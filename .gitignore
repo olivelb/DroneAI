@@ -1,0 +1,50 @@
+# === System / Editor / Tool configs ===
+.bash_history
+.bashrc
+.profile
+.motd_shown
+.sudo_as_admin_successful
+.landscape/
+.cache/
+.local/
+.npm/
+.nv/
+.config/
+.docker/
+.claude/
+.claude.json
+.gemini/
+.antigravity-server/
+.DS_Store
+
+# === Python ===
+__pycache__/
+*.pyc
+venv/
+test_venv/
+
+# === Node.js / Next.js ===
+node_modules/
+.next/
+.pnp.*
+.yarn/*
+*.tsbuildinfo
+next-env.d.ts
+
+# === Build artifacts & logs ===
+*.log
+*.tar
+
+# === Large binaries (not source code) ===
+colmap-src/
+app1-colmap/colmap-v4.0.1-bin
+
+# === Runtime / generated data ===
+workspace/
+output/
+
+# === App-specific generated files ===
+app4-dashboard/api/drones/
+
+# === Model weights ===
+*.pt
