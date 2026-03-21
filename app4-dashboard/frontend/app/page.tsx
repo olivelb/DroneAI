@@ -95,10 +95,13 @@ export default function Dashboard() {
   const progress = activeMissionId ? missions[activeMissionId]?.services ?? {} : {};
   const activeMission = activeMissionId ? missions[activeMissionId] : null;
 
-  const syncMissionSelection = (missionMap: Record<string, MissionSummary>, preferredMissionId?: string | null) => {
+  const syncMissionSelection = (
+    missionMap: Record<string, MissionSummary>,
+    preferredMissionId?: string | null,
+  ): string | null => {
     const preferred = preferredMissionId ? missionMap[preferredMissionId] : undefined;
     if (preferred && !isMissionTerminal(preferred)) {
-      return preferredMissionId;
+      return preferredMissionId ?? null;
     }
     const runningMission = Object.values(missionMap)
       .filter((mission) => mission.overall_status === "processing")
@@ -108,7 +111,7 @@ export default function Dashboard() {
     }
     const latestMission = Object.values(missionMap)
       .sort((left, right) => right.updated_at - left.updated_at)[0];
-    return latestMission?.vol_id ?? null;
+    return latestMission ? latestMission.vol_id : null;
   };
 
   const refreshSummary = async () => {
