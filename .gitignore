@@ -61,3 +61,4 @@ extractor.h
 matcher.h
 sift.h
 test_rasterizer_in_pod.sh
+GEMINI.md
