@@ -83,6 +83,8 @@ spec:
         env:
         - name: KAFKA_BROKER
           value: "my-kafka.kafka.svc.cluster.local:9092"
+        - name: WORKSPACE_DIR
+          value: "/mnt/j/workspace"
         - name: QT_QPA_PLATFORM
           value: "offscreen"
         volumeMounts:
@@ -91,6 +93,9 @@ spec:
         resources:
           limits:
             nvidia.com/gpu: "1"
+            memory: "80Gi"
+          requests:
+            memory: "8Gi"
       volumes:
       - name: host-root
         hostPath:
@@ -126,6 +131,9 @@ spec:
         resources:
           limits:
             nvidia.com/gpu: "1"
+            memory: "8Gi"
+          requests:
+            memory: "2Gi"
       volumes:
       - name: host-root
         hostPath:
@@ -151,6 +159,11 @@ spec:
       containers:
       - name: processing
         image: drone-processing:latest
+        resources:
+          limits:
+            memory: "4Gi"
+          requests:
+            memory: "1Gi"
         imagePullPolicy: IfNotPresent
         env:
         - name: KAFKA_BROKER
@@ -183,10 +196,19 @@ spec:
       containers:
       - name: api
         image: drone-dashboard-api:latest
+        resources:
+          limits:
+            memory: "2Gi"
+          requests:
+            memory: "512Mi"
         imagePullPolicy: IfNotPresent
         env:
         - name: KAFKA_BROKER
           value: "my-kafka.kafka.svc.cluster.local:9092"
+        - name: WORKSPACE_DIR
+          value: "/mnt/j/workspace"
+        - name: INPUT_DIR
+          value: "/host/mnt/j/workspace"
         ports:
         - containerPort: 8000
         volumeMounts:
@@ -231,6 +253,11 @@ spec:
       containers:
       - name: frontend
         image: drone-dashboard-frontend:latest
+        resources:
+          limits:
+            memory: "512Mi"
+          requests:
+            memory: "128Mi"
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000

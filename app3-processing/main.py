@@ -3,6 +3,7 @@ import json
 import numpy as np
 import rasterio
 from rasterio.windows import Window
+from rasterio.warp import transform as warp_transform
 import cv2
 from confluent_kafka import Consumer, Producer
 
@@ -26,12 +27,113 @@ producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 # État global pour suivre les missions
 missions = {}
 
+
+def build_tile_starts(full_size, tile_size, overlap):
+    if full_size <= tile_size:
+        return [0]
+    stride = max(1, tile_size - overlap)
+    starts = list(range(0, max(full_size - tile_size, 0) + 1, stride))
+    last_start = full_size - tile_size
+    if starts[-1] != last_start:
+        starts.append(last_start)
+    return starts
+
 def report_progress(vol_id, step, progress, status="processing", log=None):
     msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "TILER"}
     if log:
         msg["log"] = log
     producer.produce(TOPIC_STATUS, key=vol_id, value=json.dumps(msg))
     producer.flush()
+
+
+def resolve_detection_gps(det, mission):
+    lat = det.get('geo_lat')
+    lon = det.get('geo_lon')
+    if lat is not None and lon is not None:
+        try:
+            lat = float(lat)
+            lon = float(lon)
+            if np.isfinite(lat) and np.isfinite(lon) and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+                return lat, lon
+        except (TypeError, ValueError):
+            pass
+
+    ortho_transform = mission.get('transform')
+    ortho_crs = mission.get('crs')
+    if not ortho_transform or not ortho_crs or ortho_crs == "unknown":
+        return None
+
+    try:
+        gx = float(det['global_pixel_x'])
+        gy = float(det['global_pixel_y'])
+        c, a, b, f, d, e = ortho_transform
+        proj_x = c + a * gx + b * gy
+        proj_y = f + d * gx + e * gy
+        lon_arr, lat_arr = warp_transform(ortho_crs, "EPSG:4326", [proj_x], [proj_y])
+        lat = float(lat_arr[0])
+        lon = float(lon_arr[0])
+        if np.isfinite(lat) and np.isfinite(lon) and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
+            return lat, lon
+    except Exception:
+        return None
+
+    return None
+
+
+def format_detection_gps(det, mission):
+    gps = resolve_detection_gps(det, mission)
+    if gps is None:
+        return None
+    lat, lon = gps
+    return [f"lat {lat:.6f}", f"lon {lon:.6f}"]
+
+
+def draw_detection_label(img, anchor_x, anchor_y, lines):
+    if not lines:
+        return
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.55
+    font_thickness = 1
+    line_gap = 6
+    padding_x = 8
+    padding_y = 6
+    margin = 8
+
+    line_sizes = [cv2.getTextSize(line, font, font_scale, font_thickness)[0] for line in lines]
+    text_width = max(size[0] for size in line_sizes)
+    line_height = max(size[1] for size in line_sizes)
+    box_width = text_width + padding_x * 2
+    box_height = len(lines) * line_height + (len(lines) - 1) * line_gap + padding_y * 2
+
+    candidate_positions = [
+        (anchor_x + 12, anchor_y - box_height - 12),
+        (anchor_x + 12, anchor_y + 12),
+        (anchor_x - box_width - 12, anchor_y - box_height - 12),
+        (anchor_x - box_width - 12, anchor_y + 12),
+    ]
+    preferred_x, preferred_y = candidate_positions[0]
+    for cand_x, cand_y in candidate_positions:
+        if margin <= cand_x <= img.shape[1] - box_width - margin and margin <= cand_y <= img.shape[0] - box_height - margin:
+            preferred_x, preferred_y = cand_x, cand_y
+            break
+    box_x = min(max(margin, preferred_x), max(margin, img.shape[1] - box_width - margin))
+    box_y = min(max(margin, preferred_y), max(margin, img.shape[0] - box_height - margin))
+
+    cv2.line(img, (anchor_x, anchor_y), (box_x, box_y + box_height // 2), (255, 255, 255), 1, cv2.LINE_AA)
+    overlay = img.copy()
+    cv2.rectangle(overlay, (box_x, box_y), (box_x + box_width, box_y + box_height), (0, 0, 0), -1)
+    roi = img[box_y:box_y + box_height, box_x:box_x + box_width]
+    overlay_roi = overlay[box_y:box_y + box_height, box_x:box_x + box_width]
+    cv2.addWeighted(overlay_roi, 0.60, roi, 0.40, 0, roi)
+    cv2.rectangle(img, (box_x, box_y), (box_x + box_width, box_y + box_height), (255, 255, 255), 1)
+
+    baseline_y = box_y + padding_y + line_height
+    for index, line in enumerate(lines):
+        text_y = baseline_y + index * (line_height + line_gap)
+        text_origin = (box_x + padding_x, text_y)
+        cv2.putText(img, line, text_origin, font, font_scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(img, line, text_origin, font, font_scale, (255, 255, 0), font_thickness, cv2.LINE_AA)
 
 def generate_final_ortho(vol_id):
     mission = missions.get(vol_id)
@@ -67,6 +169,8 @@ def generate_final_ortho(vol_id):
                     # Draw center point / label
                     cx, cy = int(det['global_pixel_x']), int(det['global_pixel_y'])
                     cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
+                    gps_lines = format_detection_gps(det, mission)
+                    draw_detection_label(img, cx, cy, gps_lines)
                     
                     # Log to DB/File later for dashboard
             
@@ -88,10 +192,24 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
         if not ortho_path.startswith("/"): ortho_path = "/" + ortho_path
         ortho_path = "/host" + ortho_path
 
-    # Define tiles directory on the host filesystem
-    tiles_base = os.getenv("TILES_BASE_DIR", "/home/olivier/workspace/tiles")
-    tiles_dir = os.path.join("/host", tiles_base.lstrip("/"), vol_id)
+    # By default, write tiles inside the same mission workspace as the ortho.
+    # An explicit TILES_BASE_DIR still overrides this behavior when needed.
+    tiles_base = os.getenv("TILES_BASE_DIR")
+    if tiles_base:
+        if tiles_base.startswith("/host"):
+            tiles_dir = os.path.join(tiles_base, vol_id)
+        else:
+            tiles_dir = os.path.join("/host", tiles_base.lstrip("/"), vol_id)
+    else:
+        tiles_dir = os.path.join(os.path.dirname(ortho_path), "tiles")
     os.makedirs(tiles_dir, exist_ok=True)
+
+    for entry in os.listdir(tiles_dir):
+        if entry.startswith("tile_") and entry.lower().endswith(".jpg"):
+            try:
+                os.remove(os.path.join(tiles_dir, entry))
+            except OSError:
+                pass
     
     report_progress(vol_id, "TILING_START", 0)
     
@@ -103,6 +221,9 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
         with rasterio.open(ortho_path) as src:
             width = src.width
             height = src.height
+            tile_overlap = max(0, min(tile_size // 2, int(os.getenv("TILE_OVERLAP", str(tile_size // 4)))))
+            x_starts = build_tile_starts(width, tile_size, tile_overlap)
+            y_starts = build_tile_starts(height, tile_size, tile_overlap)
             
             transform_list = list(src.transform.to_gdal()) if src.transform else None
             crs_str = src.crs.to_string() if src.crs else "unknown"
@@ -117,8 +238,8 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             }
             
             # Calculer le nombre total de tuiles pour le calcul du progrès
-            total_cols = (width + tile_size - 1) // tile_size
-            total_rows = (height + tile_size - 1) // tile_size
+            total_cols = len(x_starts)
+            total_rows = len(y_starts)
             total_tiles = total_cols * total_rows
             
             # Set total_tiles BEFORE producing any tile messages to avoid
@@ -126,8 +247,10 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             missions[vol_id]["total_tiles"] = total_tiles
             
             tile_index = 0
-            for y in range(0, height, tile_size):
-                for x in range(0, width, tile_size):
+            report_progress(vol_id, "TILING_START", 0, log=f"Writing {total_tiles} overlapping tiles (size={tile_size}, overlap={tile_overlap})")
+
+            for y in y_starts:
+                for x in x_starts:
                     window = Window(x, y, min(tile_size, width - x), min(tile_size, height - y))
                     
                     tile_data = src.read(window=window)
@@ -165,6 +288,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
                         "offset_y": y,
                         "classes": classes,
                         "ai_confidence": ai_confidence,
+                        "total_tiles": total_tiles,
                         "ortho_transform": transform_list,
                         "ortho_crs": crs_str
                     }

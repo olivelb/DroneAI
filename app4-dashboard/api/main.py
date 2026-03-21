@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import threading
+from collections import deque
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,11 +16,12 @@ TOPIC_STATUS = "pipeline-status"
 TOPIC_CONTROL = "pipeline-control"
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+status_history = deque(maxlen=300)
 
 class MissionParams(BaseModel):
     vol_id: str
     input_dir: str
-    workspace_dir: str = os.getenv("WORKSPACE_DIR", "/host/home/olivier/workspace")
+    workspace_dir: str = os.getenv("WORKSPACE_DIR", "/mnt/j/workspace")
     epsg: str = "EPSG:4326"
     camera_model: str = "PINHOLE"
     pipeline: str = "modern"
@@ -34,6 +36,8 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        for message in status_history:
+            await websocket.send_text(message)
 
     def disconnect(self, websocket: WebSocket):
         try:
@@ -65,13 +69,21 @@ def kafka_consumer_thread_func(loop):
     consumer.subscribe([TOPIC_STATUS])
     
     while True:
-        msg = consumer.poll(1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            continue
-            
-        asyncio.run_coroutine_threadsafe(manager.broadcast(msg.value().decode('utf-8')), loop)
+        try:
+            msg = consumer.poll(1.0)
+            if msg is None:
+                continue
+            if msg.error():
+                print(f"Kafka status consumer error: {msg.error()}")
+                continue
+
+            payload = msg.value().decode('utf-8')
+            status_history.append(payload)
+            print(f"STATUS {payload}")
+            future = asyncio.run_coroutine_threadsafe(manager.broadcast(payload), loop)
+            future.result(timeout=5)
+        except Exception as exc:
+            print(f"Kafka status consumer loop error: {exc}")
 
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
@@ -126,7 +138,7 @@ def browse_path(path: str = "/"):
         return {"error": str(e)}
 
 @app.get("/datasets")
-def list_datasets(base_path: str = os.getenv("INPUT_DIR", "/host/home/olivier/workspace")):
+def list_datasets(base_path: str = os.getenv("INPUT_DIR", "/host/mnt/j/workspace")):
     if not os.path.exists(base_path):
         return []
     # Liste uniquement les dossiers contenant au moins une image

@@ -10,6 +10,6 @@ def acked(err, msg):
     else:
         print("Message produced: %s" % (str(msg)))
 
-msg = {"vol_id": "vol_test_pipeline", "input_dir": "/home/olivier/workspace/test_dataset", "workspace_dir": "/home/olivier/workspace"}
+msg = {"vol_id": "vol_test_pipeline", "input_dir": "/mnt/j/workspace/test_dataset", "workspace_dir": "/mnt/j/workspace"}
 producer.produce("vols-bruts", key="test", value=json.dumps(msg), callback=acked)
 producer.flush(10)

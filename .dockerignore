@@ -11,9 +11,14 @@ node_modules
 **/__pycache__
 output
 workspace
+colmap-src
+test_venv
+app1-colmap/colmap-v4.0.1-bin
 app4-dashboard/api/venv
 app4-dashboard/api/drones
 app4-dashboard/api/api*.log
 app4-dashboard/frontend/*.log
 *.log
 *.tar
+*.tif
+*.ply

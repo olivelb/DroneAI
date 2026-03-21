@@ -4,10 +4,10 @@ import React, { useState, useEffect, useRef } from "react";
 import { Play, Settings, Database, Activity, Map as MapIcon, CheckCircle, AlertCircle, Folder, File, ChevronRight, Home, Terminal, Trash2 } from "lucide-react";
 
 export default function Dashboard() {
-  const [currentPath, setCurrentPath] = useState("/host/home/olivier");
+  const [currentPath, setCurrentPath] = useState("/host/mnt/j");
   const [items, setItems] = useState<any[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
-  const [workspacePath, setWorkspacePath] = useState("/host/home/olivier/workspace");
+  const [workspacePath, setWorkspacePath] = useState("/mnt/j/workspace");
   const [volId, setVolId] = useState("vol_" + Math.floor(Math.random() * 1000));
   const [progress, setProgress] = useState<any>({});
   const [logs, setLogs] = useState<string[]>([]);
@@ -28,22 +28,55 @@ export default function Dashboard() {
 
   // Single WebSocket lifecycle — connect once on mount, disconnect on unmount
   useEffect(() => {
-    const host = window.location.hostname;
-    const wsUrl = `ws://${host}:30080/ws/status`;
-    const ws = new WebSocket(wsUrl);
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.log) {
-        setLogs(prev => [...prev.slice(-100), data.log]);
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closedByUser = false;
+
+    const connect = () => {
+      const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+      const host = window.location.hostname;
+      const port = window.location.port || "30080";
+      ws = new WebSocket(`${scheme}://${host}:${port}/ws/status`);
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.log) {
+            setLogs(prev => [...prev.slice(-100), data.log]);
+          }
+          if (data.step && data.progress !== undefined) {
+            setProgress((prev: any) => ({
+              ...prev,
+              [data.service]: data
+            }));
+          }
+        } catch (error) {
+          console.error("WebSocket message parse error:", error);
+        }
+      };
+
+      ws.onclose = () => {
+        if (!closedByUser) {
+          reconnectTimer = setTimeout(connect, 1000);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error("WebSocket error:", error);
+      };
+    };
+
+    connect();
+
+    return () => {
+      closedByUser = true;
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
       }
-      if (data.step && data.progress !== undefined) {
-        setProgress((prev: any) => ({
-          ...prev,
-          [data.service]: data
-        }));
+      if (ws) {
+        ws.close();
       }
     };
-    return () => ws.close();
   }, []);
 
   useEffect(() => {
