@@ -852,6 +852,43 @@ Important implementation details:
 - the code tracks how many candidate faces were kept after normal filtering
 - if the filled ratio is nearly empty, the CUDA rasterization is treated as failed and the worker falls back
 
+### Mesh rasterization and z-buffer diagram
+
+This diagram focuses only on the textured-mesh rasterization path and shows how visibility is resolved.
+
+```mermaid
+flowchart TD
+  A[Textured mesh faces with UVs] --> B[Batch faces]
+  B --> C[Filter by face normal]
+  C --> D[Transform vertices into local raster space]
+  D --> E[Build clip-space triangles]
+  E --> F[Rasterize triangles]
+  F --> G[Covered pixels + barycentric interpolation]
+  G --> H[Interpolate UV coordinates]
+  H --> I[Sample texture atlas]
+  F --> J[Per-pixel depth values]
+  I --> K[Candidate RGB]
+  J --> L{Depth < current final_depth?}
+  K --> L
+  L -->|Yes| M[Write RGB into final_color]
+  L -->|Yes| N[Update final_depth]
+  L -->|No| O[Keep existing pixel]
+  M --> P[Repeat for next face batch]
+  N --> P
+  O --> P
+  P --> Q[Flip image into map orientation]
+  Q --> R[Iterative gap fill]
+  R --> S[Write GeoTIFF]
+```
+
+Interpretation:
+
+1. Every retained triangle proposes color and depth for the pixels it covers.
+2. UV interpolation determines where each covered pixel samples the texture atlas.
+3. The z-buffer test keeps only the nearest visible surface at each pixel.
+4. Later batches can still overwrite earlier pixels if they are closer.
+5. The result is then gap-filled before writing the final orthomosaic.
+
 ### Step 8: CPU rasterization fallback
 
 If CUDA rasterization is unavailable or fails, the worker uses a CPU surface sampling fallback.
