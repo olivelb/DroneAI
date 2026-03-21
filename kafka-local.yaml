@@ -193,6 +193,7 @@ spec:
       labels:
         app: dashboard-api
     spec:
+      serviceAccountName: dashboard-api-sa
       containers:
       - name: api
         image: drone-dashboard-api:latest

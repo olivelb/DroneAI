@@ -3,14 +3,85 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Play, Settings, Database, Activity, Map as MapIcon, CheckCircle, AlertCircle, Folder, File, ChevronRight, Home, Terminal, Trash2 } from "lucide-react";
 
+type ServiceName = "COLMAP" | "TILER" | "IA";
+
+type StatusPayload = {
+  vol_id: string;
+  step?: string;
+  progress?: number;
+  status?: string;
+  service?: string;
+  log?: string;
+};
+
+type MissionLog = {
+  service?: string;
+  step?: string;
+  status?: string;
+  message: string;
+  ts?: number;
+};
+
+type MissionSummary = {
+  vol_id: string;
+  services: Record<string, StatusPayload>;
+  logs: MissionLog[];
+  updated_at: number;
+  overall_status: string;
+};
+
+type PodState = {
+  name: string;
+  phase: string;
+  ready: string | null;
+  restarts: number | null;
+  reason?: string | null;
+};
+
+const SERVICE_ORDER: ServiceName[] = ["COLMAP", "TILER", "IA"];
+
+const getApiBaseUrl = () => {
+  if (typeof window === "undefined") {
+    return "http://localhost:30080";
+  }
+  return `http://${window.location.hostname}:30080`;
+};
+
+const getWsBaseUrl = () => {
+  if (typeof window === "undefined") {
+    return "ws://localhost:30080";
+  }
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://${window.location.hostname}:30080`;
+};
+
+const isMissionTerminal = (mission?: MissionSummary | null) => {
+  if (!mission) {
+    return false;
+  }
+  return mission.overall_status === "success" || mission.overall_status === "error";
+};
+
+const formatPodPhase = (pod: PodState) => {
+  const phase = pod.phase || "unknown";
+  if (pod.reason) {
+    return `${phase} (${pod.reason})`;
+  }
+  return phase;
+};
+
 export default function Dashboard() {
   const [currentPath, setCurrentPath] = useState("/host/mnt/j");
   const [items, setItems] = useState<any[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("/mnt/j/workspace");
   const [volId, setVolId] = useState("vol_" + Math.floor(Math.random() * 1000));
-  const [progress, setProgress] = useState<any>({});
+  const [missions, setMissions] = useState<Record<string, MissionSummary>>({});
+  const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
+  const [pods, setPods] = useState<PodState[]>([]);
+  const [podsError, setPodsError] = useState<string | null>(null);
+  const [wsConnected, setWsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState("control");
   
   // AI Settings
@@ -21,10 +92,78 @@ export default function Dashboard() {
 
   const logContainerRef = useRef<HTMLDivElement>(null);
 
+  const progress = activeMissionId ? missions[activeMissionId]?.services ?? {} : {};
+  const activeMission = activeMissionId ? missions[activeMissionId] : null;
+
+  const syncMissionSelection = (missionMap: Record<string, MissionSummary>, preferredMissionId?: string | null) => {
+    const preferred = preferredMissionId ? missionMap[preferredMissionId] : undefined;
+    if (preferred && !isMissionTerminal(preferred)) {
+      return preferredMissionId;
+    }
+    const runningMission = Object.values(missionMap)
+      .filter((mission) => mission.overall_status === "processing")
+      .sort((left, right) => right.updated_at - left.updated_at)[0];
+    if (runningMission) {
+      return runningMission.vol_id;
+    }
+    const latestMission = Object.values(missionMap)
+      .sort((left, right) => right.updated_at - left.updated_at)[0];
+    return latestMission?.vol_id ?? null;
+  };
+
+  const refreshSummary = async () => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/status/summary`, { cache: "no-store" });
+      const data = await res.json();
+      const missionMap: Record<string, MissionSummary> = {};
+      for (const mission of data.missions ?? []) {
+        missionMap[mission.vol_id] = mission;
+      }
+      setMissions(missionMap);
+      const nextActiveMission = syncMissionSelection(missionMap, data.active_vol_id ?? activeMissionId);
+      setActiveMissionId(nextActiveMission);
+      if (nextActiveMission && missionMap[nextActiveMission]) {
+        setVolId(nextActiveMission);
+        setLogs(missionMap[nextActiveMission].logs.map((entry) => entry.message).slice(-100));
+      }
+    } catch (error) {
+      console.error("Summary refresh error:", error);
+    }
+  };
+
+  const refreshPods = async () => {
+    try {
+      const res = await fetch(`${getApiBaseUrl()}/pods`, { cache: "no-store" });
+      const data = await res.json();
+      setPods(data.pods ?? []);
+      setPodsError(data.error ?? null);
+    } catch (error) {
+      console.error("Pod refresh error:", error);
+      setPodsError(String(error));
+    }
+  };
+
   // Browse when path changes
   useEffect(() => {
     browse(currentPath);
   }, [currentPath]);
+
+  useEffect(() => {
+    void refreshSummary();
+    void refreshPods();
+
+    const summaryInterval = setInterval(() => {
+      void refreshSummary();
+    }, 5000);
+    const podInterval = setInterval(() => {
+      void refreshPods();
+    }, 10000);
+
+    return () => {
+      clearInterval(summaryInterval);
+      clearInterval(podInterval);
+    };
+  }, []);
 
   // Single WebSocket lifecycle — connect once on mount, disconnect on unmount
   useEffect(() => {
@@ -33,29 +172,67 @@ export default function Dashboard() {
     let closedByUser = false;
 
     const connect = () => {
-      const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-      const host = window.location.hostname;
-      const port = window.location.port || "30080";
-      ws = new WebSocket(`${scheme}://${host}:${port}/ws/status`);
+      ws = new WebSocket(`${getWsBaseUrl()}/ws/status`);
+
+      ws.onopen = () => {
+        setWsConnected(true);
+      };
 
       ws.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          if (data.log) {
-            setLogs(prev => [...prev.slice(-100), data.log]);
+          const data = JSON.parse(event.data) as StatusPayload;
+          if (!data.vol_id) {
+            return;
           }
-          if (data.step && data.progress !== undefined) {
-            setProgress((prev: any) => ({
+          setMissions((prev) => {
+            const existing = prev[data.vol_id] ?? {
+              vol_id: data.vol_id,
+              services: {},
+              logs: [],
+              updated_at: Date.now() / 1000,
+              overall_status: "processing",
+            };
+            const nextServices = {
+              ...existing.services,
+              ...(data.service ? { [data.service]: data } : {}),
+            };
+            const nextLogs = data.log
+              ? [...existing.logs.slice(-199), { message: data.log, service: data.service, step: data.step, status: data.status, ts: Date.now() / 1000 }]
+              : existing.logs;
+            const nextMission: MissionSummary = {
+              ...existing,
+              services: nextServices,
+              logs: nextLogs,
+              updated_at: Date.now() / 1000,
+              overall_status: data.status === "error"
+                ? "error"
+                : Object.values(nextServices).length > 0 && SERVICE_ORDER.every((service) => nextServices[service]?.status === "success")
+                  ? "success"
+                  : "processing",
+            };
+            const nextMissions = {
               ...prev,
-              [data.service]: data
-            }));
-          }
+              [data.vol_id]: nextMission,
+            };
+            const nextActiveMissionId = syncMissionSelection(nextMissions, activeMissionId ?? data.vol_id);
+            if (nextActiveMissionId !== activeMissionId) {
+              setActiveMissionId(nextActiveMissionId);
+              if (nextActiveMissionId) {
+                setVolId(nextActiveMissionId);
+              }
+            }
+            if ((activeMissionId ?? data.vol_id) === data.vol_id && data.log) {
+              setLogs(nextMission.logs.map((entry) => entry.message).slice(-100));
+            }
+            return nextMissions;
+          });
         } catch (error) {
           console.error("WebSocket message parse error:", error);
         }
       };
 
       ws.onclose = () => {
+        setWsConnected(false);
         if (!closedByUser) {
           reconnectTimer = setTimeout(connect, 1000);
         }
@@ -87,8 +264,7 @@ export default function Dashboard() {
 
   const browse = async (path: string) => {
     try {
-      const host = window.location.hostname;
-      const res = await fetch(`http://${host}:30080/browse?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${getApiBaseUrl()}/browse?path=${encodeURIComponent(path)}`);
       const data = await res.json();
       if (data.error) {
         console.error(data.error);
@@ -103,6 +279,7 @@ export default function Dashboard() {
 
   const startPipeline = async () => {
     setLogs(["[SYSTEM] Starting pipeline..."]);
+    setActiveMissionId(volId);
     const params = {
       vol_id: volId,
       input_dir: selectedPath,
@@ -116,8 +293,7 @@ export default function Dashboard() {
     };
 
     try {
-      const host = window.location.hostname;
-      const res = await fetch(`http://${host}:30080/mission`, {
+      const res = await fetch(`${getApiBaseUrl()}/mission`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params)
@@ -132,8 +308,8 @@ export default function Dashboard() {
 
   const cancelPipeline = async () => {
     try {
-      const host = window.location.hostname;
-      const res = await fetch(`http://${host}:30080/mission/cancel?vol_id=${encodeURIComponent(volId)}`, {
+      const targetMissionId = activeMissionId ?? volId;
+      const res = await fetch(`${getApiBaseUrl()}/mission/cancel?vol_id=${encodeURIComponent(targetMissionId)}`, {
         method: "POST"
       });
       const result = await res.json();
@@ -363,15 +539,30 @@ export default function Dashboard() {
                 <h2 className="text-sm font-black flex items-center gap-2 text-emerald-400 uppercase tracking-widest mb-4">
                   <Activity size={16} /> Live Pipeline
                 </h2>
+                <div className="mb-4 rounded-2xl border border-slate-700/60 bg-slate-900/40 p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Tracked Mission</div>
+                      <div className="text-sm font-mono text-blue-300">{activeMissionId ?? "No mission detected"}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-500">Status Stream</div>
+                      <div className={`text-xs font-bold ${wsConnected ? "text-emerald-400" : "text-amber-400"}`}>{wsConnected ? "connected" : "reconnecting"}</div>
+                    </div>
+                  </div>
+                  <div className="mt-2 text-[10px] text-slate-400">
+                    {activeMission ? `Mission state: ${activeMission.overall_status}` : "The frontend will follow the most recently active mission automatically."}
+                  </div>
+                </div>
                 <div className="space-y-5">
-                  {['COLMAP', 'TILER', 'IA'].map((service) => (
+                  {SERVICE_ORDER.map((service) => (
                     <div key={service} className="bg-slate-900/50 p-3 rounded-2xl border border-slate-700/50">
                       <div className="flex justify-between items-center mb-2">
                         <span className="text-[10px] font-black text-slate-500">{service} ENGINE</span>
-                        <span className="text-[10px] font-mono text-blue-400">{progress[service]?.progress || 0}%</span>
+                        <span className="text-[10px] font-mono text-blue-400">{progress[service]?.progress ?? 0}%</span>
                       </div>
                       <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
-                        <div className={`h-full transition-all duration-1000 ${progress[service]?.status === 'success' ? 'bg-emerald-500' : progress[service]?.status === 'error' ? 'bg-red-500' : 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]'}`} style={{ width: `${progress[service]?.progress || 0}%` }}></div>
+                        <div className={`h-full transition-all duration-1000 ${progress[service]?.status === 'success' ? 'bg-emerald-500' : progress[service]?.status === 'error' ? 'bg-red-500' : progress[service] ? 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]' : 'bg-slate-700'}`} style={{ width: `${progress[service]?.progress ?? 0}%` }}></div>
                       </div>
                       <div className="mt-2 flex items-center gap-2 text-[9px]">
                         {progress[service]?.status === 'success' ? <CheckCircle size={10} className="text-emerald-500" /> : progress[service]?.status === 'error' ? <AlertCircle size={10} className="text-red-500" /> : progress[service] ? <div className="animate-spin h-2 w-2 border border-blue-500 border-t-transparent rounded-full"></div> : null}
@@ -379,6 +570,28 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
+                  <div className="bg-slate-900/50 p-3 rounded-2xl border border-slate-700/50">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-[10px] font-black text-slate-500">KUBERNETES PODS</span>
+                      <span className="text-[9px] text-slate-500">{pods.length} visible</span>
+                    </div>
+                    <div className="space-y-2">
+                      {pods.map((pod) => (
+                        <div key={pod.name} className="rounded-xl border border-slate-800 bg-slate-950/70 px-3 py-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-[10px] font-mono text-slate-200">{pod.name}</span>
+                            <span className={`text-[9px] font-bold uppercase ${pod.phase === "running" ? "text-emerald-400" : pod.phase === "pending" ? "text-amber-400" : pod.phase === "failed" ? "text-red-400" : "text-slate-400"}`}>{formatPodPhase(pod)}</span>
+                          </div>
+                          <div className="mt-1 flex items-center gap-3 text-[9px] text-slate-500">
+                            <span>Ready: {pod.ready ?? "n/a"}</span>
+                            <span>Restarts: {pod.restarts ?? "n/a"}</span>
+                          </div>
+                        </div>
+                      ))}
+                      {pods.length === 0 && <div className="text-[10px] italic text-slate-600">No pod information available.</div>}
+                    </div>
+                    {podsError && <div className="mt-3 text-[9px] text-amber-400">Pod state API: {podsError}</div>}
+                  </div>
                 </div>
               </div>
 
