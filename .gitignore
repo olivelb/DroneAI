@@ -4,6 +4,8 @@
 .profile
 .motd_shown
 .sudo_as_admin_successful
+.gitconfig
+.wget-hsts
 .landscape/
 .cache/
 .local/
@@ -13,8 +15,10 @@
 .docker/
 .claude/
 .claude.json
+.copilot/
 .gemini/
 .antigravity-server/
+.vscode-server/
 .DS_Store
 
 # === Python ===
@@ -34,6 +38,8 @@ next-env.d.ts
 # === Build artifacts & logs ===
 *.log
 *.tar
+*.tar.gz
+*.zip
 
 # === Large binaries (not source code) ===
 colmap-src/
@@ -48,3 +54,10 @@ app4-dashboard/api/drones/
 
 # === Model weights ===
 *.pt
+
+# === Local research / debug artifacts ===
+aliked.h
+extractor.h
+matcher.h
+sift.h
+test_rasterizer_in_pod.sh

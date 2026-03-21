@@ -1,12 +1,26 @@
 #!/bin/bash
-# Script de build et déploiement du pipeline DroneAI (Microservices)
+# Script de build et déploiement du pipeline DroneAI (microservices)
 
-set -ex  # -x for command tracing
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
+
+export DOCKER_BUILDKIT=1
 
 echo "🛠️ Construction des images microservices..."
 
-# Use --progress=plain for verbose output in logs
-export DOCKER_BUILDKIT=1
+# 0. Base image required by the COLMAP worker
+if ! sudo docker image inspect drone-colmap-base:latest >/dev/null 2>&1; then
+    echo "   -> Building Drone COLMAP base image..."
+    sudo docker build --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
+    echo "   -> Importing Drone COLMAP base image into k3s..."
+    sudo docker save drone-colmap-base:latest > drone-colmap-base.tar
+    sudo k3s ctr images import drone-colmap-base.tar
+    rm drone-colmap-base.tar
+else
+    echo "   -> Reusing existing Drone COLMAP base image."
+fi
 
 # 1. COLMAP Worker
 echo "   -> Building Drone COLMAP Worker..."
