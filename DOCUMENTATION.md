@@ -11,7 +11,7 @@ For upstream COLMAP theory, command semantics, and reconstruction internals, ref
 - https://colmap.github.io/
 - https://github.com/colmap/colmap
 
-This repository adds orchestration, event transport, mission state handling, geo-referencing, orthomosaic generation, tiling, segmentation, aggregation, and dashboard control on top of COLMAP.
+This repository adds orchestration, event transport, mission state handling, geo-referencing, orthomosaic generation, tiling, oriented-object detection, aggregation, and dashboard control on top of COLMAP.
 
 ## System overview
 
@@ -30,7 +30,7 @@ The runtime data path is:
 3. The COLMAP worker consumes the mission, reconstructs the scene, and writes `orthomosaic.tif`.
 4. The COLMAP worker publishes an orthomosaic event to Kafka topic `images-ortho`.
 5. The processing worker consumes the orthomosaic event, slices the image into overlapping tiles, and publishes one Kafka event per tile to `image-tiles`.
-6. The IA worker consumes tiles, runs YOLO segmentation, and publishes detections to `tile-detections`.
+6. The IA worker consumes tiles, runs YOLO OBB detection, and publishes detections to `tile-detections`.
 7. The processing worker consumes all tile detections, reprojects them back into orthomosaic pixel coordinates, and writes the final annotated orthomosaic.
 8. All workers emit progress events to `pipeline-status` and the dashboard API forwards them over WebSocket to the frontend.
 
@@ -148,15 +148,15 @@ This service is central to post-reconstruction processing. It owns the transitio
 
 ### IA worker (`app2-ia`)
 
-The IA worker is a tile-level YOLO segmentation service.
+The IA worker is a tile-level Ultralytics YOLO OBB detection service.
 
 Its responsibilities are:
 
 - consume tile jobs from `image-tiles`
-- compute a stable inference image size for each tile
-- run a primary segmentation pass
-- fall back to a more permissive augmented pass when needed
+- load a local aerial OBB checkpoint, currently `yolo26s-obb.pt` by default
+- run primary and fallback confidence passes on each tile
 - convert tile-local detections into orthomosaic-global pixel coordinates
+- preserve each oriented detection polygon in the `segment` field expected by app3
 - optionally transform projected coordinates into latitude and longitude
 - publish per-tile detection results to `tile-detections`
 - publish status and throughput updates to `pipeline-status`
@@ -304,7 +304,7 @@ Consumed by:
 
 Semantic meaning:
 
-- tile job for segmentation
+- tile job for detection
 
 Payload shape:
 
@@ -342,7 +342,7 @@ Consumed by:
 
 Semantic meaning:
 
-- segmentation results for one tile
+- detection results for one tile
 
 Payload shape:
 
@@ -437,7 +437,7 @@ sequenceDiagram
     loop for each tile
         P->>K: publish image-tiles
         IA->>K: consume image-tiles
-        IA->>IA: run YOLO segmentation
+        IA->>IA: run YOLO OBB detection
         IA->>K: publish tile-detections
     end
     P->>K: consume tile-detections
@@ -715,7 +715,7 @@ Purpose:
 Why this matters:
 
 - orthomosaics built directly from sparse point projections tend to be visually perforated
-- the meshed path produces better continuity and is more suitable for downstream tiling and YOLO segmentation
+- the meshed path produces better continuity and is more suitable for downstream tiling and YOLO OBB detection
 
 ### Step 3: mesh texturing
 
@@ -1125,8 +1125,8 @@ The final rendering process:
 2. reads the first three bands as RGB
 3. converts from channel-first Rasterio layout to OpenCV's expected HWC layout
 4. iterates over all detections
-5. draws the segmentation polygon as a translucent red fill
-6. draws the segmentation contour
+5. draws the detection polygon as a translucent red fill
+6. draws the detection contour
 7. draws the detection center as a green circle
 8. resolves GPS label text lines
 9. places the label in one of several candidate positions around the anchor point
@@ -1158,7 +1158,7 @@ sequenceDiagram
     loop every tile
         P->>K: publish image-tiles
         IA->>K: consume image-tiles
-        IA->>IA: segment tile and compute global coordinates
+        IA->>IA: detect OBB polygons and compute global coordinates
         IA->>K: publish tile-detections
         P->>K: consume tile-detections
         P->>P: append detections and mark tile index received
@@ -1175,47 +1175,46 @@ Although the user-facing focus of this document is on app3 and orthomosaic const
 
 ### Model loading
 
-At startup, app2 loads:
+At startup, app2 resolves a local aerial OBB checkpoint from `AERIAL_MODEL_DIR`.
 
-- `YOLO("yolo11n-seg.pt")`
+Default runtime behavior:
+
+- variant `best` resolves to `yolo26s-obb.pt`
+- the worker downloads the checkpoint from `ultralytics/assets` if it is not already present
+- `AERIAL_MODEL_FILE` can override the checkpoint path entirely
 
 It chooses device:
 
 - `cuda:0` when available
 - otherwise CPU
 
-### Dynamic inference sizing
+### Inference sizing
 
-For each tile, app2 computes an image size by:
+The runtime IA worker uses a fixed OBB inference image size controlled by `AERIAL_MODEL_IMGSZ`.
 
-1. reading the tile dimensions with Rasterio
-2. taking the maximum dimension
-3. snapping that value to a multiple of 32
-4. clamping into `[960, 1536]`
+Default:
+
+- `1024`
 
 Purpose:
 
-- avoid using a fixed detector size for every tile
-- preserve detail on large tiles
-- stay within a stable runtime envelope for the chosen model
+- keep runtime latency predictable across tiles
+- match the aerial detector checkpoint expectation
+- simplify GPU memory planning in the deployed pod
 
 ### Two-pass detection strategy
 
-The detector uses an ordered attempt list.
+The detector uses an ordered attempt list on the same raw prediction result.
 
 Primary pass:
 
 - requested confidence
-- computed image size
-- no test-time augmentation
-- retina masks enabled
+- fixed OBB image size
 
 Fallback pass:
 
-- relaxed confidence threshold
-- larger image size
-- augmentation enabled
-- retina masks enabled
+- lower confidence threshold, floored at `0.10`
+- same image size
 
 The worker keeps the best result seen so far and stops early if a pass yields detections.
 
@@ -1229,7 +1228,7 @@ For each detection, app2 converts tile-local coordinates to orthomosaic-global c
 This is done for:
 
 - detection center
-- every vertex of the segmentation polygon
+- every vertex of the oriented polygon carried in `segment`
 
 ### Geographic coordinate lifting
 

@@ -35,9 +35,12 @@ export DOCKER_BUILDKIT=1
 sudo docker build --progress=plain -t drone-colmap:latest -f app1-colmap/Dockerfile .
 echo "📦 Importing app image to k3s..."
 sudo docker save drone-colmap:latest | sudo k3s ctr images import -
+echo "🧩 Applying Kubernetes manifest to keep colmap-worker resources in sync..."
+sudo kubectl apply -f kafka-local.yaml
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then
     echo "🚀 Restarting colmap-worker deployment..."
     sudo kubectl rollout restart deployment colmap-worker -n kafka
+    sudo kubectl rollout status deployment colmap-worker -n kafka --timeout=10m
     echo "✅ App 1 (COLMAP) deployed!"
 else
     echo "✅ App 1 image staged in k3s; deployment not restarted."

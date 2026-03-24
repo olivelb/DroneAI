@@ -19,6 +19,7 @@
 .gemini/
 .antigravity-server/
 .vscode-server/
+.dotnet/
 .DS_Store
 
 # === Python ===
@@ -48,6 +49,10 @@ app1-colmap/colmap-v4.0.1-bin
 # === Runtime / generated data ===
 workspace/
 output/
+runs/
+datasets/eagle_yolo11_obb/
+datasets/eagle_yolo11_obb_ultralytics/
+datasets/eagle_yolo11_obb_tiled*/
 
 # === App-specific generated files ===
 app4-dashboard/api/drones/
@@ -62,3 +67,5 @@ matcher.h
 sift.h
 test_rasterizer_in_pod.sh
 GEMINI.md
+isprs-archives-XLVIII-G-2025-411-2025.pdf
+*:Zone.Identifier

@@ -1,18 +1,32 @@
 import os
 import json
+import logging
+import sys
+import threading
 import numpy as np
 import rasterio
 from rasterio.windows import Window
 from rasterio.warp import transform as warp_transform
 import cv2
 from confluent_kafka import Consumer, Producer
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.append(str(ROOT_DIR))
+
+from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_ORTHO, TOPIC_STATUS, TOPIC_TILE_DETECTIONS
 
 # --- CONFIGURATION KAFKA ---
-KAFKA_BROKER = os.getenv("KAFKA_BROKER", "my-kafka.kafka.svc.cluster.local:9092")
-TOPIC_IN_ORTHO = "images-ortho"
-TOPIC_OUT_TILES = "image-tiles"
-TOPIC_IN_DETECTIONS = "tile-detections"
-TOPIC_STATUS = "pipeline-status"
+TOPIC_IN_ORTHO = TOPIC_ORTHO
+TOPIC_OUT_TILES = TOPIC_IMAGE_TILES
+TOPIC_IN_DETECTIONS = TOPIC_TILE_DETECTIONS
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+logger = logging.getLogger("app3-processing")
 
 consumer = Consumer({
     'bootstrap.servers': KAFKA_BROKER,
@@ -24,8 +38,60 @@ consumer.subscribe([TOPIC_IN_ORTHO, TOPIC_IN_DETECTIONS])
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 
-# État global pour suivre les missions
-missions = {}
+
+class MissionRegistry:
+    def __init__(self):
+        self._missions = {}
+        self._lock = threading.RLock()
+
+    def get(self, vol_id):
+        with self._lock:
+            return self._missions.get(vol_id)
+
+    def set(self, vol_id, mission):
+        with self._lock:
+            self._missions[vol_id] = mission
+
+    def set_total_tiles(self, vol_id, total_tiles):
+        with self._lock:
+            mission = self._missions.get(vol_id)
+            if mission is not None:
+                mission['total_tiles'] = total_tiles
+
+    def record_tile_detections(self, vol_id, tile_index, detections):
+        with self._lock:
+            mission = self._missions.get(vol_id)
+            if mission is None:
+                return None, False
+            mission['detections'].extend(detections)
+            mission['received_tiles'].add(tile_index)
+            total = mission.get('total_tiles')
+            is_complete = total is not None and len(mission['received_tiles']) == total
+            return mission, is_complete
+
+    def pop(self, vol_id):
+        with self._lock:
+            return self._missions.pop(vol_id, None)
+
+
+missions = MissionRegistry()
+
+
+def resolve_host_path(path_value):
+    if path_value.startswith("/host"):
+        return path_value
+    if not path_value.startswith("/"):
+        path_value = "/" + path_value
+    return "/host" + path_value
+
+
+def cleanup_tiles_directory(tiles_dir):
+    for entry in os.listdir(tiles_dir):
+        if entry.startswith("tile_") and entry.lower().endswith(".jpg"):
+            try:
+                os.remove(os.path.join(tiles_dir, entry))
+            except OSError as error:
+                logger.warning("Failed to remove stale tile %s: %s", entry, error)
 
 
 def build_tile_starts(full_size, tile_size, overlap):
@@ -74,7 +140,8 @@ def resolve_detection_gps(det, mission):
         lon = float(lon_arr[0])
         if np.isfinite(lat) and np.isfinite(lon) and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0:
             return lat, lon
-    except Exception:
+    except Exception as error:
+        logger.debug("Failed to project detection GPS for %s: %s", det.get('vol_id', 'unknown'), error)
         return None
 
     return None
@@ -135,10 +202,7 @@ def draw_detection_label(img, anchor_x, anchor_y, lines):
         cv2.putText(img, line, text_origin, font, font_scale, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, line, text_origin, font, font_scale, (255, 255, 0), font_thickness, cv2.LINE_AA)
 
-def generate_final_ortho(vol_id):
-    mission = missions.get(vol_id)
-    if not mission: return
-    
+def generate_final_ortho(vol_id, mission):
     ortho_path = mission['ortho_path']
     base, ext = os.path.splitext(ortho_path)
     output_path = f"{base}_annotated{ext}"
@@ -183,14 +247,12 @@ def generate_final_ortho(vol_id):
         report_progress(vol_id, "DONE", 100, status="success", log=f"Annotated orthomosaic saved to {output_path}")
         
     except Exception as e:
+        logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
 
 def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3):
     """Découpe un GeoTIFF en tuiles et les envoie sur Kafka."""
-    # Ensure ortho_path uses the /host prefix if needed
-    if not ortho_path.startswith("/host"):
-        if not ortho_path.startswith("/"): ortho_path = "/" + ortho_path
-        ortho_path = "/host" + ortho_path
+    ortho_path = resolve_host_path(ortho_path)
 
     # By default, write tiles inside the same mission workspace as the ortho.
     # An explicit TILES_BASE_DIR still overrides this behavior when needed.
@@ -203,13 +265,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
     else:
         tiles_dir = os.path.join(os.path.dirname(ortho_path), "tiles")
     os.makedirs(tiles_dir, exist_ok=True)
-
-    for entry in os.listdir(tiles_dir):
-        if entry.startswith("tile_") and entry.lower().endswith(".jpg"):
-            try:
-                os.remove(os.path.join(tiles_dir, entry))
-            except OSError:
-                pass
+    cleanup_tiles_directory(tiles_dir)
     
     report_progress(vol_id, "TILING_START", 0)
     
@@ -228,14 +284,14 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             transform_list = list(src.transform.to_gdal()) if src.transform else None
             crs_str = src.crs.to_string() if src.crs else "unknown"
             
-            missions[vol_id] = {
+            missions.set(vol_id, {
                 "ortho_path": ortho_path,
                 "transform": transform_list,
                 "crs": crs_str,
                 "tiles_count": 0,
                 "detections": [],
                 "received_tiles": set()
-            }
+            })
             
             # Calculer le nombre total de tuiles pour le calcul du progrès
             total_cols = len(x_starts)
@@ -244,7 +300,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             
             # Set total_tiles BEFORE producing any tile messages to avoid
             # race condition where detections arrive before count is known (BUG 1)
-            missions[vol_id]["total_tiles"] = total_tiles
+            missions.set_total_tiles(vol_id, total_tiles)
             
             tile_index = 0
             report_progress(vol_id, "TILING_START", 0, log=f"Writing {total_tiles} overlapping tiles (size={tile_size}, overlap={tile_overlap})")
@@ -300,12 +356,13 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
                         report_progress(vol_id, "TILING_IN_PROGRESS", progress)
             
             # Update to exact count (may differ from estimate if loop was interrupted)
-            missions[vol_id]["total_tiles"] = tile_index
+            missions.set_total_tiles(vol_id, tile_index)
             producer.flush()
             report_progress(vol_id, "TILING_DONE", 100, status="success")
             print(f"📦 Orthomosaïque découpée en {tile_index} tuiles pour le vol {vol_id}.")
             
     except Exception as e:
+        logger.exception("Failed to tile orthomosaic for %s", vol_id)
         error_msg = f"Failed to open orthomosaic: {str(e)}"
         try:
             if "simulée" in open(ortho_path, "r", errors="ignore").read():
@@ -335,20 +392,12 @@ try:
             
         elif topic == TOPIC_IN_DETECTIONS:
             vol_id = data['vol_id']
-            if vol_id in missions:
-                missions[vol_id]['detections'].extend(data['detections'])
-                missions[vol_id]['received_tiles'].add(data['tile_index'])
-                
-                # Check if we have received all tiles (guard against missing key)
-                total = missions[vol_id].get('total_tiles')
-                if total is not None and len(missions[vol_id]['received_tiles']) == total:
-                    report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
-                    
-                    # Build final annotated image
-                    generate_final_ortho(vol_id)
-                    
-                    # Memory Leak Fix: Clean up the mission state when done
-                    del missions[vol_id]
+            mission, is_complete = missions.record_tile_detections(vol_id, data['tile_index'], data['detections'])
+            if mission is not None and is_complete:
+                report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+                final_mission = missions.pop(vol_id)
+                if final_mission is not None:
+                    generate_final_ortho(vol_id, final_mission)
 
 except KeyboardInterrupt:
     pass

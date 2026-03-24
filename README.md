@@ -3,7 +3,7 @@
 This repository contains a complete local photogrammetry and detection pipeline built from five microservices:
 
 1. `app1-colmap`: COLMAP reconstruction and orthomosaic generation
-2. `app2-ia`: YOLO segmentation on image tiles
+2. `app2-ia`: Ultralytics YOLO OBB detection on image tiles, with polygon output preserved for downstream rendering
 3. `app3-processing`: tile slicing, detection aggregation, annotated orthomosaic generation
 4. `app4-dashboard/api`: FastAPI control and status API
 5. `app4-dashboard/frontend`: Next.js dashboard UI
@@ -304,6 +304,51 @@ Rebuild the dashboard frontend:
 bash deploy_app4_frontend.sh
 ```
 
+## Local utility scripts
+
+The repository now also contains local maintenance and training helpers that are meant for operator or developer use on the host machine.
+
+### Runtime cleanup
+
+Use `cleanup_runtime.sh` to prune unused Docker and K3s image artifacts, delete completed or failed pods, and remove leftover image tar files created by the deploy scripts.
+
+Examples:
+
+```bash
+bash cleanup_runtime.sh --dry-run
+bash cleanup_runtime.sh --yes
+bash cleanup_runtime.sh --namespace kafka
+```
+
+### EAGLE OBB dataset preparation and training
+
+`train_eagle_yolo11_obb.py` converts the Kaggle EAGLE `class xc yc w h angle` labels into the polygon OBB label format accepted by the installed Ultralytics training path, writes a local `data.yaml`, and can optionally launch training.
+
+Prepare only:
+
+```bash
+source .train-venv/bin/activate
+python train_eagle_yolo11_obb.py --prepare-only
+```
+
+Prepare and train:
+
+```bash
+source .train-venv/bin/activate
+python train_eagle_yolo11_obb.py --epochs 100 --imgsz 416 --batch 8 --device 0 --exist-ok
+```
+
+`tile_eagle_obb_dataset.py` creates overlapping tile crops for the EAGLE dataset, keeps only fully contained oriented boxes, removes exact duplicate source labels, and writes a tiled dataset with an Ultralytics-compatible `data.yaml`.
+
+Example:
+
+```bash
+source .train-venv/bin/activate
+python tile_eagle_obb_dataset.py --source datasets/eagle_yolo11_obb/EagleDatasetYOLO --output datasets/eagle_yolo11_obb_tiled --tile-size 1024 --overlap 256 --background-limit 2
+```
+
+Generated datasets under `datasets/eagle_yolo11_obb*` and training outputs under `runs/` are local artifacts and are intentionally not part of the source commit history.
+
 ## Troubleshooting
 
 ### `drone-colmap-base:latest` not found
@@ -403,7 +448,7 @@ This pipeline builds on a substantial amount of upstream open-source work. In pa
 
 - COLMAP and PyCOLMAP for SfM, MVS, and reconstruction tooling
 - PyTorch, NVIDIA CUDA, and NVLabs nvdiffrast for GPU-backed inference and rasterization
-- Ultralytics YOLO for segmentation models and tooling
+- Ultralytics YOLO for OBB detection models and tooling
 - Rasterio, pyproj, and OpenCV for geospatial and image-processing primitives
 - Apache Kafka and confluent-kafka-python for event transport between services
 - FastAPI for the dashboard API

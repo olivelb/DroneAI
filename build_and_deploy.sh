@@ -55,6 +55,7 @@ done
 
 echo "🚀 Déploiement sur Kubernetes..."
 sudo kubectl apply -f kafka-local.yaml
+sudo kubectl apply -f dashboard-api-rbac.yaml
 
 # Restart to ensure new images are pulled
 sudo kubectl rollout restart deployment -n kafka

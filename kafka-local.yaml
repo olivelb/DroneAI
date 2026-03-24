@@ -95,7 +95,7 @@ spec:
             nvidia.com/gpu: "1"
             memory: "80Gi"
           requests:
-            memory: "8Gi"
+            memory: "80Gi"
       volumes:
       - name: host-root
         hostPath:

@@ -7,6 +7,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic confluent-kafka websockets
 
+COPY shared/ /app/shared/
 # Ensure we copy the whole app4-dashboard/api to maintain import paths
 COPY app4-dashboard/api/ /app/app4-dashboard/api/
 
