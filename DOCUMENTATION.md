@@ -43,7 +43,10 @@ The control path is:
 
 ## Deployment topology
 
-The Kubernetes manifest is defined in `kafka-local.yaml`.
+The runtime deployment is split across two manifests:
+
+- `kafka-local.yaml`: namespace, broker, services, deployments, volumes, ports, and resource requests
+- `dashboard-api-rbac.yaml`: the dashboard API service account and pod-reader RBAC in namespace `kafka`
 
 Core components:
 
@@ -62,6 +65,34 @@ Important deployment properties:
 - Inside containers, the same host files are accessed through `/host/mnt/j/workspace`.
 - The COLMAP worker and IA worker both request one NVIDIA GPU.
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
+- The dashboard API deployment runs as service account `dashboard-api-sa`.
+- `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods in namespace `kafka` so the API can serve `/pods`.
+- The repository's full deploy path is `build_and_deploy.sh`, which applies both manifests.
+
+## Shared Python package
+
+The repository contains a shared Python package under `shared/` that is imported by multiple services.
+
+Current files:
+
+- `shared/config.py`
+- `shared/pipeline_params.py`
+
+Current responsibilities:
+
+- define the Kafka broker and topic names used across services
+- define the default workspace root (`/mnt/j/workspace` unless overridden by `WORKSPACE_DIR`)
+- define the service completion order used by the dashboard API (`COLMAP`, `TILER`, `IA`)
+- define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard
+- define parameter metadata used by the frontend to render editable controls
+- provide helper functions that merge mission overrides with the selected pipeline preset
+
+As implemented today:
+
+- `app1-colmap` imports shared topic names, the default workspace root, and parameter-merge helpers
+- `app2-ia` imports shared topic names
+- `app3-processing` imports shared topic names
+- `app4-dashboard/api` imports shared topic names, workspace defaults, service order, pipeline defaults, parameter metadata, and fusion-planning constants
 
 ## Services and responsibilities
 
@@ -87,6 +118,11 @@ Primary endpoints:
 - `POST /mission/cancel`
 - `GET /browse`
 - `GET /datasets`
+- `GET /status/summary`
+- `GET /pods`
+- `GET /system/resources`
+- `GET /mission/parameters`
+- `POST /mission/estimate`
 - `GET /`
 - `WS /ws/status`
 
@@ -96,10 +132,18 @@ Primary responsibilities:
 - publish mission events to `vols-bruts`
 - publish cancellation commands to `pipeline-control`
 - consume `pipeline-status`
-- buffer recent status messages in memory
+- buffer recent raw status messages in memory
+- aggregate per-mission in-memory state keyed by `vol_id`
+- compute an `overall_status` from the shared service order `COLMAP -> TILER -> IA`
 - replay buffered history to newly connected WebSocket clients
+- expose a summary view of known missions through `GET /status/summary`
+- expose pod health and restart information through `GET /pods`
+- fall back to a static pod list when Kubernetes service-account credentials are unavailable
+- expose host memory totals from `/proc/meminfo` through `GET /system/resources`
+- expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
+- estimate fusion memory pressure, cache sizing, and recommended maximum image size for an input directory through `POST /mission/estimate`
 
-The API does not own persistent mission state. It is a Kafka bridge and WebSocket relay.
+The API still does not persist mission state to disk or a database. Its mission model is in-memory only and is rebuilt from new Kafka traffic after restart.
 
 ### COLMAP worker (`app1-colmap`)
 

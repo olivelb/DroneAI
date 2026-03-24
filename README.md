@@ -22,7 +22,10 @@ For a working installation, these files are part of the install path and must be
 - `app3-processing/Dockerfile`
 - `app4-dashboard/api/Dockerfile`
 - `app4-dashboard/frontend/Dockerfile`
+- `shared/config.py`
+- `shared/pipeline_params.py`
 - `kafka-local.yaml`
+- `dashboard-api-rbac.yaml`
 - `build_and_deploy.sh`
 - `setup.sh`
 - `deploy_app1_colmap.sh`
@@ -77,7 +80,7 @@ Installation has four parts:
 1. Install Docker on the host
 2. Install the NVIDIA container toolkit on the host
 3. Install K3s on the host
-4. Build the images and apply `kafka-local.yaml`
+4. Build the images and apply the Kubernetes manifests
 
 You can do this in two ways:
 
@@ -202,6 +205,7 @@ What `build_and_deploy.sh` does:
 - builds all five application images
 - imports all images into K3s containerd
 - applies `kafka-local.yaml`
+- applies `dashboard-api-rbac.yaml`
 - restarts the deployments in namespace `kafka`
 
 ### 6. Verify the deployment
@@ -248,6 +252,14 @@ Open:
 
 The frontend talks to the API on port `30080` and receives pipeline status through the WebSocket endpoint `/ws/status`.
 
+The dashboard also uses additional REST endpoints exposed by the API for:
+
+- aggregated mission state: `GET /status/summary`
+- Kubernetes pod status: `GET /pods`
+- host memory snapshot: `GET /system/resources`
+- shared pipeline defaults and parameter metadata: `GET /mission/parameters`
+- fusion and image-size estimation for a selected dataset: `POST /mission/estimate`
+
 ## Running a mission
 
 1. Put your images in a mission directory under `/mnt/j/workspace`
@@ -267,6 +279,8 @@ The pipeline flow is:
 ## Incremental redeploy commands
 
 Use these when only one service changes.
+
+These scripts rebuild and restart a single deployment. They do not replace the full first-time install path. In particular, `deploy_app4_api.sh` restarts the API deployment but does not apply `dashboard-api-rbac.yaml`, so the initial deployment should still go through `build_and_deploy.sh`.
 
 Rebuild COLMAP including the base image:
 
