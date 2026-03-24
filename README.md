@@ -352,6 +352,22 @@ source .train-venv/bin/activate
 python train_eagle_yolo11_obb.py --epochs 100 --imgsz 416 --batch 8 --device 0 --exist-ok
 ```
 
+Resume an interrupted run from its last checkpoint:
+
+```bash
+source .train-venv/bin/activate
+python train_eagle_yolo11_obb.py --resume runs/obb/runs/eagle_obb/yolo11n_obb_eagle_tiled_1024_clean_b1/weights/last.pt
+```
+
+If the run directory matches `--project` and `--name`, you can omit the path and the script will look for `PROJECT/NAME/weights/last.pt`.
+
+Resume the newest interrupted run under a project tree automatically:
+
+```bash
+source .train-venv/bin/activate
+python train_eagle_yolo11_obb.py --auto-resume-latest --project runs/obb/runs/eagle_obb
+```
+
 `tile_eagle_obb_dataset.py` creates overlapping tile crops for the EAGLE dataset, keeps only fully contained oriented boxes, removes exact duplicate source labels, and writes a tiled dataset with an Ultralytics-compatible `data.yaml`.
 
 Example:

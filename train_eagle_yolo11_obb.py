@@ -22,8 +22,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="", help="Training device, for example '0' or 'cpu'. Empty lets Ultralytics decide.")
     parser.add_argument("--workers", type=int, default=8, help="Data loader workers.")
     parser.add_argument("--exist-ok", action="store_true", help="Allow reusing an existing run directory.")
+    parser.add_argument(
+        "--resume",
+        nargs="?",
+        const="auto",
+        default=None,
+        help="Resume training from the last checkpoint. Pass a checkpoint path or omit the value to use PROJECT/NAME/weights/last.pt.",
+    )
+    parser.add_argument(
+        "--auto-resume-latest",
+        action="store_true",
+        help="Resume from the most recently updated weights/last.pt found under --project.",
+    )
     parser.add_argument("--prepare-only", action="store_true", help="Only convert the dataset and write data.yaml.")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.resume is not None and args.auto_resume_latest:
+        parser.error("use either --resume or --auto-resume-latest, not both")
+    return args
 
 
 def xywhr_to_polygon(center_x: float, center_y: float, width: float, height: float, angle: float) -> list[tuple[float, float]]:
@@ -130,12 +145,43 @@ def prepare_dataset(source_root: Path, prepared_root: Path) -> Path:
     return data_yaml
 
 
+def resolve_resume_checkpoint(resume: str | None, project: str, name: str) -> Path | None:
+    if resume is None:
+        return None
+
+    if resume == "auto":
+        checkpoint_path = Path(project) / name / "weights" / "last.pt"
+    else:
+        checkpoint_path = Path(resume)
+
+    checkpoint_path = checkpoint_path.expanduser()
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Resume checkpoint not found: {checkpoint_path}. Pass --resume /path/to/last.pt or use matching --project/--name values."
+        )
+    return checkpoint_path
+
+
+def find_latest_resume_checkpoint(project: str) -> Path:
+    project_path = Path(project).expanduser()
+    checkpoint_paths = [path for path in project_path.rglob("last.pt") if path.name == "last.pt" and path.parent.name == "weights"]
+    if not checkpoint_paths:
+        raise FileNotFoundError(f"No resumable checkpoint found under {project_path}")
+    return max(checkpoint_paths, key=lambda path: path.stat().st_mtime)
+
+
 def main() -> None:
     args = parse_args()
     source_root = Path(args.source)
     prepared_root = Path(args.prepared)
     data_yaml = prepare_dataset(source_root, prepared_root)
     if args.prepare_only:
+        return
+
+    resume_checkpoint = find_latest_resume_checkpoint(args.project) if args.auto_resume_latest else resolve_resume_checkpoint(args.resume, args.project, args.name)
+    if resume_checkpoint is not None:
+        model = YOLO(str(resume_checkpoint))
+        model.train(resume=True)
         return
 
     model = YOLO(args.model)
