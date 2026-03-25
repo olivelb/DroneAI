@@ -714,41 +714,37 @@ This section describes the repository-specific orthomosaic logic in detail.
 
 ### Overview
 
-The orthomosaic builder prefers a mesh-based path, then falls back to direct point-cloud projection if needed.
+The orthomosaic builder defaults to a **True Orthophoto GPU pipeline**, with a fallback to legacy direct point-cloud projection.
+The old Poisson meshing and texturing pipeline was removed due to frequent Out-Of-Memory (OOM) errors and replaced with this highly optimized, O(1) VRAM PyTorch ray-casting approach.
 
-Primary path:
+Primary path (True Orthophoto, requires `use_mesh_ortho: True` within pipeline parameter payload):
 
-1. Poisson meshing from `dense/fused.ply`
-2. mesh texturing
-3. rasterization of the textured mesh into a GeoTIFF
+1. Read `dense/fused.ply`
+2. Build a 2.5D Digital Surface Model (DSM) using PyTorch on the GPU (incorporating float64 precision for geo-coordinates to eliminate tearing artifacts)
+3. Calculate camera nadir proximity (Voronoi map)
+4. Filter out oblique images (>25 degrees looking angle) to prevent stretching artifacts
+5. Ray-cast each nadir image onto the DSM surface and fill gaps using PyTorch `grid_sample`
+6. Write the result to a GeoTIFF using `rasterio` and the specified `ortho_mesh_resolution`
 
-Fallback path:
+Fallback path (Direct Point Cloud Projection):
 
-1. read `dense/fused.ply`
-2. apply the saved Sim3 alignment in float64
-3. project points to a top-down regular grid
-4. write the result to a GeoTIFF
+1. Applied automatically if True Ortho fails, or if explicitly requested (`use_mesh_ortho: False`)
+2. Uses iterative top-down point splatting
 
 ### Orthomosaic construction flow
 
 ```mermaid
 flowchart TD
-    A[Dense fused point cloud available] --> B{Textured mesh already exists?}
-    B -->|Yes| E[Load textured mesh]
-    B -->|No| C[Poisson mesher]
-    C --> D[Mesh texturer]
-    D --> E[Load textured mesh]
-    E --> F{CUDA rasterizer available?}
-    F -->|Yes| G[Rasterize mesh with nvdiffrast]
-    F -->|No| H[CPU barycentric surface sampling]
-    G --> I[Iterative gap fill]
-    H --> I[Iterative gap fill]
-    I --> J[Write GeoTIFF with projected CRS]
-    E -->|Rasterization failure| K[Fallback to fused.ply projection]
-    K --> L[Apply Sim3 in float64]
-    L --> M[Top-down z-sorted point projection]
-    M --> N[Iterative gap fill]
-    N --> J
+    A[Dense fused point cloud available] --> B{use_mesh_ortho enabled?}
+    B -->|Yes| C[PyTorch 2.5D DSM Generation]
+    C --> D[Compute Camera Distances / Voronoi]
+    D --> E[Filter Oblique Cameras >25 deg]
+    E --> F[GPU Ray-casting and grid_sample]
+    F --> G[Multi-camera gap filling]
+    G --> H[Write GeoTIFF with projected CRS]
+    B -->|No| I[Legacy float64 point splatting]
+    F -->|CUDA OOM / Failure| I
+    I --> H
 ```
 
 ### Step 1: dense source selection
@@ -759,37 +755,20 @@ If a pre-existing textured mesh is available and mesh orthos are enabled, the wo
 
 This is an intentional fast path for reruns after orthomosaic logic changes.
 
-### Step 2: Poisson meshing
+### Step 2: 2.5D DSM and Voronoi computation
 
-If `dense/meshed-poisson.ply` does not already exist, the worker runs:
+Instead of Poisson meshing, the new path builds a Digital Surface Model (DSM).
 
-- `colmap poisson_mesher`
+- Projects `fused.ply` onto a regular grid at the desired `ortho_mesh_resolution` (default 2cm/pixel).
+- Sub-pixel float64 precision is utilized for all affine transformations to fully prevent sub-millimeter quantization tearing.
+- Missing grid points are gap-filled via GPU-accelerated convolution.
+- A Voronoi diagram assigns each ground pixel to the nearest vertical nadir camera, explicitly dropping non-nadir oblique cameras (any image rotated >25 degrees).
 
-Purpose:
+### Step 3: GPU ray-casting
 
-- convert the fused point cloud into a continuous surface
-- fill local holes better than raw point splatting
-
-Why this matters:
-
-- orthomosaics built directly from sparse point projections tend to be visually perforated
-- the meshed path produces better continuity and is more suitable for downstream tiling and YOLO OBB detection
-
-### Step 3: mesh texturing
-
-If `dense/textured/mesh.ply` does not already exist, the worker runs:
-
-- `colmap mesh_texturer`
-
-Purpose:
-
-- assign image-derived color to the surface
-- produce a texture atlas plus a textured mesh file with per-face UV coordinates
-
-The orthomosaic rasterizer depends on:
-
-- `dense/textured/mesh.ply`
-- `dense/textured/texture.png`
+- Each nadir image is iteratively warped onto the top-down perspective using `torch.nn.functional.grid_sample`.
+- Since only one image is processed in VRAM at any given time, the pipeline uses roughly an O(1) constant VRAM footprint, effectively solving OOM issues on massive datasets.
+- Remaining empty pixels missed by the primary nadir assignment are recursively back-filled.
 
 ### Step 4: geo-alignment handling
 

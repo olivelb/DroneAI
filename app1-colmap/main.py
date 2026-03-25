@@ -421,13 +421,13 @@ def apply_iterative_gap_fill(img, passes=3):
     return img, fill_before, fill_after
 
 
-def generate_ortho_from_ply(ply_path, ortho_file, utm_crs, vol_id, transform_file=None):
+def generate_ortho_from_ply(ply_path, ortho_file, utm_crs, vol_id, transform_file=None, resolution=0.05):
     """Generate an orthomosaic by projecting PLY point cloud to a 2D grid.
     
     If transform_file is provided, the PLY is assumed to be in COLMAP coords
     and is geo-referenced in float64 internally to avoid float32 precision loss.
     """
-    report_progress(vol_id, "ORTHO", 95, log="Generating orthomosaic from point cloud (PLY projection)...")
+    report_progress(vol_id, "ORTHO", 95, log=f"Generating orthomosaic from point cloud (PLY projection) at {resolution}m/px...")
     from plyfile import PlyData
     plydata = PlyData.read(ply_path)
     x = np.array(plydata['vertex']['x'], dtype=np.float64)
@@ -458,10 +458,10 @@ def generate_ortho_from_ply(ply_path, ortho_file, utm_crs, vol_id, transform_fil
     width_m = max_x - min_x
     height_m = max_y - min_y
     
-    resolution = 0.05  # 5 cm/pixel
     max_dim = max(width_m, height_m)
     if max_dim > 0 and (max_dim / resolution) > 15000:
         resolution = max_dim / 15000.0
+        report_progress(vol_id, "ORTHO", 95, log=f"Ortho dimension too large. Adjusted resolution to {resolution:.3f} m/px")
     elif max_dim == 0:
         resolution = 0.05
     
@@ -1626,9 +1626,17 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         textured_texture_path = os.path.join(textured_dir, "texture.png")
         align_tf = os.path.join(workspace_dir, "alignment_transform.json")
         align_tf = align_tf if os.path.exists(align_tf) else None
-        ortho_only_ready = params["use_mesh_ortho"] and os.path.exists(textured_mesh_path) and os.path.exists(textured_texture_path)
+        # True Ortho path needs fused.ply + sparse model, NOT the textured mesh.
+        # Legacy mesh ortho path needs the textured mesh.
+        has_textured_mesh = os.path.exists(textured_mesh_path) and os.path.exists(textured_texture_path)
+        has_fused_for_true_ortho = (
+            params["use_mesh_ortho"]
+            and has_valid_fused_output(fused_path)
+            and os.path.isdir(os.path.join(dense_path, "sparse"))
+        )
+        ortho_only_ready = has_textured_mesh or has_fused_for_true_ortho
         if ortho_only_ready:
-            report_progress(vol_id, "PREPARING", 13, log="Existing textured mesh found. Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
+            report_progress(vol_id, "PREPARING", 13, log="Existing dense data found. Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
 
         # --- 3. SfM: Feature Extraction ---
         sparse_done = os.path.exists(os.path.join(sparse_path, "0", "cameras.bin")) or os.path.exists(os.path.join(sparse_path, "0", "cameras.txt"))
@@ -1882,13 +1890,25 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         if ortho_only_ready or has_valid_fused_output(fused_path):
             try:
                 if params["use_mesh_ortho"]:
-                    generate_ortho_from_mesh(dense_path, ortho_file, utm_crs, vol_id, workspace_dir=workspace_dir, params=params)
+                    import ortho_dsm
+                    ortho_resolution = float(params.get("ortho_mesh_resolution", 0.05))
+                    ortho_dsm.generate_true_orthophoto_pytorch(
+                        dense_path=dense_path,
+                        ortho_file=ortho_file,
+                        utm_crs=utm_crs,
+                        vol_id=vol_id,
+                        transform_file=ortho_point_cloud_transform,
+                        report_fn=report_progress,
+                        resolution=ortho_resolution
+                    )
                 else:
-                    generate_ortho_from_ply(ortho_point_cloud_path, ortho_file, utm_crs, vol_id, transform_file=ortho_point_cloud_transform)
+                    ortho_resolution = float(params.get("ortho_mesh_resolution", 0.05))
+                    generate_ortho_from_ply(ortho_point_cloud_path, ortho_file, utm_crs, vol_id, transform_file=ortho_point_cloud_transform, resolution=ortho_resolution)
             except Exception as e:
                 if params["use_mesh_ortho"] and has_valid_fused_output(fused_path):
-                    report_progress(vol_id, "ORTHO", 95, log=f"Mesh-based ortho failed ({e}). Falling back to point-cloud projection.")
-                    generate_ortho_from_ply(ortho_point_cloud_path, ortho_file, utm_crs, vol_id, transform_file=ortho_point_cloud_transform)
+                    report_progress(vol_id, "ORTHO", 95, log=f"True Ortho via GPU failed ({e}). Falling back to point-cloud projection.")
+                    ortho_resolution = float(params.get("ortho_mesh_resolution", 0.05))
+                    generate_ortho_from_ply(ortho_point_cloud_path, ortho_file, utm_crs, vol_id, transform_file=ortho_point_cloud_transform, resolution=ortho_resolution)
                 else:
                     report_progress(vol_id, "ORTHO", 95, log=f"Error generating ortho: {e}. Using dummy.")
                     generate_dummy_ortho(ortho_file)
@@ -1906,7 +1926,9 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             "vol_id": vol_id,
             "ortho_path": ortho_file,
             "classes": mission_params.get("classes", ["car"]),
-            "ai_confidence": mission_params.get("ai_confidence", 0.3)
+            "ai_confidence": mission_params.get("ai_confidence", 0.3),
+            "ai_backend": mission_params.get("ai_backend", "yolo"),
+            "sam_prompt": mission_params.get("sam_prompt", "car"),
         }
         producer.produce(TOPIC_OUT, key=vol_id, value=json.dumps(msg))
         producer.flush()
