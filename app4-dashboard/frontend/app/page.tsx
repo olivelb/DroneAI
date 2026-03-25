@@ -202,6 +202,7 @@ export default function Dashboard() {
   const [resources, setResources] = useState<ResourceSummary | null>(null);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const activeVolIdRef = useRef<string | null>(null);
 
   const progress = activeMissionId ? missions[activeMissionId]?.services ?? {} : {};
   const activeMission = activeMissionId ? missions[activeMissionId] : null;
@@ -349,6 +350,11 @@ export default function Dashboard() {
     };
   }, []);
 
+  // Synchronise with activeMissionId updates caused manually (if any)
+  useEffect(() => {
+    activeVolIdRef.current = activeMissionId;
+  }, [activeMissionId]);
+
   useEffect(() => {
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -397,16 +403,20 @@ export default function Dashboard() {
               ...prev,
               [data.vol_id]: nextMission,
             };
-            const nextActiveMissionId = syncMissionSelection(nextMissions, activeMissionId ?? data.vol_id);
-            if (nextActiveMissionId !== activeMissionId) {
+            
+            const currentActiveId = activeVolIdRef.current ?? data.vol_id;
+            const nextActiveMissionId = syncMissionSelection(nextMissions, currentActiveId);
+            
+            if (nextActiveMissionId !== activeVolIdRef.current) {
+              activeVolIdRef.current = nextActiveMissionId;
               setActiveMissionId(nextActiveMissionId);
               if (nextActiveMissionId) {
                 setVolId(nextActiveMissionId);
-              } else if (activeMissionId) {
+              } else if (activeVolIdRef.current) {
                 setVolId(`vol_${Math.floor(Math.random() * 1000)}`);
               }
             }
-            if ((activeMissionId ?? data.vol_id) === data.vol_id && data.log) {
+            if ((activeVolIdRef.current ?? data.vol_id) === data.vol_id && data.log) {
               setLogs(nextMission.logs.map((entry) => entry.message).slice(-100));
             }
             return nextMissions;
@@ -439,7 +449,7 @@ export default function Dashboard() {
         ws.close();
       }
     };
-  }, [activeMissionId]);
+  }, []); // Remove dependency on activeMissionId to prevent infinite reconnect loop
 
   useEffect(() => {
     if (logContainerRef.current) {
