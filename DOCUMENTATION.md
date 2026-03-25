@@ -43,12 +43,12 @@ The control path is:
 
 ## Deployment topology
 
-The runtime deployment is split across two manifests:
+The deployed runtime is driven by two manifests:
 
 - `kafka-local.yaml`: namespace, broker, services, deployments, volumes, ports, and resource requests
 - `dashboard-api-rbac.yaml`: the dashboard API service account and pod-reader RBAC in namespace `kafka`
 
-Core components:
+Main runtime objects:
 
 - namespace: `kafka`
 - Kafka broker service: `my-kafka.kafka.svc.cluster.local:9092`
@@ -58,7 +58,7 @@ Core components:
 - dashboard API deployment: `dashboard-api`
 - dashboard frontend deployment: `dashboard-frontend`
 
-Important deployment properties:
+Operational notes:
 
 - The host root `/` is mounted into the worker pods at `/host`.
 - The logical workspace root used by the pipeline is `/mnt/j/workspace`.
@@ -70,7 +70,8 @@ Important deployment properties:
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
 - The dashboard API deployment runs as service account `dashboard-api-sa`.
 - `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods in namespace `kafka` so the API can serve `/pods`.
-- The repository's full deploy path is `build_and_deploy.sh`, which applies both manifests.
+- `build_and_deploy.sh` applies both manifests for a full stack rollout.
+- The incremental deploy scripts also reapply the relevant manifest before restart so env, mounts, and RBAC changes are not skipped.
 
 ## Shared Python package
 
@@ -169,7 +170,7 @@ This is the most stateful and operationally complex service in the pipeline.
 
 ### Processing worker (`app3-processing`)
 
-The processing worker serves two distinct roles in one process:
+The processing worker combines two runtime roles:
 
 1. orthomosaic tiler
 2. detection aggregator and final-image renderer
@@ -179,30 +180,30 @@ It consumes two topics simultaneously:
 - `images-ortho`
 - `tile-detections`
 
-Its responsibilities are:
+In practice it does the following:
 
 - open the produced orthomosaic GeoTIFF
 - slice it into overlapping JPEG tiles
 - publish tile jobs to `image-tiles`
 - track per-mission state in memory
 - collect detections from all returned tiles
-- reconstruct detection geometry in global orthomosaic pixel coordinates
+- merge overlap duplicates before final rendering
 - resolve GPS labels from either direct detection coordinates or orthomosaic CRS/affine metadata
 - render masks, contours, center points, and GPS labels onto the orthomosaic
 - save the final annotated GeoTIFF
 
-This service is central to post-reconstruction processing. It owns the transition from a georeferenced orthomosaic to an AI-ready tile set and then back to a georeferenced annotated product.
+This service owns the transition from one georeferenced orthomosaic to many detector tiles, then back to one annotated orthomosaic.
 
 ### IA worker (`app2-ia`)
 
 The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation.
 
-Its responsibilities are:
+Its runtime responsibilities are:
 
 - consume tile jobs from `image-tiles`
 - load a local aerial OBB checkpoint, currently `yolo26s-obb.pt` by default
 - lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend
-- run primary and fallback confidence passes on each tile
+- run the selected detector on each tile
 - run prompt-based instance segmentation for SAM 3 tile jobs
 - convert tile-local detections into orthomosaic-global pixel coordinates
 - preserve each oriented detection polygon in the `segment` field expected by app3
@@ -1073,37 +1074,31 @@ Implications:
 - tile coverage is stable even when image dimensions are not multiples of tile size
 - overlap mitigates border truncation for detectors
 
-### Path normalization
+### Path normalization and tile location
 
-When the worker receives an orthomosaic path, it ensures the container can access it:
-
-- if the path does not start with `/host`, it is rewritten to `/host/...`
+When the processing worker receives an orthomosaic path, it rewrites it to `/host/...` if needed so the container can access the host file.
 
 Tile files are then written into either:
 
 - a configured `TILES_BASE_DIR`, or
 - a mission-scoped `tiles/<vol_id>/` subdirectory next to the orthomosaic
 
-Before new tiles are written, stale `tile_*.jpg` files in that directory are removed.
+Before new tiles are written, stale `tile_*.jpg` files are removed only from that mission directory.
 
-### GeoTIFF opening and metadata capture
+### GeoTIFF metadata capture
 
-When slicing begins, app3 opens the orthomosaic with Rasterio and captures:
+When slicing begins, app3 opens the orthomosaic with Rasterio and records:
 
 - image width
 - image height
 - the affine transform in GDAL tuple order
 - the CRS string
 
-This metadata is saved into the mission record and replicated into every tile job.
-
-This is a critical design choice because downstream services should not need to reopen the full orthomosaic just to derive geospatial coordinates.
+This metadata is stored in mission state and copied into each tile job so app2 can geolocate detections without reopening the full orthomosaic.
 
 ### Tiling output format
 
-Tiles are written as JPEG.
-
-Band handling:
+Tiles are written as JPEG with simple band normalization:
 
 - if the orthomosaic has more than 3 bands, only the first 3 are kept
 - if the orthomosaic has 1 band, it is replicated into 3 bands for JPEG compatibility
@@ -1114,11 +1109,8 @@ Each tile preserves its own local Rasterio window transform, but the tile event 
 
 Before producing any tile messages, app3 stores `total_tiles` in mission state.
 
-Why:
+This avoids a race where detections come back before the aggregator knows how many tiles belong to the mission.
 
-- detections may return before the tiling loop fully completes
-- if `total_tiles` were missing, the aggregator could believe the mission is incomplete or compare against `None`
-- setting the expected count early avoids that race
 
 ### Processing worker state diagram
 
@@ -1152,7 +1144,7 @@ When a `tile-detections` message arrives:
 4. compares `len(received_tiles)` against `total_tiles`
 5. if all tiles are present, it triggers final rendering
 
-Before final rendering, app3 deduplicates overlapping detections from adjacent tiles. The current merge rule prefers the largest polygon and merges a smaller candidate when any of the following is true:
+Before final rendering, app3 deduplicates overlapping detections from adjacent tiles. The current merge rule sorts by polygon area first, then merges a smaller candidate when any of the following is true:
 
 - the candidate polygon centroid falls inside a larger kept polygon
 - any candidate polygon vertex falls inside a larger kept polygon
@@ -1163,9 +1155,7 @@ The processing deployment currently sets:
 - `UNTILER_DEDUPE_CENTER_THRESHOLD=40`
 - `UNTILER_DEDUPE_IOU_THRESHOLD=0.05`
 
-This means completion is keyed on returned tile identities, not on a detection count or on progress percentages.
-
-An empty detection result still counts as a completed tile because the tile index is recorded regardless of whether the tile contains detections.
+Completion is keyed on returned tile identities, not on detection counts. An empty detection result still counts as a completed tile because the tile index is recorded either way.
 
 ### GPS resolution logic
 
@@ -1187,22 +1177,15 @@ The correctness of this fallback depends completely on the orthomosaic carrying 
 
 ### Final orthomosaic annotation
 
-The final rendering process:
+The final rendering path is straightforward:
 
 1. opens the orthomosaic GeoTIFF
-2. reads the first three bands as RGB
-3. converts from channel-first Rasterio layout to OpenCV's expected HWC layout
-4. iterates over all detections
-5. draws the detection polygon as a translucent red fill
-6. draws the detection contour
-7. draws the detection center as a green circle
-8. resolves GPS label text lines
-9. places the label in one of several candidate positions around the anchor point
-10. draws a leader line, translucent black box, white border, and outlined text
-11. converts the image back to channel-first format
-12. writes the result to `*_annotated.tif`
+2. converts the first three bands to OpenCV RGB layout
+3. iterates over deduplicated detections
+4. draws the polygon fill, contour, center point, and GPS label
+5. writes the result to `*_annotated.tif`
 
-Annotation output characteristics:
+Rendering characteristics:
 
 - masks are rendered in RGB red
 - center points are rendered in green
