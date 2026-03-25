@@ -1,15 +1,17 @@
-import os
 import json
 import logging
-import sys
+import os
 import shutil
-from typing import Any
+import sys
+from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
-from pyproj import Transformer
 from confluent_kafka import Consumer, Producer
-from pathlib import Path
+from PIL import Image
+from pyproj import Transformer
+from transformers import Sam3Model, Sam3Processor
 from ultralytics import YOLO
 from ultralytics.utils.downloads import attempt_download_asset
 
@@ -29,11 +31,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app2-ia")
 
-MODEL_ASSETS_DIR = Path(os.getenv("AERIAL_MODEL_DIR", "/opt/modelzoo"))
-MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
-MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
+YOLO_MODEL_ASSETS_DIR = Path(os.getenv("AERIAL_MODEL_DIR", "/opt/modelzoo"))
+YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
+YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
 
-MODEL_VARIANTS = {
+YOLO_MODEL_VARIANTS = {
     "best": {
         "checkpoint": "yolo26s-obb.pt",
     },
@@ -51,6 +53,10 @@ MODEL_VARIANTS = {
     },
 }
 
+SAM3_MODEL_ID = os.getenv("SAM3_MODEL_ID", "facebook/sam3")
+SAM3_DEFAULT_PROMPT = os.getenv("SAM3_DEFAULT_PROMPT", "car")
+SAM3_MASK_THRESHOLD = float(os.getenv("SAM3_MASK_THRESHOLD", "0.5"))
+
 REQUESTED_CLASS_MAP = {
     "car": {"small-vehicle", "large-vehicle"},
     "truck": {"large-vehicle"},
@@ -63,10 +69,19 @@ REQUESTED_CLASS_MAP = {
 
 DEFAULT_AERIAL_CLASSES = {"small-vehicle", "large-vehicle"}
 
+device_type = "cuda" if torch.cuda.is_available() else "cpu"
+yolo_device = 0 if device_type == "cuda" else "cpu"
+sam3_autocast_dtype = torch.bfloat16 if device_type == "cuda" else torch.float32
 
-def resolve_model_file():
+_yolo_model = None
+_yolo_available_labels: list[str] = []
+_sam3_model = None
+_sam3_processor = None
+
+
+def resolve_yolo_model_file() -> tuple[str, Path, str]:
     variant_name = os.getenv("AERIAL_MODEL_VARIANT", "best").strip().lower() or "best"
-    variant = MODEL_VARIANTS.get(variant_name, MODEL_VARIANTS["best"])
+    variant = YOLO_MODEL_VARIANTS.get(variant_name, YOLO_MODEL_VARIANTS["best"])
     configured_model = os.getenv("AERIAL_MODEL_FILE", "").strip()
     checkpoint_name = variant["checkpoint"]
     if configured_model:
@@ -74,23 +89,55 @@ def resolve_model_file():
         if model_path.name:
             checkpoint_name = model_path.name
     else:
-        model_path = MODEL_ASSETS_DIR / checkpoint_name
+        model_path = YOLO_MODEL_ASSETS_DIR / checkpoint_name
     return variant_name, model_path, checkpoint_name
 
 
-def ensure_model_file(model_path: Path, checkpoint_name: str):
+def ensure_yolo_model_file(model_path: Path, checkpoint_name: str) -> Path:
     if model_path.exists():
         return model_path
 
     model_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Downloading aerial detector checkpoint %s to %s", checkpoint_name, model_path)
-    downloaded_path = Path(attempt_download_asset(checkpoint_name, repo="ultralytics/assets", release=MODEL_RELEASE))
+    downloaded_path = Path(attempt_download_asset(checkpoint_name, repo="ultralytics/assets", release=YOLO_MODEL_RELEASE))
     if downloaded_path.resolve() != model_path.resolve():
         shutil.copy2(downloaded_path, model_path)
     return model_path
 
 
-def to_numpy(value: Any):
+def load_yolo_model() -> tuple[YOLO, list[str]]:
+    global _yolo_model, _yolo_available_labels
+    if _yolo_model is not None:
+        return _yolo_model, _yolo_available_labels
+
+    selected_variant, model_file_path, model_file_name = resolve_yolo_model_file()
+    model_file_path = ensure_yolo_model_file(model_file_path, model_file_name)
+    logger.info(
+        "Loading YOLO aerial detector variant=%s checkpoint=%s device=%s imgsz=%s",
+        selected_variant,
+        model_file_path,
+        yolo_device,
+        YOLO_MODEL_IMAGE_SIZE,
+    )
+    _yolo_model = YOLO(str(model_file_path))
+    _yolo_available_labels = list((_yolo_model.names or {}).values())
+    if not _yolo_available_labels:
+        raise RuntimeError(f"YOLO model did not expose class names: {model_file_path}")
+    return _yolo_model, _yolo_available_labels
+
+
+def load_sam3_model() -> tuple[Sam3Model, Sam3Processor]:
+    global _sam3_model, _sam3_processor
+    if _sam3_model is not None and _sam3_processor is not None:
+        return _sam3_model, _sam3_processor
+
+    logger.info("Loading SAM3 model=%s device=%s", SAM3_MODEL_ID, device_type)
+    _sam3_model = Sam3Model.from_pretrained(SAM3_MODEL_ID).to(device_type)
+    _sam3_processor = Sam3Processor.from_pretrained(SAM3_MODEL_ID)
+    return _sam3_model, _sam3_processor
+
+
+def to_numpy(value):
     if value is None:
         return None
     if hasattr(value, "tensor"):
@@ -100,7 +147,7 @@ def to_numpy(value: Any):
     return np.asarray(value)
 
 
-def polygon_center(polygon):
+def polygon_center(polygon: list[list[float]]) -> tuple[float, float]:
     if not polygon:
         return 0.0, 0.0
     xs = [point[0] for point in polygon]
@@ -108,7 +155,7 @@ def polygon_center(polygon):
     return float(sum(xs) / len(xs)), float(sum(ys) / len(ys))
 
 
-def resolve_requested_labels(requested_classes, available_labels):
+def resolve_requested_labels(requested_classes: list[str], available_labels: list[str]) -> list[str]:
     resolved = set()
     unsupported = []
     for requested in requested_classes or []:
@@ -131,7 +178,7 @@ def resolve_requested_labels(requested_classes, available_labels):
     return filtered or [label for label in available_labels if label in DEFAULT_AERIAL_CLASSES]
 
 
-def extract_obb_detections(raw_result, requested_labels, min_confidence):
+def extract_obb_detections(raw_result, requested_labels: list[str], min_confidence: float) -> list[dict]:
     detections = []
     requested = set(requested_labels)
     if raw_result is None:
@@ -166,73 +213,64 @@ def extract_obb_detections(raw_result, requested_labels, min_confidence):
 
     return detections
 
-consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'ia-tile-workers',
-    'auto.offset.reset': 'earliest'
-})
-consumer.subscribe([TOPIC_IN])
 
-producer = Producer({'bootstrap.servers': KAFKA_BROKER})
-mission_stats = {}
+def normalize_backend_name(value: str | None) -> str:
+    normalized = (value or "yolo").strip().lower()
+    if normalized in {"sam", "sam3", "meta-sam3"}:
+        return "sam3"
+    return "yolo"
 
 
-def resolve_host_path(path_value):
-    if path_value.startswith("/host"):
-        return path_value
-    if not path_value.startswith("/"):
-        path_value = "/" + path_value
-    return "/host" + path_value
+def resolve_sam3_prompt(tile_info: dict) -> str:
+    explicit_prompt = str(tile_info.get("sam_prompt") or "").strip()
+    if explicit_prompt:
+        return explicit_prompt
+
+    requested_classes = tile_info.get("classes") or []
+    if requested_classes:
+        return str(requested_classes[0]).strip()
+    return SAM3_DEFAULT_PROMPT
 
 
-def transform_detection_coordinates(ortho_transform, transformer, gx, gy):
-    if not ortho_transform or transformer is None:
-        return None, None
-    c, a, b, f, d, e = ortho_transform
-    proj_x = c + a * gx + b * gy
-    proj_y = f + d * gx + e * gy
-    lon, lat = transformer.transform(proj_x, proj_y)
-    return float(lon), float(lat)
+def contour_to_polygon(mask: np.ndarray, fallback_box: list[list[float]]) -> tuple[list[list[float]], float, float]:
+    binary_mask = (mask > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        center_x, center_y = polygon_center(fallback_box)
+        return fallback_box, center_x, center_y
+
+    contour = max(contours, key=cv2.contourArea)
+    perimeter = cv2.arcLength(contour, True)
+    epsilon = max(1.0, 0.01 * perimeter)
+    simplified = cv2.approxPolyDP(contour, epsilon, True)
+    polygon = [[float(point[0][0]), float(point[0][1])] for point in simplified]
+    if len(polygon) < 3:
+        polygon = fallback_box
+
+    moments = cv2.moments(contour)
+    if moments["m00"]:
+        center_x = float(moments["m10"] / moments["m00"])
+        center_y = float(moments["m01"] / moments["m00"])
+    else:
+        center_x, center_y = polygon_center(polygon)
+    return polygon, center_x, center_y
 
 
-def translate_segment(segment, offset_x, offset_y):
-    return [
-        [float(point[0] + offset_x), float(point[1] + offset_y)]
-        for point in segment
-    ]
-
-def report_progress(vol_id, step, progress, status="processing", log=None):
-    msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "IA"}
-    if log:
-        msg["log"] = log
-        print(f"[{step}] {log}")
-    producer.produce(TOPIC_STATUS, key=vol_id, value=json.dumps(msg))
-    producer.flush()
-
-selected_variant, model_file_path, model_file_name = resolve_model_file()
-model_file_path = ensure_model_file(model_file_path, model_file_name)
-
-device_type = 0 if torch.cuda.is_available() else 'cpu'
-logger.info("Loading aerial detector variant=%s checkpoint=%s device=%s imgsz=%s", selected_variant, model_file_path, device_type, MODEL_IMAGE_SIZE)
-model = YOLO(str(model_file_path))
-available_model_labels = list((model.names or {}).values())
-if not available_model_labels:
-    raise RuntimeError(f"YOLO26 model did not expose class names: {model_file_path}")
-
-
-def run_detection(tile_path, requested_labels, requested_conf):
+def run_yolo_detection(tile_path: str, requested_classes: list[str], requested_conf: float) -> tuple[list[dict], dict]:
+    model, available_labels = load_yolo_model()
+    requested_labels = resolve_requested_labels(requested_classes, available_labels)
     fallback_conf = max(0.10, min(requested_conf, 0.20))
     raw_results = model.predict(
         source=tile_path,
         conf=fallback_conf,
-        imgsz=MODEL_IMAGE_SIZE,
-        device=device_type,
+        imgsz=YOLO_MODEL_IMAGE_SIZE,
+        device=yolo_device,
         verbose=False,
     )
     raw_result = raw_results[0] if raw_results else None
     attempts = [
-        {"conf": requested_conf, "label": f"primary pass conf={requested_conf:.2f}"},
-        {"conf": fallback_conf, "label": "fallback pass with lower threshold"},
+        {"conf": requested_conf, "label": f"YOLO primary pass conf={requested_conf:.2f}"},
+        {"conf": fallback_conf, "label": "YOLO fallback pass with lower threshold"},
     ]
 
     best_detections = []
@@ -246,7 +284,99 @@ def run_detection(tile_path, requested_labels, requested_conf):
             break
     return best_detections, best_attempt
 
-print("🎧 App 2 (IA Workers) en attente de tuiles sur Kafka...")
+
+def run_sam3_detection(tile_path: str, prompt: str, requested_conf: float) -> tuple[list[dict], dict]:
+    model, processor = load_sam3_model()
+    image = Image.open(tile_path).convert("RGB")
+    inputs = processor(images=image, text=prompt, return_tensors="pt").to(device_type)
+
+    with torch.no_grad():
+        with torch.autocast(device_type="cuda", dtype=sam3_autocast_dtype, enabled=device_type == "cuda"):
+            outputs = model(**inputs)
+
+    result = processor.post_process_instance_segmentation(
+        outputs,
+        threshold=requested_conf,
+        mask_threshold=SAM3_MASK_THRESHOLD,
+        target_sizes=inputs.get("original_sizes").tolist(),
+    )[0]
+
+    masks = result.get("masks")
+    boxes = result.get("boxes")
+    scores = result.get("scores")
+    if masks is None or boxes is None or scores is None or len(scores) == 0:
+        return [], {"label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}"}
+
+    detections = []
+    for mask, box, score in zip(masks, boxes, scores):
+        x1, y1, x2, y2 = [float(value) for value in box.tolist()]
+        fallback_box = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+        polygon, center_x, center_y = contour_to_polygon(mask.detach().cpu().numpy(), fallback_box)
+        detections.append(
+            {
+                "polygon": polygon,
+                "center_x": center_x,
+                "center_y": center_y,
+                "confidence": float(score),
+                "class_id": 0,
+                "class_name": prompt,
+            }
+        )
+
+    return detections, {"label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}"}
+
+consumer = Consumer({
+    'bootstrap.servers': KAFKA_BROKER,
+    'group.id': 'ia-tile-workers',
+    'auto.offset.reset': 'earliest'
+})
+consumer.subscribe([TOPIC_IN])
+
+producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+mission_stats = {}
+
+
+def resolve_host_path(path_value: str) -> str:
+    if path_value.startswith("/host"):
+        return path_value
+    if not path_value.startswith("/"):
+        path_value = "/" + path_value
+    return "/host" + path_value
+
+
+def transform_detection_coordinates(ortho_transform, transformer, gx: float, gy: float) -> tuple[float | None, float | None]:
+    if not ortho_transform or transformer is None:
+        return None, None
+    c, a, b, f, d, e = ortho_transform
+    proj_x = c + a * gx + b * gy
+    proj_y = f + d * gx + e * gy
+    lon, lat = transformer.transform(proj_x, proj_y)
+    return float(lon), float(lat)
+
+
+def translate_segment(segment: list[list[float]], offset_x: float, offset_y: float) -> list[list[float]]:
+    return [
+        [float(point[0] + offset_x), float(point[1] + offset_y)]
+        for point in segment
+    ]
+
+def report_progress(vol_id: str, step: str, progress: int, status: str = "processing", log: str | None = None) -> None:
+    msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "IA"}
+    if log:
+        msg["log"] = log
+        print(f"[{step}] {log}")
+    producer.produce(TOPIC_STATUS, key=vol_id, value=json.dumps(msg))
+    producer.flush()
+
+def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
+    backend = normalize_backend_name(tile_info.get("ai_backend"))
+    requested_conf = float(tile_info.get("ai_confidence", 0.3))
+    requested_classes = tile_info.get("classes", ["car"])
+    if backend == "sam3":
+        return run_sam3_detection(tile_path, resolve_sam3_prompt(tile_info), requested_conf)
+    return run_yolo_detection(tile_path, requested_classes, requested_conf)
+
+print("App 2 (IA Workers) waiting for tiles on Kafka...")
 
 try:
     while True:
@@ -258,11 +388,7 @@ try:
         tile_info = json.loads(msg.value().decode('utf-8'))
         vol_id = tile_info['vol_id']
         tile_path = tile_info['tile_path']
-        req_classes = tile_info.get('classes', ['car'])
-        req_conf = float(tile_info.get('ai_confidence', 0.3))
         total_tiles = int(tile_info.get('total_tiles', 0) or 0)
-        
-        requested_labels = resolve_requested_labels(req_classes, available_model_labels)
         tile_path = resolve_host_path(tile_path)
             
         offset_x = tile_info['offset_x']
@@ -280,7 +406,7 @@ try:
         if total_tiles:
             stats["total_tiles"] = total_tiles
 
-        detections_for_tile, attempt = run_detection(tile_path, requested_labels, req_conf)
+        detections_for_tile, attempt = run_detection(tile_path, tile_info)
         
         detections = []
         
@@ -342,6 +468,6 @@ try:
             mission_stats.pop(vol_id, None)
 
 except KeyboardInterrupt:
-    print("Arrêt demandé par l'utilisateur.")
+    print("Shutdown requested by user.")
 finally:
     consumer.close()

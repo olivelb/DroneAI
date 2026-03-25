@@ -8,6 +8,15 @@ cd "$SCRIPT_DIR"
 
 export DOCKER_BUILDKIT=1
 
+echo "🔐 Checking required Kubernetes secrets..."
+if ! sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
+    echo "❌ Missing secret 'hf-token' in namespace 'kafka'."
+    echo "   Create it before deploying App 2, for example:"
+    echo '   export HF_TOKEN=your_huggingface_token'
+    echo '   sudo kubectl -n kafka create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"'
+    exit 1
+fi
+
 echo "🛠️ Construction des images microservices..."
 
 # 0. Base image required by the COLMAP worker

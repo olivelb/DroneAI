@@ -125,9 +125,22 @@ spec:
         env:
         - name: KAFKA_BROKER
           value: "my-kafka.kafka.svc.cluster.local:9092"
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token
+              key: HF_TOKEN
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: HF_HUB_CACHE
+          value: "/cache/huggingface/hub"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/huggingface/transformers"
         volumeMounts:
         - name: host-root
           mountPath: /host
+        - name: hf-cache
+          mountPath: /cache/huggingface
         resources:
           limits:
             nvidia.com/gpu: "1"
@@ -138,6 +151,10 @@ spec:
       - name: host-root
         hostPath:
           path: /
+      - name: hf-cache
+        hostPath:
+          path: /var/lib/drone-ai/huggingface-cache
+          type: DirectoryOrCreate
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -168,6 +185,10 @@ spec:
         env:
         - name: KAFKA_BROKER
           value: "my-kafka.kafka.svc.cluster.local:9092"
+        - name: UNTILER_DEDUPE_CENTER_THRESHOLD
+          value: "40"
+        - name: UNTILER_DEDUPE_IOU_THRESHOLD
+          value: "0.05"
         volumeMounts:
         - name: host-root
           mountPath: /host

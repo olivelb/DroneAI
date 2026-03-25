@@ -20,6 +20,7 @@ import {
 
 type ServiceName = "COLMAP" | "TILER" | "IA";
 type PipelineName = "modern" | "legacy";
+type AIBackend = "yolo" | "sam3";
 type ParamValue = string | boolean;
 
 type StatusPayload = {
@@ -131,6 +132,10 @@ type EstimateResponse = {
 
 const SERVICE_ORDER: ServiceName[] = ["COLMAP", "TILER", "IA"];
 const AVAILABLE_CLASSES = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat"];
+const AVAILABLE_AI_BACKENDS: Array<{ value: AIBackend; label: string; description: string }> = [
+  { value: "yolo", label: "YOLO OBB", description: "Fast oriented-box vehicle detector" },
+  { value: "sam3", label: "SAM 3", description: "Prompted mask segmentation from Meta" },
+];
 
 const getApiBaseUrl = () => {
   if (typeof window === "undefined") {
@@ -186,6 +191,8 @@ export default function Dashboard() {
   const [wsConnected, setWsConnected] = useState(false);
   const [activeTab, setActiveTab] = useState("control");
   const [aiConfidence, setAiConfidence] = useState(0.5);
+  const [aiBackend, setAiBackend] = useState<AIBackend>("yolo");
+  const [samPrompt, setSamPrompt] = useState("car");
   const [selectedClasses, setSelectedClasses] = useState<string[]>(["car"]);
   const [pipeline, setPipeline] = useState<PipelineName>("modern");
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
@@ -476,6 +483,7 @@ export default function Dashboard() {
   const startPipeline = async () => {
     setLogs(["[SYSTEM] Starting pipeline..."]);
     setActiveMissionId(volId);
+    const normalizedPrompt = samPrompt.trim() || "car";
     const params = {
       vol_id: volId,
       input_dir: selectedPath,
@@ -485,7 +493,9 @@ export default function Dashboard() {
       pipeline,
       tile_size: 1024,
       ai_confidence: aiConfidence,
-      classes: selectedClasses,
+      ai_backend: aiBackend,
+      sam_prompt: normalizedPrompt,
+      classes: aiBackend === "sam3" ? [normalizedPrompt] : selectedClasses,
       colmap_params: parameterValues,
     };
 
@@ -680,12 +690,27 @@ export default function Dashboard() {
                   </label>
                 </div>
 
-                <div className="mt-5 grid gap-5 md:grid-cols-2">
+                <div className="mt-5 grid gap-5 md:grid-cols-3">
                   <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4">
                     <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-cyan-300">Pipeline Profile</div>
                     <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-950/70 p-1">
                       <button onClick={() => setPipeline("modern")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "modern" ? "bg-cyan-500 text-slate-950" : "text-slate-400"}`}>Modern</button>
                       <button onClick={() => setPipeline("legacy")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "legacy" ? "bg-amber-500 text-black" : "text-slate-400"}`}>Legacy</button>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-fuchsia-500/30 bg-fuchsia-500/10 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-fuchsia-200">AI Backend</div>
+                    <div className="grid gap-2 rounded-2xl bg-slate-950/70 p-1">
+                      {AVAILABLE_AI_BACKENDS.map((backend) => (
+                        <button
+                          key={backend.value}
+                          onClick={() => setAiBackend(backend.value)}
+                          className={`rounded-xl px-3 py-2 text-left transition ${aiBackend === backend.value ? "bg-fuchsia-400 text-slate-950" : "text-slate-300 hover:bg-slate-900/80"}`}
+                        >
+                          <div className="text-xs font-black uppercase tracking-[0.16em]">{backend.label}</div>
+                          <div className={`text-[10px] ${aiBackend === backend.value ? "text-slate-900/70" : "text-slate-500"}`}>{backend.description}</div>
+                        </button>
+                      ))}
                     </div>
                   </div>
                   <div className="rounded-2xl border border-blue-500/30 bg-blue-500/10 p-4">
@@ -698,21 +723,39 @@ export default function Dashboard() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
-                  <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">YOLO Classes</div>
-                  <div className="flex flex-wrap gap-2">
-                    {AVAILABLE_CLASSES.map((cls) => {
-                      const selected = selectedClasses.includes(cls);
-                      return (
-                        <button
-                          key={cls}
-                          onClick={() => setSelectedClasses((prev) => selected ? prev.filter((entry) => entry !== cls) : [...prev, cls])}
-                          className={`rounded-xl border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] transition ${selected ? "border-blue-300 bg-blue-500 text-white" : "border-slate-700 bg-slate-900 text-slate-400"}`}
-                        >
-                          {cls}
-                        </button>
-                      );
-                    })}
+                  <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">
+                    {aiBackend === "sam3" ? "SAM3 Prompt" : "YOLO Classes"}
                   </div>
+                  {aiBackend === "sam3" ? (
+                    <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_220px]">
+                      <label className="block">
+                        <input
+                          value={samPrompt}
+                          onChange={(event) => setSamPrompt(event.target.value)}
+                          placeholder="car"
+                          className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-fuchsia-400"
+                        />
+                      </label>
+                      <div className="rounded-xl border border-fuchsia-500/20 bg-fuchsia-500/10 px-3 py-2 text-xs text-fuchsia-100">
+                        Prompt SAM 3 with a concept like <span className="font-black">car</span>, <span className="font-black">vehicle</span>, or a more specific phrase.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {AVAILABLE_CLASSES.map((cls) => {
+                        const selected = selectedClasses.includes(cls);
+                        return (
+                          <button
+                            key={cls}
+                            onClick={() => setSelectedClasses((prev) => selected ? prev.filter((entry) => entry !== cls) : [...prev, cls])}
+                            className={`rounded-xl border px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] transition ${selected ? "border-blue-300 bg-blue-500 text-white" : "border-slate-700 bg-slate-900 text-slate-400"}`}
+                          >
+                            {cls}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 rounded-[24px] border border-emerald-500/30 bg-emerald-500/10 p-5">

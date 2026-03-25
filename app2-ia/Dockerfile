@@ -15,7 +15,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir rasterio pyproj confluent-kafka
+    && python3 -m pip install --no-cache-dir rasterio pyproj confluent-kafka \
+        transformers accelerate huggingface_hub safetensors sentencepiece
 
 RUN mkdir -p /opt/modelzoo \
     && python3 - <<'PY'

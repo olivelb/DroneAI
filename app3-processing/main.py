@@ -155,6 +155,127 @@ def format_detection_gps(det, mission):
     return [f"lat {lat:.6f}", f"lon {lon:.6f}"]
 
 
+def polygon_area(points):
+    if not points or len(points) < 3:
+        return 0.0
+    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
+    return float(abs(cv2.contourArea(contour)))
+
+
+def polygon_bbox(points):
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def polygon_contains_point(points, point_x, point_y):
+    if not points or len(points) < 3:
+        return False
+    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
+    return cv2.pointPolygonTest(contour, (float(point_x), float(point_y)), False) >= 0
+
+
+def polygon_centroid(points):
+    if not points or len(points) < 3:
+        return None
+    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
+    moments = cv2.moments(contour)
+    if moments["m00"]:
+        return float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return float(sum(xs) / len(xs)), float(sum(ys) / len(ys))
+
+
+def bbox_iou(left_bbox, right_bbox):
+    left_x1, left_y1, left_x2, left_y2 = left_bbox
+    right_x1, right_y1, right_x2, right_y2 = right_bbox
+
+    inter_x1 = max(left_x1, right_x1)
+    inter_y1 = max(left_y1, right_y1)
+    inter_x2 = min(left_x2, right_x2)
+    inter_y2 = min(left_y2, right_y2)
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+
+    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
+    right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
+    union_area = left_area + right_area - inter_area
+    if union_area <= 0.0:
+        return 0.0
+    return inter_area / union_area
+
+
+def are_duplicate_detections(candidate, kept, center_threshold, iou_threshold):
+    if candidate.get('class_name') != kept.get('class_name'):
+        return False
+
+    candidate_segment = candidate.get('_segment') or []
+    kept_segment = kept.get('_segment') or []
+
+    # Evaluate polygon containment before the coarse center-distance gate. The
+    # previous ordering rejected true overlaps when the two tile-local centers were
+    # farther apart than the threshold, even though one smaller polygon clearly sat
+    # inside the larger polygon from an overlapping tile.
+    candidate_centroid = polygon_centroid(candidate_segment)
+    if candidate_centroid and polygon_contains_point(kept_segment, candidate_centroid[0], candidate_centroid[1]):
+        return True
+
+    for point_x, point_y in candidate_segment:
+        if polygon_contains_point(kept_segment, point_x, point_y):
+            return True
+
+    delta_x = float(candidate['global_pixel_x']) - float(kept['global_pixel_x'])
+    delta_y = float(candidate['global_pixel_y']) - float(kept['global_pixel_y'])
+    if abs(delta_x) > center_threshold or abs(delta_y) > center_threshold:
+        return False
+
+    candidate_bbox = candidate['_bbox']
+    kept_bbox = kept['_bbox']
+    return bbox_iou(candidate_bbox, kept_bbox) >= iou_threshold
+
+
+def dedupe_mission_detections(detections):
+    center_threshold = float(os.getenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "40"))
+    iou_threshold = float(os.getenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.05"))
+
+    prepared = []
+    for detection in detections:
+        segment = detection.get('segment') or []
+        if len(segment) < 3:
+            prepared.append(detection)
+            continue
+
+        enriched = dict(detection)
+        enriched['_area'] = polygon_area(segment)
+        enriched['_bbox'] = polygon_bbox(segment)
+        enriched['_segment'] = segment
+        prepared.append(enriched)
+
+    kept = []
+    for detection in sorted(
+        prepared,
+        key=lambda item: (item.get('_area', 0.0), float(item.get('confidence', 0.0))),
+        reverse=True,
+    ):
+        if '_bbox' not in detection:
+            kept.append(detection)
+            continue
+        if any(are_duplicate_detections(detection, existing, center_threshold, iou_threshold) for existing in kept if '_bbox' in existing):
+            continue
+        kept.append(detection)
+
+    deduped = []
+    for detection in kept:
+        cleaned = dict(detection)
+        cleaned.pop('_area', None)
+        cleaned.pop('_bbox', None)
+        cleaned.pop('_segment', None)
+        deduped.append(cleaned)
+    return deduped
+
+
 def draw_detection_label(img, anchor_x, anchor_y, lines):
     if not lines:
         return
@@ -206,8 +327,15 @@ def generate_final_ortho(vol_id, mission):
     ortho_path = mission['ortho_path']
     base, ext = os.path.splitext(ortho_path)
     output_path = f"{base}_annotated{ext}"
+    raw_detection_count = len(mission['detections'])
+    deduped_detections = dedupe_mission_detections(mission['detections'])
     
-    report_progress(vol_id, "FINAL_IMAGE", 90, log="Generating annotated orthomosaic...")
+    report_progress(
+        vol_id,
+        "FINAL_IMAGE",
+        90,
+        log=f"Generating annotated orthomosaic with {len(deduped_detections)} merged detections from {raw_detection_count} raw detections...",
+    )
     try:
         with rasterio.open(ortho_path) as src:
             meta = src.meta.copy()
@@ -217,7 +345,7 @@ def generate_final_ortho(vol_id, mission):
             img = data[:3].transpose(1, 2, 0).copy() # C,H,W -> H,W,C
             
             # Dessiner les masques
-            for det in mission['detections']:
+            for det in deduped_detections:
                 if 'segment' in det and len(det['segment']) > 0:
                     pts = np.array(det['segment'], np.int32)
                     pts = pts.reshape((-1, 1, 2))
@@ -244,18 +372,24 @@ def generate_final_ortho(vol_id, mission):
             with rasterio.open(output_path, 'w', **meta) as dst:
                 dst.write(out_data)
                 
-        report_progress(vol_id, "DONE", 100, status="success", log=f"Annotated orthomosaic saved to {output_path}")
+        report_progress(
+            vol_id,
+            "DONE",
+            100,
+            status="success",
+            log=f"Annotated orthomosaic saved to {output_path} ({len(deduped_detections)} merged detections from {raw_detection_count} raw detections)",
+        )
         
     except Exception as e:
         logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
 
-def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3):
+def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", sam_prompt="car"):
     """Découpe un GeoTIFF en tuiles et les envoie sur Kafka."""
     ortho_path = resolve_host_path(ortho_path)
 
-    # By default, write tiles inside the same mission workspace as the ortho.
-    # An explicit TILES_BASE_DIR still overrides this behavior when needed.
+    # Always scope tiles to the mission id to avoid cross-mission collisions.
+    # An explicit TILES_BASE_DIR still overrides the root location when needed.
     tiles_base = os.getenv("TILES_BASE_DIR")
     if tiles_base:
         if tiles_base.startswith("/host"):
@@ -263,7 +397,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
         else:
             tiles_dir = os.path.join("/host", tiles_base.lstrip("/"), vol_id)
     else:
-        tiles_dir = os.path.join(os.path.dirname(ortho_path), "tiles")
+        tiles_dir = os.path.join(os.path.dirname(ortho_path), "tiles", vol_id)
     os.makedirs(tiles_dir, exist_ok=True)
     cleanup_tiles_directory(tiles_dir)
     
@@ -342,6 +476,8 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
                         "tile_path": tile_path.replace("/host", ""), # Return path as seen by host
                         "offset_x": x,
                         "offset_y": y,
+                        "ai_backend": ai_backend,
+                        "sam_prompt": sam_prompt,
                         "classes": classes,
                         "ai_confidence": ai_confidence,
                         "total_tiles": total_tiles,
@@ -388,7 +524,16 @@ try:
             ortho_path = data['ortho_path']
             classes = data.get('classes', ['car'])
             ai_confidence = data.get('ai_confidence', 0.3)
-            slice_orthomosaic(ortho_path, vol_id, classes=classes, ai_confidence=ai_confidence)
+            ai_backend = data.get('ai_backend', 'yolo')
+            sam_prompt = data.get('sam_prompt', 'car')
+            slice_orthomosaic(
+                ortho_path,
+                vol_id,
+                classes=classes,
+                ai_confidence=ai_confidence,
+                ai_backend=ai_backend,
+                sam_prompt=sam_prompt,
+            )
             
         elif topic == TOPIC_IN_DETECTIONS:
             vol_id = data['vol_id']

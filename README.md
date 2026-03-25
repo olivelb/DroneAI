@@ -200,6 +200,7 @@ bash build_and_deploy.sh
 
 What `build_and_deploy.sh` does:
 
+- checks that the Kubernetes secret `hf-token` exists in namespace `kafka` before deploying the IA worker
 - builds `drone-colmap-base:latest` if it does not already exist
 - imports the base image into K3s
 - builds all five application images
@@ -207,6 +208,15 @@ What `build_and_deploy.sh` does:
 - applies `kafka-local.yaml`
 - applies `dashboard-api-rbac.yaml`
 - restarts the deployments in namespace `kafka`
+
+Before the first deployment of the SAM 3-enabled IA worker, create the Hugging Face token secret outside git:
+
+```bash
+export HF_TOKEN=your_huggingface_token
+sudo kubectl -n kafka create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"
+```
+
+The `ia-worker` deployment reads `HF_TOKEN` from that secret and mounts a persistent host cache at `/var/lib/drone-ai/huggingface-cache`, exposed inside the container as `/cache/huggingface`, so the SAM 3 model files stay cached across pod restarts.
 
 ### 6. Verify the deployment
 
@@ -276,11 +286,26 @@ The pipeline flow is:
 4. `app3-processing` consumes `tile-detections` and writes the final annotated orthomosaic
 5. `app4-dashboard/api` streams status to the frontend
 
+App 3 now writes tiles to a mission-scoped directory by default:
+
+- `<mission_dir>/tiles/<vol_id>/tile_*.jpg`
+
+This avoids collisions when multiple missions run against orthomosaics in the same workspace.
+
+App 3 also deduplicates overlap detections before writing the tagged orthomosaic. When the same object is detected on adjacent overlapping tiles, the untiler keeps a single detection and biases toward the largest polygon. The current merge logic first checks whether a smaller polygon centroid or vertices fall inside a larger kept polygon, then falls back to center-distance and bbox-IoU checks.
+
+The current processing deployment defaults are intentionally aggressive to reduce duplicate tags on parked cars:
+
+- `UNTILER_DEDUPE_CENTER_THRESHOLD=40`
+- `UNTILER_DEDUPE_IOU_THRESHOLD=0.05`
+
 ## Incremental redeploy commands
 
 Use these when only one service changes.
 
-These scripts rebuild and restart a single deployment. They do not replace the full first-time install path. In particular, `deploy_app4_api.sh` restarts the API deployment but does not apply `dashboard-api-rbac.yaml`, so the initial deployment should still go through `build_and_deploy.sh`.
+These scripts rebuild a single service image, import it into K3s, reapply the relevant Kubernetes manifest, restart the matching deployment, and wait for rollout completion. They are safe for incremental config changes that live in `kafka-local.yaml`, and `deploy_app4_api.sh` also reapplies `dashboard-api-rbac.yaml`.
+
+They still do not replace the full first-time install path, because `build_and_deploy.sh` remains the only script that rebuilds and stages the entire stack in one pass.
 
 Rebuild COLMAP including the base image:
 

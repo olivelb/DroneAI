@@ -30,8 +30,8 @@ The runtime data path is:
 3. The COLMAP worker consumes the mission, reconstructs the scene, and writes `orthomosaic.tif`.
 4. The COLMAP worker publishes an orthomosaic event to Kafka topic `images-ortho`.
 5. The processing worker consumes the orthomosaic event, slices the image into overlapping tiles, and publishes one Kafka event per tile to `image-tiles`.
-6. The IA worker consumes tiles, runs YOLO OBB detection, and publishes detections to `tile-detections`.
-7. The processing worker consumes all tile detections, reprojects them back into orthomosaic pixel coordinates, and writes the final annotated orthomosaic.
+6. The IA worker consumes tiles, runs either YOLO OBB or SAM 3 prompt-based detection, and publishes detections to `tile-detections`.
+7. The processing worker consumes all tile detections, merges overlap duplicates, reprojects them back into orthomosaic pixel coordinates, and writes the final annotated orthomosaic.
 8. All workers emit progress events to `pipeline-status` and the dashboard API forwards them over WebSocket to the frontend.
 
 The control path is:
@@ -64,6 +64,9 @@ Important deployment properties:
 - The logical workspace root used by the pipeline is `/mnt/j/workspace`.
 - Inside containers, the same host files are accessed through `/host/mnt/j/workspace`.
 - The COLMAP worker and IA worker both request one NVIDIA GPU.
+- The IA worker reads `HF_TOKEN` from the Kubernetes secret `hf-token`.
+- The IA worker mounts a persistent Hugging Face cache at `/cache/huggingface`, backed by `/var/lib/drone-ai/huggingface-cache` on the host.
+- The processing worker receives explicit overlap-deduplication env vars from `kafka-local.yaml`.
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
 - The dashboard API deployment runs as service account `dashboard-api-sa`.
 - `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods in namespace `kafka` so the API can serve `/pods`.
@@ -192,13 +195,15 @@ This service is central to post-reconstruction processing. It owns the transitio
 
 ### IA worker (`app2-ia`)
 
-The IA worker is a tile-level Ultralytics YOLO OBB detection service.
+The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation.
 
 Its responsibilities are:
 
 - consume tile jobs from `image-tiles`
 - load a local aerial OBB checkpoint, currently `yolo26s-obb.pt` by default
+- lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend
 - run primary and fallback confidence passes on each tile
+- run prompt-based instance segmentation for SAM 3 tile jobs
 - convert tile-local detections into orthomosaic-global pixel coordinates
 - preserve each oriented detection polygon in the `segment` field expected by app3
 - optionally transform projected coordinates into latitude and longitude
@@ -233,6 +238,8 @@ Expected payload shape:
   "pipeline": "modern",
   "tile_size": 1024,
   "ai_confidence": 0.5,
+  "ai_backend": "sam3",
+  "sam_prompt": "car",
   "classes": ["car"]
 }
 ```
@@ -356,9 +363,11 @@ Payload shape:
 {
   "vol_id": "mission_001",
   "tile_index": 12,
-  "tile_path": "/mnt/j/workspace/mission_001/tiles/tile_12.jpg",
+  "tile_path": "/mnt/j/workspace/mission_001/tiles/mission_001/tile_12.jpg",
   "offset_x": 2048,
   "offset_y": 1024,
+  "ai_backend": "sam3",
+  "sam_prompt": "car",
   "classes": ["car"],
   "ai_confidence": 0.3,
   "total_tiles": 180,
@@ -370,7 +379,10 @@ Payload shape:
 Important details:
 
 - `tile_path` is published without the `/host` prefix so downstream services can remap it as needed.
+- the default tile output is mission-scoped under `tiles/<vol_id>/` to avoid cross-mission collisions.
 - `offset_x` and `offset_y` anchor the tile within the full orthomosaic.
+- `ai_backend` selects the detector backend in app2.
+- `sam_prompt` carries the text concept for SAM 3 missions.
 - `total_tiles` is set before publication to avoid a race where detections arrive before the aggregator knows the mission tile count.
 - `ortho_transform` and `ortho_crs` are carried forward so the IA worker can compute geographic coordinates directly.
 
@@ -441,9 +453,10 @@ For a mission with `vol_id=mission_001`, the COLMAP worker typically uses:
   orthomosaic.tif
   orthomosaic_annotated.tif
   tiles/
-    tile_0.jpg
-    tile_1.jpg
-    ...
+    mission_001/
+      tile_0.jpg
+      tile_1.jpg
+      ...
 ```
 
 Important mission artifacts:
@@ -1069,7 +1082,7 @@ When the worker receives an orthomosaic path, it ensures the container can acces
 Tile files are then written into either:
 
 - a configured `TILES_BASE_DIR`, or
-- a `tiles/` subdirectory next to the orthomosaic
+- a mission-scoped `tiles/<vol_id>/` subdirectory next to the orthomosaic
 
 Before new tiles are written, stale `tile_*.jpg` files in that directory are removed.
 
@@ -1138,6 +1151,17 @@ When a `tile-detections` message arrives:
 3. records the returned `tile_index` in the `received_tiles` set
 4. compares `len(received_tiles)` against `total_tiles`
 5. if all tiles are present, it triggers final rendering
+
+Before final rendering, app3 deduplicates overlapping detections from adjacent tiles. The current merge rule prefers the largest polygon and merges a smaller candidate when any of the following is true:
+
+- the candidate polygon centroid falls inside a larger kept polygon
+- any candidate polygon vertex falls inside a larger kept polygon
+- the detections are still near each other and their bounding boxes overlap above the configured IoU threshold
+
+The processing deployment currently sets:
+
+- `UNTILER_DEDUPE_CENTER_THRESHOLD=40`
+- `UNTILER_DEDUPE_IOU_THRESHOLD=0.05`
 
 This means completion is keyed on returned tile identities, not on a detection count or on progress percentages.
 

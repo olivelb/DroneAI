@@ -49,6 +49,8 @@ class MissionParams(BaseModel):
     pipeline: str = "modern"
     tile_size: int = 1024
     ai_confidence: float = 0.5
+    ai_backend: str = "yolo"
+    sam_prompt: str = "car"
     classes: list[str] = Field(default_factory=lambda: ["car"])
     colmap_params: dict[str, Any] = Field(default_factory=dict)
 
