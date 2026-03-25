@@ -19,7 +19,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_STATUS, TOPIC_TILE_DETECTIONS
+from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN = TOPIC_IMAGE_TILES
@@ -336,9 +336,43 @@ producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 mission_stats = {}
 
 
+class CancelManager:
+    def __init__(self):
+        self._set = set()
+        self._lock = threading.Lock()
+    def cancel(self, v):
+        with self._lock: self._set.add(v)
+    def is_cancelled(self, v):
+        with self._lock: return v in self._set
+
+cancel_manager = CancelManager()
+
+def control_consumer_thread():
+    control_consumer = Consumer({
+        'bootstrap.servers': KAFKA_BROKER,
+        'group.id': 'ia-control-workers',
+        'auto.offset.reset': 'latest'
+    })
+    control_consumer.subscribe([TOPIC_CONTROL])
+    while True:
+        msg = control_consumer.poll(1.0)
+        if msg is None or msg.error(): continue
+        try:
+            data = json.loads(msg.value().decode('utf-8'))
+            if data.get("command") == "cancel":
+                vid = data.get("vol_id")
+                if vid:
+                    cancel_manager.cancel(vid)
+                    logger.info("⚠️ Cancel requested for %s", vid)
+        except Exception:
+            pass
+
+threading.Thread(target=control_consumer_thread, daemon=True).start()
+
 def resolve_host_path(path_value: str) -> str:
     if path_value.startswith("/host"):
         return path_value
+
     if not path_value.startswith("/"):
         path_value = "/" + path_value
     return "/host" + path_value
@@ -394,6 +428,9 @@ try:
         offset_x = tile_info['offset_x']
         offset_y = tile_info['offset_y']
         
+        if cancel_manager.is_cancelled(vol_id):
+            continue
+            
         # We assume the orthomosaic transform and CRS are passed in the message to compute real-world coordinates
         ortho_transform = tile_info.get('ortho_transform')
         ortho_crs = tile_info.get('ortho_crs')

@@ -15,7 +15,7 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_ORTHO, TOPIC_STATUS, TOPIC_TILE_DETECTIONS
+from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_ORTHO, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN_ORTHO = TOPIC_ORTHO
@@ -37,6 +37,48 @@ consumer = Consumer({
 consumer.subscribe([TOPIC_IN_ORTHO, TOPIC_IN_DETECTIONS])
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+
+class CancelManager:
+    def __init__(self):
+        self._cancelled_vols = set()
+        self._lock = threading.Lock()
+
+    def cancel(self, vol_id):
+        with self._lock:
+            self._cancelled_vols.add(vol_id)
+
+    def is_cancelled(self, vol_id):
+        with self._lock:
+            return vol_id in self._cancelled_vols
+
+    def clear(self, vol_id):
+        with self._lock:
+            self._cancelled_vols.discard(vol_id)
+
+cancel_manager = CancelManager()
+
+def control_consumer_thread():
+    control_consumer = Consumer({
+        'bootstrap.servers': KAFKA_BROKER,
+        'group.id': 'processing-control-workers',
+        'auto.offset.reset': 'latest'
+    })
+    control_consumer.subscribe([TOPIC_CONTROL])
+    
+    while True:
+        msg = control_consumer.poll(1.0)
+        if msg is None or msg.error(): continue
+        try:
+            data = json.loads(msg.value().decode('utf-8'))
+            if data.get("command") == "cancel":
+                vol_id = data.get("vol_id")
+                if vol_id:
+                    cancel_manager.cancel(vol_id)
+                    logger.info("⚠️ Cancel requested for %s", vol_id)
+        except Exception:
+            pass
+
+threading.Thread(target=control_consumer_thread, daemon=True).start()
 
 
 class MissionRegistry:
@@ -441,6 +483,9 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
 
             for y in y_starts:
                 for x in x_starts:
+                    if cancel_manager.is_cancelled(vol_id):
+                        logger.info("Tiling cancelled mid-loop for %s", vol_id)
+                        return
                     window = Window(x, y, min(tile_size, width - x), min(tile_size, height - y))
                     
                     tile_data = src.read(window=window)
@@ -521,6 +566,7 @@ try:
         
         if topic == TOPIC_IN_ORTHO:
             vol_id = data['vol_id']
+            cancel_manager.clear(vol_id)
             ortho_path = data['ortho_path']
             classes = data.get('classes', ['car'])
             ai_confidence = data.get('ai_confidence', 0.3)
@@ -537,6 +583,8 @@ try:
             
         elif topic == TOPIC_IN_DETECTIONS:
             vol_id = data['vol_id']
+            if cancel_manager.is_cancelled(vol_id):
+                continue
             mission, is_complete = missions.record_tile_detections(vol_id, data['tile_index'], data['detections'])
             if mission is not None and is_complete:
                 report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
