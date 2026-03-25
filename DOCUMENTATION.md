@@ -64,7 +64,7 @@ Operational notes:
 - The logical workspace root used by the pipeline is `/mnt/j/workspace`.
 - Inside containers, the same host files are accessed through `/host/mnt/j/workspace`.
 - The COLMAP worker and IA worker both request one NVIDIA GPU.
-- The IA worker reads `HF_TOKEN` from the Kubernetes secret `hf-token`.
+- The IA worker reads `HF_TOKEN` from the Kubernetes secret `hf-token` for approved access to the gated Hugging Face `facebook/sam3` model distribution.
 - The IA worker mounts a persistent Hugging Face cache at `/cache/huggingface`, backed by `/var/lib/drone-ai/huggingface-cache` on the host.
 - The processing worker receives explicit overlap-deduplication env vars from `kafka-local.yaml`.
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
@@ -196,13 +196,13 @@ This service owns the transition from one georeferenced orthomosaic to many dete
 
 ### IA worker (`app2-ia`)
 
-The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation.
+The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation. For SAM 3, treat the upstream source repository and the gated Hugging Face model distribution as separate license/compliance items.
 
 Its runtime responsibilities are:
 
 - consume tile jobs from `image-tiles`
 - load a local aerial OBB checkpoint, currently `yolo26s-obb.pt` by default
-- lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend
+- lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend and the supplied token has model access
 - run the selected detector on each tile
 - run prompt-based instance segmentation for SAM 3 tile jobs
 - convert tile-local detections into orthomosaic-global pixel coordinates

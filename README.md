@@ -3,10 +3,10 @@
 This repository contains a complete local photogrammetry and detection pipeline built from five microservices:
 
 1. `app1-colmap`: COLMAP reconstruction and orthomosaic generation
-2. `app2-ia`: Ultralytics YOLO OBB detection on image tiles, with polygon output preserved for downstream rendering
-3. `app3-processing`: tile slicing, detection aggregation, annotated orthomosaic generation
-4. `app4-dashboard/api`: FastAPI control and status API
-5. `app4-dashboard/frontend`: Next.js dashboard UI
+2. `app2-ia`: dual-backend tile detection with Ultralytics YOLO OBB or Meta SAM 3, with polygon output preserved for downstream rendering
+3. `app3-processing`: tile slicing, overlap-deduplicated detection aggregation, annotated orthomosaic generation
+4. `app4-dashboard/api`: FastAPI control and status API, including detector backend and SAM 3 prompt parameters in mission payloads
+5. `app4-dashboard/frontend`: Next.js dashboard UI with backend selection and SAM 3 prompt entry
 
 The stack runs locally on Kubernetes via K3s. Kafka is deployed inside the cluster from `kafka-local.yaml`; you do not install Kafka separately on the host.
 
@@ -276,15 +276,21 @@ The dashboard also uses additional REST endpoints exposed by the API for:
 2. Open `http://localhost:30000`
 3. Browse to the input directory
 4. Keep the workspace path set to `/mnt/j/workspace`
-5. Start the mission from the dashboard
+5. Choose the AI backend:
+  - `YOLO OBB` for the Ultralytics oriented-box detector
+  - `SAM 3` for prompt-based segmentation
+6. If you choose `SAM 3`, enter a short prompt such as `car` or `vehicle`
+7. Start the mission from the dashboard
 
 The pipeline flow is:
 
 1. `app1-colmap` consumes `vols-bruts` and produces `images-ortho`
 2. `app3-processing` consumes `images-ortho`, slices tiles, and produces `image-tiles`
-3. `app2-ia` consumes `image-tiles` and produces `tile-detections`
+3. `app2-ia` consumes `image-tiles`, runs the selected detector backend, and produces `tile-detections`
 4. `app3-processing` consumes `tile-detections` and writes the final annotated orthomosaic
 5. `app4-dashboard/api` streams status to the frontend
+
+For SAM 3 missions, access to the gated Hugging Face model must already be approved and the `hf-token` Kubernetes secret must exist before deployment.
 
 App 3 now writes tiles to a mission-scoped directory by default:
 
@@ -504,6 +510,7 @@ This pipeline builds on a substantial amount of upstream open-source work. In pa
 - COLMAP and PyCOLMAP for SfM, MVS, and reconstruction tooling
 - PyTorch, NVIDIA CUDA, and NVLabs nvdiffrast for GPU-backed inference and rasterization
 - Ultralytics YOLO for OBB detection models and tooling
+- Meta SAM 3 and the Hugging Face Transformers integration for prompt-based segmentation
 - Rasterio, pyproj, and OpenCV for geospatial and image-processing primitives
 - Apache Kafka and confluent-kafka-python for event transport between services
 - FastAPI for the dashboard API
@@ -549,6 +556,8 @@ COLMAP itself is distributed under the new BSD license. If you redistribute bina
 | PyTorch | `app1-colmap`, `app2-ia` | BSD-style permissive license | Keep the upstream license text and notices. |
 | nvdiffrast | `app1-colmap` | NVIDIA Source Code License (1-Way Commercial) | Review NVIDIA's license before redistribution; it is not a standard MIT/BSD license. |
 | Ultralytics YOLO | `app2-ia` | AGPL-3.0 or commercial enterprise license | This is the main license-sensitive dependency in the ML stack. For private or proprietary deployment, review Ultralytics terms carefully and obtain the appropriate license if needed. |
+| Meta SAM 3 code (`facebookresearch/sam3`) | `app2-ia` runtime path and local utility scripts | SAM License according to the upstream GitHub repository | Review the upstream SAM License directly before redistribution or commercial packaging; this is not a standard permissive OSS license. |
+| Hugging Face gated model `facebook/sam3` | `app2-ia` runtime model download | Hugging Face model card shows `License: other` and gated access terms | Treat the checkpoint separately from the source repo: access requires approval, contact-sharing conditions, and compliance with the model card terms plus the upstream SAM License. |
 | Rasterio | `app1-colmap`, `app2-ia`, `app3-processing` | BSD 3-Clause | Keep copyright and disclaimer notices. |
 | pyproj | `app1-colmap`, `app2-ia` | MIT | Keep the license and copyright notice. |
 | OpenCV | `app1-colmap`, `app3-processing` | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
@@ -565,10 +574,11 @@ COLMAP itself is distributed under the new BSD license. If you redistribute bina
 For this repository, the dependencies that deserve explicit review before any redistribution or commercial packaging are:
 
 1. `ultralytics`
-2. `nvdiffrast`
-3. `react-leaflet`
+2. `facebookresearch/sam3` and the gated `facebook/sam3` model distribution
+3. `nvdiffrast`
+4. `react-leaflet`
 
-Those three are not routine MIT/BSD-only cases. If you want a fully permissive redistribution story, review them first and replace them if their terms do not fit your use case.
+Those items are not routine MIT/BSD-only cases. If you want a fully permissive redistribution story, review them first and replace them if their terms do not fit your use case.
 
 ### Docker note
 
