@@ -228,9 +228,7 @@ export default function Dashboard() {
     if (runningMission) {
       return runningMission.vol_id;
     }
-    const latestMission = Object.values(missionMap)
-      .sort((left, right) => right.updated_at - left.updated_at)[0];
-    return latestMission ? latestMission.vol_id : null;
+    return null;
   };
 
   const browse = async (path: string) => {
@@ -404,6 +402,8 @@ export default function Dashboard() {
               setActiveMissionId(nextActiveMissionId);
               if (nextActiveMissionId) {
                 setVolId(nextActiveMissionId);
+              } else if (activeMissionId) {
+                setVolId(`vol_${Math.floor(Math.random() * 1000)}`);
               }
             }
             if ((activeMissionId ?? data.vol_id) === data.vol_id && data.log) {
