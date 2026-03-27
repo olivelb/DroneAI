@@ -21,11 +21,14 @@
 .vscode-server/
 .dotnet/
 .DS_Store
+.git-credentials
 
 # === Python ===
 __pycache__/
 *.pyc
 venv/
+.venv/
+.train-venv/
 test_venv/
 
 # === Node.js / Next.js ===
