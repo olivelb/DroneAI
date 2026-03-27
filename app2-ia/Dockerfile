@@ -3,7 +3,7 @@ FROM ultralytics/ultralytics:latest
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV AERIAL_MODEL_DIR=/opt/modelzoo
-ENV AERIAL_MODEL_VARIANT=s
+ENV AERIAL_MODEL_VARIANT=best
 ENV AERIAL_MODEL_IMGSZ=1024
 ENV AERIAL_MODEL_RELEASE=v8.4.0
 
@@ -23,8 +23,8 @@ RUN mkdir -p /opt/modelzoo \
 from pathlib import Path
 from urllib.request import urlretrieve
 
-checkpoint_url = "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s-obb.pt"
-checkpoint_path = Path("/opt/modelzoo/yolo26s-obb.pt")
+checkpoint_url = "https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26l-obb.pt"
+checkpoint_path = Path("/opt/modelzoo/yolo26l-obb.pt")
 if not checkpoint_path.exists():
     urlretrieve(checkpoint_url, checkpoint_path)
 PY

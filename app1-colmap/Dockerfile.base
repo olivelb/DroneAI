@@ -18,11 +18,33 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # --- LAYER 2: Ceres Solver (Stable) ---
-RUN git clone https://github.com/ceres-solver/ceres-solver.git \
-    && cd ceres-solver && git checkout 2.2.0 \
-    && mkdir build && cd build \
-    && cmake .. -GNinja -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF -DUSE_CUDA=ON -DUSE_CUDSS=ON && ninja install \
-    && cd ../.. && rm -rf ceres-solver
+RUN set -eux; \
+    git clone https://github.com/ceres-solver/ceres-solver.git; \
+    cd ceres-solver; \
+    git checkout 2.2.0; \
+    mkdir build; \
+    cd build; \
+    cmake .. -GNinja \
+        -DBUILD_TESTING=OFF \
+        -DBUILD_EXAMPLES=OFF \
+        -DUSE_CUDA=ON \
+        -DUSE_CUDSS=ON \
+        -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
+        -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 \
+        2>&1 | tee /tmp/ceres-cmake.log; \
+    echo '---- Ceres CUDA/cuDSS configure summary ----'; \
+    grep -Ei 'cuda|cudss|suitesparse|sparse' /tmp/ceres-cmake.log || true; \
+    ninja install; \
+    test -f /usr/local/include/ceres/internal/config.h; \
+    echo '---- Installed Ceres config header flags ----'; \
+    grep -E '^#define CERES_(NO_CUDA|NO_CUDSS)' /usr/local/include/ceres/internal/config.h || true; \
+    if grep -q '^#define CERES_NO_CUDA' /usr/local/include/ceres/internal/config.h \
+        || grep -q '^#define CERES_NO_CUDSS' /usr/local/include/ceres/internal/config.h; then \
+        echo 'Ceres was installed without the required CUDA/cuDSS support.' >&2; \
+        exit 1; \
+    fi; \
+    cd ../..; \
+    rm -rf ceres-solver /tmp/ceres-cmake.log
 
 # --- LAYER 3: Additional Dependencies ---
 RUN apt-get update && apt-get install -y \

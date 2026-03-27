@@ -7,6 +7,7 @@ import time
 import ssl
 import math
 import struct
+from datetime import datetime
 import urllib.error
 import urllib.request
 from collections import deque
@@ -37,8 +38,94 @@ producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 status_history = deque(maxlen=300)
 mission_state_lock = threading.Lock()
 mission_states: dict[str, dict] = {}
+mission_workspace_dirs: dict[str, str] = {}
 
 TERMINAL_STATUSES = {"success", "error"}
+MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
+
+
+def make_host_path(path: str) -> str:
+    if path.startswith("/host"):
+        return path
+    if not path.startswith("/"):
+        path = "/" + path
+    return "/host" + path
+
+
+def resolve_workspace_dir(workspace_value: str | None, vol_id: str) -> str:
+    workspace_root = os.path.normpath(workspace_value or DEFAULT_WORKSPACE_DIR)
+    if os.path.basename(workspace_root) == vol_id:
+        return workspace_root
+    return os.path.join(workspace_root, vol_id)
+
+
+def load_workspace_mission_state(vol_id: str, workspace_dir: str | None = None) -> dict | None:
+    candidate_roots: list[str] = []
+    if workspace_dir:
+        candidate_roots.append(workspace_dir)
+
+    with mission_state_lock:
+        tracked_root = mission_workspace_dirs.get(vol_id)
+    if tracked_root:
+        candidate_roots.append(tracked_root)
+
+    candidate_roots.append(DEFAULT_WORKSPACE_DIR)
+
+    seen: set[str] = set()
+    for root in candidate_roots:
+        normalized = os.path.normpath(root)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+
+        state_path = os.path.join(make_host_path(resolve_workspace_dir(normalized, vol_id)), "mission_state.json")
+        if not os.path.exists(state_path):
+            continue
+        try:
+            with open(state_path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+
+    return None
+
+
+def snapshot_mission_state(mission: dict) -> dict:
+    return {
+        "vol_id": mission["vol_id"],
+        "services": dict(mission["services"]),
+        "logs": list(mission["logs"]),
+        "updated_at": mission["updated_at"],
+        "overall_status": mission["overall_status"],
+        "workspace_dir": mission.get("workspace_dir"),
+    }
+
+
+def parse_timestamp(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            normalized = value.replace("Z", "+00:00")
+            return datetime.fromisoformat(normalized).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def is_processing_stale(mission_updated_at: float | None, workspace_state: dict | None) -> bool:
+    timestamps = [parse_timestamp(mission_updated_at)]
+    if workspace_state is not None:
+        timestamps.append(parse_timestamp(workspace_state.get("updated_at")))
+
+    valid_timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
+    if not valid_timestamps:
+        return False
+
+    latest_update = max(valid_timestamps)
+    return (time.time() - latest_update) > MISSION_PROCESSING_STALE_SECONDS
 
 class MissionParams(BaseModel):
     vol_id: str
@@ -50,6 +137,7 @@ class MissionParams(BaseModel):
     tile_size: int = 1024
     ai_confidence: float = 0.5
     ai_backend: str = "yolo"
+    ai_model_variant: str = "yolo26l"
     sam_prompt: str = "car"
     classes: list[str] = Field(default_factory=lambda: ["car"])
     colmap_params: dict[str, Any] = Field(default_factory=dict)
@@ -106,6 +194,29 @@ def compute_overall_status(services: dict) -> str:
     return "processing"
 
 
+def resolve_mission_overall_status(mission: dict, workspace_state: dict | None) -> str:
+    services = mission.get("services", {})
+    workspace_status = workspace_state.get("status") if workspace_state else None
+    has_processing_service = any(payload.get("status") == "processing" for payload in services.values())
+
+    if any(payload.get("status") == "error" for payload in services.values()):
+        return "error"
+
+    if workspace_status in TERMINAL_STATUSES and not has_processing_service:
+        return workspace_status
+
+    computed = compute_overall_status(services)
+    if computed != "processing":
+        return computed
+
+    if has_processing_service and is_processing_stale(mission.get("updated_at"), workspace_state):
+        if workspace_status in TERMINAL_STATUSES:
+            return workspace_status
+        return "error"
+
+    return computed
+
+
 def update_mission_state(payload: dict):
     vol_id = payload.get("vol_id")
     if not vol_id:
@@ -124,10 +235,13 @@ def update_mission_state(payload: dict):
                 "logs": deque(maxlen=200),
                 "updated_at": now,
                 "overall_status": "idle",
+                "workspace_dir": mission_workspace_dirs.get(vol_id),
             },
         )
         mission["services"][service] = payload
         mission["updated_at"] = now
+        if mission.get("workspace_dir") is None:
+            mission["workspace_dir"] = mission_workspace_dirs.get(vol_id)
         if log:
             mission["logs"].append({
                 "service": service,
@@ -139,6 +253,66 @@ def update_mission_state(payload: dict):
         mission["overall_status"] = compute_overall_status(mission["services"])
 
 
+def build_colmap_resume_state(services: dict, workspace_state: dict | None, mission_updated_at: float | None = None) -> dict:
+    colmap_service = services.get("COLMAP", {})
+    colmap_status = colmap_service.get("status") or workspace_state.get("status") if workspace_state else None
+    stale_processing = colmap_service.get("status") == "processing" and is_processing_stale(mission_updated_at, workspace_state)
+    downstream_processing = [
+        service_name
+        for service_name, payload in services.items()
+        if service_name != "COLMAP" and payload.get("status") == "processing"
+    ]
+
+    if colmap_service.get("status") == "processing" and not stale_processing:
+        return {
+            "available": False,
+            "state": "running",
+            "reason": "COLMAP is currently running. Resume is only relevant after an interruption.",
+            "downstream_processing": downstream_processing,
+        }
+    if stale_processing and workspace_state is not None:
+        return {
+            "available": True,
+            "state": "checkpointed",
+            "reason": "The last live COLMAP status update is stale. The saved workspace checkpoint can be used to resume the mission.",
+            "downstream_processing": downstream_processing,
+        }
+    if stale_processing:
+        return {
+            "available": False,
+            "state": "stale",
+            "reason": "The last live COLMAP status update is stale and no saved workspace checkpoint is available.",
+            "downstream_processing": downstream_processing,
+        }
+    if colmap_status == "success" or (workspace_state and workspace_state.get("step") == "DONE"):
+        return {
+            "available": False,
+            "state": "completed",
+            "reason": "COLMAP has already completed for this mission. Downstream processing can continue without restarting COLMAP." if downstream_processing else "COLMAP has already completed for this mission.",
+            "downstream_processing": downstream_processing,
+        }
+    if colmap_status == "error":
+        return {
+            "available": True,
+            "state": "resumable",
+            "reason": "COLMAP stopped with an error. A resume action can restart from the saved workspace checkpoint.",
+            "downstream_processing": downstream_processing,
+        }
+    if workspace_state is not None:
+        return {
+            "available": True,
+            "state": "checkpointed",
+            "reason": "A saved COLMAP workspace checkpoint exists. If the worker is no longer running, the mission can restart from that checkpoint.",
+            "downstream_processing": downstream_processing,
+        }
+    return {
+        "available": False,
+        "state": "unavailable",
+        "reason": "No saved COLMAP workspace checkpoint has been found yet.",
+        "downstream_processing": downstream_processing,
+    }
+
+
 def serialize_mission_state(mission: dict) -> dict:
     services = {
         name: mission["services"][name]
@@ -148,18 +322,27 @@ def serialize_mission_state(mission: dict) -> dict:
     for name, payload in mission["services"].items():
         if name not in services:
             services[name] = payload
+    workspace_state = load_workspace_mission_state(mission["vol_id"], mission.get("workspace_dir"))
+    colmap_resume = build_colmap_resume_state(services, workspace_state, mission.get("updated_at"))
+    overall_status = resolve_mission_overall_status(mission, workspace_state)
+
     return {
         "vol_id": mission["vol_id"],
+        "workspace_dir": mission.get("workspace_dir"),
+        "workspace_state": workspace_state,
+        "colmap_resume": colmap_resume,
         "services": services,
         "logs": list(mission["logs"]),
         "updated_at": mission["updated_at"],
-        "overall_status": mission["overall_status"],
+        "overall_status": overall_status,
     }
 
 
 def get_status_summary() -> dict:
     with mission_state_lock:
-        serialized = [serialize_mission_state(mission) for mission in mission_states.values()]
+        mission_snapshots = [snapshot_mission_state(mission) for mission in mission_states.values()]
+
+    serialized = [serialize_mission_state(mission) for mission in mission_snapshots]
 
     serialized.sort(key=lambda item: item["updated_at"], reverse=True)
     active = next((item for item in serialized if item["overall_status"] == "processing"), None)
@@ -519,6 +702,62 @@ def status_summary():
     return get_status_summary()
 
 
+@app.get("/mission/state")
+def mission_workspace_state(vol_id: str, workspace_dir: str | None = None):
+    return {
+        "vol_id": vol_id,
+        "workspace_state": load_workspace_mission_state(vol_id, workspace_dir),
+    }
+
+
+@app.post("/mission/resume")
+async def resume_mission(vol_id: str, workspace_dir: str | None = None):
+    with mission_state_lock:
+        mission = mission_states.get(vol_id)
+        services = dict(mission.get("services", {})) if mission else {}
+        tracked_workspace_dir = workspace_dir or mission_workspace_dirs.get(vol_id)
+
+    workspace_state = load_workspace_mission_state(vol_id, tracked_workspace_dir)
+    colmap_resume = build_colmap_resume_state(services, workspace_state)
+    if not colmap_resume["available"]:
+        return {
+            "status": "error",
+            "message": colmap_resume["reason"],
+            "colmap_resume": colmap_resume,
+        }
+
+    if workspace_state is None:
+        return {
+            "status": "error",
+            "message": f"No mission_state.json found for {vol_id}.",
+            "colmap_resume": colmap_resume,
+        }
+
+    mission_payload = dict(workspace_state.get("mission") or {})
+    if not mission_payload:
+        return {
+            "status": "error",
+            "message": f"Saved workspace state for {vol_id} does not contain the original mission payload.",
+            "colmap_resume": colmap_resume,
+        }
+
+    mission_payload["vol_id"] = vol_id
+    if tracked_workspace_dir:
+        mission_payload["workspace_dir"] = tracked_workspace_dir
+
+    with mission_state_lock:
+        if mission_payload.get("workspace_dir"):
+            mission_workspace_dirs[vol_id] = mission_payload["workspace_dir"]
+
+    producer.produce(TOPIC_MISSION, key=vol_id, value=json.dumps(mission_payload))
+    producer.flush()
+    return {
+        "status": "success",
+        "message": f"Resume command sent for {vol_id}.",
+        "colmap_resume": colmap_resume,
+    }
+
+
 @app.get("/pods")
 def pod_statuses():
     return get_pod_states()
@@ -582,6 +821,11 @@ def list_datasets(base_path: str = os.getenv("INPUT_DIR", "/host/mnt/j/workspace
 
 @app.post("/mission")
 async def start_mission(params: MissionParams):
+    with mission_state_lock:
+        mission_workspace_dirs[params.vol_id] = params.workspace_dir
+        existing = mission_states.get(params.vol_id)
+        if existing is not None:
+            existing["workspace_dir"] = params.workspace_dir
     msg = params.dict()
     producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(msg))
     producer.flush()

@@ -154,6 +154,13 @@ def report_progress(vol_id, step, progress, status="processing", log=None):
     producer.flush()
 
 
+def normalize_ai_backend(value):
+    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
+    if normalized in {"sam", "sam3", "sam-3", "meta-sam3", "meta-sam-3", "segment-anything-3"}:
+        return "sam3"
+    return "yolo"
+
+
 def resolve_detection_gps(det, mission):
     lat = det.get('geo_lat')
     lon = det.get('geo_lon')
@@ -426,9 +433,10 @@ def generate_final_ortho(vol_id, mission):
         logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
 
-def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", sam_prompt="car"):
+def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", ai_model_variant="yolo26l", sam_prompt="car"):
     """Découpe un GeoTIFF en tuiles et les envoie sur Kafka."""
     ortho_path = resolve_host_path(ortho_path)
+    ai_backend = normalize_ai_backend(ai_backend)
 
     # Always scope tiles to the mission id to avoid cross-mission collisions.
     # An explicit TILES_BASE_DIR still overrides the root location when needed.
@@ -522,6 +530,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
                         "offset_x": x,
                         "offset_y": y,
                         "ai_backend": ai_backend,
+                        "ai_model_variant": ai_model_variant,
                         "sam_prompt": sam_prompt,
                         "classes": classes,
                         "ai_confidence": ai_confidence,
@@ -570,7 +579,8 @@ try:
             ortho_path = data['ortho_path']
             classes = data.get('classes', ['car'])
             ai_confidence = data.get('ai_confidence', 0.3)
-            ai_backend = data.get('ai_backend', 'yolo')
+            ai_backend = normalize_ai_backend(data.get('ai_backend', 'yolo'))
+            ai_model_variant = data.get('ai_model_variant', 'yolo26l')
             sam_prompt = data.get('sam_prompt', 'car')
             slice_orthomosaic(
                 ortho_path,
@@ -578,6 +588,7 @@ try:
                 classes=classes,
                 ai_confidence=ai_confidence,
                 ai_backend=ai_backend,
+                ai_model_variant=ai_model_variant,
                 sam_prompt=sam_prompt,
             )
             

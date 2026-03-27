@@ -198,6 +198,12 @@ chmod +x build_and_deploy.sh deploy_app*.sh
 bash build_and_deploy.sh
 ```
 
+For a full rebuild from scratch with Docker cache disabled for the base image and every service image:
+
+```bash
+bash build_and_deploy.sh --base
+```
+
 What `build_and_deploy.sh` does:
 
 - checks that the Kubernetes secret `hf-token` exists in namespace `kafka` before deploying the IA worker
@@ -208,6 +214,10 @@ What `build_and_deploy.sh` does:
 - applies `kafka-local.yaml`
 - applies `dashboard-api-rbac.yaml`
 - restarts the deployments in namespace `kafka`
+
+Script options:
+
+- `--base`: force a full no-cache rebuild of `drone-colmap-base:latest` and all application images before importing them into K3s and restarting the stack
 
 Before the first deployment of the SAM 3-enabled IA worker, create the Hugging Face token secret outside git:
 
@@ -313,6 +323,11 @@ These scripts rebuild a single service image, import it into K3s, reapply the re
 
 They still do not replace the full first-time install path, because `build_and_deploy.sh` remains the only script that rebuilds and stages the entire stack in one pass.
 
+All per-service deploy scripts support:
+
+- `--base`: rebuild that service from scratch with Docker cache disabled
+- `--no-restart`: build and import the image into K3s without restarting the deployment
+
 Rebuild COLMAP including the base image:
 
 ```bash
@@ -331,10 +346,22 @@ Rebuild the IA worker:
 bash deploy_app2_ia.sh
 ```
 
+Rebuild the IA worker from scratch without Docker cache:
+
+```bash
+bash deploy_app2_ia.sh --base
+```
+
 Rebuild the processing worker:
 
 ```bash
 bash deploy_app3_processing.sh
+```
+
+Rebuild the processing worker from scratch without Docker cache:
+
+```bash
+bash deploy_app3_processing.sh --base
 ```
 
 Rebuild the dashboard API:
@@ -343,10 +370,28 @@ Rebuild the dashboard API:
 bash deploy_app4_api.sh
 ```
 
+Rebuild the dashboard API from scratch without Docker cache:
+
+```bash
+bash deploy_app4_api.sh --base
+```
+
 Rebuild the dashboard frontend:
 
 ```bash
 bash deploy_app4_frontend.sh
+```
+
+Rebuild the dashboard frontend from scratch without Docker cache:
+
+```bash
+bash deploy_app4_frontend.sh --base
+```
+
+Stage a rebuilt image in K3s without restarting the deployment yet:
+
+```bash
+bash deploy_app3_processing.sh --base --no-restart
 ```
 
 ## Local utility scripts
@@ -425,7 +470,7 @@ bash deploy_app1_colmap.sh --base
 or rerun:
 
 ```bash
-bash build_and_deploy.sh
+bash build_and_deploy.sh --base
 ```
 
 ### `kubectl` works only with `sudo`
@@ -488,7 +533,7 @@ kubectl exec -n kafka deployment/processing-worker -- ls /host/mnt/j/workspace
 To rebuild and redeploy everything from the repository state:
 
 ```bash
-bash build_and_deploy.sh
+bash build_and_deploy.sh --base
 ```
 
 To remove the deployed objects first:
@@ -500,7 +545,7 @@ kubectl delete namespace kafka
 Then rerun:
 
 ```bash
-bash build_and_deploy.sh
+bash build_and_deploy.sh --base
 ```
 
 ## Acknowledgements

@@ -5,6 +5,7 @@ DRY_RUN=false
 AUTO_APPROVE=false
 TARGET_SCOPE="selected"
 NAMESPACES=(kafka)
+IMAGE_PRUNE_TIMEOUT="120s"
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
@@ -16,6 +17,7 @@ Options:
   --yes               Skip the confirmation prompt.
   --namespace NAME    Add a namespace whose completed/failed/evicted pods should be removed.
   --all-namespaces    Clean completed/failed/evicted pods in every namespace.
+    --image-timeout T   Set the K3s image prune timeout passed to crictl (default: 120s).
   --help              Show this help.
 
 This script prunes unused Docker images and builder cache, prunes unused k3s images,
@@ -86,6 +88,30 @@ remove_leftover_tars() {
     done
 }
 
+prune_k3s_images() {
+    local crictl_status=0
+
+    if ! command -v k3s >/dev/null 2>&1; then
+        echo "Skipping k3s image prune: k3s not found."
+        return 0
+    fi
+
+    if $DRY_RUN; then
+        run_privileged k3s crictl -t "$IMAGE_PRUNE_TIMEOUT" rmi --prune
+        run_privileged k3s ctr --namespace k8s.io images prune --all
+        return 0
+    fi
+
+    if ! run_privileged k3s crictl -t "$IMAGE_PRUNE_TIMEOUT" rmi --prune; then
+        crictl_status=$?
+        echo "k3s crictl image prune timed out or failed; falling back to containerd image prune in namespace k8s.io." >&2
+        run_privileged k3s ctr --namespace k8s.io images prune --all || true
+        return "$crictl_status"
+    fi
+
+    return 0
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)
@@ -104,6 +130,11 @@ while [[ $# -gt 0 ]]; do
         --all-namespaces)
             TARGET_SCOPE="all"
             shift
+            ;;
+        --image-timeout)
+            [[ $# -lt 2 ]] && { echo "Missing value for --image-timeout" >&2; exit 1; }
+            IMAGE_PRUNE_TIMEOUT="$2"
+            shift 2
             ;;
         --help)
             usage
@@ -129,7 +160,6 @@ fi
 run_privileged docker container prune -f
 run_privileged docker image prune -af
 run_privileged docker builder prune -af
-run_privileged k3s crictl rmi --prune || true
 
 while IFS= read -r namespace; do
     [[ -z "$namespace" ]] && continue
@@ -137,6 +167,8 @@ while IFS= read -r namespace; do
     delete_phase_pods "$namespace" Failed
     delete_evicted_pods "$namespace"
 done < <(collect_namespaces "$TARGET_SCOPE")
+
+prune_k3s_images || true
 
 remove_leftover_tars
 

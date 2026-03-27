@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertCircle,
@@ -21,6 +21,7 @@ import {
 type ServiceName = "COLMAP" | "TILER" | "IA";
 type PipelineName = "modern" | "legacy";
 type AIBackend = "yolo" | "sam3";
+type YOLOModelVariant = "yolo26l" | "yolo26m" | "yolo26s" | "yolo26n" | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
 type ParamValue = string | boolean;
 
 type StatusPayload = {
@@ -40,8 +41,66 @@ type MissionLog = {
   ts?: number;
 };
 
+type WorkspaceCommandState = {
+  step?: string;
+  command?: string[];
+  started_at?: string;
+  finished_at?: string;
+  event?: string;
+  return_code?: number;
+  resume_note?: string;
+};
+
+type WorkspaceCopyProgress = {
+  processed?: number;
+  total?: number;
+  copied?: number;
+  skipped?: number;
+  updated_at?: string;
+  resume_note?: string;
+};
+
+type WorkspaceResumeInfo = {
+  mode?: string;
+  note?: string;
+  resumed_from?: {
+    status?: string;
+    step?: string;
+    progress?: number;
+    updated_at?: string;
+    last_log?: string | null;
+  };
+};
+
+type WorkspaceMissionState = {
+  version?: number;
+  vol_id?: string;
+  workspace_dir?: string;
+  mission?: Record<string, unknown>;
+  started_at?: string;
+  updated_at?: string;
+  status?: string;
+  step?: string;
+  progress?: number;
+  last_log?: string | null;
+  current_command?: WorkspaceCommandState | null;
+  last_command?: WorkspaceCommandState | null;
+  copy_progress?: WorkspaceCopyProgress | null;
+  resume_info?: WorkspaceResumeInfo | null;
+};
+
+type ColmapResumeState = {
+  available: boolean;
+  state: "running" | "completed" | "resumable" | "checkpointed" | "unavailable";
+  reason: string;
+  downstream_processing: string[];
+};
+
 type MissionSummary = {
   vol_id: string;
+  workspace_dir?: string;
+  workspace_state?: WorkspaceMissionState | null;
+  colmap_resume?: ColmapResumeState;
   services: Record<string, StatusPayload>;
   logs: MissionLog[];
   updated_at: number;
@@ -136,6 +195,17 @@ const AVAILABLE_AI_BACKENDS: Array<{ value: AIBackend; label: string; descriptio
   { value: "yolo", label: "YOLO OBB", description: "Fast oriented-box vehicle detector" },
   { value: "sam3", label: "SAM 3", description: "Prompted mask segmentation from Meta" },
 ];
+const AVAILABLE_YOLO_MODELS: Array<{ value: YOLOModelVariant; label: string; description: string }> = [
+  { value: "yolo26l", label: "YOLO26-L", description: "Largest YOLO26 OBB model" },
+  { value: "yolo26m", label: "YOLO26-M", description: "Balanced YOLO26 OBB model" },
+  { value: "yolo26s", label: "YOLO26-S", description: "Smaller YOLO26 OBB model" },
+  { value: "yolo26n", label: "YOLO26-N", description: "Lightest YOLO26 OBB model" },
+  { value: "yolo11l", label: "YOLO11-L", description: "Largest YOLO11 OBB model" },
+  { value: "yolo11m", label: "YOLO11-M", description: "Balanced YOLO11 OBB model" },
+  { value: "yolo11s", label: "YOLO11-S", description: "Smaller YOLO11 OBB model" },
+  { value: "yolo11n", label: "YOLO11-N", description: "Lightest YOLO11 OBB model" },
+];
+const DEFAULT_BROWSER_PATH = "/host/mnt/j";
 
 const getApiBaseUrl = () => {
   if (typeof window === "undefined") {
@@ -177,8 +247,19 @@ const formatPodPhase = (pod: PodState) => {
   return phase;
 };
 
+const formatIsoTimestamp = (value?: string | null) => {
+  if (!value) {
+    return "n/a";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString();
+};
+
 export default function Dashboard() {
-  const [currentPath, setCurrentPath] = useState("/host/mnt/j");
+  const [currentPath, setCurrentPath] = useState(DEFAULT_BROWSER_PATH);
   const [items, setItems] = useState<DatasetItem[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [workspacePath, setWorkspacePath] = useState("/mnt/j/workspace");
@@ -192,6 +273,7 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState("control");
   const [aiConfidence, setAiConfidence] = useState(0.5);
   const [aiBackend, setAiBackend] = useState<AIBackend>("yolo");
+  const [aiModelVariant, setAiModelVariant] = useState<YOLOModelVariant>("yolo26l");
   const [samPrompt, setSamPrompt] = useState("car");
   const [selectedClasses, setSelectedClasses] = useState<string[]>(["car"]);
   const [pipeline, setPipeline] = useState<PipelineName>("modern");
@@ -206,6 +288,14 @@ export default function Dashboard() {
 
   const progress = activeMissionId ? missions[activeMissionId]?.services ?? {} : {};
   const activeMission = activeMissionId ? missions[activeMissionId] : null;
+  const activeWorkspaceState = activeMission?.workspace_state ?? null;
+  const activeResumeInfo = activeWorkspaceState?.resume_info ?? null;
+  const activeResumeSource = activeResumeInfo?.resumed_from ?? null;
+  const activeCopyProgress = activeWorkspaceState?.copy_progress ?? null;
+  const activeCurrentCommand = activeWorkspaceState?.current_command ?? null;
+  const activeLastCommand = activeWorkspaceState?.last_command ?? null;
+  const activeColmapResume = activeMission?.colmap_resume;
+  const canResumeColmap = Boolean(activeMissionId && activeColmapResume?.available);
   const parameterMetadata = parameterSchema?.metadata ?? {};
   const parameterGroups = Object.entries(parameterMetadata).reduce<Record<string, string[]>>((acc, [key, meta]) => {
     if (!acc[meta.group]) {
@@ -220,19 +310,22 @@ export default function Dashboard() {
     preferredMissionId?: string | null,
   ): string | null => {
     const preferred = preferredMissionId ? missionMap[preferredMissionId] : undefined;
-    if (preferred && !isMissionTerminal(preferred)) {
-      return preferredMissionId ?? null;
-    }
     const runningMission = Object.values(missionMap)
       .filter((mission) => mission.overall_status === "processing")
       .sort((left, right) => right.updated_at - left.updated_at)[0];
+    if (runningMission && (!preferred || isMissionTerminal(preferred) || runningMission.updated_at >= preferred.updated_at)) {
+      return runningMission.vol_id;
+    }
+    if (preferred && !isMissionTerminal(preferred)) {
+      return preferredMissionId ?? null;
+    }
     if (runningMission) {
       return runningMission.vol_id;
     }
     return null;
   };
 
-  const browse = async (path: string) => {
+  const browse = useCallback(async (path: string) => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/browse?path=${encodeURIComponent(path)}`);
       const data = await res.json();
@@ -245,9 +338,9 @@ export default function Dashboard() {
     } catch (error) {
       console.error("Browse error:", error);
     }
-  };
+  }, []);
 
-  const refreshSummary = async () => {
+  const refreshSummary = useCallback(async () => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/status/summary`, { cache: "no-store" });
       const data = await res.json();
@@ -256,18 +349,17 @@ export default function Dashboard() {
         missionMap[mission.vol_id] = mission;
       }
       setMissions(missionMap);
-      const nextActiveMission = syncMissionSelection(missionMap, data.active_vol_id ?? activeMissionId);
+      const nextActiveMission = syncMissionSelection(missionMap, data.active_vol_id ?? activeVolIdRef.current);
       setActiveMissionId(nextActiveMission);
       if (nextActiveMission && missionMap[nextActiveMission]) {
-        setVolId(nextActiveMission);
         setLogs(missionMap[nextActiveMission].logs.map((entry) => entry.message).slice(-100));
       }
     } catch (error) {
       console.error("Summary refresh error:", error);
     }
-  };
+  }, []);
 
-  const refreshPods = async () => {
+  const refreshPods = useCallback(async () => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/pods`, { cache: "no-store" });
       const data = await res.json();
@@ -277,9 +369,9 @@ export default function Dashboard() {
       console.error("Pod refresh error:", error);
       setPodsError(String(error));
     }
-  };
+  }, []);
 
-  const refreshResources = async () => {
+  const refreshResources = useCallback(async () => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/system/resources`, { cache: "no-store" });
       const data = await res.json();
@@ -287,9 +379,9 @@ export default function Dashboard() {
     } catch (error) {
       console.error("Resource refresh error:", error);
     }
-  };
+  }, []);
 
-  const fetchParameters = async (nextPipeline: PipelineName) => {
+  const fetchParameters = useCallback(async (nextPipeline: PipelineName) => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/mission/parameters`, { cache: "no-store" });
       const data = (await res.json()) as ParameterConfigResponse;
@@ -298,9 +390,9 @@ export default function Dashboard() {
     } catch (error) {
       console.error("Parameter fetch error:", error);
     }
-  };
+  }, []);
 
-  const requestEstimate = async (
+  const requestEstimate = useCallback(async (
     inputDir: string,
     nextPipeline: PipelineName,
     nextParams: Record<string, ParamValue>,
@@ -327,11 +419,11 @@ export default function Dashboard() {
       console.error("Estimate error:", error);
       setEstimateError(String(error));
     }
-  };
+  }, []);
 
   useEffect(() => {
-    void browse(currentPath);
-    void fetchParameters(pipeline);
+    void browse(DEFAULT_BROWSER_PATH);
+    void fetchParameters("modern");
     void refreshSummary();
     void refreshPods();
     void refreshResources();
@@ -348,7 +440,7 @@ export default function Dashboard() {
       clearInterval(summaryInterval);
       clearInterval(podInterval);
     };
-  }, []);
+  }, [browse, fetchParameters, refreshPods, refreshResources, refreshSummary]);
 
   // Synchronise with activeMissionId updates caused manually (if any)
   useEffect(() => {
@@ -410,11 +502,6 @@ export default function Dashboard() {
             if (nextActiveMissionId !== activeVolIdRef.current) {
               activeVolIdRef.current = nextActiveMissionId;
               setActiveMissionId(nextActiveMissionId);
-              if (nextActiveMissionId) {
-                setVolId(nextActiveMissionId);
-              } else if (activeVolIdRef.current) {
-                setVolId(`vol_${Math.floor(Math.random() * 1000)}`);
-              }
             }
             if ((activeVolIdRef.current ?? data.vol_id) === data.vol_id && data.log) {
               setLogs(nextMission.logs.map((entry) => entry.message).slice(-100));
@@ -470,7 +557,7 @@ export default function Dashboard() {
     }, 350);
 
     return () => clearTimeout(timer);
-  }, [selectedPath, pipeline, parameterValues]);
+  }, [parameterValues, pipeline, requestEstimate, selectedPath]);
 
   const updateParameter = (key: string, value: ParamValue) => {
     setParameterValues((prev) => ({
@@ -504,6 +591,7 @@ export default function Dashboard() {
       tile_size: 1024,
       ai_confidence: aiConfidence,
       ai_backend: aiBackend,
+      ai_model_variant: aiModelVariant,
       sam_prompt: normalizedPrompt,
       classes: aiBackend === "sam3" ? [normalizedPrompt] : selectedClasses,
       colmap_params: parameterValues,
@@ -533,6 +621,31 @@ export default function Dashboard() {
       setLogs((prev) => [...prev, `[SYSTEM] Cancel command sent: ${result.message}`]);
     } catch (error) {
       setLogs((prev) => [...prev, `[SYSTEM] Error canceling mission: ${error}`]);
+    }
+  };
+
+  const resumeColmap = async () => {
+    if (!activeMissionId || !activeColmapResume?.available) {
+      return;
+    }
+
+    try {
+      const query = new URLSearchParams({ vol_id: activeMissionId });
+      if (activeMission?.workspace_dir) {
+        query.set("workspace_dir", activeMission.workspace_dir);
+      }
+      const res = await fetch(`${getApiBaseUrl()}/mission/resume?${query.toString()}`, {
+        method: "POST",
+      });
+      const result = await res.json();
+      if (result.status !== "success") {
+        setLogs((prev) => [...prev, `[SYSTEM] Resume rejected: ${result.message}`]);
+        return;
+      }
+      setLogs((prev) => [...prev, `[SYSTEM] ${result.message}`]);
+      void refreshSummary();
+    } catch (error) {
+      setLogs((prev) => [...prev, `[SYSTEM] Error resuming mission: ${error}`]);
     }
   };
 
@@ -670,7 +783,7 @@ export default function Dashboard() {
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div>
                     <h2 className="flex items-center gap-2 text-lg font-black text-blue-300"><Settings size={20} /> Mission Configuration</h2>
-                    <p className="mt-1 text-sm text-slate-400">All COLMAP runtime parameters are editable before launch.</p>
+                    <p className="mt-1 text-sm text-slate-400">Profile buttons load defaults. Feature extractor and matcher are configured independently below.</p>
                   </div>
                   <div className="flex gap-2">
                     <button
@@ -685,6 +798,13 @@ export default function Dashboard() {
                       className="rounded-2xl bg-red-500 px-5 py-3 text-sm font-black text-white transition hover:bg-red-400"
                     >
                       Cancel
+                    </button>
+                    <button
+                      onClick={resumeColmap}
+                      disabled={!canResumeColmap}
+                      className="rounded-2xl bg-cyan-400 px-5 py-3 text-sm font-black text-slate-950 transition hover:bg-cyan-300 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+                    >
+                      Resume COLMAP
                     </button>
                   </div>
                 </div>
@@ -702,11 +822,12 @@ export default function Dashboard() {
 
                 <div className="mt-5 grid gap-5 md:grid-cols-3">
                   <div className="rounded-2xl border border-cyan-500/30 bg-cyan-500/10 p-4">
-                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-cyan-300">Pipeline Profile</div>
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-cyan-300">Default Profile</div>
                     <div className="grid grid-cols-2 gap-2 rounded-2xl bg-slate-950/70 p-1">
-                      <button onClick={() => setPipeline("modern")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "modern" ? "bg-cyan-500 text-slate-950" : "text-slate-400"}`}>Modern</button>
-                      <button onClick={() => setPipeline("legacy")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "legacy" ? "bg-amber-500 text-black" : "text-slate-400"}`}>Legacy</button>
+                      <button onClick={() => setPipeline("modern")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "modern" ? "bg-cyan-500 text-slate-950" : "text-slate-400"}`}>Modern Defaults</button>
+                      <button onClick={() => setPipeline("legacy")} className={`rounded-xl px-3 py-2 text-xs font-black transition ${pipeline === "legacy" ? "bg-amber-500 text-black" : "text-slate-400"}`}>Legacy Defaults</button>
                     </div>
+                    <div className="mt-3 text-[11px] leading-5 text-cyan-100/80">Changing profile reloads the parameter panel with that preset, but you can still mix SIFT or ALIKED with STANDARD or LIGHTGLUE matching.</div>
                   </div>
                   <div className="rounded-2xl border border-fuchsia-500/30 bg-fuchsia-500/10 p-4">
                     <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-fuchsia-200">AI Backend</div>
@@ -731,6 +852,24 @@ export default function Dashboard() {
                     <input type="range" min="0.1" max="0.9" step="0.05" value={aiConfidence} onChange={(event) => setAiConfidence(parseFloat(event.target.value))} className="w-full accent-blue-400" />
                   </div>
                 </div>
+
+                {aiBackend === "yolo" ? (
+                  <div className="mt-5 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-amber-200">YOLO Model</div>
+                    <div className="grid gap-2 rounded-2xl bg-slate-950/70 p-1 md:grid-cols-2 xl:grid-cols-4">
+                      {AVAILABLE_YOLO_MODELS.map((modelOption) => (
+                        <button
+                          key={modelOption.value}
+                          onClick={() => setAiModelVariant(modelOption.value)}
+                          className={`rounded-xl px-3 py-2 text-left transition ${aiModelVariant === modelOption.value ? "bg-amber-400 text-slate-950" : "text-slate-300 hover:bg-slate-900/80"}`}
+                        >
+                          <div className="text-xs font-black uppercase tracking-[0.16em]">{modelOption.label}</div>
+                          <div className={`text-[10px] ${aiModelVariant === modelOption.value ? "text-slate-900/70" : "text-slate-500"}`}>{modelOption.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="mt-5 rounded-2xl border border-slate-700 bg-slate-950/60 p-4">
                   <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">
@@ -845,6 +984,89 @@ export default function Dashboard() {
                     <div className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${wsConnected ? "bg-emerald-400 text-black" : "bg-amber-400 text-black"}`}>{wsConnected ? "Live" : "Retrying"}</div>
                   </div>
                   <div className="mt-2 text-xs text-slate-400">{activeMission ? `Mission state: ${activeMission.overall_status}` : "The dashboard tracks the latest active mission automatically."}</div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[10px] font-black uppercase tracking-[0.22em] text-cyan-200">Workspace Resume State</div>
+                    <div className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${activeColmapResume?.state === "resumable" || activeColmapResume?.state === "checkpointed" ? "bg-emerald-400 text-black" : activeColmapResume?.state === "completed" ? "bg-slate-200 text-slate-950" : activeColmapResume?.state === "running" ? "bg-blue-400 text-slate-950" : "bg-slate-950/80 text-cyan-200"}`}>
+                      {activeColmapResume?.state ?? activeWorkspaceState?.status ?? "unavailable"}
+                    </div>
+                  </div>
+
+                  {activeColmapResume ? (
+                    <div className="mt-3 rounded-xl border border-slate-700/70 bg-slate-950/70 p-3 text-[11px] text-slate-300">
+                      <div className="font-semibold text-slate-100">{activeColmapResume.available ? "COLMAP resume is available." : "COLMAP resume is not available right now."}</div>
+                      <div className="mt-1">{activeColmapResume.reason}</div>
+                      {activeColmapResume.downstream_processing.length > 0 ? (
+                        <div className="mt-2 text-slate-400">Later stages still running: {activeColmapResume.downstream_processing.join(", ")}.</div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {activeWorkspaceState ? (
+                    <div className="mt-3 space-y-3 text-xs text-slate-300">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Checkpoint</div>
+                          <div className="mt-2 font-mono text-cyan-100">{activeWorkspaceState.step ?? "unknown"} · {activeWorkspaceState.progress ?? 0}%</div>
+                          <div className="mt-1 text-[11px] text-slate-400">Updated {formatIsoTimestamp(activeWorkspaceState.updated_at)}</div>
+                        </div>
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Workspace</div>
+                          <div className="mt-2 break-all font-mono text-[11px] text-cyan-100">{activeWorkspaceState.workspace_dir ?? activeMission?.workspace_dir ?? "unknown"}</div>
+                        </div>
+                      </div>
+
+                      {activeResumeSource ? (
+                        <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-amber-200">Resume Source</div>
+                          <div className="mt-2 text-slate-100">
+                            Previous checkpoint was {activeResumeSource.step ?? "unknown"} at {activeResumeSource.progress ?? 0}% with status {activeResumeSource.status ?? "unknown"}.
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-400">Saved {formatIsoTimestamp(activeResumeSource.updated_at)}</div>
+                          {activeResumeSource.last_log ? <div className="mt-1 text-[11px] text-slate-300">Last log: {activeResumeSource.last_log}</div> : null}
+                        </div>
+                      ) : null}
+
+                      {activeCurrentCommand ? (
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Current Command</div>
+                          <div className="mt-2 break-all font-mono text-[11px] text-slate-100">{activeCurrentCommand.command?.join(" ") ?? "n/a"}</div>
+                          <div className="mt-1 text-[11px] text-slate-400">Started {formatIsoTimestamp(activeCurrentCommand.started_at)}</div>
+                          {activeCurrentCommand.resume_note ? <div className="mt-1 text-[11px] text-slate-400">{activeCurrentCommand.resume_note}</div> : null}
+                        </div>
+                      ) : activeLastCommand ? (
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Last Command</div>
+                          <div className="mt-2 break-all font-mono text-[11px] text-slate-100">{activeLastCommand.command?.join(" ") ?? "n/a"}</div>
+                          <div className="mt-1 text-[11px] text-slate-400">Event {activeLastCommand.event ?? "unknown"} at {formatIsoTimestamp(activeLastCommand.finished_at)}</div>
+                        </div>
+                      ) : null}
+
+                      {activeCopyProgress ? (
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Copy Progress</div>
+                          <div className="mt-2 text-slate-100">
+                            {activeCopyProgress.processed ?? 0}/{activeCopyProgress.total ?? 0} processed · copied {activeCopyProgress.copied ?? 0} · skipped {activeCopyProgress.skipped ?? 0}
+                          </div>
+                          <div className="mt-1 text-[11px] text-slate-400">Updated {formatIsoTimestamp(activeCopyProgress.updated_at)}</div>
+                          {activeCopyProgress.resume_note ? <div className="mt-1 text-[11px] text-slate-400">{activeCopyProgress.resume_note}</div> : null}
+                        </div>
+                      ) : null}
+
+                      {activeWorkspaceState.last_log ? (
+                        <div className="rounded-xl border border-slate-700/70 bg-slate-950/70 p-3 text-[11px] text-slate-300">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Latest Persisted Log</div>
+                          <div className="mt-2">{activeWorkspaceState.last_log}</div>
+                        </div>
+                      ) : null}
+
+                      {activeResumeInfo?.note ? <div className="text-[11px] text-slate-400">{activeResumeInfo.note}</div> : null}
+                    </div>
+                  ) : (
+                    <div className="mt-3 text-xs text-slate-400">No persisted mission_state.json has been found for the tracked mission yet.</div>
+                  )}
                 </div>
 
                 <div className="mt-4 space-y-4">

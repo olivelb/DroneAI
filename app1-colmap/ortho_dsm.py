@@ -15,7 +15,6 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import pycolmap
-from plyfile import PlyData
 
 import logging
 logger = logging.getLogger(__name__)
@@ -74,6 +73,54 @@ def _get_rotation_and_translation(image):
         return R, t
     except Exception as e:
         raise RuntimeError(f"Cannot extract camera pose from pycolmap Image: {e}") from e
+
+
+def _read_colmap_dense_array(path):
+    """Read a COLMAP dense array (*.bin) with the width&height&channels& header."""
+    header_tokens = []
+    current_token = []
+
+    with open(path, "rb") as handle:
+        while len(header_tokens) < 3:
+            char = handle.read(1)
+            if not char:
+                raise ValueError(f"Incomplete COLMAP dense map header: {path}")
+            if char == b"&":
+                header_tokens.append(b"".join(current_token).decode("ascii"))
+                current_token = []
+            else:
+                current_token.append(char)
+
+        width, height, channels = (int(token) for token in header_tokens)
+        payload = handle.read()
+
+    data = np.frombuffer(payload, dtype="<f4")
+    expected_values = width * height * channels
+    if data.size < expected_values:
+        raise ValueError(
+            f"COLMAP dense map payload is truncated for {path}: expected {expected_values} float32 values, got {data.size}"
+        )
+    if data.size > expected_values:
+        data = data[:expected_values]
+
+    array = data.reshape((height, width, channels))
+    if channels == 1:
+        return array[:, :, 0]
+    return array
+
+
+def _resolve_dense_map_path(dense_path, image_name, folder_name, preferred_type):
+    folder_path = os.path.join(dense_path, "stereo", folder_name)
+    preferred_path = os.path.join(folder_path, f"{image_name}.{preferred_type}.bin")
+    if os.path.exists(preferred_path):
+        return preferred_path, preferred_type
+
+    fallback_type = "photometric" if preferred_type == "geometric" else "geometric"
+    fallback_path = os.path.join(folder_path, f"{image_name}.{fallback_type}.bin")
+    if os.path.exists(fallback_path):
+        return fallback_path, fallback_type
+
+    return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -167,41 +214,68 @@ def fill_small_color_holes_gpu(rgb_tensor, painted_mask, valid_mask, iterations=
     return rgb.squeeze(0).clamp(0, 255).to(torch.uint8), painted.squeeze(0).squeeze(0).bool()
 
 
+def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, camera_height, device, tolerance_m, min_depth):
+    """Check whether projected points are visible in the source depth map."""
+    if u.numel() == 0:
+        return torch.empty((0,), dtype=torch.bool, device=device)
+
+    u = u.to(dtype=torch.float32)
+    v = v.to(dtype=torch.float32)
+    cam_depth = cam_depth.to(dtype=torch.float32)
+
+    depth_height, depth_width = depth_map.shape
+    depth_tensor = torch.from_numpy(depth_map.copy()).to(device=device, dtype=torch.float32)
+    depth_tensor = depth_tensor.unsqueeze(0).unsqueeze(0)
+
+    scale_x = float(camera_width) / float(depth_width)
+    scale_y = float(camera_height) / float(depth_height)
+
+    depth_u = ((u + 0.5) / scale_x) - 0.5
+    depth_v = ((v + 0.5) / scale_y) - 0.5
+
+    if depth_width > 1:
+        u_norm = (depth_u / float(depth_width - 1)) * 2.0 - 1.0
+    else:
+        u_norm = torch.zeros_like(depth_u)
+    if depth_height > 1:
+        v_norm = (depth_v / float(depth_height - 1)) * 2.0 - 1.0
+    else:
+        v_norm = torch.zeros_like(depth_v)
+
+    grid = torch.stack([u_norm, v_norm], dim=-1).to(dtype=depth_tensor.dtype).view(1, 1, -1, 2)
+    sampled_depth = F.grid_sample(
+        depth_tensor,
+        grid,
+        mode='bilinear',
+        padding_mode='zeros',
+        align_corners=True,
+    ).view(-1)
+
+    valid_sampled_depth = torch.isfinite(sampled_depth) & (sampled_depth > float(min_depth))
+    return valid_sampled_depth & (cam_depth <= (sampled_depth + float(tolerance_m)))
+
+
 # ---------------------------------------------------------------------------
 #  DSM construction + Voronoi assignment
 # ---------------------------------------------------------------------------
 
 NODATA = -10000.0
 
-def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, device):
+def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution, device):
     """
-    Build a 2.5D DSM and per-pixel camera assignment.
+    Build a 2.5D DSM from COLMAP depth maps and a per-pixel camera assignment.
 
     The DSM extent is clipped to the camera footprint with padding to avoid
-    wasting pixels on areas no camera covers. Camera assignment uses a
-    per-pixel score that combines surface incidence and optical-axis alignment.
+    wasting pixels on areas no camera covers. Instead of fusing a sparse point
+    cloud first, this path projects PatchMatch depth samples directly into the
+    ortho grid and then scores source cameras per DSM cell.
     """
-    # ---- Load PLY ----
-    plydata = PlyData.read(ply_path)
-    x = np.asarray(plydata['vertex']['x'], dtype=np.float64)
-    y = np.asarray(plydata['vertex']['y'], dtype=np.float64)
-    z = np.asarray(plydata['vertex']['z'], dtype=np.float64)
-
-    if len(x) == 0:
-        raise ValueError("Point cloud is empty.")
-
     # Extract Sim3 parameters
     R_t = scale = t_vec = None
     if transform_data:
-        R_t = np.array(transform_data["R"])
-        scale = transform_data["scale"]
-        t_vec = np.array(transform_data["t"])
-
-    # Transform point cloud to geo coordinates
-    if transform_data:
-        xyz = np.column_stack([x, y, z])
-        xyz_geo = (scale * (R_t @ xyz.T) + t_vec[:, np.newaxis]).T
-        x, y, z = xyz_geo[:, 0], xyz_geo[:, 1], xyz_geo[:, 2]
+        R_t = np.array(transform_data["R"], dtype=np.float64)
+        scale = float(transform_data["scale"])
+        t_vec = np.array(transform_data["t"], dtype=np.float64)
 
     import math
     # ---- Filter cameras for primary and fallback passes ----
@@ -264,51 +338,165 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     pad_x = max(cam_span_x * 0.15, 20.0)  # at least 20m padding
     pad_y = max(cam_span_y * 0.15, 20.0)
 
-    # Clip point cloud extent to camera coverage + padding
+    # Clip DSM extent to camera coverage + padding.
     clip_min_x = cam_xs.min() - pad_x
     clip_max_x = cam_xs.max() + pad_x
     clip_min_y = cam_ys.min() - pad_y
     clip_max_y = cam_ys.max() + pad_y
 
-    # When geo-transformed, use camera hull as primary extent (the point
-    # cloud may be sparser near flight-path edges but cameras still cover
-    # that ground).  Without a transform, intersect with the point cloud
-    # to avoid producing a huge grid of empty pixels.
-    if transform_data:
-        min_x = clip_min_x
-        max_x = clip_max_x
-        min_y = clip_min_y
-        max_y = clip_max_y
-    else:
-        min_x = max(clip_min_x, float(np.min(x)))
-        max_x = min(clip_max_x, float(np.max(x)))
-        min_y = max(clip_min_y, float(np.min(y)))
-        max_y = min(clip_max_y, float(np.max(y)))
+    min_x = clip_min_x
+    max_x = clip_max_x
+    min_y = clip_min_y
+    max_y = clip_max_y
 
     width_m = max_x - min_x
     height_m = max_y - min_y
     width = max(1, int(np.ceil(width_m / resolution)))
     height = max(1, int(np.ceil(height_m / resolution)))
 
-    # ---- Filter points to clipped extent ----
-    in_extent = (x >= min_x) & (x <= max_x) & (y >= min_y) & (y <= max_y)
-    x_c = x[in_extent]
-    y_c = y[in_extent]
-    z_c = z[in_extent]
-
-    # ---- Scatter-max to build DSM ----
-    col = torch.from_numpy(((x_c - min_x) / resolution).astype(np.int64)).clamp(0, width - 1).to(device)
-    row = torch.from_numpy(((max_y - y_c) / resolution).astype(np.int64)).clamp(0, height - 1).to(device)
-    z_t = torch.from_numpy(z_c.astype(np.float32)).to(device)
-
-    flat_idx = row * width + col
     dsm_flat = torch.full((height * width,), NODATA, dtype=torch.float32, device=device)
-    dsm_flat.scatter_reduce_(0, flat_idx, z_t, reduce="amax", include_self=False)
+    sample_count_flat = torch.zeros((height * width,), dtype=torch.float32, device=device)
+
+    depth_map_type = str(os.getenv("ORTHO_DSM_DEPTH_MAP_TYPE", "geometric")).strip().lower() or "geometric"
+    depth_stride = max(1, int(os.getenv("ORTHO_DSM_DEPTH_STRIDE", "1")))
+    row_block_size = max(depth_stride, int(os.getenv("ORTHO_DSM_DEPTH_ROW_BLOCK_SIZE", "128")))
+    min_depth = float(os.getenv("ORTHO_DSM_MIN_DEPTH", "0.05"))
+    min_normal_norm = float(os.getenv("ORTHO_DSM_MIN_NORMAL_NORM", "0.05"))
+
+    depth_maps_found = 0
+    depth_maps_used = 0
+    normal_maps_used = 0
+    depth_samples_considered = 0
+    depth_samples_accepted = 0
+
+    for image in reconstruction.images.values():
+        depth_map_path, resolved_depth_type = _resolve_dense_map_path(
+            dense_path,
+            image.name,
+            "depth_maps",
+            depth_map_type,
+        )
+        if depth_map_path is None:
+            continue
+
+        depth_maps_found += 1
+        depth_map = _read_colmap_dense_array(depth_map_path)
+        if depth_map.ndim != 2:
+            raise ValueError(f"Expected a single-channel depth map for {depth_map_path}, got shape {depth_map.shape}")
+
+        normal_map_path, _ = _resolve_dense_map_path(
+            dense_path,
+            image.name,
+            "normal_maps",
+            resolved_depth_type,
+        )
+        normal_map = None
+        if normal_map_path is not None:
+            normal_map = _read_colmap_dense_array(normal_map_path)
+            if normal_map.ndim == 3 and normal_map.shape[2] == 3:
+                normal_maps_used += 1
+            else:
+                normal_map = None
+
+        camera = reconstruction.cameras[image.camera_id]
+        model = camera.model_name if hasattr(camera, "model_name") else str(camera.model)
+        if model not in ("PINHOLE", "SIMPLE_PINHOLE", "0", "1"):
+            logger.warning("Skipping depth-map accumulation for %s: unsupported camera model %s", image.name, model)
+            continue
+
+        fx = float(camera.params[0])
+        if model in ("PINHOLE", "1"):
+            fy = float(camera.params[1])
+            px = float(camera.params[2])
+            py = float(camera.params[3])
+        else:
+            fy = fx
+            px = float(camera.params[1])
+            py = float(camera.params[2])
+
+        depth_height, depth_width = depth_map.shape
+        scale_x = float(camera.width) / float(depth_width)
+        scale_y = float(camera.height) / float(depth_height)
+        col_coords = np.arange(0, depth_width, depth_stride, dtype=np.float64)
+        R_cw, t_cw = _get_rotation_and_translation(image)
+        t_cw = np.asarray(t_cw, dtype=np.float64)
+
+        image_used = False
+        for row_start in range(0, depth_height, row_block_size):
+            row_stop = min(depth_height, row_start + row_block_size)
+            row_coords = np.arange(row_start, row_stop, depth_stride, dtype=np.float64)
+            depth_block = depth_map[row_start:row_stop:depth_stride, ::depth_stride]
+            valid = np.isfinite(depth_block) & (depth_block > min_depth)
+            if normal_map is not None:
+                normal_block = normal_map[row_start:row_stop:depth_stride, ::depth_stride, :]
+                valid &= np.isfinite(normal_block).all(axis=2)
+                valid &= np.sum(normal_block * normal_block, axis=2) >= (min_normal_norm * min_normal_norm)
+
+            block_pixels = int(depth_block.size)
+            depth_samples_considered += block_pixels
+            if not np.any(valid):
+                continue
+
+            u_idx = np.broadcast_to(col_coords[np.newaxis, :], depth_block.shape)
+            v_idx = np.broadcast_to(row_coords[:, np.newaxis], depth_block.shape)
+
+            u = (u_idx[valid] + 0.5) * scale_x - 0.5
+            v = (v_idx[valid] + 0.5) * scale_y - 0.5
+            depth_values = depth_block[valid].astype(np.float64, copy=False)
+
+            cam_x = ((u - px) / fx) * depth_values
+            cam_y = ((v - py) / fy) * depth_values
+            cam_points = np.column_stack([cam_x, cam_y, depth_values])
+            world_local = (cam_points - t_cw[np.newaxis, :]) @ R_cw
+
+            if transform_data:
+                world_points = (scale * (R_t @ world_local.T) + t_vec[:, np.newaxis]).T
+            else:
+                world_points = world_local
+
+            x_geo = world_points[:, 0]
+            y_geo = world_points[:, 1]
+            z_geo = world_points[:, 2]
+            in_extent = (
+                (x_geo >= min_x)
+                & (x_geo <= max_x)
+                & (y_geo >= min_y)
+                & (y_geo <= max_y)
+                & np.isfinite(z_geo)
+            )
+            if not np.any(in_extent):
+                continue
+
+            x_geo = x_geo[in_extent]
+            y_geo = y_geo[in_extent]
+            z_geo = z_geo[in_extent]
+
+            col = np.clip(((x_geo - min_x) / resolution).astype(np.int64), 0, width - 1)
+            row = np.clip(((max_y - y_geo) / resolution).astype(np.int64), 0, height - 1)
+            flat_idx = row * width + col
+
+            idx_t = torch.from_numpy(flat_idx).to(device)
+            z_t = torch.from_numpy(z_geo.astype(np.float32, copy=False)).to(device)
+            dsm_flat.scatter_reduce_(0, idx_t, z_t, reduce="amax", include_self=False)
+            sample_count_flat.scatter_add_(0, idx_t, torch.ones_like(z_t))
+
+            accepted_count = int(flat_idx.size)
+            depth_samples_accepted += accepted_count
+            image_used = True
+
+        if image_used:
+            depth_maps_used += 1
 
     dsm = dsm_flat.view(height, width)
+    raw_dsm = dsm.clone()
+    sample_count = sample_count_flat.view(height, width)
 
-    # Track which pixels had ACTUAL point cloud data BEFORE gap filling
-    raw_valid = dsm > NODATA
+    # Track which pixels had ACTUAL depth-map support BEFORE gap filling.
+    raw_valid = sample_count > 0
+    if not raw_valid.any():
+        raise RuntimeError(
+            f"No valid DSM cells could be accumulated from COLMAP depth maps in {os.path.join(dense_path, 'stereo', 'depth_maps')}"
+        )
 
     fill_iterations = int(os.getenv("ORTHO_DSM_FILL_ITERATIONS", "5"))
 
@@ -339,6 +527,44 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     else:
         valid_mask = filled_valid & (support_distance_px <= max_support_distance_px)
 
+    edge_depth_range_m = float(os.getenv("ORTHO_DSM_EDGE_DEPTH_RANGE_M", "0.20"))
+    edge_min_raw_support = float(os.getenv("ORTHO_DSM_EDGE_MIN_RAW_SUPPORT", "4"))
+    edge_dilation_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_DILATION_PX", "1")))
+    edge_source_depth_tolerance_m = float(os.getenv("ORTHO_DSM_EDGE_SOURCE_DEPTH_TOLERANCE_M", "0.08"))
+    edge_primary_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
+    edge_fallback_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
+    raw_edge_mask = torch.zeros_like(raw_valid)
+    edge_sensitive_mask = torch.zeros_like(raw_valid)
+    edge_rejected_mask = torch.zeros_like(raw_valid)
+    edge_source_visibility_checked_count = 0
+    edge_source_visibility_rejected_count = 0
+    if edge_depth_range_m > 0.0 and raw_valid.any():
+        raw_height = raw_dsm.unsqueeze(0).unsqueeze(0)
+        raw_valid_4d = raw_valid.unsqueeze(0).unsqueeze(0)
+        neg_large = torch.full_like(raw_height, -1.0e9)
+
+        local_max = F.max_pool2d(torch.where(raw_valid_4d, raw_height, neg_large), kernel_size=3, stride=1, padding=1)
+        local_min = -F.max_pool2d(torch.where(raw_valid_4d, -raw_height, neg_large), kernel_size=3, stride=1, padding=1)
+        local_depth_range = (local_max - local_min).squeeze(0).squeeze(0)
+        raw_edge_mask = raw_valid & (local_depth_range >= edge_depth_range_m)
+
+        boundary_neighborhood = raw_edge_mask
+        if edge_dilation_px > 0 and raw_edge_mask.any():
+            kernel_size = edge_dilation_px * 2 + 1
+            boundary_neighborhood = F.max_pool2d(
+                raw_edge_mask.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=kernel_size,
+                stride=1,
+                padding=edge_dilation_px,
+            ).squeeze(0).squeeze(0) > 0
+
+        edge_sensitive_mask = boundary_neighborhood
+        edge_rejected_mask = boundary_neighborhood & (
+            (~raw_valid)
+            | ((sample_count < edge_min_raw_support) & raw_valid)
+        )
+        valid_mask = valid_mask & (~edge_rejected_mask)
+
     if transform_data:
         R_inv = np.linalg.inv(R_t)
         R_inv_t = torch.tensor(R_inv, device=device, dtype=torch.float64)
@@ -354,6 +580,13 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     fallback_incidence_min = float(os.getenv("ORTHO_DSM_FALLBACK_INCIDENCE_MIN", "0.12"))
     fallback_axis_alignment_min = float(os.getenv("ORTHO_DSM_FALLBACK_AXIS_ALIGNMENT_MIN", "0.12"))
     fallback_nadirness_min = float(os.getenv("ORTHO_DSM_FALLBACK_NADIRNESS_MIN", "0.05"))
+    edge_primary_incidence_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_INCIDENCE_MIN", "0.35"))
+    edge_primary_axis_alignment_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_AXIS_ALIGNMENT_MIN", "0.50"))
+    edge_primary_nadirness_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_NADIRNESS_MIN", "0.82"))
+    allow_fallback_on_edges = str(os.getenv("ORTHO_DSM_ALLOW_FALLBACK_ON_EDGES", "1")).strip().lower() in ("1", "true", "yes", "on")
+    edge_fallback_incidence_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_INCIDENCE_MIN", "0.25"))
+    edge_fallback_axis_alignment_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_AXIS_ALIGNMENT_MIN", "0.40"))
+    edge_fallback_nadirness_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_NADIRNESS_MIN", "0.82"))
 
     for img_id, image in reconstruction.images.items():
         if img_id not in valid_images and img_id not in fallback_images:
@@ -450,12 +683,72 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
         else:
             projection_in_bounds = valid_mask
 
+        edge_angle_ok = True
+        if image_angles_deg.get(img_id) is not None:
+            edge_angle_ok = image_angles_deg[img_id] <= edge_primary_max_view_angle_deg
+        edge_fallback_angle_ok = True
+        if image_angles_deg.get(img_id) is not None:
+            edge_fallback_angle_ok = image_angles_deg[img_id] <= edge_fallback_max_view_angle_deg
+
+        source_visible_on_edges = torch.zeros_like(valid_mask, dtype=torch.bool)
+        if edge_sensitive_mask.any() and edge_source_depth_tolerance_m >= 0.0:
+            edge_projection_mask = projection_in_bounds & edge_sensitive_mask
+            edge_projection_count = int(edge_projection_mask.sum().item())
+            if edge_projection_count > 0:
+                edge_source_visibility_checked_count += edge_projection_count
+                depth_map_path, _ = _resolve_dense_map_path(
+                    dense_path,
+                    image.name,
+                    "depth_maps",
+                    depth_map_type,
+                )
+                if depth_map_path is not None:
+                    depth_map = _read_colmap_dense_array(depth_map_path)
+                    if depth_map.ndim == 2:
+                        visible_edge_samples = sample_source_depth_visibility(
+                            u[edge_projection_mask],
+                            v[edge_projection_mask],
+                            cam_z[edge_projection_mask],
+                            depth_map,
+                            camera.width,
+                            camera.height,
+                            device,
+                            tolerance_m=edge_source_depth_tolerance_m,
+                            min_depth=min_depth,
+                        )
+                        source_visible_on_edges[edge_projection_mask] = visible_edge_samples
+                edge_source_visibility_rejected_count += edge_projection_count - int(source_visible_on_edges[edge_projection_mask].sum().item())
+
+        projection_allowed = projection_in_bounds & ((~edge_sensitive_mask) | source_visible_on_edges)
+
+        primary_edge_guard = (
+            (~edge_sensitive_mask)
+            | (
+                bool(edge_angle_ok)
+                &
+                (incidence > edge_primary_incidence_min)
+                & (axis_alignment > edge_primary_axis_alignment_min)
+                & (nadirness > edge_primary_nadirness_min)
+            )
+        )
+        fallback_edge_guard = (
+            (~edge_sensitive_mask)
+            | (
+                allow_fallback_on_edges
+                & edge_fallback_angle_ok
+                & (incidence > edge_fallback_incidence_min)
+                & (axis_alignment > edge_fallback_axis_alignment_min)
+                & (nadirness > edge_fallback_nadirness_min)
+            )
+        )
+
         if img_id in valid_images:
             primary_score = torch.where(
                 (incidence > primary_incidence_min)
                 & (axis_alignment > primary_axis_alignment_min)
                 & (nadirness > primary_nadirness_min)
-                & projection_in_bounds
+                & primary_edge_guard
+                & projection_allowed
                 & valid_mask,
                 score,
                 torch.full_like(score, -1.0),
@@ -469,7 +762,8 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
                 (incidence > fallback_incidence_min)
                 & (axis_alignment > fallback_axis_alignment_min)
                 & (nadirness > fallback_nadirness_min)
-                & projection_in_bounds
+                & fallback_edge_guard
+                & projection_allowed
                 & valid_mask,
                 score,
                 torch.full_like(score, -1.0),
@@ -493,8 +787,37 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
         "gap_filled_added_count": filled_valid_count - raw_valid_count,
         "usable_valid_count": valid_count,
         "support_limited_rejected_count": filled_valid_count - valid_count,
+        "edge_depth_range_m": edge_depth_range_m,
+        "edge_min_raw_support": edge_min_raw_support,
+        "edge_dilation_px": edge_dilation_px,
+        "raw_edge_pixel_count": int(raw_edge_mask.sum().item()),
+        "edge_sensitive_pixel_count": int(edge_sensitive_mask.sum().item()),
+        "edge_rejected_count": int(edge_rejected_mask.sum().item()),
+        "edge_source_depth_tolerance_m": edge_source_depth_tolerance_m,
+        "edge_source_visibility_checked_count": edge_source_visibility_checked_count,
+        "edge_source_visibility_rejected_count": edge_source_visibility_rejected_count,
+        "edge_primary_thresholds": {
+            "incidence_min": edge_primary_incidence_min,
+            "axis_alignment_min": edge_primary_axis_alignment_min,
+            "nadirness_min": edge_primary_nadirness_min,
+            "max_view_angle_deg": edge_primary_max_view_angle_deg,
+        },
+        "edge_fallback_thresholds": {
+            "allow_on_edges": allow_fallback_on_edges,
+            "incidence_min": edge_fallback_incidence_min,
+            "axis_alignment_min": edge_fallback_axis_alignment_min,
+            "nadirness_min": edge_fallback_nadirness_min,
+            "max_view_angle_deg": edge_fallback_max_view_angle_deg,
+        },
         "max_support_distance_px": max_support_distance_px,
         "fill_iterations": fill_iterations,
+        "depth_map_type": depth_map_type,
+        "depth_stride": depth_stride,
+        "depth_maps_found": depth_maps_found,
+        "depth_maps_used": depth_maps_used,
+        "normal_maps_used": normal_maps_used,
+        "depth_samples_considered": depth_samples_considered,
+        "depth_samples_accepted": depth_samples_accepted,
         "support_distance_histogram": support_distance_histogram,
         "image_angles_deg": image_angles_deg,
         "primary_thresholds": {
@@ -518,6 +841,7 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
         primary_voronoi_map,
         fallback_voronoi_map,
         valid_mask,
+        edge_sensitive_mask,
         min_x,
         max_y,
         width,
@@ -535,20 +859,20 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
 def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                                      transform_file=None, report_fn=None, resolution=0.05):
     """
-    Generate a True Orthophoto via 2.5D DSM ray-casting on the GPU.
+    Generate a True Orthophoto from COLMAP dense stereo depth maps.
 
-    Each source image is warped through the DSM one at a time (O(1) VRAM),
-    and each pixel is assigned to the camera with the best view score.
-    Pixels that cannot be projected through their best-view winner are painted
-    from the nearest camera that CAN see them (multi-pass fallback).
-    The final mosaic is written as a compressed GeoTIFF.
+    Depth maps are reprojected directly into an ortho-grid DSM, avoiding the
+    lossy fused.ply -> raster round-trip. Each source image is then warped
+    through that DSM one at a time (O(1) VRAM), and each pixel is assigned to
+    the camera with the best view score. The final mosaic is written as a
+    compressed GeoTIFF.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    report(vol_id, "ORTHO", 95, f"Starting PyTorch True Orthophoto on {device}…", report_fn)
+    report(vol_id, "ORTHO", 95, f"Starting depth-map True Orthophoto on {device}…", report_fn)
 
-    ply_path = os.path.join(dense_path, "fused.ply")
-    if not os.path.exists(ply_path):
-        raise FileNotFoundError(f"Missing point cloud: {ply_path}")
+    depth_maps_dir = os.path.join(dense_path, "stereo", "depth_maps")
+    if not os.path.isdir(depth_maps_dir):
+        raise FileNotFoundError(f"Missing COLMAP depth map directory: {depth_maps_dir}")
 
     transform_data = None
     if transform_file and os.path.exists(transform_file):
@@ -556,11 +880,11 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             transform_data = json.load(tf)
 
 
-    report(vol_id, "ORTHO", 96, "Building 2.5D DSM and angle-aware camera map…", report_fn)
+    report(vol_id, "ORTHO", 96, "Building 2.5D DSM from COLMAP depth maps and angle-aware camera map…", report_fn)
     reconstruction = pycolmap.Reconstruction(os.path.join(dense_path, "sparse"))
 
-    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
-        ply_path, reconstruction, transform_data, resolution, device,
+    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, edge_sensitive_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
+        dense_path, reconstruction, transform_data, resolution, device,
     )
 
     total_pixels = max(1, width * height)
@@ -660,13 +984,13 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         t_t = torch.tensor(t_np, device=device, dtype=torch.float64)
 
         def geo_to_local(x, y, z):
-            """(N,) tensors → (N, 3) float32 local coords."""
+            """(N,) tensors → (N, 3) float64 local coords."""
             pts = torch.stack([x.double(), y.double(), z.double()], dim=-1)
             pts = (pts - t_t) / scale_val
-            return (R_inv_t @ pts.T).T.float()
+            return (R_inv_t @ pts.T).T
     else:
         def geo_to_local(x, y, z):
-            return torch.stack([x, y, z], dim=-1).float()
+            return torch.stack([x.double(), y.double(), z.double()], dim=-1)
 
     images_dir = os.path.join(dense_path, "images")
     total_images = len(reconstruction.images)
@@ -685,8 +1009,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "valid_indices": empty_indices,
                 "front_mask": torch.empty((0,), dtype=torch.bool, device=device),
                 "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
-                "u_valid": torch.empty((0,), dtype=torch.float32, device=device),
-                "v_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "u_valid": torch.empty((0,), dtype=torch.float64, device=device),
+                "v_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "w_img": 0,
                 "h_img": 0,
                 "img_path": None,
@@ -698,8 +1022,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
 
         camera = reconstruction.cameras[image.camera_id]
         R_cw_np, t_cw_np = _get_rotation_and_translation(image)
-        R_cw = torch.tensor(R_cw_np, dtype=torch.float32, device=device)
-        t_cw = torch.tensor(t_cw_np, dtype=torch.float32, device=device)
+        R_cw = torch.tensor(R_cw_np, dtype=torch.float64, device=device)
+        t_cw = torch.tensor(t_cw_np, dtype=torch.float64, device=device)
 
         pts_cam = (R_cw @ pts_local.T).T + t_cw
 
@@ -711,8 +1035,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "valid_indices": torch.empty((0, 2), dtype=torch.long, device=device),
                 "front_mask": front,
                 "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
-                "u_valid": torch.empty((0,), dtype=torch.float32, device=device),
-                "v_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "u_valid": torch.empty((0,), dtype=torch.float64, device=device),
+                "v_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "w_img": int(camera.width),
                 "h_img": int(camera.height),
                 "img_path": os.path.join(images_dir, image.name),
@@ -739,8 +1063,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         else:
             pts_cam_cpu = pts_cam_f.cpu().numpy()
             uv_cpu = np.array([camera.img_from_cam(p) for p in pts_cam_cpu])
-            u = torch.tensor(uv_cpu[:, 0], device=device, dtype=torch.float32)
-            v = torch.tensor(uv_cpu[:, 1], device=device, dtype=torch.float32)
+            u = torch.tensor(uv_cpu[:, 0], device=device, dtype=torch.float64)
+            v = torch.tensor(uv_cpu[:, 1], device=device, dtype=torch.float64)
 
         w_img = int(camera.width)
         h_img = int(camera.height)
@@ -758,8 +1082,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             "valid_indices": valid_indices,
             "front_mask": front,
             "in_bounds_mask": in_bounds,
-            "u_valid": u[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float32, device=device),
-            "v_valid": v[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float32, device=device),
+            "u_valid": u[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float64, device=device),
+            "v_valid": v[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float64, device=device),
             "w_img": w_img,
             "h_img": h_img,
             "img_path": img_path,
@@ -785,6 +1109,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         # Bilinear sample
         u_norm = (projection["u_valid"] / (projection["w_img"] - 1)) * 2.0 - 1.0
         v_norm = (projection["v_valid"] / (projection["h_img"] - 1)) * 2.0 - 1.0
+        u_norm = u_norm.to(dtype=tensor_img.dtype)
+        v_norm = v_norm.to(dtype=tensor_img.dtype)
         grid = torch.stack([u_norm, v_norm], dim=-1).view(1, 1, -1, 2)
 
         sampled = F.grid_sample(
@@ -936,14 +1262,28 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     # recover the true texture. In that case, fill only small remaining holes
     # from surrounding painted pixels to avoid black seams around objects.
     remaining_holes = int((valid_dsm_mask & (~painted)).sum())
-    enable_inpaint_fill = str(os.getenv("ORTHO_DSM_ENABLE_INPAINT", "0")).strip().lower() in ("1", "true", "yes", "on")
+    enable_inpaint_fill = str(os.getenv("ORTHO_DSM_ENABLE_INPAINT", "1")).strip().lower() in ("1", "true", "yes", "on")
     if enable_inpaint_fill and remaining_holes > 0:
+        edge_inpaint_dilation_px = max(0, int(os.getenv("ORTHO_DSM_INPAINT_EDGE_DILATION_PX", "2")))
+        inpaint_edge_only = str(os.getenv("ORTHO_DSM_INPAINT_EDGE_ONLY", "1")).strip().lower() in ("1", "true", "yes", "on")
+        inpaint_allowed_mask = valid_dsm_mask
+        if inpaint_edge_only:
+            inpaint_zone = edge_sensitive_mask
+            if edge_inpaint_dilation_px > 0 and edge_sensitive_mask.any():
+                kernel_size = edge_inpaint_dilation_px * 2 + 1
+                inpaint_zone = F.max_pool2d(
+                    edge_sensitive_mask.float().unsqueeze(0).unsqueeze(0),
+                    kernel_size=kernel_size,
+                    stride=1,
+                    padding=edge_inpaint_dilation_px,
+                ).squeeze(0).squeeze(0) > 0
+            inpaint_allowed_mask = valid_dsm_mask & inpaint_zone
         ortho_rgb, painted = fill_small_color_holes_gpu(
             ortho_rgb,
             painted,
-            valid_dsm_mask,
-            iterations=int(os.getenv("ORTHO_DSM_INPAINT_ITERATIONS", "8")),
-            min_neighbors=int(os.getenv("ORTHO_DSM_INPAINT_MIN_NEIGHBORS", "3")),
+            inpaint_allowed_mask,
+            iterations=int(os.getenv("ORTHO_DSM_INPAINT_ITERATIONS", "4")),
+            min_neighbors=int(os.getenv("ORTHO_DSM_INPAINT_MIN_NEIGHBORS", "4")),
         )
         filled_after_inpaint = int((valid_dsm_mask & painted).sum())
         report(vol_id, "ORTHO", 98, f"Pass 3: inpainted small holes, coverage now {100.0 * filled_after_inpaint / max(1, valid_dsm_mask.sum().item()):.1f}%.", report_fn)
@@ -1004,10 +1344,28 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         "rejected_far_fill_pixels": int(filled_dsm_count - valid_dsm_mask.sum().item()),
         "support_distance_limit_px": build_diagnostics["max_support_distance_px"],
         "fill_iterations": build_diagnostics["fill_iterations"],
+        "depth_map_type": build_diagnostics["depth_map_type"],
+        "depth_stride": build_diagnostics["depth_stride"],
+        "depth_maps_found": build_diagnostics["depth_maps_found"],
+        "depth_maps_used": build_diagnostics["depth_maps_used"],
+        "normal_maps_used": build_diagnostics["normal_maps_used"],
+        "depth_samples_considered": build_diagnostics["depth_samples_considered"],
+        "depth_samples_accepted": build_diagnostics["depth_samples_accepted"],
         "support_distance_histogram": build_diagnostics["support_distance_histogram"],
         "final_fill_percent": float(final_fill),
         "remaining_holes": int((valid_dsm_mask & (~painted)).sum().item()),
         "black_pixel_analysis": black_pixel_analysis,
+        "edge_depth_range_m": build_diagnostics["edge_depth_range_m"],
+        "edge_min_raw_support": build_diagnostics["edge_min_raw_support"],
+        "edge_dilation_px": build_diagnostics["edge_dilation_px"],
+        "raw_edge_pixel_count": build_diagnostics["raw_edge_pixel_count"],
+        "edge_sensitive_pixel_count": build_diagnostics["edge_sensitive_pixel_count"],
+        "edge_rejected_count": build_diagnostics["edge_rejected_count"],
+        "edge_source_depth_tolerance_m": build_diagnostics["edge_source_depth_tolerance_m"],
+        "edge_source_visibility_checked_count": build_diagnostics["edge_source_visibility_checked_count"],
+        "edge_source_visibility_rejected_count": build_diagnostics["edge_source_visibility_rejected_count"],
+        "edge_primary_thresholds": build_diagnostics["edge_primary_thresholds"],
+        "edge_fallback_thresholds": build_diagnostics["edge_fallback_thresholds"],
         "primary_image_count": len(valid_images),
         "fallback_image_count": len(fallback_images),
         "thresholds": {

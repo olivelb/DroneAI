@@ -1,8 +1,22 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 BUILD_BASE=0
 RESTART_DEPLOYMENT=1
+
+usage() {
+    cat <<'EOF'
+Usage: ./deploy_app1_colmap.sh [--base] [--no-restart] [--help]
+
+Options:
+  --base        Force a rebuild from scratch. Rebuild the COLMAP base image and
+                rebuild the app image with Docker cache disabled.
+  --no-restart  Build and import the image into k3s without restarting the deployment.
+  --help        Show this help message.
+EOF
+}
+
+DOCKER_BUILD_FLAGS=()
 
 for arg in "$@"; do
     case "$arg" in
@@ -12,19 +26,27 @@ for arg in "$@"; do
         --no-restart)
             RESTART_DEPLOYMENT=0
             ;;
+        --help)
+            usage
+            exit 0
+            ;;
         *)
             echo "Unknown option: $arg" >&2
-            echo "Usage: $0 [--base] [--no-restart]" >&2
+            usage >&2
             exit 1
             ;;
     esac
 done
 
+if [[ "$BUILD_BASE" -eq 1 ]]; then
+    DOCKER_BUILD_FLAGS+=(--no-cache)
+fi
+
 # Build base image only if it doesn't exist yet (or pass --base to force rebuild)
 if [[ "$BUILD_BASE" -eq 1 ]] || ! sudo docker image inspect drone-colmap-base:latest &>/dev/null; then
     echo "🛠️ Building base image (CUDA + COLMAP + deps)... This is slow but only needed once."
     export DOCKER_BUILDKIT=1
-    sudo docker build --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
+    sudo docker build "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
     echo "📦 Importing base image to k3s..."
     sudo docker save drone-colmap-base:latest | sudo k3s ctr images import -
     echo "✅ Base image ready."
@@ -32,7 +54,7 @@ fi
 
 echo "🛠️ Building app image (just the Python code)..."
 export DOCKER_BUILDKIT=1
-sudo docker build --progress=plain -t drone-colmap:latest -f app1-colmap/Dockerfile .
+sudo docker build "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap:latest -f app1-colmap/Dockerfile .
 echo "📦 Importing app image to k3s..."
 sudo docker save drone-colmap:latest | sudo k3s ctr images import -
 echo "🧩 Applying Kubernetes manifest to keep colmap-worker resources in sync..."

@@ -201,7 +201,7 @@ The IA worker is a tile-level dual-backend detection service. It supports Ultral
 Its runtime responsibilities are:
 
 - consume tile jobs from `image-tiles`
-- load a local aerial OBB checkpoint, currently `yolo26s-obb.pt` by default
+- load a local aerial OBB checkpoint, currently `yolo26l-obb.pt` by default, with UI-selectable YOLO11/YOLO26 `l`/`m`/`s`/`n` variants per mission
 - lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend and the supplied token has model access
 - run the selected detector on each tile
 - run prompt-based instance segmentation for SAM 3 tile jobs
@@ -1209,7 +1209,8 @@ At startup, app2 resolves a local aerial OBB checkpoint from `AERIAL_MODEL_DIR`.
 
 Default runtime behavior:
 
-- variant `best` resolves to `yolo26s-obb.pt`
+- variant `best` resolves to `yolo26l-obb.pt`
+- mission requests can override the default with `ai_model_variant` such as `yolo26m`, `yolo11s`, or `yolo11n`
 - the worker downloads the checkpoint from `ultralytics/assets` if it is not already present
 - `AERIAL_MODEL_FILE` can override the checkpoint path entirely
 

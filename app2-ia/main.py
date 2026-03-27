@@ -7,6 +7,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import threading
 import torch
 from confluent_kafka import Consumer, Producer
 from PIL import Image
@@ -36,21 +37,31 @@ YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
 YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
 
 YOLO_MODEL_VARIANTS = {
-    "best": {
-        "checkpoint": "yolo26s-obb.pt",
-    },
-    "l": {
-        "checkpoint": "yolo26l-obb.pt",
-    },
-    "m": {
-        "checkpoint": "yolo26m-obb.pt",
-    },
-    "s": {
-        "checkpoint": "yolo26s-obb.pt",
-    },
-    "tiny": {
-        "checkpoint": "yolo26n-obb.pt",
-    },
+    "yolo26l": {"checkpoint": "yolo26l-obb.pt"},
+    "yolo26m": {"checkpoint": "yolo26m-obb.pt"},
+    "yolo26s": {"checkpoint": "yolo26s-obb.pt"},
+    "yolo26n": {"checkpoint": "yolo26n-obb.pt"},
+    "yolo11l": {"checkpoint": "yolo11l-obb.pt"},
+    "yolo11m": {"checkpoint": "yolo11m-obb.pt"},
+    "yolo11s": {"checkpoint": "yolo11s-obb.pt"},
+    "yolo11n": {"checkpoint": "yolo11n-obb.pt"},
+}
+
+YOLO_MODEL_ALIASES = {
+    "best": "yolo26l",
+    "l": "yolo26l",
+    "m": "yolo26m",
+    "s": "yolo26s",
+    "n": "yolo26n",
+    "tiny": "yolo26n",
+    "26l": "yolo26l",
+    "26m": "yolo26m",
+    "26s": "yolo26s",
+    "26n": "yolo26n",
+    "11l": "yolo11l",
+    "11m": "yolo11m",
+    "11s": "yolo11s",
+    "11n": "yolo11n",
 }
 
 SAM3_MODEL_ID = os.getenv("SAM3_MODEL_ID", "facebook/sam3")
@@ -73,15 +84,21 @@ device_type = "cuda" if torch.cuda.is_available() else "cpu"
 yolo_device = 0 if device_type == "cuda" else "cpu"
 sam3_autocast_dtype = torch.bfloat16 if device_type == "cuda" else torch.float32
 
-_yolo_model = None
-_yolo_available_labels: list[str] = []
+_yolo_models: dict[str, tuple[YOLO, list[str]]] = {}
 _sam3_model = None
 _sam3_processor = None
 
 
-def resolve_yolo_model_file() -> tuple[str, Path, str]:
-    variant_name = os.getenv("AERIAL_MODEL_VARIANT", "best").strip().lower() or "best"
-    variant = YOLO_MODEL_VARIANTS.get(variant_name, YOLO_MODEL_VARIANTS["best"])
+def normalize_yolo_model_variant(value: str | None) -> str:
+    normalized = str(value or os.getenv("AERIAL_MODEL_VARIANT", "best")).strip().lower().replace("_", "").replace("-", "")
+    if normalized in YOLO_MODEL_VARIANTS:
+        return normalized
+    return YOLO_MODEL_ALIASES.get(normalized, "yolo26l")
+
+
+def resolve_yolo_model_file(requested_variant: str | None = None) -> tuple[str, Path, str]:
+    variant_name = normalize_yolo_model_variant(requested_variant)
+    variant = YOLO_MODEL_VARIANTS[variant_name]
     configured_model = os.getenv("AERIAL_MODEL_FILE", "").strip()
     checkpoint_name = variant["checkpoint"]
     if configured_model:
@@ -105,12 +122,14 @@ def ensure_yolo_model_file(model_path: Path, checkpoint_name: str) -> Path:
     return model_path
 
 
-def load_yolo_model() -> tuple[YOLO, list[str]]:
-    global _yolo_model, _yolo_available_labels
-    if _yolo_model is not None:
-        return _yolo_model, _yolo_available_labels
+def load_yolo_model(requested_variant: str | None = None) -> tuple[YOLO, list[str], str]:
+    selected_variant, model_file_path, model_file_name = resolve_yolo_model_file(requested_variant)
+    cache_key = str(model_file_path.resolve())
+    cached_model = _yolo_models.get(cache_key)
+    if cached_model is not None:
+        model, available_labels = cached_model
+        return model, available_labels, selected_variant
 
-    selected_variant, model_file_path, model_file_name = resolve_yolo_model_file()
     model_file_path = ensure_yolo_model_file(model_file_path, model_file_name)
     logger.info(
         "Loading YOLO aerial detector variant=%s checkpoint=%s device=%s imgsz=%s",
@@ -119,11 +138,12 @@ def load_yolo_model() -> tuple[YOLO, list[str]]:
         yolo_device,
         YOLO_MODEL_IMAGE_SIZE,
     )
-    _yolo_model = YOLO(str(model_file_path))
-    _yolo_available_labels = list((_yolo_model.names or {}).values())
-    if not _yolo_available_labels:
+    model = YOLO(str(model_file_path))
+    available_labels = list((model.names or {}).values())
+    if not available_labels:
         raise RuntimeError(f"YOLO model did not expose class names: {model_file_path}")
-    return _yolo_model, _yolo_available_labels
+    _yolo_models[cache_key] = (model, available_labels)
+    return model, available_labels, selected_variant
 
 
 def load_sam3_model() -> tuple[Sam3Model, Sam3Processor]:
@@ -215,8 +235,8 @@ def extract_obb_detections(raw_result, requested_labels: list[str], min_confiden
 
 
 def normalize_backend_name(value: str | None) -> str:
-    normalized = (value or "yolo").strip().lower()
-    if normalized in {"sam", "sam3", "meta-sam3"}:
+    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
+    if normalized in {"sam", "sam3", "sam-3", "meta-sam3", "meta-sam-3", "segment-anything-3"}:
         return "sam3"
     return "yolo"
 
@@ -256,8 +276,8 @@ def contour_to_polygon(mask: np.ndarray, fallback_box: list[list[float]]) -> tup
     return polygon, center_x, center_y
 
 
-def run_yolo_detection(tile_path: str, requested_classes: list[str], requested_conf: float) -> tuple[list[dict], dict]:
-    model, available_labels = load_yolo_model()
+def run_yolo_detection(tile_path: str, requested_classes: list[str], requested_conf: float, requested_model_variant: str | None = None) -> tuple[list[dict], dict]:
+    model, available_labels, selected_variant = load_yolo_model(requested_model_variant)
     requested_labels = resolve_requested_labels(requested_classes, available_labels)
     fallback_conf = max(0.10, min(requested_conf, 0.20))
     raw_results = model.predict(
@@ -282,6 +302,7 @@ def run_yolo_detection(tile_path: str, requested_classes: list[str], requested_c
             best_attempt = attempt
         if detections:
             break
+    best_attempt = {**best_attempt, "label": f"{best_attempt['label']} model={selected_variant}"}
     return best_detections, best_attempt
 
 
@@ -408,7 +429,7 @@ def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
     requested_classes = tile_info.get("classes", ["car"])
     if backend == "sam3":
         return run_sam3_detection(tile_path, resolve_sam3_prompt(tile_info), requested_conf)
-    return run_yolo_detection(tile_path, requested_classes, requested_conf)
+    return run_yolo_detection(tile_path, requested_classes, requested_conf, tile_info.get("ai_model_variant"))
 
 print("App 2 (IA Workers) waiting for tiles on Kafka...")
 
