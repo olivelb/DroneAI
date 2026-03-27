@@ -81,12 +81,14 @@ def _get_rotation_and_translation(image):
 # ---------------------------------------------------------------------------
 
 def fill_dsm_gaps_gpu(dsm_tensor, nodata_value, iterations=3):
-    """Fill small holes in the DSM using dilate-then-average on the GPU."""
+    """Fill small DSM holes and track Chebyshev distance from raw support."""
     mask = (dsm_tensor != nodata_value).float().unsqueeze(0).unsqueeze(0)
     dsm_filled = dsm_tensor.clone().unsqueeze(0).unsqueeze(0)
     dsm_filled[mask == 0] = 0.0
+    support_distance = torch.full_like(dsm_tensor, float(iterations + 1), dtype=torch.float32)
+    support_distance[dsm_tensor != nodata_value] = 0.0
 
-    for _ in range(iterations):
+    for iteration_index in range(iterations):
         dilated_mask = F.max_pool2d(mask, kernel_size=3, stride=1, padding=1)
         new_pixels = (dilated_mask > 0) & (mask == 0)
 
@@ -101,8 +103,68 @@ def fill_dsm_gaps_gpu(dsm_tensor, nodata_value, iterations=3):
 
         dsm_filled = torch.where(new_pixels, fill_vals, dsm_filled)
         mask = dilated_mask
+        support_distance = torch.where(
+            new_pixels.squeeze(0).squeeze(0),
+            torch.full_like(support_distance, float(iteration_index + 1)),
+            support_distance,
+        )
 
-    return dsm_filled.squeeze(0).squeeze(0)
+    return dsm_filled.squeeze(0).squeeze(0), support_distance
+
+
+def estimate_surface_normals_gpu(dsm_tensor, resolution):
+    """Estimate upward-facing surface normals from the gap-filled DSM."""
+    smoothed = F.avg_pool2d(
+        dsm_tensor.unsqueeze(0).unsqueeze(0),
+        kernel_size=3,
+        stride=1,
+        padding=1,
+    ).squeeze(0).squeeze(0)
+
+    dz_dx = torch.zeros_like(smoothed)
+    dz_dy = torch.zeros_like(smoothed)
+
+    dz_dx[:, 1:-1] = (smoothed[:, 2:] - smoothed[:, :-2]) / (2.0 * resolution)
+    dz_dx[:, 0] = (smoothed[:, 1] - smoothed[:, 0]) / resolution
+    dz_dx[:, -1] = (smoothed[:, -1] - smoothed[:, -2]) / resolution
+
+    # Raster rows increase downward while world Y decreases downward.
+    dz_dy[1:-1, :] = (smoothed[:-2, :] - smoothed[2:, :]) / (2.0 * resolution)
+    dz_dy[0, :] = (smoothed[0, :] - smoothed[1, :]) / resolution
+    dz_dy[-1, :] = (smoothed[-2, :] - smoothed[-1, :]) / resolution
+
+    normals = torch.stack([
+        -dz_dx,
+        -dz_dy,
+        torch.ones_like(smoothed),
+    ], dim=-1)
+    return F.normalize(normals, dim=-1, eps=1e-8)
+
+
+def fill_small_color_holes_gpu(rgb_tensor, painted_mask, valid_mask, iterations=6, min_neighbors=3):
+    """Fill small remaining holes from neighboring painted colors on the GPU."""
+    rgb = rgb_tensor.float().unsqueeze(0)
+    painted = painted_mask.float().unsqueeze(0).unsqueeze(0)
+    allowed = valid_mask.unsqueeze(0).unsqueeze(0)
+
+    for _ in range(iterations):
+        expanded = F.max_pool2d(painted, kernel_size=3, stride=1, padding=1)
+        neighbor_count = F.avg_pool2d(painted, kernel_size=3, stride=1, padding=1, divisor_override=1)
+        new_pixels = (expanded > 0) & (painted == 0) & (allowed > 0) & (neighbor_count >= float(min_neighbors))
+        if not new_pixels.any():
+            break
+
+        safe_count = neighbor_count.clamp(min=1.0)
+        for channel_index in range(3):
+            channel = rgb[:, channel_index:channel_index + 1, :, :]
+            neighbor_sum = F.avg_pool2d(channel * painted, kernel_size=3, stride=1, padding=1, divisor_override=1)
+            fill_values = neighbor_sum / safe_count
+            channel = torch.where(new_pixels, fill_values, channel)
+            rgb[:, channel_index:channel_index + 1, :, :] = channel
+
+        painted = torch.where(new_pixels, torch.ones_like(painted), painted)
+
+    return rgb.squeeze(0).clamp(0, 255).to(torch.uint8), painted.squeeze(0).squeeze(0).bool()
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +175,11 @@ NODATA = -10000.0
 
 def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, device):
     """
-    Build a 2.5D DSM and per-pixel Voronoi camera assignment.
+    Build a 2.5D DSM and per-pixel camera assignment.
 
-    The DSM extent is CLIPPED to the convex hull of camera nadir points
-    (with generous padding) to avoid wasting pixels on areas no camera covers.
+    The DSM extent is clipped to the camera footprint with padding to avoid
+    wasting pixels on areas no camera covers. Camera assignment uses a
+    per-pixel score that combines surface incidence and optical-axis alignment.
     """
     # ---- Load PLY ----
     plydata = PlyData.read(ply_path)
@@ -141,23 +204,42 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
         x, y, z = xyz_geo[:, 0], xyz_geo[:, 1], xyz_geo[:, 2]
 
     import math
-    # ---- Filter non-nadir cameras ----
+    # ---- Filter cameras for primary and fallback passes ----
+    # Compute the "down" direction in COLMAP local coords from the Sim3
+    # alignment: geo-down [0,0,-1] mapped back to local via R_t^T.
+    # This avoids the Sim3 rotation inflating nadir angles.
+    NADIR_THRESHOLD_DEG = float(os.getenv("ORTHO_DSM_NADIR_THRESHOLD_DEG", "20.0"))
+    FALLBACK_NADIR_THRESHOLD_DEG = float(os.getenv("ORTHO_DSM_FALLBACK_NADIR_THRESHOLD_DEG", "65.0"))
+    if transform_data:
+        down_local = R_t.T @ np.array([0.0, 0.0, -1.0])
+        down_local = down_local / np.linalg.norm(down_local)
+    else:
+        down_local = None
+
     valid_images = []
+    fallback_images = []
+    image_angles_deg = {}
     for img_id, image in reconstruction.images.items():
-        if transform_data:
+        if down_local is not None:
             R_cw, _ = _get_rotation_and_translation(image)
-            v_local = R_cw[2, :]
-            v_geo = R_t @ v_local
-            v_geo = v_geo / np.linalg.norm(v_geo)
-            dot = max(-1.0, min(1.0, -v_geo[2]))
+            v_cam = R_cw[2, :]  # camera viewing direction in COLMAP world
+            v_cam = v_cam / np.linalg.norm(v_cam)
+            dot = max(-1.0, min(1.0, float(np.dot(v_cam, down_local))))
             angle = math.degrees(math.acos(dot))
-            if angle <= 25.0:
+            image_angles_deg[img_id] = angle
+            if angle <= NADIR_THRESHOLD_DEG:
                 valid_images.append(img_id)
+            if angle <= FALLBACK_NADIR_THRESHOLD_DEG:
+                fallback_images.append(img_id)
         else:
+            image_angles_deg[img_id] = None
             valid_images.append(img_id)
-            
+            fallback_images.append(img_id)
+
     if not valid_images:
         valid_images = list(reconstruction.images.keys())
+    if not fallback_images:
+        fallback_images = list(reconstruction.images.keys())
 
     # ---- Compute camera nadir positions for DSM clipping ----
     cam_xs = []
@@ -188,11 +270,20 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     clip_min_y = cam_ys.min() - pad_y
     clip_max_y = cam_ys.max() + pad_y
 
-    # Also intersect with actual point cloud extent
-    min_x = max(clip_min_x, float(np.min(x)))
-    max_x = min(clip_max_x, float(np.max(x)))
-    min_y = max(clip_min_y, float(np.min(y)))
-    max_y = min(clip_max_y, float(np.max(y)))
+    # When geo-transformed, use camera hull as primary extent (the point
+    # cloud may be sparser near flight-path edges but cameras still cover
+    # that ground).  Without a transform, intersect with the point cloud
+    # to avoid producing a huge grid of empty pixels.
+    if transform_data:
+        min_x = clip_min_x
+        max_x = clip_max_x
+        min_y = clip_min_y
+        max_y = clip_max_y
+    else:
+        min_x = max(clip_min_x, float(np.min(x)))
+        max_x = min(clip_max_x, float(np.max(x)))
+        min_y = max(clip_min_y, float(np.min(y)))
+        max_y = min(clip_max_y, float(np.max(y)))
 
     width_m = max_x - min_x
     height_m = max_y - min_y
@@ -219,12 +310,19 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     # Track which pixels had ACTUAL point cloud data BEFORE gap filling
     raw_valid = dsm > NODATA
 
-    # Gap-fill for small holes only
-    dsm = fill_dsm_gaps_gpu(dsm, NODATA, iterations=5)
+    fill_iterations = int(os.getenv("ORTHO_DSM_FILL_ITERATIONS", "5"))
 
-    # ---- Voronoi mask ----
-    min_distance_sq = torch.full((height, width), float('inf'), dtype=torch.float64, device=device)
-    voronoi_map = torch.full((height, width), -1, dtype=torch.long, device=device)
+    # Gap-fill for small holes only and keep track of how far each filled
+    # pixel had to expand away from actual point support.
+    dsm, support_distance_px = fill_dsm_gaps_gpu(dsm, NODATA, iterations=fill_iterations)
+
+    surface_normals = estimate_surface_normals_gpu(dsm, resolution)
+
+    # ---- Angle-aware camera assignment ----
+    primary_best_score = torch.full((height, width), -1.0, dtype=torch.float64, device=device)
+    primary_voronoi_map = torch.full((height, width), -1, dtype=torch.long, device=device)
+    fallback_best_score = torch.full((height, width), -1.0, dtype=torch.float64, device=device)
+    fallback_voronoi_map = torch.full((height, width), -1, dtype=torch.long, device=device)
 
     grid_row, grid_col = torch.meshgrid(
         torch.arange(height, device=device, dtype=torch.float64),
@@ -234,28 +332,200 @@ def build_dsm_and_voronoi(ply_path, reconstruction, transform_data, resolution, 
     world_gx = grid_col * resolution + min_x
     world_gy = max_y - grid_row * resolution
 
-    # Valid mask = gap-filled DSM pixels (use gap-filled for smooth coverage)
-    valid_mask = dsm > NODATA
+    filled_valid = dsm > NODATA
+    max_support_distance_px = float(os.getenv("ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX", "3"))
+    if max_support_distance_px < 0:
+        valid_mask = filled_valid
+    else:
+        valid_mask = filled_valid & (support_distance_px <= max_support_distance_px)
 
-    for img_id in valid_images:
-        image = reconstruction.images[img_id]
+    if transform_data:
+        R_inv = np.linalg.inv(R_t)
+        R_inv_t = torch.tensor(R_inv, device=device, dtype=torch.float64)
+        t_tensor = torch.tensor(t_vec, device=device, dtype=torch.float64)
+        pts_geo = torch.stack([world_gx, world_gy, dsm.double()], dim=-1)
+        pts_local_full = ((pts_geo - t_tensor) / float(scale)) @ R_inv_t.T
+    else:
+        pts_local_full = torch.stack([world_gx, world_gy, dsm.double()], dim=-1)
+
+    primary_incidence_min = float(os.getenv("ORTHO_DSM_PRIMARY_INCIDENCE_MIN", "0.25"))
+    primary_axis_alignment_min = float(os.getenv("ORTHO_DSM_PRIMARY_AXIS_ALIGNMENT_MIN", "0.35"))
+    primary_nadirness_min = float(os.getenv("ORTHO_DSM_PRIMARY_NADIRNESS_MIN", "0.6"))
+    fallback_incidence_min = float(os.getenv("ORTHO_DSM_FALLBACK_INCIDENCE_MIN", "0.12"))
+    fallback_axis_alignment_min = float(os.getenv("ORTHO_DSM_FALLBACK_AXIS_ALIGNMENT_MIN", "0.12"))
+    fallback_nadirness_min = float(os.getenv("ORTHO_DSM_FALLBACK_NADIRNESS_MIN", "0.05"))
+
+    for img_id, image in reconstruction.images.items():
+        if img_id not in valid_images and img_id not in fallback_images:
+            continue
         cam_center_local = np.asarray(image.projection_center(), dtype=np.float64)
+        R_cw, t_cw = _get_rotation_and_translation(image)
+        optical_axis_local = np.asarray(R_cw[2, :], dtype=np.float64)
 
         if transform_data:
             c_geo = scale * (R_t @ cam_center_local) + t_vec
+            optical_axis_geo = R_t @ optical_axis_local
         else:
             c_geo = cam_center_local
+            optical_axis_geo = optical_axis_local
 
-        cx, cy = float(c_geo[0]), float(c_geo[1])
+        optical_axis_geo = optical_axis_geo / max(np.linalg.norm(optical_axis_geo), 1e-12)
 
-        dist_sq = (world_gx - cx) ** 2 + (world_gy - cy) ** 2
-        dist_sq = torch.where(valid_mask, dist_sq, torch.tensor(float('inf'), device=device))
+        cx, cy, cz = float(c_geo[0]), float(c_geo[1]), float(c_geo[2])
 
-        closer = dist_sq < min_distance_sq
-        min_distance_sq[closer] = dist_sq[closer]
-        voronoi_map[closer] = img_id
+        ray_to_cam_x = cx - world_gx
+        ray_to_cam_y = cy - world_gy
+        ray_to_cam_z = cz - dsm
+        ray_norm = torch.sqrt(ray_to_cam_x ** 2 + ray_to_cam_y ** 2 + ray_to_cam_z ** 2).clamp(min=1e-6)
 
-    return dsm, voronoi_map, valid_mask, min_x, max_y, width, height, set(valid_images)
+        ray_to_cam = torch.stack([
+            ray_to_cam_x / ray_norm,
+            ray_to_cam_y / ray_norm,
+            ray_to_cam_z / ray_norm,
+        ], dim=-1)
+
+        nadirness = ray_to_cam[..., 2].clamp(min=0.0)
+
+        incidence = (surface_normals * ray_to_cam).sum(dim=-1).clamp(min=0.0)
+        axis_alignment = (
+            (-ray_to_cam[..., 0] * float(optical_axis_geo[0]))
+            + (-ray_to_cam[..., 1] * float(optical_axis_geo[1]))
+            + (-ray_to_cam[..., 2] * float(optical_axis_geo[2]))
+        ).clamp(min=0.0)
+
+        score = incidence * axis_alignment * nadirness
+
+        # Only allow cameras to win pixels that actually project inside the
+        # image footprint. The previous scorer ignored this and assigned many
+        # fallback pixels to images where they later projected out of bounds.
+        camera = reconstruction.cameras[image.camera_id]
+        model = camera.model_name if hasattr(camera, 'model_name') else str(camera.model)
+        projection_in_bounds = torch.zeros_like(valid_mask, dtype=torch.bool)
+        if model in ("PINHOLE", "SIMPLE_PINHOLE", "0", "1"):
+            local_x = pts_local_full[..., 0]
+            local_y = pts_local_full[..., 1]
+            local_z = pts_local_full[..., 2]
+
+            cam_x = (
+                float(R_cw[0, 0]) * local_x
+                + float(R_cw[0, 1]) * local_y
+                + float(R_cw[0, 2]) * local_z
+                + float(t_cw[0])
+            )
+            cam_y = (
+                float(R_cw[1, 0]) * local_x
+                + float(R_cw[1, 1]) * local_y
+                + float(R_cw[1, 2]) * local_z
+                + float(t_cw[1])
+            )
+            cam_z = (
+                float(R_cw[2, 0]) * local_x
+                + float(R_cw[2, 1]) * local_y
+                + float(R_cw[2, 2]) * local_z
+                + float(t_cw[2])
+            )
+            front = cam_z > 1e-6
+
+            fx = float(camera.params[0])
+            if model in ("PINHOLE", "1"):
+                fy = float(camera.params[1])
+                px = float(camera.params[2])
+                py = float(camera.params[3])
+            else:
+                fy = fx
+                px = float(camera.params[1])
+                py = float(camera.params[2])
+
+            u = torch.zeros_like(cam_x)
+            v = torch.zeros_like(cam_y)
+            u[front] = (cam_x[front] / cam_z[front]) * fx + px
+            v[front] = (cam_y[front] / cam_z[front]) * fy + py
+            projection_in_bounds = (
+                front
+                & (u >= 0.0)
+                & (u < float(camera.width))
+                & (v >= 0.0)
+                & (v < float(camera.height))
+            )
+        else:
+            projection_in_bounds = valid_mask
+
+        if img_id in valid_images:
+            primary_score = torch.where(
+                (incidence > primary_incidence_min)
+                & (axis_alignment > primary_axis_alignment_min)
+                & (nadirness > primary_nadirness_min)
+                & projection_in_bounds
+                & valid_mask,
+                score,
+                torch.full_like(score, -1.0),
+            )
+            better = primary_score > primary_best_score
+            primary_best_score[better] = primary_score[better]
+            primary_voronoi_map[better] = img_id
+
+        if img_id in fallback_images:
+            fallback_score = torch.where(
+                (incidence > fallback_incidence_min)
+                & (axis_alignment > fallback_axis_alignment_min)
+                & (nadirness > fallback_nadirness_min)
+                & projection_in_bounds
+                & valid_mask,
+                score,
+                torch.full_like(score, -1.0),
+            )
+            better = fallback_score > fallback_best_score
+            fallback_best_score[better] = fallback_score[better]
+            fallback_voronoi_map[better] = img_id
+
+    raw_valid_count = int(raw_valid.sum().item())
+    filled_valid_count = int(filled_valid.sum().item())
+    valid_count = int(valid_mask.sum().item())
+    finite_support_distances = support_distance_px[filled_valid].to(torch.int64)
+    support_distance_histogram = {
+        str(distance): int((finite_support_distances == distance).sum().item())
+        for distance in range(int(finite_support_distances.max().item()) + 1)
+    } if finite_support_distances.numel() > 0 else {}
+
+    diagnostics = {
+        "raw_valid_count": raw_valid_count,
+        "gap_filled_valid_count": filled_valid_count,
+        "gap_filled_added_count": filled_valid_count - raw_valid_count,
+        "usable_valid_count": valid_count,
+        "support_limited_rejected_count": filled_valid_count - valid_count,
+        "max_support_distance_px": max_support_distance_px,
+        "fill_iterations": fill_iterations,
+        "support_distance_histogram": support_distance_histogram,
+        "image_angles_deg": image_angles_deg,
+        "primary_thresholds": {
+            "nadir_deg": NADIR_THRESHOLD_DEG,
+            "incidence_min": primary_incidence_min,
+            "axis_alignment_min": primary_axis_alignment_min,
+            "nadirness_min": primary_nadirness_min,
+        },
+        "fallback_thresholds": {
+            "nadir_deg": FALLBACK_NADIR_THRESHOLD_DEG,
+            "incidence_min": fallback_incidence_min,
+            "axis_alignment_min": fallback_axis_alignment_min,
+            "nadirness_min": fallback_nadirness_min,
+        },
+    }
+
+    return (
+        dsm,
+        raw_valid,
+        support_distance_px,
+        primary_voronoi_map,
+        fallback_voronoi_map,
+        valid_mask,
+        min_x,
+        max_y,
+        width,
+        height,
+        set(valid_images),
+        set(fallback_images),
+        diagnostics,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,8 +538,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     Generate a True Orthophoto via 2.5D DSM ray-casting on the GPU.
 
     Each source image is warped through the DSM one at a time (O(1) VRAM),
-    and each pixel is assigned to the camera whose nadir is closest (Voronoi).
-    Pixels that cannot be projected through their Voronoi winner are painted
+    and each pixel is assigned to the camera with the best view score.
+    Pixels that cannot be projected through their best-view winner are painted
     from the nearest camera that CAN see them (multi-pass fallback).
     The final mosaic is written as a compressed GeoTIFF.
     """
@@ -286,12 +556,83 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             transform_data = json.load(tf)
 
 
-    report(vol_id, "ORTHO", 96, "Building 2.5D DSM and Voronoi map…", report_fn)
+    report(vol_id, "ORTHO", 96, "Building 2.5D DSM and angle-aware camera map…", report_fn)
     reconstruction = pycolmap.Reconstruction(os.path.join(dense_path, "sparse"))
 
-    dsm, voronoi_map, valid_dsm_mask, min_x, max_y, width, height, valid_images = build_dsm_and_voronoi(
+    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
         ply_path, reconstruction, transform_data, resolution, device,
     )
+
+    total_pixels = max(1, width * height)
+    raw_valid_count = int(raw_valid_mask.sum().item())
+    filled_dsm_count = int((dsm > NODATA).sum().item())
+    valid_dsm_count = int(valid_dsm_mask.sum().item())
+    report(
+        vol_id,
+        "ORTHO",
+        96,
+        (
+            f"DSM support: raw point-backed pixels={raw_valid_count}/{total_pixels} ({100.0 * raw_valid_count / total_pixels:.1f}%), "
+            f"gap-filled reachable pixels={filled_dsm_count}/{total_pixels} ({100.0 * filled_dsm_count / total_pixels:.1f}%), "
+            f"usable after support cap={valid_dsm_count}/{total_pixels} ({100.0 * valid_dsm_count / total_pixels:.1f}%), "
+            f"rejected far-fill={filled_dsm_count - valid_dsm_count}"
+        ),
+        report_fn,
+    )
+
+    diagnostics_path = f"{ortho_file}.diagnostics.json"
+    primary_assigned_counts = {}
+    fallback_assigned_counts = {}
+    image_stats = {}
+    for img_id, image in reconstruction.images.items():
+        primary_assigned = int(((voronoi_map == img_id) & valid_dsm_mask).sum().item())
+        fallback_assigned = int(((fallback_voronoi_map == img_id) & valid_dsm_mask).sum().item())
+        primary_assigned_counts[img_id] = primary_assigned
+        fallback_assigned_counts[img_id] = fallback_assigned
+        image_stats[img_id] = {
+            "image_name": image.name,
+            "primary_assigned_pixels": primary_assigned,
+            "fallback_assigned_pixels": fallback_assigned,
+            "primary_painted_pixels": 0,
+            "fallback_painted_pixels": 0,
+            "angle_from_down_deg": build_diagnostics["image_angles_deg"].get(img_id),
+            "primary_eligible": img_id in valid_images,
+            "fallback_eligible": img_id in fallback_images,
+        }
+
+    top_primary = sorted(
+        (stats for stats in image_stats.values() if stats["primary_assigned_pixels"] > 0),
+        key=lambda stats: stats["primary_assigned_pixels"],
+        reverse=True,
+    )[:10]
+    if top_primary:
+        report(
+            vol_id,
+            "ORTHO",
+            96,
+            "Primary assignment top images: " + "; ".join(
+                f"{stats['image_name']}={stats['primary_assigned_pixels']} px"
+                for stats in top_primary
+            ),
+            report_fn,
+        )
+
+    top_fallback = sorted(
+        (stats for stats in image_stats.values() if stats["fallback_assigned_pixels"] > 0),
+        key=lambda stats: stats["fallback_assigned_pixels"],
+        reverse=True,
+    )[:10]
+    if top_fallback:
+        report(
+            vol_id,
+            "ORTHO",
+            96,
+            "Fallback assignment top images: " + "; ".join(
+                f"{stats['image_name']}={stats['fallback_assigned_pixels']} px"
+                for stats in top_fallback
+            ),
+            report_fn,
+        )
 
     # Output buffer (initialized to 0 = black)
     ortho_rgb = torch.zeros((3, height, width), dtype=torch.uint8, device=device)
@@ -330,14 +671,30 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     images_dir = os.path.join(dense_path, "images")
     total_images = len(reconstruction.images)
 
-    def _warp_image(img_id, image, pixel_mask):
-        """Warp one image onto the DSM for pixels in pixel_mask.
-        Returns the number of successfully painted pixels."""
+    primary_margin_px = int(os.getenv("ORTHO_DSM_IMAGE_MARGIN_PX", "0"))
+    fallback_margin_px = int(os.getenv("ORTHO_DSM_FALLBACK_MARGIN_PX", "0"))
+
+    def _project_pixels_to_image(image, pixel_mask, margin_px=None):
+        """Project DSM pixels into an image and return projection diagnostics."""
         n_pixels = int(pixel_mask.sum())
         if n_pixels == 0:
-            return 0
+            empty_indices = torch.empty((0, 2), dtype=torch.long, device=device)
+            return {
+                "count": 0,
+                "mask_indices": empty_indices,
+                "valid_indices": empty_indices,
+                "front_mask": torch.empty((0,), dtype=torch.bool, device=device),
+                "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
+                "u_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "v_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "w_img": 0,
+                "h_img": 0,
+                "img_path": None,
+                "image_missing": False,
+            }
 
         pts_local = geo_to_local(world_x[pixel_mask], world_y[pixel_mask], world_z[pixel_mask])
+        mask_indices = pixel_mask.nonzero(as_tuple=False)
 
         camera = reconstruction.cameras[image.camera_id]
         R_cw_np, t_cw_np = _get_rotation_and_translation(image)
@@ -348,7 +705,19 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
 
         front = pts_cam[:, 2] > 0
         if not front.any():
-            return 0
+            return {
+                "count": n_pixels,
+                "mask_indices": mask_indices,
+                "valid_indices": torch.empty((0, 2), dtype=torch.long, device=device),
+                "front_mask": front,
+                "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
+                "u_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "v_valid": torch.empty((0,), dtype=torch.float32, device=device),
+                "w_img": int(camera.width),
+                "h_img": int(camera.height),
+                "img_path": os.path.join(images_dir, image.name),
+                "image_missing": not os.path.exists(os.path.join(images_dir, image.name)),
+            }
 
         pts_cam_f = pts_cam[front]
 
@@ -370,27 +739,42 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         else:
             pts_cam_cpu = pts_cam_f.cpu().numpy()
             uv_cpu = np.array([camera.img_from_cam(p) for p in pts_cam_cpu])
-            u = torch.tensor(uv_cpu[:, 0], device=device, dtype=torch.float64)
-            v = torch.tensor(uv_cpu[:, 1], device=device, dtype=torch.float64)
+            u = torch.tensor(uv_cpu[:, 0], device=device, dtype=torch.float32)
+            v = torch.tensor(uv_cpu[:, 1], device=device, dtype=torch.float32)
 
         w_img = int(camera.width)
         h_img = int(camera.height)
 
-        # Use a small margin (2px) inside the image borders to avoid edge artifacts
-        margin = 2
+        # Stay away from image borders to reduce edge bleed. The fallback pass
+        # can use a smaller margin to recover small gaps.
+        margin = primary_margin_px if margin_px is None else int(margin_px)
         in_bounds = (u >= margin) & (u < w_img - margin) & (v >= margin) & (v < h_img - margin)
-        if not in_bounds.any():
-            return 0
-
-        u_valid = u[in_bounds]
-        v_valid = v[in_bounds]
-
-        # Load source image
         img_path = os.path.join(images_dir, image.name)
-        if not os.path.exists(img_path):
+        valid_indices = mask_indices[front][in_bounds] if in_bounds.any() else torch.empty((0, 2), dtype=torch.long, device=device)
+
+        return {
+            "count": n_pixels,
+            "mask_indices": mask_indices,
+            "valid_indices": valid_indices,
+            "front_mask": front,
+            "in_bounds_mask": in_bounds,
+            "u_valid": u[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float32, device=device),
+            "v_valid": v[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float32, device=device),
+            "w_img": w_img,
+            "h_img": h_img,
+            "img_path": img_path,
+            "image_missing": not os.path.exists(img_path),
+        }
+
+    def _warp_image(img_id, image, pixel_mask, margin_px=None):
+        """Warp one image onto the DSM for pixels in pixel_mask.
+        Returns the number of successfully painted pixels."""
+        projection = _project_pixels_to_image(image, pixel_mask, margin_px=margin_px)
+        valid_indices = projection["valid_indices"]
+        if valid_indices.shape[0] == 0 or projection["image_missing"]:
             return 0
 
-        with Image.open(img_path) as pil_img:
+        with Image.open(projection["img_path"]) as pil_img:
             img_np = np.asarray(pil_img)
             if img_np.ndim == 2:
                 img_np = np.stack([img_np] * 3, axis=-1)
@@ -399,8 +783,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             tensor_img = torch.from_numpy(img_np.copy()).permute(2, 0, 1).to(device).float()
 
         # Bilinear sample
-        u_norm = (u_valid / (w_img - 1)) * 2.0 - 1.0
-        v_norm = (v_valid / (h_img - 1)) * 2.0 - 1.0
+        u_norm = (projection["u_valid"] / (projection["w_img"] - 1)) * 2.0 - 1.0
+        v_norm = (projection["v_valid"] / (projection["h_img"] - 1)) * 2.0 - 1.0
         grid = torch.stack([u_norm, v_norm], dim=-1).view(1, 1, -1, 2)
 
         sampled = F.grid_sample(
@@ -409,29 +793,103 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         )
         colors = sampled.squeeze(0).squeeze(1)  # (3, N)
 
-        # Write to output buffer
-        mask_indices = pixel_mask.nonzero(as_tuple=False)     # (M, 2)
-        valid_indices = mask_indices[front][in_bounds]         # (K, 2) row, col
-
         ortho_rgb[:, valid_indices[:, 0], valid_indices[:, 1]] = colors.clamp(0, 255).to(torch.uint8)
         painted[valid_indices[:, 0], valid_indices[:, 1]] = True
 
         # Free VRAM
-        del tensor_img, grid, sampled, colors, pts_local, pts_cam
+        del tensor_img, grid, sampled, colors
         if device.type == 'cuda':
             torch.cuda.empty_cache()
 
         return int(valid_indices.shape[0])
 
-    # ---- Pass 1: Voronoi-optimal assignment ----
-    report(vol_id, "ORTHO", 97, f"Pass 1: Voronoi warping {total_images} images…", report_fn)
+    def analyze_black_pixels(black_mask):
+        total_black = int(black_mask.sum().item())
+        analysis = {
+            "total_black_pixels": total_black,
+            "no_primary_candidate_pixels": int((black_mask & (voronoi_map < 0)).sum().item()),
+            "no_fallback_candidate_pixels": int((black_mask & (fallback_voronoi_map < 0)).sum().item()),
+            "fallback_assigned_black_pixels": int((black_mask & (fallback_voronoi_map >= 0)).sum().item()),
+            "fallback_failure_counts": {
+                "image_missing": 0,
+                "behind_camera": 0,
+                "out_of_bounds": 0,
+                "unknown": 0,
+            },
+            "fallback_failure_by_image": [],
+        }
+        if total_black == 0:
+            return analysis
+
+        per_image_failures = {}
+        assigned_ids = torch.unique(fallback_voronoi_map[black_mask])
+        for img_id_tensor in assigned_ids:
+            img_id = int(img_id_tensor.item())
+            if img_id < 0:
+                continue
+            image = reconstruction.images[img_id]
+            mask = black_mask & (fallback_voronoi_map == img_id)
+            projection = _project_pixels_to_image(image, mask, margin_px=fallback_margin_px)
+            requested = int(mask.sum().item())
+            if requested == 0:
+                continue
+
+            image_failure = {
+                "image_id": img_id,
+                "image_name": image.name,
+                "requested_black_pixels": requested,
+                "image_missing": 0,
+                "behind_camera": 0,
+                "out_of_bounds": 0,
+                "unknown": 0,
+            }
+
+            if projection["image_missing"]:
+                image_failure["image_missing"] = requested
+                analysis["fallback_failure_counts"]["image_missing"] += requested
+            else:
+                front_count = int(projection["front_mask"].sum().item())
+                behind_count = requested - front_count
+                if behind_count > 0:
+                    image_failure["behind_camera"] = behind_count
+                    analysis["fallback_failure_counts"]["behind_camera"] += behind_count
+
+                if front_count > 0:
+                    in_bounds_count = int(projection["in_bounds_mask"].sum().item())
+                    out_of_bounds_count = front_count - in_bounds_count
+                    if out_of_bounds_count > 0:
+                        image_failure["out_of_bounds"] = out_of_bounds_count
+                        analysis["fallback_failure_counts"]["out_of_bounds"] += out_of_bounds_count
+
+                classified = (
+                    image_failure["image_missing"]
+                    + image_failure["behind_camera"]
+                    + image_failure["out_of_bounds"]
+                )
+                unknown = max(0, requested - classified)
+                if unknown > 0:
+                    image_failure["unknown"] = unknown
+                    analysis["fallback_failure_counts"]["unknown"] += unknown
+
+            per_image_failures[img_id] = image_failure
+
+        analysis["fallback_failure_by_image"] = sorted(
+            per_image_failures.values(),
+            key=lambda entry: entry["requested_black_pixels"],
+            reverse=True,
+        )[:20]
+        return analysis
+
+    # ---- Pass 1: angle-aware assignment ----
+    report(vol_id, "ORTHO", 97, f"Pass 1: angle-aware warping {total_images} images…", report_fn)
     images_processed = 0
     total_painted = 0
 
     for img_id, image in reconstruction.images.items():
         mask = (voronoi_map == img_id) & valid_dsm_mask
-        n_painted = _warp_image(img_id, image, mask)
+        n_painted = _warp_image(img_id, image, mask, margin_px=primary_margin_px)
         total_painted += n_painted
+        image_stats[img_id]["primary_painted_pixels"] = int(n_painted)
 
         images_processed += 1
         if images_processed % 50 == 0 or images_processed == total_images:
@@ -442,48 +900,82 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     pass1_fill = 100.0 * painted.sum().item() / max(1, valid_dsm_mask.sum().item())
     report(vol_id, "ORTHO", 97, f"Pass 1 done: {pass1_fill:.1f}% filled.", report_fn)
 
-    # ---- Pass 2: Fill remaining unpainted pixels from ANY visible camera ----
-    # For each unpainted pixel, try all cameras sorted by distance, use the first
-    # one that can see it. This is done image-by-image for memory efficiency.
+    # ---- Pass 2: Per-pixel scored fallback fill ----
+    # Use a second visibility map with looser thresholds so each remaining hole
+    # is attempted from the best fallback camera for that pixel, rather than a
+    # coarse image-by-image heuristic.
+    enable_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_FALLBACK_FILL", "1")).strip().lower() in ("1", "true", "yes", "on")
     unpainted = valid_dsm_mask & (~painted)
     n_unpainted = int(unpainted.sum())
 
-    if n_unpainted > 0:
+    if enable_fallback_fill and n_unpainted > 0:
         report(vol_id, "ORTHO", 97, f"Pass 2: Filling {n_unpainted} remaining pixels…", report_fn)
+        fallback_processed = 0
+        for img_id in fallback_images:
+            image = reconstruction.images[img_id]
+            mask = (fallback_voronoi_map == img_id) & valid_dsm_mask & (~painted)
+            if not mask.any():
+                continue
+            n_painted = _warp_image(img_id, image, mask, margin_px=fallback_margin_px)
+            image_stats[img_id]["fallback_painted_pixels"] = int(n_painted)
+            fallback_processed += 1
+            if fallback_processed % 25 == 0:
+                remaining = int((valid_dsm_mask & (~painted)).sum())
+                report(
+                    vol_id,
+                    "ORTHO",
+                    97,
+                    f"Pass 2: tried {fallback_processed}/{len(fallback_images)} scored fallback images, {remaining} pixels left…",
+                    report_fn,
+                )
+    elif n_unpainted > 0:
+        report(vol_id, "ORTHO", 97, f"Skipping fallback fill for {n_unpainted} pixels to avoid edge artifacts.", report_fn)
 
-        # Sort images by distance to center of unpainted region for efficiency
-        if n_unpainted > 0:
-            unpainted_coords = unpainted.nonzero(as_tuple=False).float()
-            center_row = unpainted_coords[:, 0].mean()
-            center_col = unpainted_coords[:, 1].mean()
-            center_x = float(center_col * resolution + min_x)
-            center_y = float(max_y - center_row * resolution)
-
-            img_dists = []
-            for img_id in valid_images:
-                image = reconstruction.images[img_id]
-                c_local = np.asarray(image.projection_center(), dtype=np.float64)
-                if transform_data:
-                    c_geo = float(transform_data["scale"]) * (np.array(transform_data["R"]) @ c_local) + np.array(transform_data["t"])
-                else:
-                    c_geo = c_local
-                d = (c_geo[0] - center_x)**2 + (c_geo[1] - center_y)**2
-                img_dists.append((d, img_id, image))
-            img_dists.sort()
-
-            pass2_processed = 0
-            for _, img_id, image in img_dists:
-                still_unpainted = valid_dsm_mask & (~painted)
-                if not still_unpainted.any():
-                    break
-                n = _warp_image(img_id, image, still_unpainted)
-                pass2_processed += 1
-                if pass2_processed % 50 == 0:
-                    remaining = int((valid_dsm_mask & (~painted)).sum())
-                    report(vol_id, "ORTHO", 97,
-                           f"Pass 2: tried {pass2_processed}/{total_images}, {remaining} pixels left…", report_fn)
+    # ---- Pass 3: Small-hole inpainting ----
+    # If the ground is still occluded in every viable image, no projection can
+    # recover the true texture. In that case, fill only small remaining holes
+    # from surrounding painted pixels to avoid black seams around objects.
+    remaining_holes = int((valid_dsm_mask & (~painted)).sum())
+    enable_inpaint_fill = str(os.getenv("ORTHO_DSM_ENABLE_INPAINT", "0")).strip().lower() in ("1", "true", "yes", "on")
+    if enable_inpaint_fill and remaining_holes > 0:
+        ortho_rgb, painted = fill_small_color_holes_gpu(
+            ortho_rgb,
+            painted,
+            valid_dsm_mask,
+            iterations=int(os.getenv("ORTHO_DSM_INPAINT_ITERATIONS", "8")),
+            min_neighbors=int(os.getenv("ORTHO_DSM_INPAINT_MIN_NEIGHBORS", "3")),
+        )
+        filled_after_inpaint = int((valid_dsm_mask & painted).sum())
+        report(vol_id, "ORTHO", 98, f"Pass 3: inpainted small holes, coverage now {100.0 * filled_after_inpaint / max(1, valid_dsm_mask.sum().item()):.1f}%.", report_fn)
+    elif remaining_holes > 0:
+        report(vol_id, "ORTHO", 98, f"Skipping synthetic color inpainting for {remaining_holes} remaining pixels to avoid out-of-context colors.", report_fn)
 
     final_fill = 100.0 * painted.sum().item() / max(1, valid_dsm_mask.sum().item())
+    fallback_success = sum(stats["fallback_painted_pixels"] for stats in image_stats.values())
+    black_pixel_analysis = analyze_black_pixels(valid_dsm_mask & (~painted))
+    report(
+        vol_id,
+        "ORTHO",
+        98,
+        f"Diagnostics: primary painted={sum(stats['primary_painted_pixels'] for stats in image_stats.values())}, fallback painted={fallback_success}, remaining holes={int((valid_dsm_mask & (~painted)).sum())}",
+        report_fn,
+    )
+    if black_pixel_analysis["total_black_pixels"] > 0:
+        report(
+            vol_id,
+            "ORTHO",
+            98,
+            (
+                "Black-pixel analysis: "
+                f"no_primary_candidate={black_pixel_analysis['no_primary_candidate_pixels']}, "
+                f"no_fallback_candidate={black_pixel_analysis['no_fallback_candidate_pixels']}, "
+                f"behind_camera={black_pixel_analysis['fallback_failure_counts']['behind_camera']}, "
+                f"out_of_bounds={black_pixel_analysis['fallback_failure_counts']['out_of_bounds']}, "
+                f"image_missing={black_pixel_analysis['fallback_failure_counts']['image_missing']}, "
+                f"unknown={black_pixel_analysis['fallback_failure_counts']['unknown']}"
+            ),
+            report_fn,
+        )
     report(vol_id, "ORTHO", 98, f"Mosaicking complete: {final_fill:.1f}% fill rate.", report_fn)
 
     # ---- Write GeoTIFF ----
@@ -500,5 +992,43 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         compress='lzw',
     ) as dst:
         dst.write(final_rgb)
+
+    diagnostics_payload = {
+        "resolution": float(resolution),
+        "width": int(width),
+        "height": int(height),
+        "raw_valid_pixels": raw_valid_count,
+        "filled_pixels_before_support_limit": filled_dsm_count,
+        "valid_pixels": int(valid_dsm_mask.sum().item()),
+        "gap_filled_added_pixels": int(filled_dsm_count - raw_valid_mask.sum().item()),
+        "rejected_far_fill_pixels": int(filled_dsm_count - valid_dsm_mask.sum().item()),
+        "support_distance_limit_px": build_diagnostics["max_support_distance_px"],
+        "fill_iterations": build_diagnostics["fill_iterations"],
+        "support_distance_histogram": build_diagnostics["support_distance_histogram"],
+        "final_fill_percent": float(final_fill),
+        "remaining_holes": int((valid_dsm_mask & (~painted)).sum().item()),
+        "black_pixel_analysis": black_pixel_analysis,
+        "primary_image_count": len(valid_images),
+        "fallback_image_count": len(fallback_images),
+        "thresholds": {
+            "primary": build_diagnostics["primary_thresholds"],
+            "fallback": build_diagnostics["fallback_thresholds"],
+            "primary_margin_px": int(primary_margin_px),
+            "fallback_margin_px": int(fallback_margin_px),
+        },
+        "images": [
+            {
+                "image_id": int(img_id),
+                **image_stats[img_id],
+            }
+            for img_id in sorted(image_stats.keys())
+        ],
+    }
+    try:
+        with open(diagnostics_path, "w", encoding="utf-8") as handle:
+            json.dump(diagnostics_payload, handle, indent=2)
+        report(vol_id, "ORTHO", 99, f"Ortho diagnostics written to {diagnostics_path}", report_fn)
+    except OSError as error:
+        report(vol_id, "ORTHO", 99, f"Failed to write ortho diagnostics: {error}", report_fn)
 
     report(vol_id, "ORTHO", 99, f"True Orthophoto written: {width}×{height} px @ {resolution} m/px ({final_fill:.1f}% coverage)", report_fn)
