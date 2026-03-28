@@ -613,6 +613,7 @@ def generate_ortho_from_mesh(
         min_z, max_z = vertices[:, 2].min(), vertices[:, 2].max()
         width_m = max_x - min_x
         height_m = max_y - min_y
+        depth_m = max_z - min_z
         resolution = max(
             requested_resolution,
             width_m / max_dimension if width_m > 0 else requested_resolution,
@@ -625,7 +626,7 @@ def generate_ortho_from_mesh(
         local_vertices = np.empty((vertices.shape[0], 3), dtype=np.float32)
         local_vertices[:, 0] = (vertices[:, 0] - min_x).astype(np.float32)
         local_vertices[:, 1] = (vertices[:, 1] - min_y).astype(np.float32)
-        local_vertices[:, 2] = vertices[:, 2].astype(np.float32)
+        local_vertices[:, 2] = (vertices[:, 2] - min_z).astype(np.float32)
         vertex_colors = vertex_colors_u8.astype(np.float32) / np.float32(255.0)
 
         def write_geotiff(image):
@@ -685,7 +686,7 @@ def generate_ortho_from_mesh(
                     clip = torch.empty((tri_positions.shape[0], 3, 4), dtype=torch.float32, device=device)
                     clip[..., 0] = tri_positions[..., 0] / max(float(width_m), 1e-6) * 2.0 - 1.0
                     clip[..., 1] = tri_positions[..., 1] / max(float(height_m), 1e-6) * 2.0 - 1.0
-                    clip[..., 2] = 1.0 - 2.0 * ((tri_positions[..., 2] - float(min_z)) / max(float(max_z - min_z), 1e-6))
+                    clip[..., 2] = 1.0 - 2.0 * (tri_positions[..., 2] / max(float(depth_m), 1e-6))
                     clip[..., 3] = 1.0
 
                     pos = clip.reshape(-1, 4).contiguous()
@@ -858,6 +859,7 @@ def generate_ortho_from_mesh(
         min_z, max_z = vertices[:, 2].min(), vertices[:, 2].max()
         width_m = max_x - min_x
         height_m = max_y - min_y
+        depth_m = max_z - min_z
         resolution = max(
             requested_resolution,
             width_m / max_dimension if width_m > 0 else requested_resolution,
@@ -870,7 +872,7 @@ def generate_ortho_from_mesh(
         local_vertices = np.empty((n_verts, 3), dtype=np.float32)
         local_vertices[:, 0] = (vertices[:, 0] - min_x).astype(np.float32)
         local_vertices[:, 1] = (vertices[:, 1] - min_y).astype(np.float32)
-        local_vertices[:, 2] = vertices[:, 2].astype(np.float32)
+        local_vertices[:, 2] = (vertices[:, 2] - min_z).astype(np.float32)
         del vertices
 
         face_dtype = np.dtype([
@@ -995,7 +997,7 @@ def generate_ortho_from_mesh(
                         clip = torch.empty((tri_positions.shape[0], 3, 4), dtype=torch.float32, device=device)
                         clip[..., 0] = tri_positions[..., 0] / max(float(width_m), 1e-6) * 2.0 - 1.0
                         clip[..., 1] = tri_positions[..., 1] / max(float(height_m), 1e-6) * 2.0 - 1.0
-                        clip[..., 2] = 1.0 - 2.0 * ((tri_positions[..., 2] - float(min_z)) / max(float(max_z - min_z), 1e-6))
+                        clip[..., 2] = 1.0 - 2.0 * (tri_positions[..., 2] / max(float(depth_m), 1e-6))
                         clip[..., 3] = 1.0
 
                         pos = clip.reshape(-1, 4).contiguous()

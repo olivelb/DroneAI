@@ -214,7 +214,7 @@ def fill_small_color_holes_gpu(rgb_tensor, painted_mask, valid_mask, iterations=
     return rgb.squeeze(0).clamp(0, 255).to(torch.uint8), painted.squeeze(0).squeeze(0).bool()
 
 
-def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, camera_height, device, tolerance_m, min_depth):
+def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, camera_height, device, tolerance_m, min_depth, neighborhood_radius_px=1):
     """Check whether projected points are visible in the source depth map."""
     if u.numel() == 0:
         return torch.empty((0,), dtype=torch.bool, device=device)
@@ -224,8 +224,18 @@ def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, cam
     cam_depth = cam_depth.to(dtype=torch.float32)
 
     depth_height, depth_width = depth_map.shape
-    depth_tensor = torch.from_numpy(depth_map.copy()).to(device=device, dtype=torch.float32)
-    depth_tensor = depth_tensor.unsqueeze(0).unsqueeze(0)
+    depth_tensor = torch.from_numpy(depth_map.copy()).to(device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    valid_depth = torch.isfinite(depth_tensor) & (depth_tensor > float(min_depth))
+    invalid_fill_depth = torch.full_like(depth_tensor, 1.0e9)
+    conservative_depth_tensor = torch.where(valid_depth, depth_tensor, invalid_fill_depth)
+    if neighborhood_radius_px > 0:
+        kernel_size = neighborhood_radius_px * 2 + 1
+        conservative_depth_tensor = -F.max_pool2d(
+            -conservative_depth_tensor,
+            kernel_size=kernel_size,
+            stride=1,
+            padding=neighborhood_radius_px,
+        )
 
     scale_x = float(camera_width) / float(depth_width)
     scale_y = float(camera_height) / float(depth_height)
@@ -244,14 +254,14 @@ def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, cam
 
     grid = torch.stack([u_norm, v_norm], dim=-1).to(dtype=depth_tensor.dtype).view(1, 1, -1, 2)
     sampled_depth = F.grid_sample(
-        depth_tensor,
+        conservative_depth_tensor,
         grid,
-        mode='bilinear',
+        mode='nearest',
         padding_mode='zeros',
         align_corners=True,
     ).view(-1)
 
-    valid_sampled_depth = torch.isfinite(sampled_depth) & (sampled_depth > float(min_depth))
+    valid_sampled_depth = torch.isfinite(sampled_depth) & (sampled_depth < 1.0e8)
     return valid_sampled_depth & (cam_depth <= (sampled_depth + float(tolerance_m)))
 
 
@@ -530,11 +540,14 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     edge_depth_range_m = float(os.getenv("ORTHO_DSM_EDGE_DEPTH_RANGE_M", "0.20"))
     edge_min_raw_support = float(os.getenv("ORTHO_DSM_EDGE_MIN_RAW_SUPPORT", "4"))
     edge_dilation_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_DILATION_PX", "1")))
+    edge_assignment_dilation_px = max(edge_dilation_px, int(os.getenv("ORTHO_DSM_EDGE_ASSIGNMENT_DILATION_PX", "3")))
     edge_source_depth_tolerance_m = float(os.getenv("ORTHO_DSM_EDGE_SOURCE_DEPTH_TOLERANCE_M", "0.08"))
+    edge_source_depth_neighborhood_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_SOURCE_DEPTH_NEIGHBORHOOD_PX", "1")))
     edge_primary_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
     edge_fallback_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
     raw_edge_mask = torch.zeros_like(raw_valid)
     edge_sensitive_mask = torch.zeros_like(raw_valid)
+    edge_assignment_mask = torch.zeros_like(raw_valid)
     edge_rejected_mask = torch.zeros_like(raw_valid)
     edge_source_visibility_checked_count = 0
     edge_source_visibility_rejected_count = 0
@@ -559,11 +572,22 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
             ).squeeze(0).squeeze(0) > 0
 
         edge_sensitive_mask = boundary_neighborhood
+        edge_assignment_mask = boundary_neighborhood
+        if edge_assignment_dilation_px > edge_dilation_px and raw_edge_mask.any():
+            assignment_kernel_size = edge_assignment_dilation_px * 2 + 1
+            edge_assignment_mask = F.max_pool2d(
+                raw_edge_mask.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=assignment_kernel_size,
+                stride=1,
+                padding=edge_assignment_dilation_px,
+            ).squeeze(0).squeeze(0) > 0
         edge_rejected_mask = boundary_neighborhood & (
             (~raw_valid)
             | ((sample_count < edge_min_raw_support) & raw_valid)
         )
         valid_mask = valid_mask & (~edge_rejected_mask)
+    else:
+        edge_assignment_mask = edge_sensitive_mask
 
     if transform_data:
         R_inv = np.linalg.inv(R_t)
@@ -691,8 +715,8 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
             edge_fallback_angle_ok = image_angles_deg[img_id] <= edge_fallback_max_view_angle_deg
 
         source_visible_on_edges = torch.zeros_like(valid_mask, dtype=torch.bool)
-        if edge_sensitive_mask.any() and edge_source_depth_tolerance_m >= 0.0:
-            edge_projection_mask = projection_in_bounds & edge_sensitive_mask
+        if edge_assignment_mask.any() and edge_source_depth_tolerance_m >= 0.0:
+            edge_projection_mask = projection_in_bounds & edge_assignment_mask
             edge_projection_count = int(edge_projection_mask.sum().item())
             if edge_projection_count > 0:
                 edge_source_visibility_checked_count += edge_projection_count
@@ -715,14 +739,15 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
                             device,
                             tolerance_m=edge_source_depth_tolerance_m,
                             min_depth=min_depth,
+                            neighborhood_radius_px=edge_source_depth_neighborhood_px,
                         )
                         source_visible_on_edges[edge_projection_mask] = visible_edge_samples
                 edge_source_visibility_rejected_count += edge_projection_count - int(source_visible_on_edges[edge_projection_mask].sum().item())
 
-        projection_allowed = projection_in_bounds & ((~edge_sensitive_mask) | source_visible_on_edges)
+        projection_allowed = projection_in_bounds & ((~edge_assignment_mask) | source_visible_on_edges)
 
         primary_edge_guard = (
-            (~edge_sensitive_mask)
+            (~edge_assignment_mask)
             | (
                 bool(edge_angle_ok)
                 &
@@ -732,7 +757,7 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
             )
         )
         fallback_edge_guard = (
-            (~edge_sensitive_mask)
+            (~edge_assignment_mask)
             | (
                 allow_fallback_on_edges
                 & edge_fallback_angle_ok
@@ -790,10 +815,13 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         "edge_depth_range_m": edge_depth_range_m,
         "edge_min_raw_support": edge_min_raw_support,
         "edge_dilation_px": edge_dilation_px,
+        "edge_assignment_dilation_px": edge_assignment_dilation_px,
         "raw_edge_pixel_count": int(raw_edge_mask.sum().item()),
         "edge_sensitive_pixel_count": int(edge_sensitive_mask.sum().item()),
+        "edge_assignment_pixel_count": int(edge_assignment_mask.sum().item()),
         "edge_rejected_count": int(edge_rejected_mask.sum().item()),
         "edge_source_depth_tolerance_m": edge_source_depth_tolerance_m,
+        "edge_source_depth_neighborhood_px": edge_source_depth_neighborhood_px,
         "edge_source_visibility_checked_count": edge_source_visibility_checked_count,
         "edge_source_visibility_rejected_count": edge_source_visibility_rejected_count,
         "edge_primary_thresholds": {
@@ -842,6 +870,7 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         fallback_voronoi_map,
         valid_mask,
         edge_sensitive_mask,
+        edge_assignment_mask,
         min_x,
         max_y,
         width,
@@ -883,7 +912,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     report(vol_id, "ORTHO", 96, "Building 2.5D DSM from COLMAP depth maps and angle-aware camera map…", report_fn)
     reconstruction = pycolmap.Reconstruction(os.path.join(dense_path, "sparse"))
 
-    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, edge_sensitive_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
+    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, edge_sensitive_mask, edge_assignment_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
         dense_path, reconstruction, transform_data, resolution, device,
     )
 
@@ -1231,8 +1260,11 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     # is attempted from the best fallback camera for that pixel, rather than a
     # coarse image-by-image heuristic.
     enable_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_FALLBACK_FILL", "1")).strip().lower() in ("1", "true", "yes", "on")
+    enable_edge_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL", "0")).strip().lower() in ("1", "true", "yes", "on")
     unpainted = valid_dsm_mask & (~painted)
     n_unpainted = int(unpainted.sum())
+    edge_fallback_painted_pixels = 0
+    non_edge_fallback_painted_pixels = 0
 
     if enable_fallback_fill and n_unpainted > 0:
         report(vol_id, "ORTHO", 97, f"Pass 2: Filling {n_unpainted} remaining pixels…", report_fn)
@@ -1240,10 +1272,18 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         for img_id in fallback_images:
             image = reconstruction.images[img_id]
             mask = (fallback_voronoi_map == img_id) & valid_dsm_mask & (~painted)
+            if not enable_edge_fallback_fill:
+                mask = mask & (~edge_assignment_mask)
             if not mask.any():
                 continue
+            edge_mask = mask & edge_assignment_mask
+            non_edge_mask = mask & (~edge_assignment_mask)
             n_painted = _warp_image(img_id, image, mask, margin_px=fallback_margin_px)
             image_stats[img_id]["fallback_painted_pixels"] = int(n_painted)
+            if edge_mask.any():
+                edge_fallback_painted_pixels += int((painted & edge_mask).sum().item())
+            if non_edge_mask.any():
+                non_edge_fallback_painted_pixels += int((painted & non_edge_mask).sum().item())
             fallback_processed += 1
             if fallback_processed % 25 == 0:
                 remaining = int((valid_dsm_mask & (~painted)).sum())
@@ -1358,12 +1398,18 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         "edge_depth_range_m": build_diagnostics["edge_depth_range_m"],
         "edge_min_raw_support": build_diagnostics["edge_min_raw_support"],
         "edge_dilation_px": build_diagnostics["edge_dilation_px"],
+        "edge_assignment_dilation_px": build_diagnostics["edge_assignment_dilation_px"],
         "raw_edge_pixel_count": build_diagnostics["raw_edge_pixel_count"],
         "edge_sensitive_pixel_count": build_diagnostics["edge_sensitive_pixel_count"],
+        "edge_assignment_pixel_count": build_diagnostics["edge_assignment_pixel_count"],
         "edge_rejected_count": build_diagnostics["edge_rejected_count"],
         "edge_source_depth_tolerance_m": build_diagnostics["edge_source_depth_tolerance_m"],
+        "edge_source_depth_neighborhood_px": build_diagnostics["edge_source_depth_neighborhood_px"],
         "edge_source_visibility_checked_count": build_diagnostics["edge_source_visibility_checked_count"],
         "edge_source_visibility_rejected_count": build_diagnostics["edge_source_visibility_rejected_count"],
+        "edge_fallback_fill_enabled": enable_edge_fallback_fill,
+        "edge_fallback_painted_pixels": int(edge_fallback_painted_pixels),
+        "non_edge_fallback_painted_pixels": int(non_edge_fallback_painted_pixels),
         "edge_primary_thresholds": build_diagnostics["edge_primary_thresholds"],
         "edge_fallback_thresholds": build_diagnostics["edge_fallback_thresholds"],
         "primary_image_count": len(valid_images),

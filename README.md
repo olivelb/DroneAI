@@ -300,6 +300,13 @@ The pipeline flow is:
 4. `app3-processing` consumes `tile-detections` and writes the final annotated orthomosaic
 5. `app4-dashboard/api` streams status to the frontend
 
+### Current app1 orthomosaic path
+
+- `use_mesh_ortho: true` now selects the depth-map TrueOrtho path in `app1-colmap/ortho_dsm.py`.
+- Orthomosaic-only reruns reuse existing dense artifacts only when both `dense/sparse/{cameras,images,points3D}.bin` and at least three `dense/stereo/depth_maps/*.geometric.bin` files are present.
+- The TrueOrtho builder constructs the DSM directly from COLMAP geometric depth maps, keeps large projected-coordinate math in float64 where precision matters, applies edge-aware camera assignment with source-depth visibility checks, and writes a companion diagnostics JSON next to `orthomosaic.tif`.
+- `use_mesh_ortho: false` keeps the legacy point-cloud projection fallback based on `fused.ply` or `fused_geo.ply`.
+
 For SAM 3 missions, access to the gated Hugging Face model must already be approved and the `hf-token` Kubernetes secret must exist before deployment.
 
 App 3 now writes tiles to a mission-scoped directory by default:
@@ -500,6 +507,8 @@ kubectl describe node | grep -A3 nvidia.com/gpu
 kubectl describe pod -n kafka -l app=colmap
 kubectl describe pod -n kafka -l app=ia
 ```
+
+Inside the worker containers, COLMAP GPU indices are relative to the devices exposed through `CUDA_VISIBLE_DEVICES`. If only one GPU is visible to the pod, the only valid index is `0` even if the host labels that GPU as `1`. The current app1 defaults already normalize feature-extraction, matching, bundle-adjustment, and MVS GPU indices to this container-local numbering.
 
 ### The dashboard opens but no data is visible
 

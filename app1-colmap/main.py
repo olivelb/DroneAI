@@ -119,6 +119,32 @@ def invalidate_pipeline_artifacts(clean_images_dir, workspace_dir, db_path, spar
     return removed_paths
 
 
+def normalize_gpu_index(raw_value, default="0"):
+    normalized = str(raw_value if raw_value is not None else default).strip()
+    if not normalized or normalized == "-1":
+        normalized = default
+
+    visible_devices = [
+        token.strip()
+        for token in os.getenv("CUDA_VISIBLE_DEVICES", "").split(",")
+        if token.strip()
+    ]
+    if len(visible_devices) == 1:
+        return "0"
+    if normalized.isdigit() and visible_devices and int(normalized) >= len(visible_devices):
+        return "0"
+    return normalized
+
+
+def dense_sparse_model_ready(dense_path):
+    sparse_dir = os.path.join(dense_path, "sparse")
+    return (
+        os.path.exists(os.path.join(sparse_dir, "cameras.bin"))
+        and os.path.exists(os.path.join(sparse_dir, "images.bin"))
+        and os.path.exists(os.path.join(sparse_dir, "points3D.bin"))
+    )
+
+
 def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
     try:
         # --- Pipeline selection ---
@@ -132,11 +158,11 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         matcher_type = normalize_matcher_type(params.get("matcher_type"))
         feature_family = resolve_feature_family(feature_type)
         resolved_matcher_type = resolve_feature_matching_type(feature_type, matcher_type)
-        feature_gpu_index = os.getenv("ALIKED_GPU_INDEX", "1") if feature_family == "ALIKED" else os.getenv("SIFT_GPU_INDEX", "1")
-        ba_gpu_index = os.getenv("COLMAP_BA_GPU_INDEX", "1")
-        mvs_gpu_index = str(params.get("mvs_gpu_index", "1")).strip() or "1"
-        if mvs_gpu_index == "-1":
-            mvs_gpu_index = "1"
+        feature_gpu_index = normalize_gpu_index(
+            os.getenv("ALIKED_GPU_INDEX", "0") if feature_family == "ALIKED" else os.getenv("SIFT_GPU_INDEX", "0")
+        )
+        ba_gpu_index = normalize_gpu_index(os.getenv("COLMAP_BA_GPU_INDEX", "0"))
+        mvs_gpu_index = normalize_gpu_index(params.get("mvs_gpu_index", "0"))
         params["mvs_gpu_index"] = mvs_gpu_index
         params["feature_type"] = feature_type
         params["matcher_type"] = matcher_type
@@ -281,7 +307,7 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
 
         align_tf = os.path.join(workspace_dir, "alignment_transform.json")
         align_tf = align_tf if os.path.exists(align_tf) else None
-        dense_sparse_ready = os.path.isdir(os.path.join(dense_path, "sparse"))
+        dense_sparse_ready = dense_sparse_model_ready(dense_path)
         depth_maps_dir = os.path.join(dense_path, "stereo", "depth_maps")
 
         def count_true_ortho_depth_maps():
@@ -493,6 +519,8 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             else:
                 report_mission_progress(vol_id, "UNDISTORT", 70, log="Undistorted images and fusion.cfg found. Skipping undistortion.")
 
+            dense_sparse_ready = dense_sparse_model_ready(dense_path)
+
             # --- PatchMatchStereo ---
             # COLMAP natively handles the photometric pass internally before the geometric pass
             # when geom_consistency is set to 1.
@@ -510,6 +538,7 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 "--PatchMatchStereo.filter_min_num_consistent", params["mvs_filter_min_num_consistent"],
             ], vol_id, "STEREO_MVS", 75, report_mission_progress, ensure_not_cancelled)
 
+            dense_sparse_ready = dense_sparse_model_ready(dense_path)
             true_ortho_depth_map_count = count_true_ortho_depth_maps()
             if params["use_mesh_ortho"]:
                 if true_ortho_depth_map_count < 3:
@@ -689,14 +718,31 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                         xyz_geo = (scale * (R @ xyz.T) + t[:, np.newaxis]).T
                         nxyz_geo = (R @ nxyz.T).T
                         
-                        # Write geo-referenced PLY
-                        new_vertices = vertices.data.copy()
-                        new_vertices['x'] = xyz_geo[:, 0].astype(np.float32)
-                        new_vertices['y'] = xyz_geo[:, 1].astype(np.float32)
-                        new_vertices['z'] = xyz_geo[:, 2].astype(np.float32)
-                        new_vertices['nx'] = nxyz_geo[:, 0].astype(np.float32)
-                        new_vertices['ny'] = nxyz_geo[:, 1].astype(np.float32)
-                        new_vertices['nz'] = nxyz_geo[:, 2].astype(np.float32)
+                        # Preserve transformed coordinates in float64 so legacy
+                        # point-cloud ortho fallback does not quantize large CRS values.
+                        promoted_vertex_dtype = []
+                        for field_name in vertices.data.dtype.names:
+                            if field_name in {"x", "y", "z", "nx", "ny", "nz"}:
+                                promoted_vertex_dtype.append((field_name, np.float64))
+                            else:
+                                promoted_vertex_dtype.append((field_name, vertices.data.dtype.fields[field_name][0]))
+
+                        new_vertices = np.empty(len(vertices.data), dtype=promoted_vertex_dtype)
+                        for field_name in vertices.data.dtype.names:
+                            if field_name == 'x':
+                                new_vertices[field_name] = xyz_geo[:, 0]
+                            elif field_name == 'y':
+                                new_vertices[field_name] = xyz_geo[:, 1]
+                            elif field_name == 'z':
+                                new_vertices[field_name] = xyz_geo[:, 2]
+                            elif field_name == 'nx':
+                                new_vertices[field_name] = nxyz_geo[:, 0]
+                            elif field_name == 'ny':
+                                new_vertices[field_name] = nxyz_geo[:, 1]
+                            elif field_name == 'nz':
+                                new_vertices[field_name] = nxyz_geo[:, 2]
+                            else:
+                                new_vertices[field_name] = vertices[field_name]
                         
                         el = PlyElement.describe(new_vertices, 'vertex')
                         PlyData([el], text=False).write(fused_geo_path)
@@ -727,6 +773,8 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             align_tf = align_tf_path
 
         if params["use_mesh_ortho"]:
+            dense_sparse_ready = dense_sparse_model_ready(dense_path)
+            true_ortho_depth_map_count = count_true_ortho_depth_maps()
             if not (dense_sparse_ready and true_ortho_depth_map_count >= 3):
                 raise RuntimeError(
                     f"TrueOrtho requires dense/sparse plus COLMAP geometric depth maps. Found dense_sparse_ready={dense_sparse_ready}, depth_maps={true_ortho_depth_map_count}."

@@ -161,7 +161,7 @@ Its responsibilities are:
 - select the photogrammetry profile: `modern` or `legacy`
 - run COLMAP feature extraction, matching, mapping, undistortion, PatchMatch stereo, and stereo fusion
 - geo-align the reconstructed model after dense fusion
-- generate an orthomosaic from either a textured mesh or the fused point cloud
+- generate an orthomosaic primarily from COLMAP geometric depth maps, with legacy point-cloud projection as fallback
 - publish the orthomosaic event to `images-ortho`
 - publish detailed progress and log events to `pipeline-status`
 - honor cancellation commands from `pipeline-control`
@@ -584,7 +584,7 @@ Characteristics:
 - mapper command: `global_mapper`
 - view graph calibration enabled
 - orientation reading enabled
-- mesh-based orthomosaic enabled
+- depth-map TrueOrtho enabled
 
 This is the default and the main intended runtime path.
 
@@ -596,9 +596,9 @@ Characteristics:
 - matcher type: SIFT-compatible spatial matching
 - mapper command: `mapper`
 - no view graph calibration
-- mesh-based orthomosaic still enabled
+- depth-map TrueOrtho still enabled
 
-This exists for compatibility and fallback scenarios.
+This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the primary orthomosaic mode.
 
 ### Smart resume and compatibility checks
 
@@ -612,6 +612,29 @@ The logic infers descriptor type by inspecting descriptor blob size:
 If the persisted database was created by the opposite profile, it is deleted so the worker can re-extract features cleanly.
 
 This is important because reusing a database with the wrong feature representation would corrupt the remainder of the pipeline.
+
+### TrueOrtho rerun readiness
+
+For `use_mesh_ortho: true`, app1 does not treat the dense workspace as reusable unless all of these are true:
+
+- `dense/sparse/cameras.bin` exists
+- `dense/sparse/images.bin` exists
+- `dense/sparse/points3D.bin` exists
+- at least three `dense/stereo/depth_maps/*.geometric.bin` files exist
+
+This readiness is checked at startup, refreshed again after `image_undistorter`, refreshed after `patch_match_stereo`, and checked one last time immediately before the TrueOrtho stage. That prevents reruns from failing because the worker cached a stale `dense_sparse_ready` value before the dense workspace was rebuilt.
+
+### GPU index normalization
+
+The worker runs COLMAP inside a container, so CUDA device indices are relative to the devices exposed through `CUDA_VISIBLE_DEVICES`, not the host's global GPU numbering.
+
+Consequences:
+
+- if one GPU is visible inside the pod, the only valid COLMAP GPU index is `0`
+- mission payloads that pass `mvs_gpu_index: -1` are normalized to `0`
+- feature extraction, matching, and bundle-adjustment GPU indices also default to `0`
+
+This avoids the common COLMAP abort `selected_gpu_index < num_cuda_devices ... Invalid CUDA GPU selected` when the host GPU is labeled differently from the container-local device list.
 
 ### GPS extraction and CRS persistence
 
@@ -653,9 +676,9 @@ stateDiagram-v2
     Undistort --> PatchMatch
     PatchMatch --> Fusion
     Fusion --> Alignment
-    Alignment --> OrthoFromMesh
-    Alignment --> OrthoFromPLY: mesh disabled or fallback
-    OrthoFromMesh --> PublishOrtho
+    Alignment --> OrthoTrueOrtho
+    Alignment --> OrthoFromPLY: TrueOrtho disabled or fallback
+    OrthoTrueOrtho --> PublishOrtho
     OrthoFromPLY --> PublishOrtho
     PublishOrtho --> Completed
 
@@ -670,7 +693,7 @@ stateDiagram-v2
     PatchMatch --> Cancelled
     Fusion --> Cancelled
     Alignment --> Cancelled
-    OrthoFromMesh --> Cancelled
+    OrthoTrueOrtho --> Cancelled
     OrthoFromPLY --> Cancelled
 
     Preparing --> Error
@@ -682,7 +705,7 @@ stateDiagram-v2
     PatchMatch --> Error
     Fusion --> Error
     Alignment --> Error
-    OrthoFromMesh --> Error
+    OrthoTrueOrtho --> Error
     OrthoFromPLY --> Error
 ```
 
@@ -706,6 +729,12 @@ So the pipeline does this instead:
 4. apply that transform only after fusion
 5. use the alignment transform during orthomosaic rasterization
 
+Additional precision guards now exist in the orthomosaic code:
+
+- the depth-map TrueOrtho path keeps projected-coordinate transforms and camera reprojection math in float64 where large CRS values matter
+- mesh and point-cloud rasterizers shift X, Y, and Z into local scene coordinates before float32 upload or rasterization
+- when app1 writes `fused_geo.ply` for the legacy point-cloud fallback, transformed `x/y/z/nx/ny/nz` fields are preserved as float64 so large projected coordinates are not quantized away
+
 This is a core implementation detail and directly affects output quality.
 
 ## Orthomosaic construction
@@ -714,17 +743,18 @@ This section describes the repository-specific orthomosaic logic in detail.
 
 ### Overview
 
-The orthomosaic builder defaults to a **True Orthophoto GPU pipeline**, with a fallback to legacy direct point-cloud projection.
-The old Poisson meshing and texturing pipeline was removed due to frequent Out-Of-Memory (OOM) errors and replaced with this highly optimized, O(1) VRAM PyTorch ray-casting approach.
+The orthomosaic builder defaults to a **depth-map True Orthophoto GPU pipeline**, with a fallback to legacy direct point-cloud projection.
+The current app1 runtime no longer dispatches the textured-mesh orthomosaic path from `main.py`; instead it uses COLMAP geometric depth maps plus the aligned sparse model to build a DSM directly in `ortho_dsm.py`.
 
 Primary path (True Orthophoto, requires `use_mesh_ortho: True` within pipeline parameter payload):
 
-1. Read `dense/fused.ply`
-2. Build a 2.5D Digital Surface Model (DSM) using PyTorch on the GPU (incorporating float64 precision for geo-coordinates to eliminate tearing artifacts)
-3. Calculate camera nadir proximity (Voronoi map)
-4. Filter out oblique images (>25 degrees looking angle) to prevent stretching artifacts
-5. Ray-cast each nadir image onto the DSM surface and fill gaps using PyTorch `grid_sample`
-6. Write the result to a GeoTIFF using `rasterio` and the specified `ortho_mesh_resolution`
+1. Read `dense/sparse` plus COLMAP `dense/stereo/depth_maps/*.geometric.bin` and optional normal maps
+2. Reproject depth samples directly into a 2.5D DSM, keeping projected-coordinate transforms in float64 where large CRS values matter
+3. Track raw support, gap-fill distance, and reject DSM cells that were expanded too far from real depth support
+4. Build raw-edge, edge-sensitive, and edge-assignment masks from local DSM depth discontinuities
+5. Score per-pixel primary and fallback cameras using nadir angle, surface incidence, optical-axis alignment, and source-depth visibility tests against the originating COLMAP depth maps
+6. Warp one source image at a time onto the DSM with PyTorch `grid_sample`, then fill fallback pixels conservatively with edge fallback disabled by default
+7. Optionally run edge-limited inpainting and write both `orthomosaic.tif` and `orthomosaic.tif.diagnostics.json`
 
 Fallback path (Direct Point Cloud Projection):
 
@@ -735,44 +765,55 @@ Fallback path (Direct Point Cloud Projection):
 
 ```mermaid
 flowchart TD
-    A[Dense fused point cloud available] --> B{use_mesh_ortho enabled?}
-    B -->|Yes| C[PyTorch 2.5D DSM Generation]
-    C --> D[Compute Camera Distances / Voronoi]
-    D --> E[Filter Oblique Cameras >25 deg]
-    E --> F[GPU Ray-casting and grid_sample]
-    F --> G[Multi-camera gap filling]
-    G --> H[Write GeoTIFF with projected CRS]
+  A[dense/sparse + geometric depth maps available] --> B{use_mesh_ortho enabled?}
+  B -->|Yes| C[Build DSM directly from COLMAP depth maps]
+  C --> D[Edge-aware camera scoring and source-depth visibility rejection]
+  D --> E[Primary image warp pass]
+  E --> F[Conservative fallback fill + optional edge-limited inpainting]
+  F --> H[Write GeoTIFF + diagnostics JSON]
     B -->|No| I[Legacy float64 point splatting]
-    F -->|CUDA OOM / Failure| I
+  E -->|TrueOrtho failure| I
     I --> H
 ```
 
 ### Step 1: dense source selection
 
-The orthomosaic stage works from `dense/fused.ply` as the canonical dense source.
+The primary TrueOrtho stage does not start from `fused.ply`.
 
-If a pre-existing textured mesh is available and mesh orthos are enabled, the worker can skip recomputing SfM, MVS, and fusion and rebuild the orthomosaic only.
+It requires:
+
+- the undistorted sparse model under `dense/sparse`
+- geometric depth maps under `dense/stereo/depth_maps`
+- at least three usable geometric depth maps for the current mission
+
+`fused.ply` remains relevant for the legacy point-cloud fallback and for the optional post-fusion geo-aligned export path.
+
+If those depth-map artifacts already exist, the worker can skip recomputing SfM, undistortion, PatchMatch, and fusion and rebuild the orthomosaic only.
 
 This is an intentional fast path for reruns after orthomosaic logic changes.
 
-### Step 2: 2.5D DSM and Voronoi computation
+### Step 2: DSM construction, support tracking, and camera assignment
 
-Instead of Poisson meshing, the new path builds a Digital Surface Model (DSM).
+Instead of meshing the dense output first, the TrueOrtho builder constructs a DSM directly from COLMAP geometric depth maps.
 
-- Projects `fused.ply` onto a regular grid at the desired `ortho_mesh_resolution` (default 2cm/pixel).
-- Sub-pixel float64 precision is utilized for all affine transformations to fully prevent sub-millimeter quantization tearing.
-- Missing grid points are gap-filled via GPU-accelerated convolution.
-- A Voronoi diagram assigns each ground pixel to the nearest vertical nadir camera, explicitly dropping non-nadir oblique cameras (any image rotated >25 degrees).
+- Each source depth map is projected into the ortho grid at the desired output resolution.
+- Optional normal maps reject unstable depth samples before they reach the DSM.
+- Gap filling tracks how far each cell expanded away from real support, and cells beyond `ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX` are rejected.
+- Local depth discontinuities create a `raw_edge_mask`, an `edge_sensitive_mask`, and a wider `edge_assignment_mask` used for stricter camera assignment.
+- Per-pixel camera selection uses nadirness, incidence, optical-axis alignment, and source-depth visibility tests against the originating depth map.
 
-### Step 3: GPU ray-casting
+### Step 3: GPU warp, fallback fill, and diagnostics
 
-- Each nadir image is iteratively warped onto the top-down perspective using `torch.nn.functional.grid_sample`.
-- Since only one image is processed in VRAM at any given time, the pipeline uses roughly an O(1) constant VRAM footprint, effectively solving OOM issues on massive datasets.
-- Remaining empty pixels missed by the primary nadir assignment are recursively back-filled.
+- Each selected source image is warped one at a time with `torch.nn.functional.grid_sample`, so VRAM stays roughly constant with respect to image count.
+- Pass 1 paints pixels from the best primary camera assignment.
+- Pass 2 can paint remaining pixels from fallback cameras, but edge-neighborhood fallback fill is disabled by default via `ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL=0`.
+- Source-depth visibility checks use a conservative neighborhood minimum from the COLMAP depth map to reject edge pixels that are occluded by nearer surfaces.
+- Optional inpainting can be limited to edge neighborhoods to reduce black seams without reintroducing roof or facade bleed.
+- The stage writes a diagnostics JSON file that includes fill percentages, edge mask sizes, source-visibility rejection counts, and edge vs non-edge fallback paint counts.
 
 ### Step 4: geo-alignment handling
 
-If `alignment_transform.json` exists, the worker applies the saved Sim3 transform to mesh vertices before rasterization.
+If `alignment_transform.json` exists, the worker applies the saved Sim3 transform to the orthorectification geometry before rasterization.
 
 This is crucial:
 
@@ -785,6 +826,36 @@ The transform file contains:
 - `R`: 3x3 rotation matrix
 - `scale`: scalar scale factor
 - `t`: translation vector
+
+### TrueOrtho diagnostics and tunables
+
+`orthomosaic.tif.diagnostics.json` is the main artifact for debugging orthomosaic quality regressions.
+
+The diagnostics currently include:
+
+- raw, gap-filled, and support-limited DSM coverage counts
+- edge mask sizes and edge rejection counts
+- source-depth visibility check and rejection counts
+- primary and fallback threshold values
+- final fill ratios and remaining hole counts
+- whether edge fallback fill was enabled, plus how many fallback-painted pixels came from edge vs non-edge regions
+
+The most important environment knobs for this path are:
+
+- `ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX`
+- `ORTHO_DSM_EDGE_DEPTH_RANGE_M`
+- `ORTHO_DSM_EDGE_MIN_RAW_SUPPORT`
+- `ORTHO_DSM_EDGE_DILATION_PX`
+- `ORTHO_DSM_EDGE_ASSIGNMENT_DILATION_PX`
+- `ORTHO_DSM_EDGE_SOURCE_DEPTH_TOLERANCE_M`
+- `ORTHO_DSM_EDGE_SOURCE_DEPTH_NEIGHBORHOOD_PX`
+- `ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL`
+- `ORTHO_DSM_ENABLE_INPAINT`
+- `ORTHO_DSM_INPAINT_EDGE_ONLY`
+
+### Legacy mesh rasterization helper
+
+The repository still contains mesh rasterization helpers in `ortho_support.py`, but the current app1 runtime path does not dispatch them directly from `main.py`. The following subsections document those helpers because they remain available for experimentation and share the same alignment and GeoTIFF-writing constraints.
 
 ### Orthomosaic coordinate transform diagram
 
@@ -804,7 +875,7 @@ flowchart LR
   G --> H[Estimate Sim3<br/>R scale t]
   H --> I[alignment_transform.json]
 
-  J[Dense fused point cloud<br/>or textured mesh in local COLMAP coordinates] --> K[Apply Sim3 in float64]
+  J[Dense stereo depth maps<br/>and fallback fused point cloud in local COLMAP coordinates] --> K[Apply Sim3 in float64]
   I --> K
   K --> L[Projected UTM geometry]
   L --> M[Top-down raster bounds<br/>min_x max_x min_y max_y]
@@ -973,12 +1044,12 @@ This metadata is essential because both app2 and app3 depend on it to map detect
 
 ### PLY fallback path
 
-If mesh rasterization fails entirely, the worker falls back to direct point-cloud projection.
+If TrueOrtho is disabled or unavailable, the worker falls back to direct point-cloud projection.
 
 That path:
 
 1. reads the point cloud from `fused.ply`
-2. optionally applies the saved Sim3 alignment transform in float64
+2. optionally applies the saved Sim3 alignment transform in float64, or uses `fused_geo.ply` when a geo-aligned export already exists
 3. derives raster extents and resolution
 4. converts projected coordinates to pixel indices
 5. sorts points by z so higher points overwrite lower ones
@@ -986,7 +1057,9 @@ That path:
 7. fills holes iteratively
 8. writes the GeoTIFF
 
-This path is simpler and more robust, but visually less complete than a successful textured-mesh rasterization.
+To preserve large projected coordinates, the geo-aligned fallback export keeps transformed position and normal fields in float64 instead of truncating them back to float32.
+
+This path is simpler and more robust, but visually less complete than a successful depth-map TrueOrtho run.
 
 ## Processing worker detailed behavior
 
@@ -1288,20 +1361,15 @@ If `dense/fused.ply` exists but is suspiciously small, app1 deletes the entire `
 
 If too few common image centers exist between sparse-local and sparse-geo reconstructions, app1 cannot estimate the Sim3 transform robustly and falls back to using the raw fused cloud.
 
-### Mesh rasterization failure
+### TrueOrtho fallback
 
-If the textured mesh path fails at any point:
-
-- CUDA unavailable
-- texture loading failure
-- nearly empty CUDA coverage
-- CPU fallback failure
-
-the worker falls back to direct PLY top-down projection.
+If the depth-map TrueOrtho path is disabled, lacks the required dense artifacts, or raises an orthomosaic-stage exception, app1 can still fall back to direct PLY top-down projection on the legacy branch.
 
 ### No dense output at all
 
-If no valid dense point cloud is available, the worker creates a dummy black GeoTIFF so the pipeline can fail visibly rather than crash on missing output files.
+If `use_mesh_ortho: true`, the worker requires a usable `dense/sparse` model plus geometric depth maps before it will enter the TrueOrtho stage. If `use_mesh_ortho: false`, it still requires a valid fused point cloud for the legacy projection path.
+
+The worker only falls back to a dummy GeoTIFF after an ortho-construction exception on the legacy point-cloud branch; it does not silently invent dense artifacts that were never produced.
 
 ### Processing worker missing orthomosaic
 
@@ -1319,10 +1387,12 @@ These are the assumptions that must remain true for the current implementation t
 2. Worker containers must see the host filesystem through `/host`.
 3. The orthomosaic must keep its projected CRS metadata intact.
 4. Dense stereo must run before geo-alignment to avoid float32 precision problems.
-5. Tile events must carry the original orthomosaic transform and CRS.
-6. App3 must set `total_tiles` before tile events begin returning.
-7. `tile_index` uniqueness is the aggregator's completion key.
-8. The final annotated GeoTIFF is written by app3, not app1.
+5. TrueOrtho reruns require both `dense/sparse/{cameras,images,points3D}.bin` and geometric depth maps; one without the other is not considered a reusable dense workspace.
+6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
+7. Tile events must carry the original orthomosaic transform and CRS.
+8. App3 must set `total_tiles` before tile events begin returning.
+9. `tile_index` uniqueness is the aggregator's completion key.
+10. The final annotated GeoTIFF is written by app3, not app1.
 
 ## Operator-oriented stage map
 

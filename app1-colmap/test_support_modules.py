@@ -210,6 +210,13 @@ class TestRuntimeSupport(unittest.TestCase):
 
 
 class TestPipelineSupport(unittest.TestCase):
+    def test_merge_pipeline_params_defaults_to_gpu_zero(self):
+        legacy = pipeline_support.merge_pipeline_params("legacy", {})
+        modern = pipeline_support.merge_pipeline_params("modern", {})
+
+        self.assertEqual(legacy["mvs_gpu_index"], "0")
+        self.assertEqual(modern["mvs_gpu_index"], "0")
+
     def test_plan_clean_image_copy_skips_when_manifest_matches_hash(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             src_path = os.path.join(tmp_dir, "source.jpg")
@@ -249,6 +256,32 @@ class TestPipelineSupport(unittest.TestCase):
 
 
 class TestMainSupport(unittest.TestCase):
+    def test_dense_sparse_model_ready_requires_all_dense_sparse_files(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dense_path = os.path.join(tmp_dir, "dense")
+            sparse_dir = os.path.join(dense_path, "sparse")
+            os.makedirs(sparse_dir, exist_ok=True)
+
+            self.assertFalse(app1_main.dense_sparse_model_ready(dense_path))
+
+            for filename in ["cameras.bin", "images.bin", "points3D.bin"]:
+                with open(os.path.join(sparse_dir, filename), "wb") as handle:
+                    handle.write(b"x")
+
+            self.assertTrue(app1_main.dense_sparse_model_ready(dense_path))
+
+    def test_normalize_gpu_index_defaults_and_clamps_single_visible_device(self):
+        with patch.dict(os.environ, {}, clear=False):
+            self.assertEqual(app1_main.normalize_gpu_index(None), "0")
+            self.assertEqual(app1_main.normalize_gpu_index("-1"), "0")
+
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear=False):
+            self.assertEqual(app1_main.normalize_gpu_index("1"), "0")
+            self.assertEqual(app1_main.normalize_gpu_index("3"), "0")
+
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "0,1"}, clear=False):
+            self.assertEqual(app1_main.normalize_gpu_index("1"), "1")
+
     def test_invalidate_pipeline_artifacts_removes_cached_outputs(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             clean_images_dir = os.path.join(tmp_dir, "clean_images")
