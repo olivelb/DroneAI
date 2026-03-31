@@ -302,10 +302,21 @@ The pipeline flow is:
 
 ### Current app1 orthomosaic path
 
-- `use_mesh_ortho: true` now selects the depth-map TrueOrtho path in `app1-colmap/ortho_dsm.py`.
-- Orthomosaic-only reruns reuse existing dense artifacts only when both `dense/sparse/{cameras,images,points3D}.bin` and at least three `dense/stereo/depth_maps/*.geometric.bin` files are present.
-- The TrueOrtho builder constructs the DSM directly from COLMAP geometric depth maps, keeps large projected-coordinate math in float64 where precision matters, applies edge-aware camera assignment with source-depth visibility checks, and writes a companion diagnostics JSON next to `orthomosaic.tif`.
-- `use_mesh_ortho: false` keeps the legacy point-cloud projection fallback based on `fused.ply` or `fused_geo.ply`.
+- `use_mesh_ortho: true` (now labelled **"Use Gaussian Splatting Ortho"** in the UI) selects the 3D Gaussian Splatting orthophoto pipeline.
+- The GS pipeline trains a 3DGS model directly from COLMAP undistorted images and the sparse reconstruction, **skipping PatchMatch stereo and fusion entirely** — a significant time saving.
+- Training uses [gsplat](https://github.com/nerfstudio-project/gsplat) with MCMC densification strategy, per-image appearance compensation, and ortho-coverage regularisation to suppress nadir banding.
+- After training, an aggressive multi-stage post-processing filter chain cleans the model: bounding-box crop → statistical outlier removal (SOR) → connected-component analysis (keeps only the largest connected cluster) → anisotropy clipping.
+- The cleaned model is rendered from a virtual orthographic camera into an RGB orthomosaic and a companion height map (DSM) GeoTIFF.
+- The height map is shifted to match mean drone EXIF GPS altitude when available, giving real-world elevation values in the output CRS.
+- All model coordinates stay in COLMAP-local float32 space during training. The Sim3 geo-alignment is split: rotation+scale applied to the model, translation kept as float64 and folded into the GeoTIFF origin. This avoids the catastrophic float32 precision loss that occurs with UTM-scale translations (~10⁶ m).
+- The following GS parameters are exposed in the dashboard UI (group **Orthomosaic**):
+  - **GS Training Iterations** (`gs_iterations`): number of training iterations (default 7000)
+  - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8)
+  - **GS Max Gaussians** (`gs_cap_max`): MCMC maximum Gaussian count (default 2M)
+  - **GS Spherical Harmonics Degree** (`gs_sh_degree`): SH degree for view-dependent colour (1, 2, or 3)
+  - **GS Ortho Regularisation Weight** (`gs_ortho_reg`): weight for ortho coverage loss (default 0.5, 0 to disable)
+  - **Ortho Resolution** (`ortho_mesh_resolution`): output GSD in metres/pixel
+- `use_mesh_ortho: false` keeps the legacy point-cloud projection fallback based on `fused.ply` or `fused_geo.ply`, which still requires PatchMatch + fusion.
 
 For SAM 3 missions, access to the gated Hugging Face model must already be approved and the `hf-token` Kubernetes secret must exist before deployment.
 
@@ -562,10 +573,12 @@ bash build_and_deploy.sh --base
 This pipeline builds on a substantial amount of upstream open-source work. In particular, thanks to the maintainers and contributors of:
 
 - COLMAP and PyCOLMAP for SfM, MVS, and reconstruction tooling
+- gsplat for differentiable 3D Gaussian Splatting rasterisation and MCMC densification
 - PyTorch, NVIDIA CUDA, and NVLabs nvdiffrast for GPU-backed inference and rasterization
 - Ultralytics YOLO for OBB detection models and tooling
 - Meta SAM 3 and the Hugging Face Transformers integration for prompt-based segmentation
 - Rasterio, pyproj, and OpenCV for geospatial and image-processing primitives
+- SciPy for spatial filtering (cKDTree, connected components)
 - Apache Kafka and confluent-kafka-python for event transport between services
 - FastAPI for the dashboard API
 - Next.js, React, Leaflet, React-Leaflet, lucide, and Tailwind CSS for the dashboard frontend
@@ -597,11 +610,65 @@ If you use the COLMAP-based reconstruction parts of this pipeline in research, c
 
 COLMAP itself is distributed under the new BSD license. If you redistribute binaries or images that include COLMAP, retain the copyright notice, license text, disclaimer, and do not use the ETH Zurich or UNC Chapel Hill names to endorse your product without permission.
 
+### Gaussian Splatting citations
+
+The Gaussian Splatting orthophoto pipeline is based on the following research:
+
+```bibtex
+@article{kerbl3Dgaussians,
+  author={Kerbl, Bernhard and Kopanas, Georgios and Leimk\"uhler, Thomas and Drettakis, George},
+  title={3D Gaussian Splatting for Real-Time Radiance Field Rendering},
+  journal={ACM Transactions on Graphics},
+  volume={42},
+  number={4},
+  year={2023},
+}
+```
+
+```bibtex
+@article{kheradmand2024mcmc,
+  author={Kheradmand, Shakiba and Rebain, Daniel and Sharma, Gopal and Sun, Weiwei and Tseng, Jeff and Isack, Hossam and Kar, Abhishek and Tagliasacchi, Andrea and Yi, Kwang Moo},
+  title={3D Gaussian Splatting as Markov Chain Monte Carlo},
+  journal={Advances in Neural Information Processing Systems},
+  volume={37},
+  year={2024},
+}
+```
+
+```bibtex
+@article{ye2024gsplatopensourcelibrarygaussian,
+  title={gsplat: An Open-Source Library for Gaussian Splatting},
+  author={Vickie Ye and Ruilong Li and Justin Kerr and Matias Turkulainen and Brent Yi and Zhuoyang Pan and Otto Seiskari and Jianbo Ye and Jeffrey Hu and Matthew Tancik and Angjoo Kanazawa},
+  journal={Journal of Machine Learning Research},
+  year={2025},
+  note={Available at https://github.com/nerfstudio-project/gsplat},
+}
+```
+
+```bibtex
+@article{lin2024vastgaussian,
+  author={Lin, Jiaqi and Li, Zhihao and Tang, Xiao and He, Jianzhuang and Liu, Shiyong and Liu, Jiayue and Lu, Yangdi and Wu, Xiaofei and Li, Songcen and Qu, Youliang and Dai, Yuxiang},
+  title={VastGaussian: Vast 3D Gaussians for Large Scene Reconstruction},
+  booktitle={CVPR},
+  year={2024},
+}
+```
+
+```bibtex
+@article{wang2024tortho,
+  author={Wang, Xin and Qu, Sai and Jiang, Fan and Li, Xinming},
+  title={Tortho-Gaussian: Splatting True Digital Orthophoto Maps},
+  journal={arXiv preprint arXiv:2411.19594},
+  year={2024},
+}
+```
+
 ### Direct dependencies used by this repository
 
 | Technology | Used in this repo | Upstream license | Practical note for redistribution |
 | --- | --- | --- | --- |
 | COLMAP / PyCOLMAP | `app1-colmap` | BSD 3-Clause | Keep license and copyright notices in source or binary distributions. |
+| gsplat | `app1-colmap` (Gaussian Splatting training + rendering) | Apache 2.0 | Keep license notices. |
 | Docker CLI / Moby | host install and image builds | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | K3s | local cluster runtime | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | Kubernetes | orchestration API/runtime used through K3s | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |

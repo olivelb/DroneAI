@@ -15,6 +15,7 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import pycolmap
+from ortho_edge_support import build_edge_assignment_paint_mask, build_mixed_depth_rejection_mask
 
 import logging
 logger = logging.getLogger(__name__)
@@ -212,8 +213,6 @@ def fill_small_color_holes_gpu(rgb_tensor, painted_mask, valid_mask, iterations=
         painted = torch.where(new_pixels, torch.ones_like(painted), painted)
 
     return rgb.squeeze(0).clamp(0, 255).to(torch.uint8), painted.squeeze(0).squeeze(0).bool()
-
-
 def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, camera_height, device, tolerance_m, min_depth, neighborhood_radius_px=1):
     """Check whether projected points are visible in the source depth map."""
     if u.numel() == 0:
@@ -262,7 +261,135 @@ def sample_source_depth_visibility(u, v, cam_depth, depth_map, camera_width, cam
     ).view(-1)
 
     valid_sampled_depth = torch.isfinite(sampled_depth) & (sampled_depth < 1.0e8)
-    return valid_sampled_depth & (cam_depth <= (sampled_depth + float(tolerance_m)))
+    # Only reject when the depth map explicitly shows a CLOSER surface.
+    # If the depth map has no data at that pixel (textureless, shadow, etc.),
+    # we accept the projection — absence of evidence is not evidence of occlusion.
+    explicitly_occluded = valid_sampled_depth & (cam_depth > (sampled_depth + float(tolerance_m)))
+    return ~explicitly_occluded
+
+
+def sample_source_depth_edge_mask(u, v, depth_map, camera_width, camera_height, device, gradient_threshold=0.15):
+    """Detect depth discontinuities in the source image at projected locations.
+
+    Returns a boolean mask (True = safe, False = on a depth edge).
+    Bilinear sampling near depth edges bleeds foreground/background textures,
+    producing white or ghosted pixels.  Rejecting these projections and falling
+    back to another camera eliminates the artifact.
+    """
+    if u.numel() == 0:
+        return torch.empty((0,), dtype=torch.bool, device=device)
+
+    u = u.to(dtype=torch.float32)
+    v = v.to(dtype=torch.float32)
+
+    depth_height, depth_width = depth_map.shape
+    depth_tensor = torch.from_numpy(depth_map.copy()).to(device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+    # Replace invalid depth with 0 so gradients at invalid borders are large
+    valid_d = torch.isfinite(depth_tensor) & (depth_tensor > 0.05)
+    depth_clean = torch.where(valid_d, depth_tensor, torch.zeros_like(depth_tensor))
+
+    # Compute Sobel-like depth gradient magnitude (normalised by depth)
+    # Using a simple 3x3 finite difference
+    pad_d = F.pad(depth_clean, (1, 1, 1, 1), mode='replicate')
+    grad_x = (pad_d[:, :, 1:-1, 2:] - pad_d[:, :, 1:-1, :-2]) / 2.0
+    grad_y = (pad_d[:, :, 2:, 1:-1] - pad_d[:, :, :-2, 1:-1]) / 2.0
+    grad_mag = torch.sqrt(grad_x ** 2 + grad_y ** 2).squeeze(0).squeeze(0)
+    # Normalise by the depth itself to get relative gradient
+    depth_sq = depth_clean.squeeze(0).squeeze(0).clamp(min=0.1)
+    rel_grad = grad_mag / depth_sq
+
+    # Sample the relative gradient at projected pixel locations
+    scale_x = float(camera_width) / float(depth_width)
+    scale_y = float(camera_height) / float(depth_height)
+    depth_u = ((u + 0.5) / scale_x) - 0.5
+    depth_v = ((v + 0.5) / scale_y) - 0.5
+
+    if depth_width > 1:
+        u_norm = (depth_u / float(depth_width - 1)) * 2.0 - 1.0
+    else:
+        u_norm = torch.zeros_like(depth_u)
+    if depth_height > 1:
+        v_norm = (depth_v / float(depth_height - 1)) * 2.0 - 1.0
+    else:
+        v_norm = torch.zeros_like(depth_v)
+
+    grid = torch.stack([u_norm, v_norm], dim=-1).to(dtype=rel_grad.dtype).view(1, 1, -1, 2)
+    sampled_grad = F.grid_sample(
+        rel_grad.unsqueeze(0).unsqueeze(0),
+        grid,
+        mode='nearest',
+        padding_mode='border',
+        align_corners=True,
+    ).view(-1)
+
+    return sampled_grad < float(gradient_threshold)
+
+
+def select_layer_from_depth(u, v, cam_depth_high, cam_depth_low, depth_map,
+                           camera_width, camera_height, device, tolerance_m,
+                           min_depth):
+    """For dual-layer DSM pixels, decide which layer each camera actually sees.
+
+    Returns a boolean tensor (True = high layer visible, False = low layer).
+    The decision is based on comparing both projected camera-space depths
+    against the source depth map.  If the source depth agrees with the high
+    layer (foreground / object), that layer wins.  Otherwise the low layer
+    (ground) wins, which lets the ground texture show through instead of
+    producing a halo.
+    """
+    if u.numel() == 0:
+        return torch.empty((0,), dtype=torch.bool, device=device)
+
+    u = u.to(dtype=torch.float32)
+    v = v.to(dtype=torch.float32)
+    cam_depth_high = cam_depth_high.to(dtype=torch.float32)
+    cam_depth_low = cam_depth_low.to(dtype=torch.float32)
+
+    depth_height, depth_width = depth_map.shape
+    depth_tensor = (torch.from_numpy(depth_map.copy())
+                    .to(device=device, dtype=torch.float32)
+                    .unsqueeze(0).unsqueeze(0))
+    valid_depth = torch.isfinite(depth_tensor) & (depth_tensor > float(min_depth))
+    invalid_fill = torch.full_like(depth_tensor, 1.0e9)
+    depth_tensor = torch.where(valid_depth, depth_tensor, invalid_fill)
+
+    scale_x = float(camera_width) / float(depth_width)
+    scale_y = float(camera_height) / float(depth_height)
+    depth_u = ((u + 0.5) / scale_x) - 0.5
+    depth_v = ((v + 0.5) / scale_y) - 0.5
+    if depth_width > 1:
+        u_norm = (depth_u / float(depth_width - 1)) * 2.0 - 1.0
+    else:
+        u_norm = torch.zeros_like(depth_u)
+    if depth_height > 1:
+        v_norm = (depth_v / float(depth_height - 1)) * 2.0 - 1.0
+    else:
+        v_norm = torch.zeros_like(depth_v)
+
+    grid = (torch.stack([u_norm, v_norm], dim=-1)
+            .to(dtype=depth_tensor.dtype).view(1, 1, -1, 2))
+    sampled_depth = F.grid_sample(
+        depth_tensor, grid, mode='nearest',
+        padding_mode='zeros', align_corners=True,
+    ).view(-1)
+
+    valid_sampled = torch.isfinite(sampled_depth) & (sampled_depth < 1.0e8)
+    tol = float(tolerance_m)
+
+    # Camera sees the HIGH (foreground) surface when the source depth map
+    # agrees with cam_depth_high (within tolerance).  Otherwise prefer LOW.
+    high_agrees = valid_sampled & (torch.abs(cam_depth_high - sampled_depth) <= tol)
+    low_agrees = valid_sampled & (torch.abs(cam_depth_low - sampled_depth) <= tol)
+
+    # When both agree (rare, surfaces very close) or neither agrees, fall back
+    # to whichever depth is closer to the source depth map.
+    both_or_neither = (high_agrees == low_agrees)
+    high_closer = torch.abs(cam_depth_high - sampled_depth) <= torch.abs(cam_depth_low - sampled_depth)
+    use_high = torch.where(both_or_neither, high_closer, high_agrees)
+
+    # If no valid depth data, default to high (object) layer.
+    use_high = torch.where(valid_sampled, use_high, torch.ones_like(use_high))
+    return use_high
 
 
 # ---------------------------------------------------------------------------
@@ -325,10 +452,27 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     if not fallback_images:
         fallback_images = list(reconstruction.images.keys())
 
+    dsm_build_max_view_angle_deg = float(
+        os.getenv("ORTHO_DSM_BUILD_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG))
+    )
+    dsm_source_image_ids = []
+    for img_id, image in reconstruction.images.items():
+        image_angle = image_angles_deg.get(img_id)
+        if image_angle is None or image_angle <= dsm_build_max_view_angle_deg:
+            dsm_source_image_ids.append(img_id)
+
+    if not dsm_source_image_ids:
+        if valid_images:
+            dsm_source_image_ids = list(valid_images)
+        elif fallback_images:
+            dsm_source_image_ids = list(fallback_images)
+        else:
+            dsm_source_image_ids = list(reconstruction.images.keys())
+
     # ---- Compute camera nadir positions for DSM clipping ----
     cam_xs = []
     cam_ys = []
-    for img_id in valid_images:
+    for img_id in dsm_source_image_ids:
         image = reconstruction.images[img_id]
         cam_center_local = np.asarray(image.projection_center(), dtype=np.float64)
         if transform_data:
@@ -365,6 +509,7 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     height = max(1, int(np.ceil(height_m / resolution)))
 
     dsm_flat = torch.full((height * width,), NODATA, dtype=torch.float32, device=device)
+    dsm_min_flat = torch.full((height * width,), float("inf"), dtype=torch.float32, device=device)
     sample_count_flat = torch.zeros((height * width,), dtype=torch.float32, device=device)
 
     depth_map_type = str(os.getenv("ORTHO_DSM_DEPTH_MAP_TYPE", "geometric")).strip().lower() or "geometric"
@@ -379,7 +524,8 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     depth_samples_considered = 0
     depth_samples_accepted = 0
 
-    for image in reconstruction.images.values():
+    for img_id in dsm_source_image_ids:
+        image = reconstruction.images[img_id]
         depth_map_path, resolved_depth_type = _resolve_dense_map_path(
             dense_path,
             image.name,
@@ -488,6 +634,7 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
             idx_t = torch.from_numpy(flat_idx).to(device)
             z_t = torch.from_numpy(z_geo.astype(np.float32, copy=False)).to(device)
             dsm_flat.scatter_reduce_(0, idx_t, z_t, reduce="amax", include_self=False)
+            dsm_min_flat.scatter_reduce_(0, idx_t, z_t, reduce="amin", include_self=False)
             sample_count_flat.scatter_add_(0, idx_t, torch.ones_like(z_t))
 
             accepted_count = int(flat_idx.size)
@@ -499,6 +646,7 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
 
     dsm = dsm_flat.view(height, width)
     raw_dsm = dsm.clone()
+    raw_dsm_min = dsm_min_flat.view(height, width)
     sample_count = sample_count_flat.view(height, width)
 
     # Track which pixels had ACTUAL depth-map support BEFORE gap filling.
@@ -507,6 +655,165 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         raise RuntimeError(
             f"No valid DSM cells could be accumulated from COLMAP depth maps in {os.path.join(dense_path, 'stereo', 'depth_maps')}"
         )
+
+    # Fix building-edge height spillover: where depth samples span a large
+    # range (mixed roof + ground), prefer the LOWER height (= ground).  This
+    # prevents oblique-camera roof samples from inflating ground-cell heights
+    # and causing tile bleed in the orthophoto.
+    dsm_ambiguous_height_m = float(os.getenv("ORTHO_DSM_AMBIGUOUS_HEIGHT_M", "0.5"))
+    dsm_ambiguous_fixed_count = 0
+    if dsm_ambiguous_height_m > 0:
+        ambiguous = raw_valid & ((raw_dsm - raw_dsm_min) > dsm_ambiguous_height_m)
+        dsm_ambiguous_fixed_count = int(ambiguous.sum().item())
+        dsm[ambiguous] = raw_dsm_min[ambiguous]
+
+    # ── Dual-layer DSM for depth-discontinuity cells ──
+    # At cells where the raw depth range spans more than a threshold (e.g. a
+    # car roof vs. the ground), keep *both* surfaces so that each camera can
+    # texture the layer it actually sees.  The primary (single-surface) DSM
+    # is set to the LOWER height (ground) for ortho-grid projection, while
+    # dsm_high stores the upper surface (object top).
+    layered_dsm_threshold_m = float(os.getenv("ORTHO_DSM_LAYERED_THRESHOLD_M",
+                                               str(dsm_ambiguous_height_m)))
+    layered_dsm_enabled = str(os.getenv("ORTHO_DSM_LAYERED_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on")
+    # Method 1: per-cell multi-sample spread (works for buildings where oblique
+    # cameras deposit both roof + ground samples in the same cell).
+    spread_dual = raw_valid & ((raw_dsm - raw_dsm_min) > layered_dsm_threshold_m)
+    # Method 2: spatial-gradient detection — catches well-reconstructed elevated
+    # objects (cars, walls) where each cell is consistent but neighbouring
+    # cells jump sharply.  A 3×3 local range of the resolved DSM reveals
+    # depth discontinuities missed by per-cell spread.
+    dsm_4d_tmp = dsm.unsqueeze(0).unsqueeze(0)
+    valid_4d_tmp = raw_valid.float().unsqueeze(0).unsqueeze(0)
+    _neg_large = torch.full_like(dsm_4d_tmp, -1e9)
+    _pos_large = torch.full_like(dsm_4d_tmp, 1e9)
+    nbr_max_3 = F.max_pool2d(
+        torch.where(valid_4d_tmp > 0.5, dsm_4d_tmp, _neg_large),
+        kernel_size=3, stride=1, padding=1,
+    ).squeeze(0).squeeze(0)
+    nbr_min_3 = -F.max_pool2d(
+        torch.where(valid_4d_tmp > 0.5, -dsm_4d_tmp, _pos_large),
+        kernel_size=3, stride=1, padding=1,
+    ).squeeze(0).squeeze(0)
+    gradient_dual = raw_valid & ((nbr_max_3 - nbr_min_3) > layered_dsm_threshold_m)
+    gradient_added_count = int((gradient_dual & ~spread_dual).sum().item())
+
+    has_dual_layer = spread_dual | gradient_dual
+    # Dilate the dual-layer zone so the full transition band (= halo width)
+    # is covered.  The halo of an object of height h at view angle θ extends
+    # ≈ h·tan(θ)/gsd pixels; for a 1.5 m car at 15° that is ~20 px at
+    # 0.02 m GSD.  Default is 15 px.
+    layered_dilation_px = max(0, int(os.getenv("ORTHO_DSM_LAYERED_DILATION_PX", "15")))
+    if layered_dsm_enabled and layered_dilation_px > 0 and has_dual_layer.any():
+        kernel = layered_dilation_px * 2 + 1
+        has_dual_layer = F.max_pool2d(
+            has_dual_layer.float().unsqueeze(0).unsqueeze(0),
+            kernel_size=kernel, stride=1, padding=layered_dilation_px,
+        ).squeeze(0).squeeze(0) > 0
+        # Only apply where we actually have DSM data
+        has_dual_layer = has_dual_layer & raw_valid
+    if not layered_dsm_enabled:
+        has_dual_layer = torch.zeros_like(raw_valid)
+    # dsm_high (object/roof) and dsm_low (ground) for each dual-layer cell.
+    # Use a neighbourhood max/min over a window matching the dilation so that
+    # dilated cells far from the original edge still get correct surface
+    # heights.  raw_dsm gives per-cell max height; raw_dsm_min gives per-cell
+    # min height.  Pooling propagates the extreme values into the halo band.
+    _pool_r = max(layered_dilation_px, 1)
+    _pool_k = _pool_r * 2 + 1
+    raw_dsm_4d = raw_dsm.unsqueeze(0).unsqueeze(0)
+    raw_min_4d = raw_dsm_min.unsqueeze(0).unsqueeze(0)
+    dsm_high = F.max_pool2d(
+        torch.where(valid_4d_tmp > 0.5, raw_dsm_4d, _neg_large),
+        kernel_size=_pool_k, stride=1, padding=_pool_r,
+    ).squeeze(0).squeeze(0)
+    dsm_low = -F.max_pool2d(
+        torch.where(valid_4d_tmp > 0.5, -raw_min_4d, _pos_large),
+        kernel_size=_pool_k, stride=1, padding=_pool_r,
+    ).squeeze(0).squeeze(0)
+    del dsm_4d_tmp, valid_4d_tmp, _neg_large, _pos_large, raw_dsm_4d, raw_min_4d
+    # Outside the dual-layer zone, both layers equal the primary DSM
+    dsm_high[~has_dual_layer] = dsm[~has_dual_layer]
+    dsm_low[~has_dual_layer] = dsm[~has_dual_layer]
+    dual_layer_count = int(has_dual_layer.sum().item())
+
+    # ── DSM morphological opening for thin halo removal ──
+    # Elevated objects (cars, pillars) spill their height into neighbouring
+    # ground cells because depth samples from oblique views land 1-2 px wide.
+    # A morphological opening (erosion then dilation) on the height contrast
+    # removes these thin halos while preserving larger structures (buildings).
+    dsm_morph_radius = max(0, int(os.getenv("ORTHO_DSM_MORPH_OPENING_PX", "0")))
+    dsm_morph_fixed_count = 0
+    if dsm_morph_radius > 0 and raw_valid.any():
+        # Compute local min-max range in a 3x3 neighbourhood
+        kernel = dsm_morph_radius * 2 + 1
+        dsm_4d = dsm.unsqueeze(0).unsqueeze(0)
+        valid_4d = raw_valid.float().unsqueeze(0).unsqueeze(0)
+        neg_large = torch.full_like(dsm_4d, -1.0e9)
+        pos_large = torch.full_like(dsm_4d, 1.0e9)
+        local_max = F.max_pool2d(torch.where(valid_4d > 0.5, dsm_4d, neg_large), kernel_size=kernel, stride=1, padding=dsm_morph_radius)
+        local_min = -F.max_pool2d(torch.where(valid_4d > 0.5, -dsm_4d, pos_large), kernel_size=kernel, stride=1, padding=dsm_morph_radius)
+        local_range = (local_max - local_min).squeeze(0).squeeze(0)
+        # Erode: cells isolated at an elevated height get replaced by local min
+        # Only apply where the cell protrudes above all neighbours by >0.3m
+        # and the cell has limited sample support (thin features)
+        thin_elevated = raw_valid & (local_range > 0.3) & (sample_count <= 8)
+        if thin_elevated.any():
+            dsm_morph_fixed_count = int(thin_elevated.sum().item())
+            dsm[thin_elevated] = local_min.squeeze(0).squeeze(0)[thin_elevated]
+        del dsm_4d, valid_4d, neg_large, pos_large, local_max, local_min, local_range
+
+    # ── Sliding-window DSM anomaly detection (inspired by Ge et al. 2026) ──
+    # For each cell, check a local window. If >30% of valid neighbours differ
+    # from this cell by more than the threshold, the cell is likely an
+    # elevation outlier (e.g. roof height spilling onto ground cells at
+    # building edges). Replace with the local median of valid neighbours.
+    dsm_anomaly_window = max(3, int(os.getenv("ORTHO_DSM_ANOMALY_WINDOW", "5")))
+    dsm_anomaly_threshold_m = float(os.getenv("ORTHO_DSM_ANOMALY_THRESHOLD_M", "0.5"))
+    dsm_anomaly_ratio = float(os.getenv("ORTHO_DSM_ANOMALY_RATIO", "0.3"))
+    dsm_anomaly_fixed_count = 0
+    if dsm_anomaly_threshold_m > 0 and dsm_anomaly_window >= 3:
+        pad = dsm_anomaly_window // 2
+        dsm_4d = dsm.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        valid_4d = raw_valid.float().unsqueeze(0).unsqueeze(0)
+
+        # Unfold: extract all (window x window) patches for every pixel
+        # Shape: (1, 1, H, W, win, win)
+        dsm_patches = F.unfold(dsm_4d, kernel_size=dsm_anomaly_window, padding=pad)  # (1, win*win, H*W)
+        valid_patches = F.unfold(valid_4d, kernel_size=dsm_anomaly_window, padding=pad)
+        n_elements = dsm_anomaly_window * dsm_anomaly_window
+
+        # Centre pixel values (broadcast-ready)
+        centre_vals = dsm.view(1, 1, -1)  # (1, 1, H*W)
+
+        # Count valid neighbours that differ by > threshold from centre
+        diff = torch.abs(dsm_patches - centre_vals)
+        differs = (diff > dsm_anomaly_threshold_m) & (valid_patches > 0.5)
+        n_valid_neighbours = (valid_patches > 0.5).sum(dim=1, keepdim=True).float()
+        n_differs = differs.sum(dim=1, keepdim=True).float()
+
+        # Ratio of disagreeing neighbours
+        ratio = torch.where(
+            n_valid_neighbours > 0,
+            n_differs / n_valid_neighbours,
+            torch.zeros_like(n_differs),
+        ).view(height, width)
+
+        anomaly_mask = raw_valid & (ratio > dsm_anomaly_ratio)
+
+        if anomaly_mask.any():
+            # Replace anomalous cells with local median of valid neighbours.
+            # Compute approximate median: sort the patch values per pixel and
+            # take the middle valid element.  For efficiency, use the local
+            # minimum as a conservative substitute (avoids heavy sorting).
+            # The min-of-valid-neighbours is the same strategy as the 8-dir
+            # fill in Ge et al. (prefer low ground height over roof spill).
+            valid_dsm_only = torch.where(valid_patches > 0.5, dsm_patches, torch.full_like(dsm_patches, float("inf")))
+            local_min = valid_dsm_only.min(dim=1).values.view(height, width)  # (H, W)
+            dsm_anomaly_fixed_count = int(anomaly_mask.sum().item())
+            dsm[anomaly_mask] = local_min[anomaly_mask]
+
+        del dsm_patches, valid_patches, dsm_4d, valid_4d, diff, differs
 
     fill_iterations = int(os.getenv("ORTHO_DSM_FILL_ITERATIONS", "5"))
 
@@ -531,12 +838,15 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     world_gy = max_y - grid_row * resolution
 
     filled_valid = dsm > NODATA
-    max_support_distance_px = float(os.getenv("ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX", "3"))
+    max_support_distance_px = float(os.getenv("ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX", "-1"))
     if max_support_distance_px < 0:
         valid_mask = filled_valid
     else:
         valid_mask = filled_valid & (support_distance_px <= max_support_distance_px)
 
+    # Edge detection — still computed for diagnostics, but no longer removes
+    # pixels from valid_mask.  The per-pixel Z-buffer depth check during
+    # warping (see _warp_image) handles occlusion precisely.
     edge_depth_range_m = float(os.getenv("ORTHO_DSM_EDGE_DEPTH_RANGE_M", "0.20"))
     edge_min_raw_support = float(os.getenv("ORTHO_DSM_EDGE_MIN_RAW_SUPPORT", "4"))
     edge_dilation_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_DILATION_PX", "1")))
@@ -544,11 +854,18 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     edge_source_depth_tolerance_m = float(os.getenv("ORTHO_DSM_EDGE_SOURCE_DEPTH_TOLERANCE_M", "0.08"))
     edge_source_depth_neighborhood_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_SOURCE_DEPTH_NEIGHBORHOOD_PX", "1")))
     edge_primary_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
-    edge_fallback_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_MAX_VIEW_ANGLE_DEG", str(NADIR_THRESHOLD_DEG)))
+    edge_fallback_max_view_angle_deg = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_MAX_VIEW_ANGLE_DEG", str(FALLBACK_NADIR_THRESHOLD_DEG)))
+    edge_assignment_max_support_distance_px = float(os.getenv("ORTHO_DSM_EDGE_ASSIGNMENT_MAX_SUPPORT_DISTANCE_PX", "-1"))
+    edge_raw_depth_spread_m = float(os.getenv("ORTHO_DSM_EDGE_RAW_DEPTH_SPREAD_M", str(edge_depth_range_m)))
+    edge_raw_depth_spread_min_samples = float(os.getenv("ORTHO_DSM_EDGE_RAW_DEPTH_SPREAD_MIN_SAMPLES", "2"))
+    edge_occlusion_buffer_px = max(0, int(os.getenv("ORTHO_DSM_EDGE_OCCLUSION_BUFFER_PX", "0")))
     raw_edge_mask = torch.zeros_like(raw_valid)
     edge_sensitive_mask = torch.zeros_like(raw_valid)
     edge_assignment_mask = torch.zeros_like(raw_valid)
+    edge_occlusion_mask = torch.zeros_like(raw_valid)
     edge_rejected_mask = torch.zeros_like(raw_valid)
+    edge_assignment_paint_rejected_mask = torch.zeros_like(raw_valid)
+    edge_raw_mixed_depth_rejected_mask = torch.zeros_like(raw_valid)
     edge_source_visibility_checked_count = 0
     edge_source_visibility_rejected_count = 0
     if edge_depth_range_m > 0.0 and raw_valid.any():
@@ -581,13 +898,35 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
                 stride=1,
                 padding=edge_assignment_dilation_px,
             ).squeeze(0).squeeze(0) > 0
+        if edge_occlusion_buffer_px > 0 and raw_edge_mask.any():
+            occlusion_kernel_size = edge_occlusion_buffer_px * 2 + 1
+            edge_occlusion_mask = F.max_pool2d(
+                raw_edge_mask.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=occlusion_kernel_size,
+                stride=1,
+                padding=edge_occlusion_buffer_px,
+            ).squeeze(0).squeeze(0) > 0
         edge_rejected_mask = boundary_neighborhood & (
             (~raw_valid)
             | ((sample_count < edge_min_raw_support) & raw_valid)
         )
-        valid_mask = valid_mask & (~edge_rejected_mask)
-    else:
-        edge_assignment_mask = edge_sensitive_mask
+        # NOTE: edge_rejected_mask, edge_occlusion_mask, mixed_depth_rejected_mask
+        # are computed for diagnostics only — they no longer remove pixels from
+        # valid_mask.  The per-pixel Z-buffer warp check handles occlusion.
+
+    edge_raw_mixed_depth_rejected_mask = build_mixed_depth_rejection_mask(
+        raw_valid,
+        edge_assignment_mask,
+        sample_count,
+        raw_dsm_min,
+        raw_dsm,
+        edge_raw_depth_spread_m,
+        edge_raw_depth_spread_min_samples,
+    )
+
+    # paintable_mask = valid_mask (no edge-paint restriction with Z-buffer)
+    paintable_mask = valid_mask
+    edge_assignment_paint_rejected_mask = torch.zeros_like(raw_valid)
 
     if transform_data:
         R_inv = np.linalg.inv(R_t)
@@ -604,13 +943,6 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
     fallback_incidence_min = float(os.getenv("ORTHO_DSM_FALLBACK_INCIDENCE_MIN", "0.12"))
     fallback_axis_alignment_min = float(os.getenv("ORTHO_DSM_FALLBACK_AXIS_ALIGNMENT_MIN", "0.12"))
     fallback_nadirness_min = float(os.getenv("ORTHO_DSM_FALLBACK_NADIRNESS_MIN", "0.05"))
-    edge_primary_incidence_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_INCIDENCE_MIN", "0.35"))
-    edge_primary_axis_alignment_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_AXIS_ALIGNMENT_MIN", "0.50"))
-    edge_primary_nadirness_min = float(os.getenv("ORTHO_DSM_EDGE_PRIMARY_NADIRNESS_MIN", "0.82"))
-    allow_fallback_on_edges = str(os.getenv("ORTHO_DSM_ALLOW_FALLBACK_ON_EDGES", "1")).strip().lower() in ("1", "true", "yes", "on")
-    edge_fallback_incidence_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_INCIDENCE_MIN", "0.25"))
-    edge_fallback_axis_alignment_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_AXIS_ALIGNMENT_MIN", "0.40"))
-    edge_fallback_nadirness_min = float(os.getenv("ORTHO_DSM_EDGE_FALLBACK_NADIRNESS_MIN", "0.82"))
 
     for img_id, image in reconstruction.images.items():
         if img_id not in valid_images and img_id not in fallback_images:
@@ -707,74 +1039,17 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         else:
             projection_in_bounds = valid_mask
 
-        edge_angle_ok = True
-        if image_angles_deg.get(img_id) is not None:
-            edge_angle_ok = image_angles_deg[img_id] <= edge_primary_max_view_angle_deg
-        edge_fallback_angle_ok = True
-        if image_angles_deg.get(img_id) is not None:
-            edge_fallback_angle_ok = image_angles_deg[img_id] <= edge_fallback_max_view_angle_deg
-
-        source_visible_on_edges = torch.zeros_like(valid_mask, dtype=torch.bool)
-        if edge_assignment_mask.any() and edge_source_depth_tolerance_m >= 0.0:
-            edge_projection_mask = projection_in_bounds & edge_assignment_mask
-            edge_projection_count = int(edge_projection_mask.sum().item())
-            if edge_projection_count > 0:
-                edge_source_visibility_checked_count += edge_projection_count
-                depth_map_path, _ = _resolve_dense_map_path(
-                    dense_path,
-                    image.name,
-                    "depth_maps",
-                    depth_map_type,
-                )
-                if depth_map_path is not None:
-                    depth_map = _read_colmap_dense_array(depth_map_path)
-                    if depth_map.ndim == 2:
-                        visible_edge_samples = sample_source_depth_visibility(
-                            u[edge_projection_mask],
-                            v[edge_projection_mask],
-                            cam_z[edge_projection_mask],
-                            depth_map,
-                            camera.width,
-                            camera.height,
-                            device,
-                            tolerance_m=edge_source_depth_tolerance_m,
-                            min_depth=min_depth,
-                            neighborhood_radius_px=edge_source_depth_neighborhood_px,
-                        )
-                        source_visible_on_edges[edge_projection_mask] = visible_edge_samples
-                edge_source_visibility_rejected_count += edge_projection_count - int(source_visible_on_edges[edge_projection_mask].sum().item())
-
-        projection_allowed = projection_in_bounds & ((~edge_assignment_mask) | source_visible_on_edges)
-
-        primary_edge_guard = (
-            (~edge_assignment_mask)
-            | (
-                bool(edge_angle_ok)
-                &
-                (incidence > edge_primary_incidence_min)
-                & (axis_alignment > edge_primary_axis_alignment_min)
-                & (nadirness > edge_primary_nadirness_min)
-            )
-        )
-        fallback_edge_guard = (
-            (~edge_assignment_mask)
-            | (
-                allow_fallback_on_edges
-                & edge_fallback_angle_ok
-                & (incidence > edge_fallback_incidence_min)
-                & (axis_alignment > edge_fallback_axis_alignment_min)
-                & (nadirness > edge_fallback_nadirness_min)
-            )
-        )
+        # With Z-buffer warp check, allow all in-bounds projections for scoring.
+        # The warp-time depth check will reject occluded pixels precisely.
+        projection_allowed = projection_in_bounds
 
         if img_id in valid_images:
             primary_score = torch.where(
                 (incidence > primary_incidence_min)
                 & (axis_alignment > primary_axis_alignment_min)
                 & (nadirness > primary_nadirness_min)
-                & primary_edge_guard
                 & projection_allowed
-                & valid_mask,
+                & paintable_mask,
                 score,
                 torch.full_like(score, -1.0),
             )
@@ -787,9 +1062,8 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
                 (incidence > fallback_incidence_min)
                 & (axis_alignment > fallback_axis_alignment_min)
                 & (nadirness > fallback_nadirness_min)
-                & fallback_edge_guard
                 & projection_allowed
-                & valid_mask,
+                & paintable_mask,
                 score,
                 torch.full_like(score, -1.0),
             )
@@ -816,27 +1090,37 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         "edge_min_raw_support": edge_min_raw_support,
         "edge_dilation_px": edge_dilation_px,
         "edge_assignment_dilation_px": edge_assignment_dilation_px,
+        "edge_occlusion_buffer_px": edge_occlusion_buffer_px,
         "raw_edge_pixel_count": int(raw_edge_mask.sum().item()),
         "edge_sensitive_pixel_count": int(edge_sensitive_mask.sum().item()),
         "edge_assignment_pixel_count": int(edge_assignment_mask.sum().item()),
+        "edge_occlusion_pixel_count": int(edge_occlusion_mask.sum().item()),
         "edge_rejected_count": int(edge_rejected_mask.sum().item()),
         "edge_source_depth_tolerance_m": edge_source_depth_tolerance_m,
         "edge_source_depth_neighborhood_px": edge_source_depth_neighborhood_px,
+        "edge_assignment_max_support_distance_px": edge_assignment_max_support_distance_px,
+        "edge_raw_depth_spread_m": edge_raw_depth_spread_m,
+        "edge_raw_depth_spread_min_samples": edge_raw_depth_spread_min_samples,
         "edge_source_visibility_checked_count": edge_source_visibility_checked_count,
         "edge_source_visibility_rejected_count": edge_source_visibility_rejected_count,
-        "edge_primary_thresholds": {
-            "incidence_min": edge_primary_incidence_min,
-            "axis_alignment_min": edge_primary_axis_alignment_min,
-            "nadirness_min": edge_primary_nadirness_min,
-            "max_view_angle_deg": edge_primary_max_view_angle_deg,
-        },
-        "edge_fallback_thresholds": {
-            "allow_on_edges": allow_fallback_on_edges,
-            "incidence_min": edge_fallback_incidence_min,
-            "axis_alignment_min": edge_fallback_axis_alignment_min,
-            "nadirness_min": edge_fallback_nadirness_min,
-            "max_view_angle_deg": edge_fallback_max_view_angle_deg,
-        },
+        "edge_assignment_paint_rejected_count": int(edge_assignment_paint_rejected_mask.sum().item()),
+        "edge_raw_mixed_depth_rejected_count": int(edge_raw_mixed_depth_rejected_mask.sum().item()),
+        "edge_primary_max_view_angle_deg": edge_primary_max_view_angle_deg,
+        "edge_fallback_max_view_angle_deg": edge_fallback_max_view_angle_deg,
+        "dsm_ambiguous_height_m": dsm_ambiguous_height_m,
+        "dsm_ambiguous_fixed_count": dsm_ambiguous_fixed_count,
+        "layered_dsm_enabled": layered_dsm_enabled,
+        "layered_dsm_threshold_m": layered_dsm_threshold_m,
+        "layered_dilation_px": layered_dilation_px,
+        "dual_layer_pixel_count": dual_layer_count,
+        "dual_layer_spread_count": int(spread_dual.sum().item()),
+        "dual_layer_gradient_added_count": gradient_added_count,
+        "dsm_anomaly_window": dsm_anomaly_window,
+        "dsm_anomaly_threshold_m": dsm_anomaly_threshold_m,
+        "dsm_anomaly_ratio": dsm_anomaly_ratio,
+        "dsm_anomaly_fixed_count": dsm_anomaly_fixed_count,
+        "dsm_morph_opening_px": dsm_morph_radius,
+        "dsm_morph_fixed_count": dsm_morph_fixed_count,
         "max_support_distance_px": max_support_distance_px,
         "fill_iterations": fill_iterations,
         "depth_map_type": depth_map_type,
@@ -846,6 +1130,9 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         "normal_maps_used": normal_maps_used,
         "depth_samples_considered": depth_samples_considered,
         "depth_samples_accepted": depth_samples_accepted,
+        "dsm_build_max_view_angle_deg": dsm_build_max_view_angle_deg,
+        "dsm_source_image_count": len(dsm_source_image_ids),
+        "dsm_source_images_skipped_by_angle_count": len(reconstruction.images) - len(dsm_source_image_ids),
         "support_distance_histogram": support_distance_histogram,
         "image_angles_deg": image_angles_deg,
         "primary_thresholds": {
@@ -878,6 +1165,10 @@ def build_dsm_and_voronoi(dense_path, reconstruction, transform_data, resolution
         set(valid_images),
         set(fallback_images),
         diagnostics,
+        primary_best_score,
+        has_dual_layer,
+        dsm_high,
+        dsm_low,
     )
 
 
@@ -912,7 +1203,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     report(vol_id, "ORTHO", 96, "Building 2.5D DSM from COLMAP depth maps and angle-aware camera map…", report_fn)
     reconstruction = pycolmap.Reconstruction(os.path.join(dense_path, "sparse"))
 
-    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, edge_sensitive_mask, edge_assignment_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics = build_dsm_and_voronoi(
+    dsm, raw_valid_mask, support_distance_px, voronoi_map, fallback_voronoi_map, valid_dsm_mask, edge_sensitive_mask, edge_assignment_mask, min_x, max_y, width, height, valid_images, fallback_images, build_diagnostics, primary_best_score, has_dual_layer, dsm_high, dsm_low = build_dsm_and_voronoi(
         dense_path, reconstruction, transform_data, resolution, device,
     )
 
@@ -992,6 +1283,17 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     # Track which pixels have been successfully painted
     painted = torch.zeros((height, width), dtype=torch.bool, device=device)
 
+    # ── Dual-layer ortho buffers (high = object surface) ──
+    dual_layer_count = int(has_dual_layer.sum().item())
+    layered_dsm_active = dual_layer_count > 0
+    if layered_dsm_active:
+        ortho_rgb_high = torch.zeros((3, height, width), dtype=torch.uint8, device=device)
+        painted_high = torch.zeros((height, width), dtype=torch.bool, device=device)
+        report(vol_id, "ORTHO", 96, f"Dual-layer DSM active: {dual_layer_count} pixels with separate high/low surfaces.", report_fn)
+    else:
+        ortho_rgb_high = None
+        painted_high = None
+
     # World coordinate grids
     grid_row, grid_col = torch.meshgrid(
         torch.arange(height, device=device, dtype=torch.float64),
@@ -1001,6 +1303,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     world_x = grid_col * resolution + min_x
     world_y = max_y - grid_row * resolution
     world_z = dsm
+    world_z_high = dsm_high
+    world_z_low = dsm_low
 
     # Inverse Sim3 to go from geographic back to COLMAP local coords
     if transform_data:
@@ -1027,8 +1331,9 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     primary_margin_px = int(os.getenv("ORTHO_DSM_IMAGE_MARGIN_PX", "0"))
     fallback_margin_px = int(os.getenv("ORTHO_DSM_FALLBACK_MARGIN_PX", "0"))
 
-    def _project_pixels_to_image(image, pixel_mask, margin_px=None):
-        """Project DSM pixels into an image and return projection diagnostics."""
+    def _project_pixels_to_image(image, pixel_mask, margin_px=None, z_tensor=None):
+        """Project DSM pixels into an image and return projection diagnostics.
+        z_tensor overrides world_z for the projection (used for dual-layer)."""
         n_pixels = int(pixel_mask.sum())
         if n_pixels == 0:
             empty_indices = torch.empty((0, 2), dtype=torch.long, device=device)
@@ -1040,13 +1345,15 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
                 "u_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "v_valid": torch.empty((0,), dtype=torch.float64, device=device),
+                "cam_z_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "w_img": 0,
                 "h_img": 0,
                 "img_path": None,
                 "image_missing": False,
             }
 
-        pts_local = geo_to_local(world_x[pixel_mask], world_y[pixel_mask], world_z[pixel_mask])
+        z_src = z_tensor if z_tensor is not None else world_z
+        pts_local = geo_to_local(world_x[pixel_mask], world_y[pixel_mask], z_src[pixel_mask])
         mask_indices = pixel_mask.nonzero(as_tuple=False)
 
         camera = reconstruction.cameras[image.camera_id]
@@ -1066,6 +1373,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "in_bounds_mask": torch.empty((0,), dtype=torch.bool, device=device),
                 "u_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "v_valid": torch.empty((0,), dtype=torch.float64, device=device),
+                "cam_z_valid": torch.empty((0,), dtype=torch.float64, device=device),
                 "w_img": int(camera.width),
                 "h_img": int(camera.height),
                 "img_path": os.path.join(images_dir, image.name),
@@ -1073,6 +1381,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             }
 
         pts_cam_f = pts_cam[front]
+        cam_z_front = pts_cam_f[:, 2]
 
         # Pinhole projection
         model = camera.model_name if hasattr(camera, 'model_name') else str(camera.model)
@@ -1087,8 +1396,8 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 cx = float(camera.params[1])
                 cy = float(camera.params[2])
 
-            u = (pts_cam_f[:, 0] / pts_cam_f[:, 2]) * fx + cx
-            v = (pts_cam_f[:, 1] / pts_cam_f[:, 2]) * fy + cy
+            u = (pts_cam_f[:, 0] / cam_z_front) * fx + cx
+            v = (pts_cam_f[:, 1] / cam_z_front) * fy + cy
         else:
             pts_cam_cpu = pts_cam_f.cpu().numpy()
             uv_cpu = np.array([camera.img_from_cam(p) for p in pts_cam_cpu])
@@ -1113,52 +1422,319 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             "in_bounds_mask": in_bounds,
             "u_valid": u[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float64, device=device),
             "v_valid": v[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float64, device=device),
+            "cam_z_valid": cam_z_front[in_bounds] if in_bounds.any() else torch.empty((0,), dtype=torch.float64, device=device),
             "w_img": w_img,
             "h_img": h_img,
             "img_path": img_path,
             "image_missing": not os.path.exists(img_path),
         }
 
-    def _warp_image(img_id, image, pixel_mask, margin_px=None):
+    warp_depth_check = str(os.getenv("ORTHO_DSM_WARP_DEPTH_CHECK", "1")).strip().lower() in ("1", "true", "yes", "on")
+    warp_depth_tolerance_m = float(os.getenv("ORTHO_DSM_WARP_DEPTH_TOLERANCE_M", "0.3"))
+    warp_depth_neighborhood_px = max(0, int(os.getenv("ORTHO_DSM_WARP_DEPTH_NEIGHBORHOOD_PX", "0")))
+    warp_depth_check_fallback = str(os.getenv("ORTHO_DSM_WARP_DEPTH_CHECK_FALLBACK", "1")).strip().lower() in ("1", "true", "yes", "on")
+    warp_depth_occluded_total = 0
+    warp_depth_checked_total = 0
+    warp_depth_edge_rejected_total = 0
+    depth_map_type_warp = str(os.getenv("ORTHO_DSM_DEPTH_MAP_TYPE", "geometric")).strip().lower() or "geometric"
+    # Depth-edge gradient threshold: reject projections landing on depth
+    # discontinuities in the source image to prevent bilinear bleed artefacts.
+    warp_depth_edge_check = str(os.getenv("ORTHO_DSM_WARP_DEPTH_EDGE_CHECK", "1")).strip().lower() in ("1", "true", "yes", "on")
+    warp_depth_edge_gradient = float(os.getenv("ORTHO_DSM_WARP_DEPTH_EDGE_GRADIENT", "0.15"))
+
+    # Multi-camera blending buffers: accumulate weighted colors from multiple
+    # cameras to average out per-camera noise and sampling artefacts (Gharibi
+    # & Habib 2018 weighted averaging).
+    enable_blending = str(os.getenv("ORTHO_DSM_ENABLE_BLENDING", "1")).strip().lower() in ("1", "true", "yes", "on")
+    blend_rgb = torch.zeros((3, height, width), dtype=torch.float32, device=device)
+    blend_weight = torch.zeros((height, width), dtype=torch.float32, device=device)
+    # High-layer blending buffers for dual-layer cells
+    if layered_dsm_active and enable_blending:
+        blend_rgb_high = torch.zeros((3, height, width), dtype=torch.float32, device=device)
+        blend_weight_high = torch.zeros((height, width), dtype=torch.float32, device=device)
+    else:
+        blend_rgb_high = None
+        blend_weight_high = None
+    layered_warp_high_painted = 0
+    layered_warp_low_painted = 0
+    layered_layer_tolerance_m = float(os.getenv("ORTHO_DSM_LAYERED_LAYER_TOLERANCE_M",
+                                                 str(warp_depth_tolerance_m)))
+
+    def _warp_image(img_id, image, pixel_mask, margin_px=None, use_depth_check=None, score_tensor=None):
         """Warp one image onto the DSM for pixels in pixel_mask.
-        Returns the number of successfully painted pixels."""
-        projection = _project_pixels_to_image(image, pixel_mask, margin_px=margin_px)
-        valid_indices = projection["valid_indices"]
-        if valid_indices.shape[0] == 0 or projection["image_missing"]:
-            return 0
+        use_depth_check overrides the global warp_depth_check when set.
+        score_tensor is an optional (H, W) tensor of per-pixel camera scores
+        used as blending weights when enable_blending is on.
 
-        with Image.open(projection["img_path"]) as pil_img:
-            img_np = np.asarray(pil_img)
-            if img_np.ndim == 2:
-                img_np = np.stack([img_np] * 3, axis=-1)
-            elif img_np.shape[2] == 4:
-                img_np = img_np[:, :, :3]
-            tensor_img = torch.from_numpy(img_np.copy()).permute(2, 0, 1).to(device).float()
+        When the dual-layer DSM is active, pixels in the has_dual_layer zone
+        are projected through both surface layers.  The source depth map
+        determines which layer the camera actually sees, and each layer is
+        textured into its own buffer.  This eliminates the halo that results
+        from forcing a single surface at depth discontinuities.
+        """
+        nonlocal warp_depth_occluded_total, warp_depth_checked_total, warp_depth_edge_rejected_total
+        nonlocal layered_warp_high_painted, layered_warp_low_painted
 
-        # Bilinear sample
-        u_norm = (projection["u_valid"] / (projection["w_img"] - 1)) * 2.0 - 1.0
-        v_norm = (projection["v_valid"] / (projection["h_img"] - 1)) * 2.0 - 1.0
-        u_norm = u_norm.to(dtype=tensor_img.dtype)
-        v_norm = v_norm.to(dtype=tensor_img.dtype)
-        grid = torch.stack([u_norm, v_norm], dim=-1).view(1, 1, -1, 2)
+        # ---- Split into single-layer and dual-layer subsets ----
+        if layered_dsm_active:
+            single_mask = pixel_mask & (~has_dual_layer)
+            dual_mask = pixel_mask & has_dual_layer
+        else:
+            single_mask = pixel_mask
+            dual_mask = None
 
-        sampled = F.grid_sample(
-            tensor_img.unsqueeze(0), grid, mode='bilinear',
-            padding_mode='zeros', align_corners=True,
-        )
-        colors = sampled.squeeze(0).squeeze(1)  # (3, N)
+        total_painted = 0
 
-        ortho_rgb[:, valid_indices[:, 0], valid_indices[:, 1]] = colors.clamp(0, 255).to(torch.uint8)
-        painted[valid_indices[:, 0], valid_indices[:, 1]] = True
+        # ---- Helper: depth-check + edge-check + sample + paint ----
+        def _depth_filter_and_paint(valid_indices, u_valid, v_valid, cam_z_valid,
+                                    image, do_depth_check, img_path, w_img, h_img,
+                                    target_rgb, target_painted, target_blend_rgb,
+                                    target_blend_weight, score_tensor):
+            """Run Z-buffer / edge checks, sample colors, and paint into target buffers."""
+            nonlocal warp_depth_occluded_total, warp_depth_checked_total, warp_depth_edge_rejected_total
+            if valid_indices.shape[0] == 0:
+                return 0
+
+            if do_depth_check and valid_indices.shape[0] > 0:
+                depth_map_path, _ = _resolve_dense_map_path(
+                    dense_path, image.name, "depth_maps", depth_map_type_warp,
+                )
+                if depth_map_path is not None:
+                    depth_map_arr = _read_colmap_dense_array(depth_map_path)
+                    if depth_map_arr.ndim == 2:
+                        camera_obj = reconstruction.cameras[image.camera_id]
+                        visible = sample_source_depth_visibility(
+                            u_valid, v_valid, cam_z_valid,
+                            depth_map_arr,
+                            camera_obj.width, camera_obj.height,
+                            device,
+                            tolerance_m=warp_depth_tolerance_m,
+                            min_depth=float(os.getenv("ORTHO_DSM_MIN_DEPTH", "0.05")),
+                            neighborhood_radius_px=warp_depth_neighborhood_px,
+                        )
+                        n_before = valid_indices.shape[0]
+                        warp_depth_checked_total += n_before
+                        valid_indices = valid_indices[visible]
+                        u_valid = u_valid[visible]
+                        v_valid = v_valid[visible]
+                        cam_z_valid = cam_z_valid[visible]
+                        warp_depth_occluded_total += n_before - valid_indices.shape[0]
+
+                        if warp_depth_edge_check and valid_indices.shape[0] > 0:
+                            edge_safe = sample_source_depth_edge_mask(
+                                u_valid, v_valid, depth_map_arr,
+                                camera_obj.width, camera_obj.height,
+                                device,
+                                gradient_threshold=warp_depth_edge_gradient,
+                            )
+                            n_before_edge = valid_indices.shape[0]
+                            valid_indices = valid_indices[edge_safe]
+                            u_valid = u_valid[edge_safe]
+                            v_valid = v_valid[edge_safe]
+                            cam_z_valid = cam_z_valid[edge_safe]
+                            warp_depth_edge_rejected_total += n_before_edge - valid_indices.shape[0]
+
+            if valid_indices.shape[0] == 0:
+                return 0
+
+            with Image.open(img_path) as pil_img:
+                img_np = np.asarray(pil_img)
+                if img_np.ndim == 2:
+                    img_np = np.stack([img_np] * 3, axis=-1)
+                elif img_np.shape[2] == 4:
+                    img_np = img_np[:, :, :3]
+                tensor_img = torch.from_numpy(img_np.copy()).permute(2, 0, 1).to(device).float()
+
+            u_norm = (u_valid / (w_img - 1)) * 2.0 - 1.0
+            v_norm = (v_valid / (h_img - 1)) * 2.0 - 1.0
+            u_norm = u_norm.to(dtype=tensor_img.dtype)
+            v_norm = v_norm.to(dtype=tensor_img.dtype)
+            grid = torch.stack([u_norm, v_norm], dim=-1).view(1, 1, -1, 2)
+
+            sampled = F.grid_sample(
+                tensor_img.unsqueeze(0), grid, mode='bilinear',
+                padding_mode='zeros', align_corners=True,
+            )
+            colors = sampled.squeeze(0).squeeze(1)
+
+            rows = valid_indices[:, 0]
+            cols = valid_indices[:, 1]
+            if enable_blending and target_blend_rgb is not None:
+                if score_tensor is not None:
+                    w = score_tensor[rows, cols].clamp(min=0.01).float()
+                else:
+                    w = torch.ones(rows.shape[0], device=device, dtype=torch.float32)
+                for ch in range(3):
+                    target_blend_rgb[ch].index_put_((rows, cols), colors[ch] * w, accumulate=True)
+                target_blend_weight.index_put_((rows, cols), w, accumulate=True)
+            else:
+                target_rgb[:, rows, cols] = colors.clamp(0, 255).to(torch.uint8)
+            target_painted[rows, cols] = True
+
+            del tensor_img, grid, sampled, colors
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+            return int(valid_indices.shape[0])
+
+        # ---- Process single-layer pixels (unchanged logic) ----
+        projection = _project_pixels_to_image(image, single_mask, margin_px=margin_px)
+        if projection["valid_indices"].shape[0] > 0 and not projection["image_missing"]:
+            do_depth_check = use_depth_check if use_depth_check is not None else warp_depth_check
+            n = _depth_filter_and_paint(
+                projection["valid_indices"], projection["u_valid"],
+                projection["v_valid"], projection["cam_z_valid"],
+                image, do_depth_check, projection["img_path"],
+                projection["w_img"], projection["h_img"],
+                ortho_rgb, painted, blend_rgb, blend_weight, score_tensor,
+            )
+            total_painted += n
+
+        # ---- Process dual-layer pixels ----
+        if dual_mask is not None and int(dual_mask.sum()) > 0:
+            # Project through HIGH layer
+            proj_high = _project_pixels_to_image(image, dual_mask, margin_px=margin_px,
+                                                  z_tensor=world_z_high)
+            # Project through LOW layer
+            proj_low = _project_pixels_to_image(image, dual_mask, margin_px=margin_px,
+                                                 z_tensor=world_z_low)
+
+            if (proj_high["valid_indices"].shape[0] > 0 or proj_low["valid_indices"].shape[0] > 0) and not proj_high.get("image_missing", True):
+                # Load the depth map once for layer classification
+                depth_map_path, _ = _resolve_dense_map_path(
+                    dense_path, image.name, "depth_maps", depth_map_type_warp,
+                )
+                depth_map_arr = None
+                if depth_map_path is not None:
+                    depth_map_arr = _read_colmap_dense_array(depth_map_path)
+                    if depth_map_arr.ndim != 2:
+                        depth_map_arr = None
+
+                # For pixels that project validly in BOTH layers, classify
+                # which layer this camera sees using the depth map.
+                # For pixels only valid in one layer, use that layer.
+
+                # Build a combined index mapping: for each dual-mask pixel,
+                # we have up to two projections. Use the mask_indices from
+                # proj_high (same pixel set, same ordering).
+                hi_vi = proj_high["valid_indices"]  # (N_h, 2)
+                lo_vi = proj_low["valid_indices"]   # (N_l, 2)
+
+                if hi_vi.shape[0] > 0 and lo_vi.shape[0] > 0 and depth_map_arr is not None:
+                    # Find pixels valid in BOTH projections by matching indices.
+                    # Convert 2D indices to flat for fast set operations.
+                    hi_flat = hi_vi[:, 0] * width + hi_vi[:, 1]
+                    lo_flat = lo_vi[:, 0] * width + lo_vi[:, 1]
+
+                    # Mark which high-proj pixels also exist in low-proj
+                    # and vice versa for layer classification.
+                    hi_set = set(hi_flat.cpu().tolist())
+                    lo_set = set(lo_flat.cpu().tolist())
+                    both_set = hi_set & lo_set
+
+                    if both_set:
+                        # For these pixels: classify using depth map
+                        both_tensor = torch.tensor(sorted(both_set), device=device, dtype=torch.long)
+                        both_mask_2d = torch.zeros(height * width, dtype=torch.bool, device=device)
+                        both_mask_2d[both_tensor] = True
+                        both_mask_2d = both_mask_2d.view(height, width)
+
+                        # Get u, v, cam_z for both layers at these pixels
+                        hi_in_both = torch.tensor([f in both_set for f in hi_flat.cpu().tolist()],
+                                                   dtype=torch.bool, device=device)
+                        lo_in_both = torch.tensor([f in both_set for f in lo_flat.cpu().tolist()],
+                                                   dtype=torch.bool, device=device)
+
+                        u_both_hi = proj_high["u_valid"][hi_in_both]
+                        v_both_hi = proj_high["v_valid"][hi_in_both]
+                        cam_z_both_hi = proj_high["cam_z_valid"][hi_in_both]
+                        cam_z_both_lo = proj_low["cam_z_valid"][lo_in_both]
+
+                        camera_obj = reconstruction.cameras[image.camera_id]
+                        use_high = select_layer_from_depth(
+                            u_both_hi, v_both_hi,
+                            cam_z_both_hi, cam_z_both_lo,
+                            depth_map_arr,
+                            camera_obj.width, camera_obj.height,
+                            device,
+                            tolerance_m=layered_layer_tolerance_m,
+                            min_depth=float(os.getenv("ORTHO_DSM_MIN_DEPTH", "0.05")),
+                        )
+
+                        # Split the high-proj pixels: those classified as high stay,
+                        # those classified as low get removed from high (will be handled from low).
+                        # Similarly for low-proj pixels.
+                        hi_vi_both = hi_vi[hi_in_both]
+                        lo_vi_both = lo_vi[lo_in_both]
+
+                        # High-only: high valid pixels NOT in both, PLUS both-pixels classified high
+                        hi_only_idx = ~hi_in_both
+                        hi_keep = hi_only_idx.clone()
+                        hi_keep[hi_in_both] = use_high
+                        lo_only_idx = ~lo_in_both
+                        lo_keep = lo_only_idx.clone()
+                        lo_keep[lo_in_both] = ~use_high
+
+                        hi_vi_final = hi_vi[hi_keep]
+                        hi_u_final = proj_high["u_valid"][hi_keep]
+                        hi_v_final = proj_high["v_valid"][hi_keep]
+                        hi_cz_final = proj_high["cam_z_valid"][hi_keep]
+
+                        lo_vi_final = lo_vi[lo_keep]
+                        lo_u_final = proj_low["u_valid"][lo_keep]
+                        lo_v_final = proj_low["v_valid"][lo_keep]
+                        lo_cz_final = proj_low["cam_z_valid"][lo_keep]
+                    else:
+                        hi_vi_final = hi_vi
+                        hi_u_final = proj_high["u_valid"]
+                        hi_v_final = proj_high["v_valid"]
+                        hi_cz_final = proj_high["cam_z_valid"]
+                        lo_vi_final = lo_vi
+                        lo_u_final = proj_low["u_valid"]
+                        lo_v_final = proj_low["v_valid"]
+                        lo_cz_final = proj_low["cam_z_valid"]
+                else:
+                    hi_vi_final = hi_vi
+                    hi_u_final = proj_high["u_valid"]
+                    hi_v_final = proj_high["v_valid"]
+                    hi_cz_final = proj_high["cam_z_valid"]
+                    lo_vi_final = lo_vi
+                    lo_u_final = proj_low["u_valid"]
+                    lo_v_final = proj_low["v_valid"]
+                    lo_cz_final = proj_low["cam_z_valid"]
+
+                do_depth_check = use_depth_check if use_depth_check is not None else warp_depth_check
+
+                # Paint high-layer pixels into the high ortho buffer
+                if hi_vi_final.shape[0] > 0 and ortho_rgb_high is not None:
+                    n_hi = _depth_filter_and_paint(
+                        hi_vi_final, hi_u_final, hi_v_final, hi_cz_final,
+                        image, do_depth_check, proj_high["img_path"],
+                        proj_high["w_img"], proj_high["h_img"],
+                        ortho_rgb_high, painted_high,
+                        blend_rgb_high, blend_weight_high, score_tensor,
+                    )
+                    layered_warp_high_painted += n_hi
+                    total_painted += n_hi
+
+                # Paint low-layer pixels into the primary (ground) ortho buffer
+                if lo_vi_final.shape[0] > 0:
+                    n_lo = _depth_filter_and_paint(
+                        lo_vi_final, lo_u_final, lo_v_final, lo_cz_final,
+                        image, do_depth_check, proj_low["img_path"],
+                        proj_low["w_img"], proj_low["h_img"],
+                        ortho_rgb, painted,
+                        blend_rgb, blend_weight, score_tensor,
+                    )
+                    layered_warp_low_painted += n_lo
+                    total_painted += n_lo
 
         # Free VRAM
-        del tensor_img, grid, sampled, colors
         if device.type == 'cuda':
             torch.cuda.empty_cache()
 
-        return int(valid_indices.shape[0])
+        return total_painted
 
-    def analyze_black_pixels(black_mask):
+    def analyze_black_pixels(black_mask, edge_fallback_enabled):
         total_black = int(black_mask.sum().item())
         analysis = {
             "total_black_pixels": total_black,
@@ -1169,6 +1745,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "image_missing": 0,
                 "behind_camera": 0,
                 "out_of_bounds": 0,
+                "skipped_edge_policy": 0,
                 "unknown": 0,
             },
             "fallback_failure_by_image": [],
@@ -1196,6 +1773,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 "image_missing": 0,
                 "behind_camera": 0,
                 "out_of_bounds": 0,
+                "skipped_edge_policy": 0,
                 "unknown": 0,
             }
 
@@ -1203,6 +1781,12 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 image_failure["image_missing"] = requested
                 analysis["fallback_failure_counts"]["image_missing"] += requested
             else:
+                if not edge_fallback_enabled:
+                    skipped_edge_policy = int((mask & edge_assignment_mask).sum().item())
+                    if skipped_edge_policy > 0:
+                        image_failure["skipped_edge_policy"] = skipped_edge_policy
+                        analysis["fallback_failure_counts"]["skipped_edge_policy"] += skipped_edge_policy
+
                 front_count = int(projection["front_mask"].sum().item())
                 behind_count = requested - front_count
                 if behind_count > 0:
@@ -1220,6 +1804,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                     image_failure["image_missing"]
                     + image_failure["behind_camera"]
                     + image_failure["out_of_bounds"]
+                    + image_failure["skipped_edge_policy"]
                 )
                 unknown = max(0, requested - classified)
                 if unknown > 0:
@@ -1236,13 +1821,29 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         return analysis
 
     # ---- Pass 1: angle-aware assignment ----
-    report(vol_id, "ORTHO", 97, f"Pass 1: angle-aware warping {total_images} images…", report_fn)
+    # When blending is enabled, every primary camera paints all pixels where
+    # it scores above threshold (not just its "winning" pixels). The per-pixel
+    # camera score is used as a blending weight so the final colour is a
+    # weighted average of all contributing cameras — this averages out
+    # per-camera sampling noise and eliminates seam artifacts.
+    report(vol_id, "ORTHO", 97, f"Pass 1: angle-aware warping {total_images} images (blending={'on' if enable_blending else 'off'})…", report_fn)
     images_processed = 0
     total_painted = 0
 
     for img_id, image in reconstruction.images.items():
-        mask = (voronoi_map == img_id) & valid_dsm_mask
-        n_painted = _warp_image(img_id, image, mask, margin_px=primary_margin_px)
+        if enable_blending and img_id in valid_images:
+            # Let every primary camera paint all pixels it scores above threshold
+            cam_assigned = (voronoi_map == img_id) & valid_dsm_mask
+            if not cam_assigned.any():
+                image_stats[img_id]["primary_painted_pixels"] = 0
+                images_processed += 1
+                continue
+            mask = cam_assigned  # still use winner-takes-all for mask selection
+            n_painted = _warp_image(img_id, image, mask, margin_px=primary_margin_px,
+                                   score_tensor=primary_best_score.float())
+        else:
+            mask = (voronoi_map == img_id) & valid_dsm_mask
+            n_painted = _warp_image(img_id, image, mask, margin_px=primary_margin_px)
         total_painted += n_painted
         image_stats[img_id]["primary_painted_pixels"] = int(n_painted)
 
@@ -1260,7 +1861,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     # is attempted from the best fallback camera for that pixel, rather than a
     # coarse image-by-image heuristic.
     enable_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_FALLBACK_FILL", "1")).strip().lower() in ("1", "true", "yes", "on")
-    enable_edge_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL", "0")).strip().lower() in ("1", "true", "yes", "on")
+    enable_edge_fallback_fill = str(os.getenv("ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL", "1")).strip().lower() in ("1", "true", "yes", "on")
     unpainted = valid_dsm_mask & (~painted)
     n_unpainted = int(unpainted.sum())
     edge_fallback_painted_pixels = 0
@@ -1278,7 +1879,7 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 continue
             edge_mask = mask & edge_assignment_mask
             non_edge_mask = mask & (~edge_assignment_mask)
-            n_painted = _warp_image(img_id, image, mask, margin_px=fallback_margin_px)
+            n_painted = _warp_image(img_id, image, mask, margin_px=fallback_margin_px, use_depth_check=warp_depth_check_fallback)
             image_stats[img_id]["fallback_painted_pixels"] = int(n_painted)
             if edge_mask.any():
                 edge_fallback_painted_pixels += int((painted & edge_mask).sum().item())
@@ -1297,6 +1898,95 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     elif n_unpainted > 0:
         report(vol_id, "ORTHO", 97, f"Skipping fallback fill for {n_unpainted} pixels to avoid edge artifacts.", report_fn)
 
+    # ---- Pass 2b: Unscored hole-filling sweep ----
+    # After the scored passes, there may still be holes where the assigned
+    # camera was Z-buffer blocked. Sweep ALL cameras (sorted by nadirness)
+    # and try to paint every remaining hole. The Z-buffer ensures only
+    # non-occluded projections succeed.
+    remaining_after_fallback = int((valid_dsm_mask & (~painted)).sum())
+    enable_hole_sweep = str(os.getenv("ORTHO_DSM_ENABLE_HOLE_SWEEP", "1")).strip().lower() in ("1", "true", "yes", "on")
+    hole_sweep_painted = 0
+    if enable_hole_sweep and remaining_after_fallback > 0:
+        # Sort all cameras by nadirness (most nadir first) for quality
+        sorted_img_ids = sorted(
+            reconstruction.images.keys(),
+            key=lambda iid: build_diagnostics["image_angles_deg"].get(iid, 90.0),
+        )
+        report(
+            vol_id, "ORTHO", 97,
+            f"Pass 2b: hole-filling sweep with {len(sorted_img_ids)} cameras for {remaining_after_fallback} remaining pixels…",
+            report_fn,
+        )
+        sweep_processed = 0
+        for img_id in sorted_img_ids:
+            remaining_mask = valid_dsm_mask & (~painted)
+            if not remaining_mask.any():
+                break
+            image = reconstruction.images[img_id]
+            n_painted = _warp_image(
+                img_id, image, remaining_mask,
+                margin_px=fallback_margin_px,
+                use_depth_check=True,
+            )
+            hole_sweep_painted += n_painted
+            sweep_processed += 1
+            if sweep_processed % 25 == 0:
+                remaining = int((valid_dsm_mask & (~painted)).sum())
+                report(
+                    vol_id, "ORTHO", 97,
+                    f"Pass 2b: tried {sweep_processed}/{len(sorted_img_ids)} cameras, {remaining} pixels left…",
+                    report_fn,
+                )
+        remaining_after_sweep = int((valid_dsm_mask & (~painted)).sum())
+        report(
+            vol_id, "ORTHO", 97,
+            f"Pass 2b done: painted {hole_sweep_painted}, {remaining_after_sweep} pixels left.",
+            report_fn,
+        )
+
+    # ---- Resolve blended colours ----
+    # If multi-camera blending was active, convert accumulated weighted sums
+    # into final pixel colours.
+    if enable_blending:
+        has_blend = blend_weight > 0
+        for ch in range(3):
+            blend_rgb[ch][has_blend] /= blend_weight[has_blend]
+        ortho_rgb = blend_rgb.clamp(0, 255).to(torch.uint8)
+        blend_pixels = int(has_blend.sum().item())
+        report(vol_id, "ORTHO", 98, f"Blend resolve: {blend_pixels} pixels from weighted multi-camera average.", report_fn)
+        del blend_rgb, blend_weight
+
+        # Resolve high-layer blending
+        if layered_dsm_active and blend_rgb_high is not None and blend_weight_high is not None:
+            has_blend_high = blend_weight_high > 0
+            for ch in range(3):
+                blend_rgb_high[ch][has_blend_high] /= blend_weight_high[has_blend_high]
+            ortho_rgb_high = blend_rgb_high.clamp(0, 255).to(torch.uint8)
+            hi_blend_count = int(has_blend_high.sum().item())
+            report(vol_id, "ORTHO", 98, f"High-layer blend resolve: {hi_blend_count} pixels.", report_fn)
+            del blend_rgb_high, blend_weight_high
+    else:
+        blend_pixels = 0
+
+    # ── Merge dual-layer ortho: composite high (object) on top of low (ground) ──
+    # The high layer represents the object surface (car roof, etc.) and should
+    # be painted on top of the ground layer at dual-layer cells.  This gives
+    # us clean ground texture right up to the object boundary AND a crisp
+    # object top, eliminating the halo artifact.
+    if layered_dsm_active and ortho_rgb_high is not None and painted_high is not None:
+        composite_mask = has_dual_layer & painted_high
+        composite_count = int(composite_mask.sum().item())
+        if composite_count > 0:
+            ortho_rgb[:, composite_mask] = ortho_rgb_high[:, composite_mask]
+            painted[composite_mask] = True
+        report(
+            vol_id, "ORTHO", 98,
+            f"Layer merge: composited {composite_count} high-layer pixels on top of ground. "
+            f"(high painted={layered_warp_high_painted}, low painted={layered_warp_low_painted})",
+            report_fn,
+        )
+        del ortho_rgb_high, painted_high
+
     # ---- Pass 3: Small-hole inpainting ----
     # If the ground is still occluded in every viable image, no projection can
     # recover the true texture. In that case, fill only small remaining holes
@@ -1305,7 +1995,10 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
     enable_inpaint_fill = str(os.getenv("ORTHO_DSM_ENABLE_INPAINT", "1")).strip().lower() in ("1", "true", "yes", "on")
     if enable_inpaint_fill and remaining_holes > 0:
         edge_inpaint_dilation_px = max(0, int(os.getenv("ORTHO_DSM_INPAINT_EDGE_DILATION_PX", "2")))
-        inpaint_edge_only = str(os.getenv("ORTHO_DSM_INPAINT_EDGE_ONLY", "1")).strip().lower() in ("1", "true", "yes", "on")
+        inpaint_edge_only = str(os.getenv("ORTHO_DSM_INPAINT_EDGE_ONLY", "0")).strip().lower() in ("1", "true", "yes", "on")
+        inpaint_min_valid_neighbors = max(0, int(os.getenv("ORTHO_DSM_INPAINT_MIN_VALID_NEIGHBORS", "3")))
+        inpaint_exclude_edge_assignment = str(os.getenv("ORTHO_DSM_INPAINT_EXCLUDE_EDGE_ASSIGNMENT", "0")).strip().lower() in ("1", "true", "yes", "on")
+        inpaint_interior_radius_px = max(0, int(os.getenv("ORTHO_DSM_INPAINT_INTERIOR_RADIUS_PX", "0")))
         inpaint_allowed_mask = valid_dsm_mask
         if inpaint_edge_only:
             inpaint_zone = edge_sensitive_mask
@@ -1318,12 +2011,35 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                     padding=edge_inpaint_dilation_px,
                 ).squeeze(0).squeeze(0) > 0
             inpaint_allowed_mask = valid_dsm_mask & inpaint_zone
+        if inpaint_exclude_edge_assignment:
+            inpaint_allowed_mask = inpaint_allowed_mask & (~edge_assignment_mask)
+        if inpaint_interior_radius_px > 0:
+            interior_kernel_size = inpaint_interior_radius_px * 2 + 1
+            valid_window_count = F.avg_pool2d(
+                valid_dsm_mask.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=interior_kernel_size,
+                stride=1,
+                padding=inpaint_interior_radius_px,
+                divisor_override=1,
+            ).squeeze(0).squeeze(0)
+            inpaint_allowed_mask = inpaint_allowed_mask & (
+                valid_window_count >= float(interior_kernel_size * interior_kernel_size)
+            )
+        if inpaint_min_valid_neighbors > 0:
+            valid_neighbor_count = F.avg_pool2d(
+                valid_dsm_mask.float().unsqueeze(0).unsqueeze(0),
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                divisor_override=1,
+            ).squeeze(0).squeeze(0)
+            inpaint_allowed_mask = inpaint_allowed_mask & (valid_neighbor_count >= float(inpaint_min_valid_neighbors))
         ortho_rgb, painted = fill_small_color_holes_gpu(
             ortho_rgb,
             painted,
             inpaint_allowed_mask,
-            iterations=int(os.getenv("ORTHO_DSM_INPAINT_ITERATIONS", "4")),
-            min_neighbors=int(os.getenv("ORTHO_DSM_INPAINT_MIN_NEIGHBORS", "4")),
+            iterations=int(os.getenv("ORTHO_DSM_INPAINT_ITERATIONS", "60")),
+            min_neighbors=int(os.getenv("ORTHO_DSM_INPAINT_MIN_NEIGHBORS", "2")),
         )
         filled_after_inpaint = int((valid_dsm_mask & painted).sum())
         report(vol_id, "ORTHO", 98, f"Pass 3: inpainted small holes, coverage now {100.0 * filled_after_inpaint / max(1, valid_dsm_mask.sum().item()):.1f}%.", report_fn)
@@ -1332,12 +2048,12 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
 
     final_fill = 100.0 * painted.sum().item() / max(1, valid_dsm_mask.sum().item())
     fallback_success = sum(stats["fallback_painted_pixels"] for stats in image_stats.values())
-    black_pixel_analysis = analyze_black_pixels(valid_dsm_mask & (~painted))
+    black_pixel_analysis = analyze_black_pixels(valid_dsm_mask & (~painted), enable_edge_fallback_fill)
     report(
         vol_id,
         "ORTHO",
         98,
-        f"Diagnostics: primary painted={sum(stats['primary_painted_pixels'] for stats in image_stats.values())}, fallback painted={fallback_success}, remaining holes={int((valid_dsm_mask & (~painted)).sum())}",
+        f"Diagnostics: primary painted={sum(stats['primary_painted_pixels'] for stats in image_stats.values())}, fallback painted={fallback_success}, sweep painted={hole_sweep_painted}, remaining holes={int((valid_dsm_mask & (~painted)).sum())}",
         report_fn,
     )
     if black_pixel_analysis["total_black_pixels"] > 0:
@@ -1351,12 +2067,21 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
                 f"no_fallback_candidate={black_pixel_analysis['no_fallback_candidate_pixels']}, "
                 f"behind_camera={black_pixel_analysis['fallback_failure_counts']['behind_camera']}, "
                 f"out_of_bounds={black_pixel_analysis['fallback_failure_counts']['out_of_bounds']}, "
+                f"skipped_edge_policy={black_pixel_analysis['fallback_failure_counts']['skipped_edge_policy']}, "
                 f"image_missing={black_pixel_analysis['fallback_failure_counts']['image_missing']}, "
                 f"unknown={black_pixel_analysis['fallback_failure_counts']['unknown']}"
             ),
             report_fn,
         )
     report(vol_id, "ORTHO", 98, f"Mosaicking complete: {final_fill:.1f}% fill rate.", report_fn)
+    if warp_depth_check and warp_depth_checked_total > 0:
+        report(
+            vol_id, "ORTHO", 98,
+            f"Z-buffer depth check: {warp_depth_checked_total} checked, "
+            f"{warp_depth_occluded_total} occluded ({100.0 * warp_depth_occluded_total / warp_depth_checked_total:.1f}%), "
+            f"depth-edge rejected={warp_depth_edge_rejected_total}",
+            report_fn,
+        )
 
     # ---- Write GeoTIFF ----
     report(vol_id, "ORTHO", 98, "Writing GeoTIFF…", report_fn)
@@ -1391,6 +2116,15 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         "normal_maps_used": build_diagnostics["normal_maps_used"],
         "depth_samples_considered": build_diagnostics["depth_samples_considered"],
         "depth_samples_accepted": build_diagnostics["depth_samples_accepted"],
+        "dsm_build_max_view_angle_deg": build_diagnostics["dsm_build_max_view_angle_deg"],
+        "dsm_source_image_count": build_diagnostics["dsm_source_image_count"],
+        "dsm_source_images_skipped_by_angle_count": build_diagnostics["dsm_source_images_skipped_by_angle_count"],
+        "dsm_ambiguous_height_m": build_diagnostics.get("dsm_ambiguous_height_m"),
+        "dsm_ambiguous_fixed_count": build_diagnostics.get("dsm_ambiguous_fixed_count", 0),
+        "dsm_anomaly_window": build_diagnostics.get("dsm_anomaly_window"),
+        "dsm_anomaly_threshold_m": build_diagnostics.get("dsm_anomaly_threshold_m"),
+        "dsm_anomaly_ratio": build_diagnostics.get("dsm_anomaly_ratio"),
+        "dsm_anomaly_fixed_count": build_diagnostics.get("dsm_anomaly_fixed_count", 0),
         "support_distance_histogram": build_diagnostics["support_distance_histogram"],
         "final_fill_percent": float(final_fill),
         "remaining_holes": int((valid_dsm_mask & (~painted)).sum().item()),
@@ -1399,19 +2133,46 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
         "edge_min_raw_support": build_diagnostics["edge_min_raw_support"],
         "edge_dilation_px": build_diagnostics["edge_dilation_px"],
         "edge_assignment_dilation_px": build_diagnostics["edge_assignment_dilation_px"],
+        "edge_occlusion_buffer_px": build_diagnostics["edge_occlusion_buffer_px"],
         "raw_edge_pixel_count": build_diagnostics["raw_edge_pixel_count"],
         "edge_sensitive_pixel_count": build_diagnostics["edge_sensitive_pixel_count"],
         "edge_assignment_pixel_count": build_diagnostics["edge_assignment_pixel_count"],
+        "edge_occlusion_pixel_count": build_diagnostics["edge_occlusion_pixel_count"],
         "edge_rejected_count": build_diagnostics["edge_rejected_count"],
         "edge_source_depth_tolerance_m": build_diagnostics["edge_source_depth_tolerance_m"],
         "edge_source_depth_neighborhood_px": build_diagnostics["edge_source_depth_neighborhood_px"],
+        "edge_assignment_max_support_distance_px": build_diagnostics["edge_assignment_max_support_distance_px"],
+        "edge_raw_depth_spread_m": build_diagnostics["edge_raw_depth_spread_m"],
+        "edge_raw_depth_spread_min_samples": build_diagnostics["edge_raw_depth_spread_min_samples"],
         "edge_source_visibility_checked_count": build_diagnostics["edge_source_visibility_checked_count"],
         "edge_source_visibility_rejected_count": build_diagnostics["edge_source_visibility_rejected_count"],
+        "edge_assignment_paint_rejected_count": build_diagnostics["edge_assignment_paint_rejected_count"],
+        "edge_raw_mixed_depth_rejected_count": build_diagnostics["edge_raw_mixed_depth_rejected_count"],
+        "warp_depth_check": warp_depth_check,
+        "warp_depth_check_fallback": warp_depth_check_fallback,
+        "warp_depth_tolerance_m": warp_depth_tolerance_m,
+        "warp_depth_neighborhood_px": warp_depth_neighborhood_px,
+        "warp_depth_checked_total": warp_depth_checked_total,
+        "warp_depth_occluded_total": warp_depth_occluded_total,
+        "warp_depth_edge_check": warp_depth_edge_check,
+        "warp_depth_edge_gradient": warp_depth_edge_gradient,
+        "warp_depth_edge_rejected_total": warp_depth_edge_rejected_total,
+        "blending_enabled": enable_blending,
+        "layered_dsm_enabled": build_diagnostics.get("layered_dsm_enabled", False),
+        "layered_dsm_threshold_m": build_diagnostics.get("layered_dsm_threshold_m"),
+        "layered_dilation_px": build_diagnostics.get("layered_dilation_px", 0),
+        "dual_layer_pixel_count": build_diagnostics.get("dual_layer_pixel_count", 0),
+        "layered_warp_high_painted": layered_warp_high_painted,
+        "layered_warp_low_painted": layered_warp_low_painted,
+        "layered_layer_tolerance_m": layered_layer_tolerance_m,
+        "dsm_morph_opening_px": build_diagnostics.get("dsm_morph_opening_px", 0),
+        "dsm_morph_fixed_count": build_diagnostics.get("dsm_morph_fixed_count", 0),
         "edge_fallback_fill_enabled": enable_edge_fallback_fill,
         "edge_fallback_painted_pixels": int(edge_fallback_painted_pixels),
         "non_edge_fallback_painted_pixels": int(non_edge_fallback_painted_pixels),
-        "edge_primary_thresholds": build_diagnostics["edge_primary_thresholds"],
-        "edge_fallback_thresholds": build_diagnostics["edge_fallback_thresholds"],
+        "hole_sweep_painted_pixels": int(hole_sweep_painted),
+        "edge_primary_max_view_angle_deg": build_diagnostics["edge_primary_max_view_angle_deg"],
+        "edge_fallback_max_view_angle_deg": build_diagnostics["edge_fallback_max_view_angle_deg"],
         "primary_image_count": len(valid_images),
         "fallback_image_count": len(fallback_images),
         "thresholds": {
@@ -1419,6 +2180,9 @@ def generate_true_orthophoto_pytorch(dense_path, ortho_file, utm_crs, vol_id,
             "fallback": build_diagnostics["fallback_thresholds"],
             "primary_margin_px": int(primary_margin_px),
             "fallback_margin_px": int(fallback_margin_px),
+            "inpaint_min_valid_neighbors": int(os.getenv("ORTHO_DSM_INPAINT_MIN_VALID_NEIGHBORS", "3")),
+            "inpaint_exclude_edge_assignment": str(os.getenv("ORTHO_DSM_INPAINT_EXCLUDE_EDGE_ASSIGNMENT", "0")).strip().lower() in ("1", "true", "yes", "on"),
+            "inpaint_interior_radius_px": max(0, int(os.getenv("ORTHO_DSM_INPAINT_INTERIOR_RADIUS_PX", "0"))),
         },
         "images": [
             {

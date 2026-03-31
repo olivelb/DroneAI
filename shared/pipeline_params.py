@@ -46,6 +46,11 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "fusion_chunk_target_memory_gib": "16",
         "ortho_mesh_resolution": "0.02",
         "use_mesh_ortho": True,
+        "gs_iterations": "7000",
+        "gs_data_factor": "auto",
+        "gs_cap_max": "2000000",
+        "gs_sh_degree": "3",
+        "gs_ortho_reg": "0.5",
     },
     "modern": {
         "feature_type": "ALIKED_N16ROT",
@@ -68,6 +73,11 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "fusion_chunk_target_memory_gib": "16",
         "ortho_mesh_resolution": "0.02",
         "use_mesh_ortho": True,
+        "gs_iterations": "7000",
+        "gs_data_factor": "auto",
+        "gs_cap_max": "2000000",
+        "gs_sh_degree": "3",
+        "gs_ortho_reg": "0.5",
     },
 }
 
@@ -90,8 +100,13 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "fusion_min_num_pixels": {"label": "Fusion Min Num Pixels", "type": "int", "group": "Fusion", "min": 1, "max": 32, "step": 1},
     "fusion_cache_size": {"label": "Fusion Cache Size (GiB)", "type": "float", "group": "Fusion", "min": 1, "max": 256, "step": 0.5},
     "fusion_chunk_target_memory_gib": {"label": "Fusion Chunk Target Memory (GiB)", "type": "float", "group": "Fusion", "min": 4, "max": 256, "step": 1},
-    "ortho_mesh_resolution": {"label": "Ortho Resolution", "type": "float", "group": "Orthomosaic", "min": 0.005, "max": 1, "step": 0.005},
-    "use_mesh_ortho": {"label": "Use True Ortho DSM", "type": "bool", "group": "Orthomosaic"},
+    "ortho_mesh_resolution": {"label": "Ortho Resolution (m/px)", "type": "float", "group": "Orthomosaic", "min": 0.005, "max": 1, "step": 0.005},
+    "use_mesh_ortho": {"label": "Use Gaussian Splatting Ortho", "type": "bool", "group": "Orthomosaic"},
+    "gs_iterations": {"label": "GS Training Iterations", "type": "int", "group": "Orthomosaic", "min": 1000, "max": 100000, "step": 1000},
+    "gs_data_factor": {"label": "GS Training Image Scale", "type": "select", "group": "Orthomosaic", "options": ["auto", "1", "2", "4", "8"]},
+    "gs_cap_max": {"label": "GS Max Gaussians", "type": "int", "group": "Orthomosaic", "min": 500000, "max": 20000000, "step": 500000},
+    "gs_sh_degree": {"label": "GS Spherical Harmonics Degree", "type": "select", "group": "Orthomosaic", "options": ["1", "2", "3"]},
+    "gs_ortho_reg": {"label": "GS Ortho Regularisation Weight", "type": "float", "group": "Orthomosaic", "min": 0, "max": 2, "step": 0.1},
 }
 
 PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["legacy"].keys() | PIPELINE_DEFAULTS["modern"].keys())

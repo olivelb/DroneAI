@@ -30,6 +30,7 @@ venv/
 .venv/
 .train-venv/
 test_venv/
+ortho_test_venv/
 
 # === Node.js / Next.js ===
 node_modules/

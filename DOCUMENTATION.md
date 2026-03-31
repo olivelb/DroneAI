@@ -159,9 +159,11 @@ Its responsibilities are:
 - materialize the mission workspace under the mounted host filesystem
 - extract GPS from EXIF and determine a projected UTM CRS
 - select the photogrammetry profile: `modern` or `legacy`
-- run COLMAP feature extraction, matching, mapping, undistortion, PatchMatch stereo, and stereo fusion
-- geo-align the reconstructed model after dense fusion
-- generate an orthomosaic primarily from COLMAP geometric depth maps, with legacy point-cloud projection as fallback
+- run COLMAP feature extraction, matching, mapping, and undistortion
+- when Gaussian Splatting ortho is enabled: skip PatchMatch stereo and fusion entirely (major time saving)
+- when Gaussian Splatting ortho is disabled: run PatchMatch stereo and stereo fusion, then geo-align the reconstructed model
+- generate an orthomosaic using 3D Gaussian Splatting (primary path) or legacy point-cloud projection (fallback)
+- extract drone EXIF GPS altitude data and use it to shift the height map to real-world elevations
 - publish the orthomosaic event to `images-ortho`
 - publish detailed progress and log events to `pipeline-status`
 - honor cancellation commands from `pipeline-control`
@@ -442,16 +444,18 @@ For a mission with `vol_id=mission_001`, the COLMAP worker typically uses:
     0/
   sparse_geo/
   dense/
+    sparse/
     images/
-    stereo/
-    fused.ply
-    fused_geo.ply
-    meshed-poisson.ply
-    textured/
-      mesh.ply
-      texture.png
+    stereo/         (only present when GS ortho is disabled)
+    fused.ply       (only present when GS ortho is disabled)
+    fused_geo.ply   (only present when GS ortho is disabled)
   alignment_transform.json
+  gaussian_checkpoints/
+    full/
+      point_cloud_iter7000.ply
+    final.ply
   orthomosaic.tif
+  orthomosaic.height.tif
   orthomosaic_annotated.tif
   tiles/
     mission_001/
@@ -465,9 +469,12 @@ Important mission artifacts:
 - `geo_data.txt`: image-to-projected-coordinate reference file used for alignment
 - `geo_data.txt.crs`: persisted projected CRS selected during GPS extraction
 - `database.db`: COLMAP feature and match database
-- `dense/fused.ply`: dense point cloud in COLMAP coordinates
 - `alignment_transform.json`: Sim3 transform from COLMAP coordinates to projected coordinates
-- `orthomosaic.tif`: georeferenced orthomosaic
+- `gaussian_checkpoints/`: 3D Gaussian Splatting model checkpoints and final merged PLY
+- `gaussian_checkpoints/final.ply`: final filtered Gaussian model in COLMAP-local coordinates
+- `orthomosaic.tif`: georeferenced RGB orthomosaic
+- `orthomosaic.height.tif`: companion height map (DSM) GeoTIFF with real-world altitudes from drone EXIF
+- `dense/fused.ply`: dense point cloud in COLMAP coordinates (legacy fallback path only)
 - `orthomosaic_annotated.tif`: final annotated orthomosaic produced by app3
 
 ## End-to-end event sequence
@@ -584,7 +591,7 @@ Characteristics:
 - mapper command: `global_mapper`
 - view graph calibration enabled
 - orientation reading enabled
-- depth-map TrueOrtho enabled
+- Gaussian Splatting orthomosaic enabled (default)
 
 This is the default and the main intended runtime path.
 
@@ -596,9 +603,9 @@ Characteristics:
 - matcher type: SIFT-compatible spatial matching
 - mapper command: `mapper`
 - no view graph calibration
-- depth-map TrueOrtho still enabled
+- Gaussian Splatting orthomosaic enabled (same as modern)
 
-This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the primary orthomosaic mode.
+This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the orthomosaic mode.
 
 ### Smart resume and compatibility checks
 
@@ -613,16 +620,18 @@ If the persisted database was created by the opposite profile, it is deleted so 
 
 This is important because reusing a database with the wrong feature representation would corrupt the remainder of the pipeline.
 
-### TrueOrtho rerun readiness
+### Gaussian Splatting rerun readiness
 
-For `use_mesh_ortho: true`, app1 does not treat the dense workspace as reusable unless all of these are true:
+For `use_mesh_ortho: true` (the default), the Gaussian Splatting path treats the workspace as reusable when:
 
 - `dense/sparse/cameras.bin` exists
 - `dense/sparse/images.bin` exists
 - `dense/sparse/points3D.bin` exists
-- at least three `dense/stereo/depth_maps/*.geometric.bin` files exist
+- undistorted images exist in `dense/images/`
 
-This readiness is checked at startup, refreshed again after `image_undistorter`, refreshed after `patch_match_stereo`, and checked one last time immediately before the TrueOrtho stage. That prevents reruns from failing because the worker cached a stale `dense_sparse_ready` value before the dense workspace was rebuilt.
+Unlike the legacy TrueOrtho path, the GS pipeline does **not** require geometric depth maps. PatchMatch stereo and fusion are skipped entirely.
+
+This readiness is checked at startup and refreshed again after `image_undistorter`. If undistorted images and the sparse model are present, the worker jumps directly to the `GAUSS` stage.
 
 ### GPU index normalization
 
@@ -673,12 +682,12 @@ stateDiagram-v2
     Matching --> Mapping: legacy path
     Calibrating --> Mapping
     Mapping --> Undistort
-    Undistort --> PatchMatch
+    Undistort --> GaussianSplatting: GS ortho enabled
+    Undistort --> PatchMatch: GS ortho disabled
+    GaussianSplatting --> PublishOrtho
     PatchMatch --> Fusion
     Fusion --> Alignment
-    Alignment --> OrthoTrueOrtho
-    Alignment --> OrthoFromPLY: TrueOrtho disabled or fallback
-    OrthoTrueOrtho --> PublishOrtho
+    Alignment --> OrthoFromPLY
     OrthoFromPLY --> PublishOrtho
     PublishOrtho --> Completed
 
@@ -690,10 +699,10 @@ stateDiagram-v2
     Calibrating --> Cancelled
     Mapping --> Cancelled
     Undistort --> Cancelled
+    GaussianSplatting --> Cancelled
     PatchMatch --> Cancelled
     Fusion --> Cancelled
     Alignment --> Cancelled
-    OrthoTrueOrtho --> Cancelled
     OrthoFromPLY --> Cancelled
 
     Preparing --> Error
@@ -702,10 +711,10 @@ stateDiagram-v2
     Matching --> Error
     Mapping --> Error
     Undistort --> Error
+    GaussianSplatting --> Error
     PatchMatch --> Error
     Fusion --> Error
     Alignment --> Error
-    OrthoTrueOrtho --> Error
     OrthoFromPLY --> Error
 ```
 
@@ -729,9 +738,10 @@ So the pipeline does this instead:
 4. apply that transform only after fusion
 5. use the alignment transform during orthomosaic rasterization
 
-Additional precision guards now exist in the orthomosaic code:
+Additional precision guards exist in the orthomosaic code:
 
-- the depth-map TrueOrtho path keeps projected-coordinate transforms and camera reprojection math in float64 where large CRS values matter
+- the Gaussian Splatting pipeline splits the Sim3 into R·s (applied in float32 to Gaussian means and axes) and t (kept as a float64 GeoTIFF origin), avoiding precision loss entirely
+- the legacy depth-map path keeps projected-coordinate transforms and camera reprojection math in float64 where large CRS values matter
 - mesh and point-cloud rasterizers shift X, Y, and Z into local scene coordinates before float32 upload or rasterization
 - when app1 writes `fused_geo.ply` for the legacy point-cloud fallback, transformed `x/y/z/nx/ny/nz` fields are preserved as float64 so large projected coordinates are not quantized away
 
@@ -743,123 +753,223 @@ This section describes the repository-specific orthomosaic logic in detail.
 
 ### Overview
 
-The orthomosaic builder defaults to a **depth-map True Orthophoto GPU pipeline**, with a fallback to legacy direct point-cloud projection.
-The current app1 runtime no longer dispatches the textured-mesh orthomosaic path from `main.py`; instead it uses COLMAP geometric depth maps plus the aligned sparse model to build a DSM directly in `ortho_dsm.py`.
+The orthomosaic builder defaults to a **3D Gaussian Splatting (3DGS) pipeline**, with a fallback to legacy direct point-cloud projection.
 
-Primary path (True Orthophoto, requires `use_mesh_ortho: True` within pipeline parameter payload):
+The GS pipeline replaces the previous depth-map TrueOrtho path. It trains a Gaussian radiance field directly from COLMAP undistorted images and the sparse reconstruction, renders an orthographic True Digital Orthophoto Map (TDOM), and writes a georeferenced GeoTIFF with a companion height map shifted to real-world drone EXIF altitudes.
 
-1. Read `dense/sparse` plus COLMAP `dense/stereo/depth_maps/*.geometric.bin` and optional normal maps
-2. Reproject depth samples directly into a 2.5D DSM, keeping projected-coordinate transforms in float64 where large CRS values matter
-3. Track raw support, gap-fill distance, and reject DSM cells that were expanded too far from real depth support
-4. Build raw-edge, edge-sensitive, and edge-assignment masks from local DSM depth discontinuities
-5. Score per-pixel primary and fallback cameras using nadir angle, surface incidence, optical-axis alignment, and source-depth visibility tests against the originating COLMAP depth maps
-6. Warp one source image at a time onto the DSM with PyTorch `grid_sample`, then fill fallback pixels conservatively with edge fallback disabled by default
-7. Optionally run edge-limited inpainting and write both `orthomosaic.tif` and `orthomosaic.tif.diagnostics.json`
+Primary path (Gaussian Splatting, `use_mesh_ortho: True`):
 
-Fallback path (Direct Point Cloud Projection):
+1. Load COLMAP sparse reconstruction and alignment transform from `dense/sparse/`
+2. Extract drone EXIF GPS altitudes from undistorted images
+3. Optionally partition the scene into an m×n grid (VastGaussian divide-and-conquer)
+4. Train a 3DGS model per cell using gsplat MCMC strategy with per-image appearance compensation and ortho-coverage regularisation
+5. Merge cell models (retain only Gaussians in core, non-overlap region)
+6. Apply Sim3 geo-alignment (rotation+scale to model, translation as float64 for GeoTIFF origin)
+7. Multi-stage post-processing filter: bounding-box crop → SOR → connected-component analysis → anisotropy clipping
+8. Render orthographic RGB orthomosaic and height map via gsplat ortho rasterisation
+9. Shift height map to match mean drone EXIF GPS altitude
+10. Write GeoTIFF with projected CRS
 
-1. Applied automatically if True Ortho fails, or if explicitly requested (`use_mesh_ortho: False`)
-2. Uses iterative top-down point splatting
+Fallback path (Direct Point Cloud Projection, `use_mesh_ortho: False`):
+
+1. Requires PatchMatch stereo + fusion (not skipped)
+2. Uses iterative top-down point splatting from `fused.ply` or `fused_geo.ply`
+
+### Gaussian Splatting orthophoto pipeline
+
+This is the primary and recommended orthomosaic path. It is implemented in `app1-colmap/gaussian_ortho/`.
+
+#### Research foundations
+
+The implementation draws from several key papers:
+
+- **3D Gaussian Splatting** (Kerbl et al. 2023): core Gaussian scene representation with position, covariance (rotation quaternion + log-scale), opacity, and spherical harmonics colour coefficients
+- **3DGS as MCMC** (Kheradmand et al. 2024): Markov Chain Monte Carlo densification strategy with bounded Gaussian count (`cap_max`), stochastic relocation instead of unbounded clone/split
+- **gsplat** (Ye et al. 2025): differentiable rasterisation library providing both perspective (training) and orthographic (TDOM rendering) camera models, antialiased rendering, and packed sparse rasterisation
+- **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
+- **Tortho-Gaussian** (Wang et al. 2024): Fully Anisotropic Gaussian Kernel (FAGK) with SH-based view-dependent opacity, and orthographic projection matrix formulation (Equation 9)
+
+#### Key design decisions
+
+**Training stays in COLMAP-local coordinates.** The Gaussian model is trained in compact float32 coordinates centred near zero. The Sim3 geo-alignment is applied only after training, and the translation component (~10⁶ m for UTM) is kept as float64 and folded into the GeoTIFF origin. This avoids catastrophic float32 precision loss (e.g. Y ≈ 4,702,500 → float32 ULP = 0.5 m = 25 px banding at GSD 0.02 m).
+
+**PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
+
+**Per-image appearance compensation.** A small per-image MLP (embedding → affine colour transform) decouples transient exposure and white-balance variations from persistent Gaussian colours. At ortho-render time the appearance model is not used, so flight-strip banding disappears from the output.
+
+**Ortho-coverage regularisation.** During training, random small orthographic crops are rendered and a differentiable loss penalises low alpha coverage and row-to-row alpha variance (which directly causes horizontal banding in the ortho output). This loss is fully differentiable through gsplat rasterisation.
+
+**EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
+
+#### Step 1: Load COLMAP reconstruction
+
+The pipeline reads cameras, images, and 3D points from `dense/sparse/` via pycolmap. If an `alignment_transform.json` exists, it is loaded for later geo-alignment. Camera poses are stored as camera-to-world rotation + world-space translation.
+
+#### Step 1b: Extract EXIF altitudes
+
+GPS altitude is extracted from each undistorted image in `dense/images/` using EXIF `GPSAltitude` and `GPSAltitudeRef` tags. The mean of all valid altitudes is computed and stored for later height-map correction. If no EXIF altitude data is found, the pipeline falls back to model-relative Z values.
+
+#### Step 2: Scene partitioning (optional)
+
+For very large scenes, the model can be split into an m×n grid of overlapping cells (VastGaussian-style). Each cell gets its own set of cameras (assigned by visibility overlap) and local point cloud. Cells are trained independently. For typical drone missions (≤2000 images), a single partition (1×1) is sufficient and is the default.
+
+#### Step 3: Training
+
+Each cell is trained using gsplat's rasterisation with the following configuration:
+
+- **Loss**: 0.8 × L1 + 0.2 × D-SSIM
+- **Strategy**: MCMC (bounded Gaussian count) with stochastic relocation
+- **Optimisers**: per-parameter Adam (gsplat convention) with ExponentialLR decay on means
+- **Progressive SH**: spherical harmonics degree increases every 1000 iterations up to `sh_degree`
+- **Appearance model**: per-image affine colour correction (small embedding → 6-output MLP producing per-channel scale and bias)
+- **Ortho regularisation**: every 20 iterations from iteration 500, renders a random 256×256 ortho crop and penalises low coverage + row-to-row alpha variance + total variation
+- **Regularisation**: opacity regularisation (0.01) + scale regularisation (0.01) for MCMC stability
+- **Data loading**: images loaded one-at-a-time and downscaled by `data_factor` for VRAM efficiency
+
+Images are loaded one-at-a-time (not batched), so VRAM stays roughly constant regardless of dataset size. Memory profiling shows that even 2000 images with 8M Gaussians only uses ~5.7 GB VRAM.
+
+Default training parameters (configurable via dashboard UI):
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `gs_iterations` | 7000 | Training iterations |
+| `gs_data_factor` | auto (2 for ≤500 images, 4 for >500) | Image downscaling factor |
+| `gs_cap_max` | 2,000,000 | Maximum Gaussian count |
+| `gs_sh_degree` | 3 | Maximum spherical harmonics degree |
+| `gs_ortho_reg` | 0.5 | Ortho coverage regularisation weight |
+
+#### Step 4: Merge
+
+If partitioning was used, cell models are merged by retaining only Gaussians whose centres fall within the core (non-overlap) region of each cell. This discards duplicates in overlapping borders.
+
+#### Step 5: Geo-alignment
+
+The Sim3 transform from `alignment_transform.json` is split:
+
+- **Rotation + scale**: applied to model positions (`s * R @ xyz`), log-scales (`+= log(s)`), and rotation quaternions (pre-multiplied)
+- **Translation**: stored as float64 `geo_origin`, used only for GeoTIFF coordinate computation
+
+This split is critical for float32 precision preservation.
+
+#### Step 5b–5e: Post-processing filter chain
+
+The trained model undergoes four sequential filtering stages:
+
+1. **Bounding-box crop** (5b): remove Gaussians outside the geo-aligned point cloud bounds + 5 m padding, plus extreme scales (>99.5th percentile) and nearly transparent (opacity < 0.05)
+
+2. **Statistical Outlier Removal (SOR)** (5c): build a k-NN tree (k=16) via `scipy.spatial.cKDTree`. Compute mean distance to 16 nearest neighbours. Remove Gaussians where mean distance > μ + 1.5σ. This also breaks thin connections between the main scene and floater clusters.
+
+3. **Connected-Component filter** (5d): build a k-NN adjacency graph (k=16) as a sparse matrix. Compute connected components via `scipy.sparse.csgraph.connected_components`. Keep only the largest connected component, removing all disconnected floater clusters. This is the most effective filter against edge-of-scene floater groups that survive SOR because they have neighbours within their cluster.
+
+4. **Anisotropy clipping** (5e): limit the max/min log-scale ratio to 10×. Elongated Gaussians trained from perspective cameras produce stripe artefacts when rendered orthographically. Clamp large scales toward the mean log-scale per Gaussian.
+
+Validation results on a 113-image drone dataset: 2,000,000 initial → 1,403,610 (basic) → 1,368,111 (SOR −35k) → 1,265,425 (CC −103k). Dark artefacts reduced 54% vs. SOR-only. Edge crops completely clean, scene centre sharpness preserved.
+
+#### Step 6: Orthographic rendering
+
+The cleaned model is rendered using gsplat's orthographic camera model:
+
+- A virtual top-down camera is positioned above the scene, looking straight down
+- SH degree is capped at 1 for orthographic rendering (all ortho rays are parallel → higher SH bands produce spatially-uniform offset, not banding)
+- For large outputs, rendering is chunked into 4096×4096-pixel tiles and stitched
+- Both RGB (uint8) and height (float32) maps are produced
+
+The height map converts depth-in-camera to world Z: `height = z_top - depth`.
+
+#### Step 7: Height map altitude correction
+
+If EXIF altitudes were found in step 1b, the mean height map value is shifted to match the mean drone EXIF altitude:
+
+```
+z_offset = mean_exif_altitude - mean(height_map)
+height_map = height_map + z_offset
+```
+
+This gives real-world elevation values in the output CRS. If no EXIF altitude data was found, the raw model Z values are kept.
+
+#### Step 8: GeoTIFF writing
+
+The output is written as two GeoTIFF files:
+
+1. **RGB orthomosaic** (`orthomosaic.tif`): 3-band uint8, LZW compressed, with projected CRS and affine transform from `from_origin(geo_x_min, geo_y_max, resolution, resolution)`
+2. **Height map** (`orthomosaic.height.tif`): 1-band float32, LZW compressed, same CRS and affine transform
+
+The `geo_x_min` and `geo_y_max` are computed by adding the float64 `geo_origin` translation to the local-coordinate extent bounds. This preserves sub-centimetre positional accuracy.
 
 ### Orthomosaic construction flow
 
 ```mermaid
 flowchart TD
-  A[dense/sparse + geometric depth maps available] --> B{use_mesh_ortho enabled?}
-  B -->|Yes| C[Build DSM directly from COLMAP depth maps]
-  C --> D[Edge-aware camera scoring and source-depth visibility rejection]
-  D --> E[Primary image warp pass]
-  E --> F[Conservative fallback fill + optional edge-limited inpainting]
-  F --> H[Write GeoTIFF + diagnostics JSON]
-    B -->|No| I[Legacy float64 point splatting]
-  E -->|TrueOrtho failure| I
-    I --> H
+  A[dense/sparse + undistorted images available] --> B{use_mesh_ortho enabled?}
+  B -->|Yes| C0[Extract EXIF GPS altitudes from images]
+  C0 --> C[Train 3DGS model from images + sparse reconstruction]
+  C --> C1[MCMC densification + appearance compensation + ortho regularisation]
+  C1 --> C2[Apply Sim3 geo-alignment rotation+scale to model]
+  C2 --> D[Multi-stage filtering: BBox → SOR → CC → Anisotropy clip]
+  D --> E[Render orthographic RGB + height map via gsplat]
+  E --> E1[Shift height map to match mean EXIF altitude]
+  E1 --> H[Write GeoTIFF + height GeoTIFF]
+  B -->|No| I[PatchMatch + Fusion → Legacy float64 point splatting]
+  I --> H
 ```
 
-### Step 1: dense source selection
+### Gaussian Splatting ortho rerun readiness
 
-The primary TrueOrtho stage does not start from `fused.ply`.
+For `use_mesh_ortho: true`, app1 does not treat the dense workspace as reusable unless:
 
-It requires:
+- `dense/sparse/cameras.bin`, `images.bin`, and `points3D.bin` all exist
+- `dense/images/` directory exists with undistorted images
 
-- the undistorted sparse model under `dense/sparse`
-- geometric depth maps under `dense/stereo/depth_maps`
-- at least three usable geometric depth maps for the current mission
+This is simpler than the previous TrueOrtho readiness check (which also required geometric depth maps). The GS pipeline does not need depth maps at all.
 
-`fused.ply` remains relevant for the legacy point-cloud fallback and for the optional post-fusion geo-aligned export path.
+### GS pipeline tunables exposed in the dashboard UI
 
-If those depth-map artifacts already exist, the worker can skip recomputing SfM, undistortion, PatchMatch, and fusion and rebuild the orthomosaic only.
+All GS parameters are exposed in the **Orthomosaic** parameter group in the dashboard. The frontend renders these dynamically from `PARAMETER_METADATA` in `shared/pipeline_params.py`:
 
-This is an intentional fast path for reruns after orthomosaic logic changes.
+| UI Label | Key | Type | Default | Range |
+| --- | --- | --- | --- | --- |
+| Use Gaussian Splatting Ortho | `use_mesh_ortho` | bool | true | — |
+| Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
+| GS Training Iterations | `gs_iterations` | int | 7000 | 1000–100000 |
+| GS Training Image Scale | `gs_data_factor` | select | auto | auto/1/2/4/8 |
+| GS Max Gaussians | `gs_cap_max` | int | 2000000 | 500000–20000000 |
+| GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
+| GS Ortho Regularisation Weight | `gs_ortho_reg` | float | 0.5 | 0–2.0 |
 
-### Step 2: DSM construction, support tracking, and camera assignment
+### Scalability
 
-Instead of meshing the dense output first, the TrueOrtho builder constructs a DSM directly from COLMAP geometric depth maps.
+Memory profiling for the GS pipeline:
 
-- Each source depth map is projected into the ortho grid at the desired output resolution.
-- Optional normal maps reject unstable depth samples before they reach the DSM.
-- Gap filling tracks how far each cell expanded away from real support, and cells beyond `ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX` are rejected.
-- Local depth discontinuities create a `raw_edge_mask`, an `edge_sensitive_mask`, and a wider `edge_assignment_mask` used for stricter camera assignment.
-- Per-pixel camera selection uses nadirness, incidence, optical-axis alignment, and source-depth visibility tests against the originating depth map.
+| Images | Gaussians (cap_max) | data_factor | Training VRAM | Notes |
+| --- | --- | --- | --- | --- |
+| 113 | 2M | 2 | ~2.5 GB | Validated end-to-end |
+| 500 | 2M | 2 | ~2.8 GB | Images loaded one-at-a-time |
+| 1000 | 5M | 4 | ~3.6 GB | auto data_factor kicks in |
+| 2000 | 8M | 4 | ~5.7 GB | Comfortable on any GPU |
 
-### Step 3: GPU warp, fallback fill, and diagnostics
+Training loads images one-at-a-time. Camera metadata is negligible. The ortho renderer uses chunked rendering for large outputs. The pipeline comfortably handles 1000+ images without OOM on a single GPU.
 
-- Each selected source image is warped one at a time with `torch.nn.functional.grid_sample`, so VRAM stays roughly constant with respect to image count.
-- Pass 1 paints pixels from the best primary camera assignment.
-- Pass 2 can paint remaining pixels from fallback cameras, but edge-neighborhood fallback fill is disabled by default via `ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL=0`.
-- Source-depth visibility checks use a conservative neighborhood minimum from the COLMAP depth map to reject edge pixels that are occluded by nearer surfaces.
-- Optional inpainting can be limited to edge neighborhoods to reduce black seams without reintroducing roof or facade bleed.
-- The stage writes a diagnostics JSON file that includes fill percentages, edge mask sizes, source-visibility rejection counts, and edge vs non-edge fallback paint counts.
+### Gaussian Splatting package structure
 
-### Step 4: geo-alignment handling
+The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_ortho/`:
 
-If `alignment_transform.json` exists, the worker applies the saved Sim3 transform to the orthorectification geometry before rasterization.
-
-This is crucial:
-
-- the dense model remains in local COLMAP coordinates until after dense fusion
-- the rasterizer needs real projected coordinates to write a georeferenced GeoTIFF
-- the transform is applied in float64 to avoid precision loss at UTM scale
-
-The transform file contains:
-
-- `R`: 3x3 rotation matrix
-- `scale`: scalar scale factor
-- `t`: translation vector
-
-### TrueOrtho diagnostics and tunables
-
-`orthomosaic.tif.diagnostics.json` is the main artifact for debugging orthomosaic quality regressions.
-
-The diagnostics currently include:
-
-- raw, gap-filled, and support-limited DSM coverage counts
-- edge mask sizes and edge rejection counts
-- source-depth visibility check and rejection counts
-- primary and fallback threshold values
-- final fill ratios and remaining hole counts
-- whether edge fallback fill was enabled, plus how many fallback-painted pixels came from edge vs non-edge regions
-
-The most important environment knobs for this path are:
-
-- `ORTHO_DSM_MAX_SUPPORT_DISTANCE_PX`
-- `ORTHO_DSM_EDGE_DEPTH_RANGE_M`
-- `ORTHO_DSM_EDGE_MIN_RAW_SUPPORT`
-- `ORTHO_DSM_EDGE_DILATION_PX`
-- `ORTHO_DSM_EDGE_ASSIGNMENT_DILATION_PX`
-- `ORTHO_DSM_EDGE_SOURCE_DEPTH_TOLERANCE_M`
-- `ORTHO_DSM_EDGE_SOURCE_DEPTH_NEIGHBORHOOD_PX`
-- `ORTHO_DSM_ENABLE_EDGE_FALLBACK_FILL`
-- `ORTHO_DSM_ENABLE_INPAINT`
-- `ORTHO_DSM_INPAINT_EDGE_ONLY`
-
-### Legacy mesh rasterization helper
-
-The repository still contains mesh rasterization helpers in `ortho_support.py`, but the current app1 runtime path does not dispatch them directly from `main.py`. The following subsections document those helpers because they remain available for experimentation and share the same alignment and GeoTIFF-writing constraints.
+| Module | Purpose |
+| --- | --- |
+| `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, filtering, GeoTIFF output |
+| `train.py` | Training loop with gsplat, MCMC densification, appearance model, ortho-coverage loss |
+| `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
+| `rasterizer.py` | Unified rasteriser wrapper (gsplat backend for ortho + perspective) |
+| `ortho_renderer.py` | Orthographic camera setup, chunked rendering, height map extraction |
+| `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |
+| `scene_info.py` | Scene metadata (cameras, point cloud, bounds, radius) |
+| `partition.py` | VastGaussian-style m×n grid partitioning with overlap |
+| `merge.py` | Overlap-aware model merging (keep core-region Gaussians only) |
+| `geo_writer.py` | GeoTIFF writer for RGB + height map |
+| `exif_altitude.py` | EXIF GPS altitude extraction from drone images |
 
 ### Orthomosaic coordinate transform diagram
 
-This diagram shows the exact coordinate-space transitions used by the orthomosaic builder and later reused by app2 and app3.
+This diagram shows the exact coordinate-space transitions used by the Gaussian Splatting orthomosaic builder and later reused by app2 and app3.
 
 ```mermaid
 flowchart LR
@@ -875,13 +985,17 @@ flowchart LR
   G --> H[Estimate Sim3<br/>R scale t]
   H --> I[alignment_transform.json]
 
-  J[Dense stereo depth maps<br/>and fallback fused point cloud in local COLMAP coordinates] --> K[Apply Sim3 in float64]
+  J[Trained 3D Gaussians<br/>in local COLMAP coordinates] --> K[Apply R·s to means<br/>keep t as float64 origin]
   I --> K
-  K --> L[Projected UTM geometry]
-  L --> M[Top-down raster bounds<br/>min_x max_x min_y max_y]
-  M --> N[Pixel grid at chosen resolution]
-  N --> O[GeoTIFF affine transform<br/>from_origin min_x max_y res]
-  O --> P[orthomosaic.tif with projected CRS]
+  K --> L[Geo-scaled Gaussians<br/>axes ← R·s·axes]
+
+  L --> M[Ortho camera over AABB<br/>min_x max_x min_y max_y]
+  M --> N[gsplat rasterise ortho tiles<br/>RGB + depth]
+  N --> O[Assemble full raster<br/>pixel grid at chosen resolution]
+
+  O --> P1[Shift height map<br/>+ float64 t + EXIF altitude]
+  P1 --> P2[GeoTIFF affine transform<br/>from_origin min_x max_y res]
+  P2 --> P[orthomosaic.tif + orthomosaic.height.tif<br/>with projected CRS]
 
   P --> Q[app2/app3 use affine + CRS]
   Q --> R[projected coordinates from global pixels]
@@ -892,12 +1006,20 @@ Read it in this order:
 
 1. GPS extraction produces projected control points in the chosen UTM CRS.
 2. `model_aligner` creates a geo-referenced sparse reconstruction.
-3. Shared camera centers between local and geo sparse models are used to estimate a Sim3 transform.
-4. That transform is applied to dense geometry only after stereo fusion.
-5. Rasterization then happens in projected coordinates.
-6. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
+3. Shared camera centers between local and geo sparse models estimate a Sim3 transform (R, scale, t).
+4. R·s is applied to Gaussian means and covariance axes in float32; the translation t is kept as a float64 GeoTIFF origin to avoid precision loss.
+5. An orthographic camera is set over the axis-aligned bounding box and gsplat renders tiled RGB + depth.
+6. The height map is shifted by the float64 translation z-component plus mean EXIF GPS altitude.
+7. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
 
-### Step 5: raster bounds and resolution
+### Legacy mesh rasterization path (when `use_mesh_ortho: false`)
+
+> **Note:** The sections below describe the **legacy** orthomosaic construction path that predates the 3D Gaussian Splatting pipeline. This path is only used when `use_mesh_ortho` is set to `false` in mission parameters, which forces the worker to skip Gaussian Splatting and fall back to the old mesh-rasterization or PLY-projection approach.
+
+<details>
+<summary>Expand legacy mesh rasterization details</summary>
+
+#### Raster bounds and resolution
 
 The mesh rasterizer computes:
 
@@ -913,7 +1035,7 @@ The configured requested resolution comes from:
 
 The code also clamps the raster size by increasing the resolution when necessary so the output dimensions stay below the configured maximum raster dimension.
 
-### Step 6: face filtering
+#### Face filtering
 
 Before rasterization, the mesh path filters triangles by surface normal.
 
@@ -932,9 +1054,7 @@ Purpose:
 - suppress vertical walls, underside faces, and unstable grazing geometry
 - retain mostly horizontal or near-horizontal surfaces that contribute to a top-down orthomosaic
 
-This filter was tuned to avoid over-pruning valid surface geometry while still removing obviously unsuitable faces.
-
-### Step 7: CUDA rasterization path
+#### CUDA rasterization path
 
 Preferred rasterizer:
 
@@ -953,51 +1073,7 @@ High-level steps:
 9. run iterative gap filling
 10. write the GeoTIFF with a projected affine transform
 
-Important implementation details:
-
-- vertices are shifted into local raster coordinates before GPU upload
-- the depth buffer is initialized to a far value and updated per pixel
-- the code tracks how many candidate faces were kept after normal filtering
-- if the filled ratio is nearly empty, the CUDA rasterization is treated as failed and the worker falls back
-
-### Mesh rasterization and z-buffer diagram
-
-This diagram focuses only on the textured-mesh rasterization path and shows how visibility is resolved.
-
-```mermaid
-flowchart TD
-  A[Textured mesh faces with UVs] --> B[Batch faces]
-  B --> C[Filter by face normal]
-  C --> D[Transform vertices into local raster space]
-  D --> E[Build clip-space triangles]
-  E --> F[Rasterize triangles]
-  F --> G[Covered pixels + barycentric interpolation]
-  G --> H[Interpolate UV coordinates]
-  H --> I[Sample texture atlas]
-  F --> J[Per-pixel depth values]
-  I --> K[Candidate RGB]
-  J --> L{Depth < current final_depth?}
-  K --> L
-  L -->|Yes| M[Write RGB into final_color]
-  L -->|Yes| N[Update final_depth]
-  L -->|No| O[Keep existing pixel]
-  M --> P[Repeat for next face batch]
-  N --> P
-  O --> P
-  P --> Q[Flip image into map orientation]
-  Q --> R[Iterative gap fill]
-  R --> S[Write GeoTIFF]
-```
-
-Interpretation:
-
-1. Every retained triangle proposes color and depth for the pixels it covers.
-2. UV interpolation determines where each covered pixel samples the texture atlas.
-3. The z-buffer test keeps only the nearest visible surface at each pixel.
-4. Later batches can still overwrite earlier pixels if they are closer.
-5. The result is then gap-filled before writing the final orthomosaic.
-
-### Step 8: CPU rasterization fallback
+#### CPU rasterization fallback
 
 If CUDA rasterization is unavailable or fails, the worker uses a CPU surface sampling fallback.
 
@@ -1011,9 +1087,7 @@ This path:
 6. runs iterative gap filling
 7. writes the GeoTIFF
 
-This is less elegant and typically less dense than the CUDA path, but it preserves functionality in environments where EGL or GPU rasterization is not available.
-
-### Step 9: iterative gap filling
+#### Iterative gap filling
 
 Both mesh and point-cloud paths run `apply_iterative_gap_fill`.
 
@@ -1025,14 +1099,7 @@ The gap-fill routine:
 4. estimates missing RGB values by local neighborhood averaging
 5. repeats the process for a fixed number of passes
 
-Why this is necessary:
-
-- even a good dense reconstruction leaves sub-pixel holes after projection
-- the YOLO stage performs better on contiguous image regions than on sparse or stippled orthomosaics
-
-This step is not cosmetic only. It improves downstream detection stability.
-
-### Step 10: GeoTIFF writing
+#### GeoTIFF writing
 
 The final orthomosaic is written with:
 
@@ -1040,11 +1107,9 @@ The final orthomosaic is written with:
 - a projected affine transform built from `from_origin(min_x, max_y, resolution, resolution)`
 - the mission UTM CRS when known
 
-This metadata is essential because both app2 and app3 depend on it to map detections back to geographic coordinates.
+#### PLY fallback path
 
-### PLY fallback path
-
-If TrueOrtho is disabled or unavailable, the worker falls back to direct point-cloud projection.
+If the textured mesh is unavailable, the worker falls back to direct point-cloud projection.
 
 That path:
 
@@ -1057,9 +1122,7 @@ That path:
 7. fills holes iteratively
 8. writes the GeoTIFF
 
-To preserve large projected coordinates, the geo-aligned fallback export keeps transformed position and normal fields in float64 instead of truncating them back to float32.
-
-This path is simpler and more robust, but visually less complete than a successful depth-map TrueOrtho run.
+</details>
 
 ## Processing worker detailed behavior
 
@@ -1361,15 +1424,19 @@ If `dense/fused.ply` exists but is suspiciously small, app1 deletes the entire `
 
 If too few common image centers exist between sparse-local and sparse-geo reconstructions, app1 cannot estimate the Sim3 transform robustly and falls back to using the raw fused cloud.
 
-### TrueOrtho fallback
+### Gaussian Splatting fallback
 
-If the depth-map TrueOrtho path is disabled, lacks the required dense artifacts, or raises an orthomosaic-stage exception, app1 can still fall back to direct PLY top-down projection on the legacy branch.
+If the Gaussian Splatting training or rendering raises an exception, app1 falls back to the legacy mesh-rasterization or PLY-projection path (when `use_mesh_ortho: false`) or emits an error if no fallback is available.
+
+### Legacy TrueOrtho fallback
+
+When `use_mesh_ortho` is set to `false`, the Gaussian Splatting pipeline is skipped entirely. The worker then requires dense stereo products (depth maps or fused point cloud) and uses the legacy mesh-rasterization or PLY-projection path described in the legacy section above.
 
 ### No dense output at all
 
-If `use_mesh_ortho: true`, the worker requires a usable `dense/sparse` model plus geometric depth maps before it will enter the TrueOrtho stage. If `use_mesh_ortho: false`, it still requires a valid fused point cloud for the legacy projection path.
+When the Gaussian Splatting pipeline is active (`use_mesh_ortho: true`, the default), the worker does **not** require dense stereo products. It skips PatchMatch stereo and fusion, training directly from the sparse SfM point cloud.
 
-The worker only falls back to a dummy GeoTIFF after an ortho-construction exception on the legacy point-cloud branch; it does not silently invent dense artifacts that were never produced.
+When the legacy path is active (`use_mesh_ortho: false`), the worker requires either dense depth maps for mesh rasterization or a valid fused point cloud for PLY projection.
 
 ### Processing worker missing orthomosaic
 
@@ -1386,8 +1453,8 @@ These are the assumptions that must remain true for the current implementation t
 1. The host dataset must exist under `/mnt/j/workspace`.
 2. Worker containers must see the host filesystem through `/host`.
 3. The orthomosaic must keep its projected CRS metadata intact.
-4. Dense stereo must run before geo-alignment to avoid float32 precision problems.
-5. TrueOrtho reruns require both `dense/sparse/{cameras,images,points3D}.bin` and geometric depth maps; one without the other is not considered a reusable dense workspace.
+4. When using Gaussian Splatting (default), Sim3 rotation and scale are applied to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. When using the legacy path, dense stereo must run before geo-alignment to avoid float32 precision problems.
+5. Gaussian Splatting reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and the alignment transform. Legacy reruns additionally require dense stereo products (depth maps or `fused.ply`).
 6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
 7. Tile events must carry the original orthomosaic transform and CRS.
 8. App3 must set `total_tiles` before tile events begin returning.
@@ -1408,11 +1475,12 @@ From app1:
 - `CALIBRATING`
 - `MAPPING`
 - `UNDISTORT`
-- `STEREO_MVS`
-- `FUSION`
+- `STEREO_MVS` (skipped in GS mode after undistortion)
+- `FUSION` (skipped in GS mode)
 - `ALIGNING`
-- `MESHING`
-- `TEXTURING`
+- `MESHING` (legacy path only)
+- `TEXTURING` (legacy path only)
+- `GAUSS` (3D Gaussian Splatting training and ortho rendering)
 - `ORTHO`
 - `DONE`
 - `ERROR`

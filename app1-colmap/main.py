@@ -333,9 +333,18 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             dense_sparse_ready = False
             true_ortho_depth_map_count = 0
 
-        ortho_only_ready = (dense_sparse_ready and true_ortho_depth_map_count >= 3) if params["use_mesh_ortho"] else has_fused_output
+        # Gaussian Splatting only needs dense/sparse + undistorted images.
+        # TrueOrtho DSM needs dense/sparse + geometric depth maps.
+        # PLY fallback needs fused.ply.
+        gs_ready = dense_sparse_ready and os.path.isdir(os.path.join(dense_path, "images"))
+        ortho_only_ready = (
+            (gs_ready if params["use_mesh_ortho"] else has_fused_output)
+            or (dense_sparse_ready and true_ortho_depth_map_count >= 3)
+        )
         if ortho_only_ready:
-            if params["use_mesh_ortho"]:
+            if params["use_mesh_ortho"] and gs_ready:
+                report_mission_progress(vol_id, "PREPARING", 13, log="Existing undistorted images found. Skipping SfM/MVS/fusion and rebuilding Gaussian Splatting orthomosaic only.")
+            elif params["use_mesh_ortho"]:
                 report_mission_progress(vol_id, "PREPARING", 13, log=f"Existing dense depth maps found ({true_ortho_depth_map_count}). Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
             else:
                 report_mission_progress(vol_id, "PREPARING", 13, log="Existing dense data found. Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
@@ -493,7 +502,9 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         # float32 precision loss in PatchMatch CUDA, making geometric consistency
         # filtering reject all pixels. Geo-alignment is applied AFTER fusion.
         if ortho_only_ready:
-            if params["use_mesh_ortho"]:
+            if params["use_mesh_ortho"] and gs_ready:
+                report_mission_progress(vol_id, "STEREO_MVS", 75, log="Gaussian Splatting mode: undistorted images found. Skipping PatchMatch and fusion.")
+            elif params["use_mesh_ortho"]:
                 report_mission_progress(vol_id, "STEREO_MVS", 75, log="Existing true-ortho depth maps found. Skipping undistortion, PatchMatch, and fusion.")
             else:
                 report_mission_progress(vol_id, "STEREO_MVS", 75, log="Existing textured mesh found. Skipping undistortion, PatchMatch, and fusion.")
@@ -521,37 +532,34 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
 
             dense_sparse_ready = dense_sparse_model_ready(dense_path)
 
-            # --- PatchMatchStereo ---
-            # COLMAP natively handles the photometric pass internally before the geometric pass
-            # when geom_consistency is set to 1.
-            report_mission_progress(vol_id, "STEREO_MVS", 75, log=f"Running Multi-View Stereo (PatchMatch) gpu_index={params['mvs_gpu_index']} iterations={params['mvs_num_iterations']} samples={params['mvs_num_samples']}")
-            run_command([
-                "colmap", "patch_match_stereo",
-                "--workspace_path", dense_path,
-                "--PatchMatchStereo.gpu_index", params["mvs_gpu_index"],
-                "--PatchMatchStereo.max_image_size", params["mvs_max_image_size"],
-                "--PatchMatchStereo.window_step", params["mvs_window_step"],
-                "--PatchMatchStereo.num_iterations", params["mvs_num_iterations"],
-                "--PatchMatchStereo.num_samples", params["mvs_num_samples"],
-                "--PatchMatchStereo.geom_consistency", "1",
-                "--PatchMatchStereo.filter", "1",
-                "--PatchMatchStereo.filter_min_num_consistent", params["mvs_filter_min_num_consistent"],
-            ], vol_id, "STEREO_MVS", 75, report_mission_progress, ensure_not_cancelled)
-
-            dense_sparse_ready = dense_sparse_model_ready(dense_path)
-            true_ortho_depth_map_count = count_true_ortho_depth_maps()
+            # --- Gaussian Splatting mode: skip PatchMatch + Fusion ---
+            # GS only needs the undistorted images + dense/sparse model.
             if params["use_mesh_ortho"]:
-                if true_ortho_depth_map_count < 3:
-                    raise RuntimeError(
-                        f"PatchMatch did not produce enough geometric depth maps for TrueOrtho (found {true_ortho_depth_map_count})."
-                    )
                 report_mission_progress(
-                    vol_id,
-                    "FUSION",
-                    90,
-                    log=f"Skipping stereo fusion: TrueOrtho now uses {true_ortho_depth_map_count} COLMAP geometric depth maps directly.",
+                    vol_id, "STEREO_MVS", 90,
+                    log="Gaussian Splatting mode: skipping PatchMatch stereo and fusion. "
+                        f"Using {len(os.listdir(os.path.join(dense_path, 'images')))} undistorted images directly.",
                 )
             else:
+                # --- PatchMatchStereo ---
+                # COLMAP natively handles the photometric pass internally before the geometric pass
+                # when geom_consistency is set to 1.
+                report_mission_progress(vol_id, "STEREO_MVS", 75, log=f"Running Multi-View Stereo (PatchMatch) gpu_index={params['mvs_gpu_index']} iterations={params['mvs_num_iterations']} samples={params['mvs_num_samples']}")
+                run_command([
+                    "colmap", "patch_match_stereo",
+                    "--workspace_path", dense_path,
+                    "--PatchMatchStereo.gpu_index", params["mvs_gpu_index"],
+                    "--PatchMatchStereo.max_image_size", params["mvs_max_image_size"],
+                    "--PatchMatchStereo.window_step", params["mvs_window_step"],
+                    "--PatchMatchStereo.num_iterations", params["mvs_num_iterations"],
+                    "--PatchMatchStereo.num_samples", params["mvs_num_samples"],
+                    "--PatchMatchStereo.geom_consistency", "1",
+                    "--PatchMatchStereo.filter", "1",
+                    "--PatchMatchStereo.filter_min_num_consistent", params["mvs_filter_min_num_consistent"],
+                ], vol_id, "STEREO_MVS", 75, report_mission_progress, ensure_not_cancelled)
+
+                dense_sparse_ready = dense_sparse_model_ready(dense_path)
+                true_ortho_depth_map_count = count_true_ortho_depth_maps()
                 # Stereo Fusion — uses geometric depth maps.
                 # Explicit --input_type geometric is required for a successful multi-point fusion.
                 # Clamp min_num_pixels to the number of undistorted images to avoid
@@ -773,16 +781,40 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             align_tf = align_tf_path
 
         if params["use_mesh_ortho"]:
+            # --- Gaussian Splatting Orthomosaic ---
             dense_sparse_ready = dense_sparse_model_ready(dense_path)
-            true_ortho_depth_map_count = count_true_ortho_depth_maps()
-            if not (dense_sparse_ready and true_ortho_depth_map_count >= 3):
+            if not dense_sparse_ready:
                 raise RuntimeError(
-                    f"TrueOrtho requires dense/sparse plus COLMAP geometric depth maps. Found dense_sparse_ready={dense_sparse_ready}, depth_maps={true_ortho_depth_map_count}."
+                    "Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin). "
+                    f"dense_sparse_ready={dense_sparse_ready}."
                 )
             try:
-                import ortho_dsm
-                ortho_resolution = float(params.get("ortho_mesh_resolution", 0.05))
-                ortho_dsm.generate_true_orthophoto_pytorch(
+                import sys
+                app1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+                if app1_dir not in sys.path:
+                    sys.path.insert(0, app1_dir)
+                from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
+
+                ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
+
+                # Auto data_factor: scale down training images based on dataset size
+                gs_data_factor_raw = str(params.get("gs_data_factor", "auto"))
+                if gs_data_factor_raw == "auto":
+                    n_images_count = len([f for f in os.listdir(os.path.join(dense_path, "images"))
+                                          if f.lower().endswith(('.jpg', '.jpeg', '.png'))]) if os.path.isdir(os.path.join(dense_path, "images")) else 0
+                    gs_data_factor = 2 if n_images_count <= 500 else 4
+                    report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images")
+                else:
+                    gs_data_factor = int(gs_data_factor_raw)
+
+                gs_iterations = int(params.get("gs_iterations", 7000))
+                gs_cap_max = int(params.get("gs_cap_max", 2_000_000))
+                gs_sh_degree = int(params.get("gs_sh_degree", 3))
+                gs_ortho_reg = float(params.get("gs_ortho_reg", 0.5))
+
+                checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
+
+                result = generate_gaussian_orthophoto(
                     dense_path=dense_path,
                     ortho_file=ortho_file,
                     utm_crs=utm_crs,
@@ -790,9 +822,19 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                     transform_file=align_tf,
                     report_fn=report_mission_progress,
                     resolution=ortho_resolution,
+                    iterations=gs_iterations,
+                    sh_degree=gs_sh_degree,
+                    data_factor=gs_data_factor,
+                    strategy="mcmc",
+                    cap_max=gs_cap_max,
+                    ortho_reg=gs_ortho_reg,
+                    checkpoint_dir=checkpoint_dir,
                 )
+                report_mission_progress(vol_id, "GAUSS", 100,
+                    log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "
+                        f"{result['n_gaussians']} Gaussians, GSD={ortho_resolution}m")
             except Exception as e:
-                report_mission_progress(vol_id, "ORTHO", 95, log=f"Depth-map TrueOrtho failed: {e}")
+                report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
                 raise
         else:
             ortho_point_cloud_path = fused_path

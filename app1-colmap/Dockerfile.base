@@ -69,4 +69,5 @@ RUN pip3 install --no-cache-dir \
     confluent-kafka exif rasterio numpy plyfile pyproj trimesh Pillow pycolmap==4.0.1 scipy
 
 RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch torchvision \
-    && pip3 install --no-cache-dir --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git
+    && pip3 install --no-cache-dir --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git \
+    && pip3 install --no-cache-dir gsplat==1.5.3
