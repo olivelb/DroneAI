@@ -790,10 +790,21 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 )
             try:
                 import sys
+                import gc
+                import traceback as _tb
                 app1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
                 if app1_dir not in sys.path:
                     sys.path.insert(0, app1_dir)
                 from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
+
+                # Free any leaked CUDA memory from a previous failed attempt
+                gc.collect()
+                try:
+                    import torch as _torch
+                    if _torch.cuda.is_available():
+                        _torch.cuda.empty_cache()
+                except Exception:
+                    pass
 
                 ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
 
@@ -857,6 +868,7 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                     log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "
                         f"{result['n_gaussians']} Gaussians, GSD={ortho_resolution}m")
             except Exception as e:
+                _tb.print_exc()
                 report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
                 raise
         else:

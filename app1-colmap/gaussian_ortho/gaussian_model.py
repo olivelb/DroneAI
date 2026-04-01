@@ -219,19 +219,19 @@ class GaussianModel(nn.Module):
 
     @staticmethod
     def _knn_distances(points: torch.Tensor, k: int = 3) -> torch.Tensor:
-        """Compute mean distance to k nearest neighbours (clamped upper)."""
-        from torch import cdist
-        # For very large point clouds, subsample for speed
-        n = points.shape[0]
-        if n > 50_000:
-            idx = torch.randperm(n)[:50_000]
-            subset = points[idx]
-            d = cdist(points, subset)
-        else:
-            d = cdist(points, points)
-        # Exclude self-distance (0), take k smallest
-        topk = d.topk(k + 1, dim=-1, largest=False).values[:, 1:]  # skip self
-        return topk.mean(dim=-1)
+        """Compute mean distance to k nearest neighbours using CPU cKDTree.
+
+        Previous implementation used torch.cdist which allocates an (N, 50K)
+        distance matrix on GPU — e.g. 200K × 50K × 4 bytes = 40 GB, causing
+        instant OOM.  cKDTree runs on CPU in O(N log N) with negligible memory.
+        """
+        from scipy.spatial import cKDTree
+
+        pts_np = points.detach().cpu().numpy()
+        tree = cKDTree(pts_np)
+        dists, _ = tree.query(pts_np, k=k + 1)  # +1 because first neighbour is self
+        mean_dists = dists[:, 1:].mean(axis=1)   # skip self-distance
+        return torch.tensor(mean_dists, dtype=points.dtype, device=points.device)
 
     @staticmethod
     def _inverse_sigmoid(x: float) -> float:

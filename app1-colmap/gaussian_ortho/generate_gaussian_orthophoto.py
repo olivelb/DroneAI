@@ -105,7 +105,18 @@ def generate_gaussian_orthophoto(
         Maximum Gaussian count for MCMCStrategy.
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    _report(vol_id, "GAUSS", 0, f"Starting Gaussian Splatting orthophoto on {device}", report_fn)
+
+    # Ensure any stale CUDA allocations from a previous crashed run are freed
+    if device.type == "cuda":
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        vram_total = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        vram_free = (torch.cuda.get_device_properties(0).total_mem - torch.cuda.memory_allocated()) / (1024 ** 3)
+        _report(vol_id, "GAUSS", 0,
+                f"Starting Gaussian Splatting on {torch.cuda.get_device_name(0)} "
+                f"({vram_free:.1f}/{vram_total:.1f} GB free)", report_fn)
 
     if checkpoint_dir is None:
         checkpoint_dir = str(Path(ortho_file).parent / "gaussian_checkpoints")
