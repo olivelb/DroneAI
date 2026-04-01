@@ -72,7 +72,7 @@ def _build_ortho_camera(x_min, x_max, y_min, y_max, z_min, z_max):
 
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
-                      extent: tuple = None, chunk_size: int = 4096,
+                      extent: tuple = None, chunk_size: int = 2048,
                       device: torch.device = None):
     """
     Render an orthographic TDOM from a trained Gaussian model.

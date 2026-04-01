@@ -19,6 +19,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+# Set CUDA allocator to use expandable segments (reduces fragmentation OOMs)
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import gsplat
 from gsplat.strategy import DefaultStrategy, MCMCStrategy
 
@@ -589,41 +592,38 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         sh_degree = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
         # --- Forward (gsplat rasterisation) ---
-        # Mixed precision: autocast reduces activation memory ~2× on GPU
-        use_amp = device.type == "cuda"
-        with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
-            colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
 
-            render_colors, render_alphas, info = gsplat.rasterization(
-                means=splats["means"],
-                quats=splats["quats"],
-                scales=torch.exp(splats["scales"]),
-                opacities=torch.sigmoid(splats["opacities"]),
-                colors=colors_sh,
-                viewmats=cd["viewmat"].unsqueeze(0),
-                Ks=cd["K"].unsqueeze(0),
-                width=width,
-                height=height,
-                near_plane=0.01,
-                far_plane=1e10,
-                sh_degree=sh_degree,
-                eps2d=0.3,
-                render_mode="RGB",
-                rasterize_mode="antialiased",
-                absgrad=(not use_mcmc),
-                packed=True,
-            )
+        render_colors, render_alphas, info = gsplat.rasterization(
+            means=splats["means"],
+            quats=splats["quats"],
+            scales=torch.exp(splats["scales"]),
+            opacities=torch.sigmoid(splats["opacities"]),
+            colors=colors_sh,
+            viewmats=cd["viewmat"].unsqueeze(0),
+            Ks=cd["K"].unsqueeze(0),
+            width=width,
+            height=height,
+            near_plane=0.01,
+            far_plane=1e10,
+            sh_degree=sh_degree,
+            eps2d=0.3,
+            render_mode="RGB",
+            rasterize_mode="antialiased",
+            absgrad=(not use_mcmc),
+            packed=True,
+        )
 
-            # Background compositing
-            if cfg.random_bkgd:
-                bkgd = torch.rand(1, 3, device=device)
-            else:
-                bkgd = bg_color.unsqueeze(0)
-            colors = render_colors + bkgd.view(1, 1, 1, 3) * (1.0 - render_alphas)
+        # Background compositing
+        if cfg.random_bkgd:
+            bkgd = torch.rand(1, 3, device=device)
+        else:
+            bkgd = bg_color.unsqueeze(0)
+        colors = render_colors + bkgd.view(1, 1, 1, 3) * (1.0 - render_alphas)
 
-            # Per-image appearance correction (decouples exposure from scene colour)
-            if app_model is not None:
-                colors = app_model(idx, colors)
+        # Per-image appearance correction (decouples exposure from scene colour)
+        if app_model is not None:
+            colors = app_model(idx, colors)
 
         # Strategy pre-backward (no-op for DefaultStrategy, but keeps API correct)
         strategy.step_pre_backward(
@@ -631,10 +631,10 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             state=strategy_state, step=step, info=info,
         )
 
-        # --- Loss (float32 for numerical stability) ---
-        l1loss = F.l1_loss(colors.float(), pixels)
+        # --- Loss ---
+        l1loss = F.l1_loss(colors, pixels)
         ssimloss = dssim_loss(
-            colors.float().permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
         )
         loss = (1.0 - cfg.ssim_lambda) * l1loss + cfg.ssim_lambda * ssimloss
 
