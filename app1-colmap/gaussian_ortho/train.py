@@ -668,7 +668,16 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         if cfg.scale_reg > 0.0:
             loss = loss + cfg.scale_reg * torch.exp(splats["scales"]).mean()
 
-        # Ortho coverage regularisation
+        # --- Backward pass 1: photometric loss ---
+        # Backward the main loss FIRST so gsplat's rasterization graph is freed
+        # before computing the ortho coverage loss (which runs its own rasterization).
+        # This halves peak VRAM vs. a single combined backward.
+        last_loss = l1loss.item()
+        loss.backward()
+        del pixels, render_colors, render_alphas, colors, colors_sh, loss
+        del l1loss, ssimloss
+
+        # --- Backward pass 2: ortho coverage regularisation (separate graph) ---
         if (cfg.ortho_reg > 0
                 and step >= cfg.ortho_reg_start
                 and step % cfg.ortho_reg_every == 0):
@@ -676,9 +685,8 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
                 splats, ortho_R_c2w, ortho_scene_lo, ortho_scene_hi,
                 cfg.ortho_crop_px, device, cameras=cameras,
             )
-            loss = loss + cfg.ortho_reg * ortho_loss
-
-        loss.backward()
+            (cfg.ortho_reg * ortho_loss).backward()
+            del ortho_loss
 
         # --- Optimise ---
         for optimizer in optimizers.values():
@@ -705,9 +713,7 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             )
 
         # --- Free per-iteration intermediates (reduce peak VRAM) ---
-        last_loss = l1loss.item()
-        del pixels, render_colors, render_alphas, colors, colors_sh, info, loss
-        del l1loss, ssimloss
+        del info
         if step % 100 == 0 and device.type == "cuda":
             torch.cuda.empty_cache()
 
