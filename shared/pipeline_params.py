@@ -51,6 +51,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_cap_max": "2000000",
         "gs_sh_degree": "3",
         "gs_ortho_reg": "0.5",
+        "gs_filter_enabled": True,
     },
     "modern": {
         "feature_type": "ALIKED_N16ROT",
@@ -78,6 +79,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_cap_max": "2000000",
         "gs_sh_degree": "3",
         "gs_ortho_reg": "0.5",
+        "gs_filter_enabled": True,
     },
 }
 
@@ -107,6 +109,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "gs_cap_max": {"label": "GS Max Gaussians", "type": "int", "group": "Orthomosaic", "min": 500000, "max": 20000000, "step": 500000},
     "gs_sh_degree": {"label": "GS Spherical Harmonics Degree", "type": "select", "group": "Orthomosaic", "options": ["1", "2", "3"]},
     "gs_ortho_reg": {"label": "GS Ortho Regularisation Weight", "type": "float", "group": "Orthomosaic", "min": 0, "max": 2, "step": 0.1},
+    "gs_filter_enabled": {"label": "GS Post-Training Filters", "type": "bool", "group": "Orthomosaic"},
 }
 
 PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["legacy"].keys() | PIPELINE_DEFAULTS["modern"].keys())

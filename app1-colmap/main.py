@@ -811,6 +811,7 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 gs_cap_max = int(params.get("gs_cap_max", 2_000_000))
                 gs_sh_degree = int(params.get("gs_sh_degree", 3))
                 gs_ortho_reg = float(params.get("gs_ortho_reg", 0.5))
+                gs_filter_enabled = params.get("gs_filter_enabled", True)
 
                 checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
 
@@ -828,6 +829,7 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                     strategy="mcmc",
                     cap_max=gs_cap_max,
                     ortho_reg=gs_ortho_reg,
+                    filter_enabled=gs_filter_enabled,
                     checkpoint_dir=checkpoint_dir,
                 )
                 report_mission_progress(vol_id, "GAUSS", 100,

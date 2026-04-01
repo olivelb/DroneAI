@@ -62,6 +62,7 @@ def generate_gaussian_orthophoto(
     strategy: str = "mcmc",
     cap_max: int = 1_000_000,
     ortho_reg: float = 0.5,
+    filter_enabled: bool = True,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -251,10 +252,8 @@ def generate_gaussian_orthophoto(
         geo_pts = point_cloud.points
     del point_cloud
 
-    # --- 5b. Filter outlier Gaussians ---
-    # The model is in local coordinates (centred near zero).
-    # Filter using the geo-aligned point cloud bounds shifted to local coords.
-    pad_m = 5.0  # metres of padding beyond point cloud bounds
+    # --- 5b. Compute point cloud bounds (needed for rendering extent) ---
+    pad_m = 20.0  # metres of padding beyond point cloud bounds
     pc_min = geo_pts.min(axis=0)
     pc_max = geo_pts.max(axis=0)
     del geo_pts
@@ -263,113 +262,91 @@ def generate_gaussian_orthophoto(
     local_pc_min = pc_min - geo_origin
     local_pc_max = pc_max - geo_origin
 
-    xyz = merged_model.positions.detach()
-    scales = merged_model.scales.detach()
-    max_scale = scales.max(dim=-1).values
+    # --- 5c. Filter outlier Gaussians ---
+    if not filter_enabled:
+        _report(vol_id, "GAUSS", 89, f"Filtering disabled — keeping all {merged_model.num_gaussians} Gaussians", report_fn)
+    else:
+        # The model is in local coordinates (centred near zero).
+        # Filter using the geo-aligned point cloud bounds shifted to local coords.
+        xyz = merged_model.positions.detach()
+        scales = merged_model.scales.detach()
+        max_scale = scales.max(dim=-1).values
 
-    # Keep Gaussians within the padded point cloud bounding box (local coords)
-    in_bounds = (
-        (xyz[:, 0] >= local_pc_min[0] - pad_m) & (xyz[:, 0] <= local_pc_max[0] + pad_m) &
-        (xyz[:, 1] >= local_pc_min[1] - pad_m) & (xyz[:, 1] <= local_pc_max[1] + pad_m) &
-        (xyz[:, 2] >= local_pc_min[2] - pad_m) & (xyz[:, 2] <= local_pc_max[2] + pad_m)
-    )
-    # Remove Gaussians with extreme scales (> 99.5th percentile)
-    scale_thresh = torch.quantile(max_scale, 0.995).item()
-    reasonable_scale = max_scale <= scale_thresh
-    # Remove nearly transparent Gaussians
-    visible = merged_model.opacity.squeeze(-1).detach() > 0.05
+        # Keep Gaussians within the padded point cloud bounding box (local coords)
+        in_bounds = (
+            (xyz[:, 0] >= local_pc_min[0] - pad_m) & (xyz[:, 0] <= local_pc_max[0] + pad_m) &
+            (xyz[:, 1] >= local_pc_min[1] - pad_m) & (xyz[:, 1] <= local_pc_max[1] + pad_m) &
+            (xyz[:, 2] >= local_pc_min[2] - pad_m) & (xyz[:, 2] <= local_pc_max[2] + pad_m)
+        )
+        # Remove nearly transparent Gaussians
+        visible = merged_model.opacity.squeeze(-1).detach() > 0.05
 
-    keep = in_bounds & reasonable_scale & visible
-    n_before = merged_model.num_gaussians
-    merged_model.filter_by_mask(keep)
-    n_after = merged_model.num_gaussians
-    _report(vol_id, "GAUSS", 89,
-            f"Filtered: {n_before} → {n_after} Gaussians "
-            f"(removed {n_before - n_after} outliers/floaters)",
-            report_fn)
-    del xyz, scales, max_scale, in_bounds, reasonable_scale, visible, keep
+        # Remove highly elongated Gaussians (needle artifacts in ortho view).
+        log_scales = merged_model._scaling.detach()
+        sorted_log, _ = log_scales.sort(dim=-1)
+        aniso_ratio = (sorted_log[:, 2] - sorted_log[:, 0]).exp()  # max/min scale ratio
+        not_needle = aniso_ratio <= 50.0  # remove extreme needles
 
-    # --- 5c. Statistical outlier removal (SOR) ---
-    # Remove isolated Gaussians that are far from their neighbours.
-    # This also breaks thin connections between the main scene and floater
-    # clusters, making the subsequent connected-component filter more effective.
-    from scipy.spatial import cKDTree
-
-    xyz_np = merged_model.positions.detach().cpu().numpy()
-    k_sor = 16
-    tree = cKDTree(xyz_np)
-    dists, idx = tree.query(xyz_np, k=k_sor + 1)  # +1: first is self (dist=0)
-    mean_dists = dists[:, 1:].mean(axis=1)
-    mu = mean_dists.mean()
-    sigma = mean_dists.std()
-    sor_thresh = mu + 1.5 * sigma
-    sor_keep = torch.tensor(mean_dists <= sor_thresh, device=merged_model._xyz.device)
-    n_before_sor = merged_model.num_gaussians
-    merged_model.filter_by_mask(sor_keep)
-    n_removed_sor = n_before_sor - merged_model.num_gaussians
-    if n_removed_sor > 0:
+        keep = in_bounds & visible & not_needle
+        n_before = merged_model.num_gaussians
+        merged_model.filter_by_mask(keep)
+        n_after = merged_model.num_gaussians
         _report(vol_id, "GAUSS", 89,
-                f"SOR: removed {n_removed_sor} isolated Gaussians "
-                f"(k={k_sor}, threshold={sor_thresh:.4f})",
+                f"Filtered: {n_before} → {n_after} Gaussians "
+                f"(removed {n_before - n_after} outliers/floaters)",
                 report_fn)
-    del xyz_np, tree, dists, idx, mean_dists, sor_keep
+        del xyz, scales, max_scale, in_bounds, visible, not_needle, keep, log_scales, sorted_log, aniso_ratio
 
-    # --- 5d. Connected-component filter ---
-    # Build a k-NN graph and keep only the largest connected component.
-    # This removes small floater clusters that survived SOR (groups of
-    # nearby Gaussians disconnected from the main scene).
-    from scipy.sparse import csr_matrix
-    from scipy.sparse.csgraph import connected_components
+        # --- 5d. Statistical outlier removal (SOR) ---
+        from scipy.spatial import cKDTree
 
-    xyz_np = merged_model.positions.detach().cpu().numpy()
-    N_cc = len(xyz_np)
-    tree = cKDTree(xyz_np)
-    _, idx_k = tree.query(xyz_np, k=k_sor + 1)
-    rows = np.repeat(np.arange(N_cc), k_sor)
-    cols = idx_k[:, 1:].ravel()
-    adj = csr_matrix(
-        (np.ones(len(rows), dtype=np.float32), (rows, cols)),
-        shape=(N_cc, N_cc),
-    )
-    n_components, labels = connected_components(adj, directed=False)
-    if n_components > 1:
-        unique, counts = np.unique(labels, return_counts=True)
-        largest_label = unique[counts.argmax()]
-        cc_keep = torch.tensor(labels == largest_label, device=merged_model._xyz.device)
-        n_before_cc = merged_model.num_gaussians
-        merged_model.filter_by_mask(cc_keep)
-        n_removed_cc = n_before_cc - merged_model.num_gaussians
-        _report(vol_id, "GAUSS", 89,
-                f"CC filter: removed {n_removed_cc} floaters in "
-                f"{n_components - 1} disconnected clusters",
-                report_fn)
-        del cc_keep
-    del xyz_np, tree, idx_k, adj, labels
-
-    # --- 5e. Clip anisotropy to reduce stripe artifacts in ortho view ---
-    # Elongated Gaussians (trained from perspective cameras) produce banding when
-    # rendered orthographically. Limit the max/min scale ratio.
-    max_aniso = 10.0  # maximum allowed anisotropy ratio
-    with torch.no_grad():
-        log_scales = merged_model._scaling.data          # (N, 3)
-        min_log, _ = log_scales.min(dim=-1, keepdim=True)
-        max_log, _ = log_scales.max(dim=-1, keepdim=True)
-        log_ratio = max_log - min_log  # log(max_scale / min_scale)
-        threshold = np.log(max_aniso)
-        needs_clip = log_ratio > threshold
-        if needs_clip.any():
-            # Clamp large scales towards the mean
-            mean_log = log_scales.mean(dim=-1, keepdim=True)
-            clamped = mean_log + (log_scales - mean_log).clamp(
-                -threshold / 2, threshold / 2
-            )
-            merged_model._scaling.data = torch.where(
-                needs_clip.expand_as(log_scales), clamped, log_scales
-            )
-            n_clipped = needs_clip.squeeze(-1).sum().item()
+        xyz_np = merged_model.positions.detach().cpu().numpy()
+        k_sor = 16
+        tree = cKDTree(xyz_np)
+        dists, idx = tree.query(xyz_np, k=k_sor + 1)  # +1: first is self (dist=0)
+        mean_dists = dists[:, 1:].mean(axis=1)
+        mu = mean_dists.mean()
+        sigma = mean_dists.std()
+        sor_thresh = mu + 3.0 * sigma
+        sor_keep = torch.tensor(mean_dists <= sor_thresh, device=merged_model._xyz.device)
+        n_before_sor = merged_model.num_gaussians
+        merged_model.filter_by_mask(sor_keep)
+        n_removed_sor = n_before_sor - merged_model.num_gaussians
+        if n_removed_sor > 0:
             _report(vol_id, "GAUSS", 89,
-                    f"Clipped anisotropy on {n_clipped} Gaussians (max ratio {max_aniso})",
+                    f"SOR: removed {n_removed_sor} isolated Gaussians "
+                    f"(k={k_sor}, threshold={sor_thresh:.4f})",
                     report_fn)
+        del xyz_np, tree, dists, idx, mean_dists, sor_keep
+
+        # --- 5e. Connected-component filter ---
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        xyz_np = merged_model.positions.detach().cpu().numpy()
+        N_cc = len(xyz_np)
+        tree = cKDTree(xyz_np)
+        _, idx_k = tree.query(xyz_np, k=k_sor + 1)
+        rows = np.repeat(np.arange(N_cc), k_sor)
+        cols = idx_k[:, 1:].ravel()
+        adj = csr_matrix(
+            (np.ones(len(rows), dtype=np.float32), (rows, cols)),
+            shape=(N_cc, N_cc),
+        )
+        n_components, labels = connected_components(adj, directed=False)
+        if n_components > 1:
+            unique, counts = np.unique(labels, return_counts=True)
+            largest_label = unique[counts.argmax()]
+            cc_keep = torch.tensor(labels == largest_label, device=merged_model._xyz.device)
+            n_before_cc = merged_model.num_gaussians
+            merged_model.filter_by_mask(cc_keep)
+            n_removed_cc = n_before_cc - merged_model.num_gaussians
+            _report(vol_id, "GAUSS", 89,
+                    f"CC filter: removed {n_removed_cc} floaters in "
+                    f"{n_components - 1} disconnected clusters",
+                    report_fn)
+            del cc_keep
+        del xyz_np, tree, idx_k, adj, labels
 
     # Define rendering extent in local coordinates
     render_extent = (

@@ -146,6 +146,11 @@ def parse_args():
         action="store_true",
         help="Disable progress output.",
     )
+    parser.add_argument(
+        "--no-filter",
+        action="store_true",
+        help="Disable all post-training filters (BBox, SOR, CC, anisotropy).",
+    )
     return parser.parse_args()
 
 
@@ -185,6 +190,7 @@ def main():
     print(f"Depth λ:     {args.lambda_depth}")
     print(f"Data factor: {args.data_factor}")
     print(f"Strategy:    {args.strategy} (cap_max={args.cap_max})")
+    print(f"Filters:     {'off' if args.no_filter else 'on'}")
     print()
 
     result = generate_gaussian_orthophoto(
@@ -204,6 +210,7 @@ def main():
         data_factor=args.data_factor,
         strategy=args.strategy,
         cap_max=args.cap_max,
+        filter_enabled=not args.no_filter,
     )
 
     print()
