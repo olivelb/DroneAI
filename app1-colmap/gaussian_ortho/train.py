@@ -282,14 +282,37 @@ def _ortho_coverage_loss(splats, R_c2w_ortho, scene_lo, scene_hi,
     ], dtype=torch.float32, device=device).unsqueeze(0)
     vm = viewmat.to(device).unsqueeze(0)
 
-    colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+    # --- Frustum culling: only send Gaussians overlapping the crop ---
+    # Project Gaussian positions onto the camera-plane axes and keep
+    # those within the crop region (+ scale-based margin).
+    right_t = torch.tensor(right_ax, dtype=torch.float32, device=device)
+    down_t = torch.tensor(down_ax, dtype=torch.float32, device=device)
+    with torch.no_grad():
+        xyz = splats["means"]  # (N, 3)
+        proj_r_g = (xyz * right_t).sum(dim=1)  # (N,)
+        proj_d_g = (xyz * down_t).sum(dim=1)   # (N,)
+        # Margin: max Gaussian scale × 3σ
+        gauss_margin = torch.exp(splats["scales"]).max(dim=1).values * 3.0
+        cull_mask = (
+            (proj_r_g + gauss_margin >= rand_r - crop_world / 2.0) &
+            (proj_r_g - gauss_margin <= rand_r + crop_world / 2.0) &
+            (proj_d_g + gauss_margin >= rand_d - crop_world / 2.0) &
+            (proj_d_g - gauss_margin <= rand_d + crop_world / 2.0)
+        )
+        indices = cull_mask.nonzero(as_tuple=False).squeeze(-1)
+        del proj_r_g, proj_d_g, gauss_margin, cull_mask
 
+    if indices.numel() == 0:
+        # No Gaussians in crop — return zero loss (no gradient)
+        return torch.tensor(0.0, device=device, requires_grad=True)
+
+    # Only pass DC band (sh0) — sh_degree=0 ignores higher bands anyway
     render_colors, render_alphas, _info = gsplat.rasterization(
-        means=splats["means"],
-        quats=splats["quats"],
-        scales=torch.exp(splats["scales"]),
-        opacities=torch.sigmoid(splats["opacities"]),
-        colors=colors_sh,
+        means=splats["means"][indices],
+        quats=splats["quats"][indices],
+        scales=torch.exp(splats["scales"][indices]),
+        opacities=torch.sigmoid(splats["opacities"][indices]),
+        colors=splats["sh0"][indices],
         viewmats=vm,
         Ks=K,
         width=crop_px,
@@ -304,6 +327,7 @@ def _ortho_coverage_loss(splats, R_c2w_ortho, scene_lo, scene_hi,
         absgrad=False,
         packed=True,
     )
+    del indices
 
     alpha = render_alphas[0, :, :, 0]  # (H, W)
 

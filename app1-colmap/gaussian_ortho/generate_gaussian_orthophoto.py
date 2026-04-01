@@ -179,10 +179,20 @@ def generate_gaussian_orthophoto(
         if torch.cuda.is_available():
             vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
 
-        if vram_gb is not None and vram_gb < 10:
-            # 8 GB class GPU: reduce cap_max and ortho crop
-            effective_cap = min(cap_max, 500_000)
-            effective_ortho_crop = 128
+        if vram_gb is not None:
+            # Scale cap_max based on available VRAM to prevent OOM.
+            # Each Gaussian uses ~700 bytes (params + optimizer) plus
+            # variable rasterization memory during forward/backward.
+            if vram_gb < 10:
+                effective_cap = min(cap_max, 500_000)
+                effective_ortho_crop = 128
+            elif vram_gb < 16:
+                effective_cap = min(cap_max, 800_000)
+                effective_ortho_crop = 128
+            elif vram_gb < 32:
+                effective_cap = min(cap_max, 1_000_000)
+                effective_ortho_crop = 192
+            # else: keep user cap_max and default crop
 
         if vram_gb is not None and vram_gb < 12:
             # Enable progressive schedule for ≤12 GB GPUs with large images
