@@ -112,8 +112,8 @@ def generate_gaussian_orthophoto(
         gc.collect()
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
-        vram_total = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
-        vram_free = (torch.cuda.get_device_properties(0).total_mem - torch.cuda.memory_allocated()) / (1024 ** 3)
+        vram_total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        vram_free = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / (1024 ** 3)
         _report(vol_id, "GAUSS", 0,
                 f"Starting Gaussian Splatting on {torch.cuda.get_device_name(0)} "
                 f"({vram_free:.1f}/{vram_total:.1f} GB free)", report_fn)
@@ -188,7 +188,7 @@ def generate_gaussian_orthophoto(
         # Probe available GPU VRAM for progressive schedule on tiny GPUs
         vram_gb = None
         if torch.cuda.is_available():
-            vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
         if vram_gb is not None and vram_gb < 12:
             # Enable progressive schedule for ≤12 GB GPUs with large images
