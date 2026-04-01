@@ -93,14 +93,19 @@ except ImportError:
 #  Rendering entry points
 # ---------------------------------------------------------------------------
 
-def render_ortho(model: GaussianModel, settings: RasterSettings):
+def render_ortho(model: GaussianModel, settings: RasterSettings, indices: torch.Tensor = None):
     """
     Render an orthographic image from the Gaussian model (inference-only).
+
+    Parameters
+    ----------
+    indices : torch.Tensor (int64), optional
+        If provided, only render these Gaussians (for per-tile frustum culling).
 
     Returns dict with 'image' (3, H, W), 'depth' (1, H, W).
     """
     if _GSPLAT_AVAILABLE:
-        return _render_gsplat_inference(model, settings, camera_model="ortho")
+        return _render_gsplat_inference(model, settings, camera_model="ortho", indices=indices)
     if _CUDA_ORTHO_AVAILABLE:
         device = model.positions.device
         bg = torch.tensor(settings.bg_color, dtype=torch.float32, device=device)
@@ -115,10 +120,13 @@ def render_ortho(model: GaussianModel, settings: RasterSettings):
 # ---------------------------------------------------------------------------
 
 def _render_gsplat_inference(model: GaussianModel, settings: RasterSettings,
-                             camera_model: str = "ortho"):
+                             camera_model: str = "ortho", indices: torch.Tensor = None):
     """
     Lightweight gsplat render for inference — no gradients, no packed meta,
     no absgrad buffers.  Drastically reduces RAM/VRAM for large models.
+
+    When `indices` is provided, only those Gaussians are sent to gsplat,
+    drastically reducing VRAM for per-tile ortho rendering.
     """
     device = model.positions.device
     W, H = settings.image_width, settings.image_height
@@ -137,6 +145,14 @@ def _render_gsplat_inference(model: GaussianModel, settings: RasterSettings,
     scales = model.scales * settings.scaling_modifier
     opacities = model.opacity.squeeze(-1)
     colors = model.features
+
+    # Per-tile frustum culling: only send relevant Gaussians to gsplat
+    if indices is not None:
+        means = means[indices]
+        quats = quats[indices]
+        scales = scales[indices]
+        opacities = opacities[indices]
+        colors = colors[indices]
     # For orthographic rendering, use SH degree up to 1.  All ortho rays are
     # parallel (same direction), so SH bands >= 1 produce a spatially-uniform
     # colour offset — no banding risk.  Using degree 1 recovers more of the

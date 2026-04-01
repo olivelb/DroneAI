@@ -36,6 +36,12 @@ class TrainConfig:
     iterations: int = 30_000
     # Image downscaling (4 = quarter-res, fast; 1 = full-res, best quality)
     data_factor: int = 4
+    # Progressive resolution: train at coarser scale early, ramp to data_factor.
+    # Schedule is a list of (fraction_of_training, data_factor) breakpoints.
+    # E.g. [(0.0, 8), (0.3, 4), (0.6, 2), (0.8, 1)] means:
+    #   0-30%: df=8, 30-60%: df=4, 60-80%: df=2, 80-100%: df=1
+    # Set to None to disable (use data_factor throughout).
+    progressive_schedule: list = None
     # Loss weights (same as gsplat default: 0.8 L1 + 0.2 SSIM)
     ssim_lambda: float = 0.2
     # Learning rates (gsplat defaults)
@@ -329,6 +335,39 @@ def _load_image(cam: CameraInfo, data_factor: int, device: torch.device) -> torc
     return torch.tensor(np_img, device=device).unsqueeze(0)  # (1, H, W, 3)
 
 
+def _get_current_data_factor(step: int, cfg: TrainConfig) -> int:
+    """Return the data_factor for the current training step, respecting progressive schedule."""
+    if not cfg.progressive_schedule:
+        return cfg.data_factor
+    # Schedule is [(fraction, df), ...] sorted by fraction ascending.
+    current_df = cfg.progressive_schedule[0][1]
+    frac = step / max(cfg.iterations - 1, 1)
+    for threshold, df in cfg.progressive_schedule:
+        if frac >= threshold:
+            current_df = df
+    return max(current_df, cfg.data_factor)  # never go below target data_factor
+
+
+def _camera_data_for_factor(cam: CameraInfo, data_factor: int, device: torch.device) -> dict:
+    """Build K and viewmat for a single camera at the given data_factor."""
+    fx = cam.fx / data_factor if data_factor > 1 else cam.fx
+    fy = cam.fy / data_factor if data_factor > 1 else cam.fy
+    cx = cam.cx / data_factor if data_factor > 1 else cam.cx
+    cy = cam.cy / data_factor if data_factor > 1 else cam.cy
+    K = torch.tensor([
+        [fx, 0.0, cx],
+        [0.0, fy, cy],
+        [0.0, 0.0, 1.0],
+    ], dtype=torch.float32, device=device)
+    R_w2c = cam.R.T
+    t_w2c = -R_w2c @ cam.T
+    vm = np.eye(4, dtype=np.float32)
+    vm[:3, :3] = R_w2c
+    vm[:3, 3] = t_w2c
+    viewmat = torch.tensor(vm, dtype=torch.float32, device=device)
+    return {"K": K, "viewmat": viewmat}
+
+
 # ---------------------------------------------------------------------------
 #  gsplat ParameterDict / optimisers
 # ---------------------------------------------------------------------------
@@ -510,7 +549,8 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
 
     print(f"Training: {cfg.iterations} iters, {len(cameras)} cameras, "
           f"data_factor={cfg.data_factor}, {splats['means'].shape[0]} initial GS"
-          f", appearance={'on' if app_model else 'off'}")
+          f", appearance={'on' if app_model else 'off'}"
+          f"{', progressive' if cfg.progressive_schedule else ''}")
 
     # --- Ortho coverage regularisation setup ---
     ortho_R_c2w = None
@@ -523,52 +563,67 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         print(f"Ortho reg enabled: weight={cfg.ortho_reg}, every {cfg.ortho_reg_every} "
               f"iters from {cfg.ortho_reg_start}, crop={cfg.ortho_crop_px}px")
 
+    # Pre-compute camera data at the initial data_factor
+    current_df = _get_current_data_factor(0, cfg)
+    cam_data = _precompute_cameras(cameras, current_df, device)
+
     for step in range(cfg.iterations):
+        # --- Progressive resolution: update data_factor if needed ---
+        step_df = _get_current_data_factor(step, cfg)
+        if step_df != current_df:
+            current_df = step_df
+            cam_data = _precompute_cameras(cameras, current_df, device)
+            if step % 100 == 0:
+                print(f"  Progressive: data_factor → {current_df} at step {step}")
+
         # Random camera
         idx = random.randint(0, len(cameras) - 1)
         cd = cam_data[idx]
         cam = cameras[idx]
 
-        # Load image
-        pixels = _load_image(cam, cfg.data_factor, device)  # (1, H, W, 3)
+        # Load image (streamed from disk, not cached — saves VRAM)
+        pixels = _load_image(cam, current_df, device)  # (1, H, W, 3)
         height, width = pixels.shape[1], pixels.shape[2]
 
         # Progressive SH degree
         sh_degree = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
         # --- Forward (gsplat rasterisation) ---
-        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+        # Mixed precision: autocast reduces activation memory ~2× on GPU
+        use_amp = device.type == "cuda"
+        with torch.amp.autocast(device_type="cuda", dtype=torch.float16, enabled=use_amp):
+            colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
 
-        render_colors, render_alphas, info = gsplat.rasterization(
-            means=splats["means"],
-            quats=splats["quats"],
-            scales=torch.exp(splats["scales"]),
-            opacities=torch.sigmoid(splats["opacities"]),
-            colors=colors_sh,
-            viewmats=cd["viewmat"].unsqueeze(0),
-            Ks=cd["K"].unsqueeze(0),
-            width=width,
-            height=height,
-            near_plane=0.01,
-            far_plane=1e10,
-            sh_degree=sh_degree,
-            eps2d=0.3,
-            render_mode="RGB",
-            rasterize_mode="antialiased",
-            absgrad=(not use_mcmc),
-            packed=True,
-        )
+            render_colors, render_alphas, info = gsplat.rasterization(
+                means=splats["means"],
+                quats=splats["quats"],
+                scales=torch.exp(splats["scales"]),
+                opacities=torch.sigmoid(splats["opacities"]),
+                colors=colors_sh,
+                viewmats=cd["viewmat"].unsqueeze(0),
+                Ks=cd["K"].unsqueeze(0),
+                width=width,
+                height=height,
+                near_plane=0.01,
+                far_plane=1e10,
+                sh_degree=sh_degree,
+                eps2d=0.3,
+                render_mode="RGB",
+                rasterize_mode="antialiased",
+                absgrad=(not use_mcmc),
+                packed=True,
+            )
 
-        # Background compositing
-        if cfg.random_bkgd:
-            bkgd = torch.rand(1, 3, device=device)
-        else:
-            bkgd = bg_color.unsqueeze(0)
-        colors = render_colors + bkgd.view(1, 1, 1, 3) * (1.0 - render_alphas)
+            # Background compositing
+            if cfg.random_bkgd:
+                bkgd = torch.rand(1, 3, device=device)
+            else:
+                bkgd = bg_color.unsqueeze(0)
+            colors = render_colors + bkgd.view(1, 1, 1, 3) * (1.0 - render_alphas)
 
-        # Per-image appearance correction (decouples exposure from scene colour)
-        if app_model is not None:
-            colors = app_model(idx, colors)
+            # Per-image appearance correction (decouples exposure from scene colour)
+            if app_model is not None:
+                colors = app_model(idx, colors)
 
         # Strategy pre-backward (no-op for DefaultStrategy, but keeps API correct)
         strategy.step_pre_backward(
@@ -576,10 +631,10 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             state=strategy_state, step=step, info=info,
         )
 
-        # --- Loss ---
-        l1loss = F.l1_loss(colors, pixels)
+        # --- Loss (float32 for numerical stability) ---
+        l1loss = F.l1_loss(colors.float(), pixels)
         ssimloss = dssim_loss(
-            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+            colors.float().permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
         )
         loss = (1.0 - cfg.ssim_lambda) * l1loss + cfg.ssim_lambda * ssimloss
 
@@ -625,9 +680,16 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
                 packed=True,
             )
 
+        # --- Free per-iteration intermediates (reduce peak VRAM) ---
+        last_loss = l1loss.item()
+        del pixels, render_colors, render_alphas, colors, colors_sh, info, loss
+        del l1loss, ssimloss
+        if step % 100 == 0 and device.type == "cuda":
+            torch.cuda.empty_cache()
+
         # --- Logging ---
         if report_fn and step % 100 == 0:
-            report_fn(step, loss.item(), len(splats["means"]))
+            report_fn(step, last_loss, len(splats["means"]))
 
         # --- Checkpoint ---
         if (step + 1) in cfg.checkpoint_iterations:
@@ -635,7 +697,7 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             ckpt_path = os.path.join(cfg.output_dir, f"point_cloud_iter{step + 1}.ply")
             model.save_ply(ckpt_path)
             if report_fn:
-                report_fn(step, loss.item(), len(splats["means"]))
+                report_fn(step, last_loss, len(splats["means"]))
 
     # Copy final results back to model
     _update_model_from_splats(model, splats)

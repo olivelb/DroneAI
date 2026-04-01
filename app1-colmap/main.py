@@ -797,13 +797,34 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
 
                 ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
 
-                # Auto data_factor: scale down training images based on dataset size
+                # Auto data_factor: scale down training images based on dataset size and resolution
                 gs_data_factor_raw = str(params.get("gs_data_factor", "auto"))
                 if gs_data_factor_raw == "auto":
-                    n_images_count = len([f for f in os.listdir(os.path.join(dense_path, "images"))
-                                          if f.lower().endswith(('.jpg', '.jpeg', '.png'))]) if os.path.isdir(os.path.join(dense_path, "images")) else 0
-                    gs_data_factor = 2 if n_images_count <= 500 else 4
-                    report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images")
+                    images_dir = os.path.join(dense_path, "images")
+                    image_files = [f for f in os.listdir(images_dir)
+                                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))] if os.path.isdir(images_dir) else []
+                    n_images_count = len(image_files)
+                    # Probe max image dimension from the first image
+                    max_dim = 0
+                    if image_files:
+                        try:
+                            from PIL import Image as PILImage
+                            probe_path = os.path.join(images_dir, image_files[0])
+                            with PILImage.open(probe_path) as img:
+                                max_dim = max(img.size)
+                        except Exception:
+                            pass
+                    # Target: keep training images ≤ 1600px on the long side
+                    # and also limit total pixel throughput for large datasets
+                    if max_dim > 4000 or n_images_count > 800:
+                        gs_data_factor = 8
+                    elif max_dim > 2000 or n_images_count > 500:
+                        gs_data_factor = 4
+                    elif max_dim > 1200:
+                        gs_data_factor = 2
+                    else:
+                        gs_data_factor = 1
+                    report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images, max_dim={max_dim}px")
                 else:
                     gs_data_factor = int(gs_data_factor_raw)
 

@@ -169,13 +169,62 @@ def generate_gaussian_orthophoto(
         model.init_from_point_cloud(cell_scene.point_cloud, cell_scene.scene_radius,
                                     init_opa=init_opa)
 
+        # --- VRAM-aware training config ---
+        effective_cap = cap_max
+        effective_ortho_crop = 256
+        progressive = None
+
+        # Probe available GPU VRAM to auto-tune parameters
+        vram_gb = None
+        if torch.cuda.is_available():
+            vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+
+        if vram_gb is not None and vram_gb < 10:
+            # 8 GB class GPU: reduce cap_max and ortho crop
+            effective_cap = min(cap_max, 500_000)
+            effective_ortho_crop = 128
+
+        if vram_gb is not None and vram_gb < 12:
+            # Enable progressive schedule for ≤12 GB GPUs with large images
+            # Probe max image dimension from the first camera
+            try:
+                from PIL import Image as PILImage
+                first_cam = cell_scene.train_cameras[0]
+                max_dim = max(first_cam.width, first_cam.height)
+            except Exception:
+                max_dim = 0
+
+            if max_dim > 1200 and data_factor <= 2:
+                # Build schedule: start coarse, ramp to target data_factor
+                progressive = []
+                if max_dim > 3000:
+                    progressive.append((0.0, 8))
+                    progressive.append((0.25, 4))
+                    progressive.append((0.50, 2))
+                    if data_factor <= 1:
+                        progressive.append((0.75, 1))
+                elif max_dim > 2000:
+                    progressive.append((0.0, 4))
+                    progressive.append((0.35, 2))
+                    if data_factor <= 1:
+                        progressive.append((0.70, 1))
+                else:  # 1200 < max_dim <= 2000
+                    progressive.append((0.0, 2))
+                    if data_factor <= 1:
+                        progressive.append((0.50, 1))
+                _report(vol_id, "GAUSS", pct_start,
+                        f"Progressive schedule: {progressive} (VRAM={vram_gb:.1f}GB, max_dim={max_dim}px)",
+                        report_fn)
+
         cfg = TrainConfig(
             iterations=iterations,
             data_factor=data_factor,
+            progressive_schedule=progressive,
             sh_degree=sh_degree,
             strategy=strategy,
-            cap_max=cap_max,
+            cap_max=effective_cap,
             ortho_reg=ortho_reg,
+            ortho_crop_px=effective_ortho_crop,
             output_dir=os.path.join(checkpoint_dir, cell_label),
         )
 

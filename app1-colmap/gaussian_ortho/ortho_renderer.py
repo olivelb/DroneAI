@@ -163,7 +163,27 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
 
 def _render_single_tile(model, x_min, x_max, y_min, y_max,
                          z_min, z_max, W, H, device):
-    """Render a single tile via orthographic splatting."""
+    """Render a single tile via orthographic splatting with per-tile frustum culling."""
+    # --- Per-tile frustum culling (XY) ---
+    # Only send Gaussians whose XY position (± max scale margin) overlaps this tile.
+    # This prevents OOM when the full model has millions of Gaussians.
+    with torch.no_grad():
+        xyz = model.positions  # (N, 3)
+        # Margin: max scale of each Gaussian × 3 (covers 3σ splat footprint)
+        max_scale = model.scales.max(dim=-1).values  # (N,)
+        margin = max_scale * 3.0
+        mask = (
+            (xyz[:, 0] + margin >= x_min) & (xyz[:, 0] - margin <= x_max) &
+            (xyz[:, 1] + margin >= y_min) & (xyz[:, 1] - margin <= y_max)
+        )
+        indices = mask.nonzero(as_tuple=False).squeeze(-1)
+
+    if indices.numel() == 0:
+        # No Gaussians in this tile — return white background
+        rgb_np = np.full((H, W, 3), 255, dtype=np.uint8)
+        height_np = np.zeros((H, W), dtype=np.float32)
+        return rgb_np, height_np
+
     R_c2w, T_world = _build_ortho_camera(x_min, x_max, y_min, y_max, z_min, z_max)
 
     viewmat = make_view_matrix(R_c2w, T_world)
@@ -195,7 +215,7 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
         projmatrix=projmat,
     )
 
-    result = render_ortho(model, settings)
+    result = render_ortho(model, settings, indices=indices)
 
     img = result["image"]  # (3, H, W)
     img_np = (img.clamp(0, 1).detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
