@@ -270,7 +270,9 @@ def generate_gaussian_orthophoto(
     _report(vol_id, "GAUSS", 88, f"Saved final model: {final_ply}", report_fn)
 
     # --- Free training data before rendering (keep point_cloud for extent) ---
-    del cells, cell_models, scene, train_cameras, test_cameras
+    # Save cameras for potential PCA auto-alignment (lightweight list of R, T)
+    _all_cameras = train_cameras
+    del cells, cell_models, scene, test_cameras
     import gc
     gc.collect()
     if torch.cuda.is_available():
@@ -304,10 +306,63 @@ def generate_gaussian_orthophoto(
         # Compute scene extent from the geo-aligned COLMAP point cloud
         geo_pts = apply_sim3_to_points(point_cloud.points, transform_data)
     else:
-        geo_pts = point_cloud.points
-    del point_cloud
+        # --- Auto-alignment via PCA on camera positions ---
+        # Without an alignment transform, COLMAP local coordinates have an
+        # arbitrary orientation.  The ortho camera looks down -Z, so we need
+        # Z = "up".  Estimate "up" from the camera positions: for drone
+        # surveys, cameras lie in a roughly flat horizontal plane, so the
+        # smallest principal component of their positions gives the vertical.
+        _report(vol_id, "GAUSS", 89, "No alignment transform — auto-aligning via camera PCA…", report_fn)
+        from numpy.linalg import svd as _svd
 
-    # --- 5b. Compute point cloud bounds (needed for rendering extent) ---
+        cam_positions = np.array([c.T for c in _all_cameras], dtype=np.float64)
+        centroid = cam_positions.mean(axis=0)
+        _, S_pca, Vt_pca = _svd(cam_positions - centroid, full_matrices=False)
+
+        up_est = Vt_pca[2].astype(np.float64)  # smallest eigenvalue direction
+
+        # Orient "up" so it points away from where cameras look (camera forward
+        # ≈ ground direction for nadir drone imagery).
+        cam_fwd = np.array([c.R[2, :] for c in _all_cameras], dtype=np.float64)  # camera -Z in world
+        mean_fwd = cam_fwd.mean(axis=0)
+        mean_fwd /= max(np.linalg.norm(mean_fwd), 1e-9)
+        if np.dot(up_est, mean_fwd) > 0:
+            up_est = -up_est
+
+        # Build rotation that maps up_est → [0, 0, 1]
+        up_est = up_est / max(np.linalg.norm(up_est), 1e-9)
+        target = np.array([0.0, 0.0, 1.0])
+        v = np.cross(up_est, target)
+        c_dot = np.dot(up_est, target)
+        if np.linalg.norm(v) < 1e-8:
+            # Already aligned (or exactly anti-parallel)
+            R_align = np.eye(3) if c_dot > 0 else np.diag([1.0, -1.0, -1.0])
+        else:
+            vx = np.array([[0, -v[2], v[1]],
+                           [v[2], 0, -v[0]],
+                           [-v[1], v[0], 0]])
+            R_align = np.eye(3) + vx + vx @ vx / (1.0 + c_dot)
+
+        R_align = R_align.astype(np.float32)
+        angle_deg = np.degrees(np.arccos(np.clip(c_dot, -1, 1)))
+        _report(vol_id, "GAUSS", 89,
+                f"PCA auto-alignment: rotating {angle_deg:.1f}° to align UP with Z",
+                report_fn)
+
+        # Apply rotation to the trained model (scale=1, no translation)
+        R_torch = torch.tensor(R_align, dtype=torch.float32,
+                               device=merged_model._xyz.device)
+        merged_model._xyz.data = (R_torch @ merged_model._xyz.data.T).T
+        R_quat = merged_model._matrix_to_quaternion(R_torch)
+        merged_model._rotation.data = merged_model._quaternion_multiply(
+            R_quat.unsqueeze(0), merged_model._rotation.data,
+        )
+
+        # Rotate point cloud for extent computation
+        geo_pts = (R_align @ point_cloud.points.T).T
+    del point_cloud, _all_cameras
+
+    # --- 5b. Compute point cloud bounds (used for outlier filtering) ---
     pad_m = 20.0  # metres of padding beyond point cloud bounds
     pc_min = geo_pts.min(axis=0)
     pc_max = geo_pts.max(axis=0)
@@ -403,12 +458,15 @@ def generate_gaussian_orthophoto(
             del cc_keep
         del xyz_np, tree, idx_k, adj, labels
 
-    # Define rendering extent in local coordinates
-    render_extent = (
-        float(local_pc_min[0] - pad_m), float(local_pc_max[0] + pad_m),
-        float(local_pc_min[1] - pad_m), float(local_pc_max[1] + pad_m),
-        float(local_pc_min[2] - pad_m), float(local_pc_max[2] + pad_m),
-    )
+    # Define rendering extent in local coordinates.
+    # Use the Gaussian model's own percentile-clipped position bounds rather
+    # than the raw COLMAP point cloud bounds.  The COLMAP cloud often contains
+    # outlier points far from the scene which inflate the Z range: this causes
+    # "sky" Gaussians (large scale, high Z) to enter the near/far frustum and
+    # produce a uniform haze when viewed from the ortho camera.
+    from .ortho_renderer import compute_ortho_extent as _compute_extent
+    model_extent = _compute_extent(merged_model, pad=2.0)
+    render_extent = model_extent
 
     gc.collect()
     if torch.cuda.is_available():
