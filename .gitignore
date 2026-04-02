@@ -74,6 +74,19 @@ extractor.h
 matcher.h
 sift.h
 test_rasterizer_in_pod.sh
-GEMINI.md
+gemini.md
 isprs-archives-XLVIII-G-2025-411-2025.pdf
 *:Zone.Identifier
+
+# === Root-level local test / dev scripts (not part of the apps) ===
+/test_*.py
+/ws_test.py
+/run_local_*.py
+/run_local_*.sh
+/run_sam3_tile_inference.py
+/draw_tile_detections_on_ortho.py
+/tile_eagle_obb_dataset.py
+/train_eagle_yolo11_obb.py
+/setup_*_venv.sh
+/requirements-gaussian-ortho.txt
+/test_gaussian_ortho_banyuls.py
