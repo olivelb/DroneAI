@@ -3,6 +3,7 @@
 .bashrc
 .profile
 .motd_shown
+.github/
 .sudo_as_admin_successful
 .gitconfig
 .wget-hsts
@@ -45,6 +46,9 @@ next-env.d.ts
 *.tar
 *.tar.gz
 *.zip
+
+# === Test result images ===
+*.png
 
 # === Large binaries (not source code) ===
 colmap-src/
