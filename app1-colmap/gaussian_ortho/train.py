@@ -731,6 +731,7 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
 
     # Copy final results back to model
     _update_model_from_splats(model, splats)
+    model.active_sh_degree = min(cfg.iterations // cfg.sh_degree_interval, cfg.sh_degree)
 
     # --- Free training memory ---
     del splats, optimizers, schedulers, strategy, strategy_state

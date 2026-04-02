@@ -54,7 +54,7 @@ def generate_gaussian_orthophoto(
     partition_m: int = 1,
     partition_n: int = 1,
     partition_overlap: float = 0.20,
-    sh_degree: int = 3,
+    sh_degree: int = 0,
     fagk: bool = True,
     lambda_depth: float = 0.1,
     checkpoint_dir: str = None,
@@ -457,6 +457,30 @@ def generate_gaussian_orthophoto(
                     report_fn)
             del cc_keep
         del xyz_np, tree, idx_k, adj, labels
+
+    # --- Z-floater removal (always runs, even with filter_enabled=False) ---
+    # MCMC densification often creates semi-transparent Gaussians very far
+    # above/below the scene surface to represent the sky / background.  In
+    # perspective training these are harmless, but the ortho camera looks
+    # straight down and they accumulate into a uniform haze.  We detect them
+    # with a robust IQR fence on the Z axis (k=3) and remove them.
+    with torch.no_grad():
+        z_vals = merged_model._xyz[:, 2].detach()
+        q25 = torch.quantile(z_vals, 0.25).item()
+        q75 = torch.quantile(z_vals, 0.75).item()
+        z_iqr = q75 - q25
+        z_lo = q25 - 3.0 * z_iqr
+        z_hi = q75 + 3.0 * z_iqr
+        z_keep = (z_vals >= z_lo) & (z_vals <= z_hi)
+        n_before_z = merged_model.num_gaussians
+        merged_model.filter_by_mask(z_keep)
+        n_removed_z = n_before_z - merged_model.num_gaussians
+        if n_removed_z > 0:
+            _report(vol_id, "GAUSS", 89,
+                    f"Z-floater filter: removed {n_removed_z} sky/background Gaussians "
+                    f"(Z outside [{z_lo:.2f}, {z_hi:.2f}])",
+                    report_fn)
+        del z_vals, z_keep
 
     # Define rendering extent in local coordinates.
     # Use the Gaussian model's own percentile-clipped position bounds rather
