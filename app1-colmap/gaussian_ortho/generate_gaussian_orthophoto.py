@@ -607,9 +607,7 @@ def generate_gaussian_orthophoto(
     # "sky" Gaussians (large scale, high Z) to enter the near/far frustum and
     # produce a uniform haze when viewed from the ortho camera.
     from .ortho_renderer import compute_ortho_extent as _compute_extent
-    R_geo_f32 = torch.tensor(R_geo, dtype=torch.float32,
-                             device=merged_model._xyz.device) if R_geo is not None else None
-    model_extent = _compute_extent(merged_model, pad=2.0, R_geo=R_geo_f32)
+    model_extent = _compute_extent(merged_model, pad=2.0, R_geo=R_geo)
     render_extent = model_extent
 
     gc.collect()
@@ -631,7 +629,7 @@ def generate_gaussian_orthophoto(
             f"(local GSD={local_gsd:.6f})…", report_fn)
     result = render_orthophoto(
         merged_model, gsd=local_gsd, extent=render_extent, device=device,
-        R_geo=R_geo_f32,
+        R_geo=R_geo,
     )
 
     rgb = result["rgb"]
