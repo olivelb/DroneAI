@@ -164,7 +164,7 @@ class GaussianModel(nn.Module):
     # ------------------------------------------------------------------
 
     def init_from_point_cloud(self, pc: PointCloud, spatial_lr_scale: float = 1.0,
-                              init_opa: float = 0.1):
+                              init_opa: float = 0.1, init_scale: float = 1.0):
         """
         Initialise Gaussian parameters from a COLMAP sparse point cloud.
 
@@ -191,9 +191,9 @@ class GaussianModel(nn.Module):
         n_rest = num_sh_coefficients(self.max_sh_degree) - 1
         self._features_rest = nn.Parameter(torch.zeros(n, n_rest, 3, device=device))
 
-        # Scale: log of mean distance to 3 nearest neighbours
+        # Scale: log of mean distance to 3 nearest neighbours, times init_scale
         dists = self._knn_distances(points, k=3)
-        log_scales = torch.log(dists.clamp(min=1e-7)).unsqueeze(-1).expand(-1, 3).clone()
+        log_scales = torch.log((dists * init_scale).clamp(min=1e-7)).unsqueeze(-1).expand(-1, 3).clone()
         self._scaling = nn.Parameter(log_scales)
 
         # Rotation: unit quaternion (w=1, x=y=z=0)

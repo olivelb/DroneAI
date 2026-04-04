@@ -72,8 +72,18 @@ class TrainConfig:
     scale_reg: float = 0.01
     # Initial opacity (0.1 for default, 0.5 for mcmc)
     init_opa: float = 0.1
-    # Random background during training (helps avoid transparency)
-    random_bkgd: bool = False
+    # Initial scale multiplier (1.0 for default, 0.1 for mcmc per gsplat official example).
+    # Smaller initial Gaussians help MCMC convergence: they cover less area so
+    # the photometric loss signal is more localised, and MCMC relocation/growth
+    # handles filling gaps.
+    init_scale: float = 0.1
+    # Random background during training (helps avoid transparency / floaters).
+    # Strongly recommended for MCMC. Modulated backgrounds prevent semi-
+    # transparent Gaussians from converging to a constant background colour.
+    random_bkgd: bool = True
+    # Fraction of training to use random backgrounds. After this, switch to
+    # white so the model settles with the actual render-time background.
+    random_bkgd_end_frac: float = 0.75
     # Checkpoints
     checkpoint_iterations: list = field(default_factory=lambda: [7_000, 30_000])
     # Output
@@ -84,8 +94,11 @@ class TrainConfig:
     appearance_enabled: bool = True
     appearance_dim: int = 16
     appearance_lr: float = 1e-3
+    # Spatial pruning during training: mark far-away Gaussians as dead so
+    # MCMC's relocate recycling them to useful positions near the cameras.
+    spatial_prune_every: int = 500   # 0 to disable
     # Ortho coverage regularisation (removes nadir banding artefacts)
-    ortho_reg: float = 0.5       # weight (0 to disable)
+    ortho_reg: float = 0.0       # weight (0 to disable) — currently broken with scene normalisation
     ortho_reg_start: int = 500   # iteration to start
     ortho_reg_every: int = 20    # apply every N iterations
     ortho_crop_px: int = 256     # ortho crop size in pixels
@@ -462,8 +475,15 @@ def _update_model_from_splats(model: GaussianModel, splats):
 #  Camera data pre-computation
 # ---------------------------------------------------------------------------
 
-def _precompute_cameras(cameras, data_factor: int, device: torch.device):
-    """Precompute viewmats and intrinsics for all training cameras."""
+def _precompute_cameras(cameras, data_factor: int, device: torch.device,
+                        norm_center=None, norm_scale=1.0):
+    """Precompute viewmats and intrinsics for all training cameras.
+
+    If norm_center and norm_scale are given, camera positions are transformed
+    to normalised space:  pos_norm = (pos - center) / scale.
+    Intrinsics (K) are unchanged because pixel projection is independent of
+    world-space scaling.
+    """
     cam_data = []
     for cam in cameras:
         fx = cam.fx / data_factor if data_factor > 1 else cam.fx
@@ -476,8 +496,12 @@ def _precompute_cameras(cameras, data_factor: int, device: torch.device):
             [0.0, 0.0, 1.0],
         ], dtype=torch.float32, device=device)
 
+        cam_pos = cam.T  # camera centre in world coords
+        if norm_center is not None:
+            cam_pos = (cam_pos - norm_center) / norm_scale
+
         R_w2c = cam.R.T
-        t_w2c = -R_w2c @ cam.T
+        t_w2c = -R_w2c @ cam_pos
         vm = np.eye(4, dtype=np.float32)
         vm[:3, :3] = R_w2c
         vm[:3, 3] = t_w2c
@@ -522,10 +546,37 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
     os.makedirs(cfg.output_dir, exist_ok=True)
 
     cameras = scene.train_cameras
-    scene_scale = scene.scene_radius * 1.1
+
+    # ------------------------------------------------------------------
+    #  Scene normalisation: centre at scene_centre, scale to unit radius.
+    #  gsplat's default MCMC hyperparameters (noise_lr, LR values, etc.)
+    #  are tuned for scenes where positions live in a ~unit ball.  Our raw
+    #  COLMAP coordinates can be 10-30 units across (1 unit ≈ 12 m), which
+    #  breaks noise injection scaling.  By normalising here we can use all
+    #  upstream defaults unmodified and convert back after training.
+    # ------------------------------------------------------------------
+    norm_center = scene.scene_centre.astype(np.float64)
+    norm_scale = float(scene.scene_radius)          # radius → ~1.0
+    if norm_scale < 1e-6:
+        norm_scale = 1.0
+
+    # scene_scale (for LR) is now just a small padding factor (~1.1)
+    scene_scale = 1.1
 
     # --- Create gsplat params, optimisers, strategy ---
     splats = _create_splats(model, device)
+
+    # Normalise Gaussian positions and scales into the unit-ball space.
+    with torch.no_grad():
+        splats["means"].sub_(torch.tensor(norm_center, dtype=torch.float32,
+                                          device=device))
+        splats["means"].div_(norm_scale)
+        # Scales are in log-space: log(s_world) → log(s_world / norm_scale)
+        splats["scales"].sub_(math.log(norm_scale))
+
+    print(f"Scene normalisation: center={norm_center}, "
+          f"scale={norm_scale:.4f} (1 unit ≈ {norm_scale:.2f} COLMAP units)")
+
     optimizers = _create_optimizers(splats, cfg, scene_scale)
 
     # ExponentialLR: means LR decays to 1% over training
@@ -543,7 +594,9 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             cap_max=cfg.cap_max,
             noise_lr=cfg.noise_lr,
             refine_start_iter=cfg.refine_start_iter,
-            refine_stop_iter=min(cfg.refine_stop_iter, cfg.iterations),
+            # Stop refinement at 75% of training to leave a settling phase
+            # where Gaussians converge without being relocated/added.
+            refine_stop_iter=min(cfg.refine_stop_iter, int(cfg.iterations * 0.75)),
             refine_every=cfg.refine_every,
             min_opacity=0.005,
         )
@@ -562,8 +615,10 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
     else:
         strategy_state = strategy.initialize_state(scene_scale=scene_scale)
 
-    # Precompute camera data
-    cam_data = _precompute_cameras(cameras, cfg.data_factor, device)
+    # Precompute camera data (in normalised space)
+    cam_data = _precompute_cameras(cameras, cfg.data_factor, device,
+                                   norm_center=norm_center,
+                                   norm_scale=norm_scale)
 
     bg_color = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32, device=device)
 
@@ -579,27 +634,49 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
           f", appearance={'on' if app_model else 'off'}"
           f"{', progressive' if cfg.progressive_schedule else ''}")
 
-    # --- Ortho coverage regularisation setup ---
+    # --- Spatial pruning setup (camera proximity tree, normalised space) ---
+    _cam_positions = None
+    _cam_tree = None
+    _max_cam_dist = None
+    if use_mcmc and cfg.spatial_prune_every > 0:
+        from scipy.spatial import cKDTree as _cKDTree
+        from scipy.spatial.distance import pdist as _pdist
+        # Camera positions in normalised space
+        _cam_positions = np.array(
+            [(cam.T - norm_center) / norm_scale for cam in cameras],
+            dtype=np.float64)
+        _cam_tree = _cKDTree(_cam_positions)
+        _max_cam_dist = float(np.max(_pdist(_cam_positions)))
+        print(f"Spatial pruning: enabled every {cfg.spatial_prune_every} steps, "
+              f"scene diameter={_max_cam_dist:.2f} normalised units")
+
+    # --- Ortho coverage regularisation setup (normalised space) ---
     ortho_R_c2w = None
     ortho_scene_lo = ortho_scene_hi = None
     if cfg.ortho_reg > 0:
         ortho_R_c2w = _estimate_nadir_frame(cameras)
         pts = scene.point_cloud.points
-        ortho_scene_lo = np.percentile(pts, 2, axis=0)
-        ortho_scene_hi = np.percentile(pts, 98, axis=0)
+        lo = np.percentile(pts, 2, axis=0)
+        hi = np.percentile(pts, 98, axis=0)
+        ortho_scene_lo = (lo - norm_center) / norm_scale
+        ortho_scene_hi = (hi - norm_center) / norm_scale
         print(f"Ortho reg enabled: weight={cfg.ortho_reg}, every {cfg.ortho_reg_every} "
               f"iters from {cfg.ortho_reg_start}, crop={cfg.ortho_crop_px}px")
 
-    # Pre-compute camera data at the initial data_factor
+    # Pre-compute camera data at the initial data_factor (normalised space)
     current_df = _get_current_data_factor(0, cfg)
-    cam_data = _precompute_cameras(cameras, current_df, device)
+    cam_data = _precompute_cameras(cameras, current_df, device,
+                                   norm_center=norm_center,
+                                   norm_scale=norm_scale)
 
     for step in range(cfg.iterations):
         # --- Progressive resolution: update data_factor if needed ---
         step_df = _get_current_data_factor(step, cfg)
         if step_df != current_df:
             current_df = step_df
-            cam_data = _precompute_cameras(cameras, current_df, device)
+            cam_data = _precompute_cameras(cameras, current_df, device,
+                                           norm_center=norm_center,
+                                           norm_scale=norm_scale)
             if step % 100 == 0:
                 print(f"  Progressive: data_factor → {current_df} at step {step}")
 
@@ -638,8 +715,13 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             packed=True,
         )
 
-        # Background compositing
-        if cfg.random_bkgd:
+        # Background compositing — modulated backgrounds prevent floaters
+        # by making semi-transparent Gaussians unable to exploit a constant BG.
+        use_random_bg = (
+            cfg.random_bkgd
+            and step < int(cfg.iterations * cfg.random_bkgd_end_frac)
+        )
+        if use_random_bg:
             bkgd = torch.rand(1, 3, device=device)
         else:
             bkgd = bg_color.unsqueeze(0)
@@ -700,10 +782,16 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
 
         # --- Strategy post-backward (densification / relocation) ---
         if use_mcmc:
+            # Scene is normalised to unit scale, so lr and covariance
+            # magnitudes match the paper's assumptions — no correction needed.
+            mcmc_lr = schedulers[0].get_last_lr()[0]
+            # After refine_stop_iter, silence noise entirely (settling phase).
+            if step >= strategy.refine_stop_iter:
+                mcmc_lr = 0.0
             strategy.step_post_backward(
                 params=splats, optimizers=optimizers,
                 state=strategy_state, step=step, info=info,
-                lr=schedulers[0].get_last_lr()[0],
+                lr=mcmc_lr,
             )
         else:
             strategy.step_post_backward(
@@ -711,6 +799,48 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
                 state=strategy_state, step=step, info=info,
                 packed=True,
             )
+
+        # --- Spatial pruning: kill far-away Gaussians ---
+        # Gaussians beyond the scene diameter from all cameras get their
+        # opacity crushed below min_opacity so the next MCMC relocate step
+        # teleports them to useful high-opacity positions near the scene.
+        if (_cam_tree is not None
+                and step >= cfg.refine_start_iter
+                and step < strategy.refine_stop_iter
+                and step % cfg.spatial_prune_every == 0):
+            with torch.no_grad():
+                means_np = splats["means"].detach().cpu().numpy()
+                dists_to_cam, _ = _cam_tree.query(means_np, k=1)
+                far_mask = dists_to_cam > _max_cam_dist
+                n_far = int(far_mask.sum())
+                if n_far > 0:
+                    far_t = torch.tensor(far_mask, device=device)
+                    # Set opacity well below min_opacity (0.005) → relocate
+                    # will recycle them on its next pass.
+                    splats["opacities"].data[far_t] = torch.logit(
+                        torch.tensor(0.001, device=device)
+                    )
+                    # Also shrink scales to avoid huge noise displacement
+                    # (noise ∝ covariance = scale²) before relocation.
+                    splats["scales"].data[far_t] = torch.log(
+                        torch.tensor(1e-4, device=device)
+                    )
+                    # Zero the optimizer state so they start fresh
+                    for opt in optimizers.values():
+                        for pg in opt.param_groups:
+                            for p in pg["params"]:
+                                ptr = p.data_ptr()
+                                if (ptr == splats["opacities"].data_ptr()
+                                        or ptr == splats["scales"].data_ptr()):
+                                    if p in opt.state:
+                                        for k, v in opt.state[p].items():
+                                            if isinstance(v, torch.Tensor) and v.shape == p.shape:
+                                                v[far_t] = 0.0
+                    if step % 500 == 0 or n_far > 1000:
+                        print(f"  [step {step}] Spatial prune: "
+                              f"{n_far} Gaussians beyond scene diameter "
+                              f"({_max_cam_dist:.2f}) marked for relocation")
+                del means_np, dists_to_cam
 
         # --- Free per-iteration intermediates (reduce peak VRAM) ---
         del info
@@ -721,13 +851,32 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         if report_fn and step % 100 == 0:
             report_fn(step, last_loss, len(splats["means"]))
 
-        # --- Checkpoint ---
+        # --- Checkpoint (save in COLMAP coordinates) ---
         if (step + 1) in cfg.checkpoint_iterations:
-            _update_model_from_splats(model, splats)
-            ckpt_path = os.path.join(cfg.output_dir, f"point_cloud_iter{step + 1}.ply")
-            model.save_ply(ckpt_path)
+            with torch.no_grad():
+                # Temporarily denormalise for saving
+                splats["means"].mul_(norm_scale).add_(
+                    torch.tensor(norm_center, dtype=torch.float32, device=device))
+                splats["scales"].add_(math.log(norm_scale))
+                _update_model_from_splats(model, splats)
+                ckpt_path = os.path.join(cfg.output_dir, f"point_cloud_iter{step + 1}.ply")
+                model.save_ply(ckpt_path)
+                # Re-normalise to continue training
+                splats["means"].sub_(
+                    torch.tensor(norm_center, dtype=torch.float32, device=device))
+                splats["means"].div_(norm_scale)
+                splats["scales"].sub_(math.log(norm_scale))
             if report_fn:
                 report_fn(step, last_loss, len(splats["means"]))
+
+    # --- Denormalise back to COLMAP coordinates ---
+    # Training was done in unit-ball space.  Convert means and scales back
+    # so the exported model lives in the original COLMAP coordinate frame
+    # (needed for correct GeoTIFF placement and metric measurements).
+    with torch.no_grad():
+        splats["means"].mul_(norm_scale).add_(
+            torch.tensor(norm_center, dtype=torch.float32, device=device))
+        splats["scales"].add_(math.log(norm_scale))
 
     # Copy final results back to model
     _update_model_from_splats(model, splats)
@@ -740,4 +889,356 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         torch.cuda.empty_cache()
     import gc; gc.collect()
 
+    return model
+
+
+# ---------------------------------------------------------------------------
+#  Nadir fine-tune: optimise colours for top-down rendering
+# ---------------------------------------------------------------------------
+
+def _filter_nadir_cameras(cameras, max_angle_deg: float = 15.0):
+    """Return cameras whose viewing direction is within *max_angle_deg* of
+    the PCA-derived vertical (nadir) direction.
+
+    Camera forward in world coords = ``cam.R[:, 2]`` (3rd column of the
+    camera-to-world rotation matrix — the camera +Z axis in COLMAP
+    convention).
+    """
+    from numpy.linalg import svd as _svd
+
+    cam_positions = np.array([c.T for c in cameras], dtype=np.float64)
+    _, _, Vt = _svd(cam_positions - cam_positions.mean(0), full_matrices=False)
+    up = Vt[2]  # smallest eigenvalue direction = vertical
+
+    fwds = np.array([c.R[:, 2] for c in cameras], dtype=np.float64)
+    mean_fwd = fwds.mean(axis=0)
+    if np.dot(up, mean_fwd) > 0:
+        up = -up
+    down = -up  # nadir look direction
+
+    dots = np.sum(fwds * down, axis=1)
+    dots /= np.maximum(np.linalg.norm(fwds, axis=1), 1e-9)
+    angles = np.degrees(np.arccos(np.clip(dots, -1, 1)))
+
+    nadir_cams = [c for c, a in zip(cameras, angles) if a < max_angle_deg]
+    return nadir_cams, down
+
+
+def nadir_finetune(scene: SceneInfo, model: GaussianModel,
+                   iterations: int = 2000,
+                   data_factor: int = 2,
+                   max_angle_deg: float = 15.0,
+                   lr_sh0: float = 2.5e-3,
+                   lr_shN: float = 1.25e-4,
+                   ssim_lambda: float = 0.2,
+                   report_fn=None):
+    """Fine-tune only the SH colour coefficients using near-nadir cameras.
+
+    The geometry (positions, scales, rotations, opacities) is frozen.
+    This makes the Gaussian colours match the straight-down view used
+    by the orthographic renderer, eliminating the colour mismatch that
+    arises when SH bands are trained from mixed oblique + nadir views.
+
+    Parameters
+    ----------
+    scene : SceneInfo
+        Same scene used for the original training.
+    model : GaussianModel
+        Already-trained model (with good geometry).
+    iterations : int
+        Number of fine-tune iterations.
+    data_factor : int
+        Image downscaling factor.
+    max_angle_deg : float
+        Maximum angle from nadir for camera selection.
+    lr_sh0 : float
+        Learning rate for the DC (base colour) SH band.
+    lr_shN : float
+        Learning rate for higher SH bands.
+    ssim_lambda : float
+        SSIM loss weight (0 = pure L1, 1 = pure SSIM).
+    report_fn : callable, optional
+        report_fn(iteration, loss, n_gaussians) for progress.
+    """
+    device = model.positions.device
+
+    # --- Filter to nadir cameras ---
+    nadir_cams, down_dir = _filter_nadir_cameras(scene.train_cameras,
+                                                  max_angle_deg)
+    if len(nadir_cams) < 10:
+        print(f"WARNING: only {len(nadir_cams)} nadir cameras (<{max_angle_deg}°),"
+              f" falling back to 30° threshold")
+        nadir_cams, down_dir = _filter_nadir_cameras(scene.train_cameras, 30.0)
+    if len(nadir_cams) < 5:
+        print(f"ERROR: only {len(nadir_cams)} cameras even at 30° — skipping finetune")
+        return model
+
+    print(f"Nadir fine-tune: {len(nadir_cams)} cameras (<{max_angle_deg}°), "
+          f"{iterations} iters, data_factor={data_factor}")
+
+    # --- Scene normalisation (same as main training) ---
+    norm_center = scene.scene_centre.astype(np.float64)
+    norm_scale = float(scene.scene_radius)
+    if norm_scale < 1e-6:
+        norm_scale = 1.0
+
+    # --- Build splats from existing model ---
+    splats = _create_splats(model, device)
+
+    # Normalise positions and scales
+    with torch.no_grad():
+        splats["means"].sub_(torch.tensor(norm_center, dtype=torch.float32,
+                                          device=device))
+        splats["means"].div_(norm_scale)
+        splats["scales"].sub_(math.log(norm_scale))
+
+    # --- Freeze geometry: only optimise SH coefficients ---
+    splats["means"].requires_grad_(False)
+    splats["scales"].requires_grad_(False)
+    splats["quats"].requires_grad_(False)
+    splats["opacities"].requires_grad_(False)
+
+    optimizers = {
+        "sh0": torch.optim.Adam([splats["sh0"]], lr=lr_sh0, eps=1e-15),
+        "shN": torch.optim.Adam([splats["shN"]], lr=lr_shN, eps=1e-15),
+    }
+
+    # Precompute camera data (normalised space)
+    cam_data = _precompute_cameras(nadir_cams, data_factor, device,
+                                   norm_center=norm_center,
+                                   norm_scale=norm_scale)
+
+    bg_color = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32, device=device)
+    sh_degree = model.max_sh_degree  # Use full SH from the start
+
+    # --- Training loop ---
+    for step in range(iterations):
+        idx = random.randint(0, len(nadir_cams) - 1)
+        cd = cam_data[idx]
+        cam = nadir_cams[idx]
+
+        pixels = _load_image(cam, data_factor, device)
+        height, width = pixels.shape[1], pixels.shape[2]
+
+        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+
+        render_colors, render_alphas, info = gsplat.rasterization(
+            means=splats["means"],
+            quats=splats["quats"],
+            scales=torch.exp(splats["scales"]),
+            opacities=torch.sigmoid(splats["opacities"]),
+            colors=colors_sh,
+            viewmats=cd["viewmat"].unsqueeze(0),
+            Ks=cd["K"].unsqueeze(0),
+            width=width,
+            height=height,
+            near_plane=0.01,
+            far_plane=1e10,
+            sh_degree=sh_degree,
+            eps2d=0.3,
+            render_mode="RGB",
+            rasterize_mode="antialiased",
+            packed=True,
+        )
+
+        colors = render_colors + bg_color.view(1, 1, 1, 3) * (1.0 - render_alphas)
+
+        # Loss
+        l1loss = F.l1_loss(colors, pixels)
+        ssimloss = dssim_loss(
+            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+        )
+        loss = (1.0 - ssim_lambda) * l1loss + ssim_lambda * ssimloss
+
+        loss.backward()
+
+        for opt in optimizers.values():
+            opt.step()
+            opt.zero_grad(set_to_none=True)
+
+        if report_fn and step % 100 == 0:
+            report_fn(step, l1loss.item(), len(splats["means"]))
+
+        del pixels, render_colors, render_alphas, colors, colors_sh, info
+        del l1loss, ssimloss, loss
+
+        if step % 100 == 0 and device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    # --- Denormalise and copy back ---
+    with torch.no_grad():
+        splats["means"].mul_(norm_scale).add_(
+            torch.tensor(norm_center, dtype=torch.float32, device=device))
+        splats["scales"].add_(math.log(norm_scale))
+
+    _update_model_from_splats(model, splats)
+    model.active_sh_degree = sh_degree
+
+    del splats, optimizers, cam_data
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    import gc; gc.collect()
+
+    print(f"Nadir fine-tune complete.")
+    return model
+
+
+def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
+                        iterations: int = 3000,
+                        data_factor: int = 2,
+                        max_angle_deg: float = 15.0,
+                        lr_sh0: float = 2.5e-3,
+                        lr_shN: float = 1.25e-4,
+                        lr_scales: float = 1e-3,
+                        lr_opacities: float = 5e-3,
+                        ssim_lambda: float = 0.2,
+                        report_fn=None):
+    """Fine-tune SH coefficients, scales, and opacities using near-nadir cameras.
+
+    Like :func:`nadir_finetune` but also optimises scales and opacity so that
+    Gaussians can adapt their shapes for the nadir ortho view:
+
+    - Large "fill" Gaussians can shrink for sharper orthographic rendering
+    - Opacity can be refined for cleaner alpha compositing
+    - Positions and rotations stay **frozen** (no geometric collapse)
+
+    Parameters
+    ----------
+    scene : SceneInfo
+        Same scene used for the original training.
+    model : GaussianModel
+        Already-trained model (with good geometry).
+    iterations : int
+        Number of fine-tune iterations.
+    data_factor : int
+        Image downscaling factor.
+    max_angle_deg : float
+        Maximum angle from nadir for camera selection.
+    lr_sh0, lr_shN : float
+        Learning rates for SH bands.
+    lr_scales : float
+        Learning rate for Gaussian scales.
+    lr_opacities : float
+        Learning rate for Gaussian opacities.
+    ssim_lambda : float
+        SSIM loss weight (0 = pure L1, 1 = pure SSIM).
+    report_fn : callable, optional
+        report_fn(iteration, loss, n_gaussians) for progress.
+    """
+    device = model.positions.device
+
+    nadir_cams, down_dir = _filter_nadir_cameras(scene.train_cameras,
+                                                  max_angle_deg)
+    if len(nadir_cams) < 10:
+        print(f"WARNING: only {len(nadir_cams)} nadir cameras (<{max_angle_deg}°),"
+              f" falling back to 30° threshold")
+        nadir_cams, down_dir = _filter_nadir_cameras(scene.train_cameras, 30.0)
+    if len(nadir_cams) < 5:
+        print(f"ERROR: only {len(nadir_cams)} cameras even at 30° — skipping finetune")
+        return model
+
+    print(f"Nadir fine-tune (full): {len(nadir_cams)} cameras (<{max_angle_deg}°), "
+          f"{iterations} iters, data_factor={data_factor}")
+    print(f"  Optimising: sh0, shN, scales, opacities (positions/rotations frozen)")
+
+    norm_center = scene.scene_centre.astype(np.float64)
+    norm_scale = float(scene.scene_radius)
+    if norm_scale < 1e-6:
+        norm_scale = 1.0
+
+    splats = _create_splats(model, device)
+
+    with torch.no_grad():
+        splats["means"].sub_(torch.tensor(norm_center, dtype=torch.float32,
+                                          device=device))
+        splats["means"].div_(norm_scale)
+        splats["scales"].sub_(math.log(norm_scale))
+
+    # Freeze positions and rotations only
+    splats["means"].requires_grad_(False)
+    splats["quats"].requires_grad_(False)
+    # Unfreeze scales and opacities (in addition to SH)
+    splats["scales"].requires_grad_(True)
+    splats["opacities"].requires_grad_(True)
+
+    optimizers = {
+        "sh0":       torch.optim.Adam([splats["sh0"]], lr=lr_sh0, eps=1e-15),
+        "shN":       torch.optim.Adam([splats["shN"]], lr=lr_shN, eps=1e-15),
+        "scales":    torch.optim.Adam([splats["scales"]], lr=lr_scales, eps=1e-15),
+        "opacities": torch.optim.Adam([splats["opacities"]], lr=lr_opacities, eps=1e-15),
+    }
+
+    cam_data = _precompute_cameras(nadir_cams, data_factor, device,
+                                   norm_center=norm_center,
+                                   norm_scale=norm_scale)
+
+    bg_color = torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32, device=device)
+    sh_degree = model.max_sh_degree
+
+    for step in range(iterations):
+        idx = random.randint(0, len(nadir_cams) - 1)
+        cd = cam_data[idx]
+        cam = nadir_cams[idx]
+
+        pixels = _load_image(cam, data_factor, device)
+        height, width = pixels.shape[1], pixels.shape[2]
+
+        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
+
+        render_colors, render_alphas, info = gsplat.rasterization(
+            means=splats["means"],
+            quats=splats["quats"],
+            scales=torch.exp(splats["scales"]),
+            opacities=torch.sigmoid(splats["opacities"]),
+            colors=colors_sh,
+            viewmats=cd["viewmat"].unsqueeze(0),
+            Ks=cd["K"].unsqueeze(0),
+            width=width,
+            height=height,
+            near_plane=0.01,
+            far_plane=1e10,
+            sh_degree=sh_degree,
+            eps2d=0.3,
+            render_mode="RGB",
+            rasterize_mode="antialiased",
+            packed=True,
+        )
+
+        colors = render_colors + bg_color.view(1, 1, 1, 3) * (1.0 - render_alphas)
+
+        l1loss = F.l1_loss(colors, pixels)
+        ssimloss = dssim_loss(
+            colors.permute(0, 3, 1, 2), pixels.permute(0, 3, 1, 2)
+        )
+        loss = (1.0 - ssim_lambda) * l1loss + ssim_lambda * ssimloss
+
+        loss.backward()
+
+        for opt in optimizers.values():
+            opt.step()
+            opt.zero_grad(set_to_none=True)
+
+        if report_fn and step % 100 == 0:
+            report_fn(step, l1loss.item(), len(splats["means"]))
+
+        del pixels, render_colors, render_alphas, colors, colors_sh, info
+        del l1loss, ssimloss, loss
+
+        if step % 100 == 0 and device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    with torch.no_grad():
+        splats["means"].mul_(norm_scale).add_(
+            torch.tensor(norm_center, dtype=torch.float32, device=device))
+        splats["scales"].add_(math.log(norm_scale))
+
+    _update_model_from_splats(model, splats)
+    model.active_sh_degree = sh_degree
+
+    del splats, optimizers, cam_data
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    import gc; gc.collect()
+
+    print(f"Nadir fine-tune (full) complete.")
     return model

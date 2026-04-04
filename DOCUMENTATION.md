@@ -764,11 +764,14 @@ Primary path (Gaussian Splatting, `use_mesh_ortho: True`):
 3. Optionally partition the scene into an m×n grid (VastGaussian divide-and-conquer)
 4. Train a 3DGS model per cell using gsplat MCMC strategy with per-image appearance compensation and ortho-coverage regularisation
 5. Merge cell models (retain only Gaussians in core, non-overlap region)
-6. Apply Sim3 geo-alignment (rotation+scale to model, translation as float64 for GeoTIFF origin)
-7. Multi-stage post-processing filter: bounding-box crop → SOR → connected-component analysis → anisotropy clipping
-8. Render orthographic RGB orthomosaic and height map via gsplat ortho rasterisation
-9. Shift height map to match mean drone EXIF GPS altitude
-10. Write GeoTIFF with projected CRS
+6. Geo-alignment:
+   - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to model, keep translation as float64 for GeoTIFF origin
+   - **PCA path** (no alignment transform): compute `R_geo` rotation matrix from camera PCA, pass it to the renderer — the model stays in the original COLMAP coordinate frame to preserve SH coefficient consistency
+7. Configurable multi-stage post-processing filter chain: spatial crop → SOR → connected-component → needle removal → Z-floater removal (each individually togglable)
+8. Nadir fine-tune: optimise SH coefficients, scales, and opacities using near-nadir training cameras to adapt the model for orthographic view
+9. Render orthographic RGB orthomosaic and height map via gsplat ortho rasterisation (with `R_geo` for PCA path)
+10. Shift height map to match mean drone EXIF GPS altitude
+11. Write GeoTIFF with projected CRS
 
 Fallback path (Direct Point Cloud Projection, `use_mesh_ortho: False`):
 
@@ -792,6 +795,8 @@ The implementation draws from several key papers:
 #### Key design decisions
 
 **Training stays in COLMAP-local coordinates.** The Gaussian model is trained in compact float32 coordinates centred near zero. The Sim3 geo-alignment is applied only after training, and the translation component (~10⁶ m for UTM) is kept as float64 and folded into the GeoTIFF origin. This avoids catastrophic float32 precision loss (e.g. Y ≈ 4,702,500 → float32 ULP = 0.5 m = 25 px banding at GSD 0.02 m).
+
+**PCA path keeps the model in COLMAP frame entirely.** When no Sim3 alignment is available, a PCA-based rotation `R_geo` is computed from camera positions and passed to the orthographic renderer instead of being applied to the model. This preserves consistency between SH coefficients, positions, and rotations — applying the rotation to positions and quaternions but not to SH coefficients causes a frame mismatch that produces blurry, washed-out colours when rendered from nadir.
 
 **PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
 
@@ -844,26 +849,50 @@ If partitioning was used, cell models are merged by retaining only Gaussians who
 
 #### Step 5: Geo-alignment
 
-The Sim3 transform from `alignment_transform.json` is split:
+The geo-alignment step has two paths depending on whether an `alignment_transform.json` exists.
+
+**Sim3 path** (alignment transform available):
+
+The Sim3 transform is split:
 
 - **Rotation + scale**: applied to model positions (`s * R @ xyz`), log-scales (`+= log(s)`), and rotation quaternions (pre-multiplied)
 - **Translation**: stored as float64 `geo_origin`, used only for GeoTIFF coordinate computation
 
 This split is critical for float32 precision preservation.
 
+**PCA path** (no alignment transform):
+
+The model stays in the original COLMAP coordinate frame. A rotation matrix `R_geo` is computed from camera PCA (smallest principal component of camera positions gives the vertical direction) and passed to the orthographic renderer as a parameter. The renderer uses `R_geo` to orient the virtual nadir camera without modifying the model.
+
+This design preserves the consistency between Gaussian positions, rotation quaternions, and spherical harmonics coefficients. Previously, the PCA rotation was applied directly to positions and quaternions but NOT to SH coefficients, causing a frame mismatch: the SH evaluation computed view-dependent colours in the rotated frame while the coefficients were trained in COLMAP frame. This manifested as colour artefacts (blurry, washed-out rendering) when viewed from nadir. Keeping the model in COLMAP frame and passing `R_geo` to the renderer avoids this problem entirely.
+
 #### Step 5b–5e: Post-processing filter chain
 
-The trained model undergoes four sequential filtering stages:
+The trained model undergoes a configurable multi-stage filtering pipeline. Each filter can be individually enabled or disabled via the dashboard UI.
 
-1. **Bounding-box crop** (5b): remove Gaussians outside the geo-aligned point cloud bounds + 5 m padding, plus extreme scales (>99.5th percentile) and nearly transparent (opacity < 0.05)
+1. **Spatial filter + opacity + needle removal** (5b, `gs_filter_enabled`): remove Gaussians farther from all cameras than the scene diameter, remove nearly transparent Gaussians (opacity < 0.05), and remove highly elongated "needle" Gaussians whose max/min scale ratio exceeds `gs_filter_needle_ratio` (default 50, set to 0 to disable needle removal).
 
-2. **Statistical Outlier Removal (SOR)** (5c): build a k-NN tree (k=16) via `scipy.spatial.cKDTree`. Compute mean distance to 16 nearest neighbours. Remove Gaussians where mean distance > μ + 1.5σ. This also breaks thin connections between the main scene and floater clusters.
+2. **Statistical Outlier Removal (SOR)** (5c, `gs_filter_sor`): build a k-NN tree (k=16) via `scipy.spatial.cKDTree`. Compute mean distance to 16 nearest neighbours. Remove Gaussians where mean distance > μ + σ × `gs_filter_sor_sigma` (default 4.0). This also breaks thin connections between the main scene and floater clusters.
 
-3. **Connected-Component filter** (5d): build a k-NN adjacency graph (k=16) as a sparse matrix. Compute connected components via `scipy.sparse.csgraph.connected_components`. Keep only the largest connected component, removing all disconnected floater clusters. This is the most effective filter against edge-of-scene floater groups that survive SOR because they have neighbours within their cluster.
+3. **Connected-Component filter** (5d, `gs_filter_cc`): build a k-NN adjacency graph (k=16) as a sparse matrix. Compute connected components via `scipy.sparse.csgraph.connected_components`. Keep only the largest connected component, removing all disconnected floater clusters.
 
-4. **Anisotropy clipping** (5e): limit the max/min log-scale ratio to 10×. Elongated Gaussians trained from perspective cameras produce stripe artefacts when rendered orthographically. Clamp large scales toward the mean log-scale per Gaussian.
+4. **Z-Floater Removal** (5e, `gs_filter_z_floater`): IQR-based fence (5× IQR) on the vertical axis. For the PCA path, the vertical axis is determined by projecting Gaussian positions through `R_geo`'s Z row, not simply using the model's Z coordinate. Removes sky/background Gaussians that accumulate into haze in orthographic rendering.
 
-Validation results on a 113-image drone dataset: 2,000,000 initial → 1,403,610 (basic) → 1,368,111 (SOR −35k) → 1,265,425 (CC −103k). Dark artefacts reduced 54% vs. SOR-only. Edge crops completely clean, scene centre sharpness preserved.
+All filter parameters are exposed in the **Orthomosaic** parameter group in the dashboard (see tunables table below).
+
+#### Step 5f: Nadir fine-tune
+
+After filtering, the model undergoes a nadir fine-tune phase that adapts Gaussian properties for the orthographic view direction. This step is critical for the PCA path where the model stays in COLMAP frame: the SH coefficients were trained from mixed oblique and nadir views and can produce colour artefacts when rendered from a pure nadir orthographic camera.
+
+The fine-tune selects training cameras whose optical axis is within `gs_nadir_finetune_angle` degrees of the estimated nadir direction, then optimises a subset of Gaussian parameters using these cameras:
+
+- **full** mode (`gs_nadir_finetune_mode = "full"`, default): optimises SH coefficients, scales, and opacities while freezing positions and rotations. This lets Gaussians adapt both colours and shapes for the nadir view. Typical loss improvement: 0.19 → 0.06 over 3000 iterations.
+- **sh_only** mode: optimises only SH coefficients (geometry completely frozen).
+- **off** mode: skip fine-tuning entirely.
+
+The number of iterations is controlled by `gs_nadir_finetune_iters` (default 3000, set to 0 to skip). Progress is reported to the dashboard every 100 iterations with loss values, advancing the progress bar from 90% to 95%.
+
+Fine-tune is implemented in `train.py` as `nadir_finetune_full()` (full mode) and `nadir_finetune()` (SH-only mode).
 
 #### Step 6: Orthographic rendering
 
@@ -904,9 +933,13 @@ flowchart TD
   B -->|Yes| C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
   C --> C1[MCMC densification + appearance compensation + ortho regularisation]
-  C1 --> C2[Apply Sim3 geo-alignment rotation+scale to model]
-  C2 --> D[Multi-stage filtering: BBox → SOR → CC → Anisotropy clip]
-  D --> E[Render orthographic RGB + height map via gsplat]
+  C1 --> C2{Geo-alignment method}
+  C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
+  C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
+  D1 --> D[Multi-stage filtering: SOR → CC → Z-floater → Needle removal]
+  D2 --> D
+  D --> FT[Nadir fine-tune: adapt SH + scales + opacity for top-down view]
+  FT --> E[Render orthographic RGB + height map via gsplat with R_geo]
   E --> E1[Shift height map to match mean EXIF altitude]
   E1 --> H[Write GeoTIFF + height GeoTIFF]
   B -->|No| I[PatchMatch + Fusion → Legacy float64 point splatting]
@@ -935,6 +968,15 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | GS Max Gaussians | `gs_cap_max` | int | 2000000 | 500000–20000000 |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
 | GS Ortho Regularisation Weight | `gs_ortho_reg` | float | 0.5 | 0–2.0 |
+| Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
+| SOR Filter | `gs_filter_sor` | bool | true | — |
+| Connected-Component Filter | `gs_filter_cc` | bool | true | — |
+| Z-Floater Removal | `gs_filter_z_floater` | bool | true | — |
+| Needle Removal Ratio | `gs_filter_needle_ratio` | float | 50.0 | 0–500 |
+| SOR Sigma Threshold | `gs_filter_sor_sigma` | float | 4.0 | 1.0–10.0 |
+| Nadir Fine-tune Iterations | `gs_nadir_finetune_iters` | int | 3000 | 0–30000 |
+| Nadir Fine-tune Mode | `gs_nadir_finetune_mode` | select | full | full/sh_only/off |
+| Nadir Fine-tune Angle (°) | `gs_nadir_finetune_angle` | float | 30.0 | 5–90 |
 
 ### Scalability
 
@@ -956,7 +998,7 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | Module | Purpose |
 | --- | --- |
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, filtering, GeoTIFF output |
-| `train.py` | Training loop with gsplat, MCMC densification, appearance model, ortho-coverage loss |
+| `train.py` | Training loop with gsplat, MCMC densification, appearance model, ortho-coverage loss, `nadir_finetune_full()` |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
 | `rasterizer.py` | Unified rasteriser wrapper (gsplat backend for ortho + perspective) |
 | `ortho_renderer.py` | Orthographic camera setup, chunked rendering, height map extraction |
@@ -982,15 +1024,20 @@ flowchart LR
 
   D --> G[Shared image projection centers]
   F --> G
-  G --> H[Estimate Sim3<br/>R scale t]
-  H --> I[alignment_transform.json]
+  G --> H{Alignment method}
+  H -->|Sim3| I1[Estimate Sim3<br/>R scale t]
+  H -->|PCA| I2[PCA on sparse points<br/>→ R_geo rotation only]
+  I1 --> I[alignment_transform.json]
+  I2 --> I
 
-  J[Trained 3D Gaussians<br/>in local COLMAP coordinates] --> K[Apply R·s to means<br/>keep t as float64 origin]
+  J[Trained 3D Gaussians<br/>in local COLMAP coordinates] --> K{Alignment method}
   I --> K
-  K --> L[Geo-scaled Gaussians<br/>axes ← R·s·axes]
+  K -->|Sim3| L1[Apply R·s to means + quats<br/>keep t as float64 origin]
+  K -->|PCA| L2[Keep model unrotated<br/>pass R_geo to renderer]
+  L1 --> M
+  L2 --> M
 
-  L --> M[Ortho camera over AABB<br/>min_x max_x min_y max_y]
-  M --> N[gsplat rasterise ortho tiles<br/>RGB + depth]
+  M[Ortho camera over AABB<br/>min_x max_x min_y max_y] --> N[gsplat rasterise ortho tiles<br/>RGB + depth, viewmat includes R_geo]
   N --> O[Assemble full raster<br/>pixel grid at chosen resolution]
 
   O --> P1[Shift height map<br/>+ float64 t + EXIF altitude]
@@ -1006,8 +1053,8 @@ Read it in this order:
 
 1. GPS extraction produces projected control points in the chosen UTM CRS.
 2. `model_aligner` creates a geo-referenced sparse reconstruction.
-3. Shared camera centers between local and geo sparse models estimate a Sim3 transform (R, scale, t).
-4. R·s is applied to Gaussian means and covariance axes in float32; the translation t is kept as a float64 GeoTIFF origin to avoid precision loss.
+3. Shared camera centers between local and geo sparse models estimate a Sim3 or PCA transform.
+4. **Sim3 path**: R·s is applied to Gaussian means and covariance axes in float32; the translation t is kept as a float64 GeoTIFF origin to avoid precision loss. **PCA path**: the model stays in COLMAP frame (preserving SH coefficient consistency); `R_geo` is passed to the renderer which embeds it in the view matrix.
 5. An orthographic camera is set over the axis-aligned bounding box and gsplat renders tiled RGB + depth.
 6. The height map is shifted by the float64 translation z-component plus mean EXIF GPS altitude.
 7. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
@@ -1453,8 +1500,8 @@ These are the assumptions that must remain true for the current implementation t
 1. The host dataset must exist under `/mnt/j/workspace`.
 2. Worker containers must see the host filesystem through `/host`.
 3. The orthomosaic must keep its projected CRS metadata intact.
-4. When using Gaussian Splatting (default), Sim3 rotation and scale are applied to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. When using the legacy path, dense stereo must run before geo-alignment to avoid float32 precision problems.
-5. Gaussian Splatting reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and the alignment transform. Legacy reruns additionally require dense stereo products (depth maps or `fused.ply`).
+4. When using Gaussian Splatting (default), the Sim3 path applies rotation and scale to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. The PCA path keeps the model in COLMAP frame and passes `R_geo` to the renderer to preserve SH coefficient consistency. When using the legacy path, dense stereo must run before geo-alignment to avoid float32 precision problems.
+5. Gaussian Splatting reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment transform (PCA fallback is used if absent). Legacy reruns additionally require dense stereo products (depth maps or `fused.ply`).
 6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
 7. Tile events must carry the original orthomosaic transform and CRS.
 8. App3 must set `total_tiles` before tile events begin returning.

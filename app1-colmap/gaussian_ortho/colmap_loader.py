@@ -177,14 +177,56 @@ def load_colmap_reconstruction(dense_path: str, transform_file: str | None = Non
         train_cameras = all_cameras
         test_cameras = []
 
-    # Extract sparse point cloud
+    # Extract sparse point cloud with quality metrics
     pts3d = reconstruction.points3D
     n_pts = len(pts3d)
     points = np.zeros((n_pts, 3), dtype=np.float32)
     colors = np.zeros((n_pts, 3), dtype=np.float32)
+    reproj_errors = np.zeros(n_pts, dtype=np.float32)
+    track_lengths = np.zeros(n_pts, dtype=np.int32)
     for i, (pid, pt) in enumerate(pts3d.items()):
         points[i] = pt.xyz
         colors[i] = np.array(pt.color[:3], dtype=np.float32) / 255.0
+        reproj_errors[i] = pt.error if hasattr(pt, "error") else 0.0
+        track_lengths[i] = pt.track.length() if hasattr(pt, "track") else 0
+
+    # Filter by reprojection error and track length (like Metashape confidence)
+    max_reproj_error = 1.0   # pixels — points above this are poorly triangulated
+    min_track_length = 3     # images — points seen by <3 cameras are unreliable
+    keep = (reproj_errors <= max_reproj_error) & (track_lengths >= min_track_length)
+    n_before = len(points)
+    n_removed = n_before - keep.sum()
+    if n_removed > 0:
+        points = points[keep]
+        colors = colors[keep]
+        reproj_errors = reproj_errors[keep]
+        track_lengths = track_lengths[keep]
+        print(f"[colmap_loader] Point quality filter: {n_before} → {keep.sum()} points "
+              f"(removed {n_removed}: reproj_error>{max_reproj_error}px or track_len<{min_track_length})")
+
+    # Spatial proximity filter: remove points far from any camera.
+    # COLMAP local coordinates are NOT metric — we use the max inter-camera
+    # distance (scene diameter) as an adaptive threshold.  No legitimate scene
+    # point should be farther from all cameras than the cameras are from each
+    # other, so this is a physically conservative bound.
+    from scipy.spatial import cKDTree
+    cam_positions = np.array([c.T for c in all_cameras], dtype=np.float64)
+    cam_tree = cKDTree(cam_positions)
+    from scipy.spatial.distance import pdist
+    max_inter_cam = float(np.max(pdist(cam_positions)))
+    max_dist = max_inter_cam
+    pt_dists, _ = cam_tree.query(points, k=1)
+    inside = pt_dists <= max_dist
+    n_before_bbox = len(points)
+    n_outside = n_before_bbox - int(inside.sum())
+    if n_outside > 0:
+        points = points[inside]
+        colors = colors[inside]
+        print(f"[colmap_loader] Spatial proximity filter: {n_before_bbox} → {inside.sum()} points "
+              f"(removed {n_outside} farther than {max_dist:.2f} units from nearest camera)")
+    else:
+        print(f"[colmap_loader] Spatial proximity filter: all {n_before_bbox} points within "
+              f"{max_dist:.2f} units of a camera (scene diameter)")
 
     normals = np.zeros_like(points)
     point_cloud = PointCloud(points=points, colors=colors, normals=normals)

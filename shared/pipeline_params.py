@@ -52,6 +52,14 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_sh_degree": "3",
         "gs_ortho_reg": "0.5",
         "gs_filter_enabled": True,
+        "gs_filter_sor": True,
+        "gs_filter_cc": True,
+        "gs_filter_z_floater": True,
+        "gs_filter_needle_ratio": "50.0",
+        "gs_filter_sor_sigma": "4.0",
+        "gs_nadir_finetune_iters": "3000",
+        "gs_nadir_finetune_mode": "full",
+        "gs_nadir_finetune_angle": "15.0",
     },
     "modern": {
         "feature_type": "ALIKED_N16ROT",
@@ -80,6 +88,14 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_sh_degree": "3",
         "gs_ortho_reg": "0.5",
         "gs_filter_enabled": True,
+        "gs_filter_sor": True,
+        "gs_filter_cc": True,
+        "gs_filter_z_floater": True,
+        "gs_filter_needle_ratio": "50.0",
+        "gs_filter_sor_sigma": "4.0",
+        "gs_nadir_finetune_iters": "3000",
+        "gs_nadir_finetune_mode": "full",
+        "gs_nadir_finetune_angle": "15.0",
     },
 }
 
@@ -109,7 +125,15 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "gs_cap_max": {"label": "GS Max Gaussians", "type": "int", "group": "Orthomosaic", "min": 500000, "max": 20000000, "step": 500000},
     "gs_sh_degree": {"label": "GS Spherical Harmonics Degree", "type": "select", "group": "Orthomosaic", "options": ["1", "2", "3"]},
     "gs_ortho_reg": {"label": "GS Ortho Regularisation Weight", "type": "float", "group": "Orthomosaic", "min": 0, "max": 2, "step": 0.1},
-    "gs_filter_enabled": {"label": "GS Post-Training Filters", "type": "bool", "group": "Orthomosaic"},
+    "gs_filter_enabled": {"label": "GS Spatial Filter (proximity + opacity)", "type": "bool", "group": "Orthomosaic"},
+    "gs_filter_sor": {"label": "GS Statistical Outlier Removal", "type": "bool", "group": "Orthomosaic"},
+    "gs_filter_cc": {"label": "GS Connected-Component Filter", "type": "bool", "group": "Orthomosaic"},
+    "gs_filter_z_floater": {"label": "GS Z-Floater Removal", "type": "bool", "group": "Orthomosaic"},
+    "gs_filter_needle_ratio": {"label": "GS Needle Anisotropy Threshold", "type": "float", "group": "Orthomosaic", "min": 0, "max": 200, "step": 5},
+    "gs_filter_sor_sigma": {"label": "GS SOR Sigma Multiplier", "type": "float", "group": "Orthomosaic", "min": 1, "max": 10, "step": 0.5},
+    "gs_nadir_finetune_iters": {"label": "GS Nadir Fine-Tune Iterations", "type": "int", "group": "Orthomosaic", "min": 0, "max": 10000, "step": 500},
+    "gs_nadir_finetune_mode": {"label": "GS Nadir Fine-Tune Mode", "type": "select", "group": "Orthomosaic", "options": ["full", "sh_only", "off"]},
+    "gs_nadir_finetune_angle": {"label": "GS Nadir Fine-Tune Max Angle (°)", "type": "float", "group": "Orthomosaic", "min": 5, "max": 45, "step": 1},
 }
 
 PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["legacy"].keys() | PIPELINE_DEFAULTS["modern"].keys())

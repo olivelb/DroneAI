@@ -32,6 +32,12 @@ venv/
 .train-venv/
 test_venv/
 ortho_test_venv/
+.pdf-read-venv/
+.pytest_cache/
+
+# === Conda ===
+.conda/
+.anaconda/
 
 # === Node.js / Next.js ===
 node_modules/
@@ -53,6 +59,9 @@ next-env.d.ts
 # === Large binaries (not source code) ===
 colmap-src/
 app1-colmap/colmap-v4.0.1-bin
+
+# === External / cloned research repos ===
+Tortho_Gaussian/
 
 # === Runtime / generated data ===
 workspace/
@@ -90,3 +99,4 @@ isprs-archives-XLVIII-G-2025-411-2025.pdf
 /setup_*_venv.sh
 /requirements-gaussian-ortho.txt
 /test_gaussian_ortho_banyuls.py
+/rerender_ortho.py

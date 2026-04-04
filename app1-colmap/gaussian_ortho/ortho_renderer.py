@@ -16,25 +16,29 @@ from .gaussian_model import GaussianModel
 from .rasterizer import (
     RasterSettings, render_ortho,
     make_ortho_proj, make_view_matrix,
+    _render_gsplat_inference, _GSPLAT_AVAILABLE,
 )
 from .colmap_loader import CameraInfo
 
 
-def compute_ortho_extent(model: GaussianModel, pad: float = 1.0):
+def compute_ortho_extent(model: GaussianModel, pad: float = 1.0, R_geo: np.ndarray = None):
     """
     Compute the X-Y bounding box of the Gaussian scene.
 
-    Uses position-based bounds with a small percentile clip to exclude
-    outlier Gaussians that would blow up the extent.
+    If ``R_geo`` is provided (3×3 rotation COLMAP→geo), positions are
+    projected into the geo-aligned frame before computing the extent.
+    All returned values are in the geo-aligned frame.
 
     Returns (x_min, x_max, y_min, y_max, z_min, z_max).
     """
     xyz = model.positions.detach()
 
-    # Use 0.1th / 99.9th percentile of positions to reject outliers,
-    # then add a generous fixed pad (metres).
-    lo = torch.quantile(xyz, 0.001, dim=0)  # (3,)
-    hi = torch.quantile(xyz, 0.999, dim=0)  # (3,)
+    if R_geo is not None:
+        R_t = torch.tensor(R_geo, dtype=torch.float32, device=xyz.device)
+        xyz = (R_t @ xyz.T).T
+
+    lo = torch.quantile(xyz, 0.001, dim=0)
+    hi = torch.quantile(xyz, 0.999, dim=0)
 
     x_lo = lo[0].item() - pad
     x_hi = hi[0].item() + pad
@@ -73,22 +77,27 @@ def _build_ortho_camera(x_min, x_max, y_min, y_max, z_min, z_max):
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                       extent: tuple = None, chunk_size: int = 2048,
-                      device: torch.device = None):
+                      device: torch.device = None, R_geo: np.ndarray = None):
     """
     Render an orthographic TDOM from a trained Gaussian model.
 
     Parameters
     ----------
     model : GaussianModel
-        Trained model.
+        Trained model (in original COLMAP coordinates — NOT rotated).
     gsd : float
         Ground sample distance in scene units (metres).
     extent : (x_min, x_max, y_min, y_max, z_min, z_max) or None
-        Scene bounds. If None, computed from Gaussian positions.
+        Scene bounds in geo-aligned frame.  If None, computed automatically.
     chunk_size : int
         Maximum tile dimension for chunked rendering.
     device : torch.device
         Computation device.
+    R_geo : np.ndarray (3, 3) or None
+        Rotation from COLMAP coords → geo-aligned (East, North, Up).
+        If provided, the ortho camera is oriented to look along the true
+        nadir direction **without** rotating the model.  If None, the
+        model is assumed to already be geo-aligned (Z = Up).
 
     Returns
     -------
@@ -102,7 +111,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
         device = model.positions.device
 
     if extent is None:
-        x_min, x_max, y_min, y_max, z_min, z_max = compute_ortho_extent(model)
+        x_min, x_max, y_min, y_max, z_min, z_max = compute_ortho_extent(
+            model, R_geo=R_geo)
     else:
         x_min, x_max, y_min, y_max, z_min, z_max = extent
 
@@ -116,7 +126,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     # If the image is small enough, render in one pass
     if W <= chunk_size and H <= chunk_size:
         rgb, height = _render_single_tile(
-            model, x_min, x_max, y_min, y_max, z_min, z_max, W, H, device
+            model, x_min, x_max, y_min, y_max, z_min, z_max, W, H, device,
+            R_geo=R_geo,
         )
     else:
         # Chunked rendering for large orthophotos
@@ -143,7 +154,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
 
                 tile_rgb, tile_h = _render_single_tile(
                     model, tile_x_min, tile_x_max, tile_y_min, tile_y_max,
-                    z_min, z_max, tw, th, device
+                    z_min, z_max, tw, th, device, R_geo=R_geo,
                 )
 
                 rgb[py0:py1, px0:px1] = tile_rgb
@@ -162,49 +173,74 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
 
 
 def _render_single_tile(model, x_min, x_max, y_min, y_max,
-                         z_min, z_max, W, H, device):
-    """Render a single tile via orthographic splatting with per-tile frustum culling."""
-    # --- Per-tile frustum culling (XY) ---
-    # Only send Gaussians whose XY position (± max scale margin) overlaps this tile.
-    # This prevents OOM when the full model has millions of Gaussians.
+                         z_min, z_max, W, H, device, R_geo=None):
+    """Render a single tile via gsplat native orthographic projection.
+
+    All extent parameters (x_min … z_max) are in the **geo-aligned** frame
+    (East, North, Up).  The model lives in the original COLMAP frame.
+
+    When ``R_geo`` is provided the camera is oriented to look along the
+    true nadir direction in COLMAP coords — **no model rotation needed**.
+    Frustum culling is done by projecting positions into the geo frame.
+    """
+    # --- Per-tile frustum culling (in geo frame) ---
     with torch.no_grad():
-        xyz = model.positions  # (N, 3)
-        # Margin: max scale of each Gaussian × 3 (covers 3σ splat footprint)
+        xyz = model.positions  # (N, 3) – COLMAP coords
+        if R_geo is not None:
+            R_t = torch.tensor(R_geo, dtype=torch.float32, device=device)
+            xyz_geo = (R_t @ xyz.T).T
+        else:
+            xyz_geo = xyz
+
         max_scale = model.scales.max(dim=-1).values  # (N,)
         margin = max_scale * 3.0
         mask = (
-            (xyz[:, 0] + margin >= x_min) & (xyz[:, 0] - margin <= x_max) &
-            (xyz[:, 1] + margin >= y_min) & (xyz[:, 1] - margin <= y_max)
+            (xyz_geo[:, 0] + margin >= x_min) & (xyz_geo[:, 0] - margin <= x_max) &
+            (xyz_geo[:, 1] + margin >= y_min) & (xyz_geo[:, 1] - margin <= y_max)
         )
         indices = mask.nonzero(as_tuple=False).squeeze(-1)
 
     if indices.numel() == 0:
-        # No Gaussians in this tile — return white background
         rgb_np = np.full((H, W, 3), 255, dtype=np.uint8)
         height_np = np.zeros((H, W), dtype=np.float32)
         return rgb_np, height_np
 
-    R_c2w, T_world = _build_ortho_camera(x_min, x_max, y_min, y_max, z_min, z_max)
+    # --- Orthographic camera ---
+    # In geo frame: X=East, Y=North, Z=Up.
+    # Camera convention: +X=right, +Y=down (screen), +Z=forward (into scene).
+    # For nadir: cam-X→East, cam-Y→South(-North), cam-Z→Down(-Up).
+    # R_c2w_geo columns: [east, -north, -up] = diag(1, -1, -1).
+    R_c2w_geo = np.array([
+        [1.0,  0.0,  0.0],
+        [0.0, -1.0,  0.0],
+        [0.0,  0.0, -1.0],
+    ], dtype=np.float64)
+
+    cx_geo = (x_min + x_max) / 2.0
+    cy_geo = (y_min + y_max) / 2.0
+    scene_height = max(z_max - z_min, 0.1)
+    z_cam_geo = z_max + 10.0
+
+    if R_geo is not None:
+        # Transform camera pose from geo frame back to COLMAP frame.
+        R_inv = R_geo.T.astype(np.float64)          # geo → COLMAP
+        R_c2w = (R_inv @ R_c2w_geo).astype(np.float32)
+        T_world = (R_inv @ np.array([cx_geo, cy_geo, z_cam_geo],
+                                     dtype=np.float64)).astype(np.float32)
+    else:
+        R_c2w = R_c2w_geo.astype(np.float32)
+        T_world = np.array([cx_geo, cy_geo, z_cam_geo], dtype=np.float32)
 
     viewmat = make_view_matrix(R_c2w, T_world)
 
-    # Orthographic projection: maps scene extent to [-1, 1] NDC
-    # left=x_min, right=x_max, bottom=y_min, top=y_max (in camera space)
-    # Since camera is flipped, we need to map correctly
-    half_w = (x_max - x_min) / 2.0
-    half_h = (y_max - y_min) / 2.0
+    # Ortho focal: maps geo-frame extent to image pixels.
+    tile_w = x_max - x_min
+    tile_h = y_max - y_min
+    fx = W / tile_w if tile_w > 0 else 1.0
+    fy = H / tile_h if tile_h > 0 else 1.0
+
     znear = 0.01
-    zfar = (z_max - z_min) + 20.0
-
-    projmat = make_ortho_proj(
-        left=-half_w, right=half_w,
-        bottom=-half_h, top=half_h,
-        znear=znear, zfar=zfar,
-    )
-
-    # For the CUDA ortho rasteriser, fx/fy encode the NDC mapping
-    fx = W / (2.0 * half_w) if half_w > 0 else 1.0
-    fy = H / (2.0 * half_h) if half_h > 0 else 1.0
+    zfar = scene_height + 20.0
 
     settings = RasterSettings(
         image_width=W, image_height=H,
@@ -212,23 +248,20 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
         znear=znear, zfar=zfar,
         bg_color=(1.0, 1.0, 1.0),
         viewmatrix=viewmat,
-        projmatrix=projmat,
     )
 
-    result = render_ortho(model, settings, indices=indices)
+    # Render via gsplat native orthographic projection.
+    result = _render_gsplat_inference(model, settings, camera_model="ortho",
+                                     indices=indices)
 
     img = result["image"]  # (3, H, W)
     img_np = (img.clamp(0, 1).detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
 
-    # Height map from depth
+    # Height map: convert depth-from-camera to world Z (in geo frame)
     height_np = np.zeros((H, W), dtype=np.float32)
     if "depth" in result:
         depth = result["depth"]  # (1, H, W)
-        # Convert depth-in-camera to world Z
-        z_top = z_max + 10.0
-        height_np = z_top - depth.squeeze(0).detach().cpu().numpy()
+        height_np = z_cam_geo - depth.squeeze(0).detach().cpu().numpy()
 
-    # Free GPU tensors from rasterisation
     del result
-
     return img_np, height_np

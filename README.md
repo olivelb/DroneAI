@@ -305,16 +305,37 @@ The pipeline flow is:
 - `use_mesh_ortho: true` (now labelled **"Use Gaussian Splatting Ortho"** in the UI) selects the 3D Gaussian Splatting orthophoto pipeline.
 - The GS pipeline trains a 3DGS model directly from COLMAP undistorted images and the sparse reconstruction, **skipping PatchMatch stereo and fusion entirely** — a significant time saving.
 - Training uses [gsplat](https://github.com/nerfstudio-project/gsplat) with MCMC densification strategy, per-image appearance compensation, and ortho-coverage regularisation to suppress nadir banding.
-- After training, an aggressive multi-stage post-processing filter chain cleans the model: bounding-box crop → statistical outlier removal (SOR) → connected-component analysis (keeps only the largest connected cluster) → anisotropy clipping.
-- The cleaned model is rendered from a virtual orthographic camera into an RGB orthomosaic and a companion height map (DSM) GeoTIFF.
+- After training, a configurable multi-stage post-processing filter chain cleans the model. Each filter can be individually enabled or disabled in the dashboard UI:
+  - **Spatial filter** (`gs_filter_enabled`): bounding-box crop, opacity threshold (>0.05), and needle anisotropy removal
+  - **Statistical Outlier Removal** (`gs_filter_sor`): k-NN distance outlier removal with configurable sigma multiplier (`gs_filter_sor_sigma`, default 4.0)
+  - **Connected-Component filter** (`gs_filter_cc`): keeps only the largest connected cluster, removing disconnected floater groups
+  - **Z-Floater Removal** (`gs_filter_z_floater`): IQR-based fence on the vertical axis (R_geo-projected for PCA path)
+  - **Needle removal**: anisotropy ratio threshold (`gs_filter_needle_ratio`, default 50, set to 0 to disable)
+- **Nadir fine-tune** phase: after filtering, the model is fine-tuned using only near-nadir training cameras to adapt SH colour coefficients, Gaussian scales, and opacities for the orthographic view direction. Configurable via:
+  - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`, default 3000, set to 0 to skip)
+  - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full` (SH + scales + opacity), `sh_only`, or `off`
+  - **GS Nadir Fine-Tune Max Angle** (`gs_nadir_finetune_angle`, default 15°): camera selection threshold
+- The cleaned and fine-tuned model is rendered from a virtual orthographic camera into an RGB orthomosaic and a companion height map (DSM) GeoTIFF.
+- **PCA path (no Sim3 transform)**: the model stays in the original COLMAP coordinate frame and a rotation matrix `R_geo` is passed to the renderer to orient the virtual nadir camera. This avoids rotating positions and quaternions without rotating SH coefficients, which previously caused colour artefacts.
+- **Sim3 path (with alignment transform)**: rotation + scale are applied to the model; translation is kept as float64 for the GeoTIFF origin.
 - The height map is shifted to match mean drone EXIF GPS altitude when available, giving real-world elevation values in the output CRS.
 - All model coordinates stay in COLMAP-local float32 space during training. The Sim3 geo-alignment is split: rotation+scale applied to the model, translation kept as float64 and folded into the GeoTIFF origin. This avoids the catastrophic float32 precision loss that occurs with UTM-scale translations (~10⁶ m).
+- Training and nadir fine-tune progress are reported to the dashboard every 100 iterations with loss values and Gaussian count, advancing the progress bar smoothly across both phases.
 - The following GS parameters are exposed in the dashboard UI (group **Orthomosaic**):
   - **GS Training Iterations** (`gs_iterations`): number of training iterations (default 7000)
   - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8)
   - **GS Max Gaussians** (`gs_cap_max`): MCMC maximum Gaussian count (default 2M)
   - **GS Spherical Harmonics Degree** (`gs_sh_degree`): SH degree for view-dependent colour (1, 2, or 3)
   - **GS Ortho Regularisation Weight** (`gs_ortho_reg`): weight for ortho coverage loss (default 0.5, 0 to disable)
+  - **GS Spatial Filter** (`gs_filter_enabled`): enable/disable proximity + opacity filter
+  - **GS Statistical Outlier Removal** (`gs_filter_sor`): enable/disable SOR
+  - **GS Connected-Component Filter** (`gs_filter_cc`): enable/disable CC filter
+  - **GS Z-Floater Removal** (`gs_filter_z_floater`): enable/disable vertical outlier removal
+  - **GS Needle Anisotropy Threshold** (`gs_filter_needle_ratio`): max/min scale ratio (0 to disable)
+  - **GS SOR Sigma Multiplier** (`gs_filter_sor_sigma`): sigma multiplier for SOR threshold
+  - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`): nadir fine-tune iterations (0 to skip)
+  - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full`, `sh_only`, or `off`
+  - **GS Nadir Fine-Tune Max Angle** (`gs_nadir_finetune_angle`): max camera angle from nadir
   - **Ortho Resolution** (`ortho_mesh_resolution`): output GSD in metres/pixel
 - `use_mesh_ortho: false` keeps the legacy point-cloud projection fallback based on `fused.ply` or `fused_geo.ply`, which still requires PatchMatch + fusion.
 

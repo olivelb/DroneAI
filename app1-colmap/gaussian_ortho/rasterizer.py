@@ -153,16 +153,25 @@ def _render_gsplat_inference(model: GaussianModel, settings: RasterSettings,
         scales = scales[indices]
         opacities = opacities[indices]
         colors = colors[indices]
-    # For orthographic rendering, use SH degree up to 1.  All ortho rays are
-    # parallel (same direction), so SH bands >= 1 produce a spatially-uniform
-    # colour offset — no banding risk.  Using degree 1 recovers more of the
-    # trained colour information than DC-only.
-    if camera_model == "ortho":
-        sh_degree = min(1, model.active_sh_degree)
-    else:
-        sh_degree = model.active_sh_degree
+
+    sh_degree = model.active_sh_degree
 
     with torch.no_grad():
+        # For orthographic rendering, pre-compute SH colours with a uniform
+        # nadir view direction.  gsplat normally uses per-Gaussian directions
+        # from camera position to each Gaussian, which vary ~17° across the
+        # tile when the camera is only 10 units above. Ortho rays are all
+        # parallel, so the view direction should be the same for every
+        # Gaussian: the camera's forward (+Z) axis in world space.
+        raster_sh_degree = sh_degree
+        if camera_model == "ortho" and sh_degree is not None and sh_degree > 0:
+            c2w = torch.linalg.inv(viewmat[0])  # (4, 4)
+            cam_fwd = c2w[:3, 2]  # camera +Z in world = look direction
+            dirs = cam_fwd.unsqueeze(0).expand(means.shape[0], 3)  # (N, 3)
+            colors = gsplat.spherical_harmonics(sh_degree, dirs, colors)
+            colors = torch.clamp_min(colors + 0.5, 0.0)  # match gsplat convention
+            raster_sh_degree = None  # pass flat RGB, not SH coefficients
+
         render_colors, render_alphas, _info = gsplat.rasterization(
             means=means,
             quats=quats,
@@ -175,7 +184,7 @@ def _render_gsplat_inference(model: GaussianModel, settings: RasterSettings,
             height=H,
             near_plane=settings.znear,
             far_plane=settings.zfar,
-            sh_degree=sh_degree,
+            sh_degree=raster_sh_degree,
             eps2d=0.3,
             backgrounds=None,
             render_mode="RGB+ED",
