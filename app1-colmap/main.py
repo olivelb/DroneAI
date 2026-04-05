@@ -920,6 +920,16 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         report_mission_progress(vol_id, "CANCELLED", 0, status="error", log=f"🚫 {str(e)}")
     except Exception as e:
         report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {str(e)}")
+    finally:
+        # Free RAM/VRAM after every mission (success, cancel, or error)
+        import gc
+        gc.collect()
+        try:
+            import torch as _torch
+            if _torch.cuda.is_available():
+                _torch.cuda.empty_cache()
+        except Exception:
+            pass
 
 
 def worker_main():

@@ -393,17 +393,29 @@ def generate_final_ortho(vol_id, mission):
             # Data is usually (C, H, W). Rasterio expects RGB, we need HWC for OpenCV
             img = data[:3].transpose(1, 2, 0).copy() # C,H,W -> H,W,C
             
-            # Dessiner les masques
+            # Dessiner les masques — use ROI-local overlay to avoid
+            # copying the entire image per detection (OOM on large orthos).
             for det in deduped_detections:
                 if 'segment' in det and len(det['segment']) > 0:
                     pts = np.array(det['segment'], np.int32)
                     pts = pts.reshape((-1, 1, 2))
-                    
-                    # Draw a transparent red overlay for the mask
-                    overlay = img.copy()
-                    cv2.fillPoly(overlay, [pts], (255, 0, 0)) # Red in RGB
-                    cv2.addWeighted(overlay, 0.4, img, 0.6, 0, img)
-                    
+
+                    # Compute bounding box of the polygon + margin for the local overlay
+                    bx, by, bw, bh = cv2.boundingRect(pts)
+                    margin = 4
+                    rx0 = max(bx - margin, 0)
+                    ry0 = max(by - margin, 0)
+                    rx1 = min(bx + bw + margin, img.shape[1])
+                    ry1 = min(by + bh + margin, img.shape[0])
+
+                    # Draw transparent red overlay only on the ROI
+                    roi = img[ry0:ry1, rx0:rx1]
+                    roi_overlay = roi.copy()
+                    pts_local = pts - np.array([rx0, ry0], dtype=np.int32)
+                    cv2.fillPoly(roi_overlay, [pts_local], (255, 0, 0))
+                    cv2.addWeighted(roi_overlay, 0.4, roi, 0.6, 0, roi)
+                    del roi_overlay
+
                     # Draw the contour
                     cv2.polylines(img, [pts], True, (255, 0, 0), 2)
                     
@@ -420,6 +432,11 @@ def generate_final_ortho(vol_id, mission):
             
             with rasterio.open(output_path, 'w', **meta) as dst:
                 dst.write(out_data)
+
+            # Free large arrays now that we're done writing
+            del data, img, out_data
+            import gc
+            gc.collect()
                 
         report_progress(
             vol_id,

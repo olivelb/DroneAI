@@ -524,6 +524,11 @@ try:
             summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
             report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
             mission_stats.pop(vol_id, None)
+            # Free VRAM after each completed mission
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 except KeyboardInterrupt:
     print("Shutdown requested by user.")

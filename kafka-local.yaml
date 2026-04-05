@@ -178,9 +178,9 @@ spec:
         image: drone-processing:latest
         resources:
           limits:
-            memory: "4Gi"
+            memory: "16Gi"
           requests:
-            memory: "1Gi"
+            memory: "4Gi"
         imagePullPolicy: IfNotPresent
         env:
         - name: KAFKA_BROKER
