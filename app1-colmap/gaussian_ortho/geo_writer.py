@@ -50,9 +50,33 @@ def write_geotiff(output_path: str, rgb: np.ndarray,
         height=H, width=W, count=3,
         dtype='uint8', crs=crs, transform=geo_transform,
         compress='lzw',
+        photometric='rgb',
     ) as dst:
         for band_idx in range(3):
             dst.write(np.ascontiguousarray(rgb[:, :, band_idx]), band_idx + 1)
+
+    # Embed sRGB ICC profile so viewers don't misinterpret values as linear.
+    # The rendered pixels are sRGB (trained against sRGB JPEGs) but an
+    # untagged TIFF is often assumed linear by VFX tools → double gamma.
+    try:
+        from PIL.ImageCms import ImageCmsProfile, createProfile
+        srgb_bytes = ImageCmsProfile(createProfile("sRGB")).tobytes()
+        # TIFF tag 34675 = ICCProfile. Patch via GDAL's SetMetadataItem.
+        from osgeo import gdal
+        ds = gdal.Open(output_path, gdal.GA_Update)
+        if ds is not None:
+            ds.GetRasterBand(1).SetColorInterpretation(gdal.GCI_RedBand)
+            ds.GetRasterBand(2).SetColorInterpretation(gdal.GCI_GreenBand)
+            ds.GetRasterBand(3).SetColorInterpretation(gdal.GCI_BlueBand)
+            # GDAL ≥ 3.x supports writing ICC profiles via SetMetadata
+            import base64 as _b64
+            ds.SetMetadataItem("SOURCE_ICC_PROFILE",
+                               _b64.b64encode(srgb_bytes).decode("ascii"),
+                               "COLOR_PROFILE")
+            ds.FlushCache()
+            ds = None
+    except Exception:
+        pass  # non-critical: ortho is still valid, just without ICC tag
 
     # Optional height map
     if height_map is not None and height_output_path:

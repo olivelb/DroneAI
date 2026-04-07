@@ -61,7 +61,7 @@ class TrainConfig:
     strategy: str = "mcmc"
     # DefaultStrategy densification
     refine_start_iter: int = 500
-    refine_stop_iter: int = 15_000
+    refine_stop_iter: int = 25_000
     refine_every: int = 100
     reset_every: int = 3000
     # MCMCStrategy
@@ -70,6 +70,12 @@ class TrainConfig:
     # Regularisation (used with MCMC)
     opacity_reg: float = 0.01
     scale_reg: float = 0.01
+    # Maximum normalised scale per axis.  Prevents Gaussians from growing
+    # so large that the tile-intersection list (isect_ids) blows up VRAM.
+    # 0.1 normalised ≈ 50 px at df=4 → ~31 tiles per GS.
+    # 0.2 normalised ≈ 100 px at df=4 → ~123 tiles per GS.
+    # Set to 0 to disable the cap.
+    max_scale: float = 0.1
     # Initial opacity (0.1 for default, 0.5 for mcmc)
     init_opa: float = 0.1
     # Initial scale multiplier (1.0 for default, 0.1 for mcmc per gsplat official example).
@@ -147,9 +153,10 @@ class AppearanceModel(torch.nn.Module):
     variations from persistent Gaussian colours.
 
     Each training image gets a learnable embedding that produces per-channel
-    scale and bias.  At ortho-render time this module is NOT used, so the
-    Gaussians learn the *canonical* scene colour and flight-strip banding
-    disappears.
+    scale and bias.  Applied to the **rendered image** so that per-image
+    lighting variations are absorbed by the appearance model, while the
+    Gaussians learn canonical scene colours.  At ortho-render time this
+    module is NOT used, and the raw Gaussian colours are already correct.
     """
 
     def __init__(self, n_images: int, embed_dim: int = 16):
@@ -167,7 +174,7 @@ class AppearanceModel(torch.nn.Module):
         torch.nn.init.zeros_(self.mlp[-1].bias)
 
     def forward(self, img_idx: int, rendered: torch.Tensor) -> torch.Tensor:
-        """Apply per-image colour correction.
+        """Apply per-image colour correction to rendered image.
 
         Parameters
         ----------
@@ -182,8 +189,10 @@ class AppearanceModel(torch.nn.Module):
         """
         embed = self.embeds(torch.tensor(img_idx, device=rendered.device))
         params = self.mlp(embed)  # (6,)
-        scale = torch.sigmoid(params[:3]) * 2.0  # range (0, 2)
-        bias = params[3:] * 0.1  # small bias range
+        # Scale constrained to [0.8, 1.2]: allows ±20% exposure correction
+        # but cannot collapse to zero (which killed color diversity).
+        scale = 0.8 + torch.sigmoid(params[:3]) * 0.4
+        bias = params[3:] * 0.05  # small bias range (±5%)
         return rendered * scale.view(1, 1, 1, 3) + bias.view(1, 1, 1, 3)
 
 
@@ -325,7 +334,7 @@ def _ortho_coverage_loss(splats, R_c2w_ortho, scene_lo, scene_hi,
         quats=splats["quats"][indices],
         scales=torch.exp(splats["scales"][indices]),
         opacities=torch.sigmoid(splats["opacities"][indices]),
-        colors=splats["sh0"][indices],
+        colors=splats["colors"][indices, :1, :],   # DC band only
         viewmats=vm,
         Ks=K,
         width=crop_px,
@@ -408,38 +417,107 @@ def _camera_data_for_factor(cam: CameraInfo, data_factor: int, device: torch.dev
     return {"K": K, "viewmat": viewmat}
 
 
+def _vram_mb():
+    """Return current CUDA allocated memory in MB (0 if no GPU)."""
+    if torch.cuda.is_available():
+        return torch.cuda.memory_allocated() / (1024 ** 2)
+    return 0.0
+
+
+def _prune_splats(splats, keep_mask, optimizers, strategy_state, cfg, scene_scale):
+    """Remove Gaussians where keep_mask is False.
+
+    Rebuilds parameter dict, optimisers, and strategy state from scratch.
+    Adam momentum is lost for the pruned Gaussians (acceptable — pruning
+    is rare, ~2-4 times per training run).
+
+    Returns (new_splats, new_optimizers, new_strategy_state).
+    """
+    device = splats["means"].device
+    n_before = splats["means"].shape[0]
+    n_after = int(keep_mask.sum().item())
+
+    if n_after >= n_before:
+        return splats, optimizers, strategy_state
+
+    # Build new ParameterDict with only kept Gaussians
+    new_splats = torch.nn.ParameterDict()
+    with torch.no_grad():
+        for name in splats.keys():
+            new_splats[name] = torch.nn.Parameter(
+                splats[name].data[keep_mask].clone()
+            )
+
+    # Carry over requires_grad settings
+    for name in splats.keys():
+        new_splats[name].requires_grad_(splats[name].requires_grad)
+
+    new_splats = new_splats.to(device)
+
+    # Delete old splats to free VRAM immediately
+    del splats
+    for opt in optimizers.values():
+        opt.state.clear()
+    del optimizers
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Rebuild optimizers
+    new_optimizers = _create_optimizers(new_splats, cfg, scene_scale)
+
+    # Reset strategy state
+    new_strategy_state = {}
+
+    return new_splats, new_optimizers, new_strategy_state
+
+
 # ---------------------------------------------------------------------------
 #  gsplat ParameterDict / optimisers
 # ---------------------------------------------------------------------------
 
 def _create_splats(model: GaussianModel, device: torch.device):
-    """Convert GaussianModel parameters to gsplat ParameterDict format."""
+    """Convert GaussianModel parameters to gsplat ParameterDict format.
+
+    SH coefficients are stored as a single contiguous 'colors' tensor
+    (N, 1+K, 3) instead of separate sh0/shN.  This avoids a per-step
+    torch.cat allocation that doubles SH peak VRAM during backward.
+    At 4M Gaussians with SH degree 3 this saves ~1.5 GB.
+    """
+    colors = torch.cat([
+        model._features_dc.data.clone(),    # (N, 1, 3)
+        model._features_rest.data.clone(),  # (N, K, 3)
+    ], dim=1)  # (N, 1+K, 3)
     return torch.nn.ParameterDict({
         "means":     torch.nn.Parameter(model._xyz.data.clone()),
         "scales":    torch.nn.Parameter(model._scaling.data.clone()),
         "quats":     torch.nn.Parameter(model._rotation.data.clone()),
         "opacities": torch.nn.Parameter(model._opacity.data.clone().squeeze(-1)),  # (N,)
-        "sh0":       torch.nn.Parameter(model._features_dc.data.clone()),   # (N, 1, 3)
-        "shN":       torch.nn.Parameter(model._features_rest.data.clone()), # (N, K, 3)
+        "colors":    torch.nn.Parameter(colors),  # (N, 1+K, 3)
     }).to(device)
 
 
 def _create_optimizers(splats, cfg: TrainConfig, scene_scale: float):
-    """Create per-parameter Adam optimisers (gsplat convention)."""
+    """Create per-parameter Adam optimisers (gsplat convention).
+
+    For the merged 'colors' parameter, we use lr_shN (the lower LR)
+    and compensate the DC band with gradient scaling in the training loop.
+    """
     lr_map = {
         "means":     cfg.lr_means * scene_scale,
         "scales":    cfg.lr_scales,
         "opacities": cfg.lr_opacities,
         "quats":     cfg.lr_quats,
-        "sh0":       cfg.lr_sh0,
-        "shN":       cfg.lr_shN,
+        "colors":    cfg.lr_shN,   # base LR; DC band scaled in training loop
     }
+    # Use fused Adam when available (PyTorch 2.x) for better VRAM efficiency
+    fused = torch.cuda.is_available()
     optimizers = {}
     for name, lr in lr_map.items():
         optimizers[name] = torch.optim.Adam(
             [{"params": splats[name], "lr": lr, "name": name}],
             eps=1e-15,
             betas=(0.9, 0.999),
+            fused=fused,
         )
     return optimizers
 
@@ -454,8 +532,10 @@ def _update_model_from_splats(model: GaussianModel, splats):
     model._scaling = nn.Parameter(splats["scales"].data)
     model._rotation = nn.Parameter(splats["quats"].data)
     model._opacity = nn.Parameter(splats["opacities"].data.unsqueeze(-1))
-    model._features_dc = nn.Parameter(splats["sh0"].data)
-    model._features_rest = nn.Parameter(splats["shN"].data)
+    # Split merged colors back into DC + rest
+    colors = splats["colors"].data
+    model._features_dc = nn.Parameter(colors[:, :1, :].contiguous())
+    model._features_rest = nn.Parameter(colors[:, 1:, :].contiguous())
 
     # FAGK SH (reset to match new count)
     if model.fagk_enabled:
@@ -566,6 +646,10 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
     # --- Create gsplat params, optimisers, strategy ---
     splats = _create_splats(model, device)
 
+    # Free the original model's GPU tensors — splats has its own copies.
+    # This saves ~30% of Gaussian VRAM (model params are dead weight during training).
+    model.to("cpu")
+
     # Normalise Gaussian positions and scales into the unit-ball space.
     with torch.no_grad():
         splats["means"].sub_(torch.tensor(norm_center, dtype=torch.float32,
@@ -669,16 +753,103 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
                                    norm_center=norm_center,
                                    norm_scale=norm_scale)
 
+    # --- Resolution-proportional cap: prevent MCMC over-growing at low res ---
+    # At low resolution (df=8, df=4), the pixel budget can't support many
+    # Gaussians.  MCMC will grow to cap_max regardless, creating a death
+    # spiral where most Gaussians are dead and constantly relocated.
+    # Scale cap_max proportionally to current resolution vs target resolution.
+    _target_pixels = (cameras[0].width // cfg.data_factor) * \
+                     (cameras[0].height // cfg.data_factor)
+    _original_cap = cfg.cap_max
+
+    def _update_cap_for_resolution(cur_df):
+        """Scale strategy.cap_max based on current resolution."""
+        if not (use_mcmc and cfg.progressive_schedule):
+            return
+        cur_pixels = (cameras[0].width // cur_df) * (cameras[0].height // cur_df)
+        # 0.5 GS/pixel is a healthy maximum; scale linearly with resolution
+        effective_cap = max(int(_original_cap * cur_pixels / _target_pixels),
+                           100_000)  # minimum 100K
+        if effective_cap != strategy.cap_max:
+            print(f"  Cap scaled for df={cur_df}: {strategy.cap_max:,} → "
+                  f"{effective_cap:,} ({cur_pixels:,} px)")
+        strategy.cap_max = effective_cap
+
+    _update_cap_for_resolution(current_df)
+
     for step in range(cfg.iterations):
         # --- Progressive resolution: update data_factor if needed ---
         step_df = _get_current_data_factor(step, cfg)
         if step_df != current_df:
+            # Resolution is increasing — flush VRAM before allocating larger tensors.
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            n_gs = splats["means"].shape[0]
+            print(f"  Progressive: data_factor {current_df}→{step_df} at step {step} "
+                  f"(N={n_gs:,}, VRAM={_vram_mb():.0f} MB)")
+
+            # Update cap for the NEW resolution BEFORE pruning, so pruning
+            # uses the correct target count for the incoming resolution.
+            _update_cap_for_resolution(step_df)
+
+            # --- Safe pre-resolution pruning (MCMC only, resolution increasing) ---
+            # Uses gsplat's remove() which preserves Adam optimizer state for
+            # surviving Gaussians — no momentum reset, no death spiral.
+            if use_mcmc and step_df < current_df:
+                from gsplat.strategy.ops import remove as _gsplat_remove
+
+                # Use the proportional cap for the new resolution as the target.
+                # Also check VRAM safety: if the estimated peak exceeds GPU
+                # capacity, further reduce the cap.
+                safe_cap = strategy.cap_max
+                if torch.cuda.is_available():
+                    total_memory = torch.cuda.get_device_properties(0).total_memory
+                    peak_mem = torch.cuda.max_memory_allocated()
+                    n_now = splats["means"].shape[0]
+                    pixel_ratio = (current_df / step_df) ** 2
+                    estimated_peak = peak_mem * (pixel_ratio ** 0.6)
+                    target = 0.75 * total_memory
+                    if estimated_peak > target and n_now > 0:
+                        scale = target / estimated_peak
+                        vram_cap = max(100_000, int(n_now * scale))
+                        if vram_cap < safe_cap:
+                            safe_cap = vram_cap
+                            strategy.cap_max = safe_cap
+                            print(f"  VRAM-safe cap: → {safe_cap:,} "
+                                  f"(peak={peak_mem/1024**2:.0f}MB, "
+                                  f"est@df{step_df}={estimated_peak/1024**2:.0f}MB, "
+                                  f"GPU={total_memory/1024**2:.0f}MB)")
+                    # Reset peak stats so next transition uses new-resolution data
+                    torch.cuda.reset_peak_memory_stats()
+
+                # Only prune if N exceeds the target cap for the new resolution.
+                # Uses gsplat's remove() which preserves optimizer state.
+                n_now = splats["means"].shape[0]
+                if n_now > safe_cap:
+                    with torch.no_grad():
+                        opa = torch.sigmoid(splats["opacities"])
+                        n_to_remove = n_now - safe_cap
+                        _, remove_idx = torch.topk(opa, n_to_remove, largest=False)
+                        remove_mask = torch.zeros(n_now, dtype=torch.bool, device=device)
+                        remove_mask[remove_idx] = True
+                        _gsplat_remove(
+                            params=splats, optimizers=optimizers,
+                            state={}, mask=remove_mask,
+                        )
+                        print(f"  Pre-res prune: {n_now:,} → "
+                              f"{splats['means'].shape[0]:,} "
+                              f"(removed {n_to_remove:,} lowest-opacity GS)")
+                        del opa, remove_idx, remove_mask
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
             current_df = step_df
             cam_data = _precompute_cameras(cameras, current_df, device,
                                            norm_center=norm_center,
                                            norm_scale=norm_scale)
-            if step % 100 == 0:
-                print(f"  Progressive: data_factor → {current_df} at step {step}")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         # Random camera
         idx = random.randint(0, len(cameras) - 1)
@@ -693,14 +864,12 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         sh_degree = min(step // cfg.sh_degree_interval, cfg.sh_degree)
 
         # --- Forward (gsplat rasterisation) ---
-        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
-
         render_colors, render_alphas, info = gsplat.rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
             opacities=torch.sigmoid(splats["opacities"]),
-            colors=colors_sh,
+            colors=splats["colors"],   # merged SH (N, 1+K, 3) — no cat()
             viewmats=cd["viewmat"].unsqueeze(0),
             Ks=cd["K"].unsqueeze(0),
             width=width,
@@ -710,7 +879,7 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             sh_degree=sh_degree,
             eps2d=0.3,
             render_mode="RGB",
-            rasterize_mode="antialiased",
+            rasterize_mode="classic",
             absgrad=(not use_mcmc),
             packed=True,
         )
@@ -727,7 +896,12 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             bkgd = bg_color.unsqueeze(0)
         colors = render_colors + bkgd.view(1, 1, 1, 3) * (1.0 - render_alphas)
 
-        # Per-image appearance correction (decouples exposure from scene colour)
+        # Per-image appearance correction (decouples exposure from scene colour).
+        # Applied to the rendered image so the Gaussians learn canonical scene
+        # colours directly.  The appearance model maps rendered→GT space,
+        # absorbing per-image exposure/WB variations.  Scale is constrained to
+        # [0.8, 1.2] to prevent degenerate solutions where the model collapses
+        # GT signal to zero.
         if app_model is not None:
             colors = app_model(idx, colors)
 
@@ -756,8 +930,24 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         # This halves peak VRAM vs. a single combined backward.
         last_loss = l1loss.item()
         loss.backward()
-        del pixels, render_colors, render_alphas, colors, colors_sh, loss
+
+        # Scale DC-band gradient to achieve effective lr_sh0
+        # (colors uses lr_shN as base; DC band needs higher LR)
+        with torch.no_grad():
+            g = splats["colors"].grad
+            if g is not None:
+                g[:, :1, :] *= cfg.lr_sh0 / max(cfg.lr_shN, 1e-10)
+
+        del pixels, render_colors, render_alphas, colors, loss
         del l1loss, ssimloss
+
+        # Free rasterisation intermediates early for MCMC — step_post_backward
+        # never reads `info` (only DefaultStrategy uses radii from it).
+        # This frees ~500 MB of tile intersection buffers (isect_ids,
+        # flatten_ids, gaussian_ids, means2d, conics) before MCMC allocates
+        # memory for relocation / addition.
+        if use_mcmc:
+            del info
 
         # --- Backward pass 2: ortho coverage regularisation (separate graph) ---
         if (cfg.ortho_reg > 0
@@ -777,20 +967,25 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
         if app_optimizer is not None:
             app_optimizer.step()
             app_optimizer.zero_grad(set_to_none=True)
+
+        # Cap maximum scale to prevent tile-intersection explosion.
+        if cfg.max_scale > 0:
+            with torch.no_grad():
+                splats["scales"].data.clamp_(max=math.log(cfg.max_scale))
         for scheduler in schedulers:
             scheduler.step()
 
         # --- Strategy post-backward (densification / relocation) ---
+        # Note: MCMC's step_post_backward ignores `info` and has its own
+        # empty_cache() after relocation.  For DefaultStrategy, `info` holds
+        # radii needed for densification so it must stay alive.
         if use_mcmc:
-            # Scene is normalised to unit scale, so lr and covariance
-            # magnitudes match the paper's assumptions — no correction needed.
             mcmc_lr = schedulers[0].get_last_lr()[0]
-            # After refine_stop_iter, silence noise entirely (settling phase).
             if step >= strategy.refine_stop_iter:
                 mcmc_lr = 0.0
             strategy.step_post_backward(
                 params=splats, optimizers=optimizers,
-                state=strategy_state, step=step, info=info,
+                state=strategy_state, step=step, info={},
                 lr=mcmc_lr,
             )
         else:
@@ -800,10 +995,10 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
                 packed=True,
             )
 
-        # --- Spatial pruning: kill far-away Gaussians ---
-        # Gaussians beyond the scene diameter from all cameras get their
-        # opacity crushed below min_opacity so the next MCMC relocate step
-        # teleports them to useful high-opacity positions near the scene.
+        # --- Spatial pruning: mark far-away Gaussians as dead ---
+        # Crush opacity so MCMC's relocation mechanism naturally recycles
+        # them to useful positions near cameras.  We do NOT remove them
+        # (that would reset optimizer state and cause a death spiral).
         if (_cam_tree is not None
                 and step >= cfg.refine_start_iter
                 and step < strategy.refine_stop_iter
@@ -811,45 +1006,41 @@ def train(scene: SceneInfo, model: GaussianModel, cfg: TrainConfig = None,
             with torch.no_grad():
                 means_np = splats["means"].detach().cpu().numpy()
                 dists_to_cam, _ = _cam_tree.query(means_np, k=1)
-                far_mask = dists_to_cam > _max_cam_dist
-                n_far = int(far_mask.sum())
-                if n_far > 0:
-                    far_t = torch.tensor(far_mask, device=device)
-                    # Set opacity well below min_opacity (0.005) → relocate
-                    # will recycle them on its next pass.
-                    splats["opacities"].data[far_t] = torch.logit(
-                        torch.tensor(0.001, device=device)
-                    )
-                    # Also shrink scales to avoid huge noise displacement
-                    # (noise ∝ covariance = scale²) before relocation.
-                    splats["scales"].data[far_t] = torch.log(
-                        torch.tensor(1e-4, device=device)
-                    )
-                    # Zero the optimizer state so they start fresh
-                    for opt in optimizers.values():
-                        for pg in opt.param_groups:
-                            for p in pg["params"]:
-                                ptr = p.data_ptr()
-                                if (ptr == splats["opacities"].data_ptr()
-                                        or ptr == splats["scales"].data_ptr()):
-                                    if p in opt.state:
-                                        for k, v in opt.state[p].items():
-                                            if isinstance(v, torch.Tensor) and v.shape == p.shape:
-                                                v[far_t] = 0.0
-                    if step % 500 == 0 or n_far > 1000:
-                        print(f"  [step {step}] Spatial prune: "
-                              f"{n_far} Gaussians beyond scene diameter "
-                              f"({_max_cam_dist:.2f}) marked for relocation")
+                far_mask_np = dists_to_cam > _max_cam_dist
+                n_far = int(far_mask_np.sum())
                 del means_np, dists_to_cam
 
-        # --- Free per-iteration intermediates (reduce peak VRAM) ---
-        del info
-        if step % 100 == 0 and device.type == "cuda":
-            torch.cuda.empty_cache()
+                if n_far > 0:
+                    far_t = torch.tensor(far_mask_np, device=device)
+                    # Crush opacity to near-zero so MCMC will relocate them
+                    splats["opacities"].data[far_t] = torch.logit(
+                        torch.tensor(0.001, device=device))
+                    # Shrink scales so they don't pollute renders
+                    splats["scales"].data[far_t] = math.log(1e-4)
+                    del far_t
+
+                if n_far > 100 or step % 500 == 0:
+                    print(f"  [step {step}] Spatial prune: crushed {n_far} far "
+                          f"Gaussians (N={splats['means'].shape[0]:,}), "
+                          f"VRAM={_vram_mb():.0f} MB")
+                del far_mask_np
+
+        # --- Free per-iteration intermediates ---
+        # For DefaultStrategy, `info` was kept alive through step_post_backward;
+        # for MCMC it was already deleted right after loss.backward().
+        if not use_mcmc:
+            del info
 
         # --- Logging ---
         if report_fn and step % 100 == 0:
             report_fn(step, last_loss, len(splats["means"]))
+        if step % 500 == 0 and device.type == "cuda":
+            peak_mb = torch.cuda.max_memory_allocated() / 1024**2
+            max_s = torch.exp(splats["scales"]).max().item()
+            print(f"  [step {step}] VRAM: {_vram_mb():.0f} MB allocated, "
+                  f"peak={peak_mb:.0f} MB, "
+                  f"N={splats['means'].shape[0]:,}, max_scale={max_s:.4f}")
+            torch.cuda.reset_peak_memory_stats()
 
         # --- Checkpoint (save in COLMAP coordinates) ---
         if (step + 1) in cfg.checkpoint_iterations:
@@ -998,9 +1189,10 @@ def nadir_finetune(scene: SceneInfo, model: GaussianModel,
     splats["quats"].requires_grad_(False)
     splats["opacities"].requires_grad_(False)
 
+    dc_lr_scale = lr_sh0 / max(lr_shN, 1e-10)
+    fused = torch.cuda.is_available()
     optimizers = {
-        "sh0": torch.optim.Adam([splats["sh0"]], lr=lr_sh0, eps=1e-15),
-        "shN": torch.optim.Adam([splats["shN"]], lr=lr_shN, eps=1e-15),
+        "colors": torch.optim.Adam([splats["colors"]], lr=lr_shN, eps=1e-15, fused=fused),
     }
 
     # Precompute camera data (normalised space)
@@ -1020,14 +1212,12 @@ def nadir_finetune(scene: SceneInfo, model: GaussianModel,
         pixels = _load_image(cam, data_factor, device)
         height, width = pixels.shape[1], pixels.shape[2]
 
-        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
-
         render_colors, render_alphas, info = gsplat.rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
             opacities=torch.sigmoid(splats["opacities"]),
-            colors=colors_sh,
+            colors=splats["colors"],   # merged SH — no cat()
             viewmats=cd["viewmat"].unsqueeze(0),
             Ks=cd["K"].unsqueeze(0),
             width=width,
@@ -1052,6 +1242,12 @@ def nadir_finetune(scene: SceneInfo, model: GaussianModel,
 
         loss.backward()
 
+        # Scale DC gradient for effective lr_sh0
+        with torch.no_grad():
+            g = splats["colors"].grad
+            if g is not None:
+                g[:, :1, :] *= dc_lr_scale
+
         for opt in optimizers.values():
             opt.step()
             opt.zero_grad(set_to_none=True)
@@ -1059,7 +1255,7 @@ def nadir_finetune(scene: SceneInfo, model: GaussianModel,
         if report_fn and step % 100 == 0:
             report_fn(step, l1loss.item(), len(splats["means"]))
 
-        del pixels, render_colors, render_alphas, colors, colors_sh, info
+        del pixels, render_colors, render_alphas, colors, info
         del l1loss, ssimloss, loss
 
         if step % 100 == 0 and device.type == "cuda":
@@ -1139,7 +1335,7 @@ def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
 
     print(f"Nadir fine-tune (full): {len(nadir_cams)} cameras (<{max_angle_deg}°), "
           f"{iterations} iters, data_factor={data_factor}")
-    print(f"  Optimising: sh0, shN, scales, opacities (positions/rotations frozen)")
+    print(f"  Optimising: colors, scales, opacities (positions/rotations frozen)")
 
     norm_center = scene.scene_centre.astype(np.float64)
     norm_scale = float(scene.scene_radius)
@@ -1161,11 +1357,12 @@ def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
     splats["scales"].requires_grad_(True)
     splats["opacities"].requires_grad_(True)
 
+    dc_lr_scale = lr_sh0 / max(lr_shN, 1e-10)
+    fused = torch.cuda.is_available()
     optimizers = {
-        "sh0":       torch.optim.Adam([splats["sh0"]], lr=lr_sh0, eps=1e-15),
-        "shN":       torch.optim.Adam([splats["shN"]], lr=lr_shN, eps=1e-15),
-        "scales":    torch.optim.Adam([splats["scales"]], lr=lr_scales, eps=1e-15),
-        "opacities": torch.optim.Adam([splats["opacities"]], lr=lr_opacities, eps=1e-15),
+        "colors":    torch.optim.Adam([splats["colors"]], lr=lr_shN, eps=1e-15, fused=fused),
+        "scales":    torch.optim.Adam([splats["scales"]], lr=lr_scales, eps=1e-15, fused=fused),
+        "opacities": torch.optim.Adam([splats["opacities"]], lr=lr_opacities, eps=1e-15, fused=fused),
     }
 
     cam_data = _precompute_cameras(nadir_cams, data_factor, device,
@@ -1183,14 +1380,12 @@ def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
         pixels = _load_image(cam, data_factor, device)
         height, width = pixels.shape[1], pixels.shape[2]
 
-        colors_sh = torch.cat([splats["sh0"], splats["shN"]], dim=1)
-
         render_colors, render_alphas, info = gsplat.rasterization(
             means=splats["means"],
             quats=splats["quats"],
             scales=torch.exp(splats["scales"]),
             opacities=torch.sigmoid(splats["opacities"]),
-            colors=colors_sh,
+            colors=splats["colors"],   # merged SH — no cat()
             viewmats=cd["viewmat"].unsqueeze(0),
             Ks=cd["K"].unsqueeze(0),
             width=width,
@@ -1214,6 +1409,12 @@ def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
 
         loss.backward()
 
+        # Scale DC gradient for effective lr_sh0
+        with torch.no_grad():
+            g = splats["colors"].grad
+            if g is not None:
+                g[:, :1, :] *= dc_lr_scale
+
         for opt in optimizers.values():
             opt.step()
             opt.zero_grad(set_to_none=True)
@@ -1221,7 +1422,7 @@ def nadir_finetune_full(scene: SceneInfo, model: GaussianModel,
         if report_fn and step % 100 == 0:
             report_fn(step, l1loss.item(), len(splats["means"]))
 
-        del pixels, render_colors, render_alphas, colors, colors_sh, info
+        del pixels, render_colors, render_alphas, colors, info
         del l1loss, ssimloss, loss
 
         if step % 100 == 0 and device.type == "cuda":

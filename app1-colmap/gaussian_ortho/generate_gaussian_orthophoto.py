@@ -219,14 +219,28 @@ def generate_gaussian_orthophoto(
         effective_ortho_crop = 256
         progressive = None
 
-        # Probe available GPU VRAM for progressive schedule on tiny GPUs
+        # Probe available GPU VRAM and adapt training params to fit.
         vram_gb = None
         if torch.cuda.is_available():
             vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
-        if vram_gb is not None and vram_gb < 12:
-            # Enable progressive schedule for ≤12 GB GPUs with large images
-            # Probe max image dimension from the first camera
+        if vram_gb is not None:
+            # --- Adaptive cap_max ---
+            # Each Gaussian uses ~908 bytes steady-state (params + Adam state),
+            # PLUS ~4-8 KB during rasterization peak (view-dependent tile
+            # intersections).  Use 5 KB total as a conservative estimate.
+            # Target: 65% of VRAM (need headroom for worst-case camera views
+            # where tile intersections can spike 2-3x above average).
+            bytes_per_gs = 5000  # 908 B steady + ~4 KB rasterization peak
+            max_gaussians_for_vram = int((vram_gb * 0.65 * 1024**3) / bytes_per_gs)
+            if effective_cap > max_gaussians_for_vram:
+                effective_cap = max(100_000, max_gaussians_for_vram)
+                _report(vol_id, "GAUSS", pct_start,
+                        f"VRAM-adaptive: cap_max reduced to {effective_cap:,} "
+                        f"(GPU has {vram_gb:.1f} GB)", report_fn)
+
+            # --- Adaptive data_factor: ensure image tensors fit in remaining VRAM ---
+            # Estimate image VRAM per step: ~16 bytes/pixel × 4 tensors × 2 (backward).
             try:
                 from PIL import Image as PILImage
                 first_cam = cell_scene.train_cameras[0]
@@ -234,8 +248,29 @@ def generate_gaussian_orthophoto(
             except Exception:
                 max_dim = 0
 
+            if max_dim > 0:
+                # Remaining VRAM after Gaussians + 500 MB overhead
+                remaining_mb = (vram_gb * 1024) - (effective_cap * 908 / 1024**2) - 500
+                remaining_mb = max(remaining_mb, 200)
+                # Each pixel ≈ 128 bytes peak (forward + backward + intermediates)
+                max_pixels = int(remaining_mb * 1024**2 / 128)
+                # Find the smallest data_factor that keeps pixels within budget
+                test_df = data_factor
+                while test_df < 16:
+                    eff_w = first_cam.width // test_df
+                    eff_h = first_cam.height // test_df
+                    if eff_w * eff_h <= max_pixels:
+                        break
+                    test_df *= 2
+                if test_df > data_factor:
+                    data_factor = test_df
+                    _report(vol_id, "GAUSS", pct_start,
+                            f"VRAM-adaptive: data_factor increased to {data_factor} "
+                            f"(remaining VRAM budget: {remaining_mb:.0f} MB)",
+                            report_fn)
+
+            # Progressive schedule for all GPUs with large images
             if max_dim > 1200 and data_factor <= 2:
-                # Build schedule: start coarse, ramp to target data_factor
                 progressive = []
                 if max_dim > 3000:
                     progressive.append((0.0, 8))
@@ -275,8 +310,56 @@ def generate_gaussian_orthophoto(
                         f"iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
             return reporter
 
-        model = train(cell_scene, model, cfg,
-                      report_fn=make_train_reporter(pct_start, pct_end, vol_id, report_fn))
+        # --- OOM-resilient training: retry with reduced params on CUDA OOM ---
+        oom_retries = 0
+        while True:
+            try:
+                model = train(cell_scene, model, cfg,
+                              report_fn=make_train_reporter(pct_start, pct_end, vol_id, report_fn))
+                break
+            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
+                if "out of memory" not in str(e).lower() and "CUDA" not in str(e):
+                    raise
+                oom_retries += 1
+                if oom_retries > 3:
+                    raise RuntimeError(
+                        f"CUDA OOM after {oom_retries} retries "
+                        f"(cap_max={cfg.cap_max}, data_factor={cfg.data_factor})"
+                    ) from e
+                # Free everything and retry with halved cap_max + doubled data_factor
+                import gc
+                gc.collect()
+                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                    torch.cuda.memory._set_allocator_settings("")
+                except Exception:
+                    pass
+
+                new_cap = max(50_000, cfg.cap_max // 2)
+                new_df = min(16, cfg.data_factor * 2)
+                _report(vol_id, "GAUSS", pct_start,
+                        f"CUDA OOM — retry {oom_retries}/3: cap_max {cfg.cap_max:,}→{new_cap:,}, "
+                        f"data_factor {cfg.data_factor}→{new_df}",
+                        report_fn)
+                cfg = TrainConfig(
+                    iterations=cfg.iterations,
+                    data_factor=new_df,
+                    progressive_schedule=cfg.progressive_schedule,
+                    sh_degree=cfg.sh_degree,
+                    strategy=cfg.strategy,
+                    cap_max=new_cap,
+                    ortho_reg=cfg.ortho_reg,
+                    ortho_crop_px=cfg.ortho_crop_px,
+                    output_dir=cfg.output_dir,
+                )
+                # Re-init model from point cloud with reduced params
+                model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
+                model = model.to(device)
+                init_opa = 0.5 if strategy.lower() == "mcmc" else 0.1
+                init_scale = 0.1 if strategy.lower() == "mcmc" else 1.0
+                model.init_from_point_cloud(cell_scene.point_cloud, cell_scene.scene_radius,
+                                            init_opa=init_opa, init_scale=init_scale)
 
         cell_models.append((cell_bounds, model))
 

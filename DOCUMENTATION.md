@@ -800,7 +800,7 @@ The implementation draws from several key papers:
 
 **PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
 
-**Per-image appearance compensation.** A small per-image MLP (embedding → affine colour transform) decouples transient exposure and white-balance variations from persistent Gaussian colours. At ortho-render time the appearance model is not used, so flight-strip banding disappears from the output.
+**Per-image appearance compensation.** A small per-image MLP (embedding → affine colour transform) decouples transient exposure and white-balance variations from persistent Gaussian colours. The colour correction is applied to the **rendered image** (not ground truth), with scale constrained to [0.8, 1.2] and bias to ±5%. This prevents degenerate solutions where the model could collapse colour diversity to zero. At ortho-render time the appearance model is not used, so flight-strip banding disappears from the output.
 
 **Ortho-coverage regularisation.** During training, random small orthographic crops are rendered and a differentiable loss penalises low alpha coverage and row-to-row alpha variance (which directly causes horizontal banding in the ortho output). This loss is fully differentiable through gsplat rasterisation.
 
@@ -824,22 +824,38 @@ Each cell is trained using gsplat's rasterisation with the following configurati
 
 - **Loss**: 0.8 × L1 + 0.2 × D-SSIM
 - **Strategy**: MCMC (bounded Gaussian count) with stochastic relocation
-- **Optimisers**: per-parameter Adam (gsplat convention) with ExponentialLR decay on means
+- **Rasterisation**: `classic` mode with `packed=True` for predictable VRAM usage (antialiased mode has higher peak)
+- **Optimisers**: per-parameter fused Adam (gsplat convention) with ExponentialLR decay on means
 - **Progressive SH**: spherical harmonics degree increases every 1000 iterations up to `sh_degree`
-- **Appearance model**: per-image affine colour correction (small embedding → 6-output MLP producing per-channel scale and bias)
+- **Progressive resolution**: for large images (>1200 px), training starts at a coarse data_factor (e.g. 8) and progressively ramps to the target (e.g. 1). This prevents early OOM and ensures Gaussians are visible at each stage. The cap_max is scaled proportionally to current resolution.
+- **Appearance model**: per-image affine colour correction (small embedding → 6-output MLP producing per-channel scale [0.8, 1.2] and bias [±5%]), applied to the rendered image
+- **Max scale cap**: Gaussian scales are clamped to `max_scale=0.1` (normalised) to prevent tile-intersection explosion in gsplat’s `isect_tiles`, which can spike VRAM by >10 GB for a few oversized Gaussians
 - **Ortho regularisation**: every 20 iterations from iteration 500, renders a random 256×256 ortho crop and penalises low coverage + row-to-row alpha variance + total variation
 - **Regularisation**: opacity regularisation (0.01) + scale regularisation (0.01) for MCMC stability
 - **Data loading**: images loaded one-at-a-time and downscaled by `data_factor` for VRAM efficiency
+- **SH memory optimisation**: DC and rest SH coefficients are stored as a single merged `colors` tensor (N, 1+K, 3) instead of separate `sh0`/`shN`, eliminating a per-step `torch.cat` that doubled SH peak VRAM. DC band gets effective higher LR via gradient scaling.
+- **Early VRAM release**: rasterisation intermediates (`info`) are freed immediately after backward for MCMC (which doesn’t use them), releasing ~500 MB of tile intersection buffers before MCMC allocates memory for relocation
+- **MCMC refinement**: `refine_stop_iter` raised to 25,000 so MCMC can continue growing Gaussians at full resolution during progressive training
 
-Images are loaded one-at-a-time (not batched), so VRAM stays roughly constant regardless of dataset size. Memory profiling shows that even 2000 images with 8M Gaussians only uses ~5.7 GB VRAM.
+Images are loaded one-at-a-time (not batched), so VRAM stays roughly constant regardless of dataset size.
+
+**VRAM management features:**
+
+- **VRAM-adaptive cap_max**: on startup, cap_max is automatically reduced if the GPU doesn’t have enough VRAM (targeting 65% utilisation with 5 KB/Gaussian total estimate)
+- **VRAM-adaptive data_factor**: if image resolution exceeds the remaining VRAM budget after Gaussian allocation, data_factor is automatically increased
+- **Resolution-proportional cap scaling**: during progressive training, cap_max is scaled linearly with current resolution vs target resolution (minimum 100K). This prevents MCMC from growing millions of Gaussians at a resolution where most would be invisible.
+- **Pre-resolution pruning**: when resolution increases during progressive training, the lowest-opacity Gaussians are pruned using gsplat’s `remove()` (which preserves Adam optimizer state) to fit the new resolution’s cap
+- **VRAM-safe pruning**: if estimated peak VRAM at the new resolution exceeds 75% of GPU total, the cap is further reduced before pruning
+- **OOM-resilient retry**: if CUDA OOM occurs during training, the pipeline automatically retries up to 3 times with halved cap_max and doubled data_factor
+- **CUDA allocator reset**: after each mission (success, cancel, or error), the CUDA allocator is fully reset to prevent stale-handle assertions on the next mission
 
 Default training parameters (configurable via dashboard UI):
 
 | Parameter | Default | Description |
 | --- | --- | --- |
 | `gs_iterations` | 7000 | Training iterations |
-| `gs_data_factor` | auto (2 for ≤500 images, 4 for >500) | Image downscaling factor |
-| `gs_cap_max` | 2,000,000 | Maximum Gaussian count |
+| `gs_data_factor` | auto (2 for ≤500 images, 4 for >500) | Image downscaling factor (auto-adjusted for VRAM) |
+| `gs_cap_max` | 2,000,000 | Maximum Gaussian count (auto-reduced for small GPUs) |
 | `gs_sh_degree` | 3 | Maximum spherical harmonics degree |
 | `gs_ortho_reg` | 0.5 | Ortho coverage regularisation weight |
 
@@ -932,7 +948,7 @@ flowchart TD
   A[dense/sparse + undistorted images available] --> B{use_mesh_ortho enabled?}
   B -->|Yes| C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
-  C --> C1[MCMC densification + appearance compensation + ortho regularisation]
+  C --> C1[MCMC densification + appearance compensation + ortho regularisation + progressive resolution]
   C1 --> C2{Geo-alignment method}
   C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
@@ -987,9 +1003,17 @@ Memory profiling for the GS pipeline:
 | 113 | 2M | 2 | ~2.5 GB | Validated end-to-end |
 | 500 | 2M | 2 | ~2.8 GB | Images loaded one-at-a-time |
 | 1000 | 5M | 4 | ~3.6 GB | auto data_factor kicks in |
+| 1140 | 1M | 2 | ~1.8 GB | Progressive df=2 |
+| 1140 | 3M | 1 | ~6.4 GB | Progressive df=8→4→2→1, validated on RTX 3090 |
 | 2000 | 8M | 4 | ~5.7 GB | Comfortable on any GPU |
 
-Training loads images one-at-a-time. Camera metadata is negligible. The ortho renderer uses chunked rendering for large outputs. The pipeline comfortably handles 1000+ images without OOM on a single GPU.
+Key VRAM insights from RTX 3090 (24 GB) testing with 1140 cameras at 4000×2997:
+
+- The `max_scale=0.1` cap is critical: without it, a few oversized Gaussians can cause tile-intersection lists to spike VRAM by >10 GB
+- `classic` rasterize_mode has lower peak VRAM than `antialiased` (~15% less)
+- `packed=True` reduces rasterisation overhead for sparse scenes
+- Freeing `info` early saves ~500 MB per step for MCMC training
+- Merged SH `colors` tensor saves ~1.5 GB at 4M Gaussians with SH degree 3
 
 ### Gaussian Splatting package structure
 
@@ -998,15 +1022,15 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | Module | Purpose |
 | --- | --- |
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, filtering, GeoTIFF output |
-| `train.py` | Training loop with gsplat, MCMC densification, appearance model, ortho-coverage loss, `nadir_finetune_full()` |
+| `train.py` | Training loop with gsplat, MCMC densification, appearance model (applied to rendered image, scale [0.8,1.2]), ortho-coverage loss, progressive resolution, resolution-proportional cap, max_scale cap, OOM-safe VRAM management, `nadir_finetune_full()` |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
 | `rasterizer.py` | Unified rasteriser wrapper (gsplat backend for ortho + perspective) |
-| `ortho_renderer.py` | Orthographic camera setup, chunked rendering, height map extraction |
+| `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |
 | `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |
 | `scene_info.py` | Scene metadata (cameras, point cloud, bounds, radius) |
 | `partition.py` | VastGaussian-style m×n grid partitioning with overlap |
 | `merge.py` | Overlap-aware model merging (keep core-region Gaussians only) |
-| `geo_writer.py` | GeoTIFF writer for RGB + height map |
+| `geo_writer.py` | GeoTIFF writer for RGB + height map, with embedded sRGB ICC profile |
 | `exif_altitude.py` | EXIF GPS altitude extraction from drone images |
 
 ### Orthomosaic coordinate transform diagram

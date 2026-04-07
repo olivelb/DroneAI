@@ -797,12 +797,27 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                     sys.path.insert(0, app1_dir)
                 from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
 
-                # Free any leaked CUDA memory from a previous failed attempt
+                # Free any leaked CUDA memory from a previous failed attempt.
+                # A prior OOM/crash can leave the caching allocator with stale
+                # handles that empty_cache() alone cannot fix — we must fully
+                # reset the CUDA context to avoid the
+                # "!handles_.at(i) INTERNAL ASSERT FAILED" assertion.
                 gc.collect()
                 try:
                     import torch as _torch
                     if _torch.cuda.is_available():
                         _torch.cuda.empty_cache()
+                        _torch.cuda.reset_peak_memory_stats()
+                        # Force-release all cached blocks by resetting the
+                        # allocator.  This is the only reliable way to clear
+                        # stale handles after a CUDA error in-process.
+                        try:
+                            _torch.cuda.memory.empty_cache()
+                            # If expandable_segments was previously set we
+                            # re-apply it so the new allocator picks it up.
+                            _torch.cuda.memory._set_allocator_settings("")
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -921,13 +936,20 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
     except Exception as e:
         report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {str(e)}")
     finally:
-        # Free RAM/VRAM after every mission (success, cancel, or error)
+        # Free RAM/VRAM after every mission (success, cancel, or error).
+        # Aggressively reset the CUDA allocator to prevent stale-handle
+        # assertions on the next mission.
         import gc
         gc.collect()
         try:
             import torch as _torch
             if _torch.cuda.is_available():
                 _torch.cuda.empty_cache()
+                _torch.cuda.reset_peak_memory_stats()
+                try:
+                    _torch.cuda.memory._set_allocator_settings("")
+                except Exception:
+                    pass
         except Exception:
             pass
 

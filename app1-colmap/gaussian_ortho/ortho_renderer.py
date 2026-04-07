@@ -76,7 +76,7 @@ def _build_ortho_camera(x_min, x_max, y_min, y_max, z_min, z_max):
 
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
-                      extent: tuple = None, chunk_size: int = 2048,
+                      extent: tuple = None, chunk_size: int = 0,
                       device: torch.device = None, R_geo: np.ndarray = None):
     """
     Render an orthographic TDOM from a trained Gaussian model.
@@ -90,7 +90,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     extent : (x_min, x_max, y_min, y_max, z_min, z_max) or None
         Scene bounds in geo-aligned frame.  If None, computed automatically.
     chunk_size : int
-        Maximum tile dimension for chunked rendering.
+        Maximum tile dimension for chunked rendering.  0 = auto-select
+        based on available GPU VRAM.
     device : torch.device
         Computation device.
     R_geo : np.ndarray (3, 3) or None
@@ -122,6 +123,28 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     if W <= 0 or H <= 0:
         raise ValueError(f"Invalid ortho dimensions: {W}x{H} from extent "
                          f"({x_min:.2f},{x_max:.2f}), ({y_min:.2f},{y_max:.2f}), gsd={gsd}")
+
+    # Auto-select chunk_size based on available GPU VRAM.
+    # Each tile pixel ≈ 20 bytes (RGB+ED + alpha) + model subset overhead.
+    if chunk_size <= 0:
+        chunk_size = 2048  # safe default
+        if torch.cuda.is_available():
+            try:
+                free_vram_mb = (torch.cuda.get_device_properties(0).total_memory
+                                - torch.cuda.memory_allocated()) / (1024 ** 2)
+                # Model footprint already on GPU; budget the remaining VRAM for tiles.
+                # Per tile: ~20 bytes/pixel for render buffers + ~100 MB overhead.
+                available_for_tile = max(free_vram_mb - 200, 100)  # MB
+                max_pixels = int(available_for_tile * 1024**2 / 20)
+                # Square tile: side = sqrt(max_pixels), rounded down to power of 2
+                import math as _m
+                side = int(_m.sqrt(max_pixels))
+                # Clamp to [512, 4096]
+                chunk_size = min(4096, max(512, side))
+                # Round down to nearest 256 for alignment
+                chunk_size = (chunk_size // 256) * 256
+            except Exception:
+                chunk_size = 1024  # conservative fallback
 
     # If the image is small enough, render in one pass
     if W <= chunk_size and H <= chunk_size:

@@ -305,6 +305,10 @@ The pipeline flow is:
 - `use_mesh_ortho: true` (now labelled **"Use Gaussian Splatting Ortho"** in the UI) selects the 3D Gaussian Splatting orthophoto pipeline.
 - The GS pipeline trains a 3DGS model directly from COLMAP undistorted images and the sparse reconstruction, **skipping PatchMatch stereo and fusion entirely** — a significant time saving.
 - Training uses [gsplat](https://github.com/nerfstudio-project/gsplat) with MCMC densification strategy, per-image appearance compensation, and ortho-coverage regularisation to suppress nadir banding.
+- **Progressive resolution training**: large images (>1200 px) automatically train at low resolution first (df=8→4→2→1), growing both resolution and Gaussian count over the training run. This prevents early OOM and lets MCMC densify at a resolution where Gaussians are visible.
+- **VRAM-adaptive parameters**: on startup, cap_max and data_factor are automatically adjusted based on available GPU VRAM. Resolution-proportional cap scaling prevents MCMC from over-growing at low resolution.
+- **OOM-resilient retry**: if a CUDA OOM occurs during training, the pipeline automatically retries up to 3 times with halved cap_max and doubled data_factor.
+- **Appearance model**: per-image affine colour correction is applied to the rendered image (scale constrained to [0.8, 1.2], bias ±5%) so Gaussians learn canonical scene colours. Degenerate solutions where colour diversity collapses are prevented by the constrained scale range.
 - After training, a configurable multi-stage post-processing filter chain cleans the model. Each filter can be individually enabled or disabled in the dashboard UI:
   - **Spatial filter** (`gs_filter_enabled`): bounding-box crop, opacity threshold (>0.05), and needle anisotropy removal
   - **Statistical Outlier Removal** (`gs_filter_sor`): k-NN distance outlier removal with configurable sigma multiplier (`gs_filter_sor_sigma`, default 4.0)
@@ -323,8 +327,8 @@ The pipeline flow is:
 - Training and nadir fine-tune progress are reported to the dashboard every 100 iterations with loss values and Gaussian count, advancing the progress bar smoothly across both phases.
 - The following GS parameters are exposed in the dashboard UI (group **Orthomosaic**):
   - **GS Training Iterations** (`gs_iterations`): number of training iterations (default 7000)
-  - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8)
-  - **GS Max Gaussians** (`gs_cap_max`): MCMC maximum Gaussian count (default 2M)
+  - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8). With progressive scheduling, training starts coarser and ramps to target.
+  - **GS Max Gaussians** (`gs_cap_max`): MCMC maximum Gaussian count (default 2M, auto-reduced based on GPU VRAM)
   - **GS Spherical Harmonics Degree** (`gs_sh_degree`): SH degree for view-dependent colour (1, 2, or 3)
   - **GS Ortho Regularisation Weight** (`gs_ortho_reg`): weight for ortho coverage loss (default 0.5, 0 to disable)
   - **GS Spatial Filter** (`gs_filter_enabled`): enable/disable proximity + opacity filter

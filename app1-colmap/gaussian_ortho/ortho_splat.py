@@ -18,7 +18,7 @@ def generate_tdom(checkpoint_path: str, gsd: float = 0.02,
                   output_rgb_path: str = None,
                   output_height_path: str = None,
                   sh_degree: int = 3, fagk: bool = True,
-                  chunk_size: int = 4096,
+                  chunk_size: int = 0,
                   device: torch.device = None,
                   report_fn=None):
     """
