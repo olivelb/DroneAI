@@ -2,15 +2,18 @@
 set -euo pipefail
 
 BUILD_BASE=0
+BUILD_LICHTFELD=0
 RESTART_DEPLOYMENT=1
 
 usage() {
     cat <<'EOF'
-Usage: ./deploy_app1_colmap.sh [--base] [--no-restart] [--help]
+Usage: ./deploy_app1_colmap.sh [--base] [--lichtfeld] [--no-restart] [--help]
 
 Options:
   --base        Force a rebuild from scratch. Rebuild the COLMAP base image and
                 rebuild the app image with Docker cache disabled.
+  --lichtfeld   Force a rebuild of the LichtFeld-Studio runtime image.
+                Only needed when upgrading LichtFeld-Studio itself.
   --no-restart  Build and import the image into k3s without restarting the deployment.
   --help        Show this help message.
 EOF
@@ -22,6 +25,9 @@ for arg in "$@"; do
     case "$arg" in
         --base)
             BUILD_BASE=1
+            ;;
+        --lichtfeld)
+            BUILD_LICHTFELD=1
             ;;
         --no-restart)
             RESTART_DEPLOYMENT=0
@@ -40,6 +46,19 @@ done
 
 if [[ "$BUILD_BASE" -eq 1 ]]; then
     DOCKER_BUILD_FLAGS+=(--no-cache)
+fi
+
+# Build LichtFeld runtime image if it doesn't exist yet (or pass --lichtfeld to force rebuild)
+if [[ "$BUILD_LICHTFELD" -eq 1 ]] || ! sudo docker image inspect lichtfeld-runtime:latest &>/dev/null; then
+    echo "🛠️ Building LichtFeld-Studio runtime image (CUDA 12.8 + vcpkg + build)..."
+    echo "   This is slow (~30-45 min) but only needed once per LichtFeld version."
+    export DOCKER_BUILDKIT=1
+    sudo docker build "${DOCKER_BUILD_FLAGS[@]}" --progress=plain \
+        -t lichtfeld-runtime:latest \
+        -f app1-colmap/Dockerfile.lichtfeld .
+    echo "📦 Importing LichtFeld runtime image to k3s..."
+    sudo docker save lichtfeld-runtime:latest | sudo k3s ctr images import -
+    echo "✅ LichtFeld runtime image ready."
 fi
 
 # Build base image only if it doesn't exist yet (or pass --base to force rebuild)

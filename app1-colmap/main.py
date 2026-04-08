@@ -854,16 +854,18 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 else:
                     gs_data_factor = int(gs_data_factor_raw)
 
-                gs_iterations = int(params.get("gs_iterations", 7000))
-                gs_cap_max = int(params.get("gs_cap_max", 2_000_000))
+                gs_iterations = int(params.get("gs_iterations", 30_000))
+                gs_cap_max = int(params.get("gs_cap_max", 5_000_000))
                 gs_sh_degree = int(params.get("gs_sh_degree", 3))
-                gs_ortho_reg = float(params.get("gs_ortho_reg", 0.5))
                 gs_filter_enabled = params.get("gs_filter_enabled", True)
-                gs_filter_sor = params.get("gs_filter_sor", True)
-                gs_filter_cc = params.get("gs_filter_cc", True)
-                gs_filter_z_floater = params.get("gs_filter_z_floater", True)
-                gs_filter_needle_ratio = float(params.get("gs_filter_needle_ratio", 50.0))
+                gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
+                gs_filter_dist = float(params.get("gs_filter_dist", 1.0))
+                gs_filter_opacity = float(params.get("gs_filter_opacity", 0.005))
+                gs_filter_needle = float(params.get("gs_filter_needle", 0.0))
+                gs_filter_sor = params.get("gs_filter_sor", False)
                 gs_filter_sor_sigma = float(params.get("gs_filter_sor_sigma", 4.0))
+                gs_filter_cc = params.get("gs_filter_cc", False)
+                gs_filter_z_floater = params.get("gs_filter_z_floater", False)
                 gs_nadir_finetune_iters = int(params.get("gs_nadir_finetune_iters", 3000))
                 gs_nadir_finetune_mode = str(params.get("gs_nadir_finetune_mode", "full"))
                 gs_nadir_finetune_angle = float(params.get("gs_nadir_finetune_angle", 15.0))
@@ -881,15 +883,16 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                     iterations=gs_iterations,
                     sh_degree=gs_sh_degree,
                     data_factor=gs_data_factor,
-                    strategy="mcmc",
                     cap_max=gs_cap_max,
-                    ortho_reg=gs_ortho_reg,
                     filter_enabled=gs_filter_enabled,
+                    filter_max_scale=gs_filter_max_scale,
+                    filter_dist_multiplier=gs_filter_dist,
+                    filter_opacity_threshold=gs_filter_opacity,
+                    filter_needle_ratio=gs_filter_needle,
                     filter_sor=gs_filter_sor,
+                    filter_sor_sigma=gs_filter_sor_sigma,
                     filter_cc=gs_filter_cc,
                     filter_z_floater=gs_filter_z_floater,
-                    filter_needle_ratio=gs_filter_needle_ratio,
-                    filter_sor_sigma=gs_filter_sor_sigma,
                     checkpoint_dir=checkpoint_dir,
                     nadir_finetune_iters=gs_nadir_finetune_iters,
                     nadir_finetune_mode=gs_nadir_finetune_mode,

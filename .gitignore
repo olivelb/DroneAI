@@ -100,3 +100,15 @@ isprs-archives-XLVIII-G-2025-411-2025.pdf
 /requirements-gaussian-ortho.txt
 /test_gaussian_ortho_banyuls.py
 /rerender_ortho.py
+
+# === C++ build dependencies (LichtFeld / COLMAP) ===
+.vcpkg/
+vcpkg/
+LichtFeld-Studio/
+colmap-src/build/
+
+# === Local tool / platform binaries ===
+plat
+
+# === Local helper scripts ===
+/scripts/

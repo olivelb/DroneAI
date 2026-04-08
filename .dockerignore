@@ -9,6 +9,7 @@ node_modules
 **/.npm
 .gemini
 **/__pycache__
+LichtFeld-Studio/build
 output
 workspace
 colmap-src

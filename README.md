@@ -17,6 +17,7 @@ For runtime architecture, Kafka contracts, orthomosaic construction details, and
 For a working installation, these files are part of the install path and must be present:
 
 - `app1-colmap/Dockerfile.base`
+- `app1-colmap/Dockerfile.lichtfeld`
 - `app1-colmap/Dockerfile`
 - `app2-ia/Dockerfile`
 - `app3-processing/Dockerfile`
@@ -304,17 +305,18 @@ The pipeline flow is:
 
 - `use_mesh_ortho: true` (now labelled **"Use Gaussian Splatting Ortho"** in the UI) selects the 3D Gaussian Splatting orthophoto pipeline.
 - The GS pipeline trains a 3DGS model directly from COLMAP undistorted images and the sparse reconstruction, **skipping PatchMatch stereo and fusion entirely** — a significant time saving.
-- Training uses [gsplat](https://github.com/nerfstudio-project/gsplat) with MCMC densification strategy, per-image appearance compensation, and ortho-coverage regularisation to suppress nadir banding.
-- **Progressive resolution training**: large images (>1200 px) automatically train at low resolution first (df=8→4→2→1), growing both resolution and Gaussian count over the training run. This prevents early OOM and lets MCMC densify at a resolution where Gaussians are visible.
-- **VRAM-adaptive parameters**: on startup, cap_max and data_factor are automatically adjusted based on available GPU VRAM. Resolution-proportional cap scaling prevents MCMC from over-growing at low resolution.
-- **OOM-resilient retry**: if a CUDA OOM occurs during training, the pipeline automatically retries up to 3 times with halved cap_max and doubled data_factor.
-- **Appearance model**: per-image affine colour correction is applied to the rendered image (scale constrained to [0.8, 1.2], bias ±5%) so Gaussians learn canonical scene colours. Degenerate solutions where colour diversity collapses are prevented by the constrained scale range.
+- Training uses **LichtFeld-Studio** (headless CLI mode) with the **MRNF** (Multi-Resolution Neural Field) densification strategy, which grows Gaussians from the initial sparse points to a configurable cap (default 5M). LichtFeld handles image loading, GPU-accelerated NVCODEC decoding, and CUDA rasterisation natively in C++/CUDA with no Python training loop overhead.
+- **gsplat** is retained as a rendering-only dependency: orthographic rasterisation of the final model into the GeoTIFF orthomosaic and height map.
+- **Fully Anisotropic Gaussian Kernels (FAGK)** with SH-based view-dependent opacity are enabled by default (Tortho-Gaussian).
 - After training, a configurable multi-stage post-processing filter chain cleans the model. Each filter can be individually enabled or disabled in the dashboard UI:
-  - **Spatial filter** (`gs_filter_enabled`): bounding-box crop, opacity threshold (>0.05), and needle anisotropy removal
-  - **Statistical Outlier Removal** (`gs_filter_sor`): k-NN distance outlier removal with configurable sigma multiplier (`gs_filter_sor_sigma`, default 4.0)
-  - **Connected-Component filter** (`gs_filter_cc`): keeps only the largest connected cluster, removing disconnected floater groups
-  - **Z-Floater Removal** (`gs_filter_z_floater`): IQR-based fence on the vertical axis (R_geo-projected for PCA path)
-  - **Needle removal**: anisotropy ratio threshold (`gs_filter_needle_ratio`, default 50, set to 0 to disable)
+  - **Max scale filter** (`gs_filter_max_scale`): removes oversized Gaussians (default: 1.0 world units per axis)
+  - **Distance filter** (`gs_filter_dist`): spatial crop as a multiple of the maximum camera distance (default: 1.0)
+  - **Opacity filter** (`gs_filter_opacity`): removes nearly transparent Gaussians (default threshold: 0.005)
+  - **Needle removal** (`gs_filter_needle`): anisotropy ratio threshold (default 0 = disabled)
+  - **Statistical Outlier Removal** (`gs_filter_sor`): k-NN distance outlier removal (default: off)
+  - **Connected-Component filter** (`gs_filter_cc`): keeps only the largest connected cluster (default: off)
+  - **Z-Floater Removal** (`gs_filter_z_floater`): IQR-based fence on the vertical axis (default: off)
+- Filter defaults are deliberately relaxed: LichtFeld's MRNF strategy produces clean models that need minimal post-processing.
 - **Nadir fine-tune** phase: after filtering, the model is fine-tuned using only near-nadir training cameras to adapt SH colour coefficients, Gaussian scales, and opacities for the orthographic view direction. Configurable via:
   - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`, default 3000, set to 0 to skip)
   - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full` (SH + scales + opacity), `sh_only`, or `off`
@@ -324,18 +326,20 @@ The pipeline flow is:
 - **Sim3 path (with alignment transform)**: rotation + scale are applied to the model; translation is kept as float64 for the GeoTIFF origin.
 - The height map is shifted to match mean drone EXIF GPS altitude when available, giving real-world elevation values in the output CRS.
 - All model coordinates stay in COLMAP-local float32 space during training. The Sim3 geo-alignment is split: rotation+scale applied to the model, translation kept as float64 and folded into the GeoTIFF origin. This avoids the catastrophic float32 precision loss that occurs with UTM-scale translations (~10⁶ m).
-- Training and nadir fine-tune progress are reported to the dashboard every 100 iterations with loss values and Gaussian count, advancing the progress bar smoothly across both phases.
+- Training progress is reported to the dashboard via MCP (Model Context Protocol) polling, with loss values and Gaussian count advancing the progress bar smoothly.
 - The following GS parameters are exposed in the dashboard UI (group **Orthomosaic**):
-  - **GS Training Iterations** (`gs_iterations`): number of training iterations (default 7000)
-  - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8). With progressive scheduling, training starts coarser and ramps to target.
-  - **GS Max Gaussians** (`gs_cap_max`): MCMC maximum Gaussian count (default 2M, auto-reduced based on GPU VRAM)
+  - **GS Training Iterations** (`gs_iterations`): number of LichtFeld MRNF training iterations (default 30000)
+  - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8)
+  - **GS Max Gaussians** (`gs_cap_max`): MRNF maximum Gaussian count (default 5M)
   - **GS Spherical Harmonics Degree** (`gs_sh_degree`): SH degree for view-dependent colour (1, 2, or 3)
-  - **GS Ortho Regularisation Weight** (`gs_ortho_reg`): weight for ortho coverage loss (default 0.5, 0 to disable)
-  - **GS Spatial Filter** (`gs_filter_enabled`): enable/disable proximity + opacity filter
+  - **GS Spatial Filter** (`gs_filter_enabled`): enable/disable post-training filters
+  - **GS Max Scale** (`gs_filter_max_scale`): max activated scale per axis (0 to disable)
+  - **GS Distance Multiplier** (`gs_filter_dist`): spatial boundary distance (0 to disable)
+  - **GS Opacity Threshold** (`gs_filter_opacity`): minimum opacity to keep (0 to disable)
+  - **GS Needle Threshold** (`gs_filter_needle`): max/min scale ratio (0 to disable)
   - **GS Statistical Outlier Removal** (`gs_filter_sor`): enable/disable SOR
   - **GS Connected-Component Filter** (`gs_filter_cc`): enable/disable CC filter
   - **GS Z-Floater Removal** (`gs_filter_z_floater`): enable/disable vertical outlier removal
-  - **GS Needle Anisotropy Threshold** (`gs_filter_needle_ratio`): max/min scale ratio (0 to disable)
   - **GS SOR Sigma Multiplier** (`gs_filter_sor_sigma`): sigma multiplier for SOR threshold
   - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`): nadir fine-tune iterations (0 to skip)
   - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full`, `sh_only`, or `off`
@@ -381,6 +385,12 @@ Rebuild only the COLMAP app layer:
 
 ```bash
 bash deploy_app1_colmap.sh
+```
+
+Rebuild the LichtFeld-Studio training image:
+
+```bash
+bash deploy_app1_colmap.sh --lichtfeld
 ```
 
 Rebuild the IA worker:
@@ -598,7 +608,8 @@ bash build_and_deploy.sh --base
 This pipeline builds on a substantial amount of upstream open-source work. In particular, thanks to the maintainers and contributors of:
 
 - COLMAP and PyCOLMAP for SfM, MVS, and reconstruction tooling
-- gsplat for differentiable 3D Gaussian Splatting rasterisation and MCMC densification
+- LichtFeld-Studio for high-performance C++/CUDA Gaussian Splatting training (MRNF strategy)
+- gsplat for differentiable orthographic Gaussian rasterisation (rendering only)
 - PyTorch, NVIDIA CUDA, and NVLabs nvdiffrast for GPU-backed inference and rasterization
 - Ultralytics YOLO for OBB detection models and tooling
 - Meta SAM 3 and the Hugging Face Transformers integration for prompt-based segmentation
@@ -637,7 +648,7 @@ COLMAP itself is distributed under the new BSD license. If you redistribute bina
 
 ### Gaussian Splatting citations
 
-The Gaussian Splatting orthophoto pipeline is based on the following research:
+The Gaussian Splatting orthophoto pipeline uses LichtFeld-Studio for training (MRNF strategy) and gsplat for orthographic rendering. The following research is foundational:
 
 ```bibtex
 @article{kerbl3Dgaussians,
@@ -693,7 +704,8 @@ The Gaussian Splatting orthophoto pipeline is based on the following research:
 | Technology | Used in this repo | Upstream license | Practical note for redistribution |
 | --- | --- | --- | --- |
 | COLMAP / PyCOLMAP | `app1-colmap` | BSD 3-Clause | Keep license and copyright notices in source or binary distributions. |
-| gsplat | `app1-colmap` (Gaussian Splatting training + rendering) | Apache 2.0 | Keep license notices. |
+| LichtFeld-Studio | `app1-colmap` (Gaussian Splatting training, MRNF strategy) | See LichtFeld-Studio LICENSE | Review the upstream license before redistribution. |
+| gsplat | `app1-colmap` (orthographic Gaussian rasterisation, rendering only) | Apache 2.0 | Keep license notices. |
 | Docker CLI / Moby | host install and image builds | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | K3s | local cluster runtime | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | Kubernetes | orchestration API/runtime used through K3s | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |

@@ -762,12 +762,12 @@ Primary path (Gaussian Splatting, `use_mesh_ortho: True`):
 1. Load COLMAP sparse reconstruction and alignment transform from `dense/sparse/`
 2. Extract drone EXIF GPS altitudes from undistorted images
 3. Optionally partition the scene into an m×n grid (VastGaussian divide-and-conquer)
-4. Train a 3DGS model per cell using gsplat MCMC strategy with per-image appearance compensation and ortho-coverage regularisation
+4. Train a 3DGS model per cell via LichtFeld-Studio headless CLI (MRNF strategy, C++/CUDA)
 5. Merge cell models (retain only Gaussians in core, non-overlap region)
 6. Geo-alignment:
    - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to model, keep translation as float64 for GeoTIFF origin
    - **PCA path** (no alignment transform): compute `R_geo` rotation matrix from camera PCA, pass it to the renderer — the model stays in the original COLMAP coordinate frame to preserve SH coefficient consistency
-7. Configurable multi-stage post-processing filter chain: spatial crop → SOR → connected-component → needle removal → Z-floater removal (each individually togglable)
+7. Configurable multi-stage post-processing filter chain: max-scale → spatial crop → opacity → needle removal → SOR → connected-component → Z-floater removal (each individually togglable)
 8. Nadir fine-tune: optimise SH coefficients, scales, and opacities using near-nadir training cameras to adapt the model for orthographic view
 9. Render orthographic RGB orthomosaic and height map via gsplat ortho rasterisation (with `R_geo` for PCA path)
 10. Shift height map to match mean drone EXIF GPS altitude
@@ -787,8 +787,9 @@ This is the primary and recommended orthomosaic path. It is implemented in `app1
 The implementation draws from several key papers:
 
 - **3D Gaussian Splatting** (Kerbl et al. 2023): core Gaussian scene representation with position, covariance (rotation quaternion + log-scale), opacity, and spherical harmonics colour coefficients
-- **3DGS as MCMC** (Kheradmand et al. 2024): Markov Chain Monte Carlo densification strategy with bounded Gaussian count (`cap_max`), stochastic relocation instead of unbounded clone/split
-- **gsplat** (Ye et al. 2025): differentiable rasterisation library providing both perspective (training) and orthographic (TDOM rendering) camera models, antialiased rendering, and packed sparse rasterisation
+- **3DGS as MCMC** (Kheradmand et al. 2024): Markov Chain Monte Carlo densification strategy with bounded Gaussian count (`cap_max`), stochastic relocation instead of unbounded clone/split — used by LichtFeld MRNF internally
+- **LichtFeld-Studio** (MRNF strategy): high-performance C++/CUDA training with multi-resolution neural features, progressive resolution scheduling, and built-in VRAM management — replaces the previous Python/gsplat training loop
+- **gsplat** (Ye et al. 2025): differentiable rasterisation library providing orthographic camera model for TDOM rendering, antialiased rendering, and packed sparse rasterisation (used for rendering only, not training)
 - **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
 - **Tortho-Gaussian** (Wang et al. 2024): Fully Anisotropic Gaussian Kernel (FAGK) with SH-based view-dependent opacity, and orthographic projection matrix formulation (Equation 9)
 
@@ -800,9 +801,7 @@ The implementation draws from several key papers:
 
 **PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
 
-**Per-image appearance compensation.** A small per-image MLP (embedding → affine colour transform) decouples transient exposure and white-balance variations from persistent Gaussian colours. The colour correction is applied to the **rendered image** (not ground truth), with scale constrained to [0.8, 1.2] and bias to ±5%. This prevents degenerate solutions where the model could collapse colour diversity to zero. At ortho-render time the appearance model is not used, so flight-strip banding disappears from the output.
-
-**Ortho-coverage regularisation.** During training, random small orthographic crops are rendered and a differentiable loss penalises low alpha coverage and row-to-row alpha variance (which directly causes horizontal banding in the ortho output). This loss is fully differentiable through gsplat rasterisation.
+**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress through its MCP HTTP endpoint, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally. This replaces the previous Python/gsplat training loop and its per-image appearance model, ortho-coverage regularisation, and VRAM-adaptive logic.
 
 **EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
 
@@ -820,44 +819,28 @@ For very large scenes, the model can be split into an m×n grid of overlapping c
 
 #### Step 3: Training
 
-Each cell is trained using gsplat's rasterisation with the following configuration:
+Each cell is trained using LichtFeld-Studio's headless CLI with the MRNF (Multi-Resolution Neural Features) strategy:
 
-- **Loss**: 0.8 × L1 + 0.2 × D-SSIM
-- **Strategy**: MCMC (bounded Gaussian count) with stochastic relocation
-- **Rasterisation**: `classic` mode with `packed=True` for predictable VRAM usage (antialiased mode has higher peak)
-- **Optimisers**: per-parameter fused Adam (gsplat convention) with ExponentialLR decay on means
-- **Progressive SH**: spherical harmonics degree increases every 1000 iterations up to `sh_degree`
-- **Progressive resolution**: for large images (>1200 px), training starts at a coarse data_factor (e.g. 8) and progressively ramps to the target (e.g. 1). This prevents early OOM and ensures Gaussians are visible at each stage. The cap_max is scaled proportionally to current resolution.
-- **Appearance model**: per-image affine colour correction (small embedding → 6-output MLP producing per-channel scale [0.8, 1.2] and bias [±5%]), applied to the rendered image
-- **Max scale cap**: Gaussian scales are clamped to `max_scale=0.1` (normalised) to prevent tile-intersection explosion in gsplat’s `isect_tiles`, which can spike VRAM by >10 GB for a few oversized Gaussians
-- **Ortho regularisation**: every 20 iterations from iteration 500, renders a random 256×256 ortho crop and penalises low coverage + row-to-row alpha variance + total variation
-- **Regularisation**: opacity regularisation (0.01) + scale regularisation (0.01) for MCMC stability
-- **Data loading**: images loaded one-at-a-time and downscaled by `data_factor` for VRAM efficiency
-- **SH memory optimisation**: DC and rest SH coefficients are stored as a single merged `colors` tensor (N, 1+K, 3) instead of separate `sh0`/`shN`, eliminating a per-step `torch.cat` that doubled SH peak VRAM. DC band gets effective higher LR via gradient scaling.
-- **Early VRAM release**: rasterisation intermediates (`info`) are freed immediately after backward for MCMC (which doesn’t use them), releasing ~500 MB of tile intersection buffers before MCMC allocates memory for relocation
-- **MCMC refinement**: `refine_stop_iter` raised to 25,000 so MCMC can continue growing Gaussians at full resolution during progressive training
+- **Binary**: LichtFeld-Studio C++/CUDA executable, invoked via subprocess with `--headless --train`
+- **Strategy**: MRNF (recommended) — handles progressive resolution scheduling, densification, and VRAM management internally
+- **Progress monitoring**: the Python pipeline polls LichtFeld's MCP HTTP endpoint for iteration count, loss, and Gaussian count
+- **Output**: a standard 3DGS PLY checkpoint, loaded into the Python GaussianModel for post-processing and rendering
+- **Cancellation**: the subprocess is killed via SIGTERM if a cancellation is requested through the dashboard
 
-Images are loaded one-at-a-time (not batched), so VRAM stays roughly constant regardless of dataset size.
-
-**VRAM management features:**
-
-- **VRAM-adaptive cap_max**: on startup, cap_max is automatically reduced if the GPU doesn’t have enough VRAM (targeting 65% utilisation with 5 KB/Gaussian total estimate)
-- **VRAM-adaptive data_factor**: if image resolution exceeds the remaining VRAM budget after Gaussian allocation, data_factor is automatically increased
-- **Resolution-proportional cap scaling**: during progressive training, cap_max is scaled linearly with current resolution vs target resolution (minimum 100K). This prevents MCMC from growing millions of Gaussians at a resolution where most would be invisible.
-- **Pre-resolution pruning**: when resolution increases during progressive training, the lowest-opacity Gaussians are pruned using gsplat’s `remove()` (which preserves Adam optimizer state) to fit the new resolution’s cap
-- **VRAM-safe pruning**: if estimated peak VRAM at the new resolution exceeds 75% of GPU total, the cap is further reduced before pruning
-- **OOM-resilient retry**: if CUDA OOM occurs during training, the pipeline automatically retries up to 3 times with halved cap_max and doubled data_factor
-- **CUDA allocator reset**: after each mission (success, cancel, or error), the CUDA allocator is fully reset to prevent stale-handle assertions on the next mission
+LichtFeld-Studio manages all training internals (loss, optimisers, resolution scheduling, memory). The Python pipeline is responsible only for:
+1. Preparing per-cell COLMAP data directories
+2. Launching and monitoring the subprocess
+3. Loading the resulting PLY
+4. All post-training steps (filtering, nadir fine-tune, rendering, GeoTIFF output)
 
 Default training parameters (configurable via dashboard UI):
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `gs_iterations` | 7000 | Training iterations |
-| `gs_data_factor` | auto (2 for ≤500 images, 4 for >500) | Image downscaling factor (auto-adjusted for VRAM) |
-| `gs_cap_max` | 2,000,000 | Maximum Gaussian count (auto-reduced for small GPUs) |
+| `gs_iterations` | 30000 | Training iterations |
+| `gs_data_factor` | 1 | Image downscaling factor (LichtFeld schedules resolution internally) |
+| `gs_cap_max` | 5,000,000 | Maximum Gaussian count |
 | `gs_sh_degree` | 3 | Maximum spherical harmonics degree |
-| `gs_ortho_reg` | 0.5 | Ortho coverage regularisation weight |
 
 #### Step 4: Merge
 
@@ -886,13 +869,13 @@ This design preserves the consistency between Gaussian positions, rotation quate
 
 The trained model undergoes a configurable multi-stage filtering pipeline. Each filter can be individually enabled or disabled via the dashboard UI.
 
-1. **Spatial filter + opacity + needle removal** (5b, `gs_filter_enabled`): remove Gaussians farther from all cameras than the scene diameter, remove nearly transparent Gaussians (opacity < 0.05), and remove highly elongated "needle" Gaussians whose max/min scale ratio exceeds `gs_filter_needle_ratio` (default 50, set to 0 to disable needle removal).
+1. **Max-scale + spatial crop + opacity + needle removal** (5b, `gs_filter_enabled`): remove Gaussians with any activated scale larger than `gs_filter_max_scale` (default 1.0, 0 = disabled), remove Gaussians farther from all cameras than `gs_filter_dist` × scene diameter (default 1.0, 0 = disabled), remove nearly transparent Gaussians (opacity < `gs_filter_opacity`, default 0.005), and remove highly elongated "needle" Gaussians whose max/min scale ratio exceeds `gs_filter_needle` (default 0, disabled by default).
 
-2. **Statistical Outlier Removal (SOR)** (5c, `gs_filter_sor`): build a k-NN tree (k=16) via `scipy.spatial.cKDTree`. Compute mean distance to 16 nearest neighbours. Remove Gaussians where mean distance > μ + σ × `gs_filter_sor_sigma` (default 4.0). This also breaks thin connections between the main scene and floater clusters.
+2. **Statistical Outlier Removal (SOR)** (5c, `gs_filter_sor`): build a k-NN tree (k=16) via `scipy.spatial.cKDTree`. Compute mean distance to 16 nearest neighbours. Remove Gaussians where mean distance > μ + σ × `gs_filter_sor_sigma` (default 4.0). Disabled by default — enable when floater clusters are visible.
 
-3. **Connected-Component filter** (5d, `gs_filter_cc`): build a k-NN adjacency graph (k=16) as a sparse matrix. Compute connected components via `scipy.sparse.csgraph.connected_components`. Keep only the largest connected component, removing all disconnected floater clusters.
+3. **Connected-Component filter** (5d, `gs_filter_cc`): build a k-NN adjacency graph (k=16) as a sparse matrix. Compute connected components via `scipy.sparse.csgraph.connected_components`. Keep only the largest connected component, removing all disconnected floater clusters. Disabled by default.
 
-4. **Z-Floater Removal** (5e, `gs_filter_z_floater`): IQR-based fence (5× IQR) on the vertical axis. For the PCA path, the vertical axis is determined by projecting Gaussian positions through `R_geo`'s Z row, not simply using the model's Z coordinate. Removes sky/background Gaussians that accumulate into haze in orthographic rendering.
+4. **Z-Floater Removal** (5e, `gs_filter_z_floater`): IQR-based fence (5× IQR) on the vertical axis. For the PCA path, the vertical axis is determined by projecting Gaussian positions through `R_geo`'s Z row, not simply using the model's Z coordinate. Removes sky/background Gaussians that accumulate into haze in orthographic rendering. Disabled by default.
 
 All filter parameters are exposed in the **Orthomosaic** parameter group in the dashboard (see tunables table below).
 
@@ -908,7 +891,7 @@ The fine-tune selects training cameras whose optical axis is within `gs_nadir_fi
 
 The number of iterations is controlled by `gs_nadir_finetune_iters` (default 3000, set to 0 to skip). Progress is reported to the dashboard every 100 iterations with loss values, advancing the progress bar from 90% to 95%.
 
-Fine-tune is implemented in `train.py` as `nadir_finetune_full()` (full mode) and `nadir_finetune()` (SH-only mode).
+Fine-tune is implemented in `nadir_finetune.py` as `nadir_finetune_full()` (full mode) and `nadir_finetune()` (SH-only mode).
 
 #### Step 6: Orthographic rendering
 
@@ -948,11 +931,11 @@ flowchart TD
   A[dense/sparse + undistorted images available] --> B{use_mesh_ortho enabled?}
   B -->|Yes| C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
-  C --> C1[MCMC densification + appearance compensation + ortho regularisation + progressive resolution]
+  C --> C1[LichtFeld MRNF training via headless subprocess]
   C1 --> C2{Geo-alignment method}
   C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
-  D1 --> D[Multi-stage filtering: SOR → CC → Z-floater → Needle removal]
+  D1 --> D[Multi-stage filtering: max-scale → spatial → opacity → needle → SOR → CC → Z-floater]
   D2 --> D
   D --> FT[Nadir fine-tune: adapt SH + scales + opacity for top-down view]
   FT --> E[Render orthographic RGB + height map via gsplat with R_geo]
@@ -979,41 +962,33 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | --- | --- | --- | --- | --- |
 | Use Gaussian Splatting Ortho | `use_mesh_ortho` | bool | true | — |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
-| GS Training Iterations | `gs_iterations` | int | 7000 | 1000–100000 |
-| GS Training Image Scale | `gs_data_factor` | select | auto | auto/1/2/4/8 |
-| GS Max Gaussians | `gs_cap_max` | int | 2000000 | 500000–20000000 |
+| GS Training Iterations | `gs_iterations` | int | 30000 | 1000–100000 |
+| GS Training Image Scale | `gs_data_factor` | select | 1 | 1/2/4/8 |
+| GS Max Gaussians | `gs_cap_max` | int | 5000000 | 500000–20000000 |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
-| GS Ortho Regularisation Weight | `gs_ortho_reg` | float | 0.5 | 0–2.0 |
 | Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
-| SOR Filter | `gs_filter_sor` | bool | true | — |
-| Connected-Component Filter | `gs_filter_cc` | bool | true | — |
-| Z-Floater Removal | `gs_filter_z_floater` | bool | true | — |
-| Needle Removal Ratio | `gs_filter_needle_ratio` | float | 50.0 | 0–500 |
+| Max Scale Filter | `gs_filter_max_scale` | float | 1.0 | 0–100 |
+| Distance Filter Multiplier | `gs_filter_dist` | float | 1.0 | 0–10 |
+| Opacity Threshold | `gs_filter_opacity` | float | 0.005 | 0–1.0 |
+| SOR Filter | `gs_filter_sor` | bool | false | — |
+| Connected-Component Filter | `gs_filter_cc` | bool | false | — |
+| Z-Floater Removal | `gs_filter_z_floater` | bool | false | — |
+| Needle Removal Ratio | `gs_filter_needle` | float | 0.0 | 0–500 |
 | SOR Sigma Threshold | `gs_filter_sor_sigma` | float | 4.0 | 1.0–10.0 |
 | Nadir Fine-tune Iterations | `gs_nadir_finetune_iters` | int | 3000 | 0–30000 |
 | Nadir Fine-tune Mode | `gs_nadir_finetune_mode` | select | full | full/sh_only/off |
-| Nadir Fine-tune Angle (°) | `gs_nadir_finetune_angle` | float | 30.0 | 5–90 |
+| Nadir Fine-tune Angle (°) | `gs_nadir_finetune_angle` | float | 15.0 | 5–90 |
 
 ### Scalability
 
-Memory profiling for the GS pipeline:
+Memory and timing profiling for the GS pipeline with LichtFeld MRNF training (RTX 3090 24 GB):
 
-| Images | Gaussians (cap_max) | data_factor | Training VRAM | Notes |
-| --- | --- | --- | --- | --- |
-| 113 | 2M | 2 | ~2.5 GB | Validated end-to-end |
-| 500 | 2M | 2 | ~2.8 GB | Images loaded one-at-a-time |
-| 1000 | 5M | 4 | ~3.6 GB | auto data_factor kicks in |
-| 1140 | 1M | 2 | ~1.8 GB | Progressive df=2 |
-| 1140 | 3M | 1 | ~6.4 GB | Progressive df=8→4→2→1, validated on RTX 3090 |
-| 2000 | 8M | 4 | ~5.7 GB | Comfortable on any GPU |
+| Images | Gaussians (cap_max) | data_factor | Iterations | Training VRAM | Training time | Output size | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 113 | 3M | 1 | 15000 | ~11 GB | ~650 s | 7187×6613 px | vol_banyuls, validated end-to-end |
+| 1140 | 5M | 1 | 30000 | ~11 GB | ~4060 s | 22487×19491 px | vol_sauzet, validated end-to-end on RTX 3090 |
 
-Key VRAM insights from RTX 3090 (24 GB) testing with 1140 cameras at 4000×2997:
-
-- The `max_scale=0.1` cap is critical: without it, a few oversized Gaussians can cause tile-intersection lists to spike VRAM by >10 GB
-- `classic` rasterize_mode has lower peak VRAM than `antialiased` (~15% less)
-- `packed=True` reduces rasterisation overhead for sparse scenes
-- Freeing `info` early saves ~500 MB per step for MCMC training
-- Merged SH `colors` tensor saves ~1.5 GB at 4M Gaussians with SH degree 3
+LichtFeld-Studio manages VRAM internally. Training VRAM is roughly proportional to `cap_max` and largely independent of image count (images are loaded one-at-a-time by the C++ backend).
 
 ### Gaussian Splatting package structure
 
@@ -1021,8 +996,11 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 
 | Module | Purpose |
 | --- | --- |
-| `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, filtering, GeoTIFF output |
-| `train.py` | Training loop with gsplat, MCMC densification, appearance model (applied to rendered image, scale [0.8,1.2]), ortho-coverage loss, progressive resolution, resolution-proportional cap, max_scale cap, OOM-safe VRAM management, `nadir_finetune_full()` |
+| `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, GeoTIFF output |
+| `lichtfeld_trainer.py` | LichtFeld-Studio headless subprocess wrapper, MCP progress monitoring, PLY export |
+| `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
+| `nadir_finetune.py` | Nadir fine-tune with gsplat: `nadir_finetune_full()` (SH + scales + opacity) and `nadir_finetune()` (SH-only) |
+| `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
 | `rasterizer.py` | Unified rasteriser wrapper (gsplat backend for ortho + perspective) |
 | `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |

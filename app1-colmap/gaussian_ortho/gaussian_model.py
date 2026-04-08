@@ -294,7 +294,11 @@ class GaussianModel(nn.Module):
         n = self.num_gaussians
         xyz = self._xyz.detach().cpu().numpy()
         dc = self._features_dc.detach().cpu().numpy().reshape(n, 3)
-        rest = self._features_rest.detach().cpu().numpy().reshape(n, -1)
+        # PLY convention (3DGS / LichtFeld): flat SH rest is stored in
+        # (3, K) layout — all R coefficients first, then G, then B.
+        # Internal tensor is (N, K, 3).  Transpose before flattening.
+        rest_raw = self._features_rest.detach().cpu().numpy()  # (N, K, 3)
+        rest = rest_raw.transpose(0, 2, 1).reshape(n, -1)      # (N, 3, K) → (N, 3*K)
         scales = self._scaling.detach().cpu().numpy()
         rots = self._rotation.detach().cpu().numpy()
         opas = self._opacity.detach().cpu().numpy()
@@ -347,13 +351,20 @@ class GaussianModel(nn.Module):
         dc = np.stack([vertex[f'f_dc_{i}'] for i in range(3)], axis=1)
         self._features_dc = nn.Parameter(torch.tensor(dc, dtype=torch.float32, device=device).unsqueeze(1))
 
-        rest_names = sorted([p.name for p in vertex.properties if p.name.startswith('f_rest_')])
+        rest_names = sorted(
+            [p.name for p in vertex.properties if p.name.startswith('f_rest_')],
+            key=lambda s: int(s.split('_')[-1]),
+        )
         if rest_names:
-            rest = np.stack([vertex[n] for n in rest_names], axis=1)
+            rest = np.stack([vertex[rn] for rn in rest_names], axis=1)
             n_rest = rest.shape[1]
-            self._features_rest = nn.Parameter(
-                torch.tensor(rest, dtype=torch.float32, device=device).reshape(n, n_rest // 3, 3)
-            )
+            # PLY convention (3DGS / LichtFeld): flat SH rest is in
+            # (3, K) layout — all R coefficients, then G, then B.
+            # Internal tensor must be (N, K, 3).  Reshape then transpose.
+            K = n_rest // 3
+            rest_tensor = torch.tensor(rest, dtype=torch.float32, device=device)
+            rest_tensor = rest_tensor.reshape(n, 3, K).permute(0, 2, 1)  # (N, 3, K) → (N, K, 3)
+            self._features_rest = nn.Parameter(rest_tensor)
         else:
             self._features_rest = nn.Parameter(torch.zeros(n, 0, 3, device=device))
 
@@ -367,9 +378,12 @@ class GaussianModel(nn.Module):
         self._opacity = nn.Parameter(torch.tensor(opas, dtype=torch.float32, device=device))
 
         # FAGK
-        opa_sh_names = sorted([p.name for p in vertex.properties if p.name.startswith('opacity_sh_')])
+        opa_sh_names = sorted(
+            [p.name for p in vertex.properties if p.name.startswith('opacity_sh_')],
+            key=lambda s: int(s.split('_')[-1]),
+        )
         if opa_sh_names and self.fagk_enabled:
-            opa_sh = np.stack([vertex[n] for n in opa_sh_names], axis=1)
+            opa_sh = np.stack([vertex[on] for on in opa_sh_names], axis=1)
             self._opacity_sh = nn.Parameter(torch.tensor(opa_sh, dtype=torch.float32, device=device))
         else:
             self._opacity_sh = nn.Parameter(torch.empty(n, 0, device=device))

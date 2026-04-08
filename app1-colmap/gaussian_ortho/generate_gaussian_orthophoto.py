@@ -8,9 +8,9 @@ to swap in from the existing pipeline.
 Pipeline:
   1. Load COLMAP reconstruction + alignment transform
   2. Partition scene (VastGaussian, if m×n > 1×1)
-  3. Train Gaussian model per cell (with depth regularisation)
+  3. Train Gaussian model per cell via LichtFeld MRNF (C++ headless)
   4. Merge cell models
-  5. Render orthographic TDOM
+  5. Render orthographic TDOM (gsplat rasterisation)
   6. Write GeoTIFF
 """
 import json
@@ -26,7 +26,11 @@ from .colmap_loader import (
 )
 from .scene_info import build_scene_info
 from .gaussian_model import GaussianModel
-from .train import train, TrainConfig
+from .lichtfeld_trainer import (
+    LichtFeldTrainConfig,
+    train_with_lichtfeld,
+    export_colmap_subset,
+)
 from .partition import partition_scene
 from .merge import merge_models
 from .ortho_renderer import render_orthophoto, compute_ortho_extent
@@ -56,24 +60,22 @@ def generate_gaussian_orthophoto(
     partition_overlap: float = 0.20,
     sh_degree: int = 3,
     fagk: bool = True,
-    lambda_depth: float = 0.1,
     checkpoint_dir: str = None,
     data_factor: int = 1,
-    strategy: str = "mcmc",
-    cap_max: int = 1_000_000,
-    # Disabled: ortho_reg has a coordinate-system mismatch with scene
-    # normalisation (cameras in COLMAP coords vs scene in normalised space).
-    # TODO: fix _ortho_coverage_loss to pass normalised camera positions.
-    ortho_reg: float = 0.0,
+    cap_max: int = 5_000_000,
     filter_enabled: bool = True,
-    filter_sor: bool = True,
-    filter_cc: bool = True,
-    filter_z_floater: bool = True,
-    filter_needle_ratio: float = 50.0,
+    filter_max_scale: float = 1.0,
+    filter_dist_multiplier: float = 1.0,
+    filter_opacity_threshold: float = 0.005,
+    filter_needle_ratio: float = 0.0,
+    filter_sor: bool = False,
     filter_sor_sigma: float = 4.0,
+    filter_cc: bool = False,
+    filter_z_floater: bool = False,
     nadir_finetune_iters: int = 3000,
     nadir_finetune_mode: str = "full",
     nadir_finetune_angle: float = 15.0,
+    verbose: bool = False,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -95,7 +97,7 @@ def generate_gaussian_orthophoto(
     resolution : float
         Ground sample distance in metres.
     iterations : int
-        Training iterations per cell.
+        Training iterations per cell (LichtFeld MRNF).
     partition_m, partition_n : int
         Grid partition dimensions (1×1 = no partition).
     partition_overlap : float
@@ -104,16 +106,12 @@ def generate_gaussian_orthophoto(
         Maximum spherical harmonics degree.
     fagk : bool
         Enable Fully Anisotropic Gaussian Kernel.
-    lambda_depth : float
-        Depth regularisation weight.
     checkpoint_dir : str, optional
         Directory for training checkpoints.
     data_factor : int
-        Image downscaling factor for training (4 = quarter-res, fast).
-    strategy : str
-        Densification strategy: "mcmc" (bounded, recommended) or "default".
+        Image downscaling factor (used by nadir fine-tune).
     cap_max : int
-        Maximum Gaussian count for MCMCStrategy.
+        Maximum Gaussian count for MRNF strategy.
     nadir_finetune_iters : int
         Nadir fine-tune iterations (0 = skip). Default 3000.
     nadir_finetune_mode : str
@@ -191,7 +189,7 @@ def generate_gaussian_orthophoto(
     else:
         cells = [(None, scene)]
 
-    # --- 3. Train per cell ---
+    # --- 3. Train per cell (LichtFeld MRNF) ---
     cell_models = []
     n_cells = len(cells)
 
@@ -201,165 +199,62 @@ def generate_gaussian_orthophoto(
         pct_end = 15 + int(65 * (i + 1) / n_cells)
 
         _report(vol_id, "GAUSS", pct_start,
-                f"Training {cell_label}: {len(cell_scene.train_cameras)} cameras, "
+                f"[LichtFeld MRNF] Training {cell_label}: "
+                f"{len(cell_scene.train_cameras)} cameras, "
                 f"{cell_scene.point_cloud.points.shape[0]} points",
                 report_fn)
 
-        model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
-        model = model.to(device)
-        init_opa = 0.5 if strategy.lower() == "mcmc" else 0.1
-        # gsplat MCMC uses init_scale=0.1 even for normalised scenes:
-        # smaller initial Gaussians give sharper gradient localisation.
-        init_scale = 0.1 if strategy.lower() == "mcmc" else 1.0
-        model.init_from_point_cloud(cell_scene.point_cloud, cell_scene.scene_radius,
-                                    init_opa=init_opa, init_scale=init_scale)
+        # Prepare per-cell COLMAP data for LichtFeld
+        cell_output = os.path.join(checkpoint_dir, cell_label)
+        sparse_dir = os.path.join(dense_path, "sparse", "0")
+        if not os.path.isdir(sparse_dir):
+            sparse_dir = os.path.join(dense_path, "sparse")
+        images_dir_path = os.path.join(dense_path, "images")
 
-        # --- VRAM-aware training config ---
-        effective_cap = cap_max
-        effective_ortho_crop = 256
-        progressive = None
+        if use_partition:
+            # Export filtered COLMAP subset for this cell
+            cell_workspace = os.path.join(checkpoint_dir, f"{cell_label}_workspace")
+            camera_names = [c.image_name for c in cell_scene.train_cameras]
+            export_colmap_subset(
+                source_sparse_dir=sparse_dir,
+                target_dir=cell_workspace,
+                camera_names=camera_names,
+                images_dir=images_dir_path,
+            )
+            lf_data_path = cell_workspace
+        else:
+            lf_data_path = dense_path
 
-        # Probe available GPU VRAM and adapt training params to fit.
-        vram_gb = None
-        if torch.cuda.is_available():
-            vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-
-        if vram_gb is not None:
-            # --- Adaptive cap_max ---
-            # Each Gaussian uses ~908 bytes steady-state (params + Adam state),
-            # PLUS ~4-8 KB during rasterization peak (view-dependent tile
-            # intersections).  Use 5 KB total as a conservative estimate.
-            # Target: 65% of VRAM (need headroom for worst-case camera views
-            # where tile intersections can spike 2-3x above average).
-            bytes_per_gs = 5000  # 908 B steady + ~4 KB rasterization peak
-            max_gaussians_for_vram = int((vram_gb * 0.65 * 1024**3) / bytes_per_gs)
-            if effective_cap > max_gaussians_for_vram:
-                effective_cap = max(100_000, max_gaussians_for_vram)
-                _report(vol_id, "GAUSS", pct_start,
-                        f"VRAM-adaptive: cap_max reduced to {effective_cap:,} "
-                        f"(GPU has {vram_gb:.1f} GB)", report_fn)
-
-            # --- Adaptive data_factor: ensure image tensors fit in remaining VRAM ---
-            # Estimate image VRAM per step: ~16 bytes/pixel × 4 tensors × 2 (backward).
-            try:
-                from PIL import Image as PILImage
-                first_cam = cell_scene.train_cameras[0]
-                max_dim = max(first_cam.width, first_cam.height)
-            except Exception:
-                max_dim = 0
-
-            if max_dim > 0:
-                # Remaining VRAM after Gaussians + 500 MB overhead
-                remaining_mb = (vram_gb * 1024) - (effective_cap * 908 / 1024**2) - 500
-                remaining_mb = max(remaining_mb, 200)
-                # Each pixel ≈ 128 bytes peak (forward + backward + intermediates)
-                max_pixels = int(remaining_mb * 1024**2 / 128)
-                # Find the smallest data_factor that keeps pixels within budget
-                test_df = data_factor
-                while test_df < 16:
-                    eff_w = first_cam.width // test_df
-                    eff_h = first_cam.height // test_df
-                    if eff_w * eff_h <= max_pixels:
-                        break
-                    test_df *= 2
-                if test_df > data_factor:
-                    data_factor = test_df
-                    _report(vol_id, "GAUSS", pct_start,
-                            f"VRAM-adaptive: data_factor increased to {data_factor} "
-                            f"(remaining VRAM budget: {remaining_mb:.0f} MB)",
-                            report_fn)
-
-            # Progressive schedule for all GPUs with large images
-            if max_dim > 1200 and data_factor <= 2:
-                progressive = []
-                if max_dim > 3000:
-                    progressive.append((0.0, 8))
-                    progressive.append((0.25, 4))
-                    progressive.append((0.50, 2))
-                    if data_factor <= 1:
-                        progressive.append((0.75, 1))
-                elif max_dim > 2000:
-                    progressive.append((0.0, 4))
-                    progressive.append((0.35, 2))
-                    if data_factor <= 1:
-                        progressive.append((0.70, 1))
-                else:  # 1200 < max_dim <= 2000
-                    progressive.append((0.0, 2))
-                    if data_factor <= 1:
-                        progressive.append((0.50, 1))
-                _report(vol_id, "GAUSS", pct_start,
-                        f"Progressive schedule: {progressive} (VRAM={vram_gb:.1f}GB, max_dim={max_dim}px)",
-                        report_fn)
-
-        cfg = TrainConfig(
+        lf_config = LichtFeldTrainConfig(
             iterations=iterations,
-            data_factor=data_factor,
-            progressive_schedule=progressive,
+            strategy="mrnf",
             sh_degree=sh_degree,
-            strategy=strategy,
-            cap_max=effective_cap,
-            ortho_reg=ortho_reg,
-            ortho_crop_px=effective_ortho_crop,
-            output_dir=os.path.join(checkpoint_dir, cell_label),
+            cap_max=cap_max,
+            data_path=lf_data_path,
+            output_path=cell_output,
+            data_factor=data_factor,
         )
 
-        def make_train_reporter(pct_s, pct_e, vid, rfn):
+        def make_lf_reporter(pct_s, pct_e, vid, rfn, total):
             def reporter(it, loss_val, n_gauss):
-                pct = pct_s + int((pct_e - pct_s) * it / max(1, cfg.iterations))
+                pct = pct_s + int((pct_e - pct_s) * it / max(1, total))
                 _report(vid, "GAUSS", pct,
-                        f"iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
+                        f"[MRNF] iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
             return reporter
 
-        # --- OOM-resilient training: retry with reduced params on CUDA OOM ---
-        oom_retries = 0
-        while True:
-            try:
-                model = train(cell_scene, model, cfg,
-                              report_fn=make_train_reporter(pct_start, pct_end, vol_id, report_fn))
-                break
-            except (torch.cuda.OutOfMemoryError, RuntimeError) as e:
-                if "out of memory" not in str(e).lower() and "CUDA" not in str(e):
-                    raise
-                oom_retries += 1
-                if oom_retries > 3:
-                    raise RuntimeError(
-                        f"CUDA OOM after {oom_retries} retries "
-                        f"(cap_max={cfg.cap_max}, data_factor={cfg.data_factor})"
-                    ) from e
-                # Free everything and retry with halved cap_max + doubled data_factor
-                import gc
-                gc.collect()
-                torch.cuda.empty_cache()
-                try:
-                    torch.cuda.reset_peak_memory_stats()
-                    torch.cuda.memory._set_allocator_settings("")
-                except Exception:
-                    pass
+        ply_path = train_with_lichtfeld(
+            lf_config,
+            report_fn=make_lf_reporter(pct_start, pct_end, vol_id, report_fn,
+                                       iterations),
+            verbose=verbose,
+        )
 
-                new_cap = max(50_000, cfg.cap_max // 2)
-                new_df = min(16, cfg.data_factor * 2)
-                _report(vol_id, "GAUSS", pct_start,
-                        f"CUDA OOM — retry {oom_retries}/3: cap_max {cfg.cap_max:,}→{new_cap:,}, "
-                        f"data_factor {cfg.data_factor}→{new_df}",
-                        report_fn)
-                cfg = TrainConfig(
-                    iterations=cfg.iterations,
-                    data_factor=new_df,
-                    progressive_schedule=cfg.progressive_schedule,
-                    sh_degree=cfg.sh_degree,
-                    strategy=cfg.strategy,
-                    cap_max=new_cap,
-                    ortho_reg=cfg.ortho_reg,
-                    ortho_crop_px=cfg.ortho_crop_px,
-                    output_dir=cfg.output_dir,
-                )
-                # Re-init model from point cloud with reduced params
-                model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
-                model = model.to(device)
-                init_opa = 0.5 if strategy.lower() == "mcmc" else 0.1
-                init_scale = 0.1 if strategy.lower() == "mcmc" else 1.0
-                model.init_from_point_cloud(cell_scene.point_cloud, cell_scene.scene_radius,
-                                            init_opa=init_opa, init_scale=init_scale)
+        # Load the exported PLY into our GaussianModel
+        model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
+        model.load_ply(ply_path)
+        _report(vol_id, "GAUSS", pct_end,
+                f"[LichtFeld] Loaded {model.num_gaussians} Gaussians from {ply_path}",
+                report_fn)
 
         cell_models.append((cell_bounds, model))
 
@@ -438,38 +333,11 @@ def generate_gaussian_orthophoto(
         # The model stays in COLMAP frame.  R_geo tells the ortho renderer
         # which direction is "down" without breaking SH evaluation.
         _report(vol_id, "GAUSS", 89, "Computing PCA nadir direction…", report_fn)
-        from numpy.linalg import svd as _svd
+        from .pca_alignment import compute_pca_rotation
 
         cam_positions = np.array([c.T for c in _all_cameras], dtype=np.float64)
-        centroid = cam_positions.mean(axis=0)
-        _, S_pca, Vt_pca = _svd(cam_positions - centroid, full_matrices=False)
-
-        up_est = Vt_pca[2].astype(np.float64)  # smallest eigenvalue direction
-        up_est = up_est / max(np.linalg.norm(up_est), 1e-9)
-
-        # Build rotation that maps up_est → [0, 0, 1]
-        target = np.array([0.0, 0.0, 1.0])
-        v = np.cross(up_est, target)
-        c_dot = np.dot(up_est, target)
-        if np.linalg.norm(v) < 1e-8:
-            # Already aligned (or exactly anti-parallel)
-            R_align = np.eye(3) if c_dot > 0 else np.diag([1.0, -1.0, -1.0])
-        else:
-            vx = np.array([[0, -v[2], v[1]],
-                           [v[2], 0, -v[0]],
-                           [-v[1], v[0], 0]])
-            R_align = np.eye(3) + vx + vx @ vx / (1.0 + c_dot)
-
-        # Post-rotation check: cameras must be ABOVE the scene (drone data).
-        rot_cam_z = (R_align @ cam_positions.T)[2, :].mean()
-        rot_scene_z = (R_align @ point_cloud.points.T)[2, :].mean()
-        if rot_cam_z < rot_scene_z:
-            R_align = np.diag([1.0, -1.0, -1.0]) @ R_align
-            c_dot = -c_dot
-
-        R_align = R_align.astype(np.float32)
-        R_geo = R_align  # pass to renderer
-        angle_deg = np.degrees(np.arccos(np.clip(abs(c_dot), -1, 1)))
+        R_align, angle_deg = compute_pca_rotation(_all_cameras, point_cloud.points)
+        R_geo = R_align.astype(np.float32)
         _report(vol_id, "GAUSS", 89,
                 f"PCA nadir direction: {angle_deg:.1f}° from Z (using R_geo for rendering)",
                 report_fn)
@@ -507,132 +375,27 @@ def generate_gaussian_orthophoto(
     else:
         local_cam_positions = np.array([c.T for c in _all_cameras], dtype=np.float64)
 
-    # --- 5b. Compute camera-based proximity threshold for Gaussian filtering ---
-    from scipy.spatial import cKDTree as _cKDTree
-    from scipy.spatial.distance import pdist as _pdist
-    _cam_tree = _cKDTree(local_cam_positions)
-    # Use scene diameter (max inter-camera distance) as threshold — no
-    # legitimate Gaussian should be farther from all cameras than the cameras
-    # are from each other.
-    _max_cam_dist = float(np.max(_pdist(local_cam_positions)))
-
-    # --- 5c. Filter outlier Gaussians ---
+    # --- 5b–e. Filter outlier Gaussians ---
     if not filter_enabled:
         _report(vol_id, "GAUSS", 89, f"Filtering disabled — keeping all {merged_model.num_gaussians} Gaussians", report_fn)
     else:
-        # The model is in local coordinates (centred near zero).
-        # Filter Gaussians by proximity to nearest camera — same adaptive
-        # threshold used for the sparse point cloud in colmap_loader.
-        xyz = merged_model.positions.detach()
-        xyz_np = xyz.cpu().numpy()
-        gauss_dists, _ = _cam_tree.query(xyz_np, k=1)
-        in_bounds = torch.tensor(gauss_dists <= _max_cam_dist,
-                                 device=merged_model._xyz.device)
-        # Remove nearly transparent Gaussians
-        visible = merged_model.opacity.squeeze(-1).detach() > 0.05
-
-        # Remove highly elongated Gaussians (needle artifacts in ortho view).
-        if filter_needle_ratio > 0:
-            log_scales = merged_model._scaling.detach()
-            sorted_log, _ = log_scales.sort(dim=-1)
-            aniso_ratio = (sorted_log[:, 2] - sorted_log[:, 0]).exp()
-            not_needle = aniso_ratio <= filter_needle_ratio
-        else:
-            not_needle = torch.ones(len(xyz), dtype=torch.bool,
-                                    device=merged_model._xyz.device)
-
-        keep = in_bounds & visible & not_needle
-        n_before = merged_model.num_gaussians
-        merged_model.filter_by_mask(keep)
-        n_after = merged_model.num_gaussians
-        _report(vol_id, "GAUSS", 89,
-                f"Filtered: {n_before} → {n_after} Gaussians "
-                f"(removed {n_before - n_after} outliers/floaters, "
-                f"cam_dist_thresh={_max_cam_dist:.2f}, needle_ratio={filter_needle_ratio})",
-                report_fn)
-        del xyz, xyz_np, gauss_dists, in_bounds, visible, not_needle, keep
-        if filter_needle_ratio > 0:
-            del log_scales, sorted_log, aniso_ratio
-
-        # --- 5d. Statistical outlier removal (SOR) ---
-        if filter_sor:
-            from scipy.spatial import cKDTree
-
-            xyz_np = merged_model.positions.detach().cpu().numpy()
-            k_sor = 16
-            tree = cKDTree(xyz_np)
-            dists, idx = tree.query(xyz_np, k=k_sor + 1)  # +1: first is self (dist=0)
-            mean_dists = dists[:, 1:].mean(axis=1)
-            mu = mean_dists.mean()
-            sigma = mean_dists.std()
-            sor_thresh = mu + filter_sor_sigma * sigma
-            sor_keep = torch.tensor(mean_dists <= sor_thresh, device=merged_model._xyz.device)
-            n_before_sor = merged_model.num_gaussians
-            merged_model.filter_by_mask(sor_keep)
-            n_removed_sor = n_before_sor - merged_model.num_gaussians
-            if n_removed_sor > 0:
-                _report(vol_id, "GAUSS", 89,
-                        f"SOR: removed {n_removed_sor} isolated Gaussians "
-                        f"(k={k_sor}, sigma={filter_sor_sigma}, threshold={sor_thresh:.4f})",
-                        report_fn)
-            del xyz_np, tree, dists, idx, mean_dists, sor_keep
-
-        # --- 5e. Connected-component filter ---
-        if filter_cc:
-            from scipy.sparse import csr_matrix
-            from scipy.sparse.csgraph import connected_components
-            from scipy.spatial import cKDTree
-
-            k_cc = 16
-            xyz_np = merged_model.positions.detach().cpu().numpy()
-            N_cc = len(xyz_np)
-            tree = cKDTree(xyz_np)
-            _, idx_k = tree.query(xyz_np, k=k_cc + 1)
-            rows = np.repeat(np.arange(N_cc), k_cc)
-            cols = idx_k[:, 1:].ravel()
-            adj = csr_matrix(
-                (np.ones(len(rows), dtype=np.float32), (rows, cols)),
-                shape=(N_cc, N_cc),
-            )
-            n_components, labels = connected_components(adj, directed=False)
-            if n_components > 1:
-                unique, counts = np.unique(labels, return_counts=True)
-                largest_label = unique[counts.argmax()]
-                cc_keep = torch.tensor(labels == largest_label, device=merged_model._xyz.device)
-                n_before_cc = merged_model.num_gaussians
-                merged_model.filter_by_mask(cc_keep)
-                n_removed_cc = n_before_cc - merged_model.num_gaussians
-                _report(vol_id, "GAUSS", 89,
-                        f"CC filter: removed {n_removed_cc} floaters in "
-                        f"{n_components - 1} disconnected clusters",
-                        report_fn)
-                del cc_keep
-            del xyz_np, tree, idx_k, adj, labels
-
-    # --- Z-floater removal ---
-    if filter_z_floater:
-        with torch.no_grad():
-            if R_geo is not None:
-                R_geo_t = torch.tensor(R_geo, dtype=torch.float32,
-                                       device=merged_model._xyz.device)
-                z_vals = (R_geo_t[2:3, :] @ merged_model._xyz.T).squeeze(0).detach()
-            else:
-                z_vals = merged_model._xyz[:, 2].detach()
-            q25 = torch.quantile(z_vals, 0.25).item()
-            q75 = torch.quantile(z_vals, 0.75).item()
-            z_iqr = q75 - q25
-            z_lo = q25 - 5.0 * z_iqr
-            z_hi = q75 + 5.0 * z_iqr
-            z_keep = (z_vals >= z_lo) & (z_vals <= z_hi)
-            n_before_z = merged_model.num_gaussians
-            merged_model.filter_by_mask(z_keep)
-            n_removed_z = n_before_z - merged_model.num_gaussians
-            if n_removed_z > 0:
-                _report(vol_id, "GAUSS", 89,
-                        f"Z-floater filter: removed {n_removed_z} sky/background Gaussians "
-                        f"(Z outside [{z_lo:.2f}, {z_hi:.2f}])",
-                        report_fn)
-            del z_vals, z_keep
+        from .model_filtering import filter_gaussians
+        _report(vol_id, "GAUSS", 89, "Filtering Gaussians…", report_fn)
+        filter_gaussians(
+            merged_model,
+            local_cam_positions,
+            max_scale=filter_max_scale,
+            dist_multiplier=filter_dist_multiplier,
+            opacity_threshold=filter_opacity_threshold,
+            needle_ratio=filter_needle_ratio,
+            sor_sigma=filter_sor_sigma,
+            sor_enabled=filter_sor,
+            cc_enabled=filter_cc,
+            z_floater_enabled=filter_z_floater,
+            R_geo=R_geo,
+            report_fn=lambda msg: _report(vol_id, "GAUSS", 89, msg, report_fn),
+        )
+        _report(vol_id, "GAUSS", 89, f"After filtering: {merged_model.num_gaussians} Gaussians", report_fn)
 
     # --- Nadir fine-tune (PCA path only) ---
     # In the PCA path the model stays in COLMAP frame.  The SH coefficients
@@ -641,8 +404,8 @@ def generate_gaussian_orthophoto(
     # SH (and optionally scales + opacity) using only near-nadir training
     # images so the model adapts to the ortho view.
     if R_geo is not None and nadir_finetune_iters > 0 and nadir_finetune_mode != "off":
-        from .train import nadir_finetune as _nadir_finetune_sh
-        from .train import nadir_finetune_full as _nadir_finetune_full
+        from .nadir_finetune import nadir_finetune as _nadir_finetune_sh
+        from .nadir_finetune import nadir_finetune_full as _nadir_finetune_full
         _report(vol_id, "GAUSS", 90,
                 f"Nadir fine-tune ({nadir_finetune_mode}, {nadir_finetune_iters} iters, "
                 f"angle≤{nadir_finetune_angle}°)…", report_fn)
