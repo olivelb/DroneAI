@@ -12,6 +12,12 @@ The stack runs locally on Kubernetes via K3s. Kafka is deployed inside the clust
 
 For runtime architecture, Kafka contracts, orthomosaic construction details, and processing-worker behavior, see `DOCUMENTATION.md`.
 
+## Showcase
+
+![Vehicle detection on orthomosaic](docs/showcase_vehicle_detection.png)
+
+Georeferenced vehicle detection on a drone orthomosaic. The pipeline reconstructs the scene with COLMAP and 3D Gaussian Splatting, slices the resulting orthophoto into tiles, runs SAM 3 prompt-based segmentation on each tile, deduplicates overlapping detections, and reprojects the results back onto the full orthomosaic with real-world GPS coordinates (lat/lon labels).
+
 ## What is required in the repo
 
 For a working installation, these files are part of the install path and must be present:

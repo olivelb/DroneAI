@@ -55,6 +55,7 @@ next-env.d.ts
 
 # === Test result images ===
 *.png
+!docs/*.png
 
 # === Large binaries (not source code) ===
 colmap-src/
