@@ -1,73 +1,206 @@
-FROM nvidia/cuda:12.8.1-devel-ubuntu22.04
+# ============================================================
+# Stage 1: Build COLMAP + Ceres from source (devel image)
+# ============================================================
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake ninja-build git build-essential \
+    libboost-program-options-dev libboost-filesystem-dev libboost-graph-dev \
+    libboost-system-dev libboost-iostreams-dev libgoogle-glog-dev libgflags-dev \
+    libsuitesparse-dev libfreeimage-dev libglew-dev \
+    libcgal-dev libatlas-base-dev libeigen3-dev libgmp-dev liblz4-dev libmetis-dev \
+    libopencv-dev libopenblas-dev libpng-dev libjpeg-dev libtiff-dev \
+    libopenimageio-dev openimageio-tools libopenexr-dev libsqlite3-dev libflann-dev libssl-dev \
+    libcudnn9-dev-cuda-12 libcudss0-dev-cuda-12 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ceres Solver 2.2.0 with CUDA + cuDSS
+COPY app1-colmap/ceres-solver /tmp/ceres-solver
+RUN set -eux; \
+    cd /tmp/ceres-solver; mkdir build; cd build; \
+    cmake .. -GNinja \
+        -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
+        -DUSE_CUDA=ON -DUSE_CUDSS=ON \
+        -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
+        -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 \
+        2>&1 | tee /tmp/ceres-cmake.log; \
+    grep -Ei 'cuda|cudss|suitesparse|sparse' /tmp/ceres-cmake.log || true; \
+    ninja install; \
+    test -f /usr/local/include/ceres/internal/config.h; \
+    if grep -q '^#define CERES_NO_CUDA' /usr/local/include/ceres/internal/config.h \
+        || grep -q '^#define CERES_NO_CUDSS' /usr/local/include/ceres/internal/config.h; then \
+        echo 'Ceres was installed without CUDA/cuDSS support.' >&2; exit 1; \
+    fi; \
+    cd /; rm -rf /tmp/ceres-solver /tmp/ceres-cmake.log
+
+# COLMAP 4.0.1
+COPY app1-colmap/colmap-deps /tmp/colmap-deps
+COPY app1-colmap/colmap-local /tmp/colmap
+RUN cd /tmp/colmap \
+    && rm -rf build && mkdir build && cd build \
+    && cmake .. -GNinja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DGUI_ENABLED=OFF \
+        -DCUDA_ENABLED=ON \
+        -DONNX_ENABLED=OFF \
+        -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
+    && ninja install \
+    && rm -rf /tmp/colmap /tmp/colmap-deps
+
+# Stage only the CUDA runtime .so files that COLMAP + Ceres actually link against.
+# Avoids pulling the full 2.6 GB CUDA runtime suite into the final image.
+# libnvJitLink is a transitive dep of COLMAP and libcusparse (JIT compilation of GPU kernels).
+RUN mkdir -p /cuda-slim && cd /usr/local/cuda/lib64 && \
+    cp -a libcublas.so* libcublasLt.so* \
+          libcusparse.so* libcusolver.so* \
+          libcurand.so* libnvJitLink.so* /cuda-slim/ && \
+    rm -f /cuda-slim/libcusolverMg* /cuda-slim/*.a && \
+    find /usr/lib/x86_64-linux-gnu -maxdepth 1 -name 'libcudss.so*' -exec cp -a {} /cuda-slim/ \; && \
+    find /usr/lib/x86_64-linux-gnu/libcudss -name 'libcudss.so*' -exec cp -a {} /cuda-slim/ \; 2>/dev/null; \
+    ls -lh /cuda-slim/
+
+# ============================================================
+# Stage 2: Build Python packages that need nvcc (devel image)
+# ============================================================
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS pip-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-setuptools python3-dev \
+    git build-essential ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+# Pure Python packages (trimesh removed — never imported)
+RUN pip3 install --no-cache-dir --break-system-packages \
+    confluent-kafka exif rasterio numpy plyfile pyproj Pillow pycolmap==4.0.1 scipy
+
+# PyTorch + gsplat (torchvision and nvdiffrast removed — never imported by app code)
+RUN pip3 install --no-cache-dir --break-system-packages --index-url https://download.pytorch.org/whl/cu124 torch \
+    && pip3 install --no-cache-dir --break-system-packages gsplat==1.5.3
+
+# ============================================================
+# Stage 3: Build LichtFeld-Studio from source
+# Needs gcc-14 + cmake 4.x + vcpkg — separate stage, parallel with 1 & 2
+# ============================================================
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS lichtfeld-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential git curl ca-certificates wget unzip zip \
+        pkg-config ninja-build nasm yasm \
+        autoconf autoconf-archive automake libtool \
+        python3 python3-dev python3-pip \
+        libx11-dev libxft-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+        libxi-dev libxext-dev libxtst-dev libwayland-dev libxkbcommon-dev \
+        libibus-1.0-dev libdbus-1-dev libpulse-dev libasound2-dev \
+        libffi-dev libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
+    && apt-get install -y gcc-14 g++-14 \
+    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
+    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 60 \
+    && update-alternatives --set gcc /usr/bin/gcc-14 \
+    && update-alternatives --set g++ /usr/bin/g++-14 \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN ARCH=$(uname -m) \
+    && wget -q https://github.com/Kitware/CMake/releases/download/v4.0.3/cmake-4.0.3-linux-${ARCH}.sh \
+    && chmod +x cmake-4.0.3-linux-${ARCH}.sh \
+    && ./cmake-4.0.3-linux-${ARCH}.sh --skip-license --prefix=/usr/local \
+    && rm cmake-4.0.3-linux-${ARCH}.sh
+
+COPY .docker-vcpkg/ /opt/vcpkg/
+RUN /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+ENV VCPKG_ROOT=/opt/vcpkg
+
+COPY LichtFeld-Studio/ /build/LichtFeld-Studio/
+WORKDIR /build/LichtFeld-Studio
+
+RUN git submodule update --init --recursive 2>/dev/null || true
+RUN if [ ! -f external/libvterm/src/encoding.c ]; then \
+        rm -rf external/libvterm && \
+        git clone --depth 1 https://github.com/neovim/libvterm.git external/libvterm; \
+    fi
+
+RUN rm -rf build
+RUN /opt/vcpkg/vcpkg install --triplet x64-linux
+
+RUN cmake -S . -B build \
+    -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_CUDA_PTX_ONLY=ON \
+    -DBUILD_PYTHON_STUBS=OFF \
+    -DBUILD_TESTS=OFF \
+    -DENABLE_COMPILER_CACHE=OFF \
+    -DCMAKE_C_COMPILER=gcc-14 \
+    -DCMAKE_CXX_COMPILER=g++-14 \
+    -DCMAKE_CUDA_HOST_COMPILER=g++-14 \
+    -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+RUN cmake --build build --config Release -j$(nproc)
+RUN test -x build/LichtFeld-Studio
+
+# Collect LichtFeld runtime files in a clean directory
+RUN mkdir -p /opt/lichtfeld/lib \
+    && cp build/LichtFeld-Studio /opt/lichtfeld/ \
+    && cp build/liblfs_*.so /opt/lichtfeld/lib/ \
+    && cp -a build/libnvimgcodec.so* /opt/lichtfeld/lib/ \
+    && cp -r build/extensions/ /opt/lichtfeld/extensions/ \
+    && cp build/vcpkg_installed/x64-linux/lib/libusd_*.so /opt/lichtfeld/lib/ \
+    && cp -r build/resources/ /opt/lichtfeld/resources/ \
+    && cp LICENSE /opt/lichtfeld/LICENSE \
+    && cp THIRD_PARTY_LICENSES.md /opt/lichtfeld/THIRD_PARTY_LICENSES.md
+
+# ============================================================
+# Stage 4: Slim runtime image (24.04 — matches all builder stages)
+# ============================================================
+FROM nvidia/cuda:12.8.1-base-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV TORCH_CUDA_ARCH_LIST="8.6;8.9"
 WORKDIR /app
 
-# --- LAYER 1: Base Stable Dependencies ---
-RUN apt-get update && apt-get install -y \
-    cmake ninja-build git build-essential \
-    libboost-program-options-dev libboost-filesystem-dev libboost-graph-dev \
-    libboost-system-dev libboost-iostreams-dev libgoogle-glog-dev libgflags-dev \
-    libsuitesparse-dev libfreeimage-dev libglew-dev libqt5opengl5-dev qtbase5-dev \
-    libcgal-dev libatlas-base-dev libeigen3-dev libgmp-dev liblz4-dev libmetis-dev \
-    libopencv-dev libopenblas-dev libpng-dev libjpeg-dev libtiff-dev \
-    libcudnn9-dev-cuda-12 libcudss0-dev-cuda-12 \
-    python3 python3-pip python3-setuptools curl \
+# Runtime libraries needed by COLMAP, Ceres, and Python packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip \
+    curl \
+    libboost-program-options1.83.0 libboost-filesystem1.83.0 libboost-graph1.83.0 \
+    libboost-system1.83.0 libboost-iostreams1.83.0 \
+    libgoogle-glog0v6t64 libgflags2.2 \
+    libsuitesparseconfig7 libamd3 libcamd3 libccolamd3 libcolamd3 libcholmod5 \
+    libcxsparse4 libspqr4 \
+    libfreeimage3 libglew2.2 \
+    libmetis5 liblz4-1 \
+    libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 \
+    libopenblas0 libatlas3-base \
+    libpng16-16t64 libjpeg8 libtiff6 \
+    libopenimageio2.4t64 openimageio-tools libopenexr-3-1-30 libsqlite3-0 \
+    libflann1.9 libssl3t64 libxcb-cursor0 libimage-exiftool-perl \
+    libgmp10 libgomp1 libopengl0 \
+    libx11-6 \
     && rm -rf /var/lib/apt/lists/*
 
-# --- LAYER 2: Ceres Solver (Stable) ---
-RUN set -eux; \
-    git clone https://github.com/ceres-solver/ceres-solver.git; \
-    cd ceres-solver; \
-    git checkout 2.2.0; \
-    mkdir build; \
-    cd build; \
-    cmake .. -GNinja \
-        -DBUILD_TESTING=OFF \
-        -DBUILD_EXAMPLES=OFF \
-        -DUSE_CUDA=ON \
-        -DUSE_CUDSS=ON \
-        -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
-        -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 \
-        2>&1 | tee /tmp/ceres-cmake.log; \
-    echo '---- Ceres CUDA/cuDSS configure summary ----'; \
-    grep -Ei 'cuda|cudss|suitesparse|sparse' /tmp/ceres-cmake.log || true; \
-    ninja install; \
-    test -f /usr/local/include/ceres/internal/config.h; \
-    echo '---- Installed Ceres config header flags ----'; \
-    grep -E '^#define CERES_(NO_CUDA|NO_CUDSS)' /usr/local/include/ceres/internal/config.h || true; \
-    if grep -q '^#define CERES_NO_CUDA' /usr/local/include/ceres/internal/config.h \
-        || grep -q '^#define CERES_NO_CUDSS' /usr/local/include/ceres/internal/config.h; then \
-        echo 'Ceres was installed without the required CUDA/cuDSS support.' >&2; \
-        exit 1; \
-    fi; \
-    cd ../..; \
-    rm -rf ceres-solver /tmp/ceres-cmake.log
+# Selective CUDA runtime libs (cuBLAS, cuSPARSE, cuSOLVER, cuDSS for COLMAP/Ceres + cuRAND for LichtFeld)
+# cudart is already in cuda:base; cuDNN/cufft/npp/nvrtc not needed
+COPY --from=builder /cuda-slim/ /usr/local/cuda/lib64/
 
-# --- LAYER 3: Additional Dependencies ---
-RUN apt-get update && apt-get install -y \
-    libopenimageio-dev openimageio-tools libopenexr-dev libsqlite3-dev \
-    libflann-dev libssl-dev libxcb-cursor0 libimage-exiftool-perl \
-    && rm -rf /var/lib/apt/lists/*
+# Copy COLMAP + Ceres installed binaries and libraries from builder
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
+COPY --from=builder /usr/local/lib/ /usr/local/lib/
+COPY --from=builder /usr/local/share/colmap/ /usr/local/share/colmap/
 
-# --- LAYER 4: COLMAP 4.0.1 ---
-RUN git clone https://github.com/colmap/colmap.git \
-    && cd colmap && git checkout 4.0.1 \
-    && mkdir build && cd build \
-    && cmake .. -GNinja \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DGUI=OFF \
-        -DCUDA_ENABLED=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
-    && ninja install \
-    && cd ../.. && rm -rf colmap
+# Copy all installed Python packages from pip-builder
+COPY --from=pip-builder /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
+COPY --from=pip-builder /usr/local/bin/ /usr/local/bin/
 
-# --- LAYER 5: Python Dependencies ---
-RUN pip3 install --no-cache-dir \
-    confluent-kafka exif rasterio numpy plyfile pyproj trimesh Pillow pycolmap==4.0.1 scipy
+# LichtFeld-Studio headless binary + runtime libs (GPL-3.0-or-later, subprocess only)
+COPY --from=lichtfeld-builder /opt/lichtfeld/ /opt/lichtfeld/
+ENV LD_LIBRARY_PATH="/opt/lichtfeld/lib:${LD_LIBRARY_PATH}"
+ENV LICHTFELD_BIN="/opt/lichtfeld/LichtFeld-Studio"
 
-RUN pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cu124 torch torchvision \
-    && pip3 install --no-cache-dir --no-build-isolation git+https://github.com/NVlabs/nvdiffrast.git \
-    && pip3 install --no-cache-dir gsplat==1.5.3
+RUN ldconfig

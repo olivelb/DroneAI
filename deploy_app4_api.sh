@@ -46,10 +46,11 @@ fi
 echo "🛠️ Building Drone Dashboard API..."
 export DOCKER_BUILDKIT=1
 sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-dashboard-api:latest -f app4-dashboard/api/Dockerfile .
+echo "🧹 Cleaning Docker build cache..."
+sudo docker builder prune -f --filter 'until=1h' 2>/dev/null || true
+sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
-sudo docker save drone-dashboard-api:latest > drone-dashboard-api.tar
-sudo k3s ctr images import drone-dashboard-api.tar
-rm drone-dashboard-api.tar
+sudo docker save drone-dashboard-api:latest | sudo k3s ctr images import -
 echo "🧩 Applying Kubernetes manifests to keep dashboard-api config and RBAC in sync..."
 sudo kubectl apply -f kafka-local.yaml
 sudo kubectl apply -f dashboard-api-rbac.yaml

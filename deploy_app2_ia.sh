@@ -55,10 +55,11 @@ fi
 echo "🛠️ Building Drone IA Worker..."
 export DOCKER_BUILDKIT=1
 sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-ia:latest -f app2-ia/Dockerfile .
+echo "🧹 Cleaning Docker build cache..."
+sudo docker builder prune -f --filter 'until=1h' 2>/dev/null || true
+sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
-sudo docker save drone-ia:latest > drone-ia.tar
-sudo k3s ctr images import drone-ia.tar
-rm drone-ia.tar
+sudo docker save drone-ia:latest | sudo k3s ctr images import -
 echo "🧩 Applying Kubernetes manifest to keep ia-worker resources and env in sync..."
 sudo kubectl apply -f kafka-local.yaml
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then

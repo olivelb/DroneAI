@@ -113,3 +113,10 @@ plat
 
 # === Local helper scripts ===
 /scripts/
+
+# === Docker build dependencies (cloned externally, not source) ===
+.docker-vcpkg/
+app1-colmap/ceres-solver/
+app1-colmap/colmap-local/
+app1-colmap/colmap-deps/
+app1-colmap/nvdiffrast-src/

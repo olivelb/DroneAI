@@ -46,10 +46,11 @@ fi
 echo "🛠️ Building Drone Processing Worker..."
 export DOCKER_BUILDKIT=1
 sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-processing:latest -f app3-processing/Dockerfile .
+echo "🧹 Cleaning Docker build cache..."
+sudo docker builder prune -f --filter 'until=1h' 2>/dev/null || true
+sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
-sudo docker save drone-processing:latest > drone-processing.tar
-sudo k3s ctr images import drone-processing.tar
-rm drone-processing.tar
+sudo docker save drone-processing:latest | sudo k3s ctr images import -
 echo "🧩 Applying Kubernetes manifest to keep processing-worker config in sync..."
 sudo kubectl apply -f kafka-local.yaml
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then

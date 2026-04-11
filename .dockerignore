@@ -14,6 +14,8 @@ output
 workspace
 colmap-src
 test_venv
+ortho_test_venv
+vcpkg
 app1-colmap/colmap-v4.0.1-bin
 app4-dashboard/api/venv
 app4-dashboard/api/drones
