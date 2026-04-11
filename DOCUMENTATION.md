@@ -595,6 +595,8 @@ Characteristics:
 
 This is the default and the main intended runtime path.
 
+> **Note:** ALIKED and LightGlue require ONNX Runtime support compiled into COLMAP. The current `Dockerfile.base` does not include ONNX Runtime, so the modern profile will fail at feature extraction with `"ALIKED feature extraction requires ONNX support."` Until ONNX Runtime is added to the COLMAP build, use the legacy profile (`"pipeline": "legacy"`) which uses SIFT and works without ONNX.
+
 #### Legacy profile
 
 Characteristics:
@@ -605,7 +607,7 @@ Characteristics:
 - no view graph calibration
 - Gaussian Splatting orthomosaic enabled (same as modern)
 
-This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the orthomosaic mode.
+This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the orthomosaic mode. It is currently the only working profile because the COLMAP build does not include ONNX Runtime (required by ALIKED/LightGlue in the modern profile).
 
 ### Smart resume and compatibility checks
 
@@ -801,7 +803,7 @@ The implementation draws from several key papers:
 
 **PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
 
-**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress through its MCP HTTP endpoint, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally. This replaces the previous Python/gsplat training loop and its per-image appearance model, ortho-coverage regularisation, and VRAM-adaptive logic.
+**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress by parsing its `indicators`-library progress bar from stdout, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally. This replaces the previous Python/gsplat training loop and its per-image appearance model, ortho-coverage regularisation, and VRAM-adaptive logic.
 
 **EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
 
@@ -823,7 +825,7 @@ Each cell is trained using LichtFeld-Studio's headless CLI with the MRNF (Multi-
 
 - **Binary**: LichtFeld-Studio C++/CUDA executable, invoked via subprocess with `--headless --train`
 - **Strategy**: MRNF (recommended) — handles progressive resolution scheduling, densification, and VRAM management internally
-- **Progress monitoring**: the Python pipeline polls LichtFeld's MCP HTTP endpoint for iteration count, loss, and Gaussian count
+- **Progress monitoring**: the Python pipeline reads LichtFeld’s stdout and parses progress from the `indicators` C++ library output (format: `{iter}/{total} | Loss: {loss} | Splats: {count}`). The `indicators` library uses `\r` carriage returns for in-place updates, so the reader splits on both `\r` and `\n`. LichtFeld’s MCP HTTP server is only available in GUI mode, not in the headless CLI mode used by the pipeline.
 - **Output**: a standard 3DGS PLY checkpoint, loaded into the Python GaussianModel for post-processing and rendering
 - **Cancellation**: the subprocess is killed via SIGTERM if a cancellation is requested through the dashboard
 
@@ -997,7 +999,7 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | Module | Purpose |
 | --- | --- |
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, GeoTIFF output |
-| `lichtfeld_trainer.py` | LichtFeld-Studio headless subprocess wrapper, MCP progress monitoring, PLY export |
+| `lichtfeld_trainer.py` | LichtFeld-Studio headless subprocess wrapper, stdout progress parsing, PLY export |
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
 | `nadir_finetune.py` | Nadir fine-tune with gsplat: `nadir_finetune_full()` (SH + scales + opacity) and `nadir_finetune()` (SH-only) |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |

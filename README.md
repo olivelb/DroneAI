@@ -23,7 +23,6 @@ Georeferenced vehicle detection on a drone orthomosaic. The pipeline reconstruct
 For a working installation, these files are part of the install path and must be present:
 
 - `app1-colmap/Dockerfile.base`
-- `app1-colmap/Dockerfile.lichtfeld`
 - `app1-colmap/Dockerfile`
 - `app2-ia/Dockerfile`
 - `app3-processing/Dockerfile`
@@ -42,6 +41,130 @@ For a working installation, these files are part of the install path and must be
 - `deploy_app4_frontend.sh`
 
 The rest of the repository is the application source code used by those images.
+
+## Pre-requisite source setup
+
+The Docker build `COPY`s several external source trees into the image. These are **not** bundled in this repository and must be prepared before the first build. Without them, `docker build` will fail immediately.
+
+### 1. Ceres Solver 2.2.0
+
+```bash
+git clone --branch 2.2.0 --depth 1 https://github.com/ceres-solver/ceres-solver.git app1-colmap/ceres-solver
+```
+
+### 2. COLMAP 4.0.1
+
+```bash
+git clone --branch 4.0.1 --depth 1 https://github.com/colmap/colmap.git app1-colmap/colmap-local
+```
+
+COLMAP's build uses CMake `FetchContent` to download PoseLib and faiss at configure time. Because Docker BuildKit network access can be unreliable (especially under WSL2), the Dockerfile expects pre-downloaded archives and patches the URLs to `file://` paths. Apply the patch:
+
+```bash
+mkdir -p app1-colmap/colmap-deps
+
+# Download the exact archives that COLMAP 4.0.1 expects (SHA256-verified):
+wget -O app1-colmap/colmap-deps/poselib.zip \
+  https://github.com/PoseLib/PoseLib/archive/f119951fca625133112acde48daffa5f20eba451.zip
+
+wget -O app1-colmap/colmap-deps/faiss.zip \
+  https://github.com/ahojnnes/faiss/archive/36b77353dc435383e0c23a709e7997a29d049041.zip
+
+# Patch FetchContent URLs to use local file:// paths inside the Docker build:
+sed -i 's|https://github.com/PoseLib/PoseLib/archive/f119951fca625133112acde48daffa5f20eba451.zip|file:///tmp/colmap-deps/poselib.zip|' \
+  app1-colmap/colmap-local/src/thirdparty/CMakeLists.txt
+
+sed -i 's|https://github.com/ahojnnes/faiss/archive/36b77353dc435383e0c23a709e7997a29d049041.zip|file:///tmp/colmap-deps/faiss.zip|' \
+  app1-colmap/colmap-local/src/thirdparty/CMakeLists.txt
+```
+
+### 3. LichtFeld-Studio
+
+```bash
+git clone https://github.com/MrNeRF/LichtFeld-Studio.git LichtFeld-Studio
+cd LichtFeld-Studio && git submodule update --init --recursive && cd ..
+```
+
+### 4. vcpkg (for the LichtFeld build stage)
+
+LichtFeld-Studio pins vcpkg at a specific baseline commit (`c3867e714dd3a51c272826eea77267876517ed99`). The Docker build expects a pre-cloned vcpkg tree at `.docker-vcpkg/`:
+
+```bash
+git clone https://github.com/microsoft/vcpkg.git .docker-vcpkg
+git -C .docker-vcpkg checkout c3867e714dd3a51c272826eea77267876517ed99
+```
+
+### Quick-reference summary
+
+| Directory | Source | Version / Commit |
+| --- | --- | --- |
+| `app1-colmap/ceres-solver/` | `https://github.com/ceres-solver/ceres-solver.git` | tag `2.2.0` |
+| `app1-colmap/colmap-local/` | `https://github.com/colmap/colmap.git` | tag `4.0.1` (then patch FetchContent URLs) |
+| `app1-colmap/colmap-deps/` | PoseLib + faiss zip archives | see wget commands above |
+| `LichtFeld-Studio/` | `https://github.com/MrNeRF/LichtFeld-Studio.git` | latest (or pin to a known-good commit) |
+| `.docker-vcpkg/` | `https://github.com/microsoft/vcpkg.git` | commit `c3867e714dd3a51c272826eea77267876517ed99` |
+
+## Docker build architecture
+
+The base image (`app1-colmap/Dockerfile.base`) is a four-stage multi-stage build. Docker BuildKit runs the first three stages in parallel:
+
+```text
+Stage 1: builder           (nvidia/cuda:12.8.1-devel-ubuntu22.04)
+  → Ceres Solver + COLMAP from source
+  → Stages selective CUDA runtime libs into /cuda-slim/
+
+Stage 2: pip-builder       (nvidia/cuda:12.8.1-devel-ubuntu22.04)
+  → PyTorch (cu124) + gsplat 1.5.3 + Python packages
+
+Stage 3: lichtfeld-builder (nvidia/cuda:12.8.1-devel-ubuntu24.04)
+  → LichtFeld-Studio via gcc-14 + CMake 4.x + vcpkg
+  → Ubuntu 24.04 is required because LichtFeld needs gcc-14
+
+Stage 4: runtime           (nvidia/cuda:12.8.1-base-ubuntu22.04)
+  → Copies outputs from all three builder stages
+  → Copies nvimgcodec extension plugins (nvjpeg_ext) for GPU JPEG decoding
+  → Only the CUDA libs actually needed at runtime (~1.5 GB vs 2.6 GB full suite)
+```
+
+The final `Dockerfile` adds the Python application code on top of the base image.
+
+### CUDA compute architecture targeting
+
+The build currently targets **Ampere** (RTX 3090, A100) and **Ada Lovelace** (RTX 4090) GPUs:
+
+- COLMAP / Ceres: `-DCMAKE_CUDA_ARCHITECTURES="86-real;89-real"`
+- PyTorch / gsplat: `TORCH_CUDA_ARCH_LIST="8.6;8.9"`
+- LichtFeld-Studio: `BUILD_CUDA_PTX_ONLY=ON` (JIT-compiles for any GPU at runtime)
+
+To support different GPUs, edit `Dockerfile.base` and change the architecture values. Common targets:
+
+| GPU family | CUDA arch code |
+| --- | --- |
+| Turing (RTX 2080) | `75` |
+| Ampere (RTX 3090, A100) | `86` |
+| Ada Lovelace (RTX 4090) | `89` |
+| Hopper (H100) | `90` |
+
+### Selective CUDA library staging
+
+The runtime image uses `nvidia/cuda:12.8.1-base` (402 MB) instead of the full `runtime` variant (5.5 GB). Only the CUDA libraries actually linked by COLMAP, Ceres, and LichtFeld are copied from the builder stage:
+
+| Library | Size | Needed by |
+| --- | --- | --- |
+| cuBLAS + cuBLASLt | ~830 MB | COLMAP (feature matching), Ceres |
+| cuSPARSE | ~370 MB | Ceres (sparse solvers) |
+| cuSOLVER | ~230 MB | Ceres (dense solvers) |
+| cuDSS | ~100 MB | Ceres (direct sparse solver) |
+| cuRAND | ~130 MB | LichtFeld (random sampling) |
+| cudart | ~1 MB | All (included in cuda:base) |
+
+Excluded (not linked by any component): cuDNN, cuFFT, NPP, nvRTC, nvJitLink (~1.1 GB saved).
+
+### Build time and disk space
+
+- **First build**: 30–90 minutes depending on CPU and network speed
+- **Transient disk usage**: the three devel-image stages can consume 20+ GB each during the build. Plan for **40–60 GB of free disk** beyond what K3s and your data already use.
+- After the build, run `sudo docker builder prune -af && sudo docker image prune -af` to reclaim build cache.
 
 ## Host requirements
 
@@ -332,7 +455,7 @@ The pipeline flow is:
 - **Sim3 path (with alignment transform)**: rotation + scale are applied to the model; translation is kept as float64 for the GeoTIFF origin.
 - The height map is shifted to match mean drone EXIF GPS altitude when available, giving real-world elevation values in the output CRS.
 - All model coordinates stay in COLMAP-local float32 space during training. The Sim3 geo-alignment is split: rotation+scale applied to the model, translation kept as float64 and folded into the GeoTIFF origin. This avoids the catastrophic float32 precision loss that occurs with UTM-scale translations (~10⁶ m).
-- Training progress is reported to the dashboard via MCP (Model Context Protocol) polling, with loss values and Gaussian count advancing the progress bar smoothly.
+- Training progress is reported to the dashboard by parsing LichtFeld's `indicators`-library progress bar output from stdout (`\r`-delimited in-place updates). The LichtFeld MCP HTTP server is only available in GUI mode, not in the headless CLI mode used by the pipeline.
 - The following GS parameters are exposed in the dashboard UI (group **Orthomosaic**):
   - **GS Training Iterations** (`gs_iterations`): number of LichtFeld MRNF training iterations (default 30000)
   - **GS Training Image Scale** (`gs_data_factor`): image downscaling factor for training (`auto`, 1, 2, 4, 8)
@@ -391,12 +514,6 @@ Rebuild only the COLMAP app layer:
 
 ```bash
 bash deploy_app1_colmap.sh
-```
-
-Rebuild the LichtFeld-Studio training image:
-
-```bash
-bash deploy_app1_colmap.sh --lichtfeld
 ```
 
 Rebuild the IA worker:

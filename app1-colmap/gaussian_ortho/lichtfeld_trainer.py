@@ -30,8 +30,10 @@ LFS_MCP_PORT = 45677
 # Poll interval for training progress (seconds)
 POLL_INTERVAL = 5.0
 
-# Maximum time to wait for the MCP server to come up (seconds)
-MCP_STARTUP_TIMEOUT = 120
+# Maximum time to wait for the MCP server to come up (seconds).
+# Headless mode does NOT start the MCP HTTP server, so set to 0
+# to skip straight to stdout monitoring.
+MCP_STARTUP_TIMEOUT = 0
 
 
 @dataclass
@@ -331,23 +333,75 @@ def _monitor_training_stdout(
     report_fn: Optional[Callable],
     verbose: bool = False,
 ):
-    """Fallback: monitor training via stdout parsing."""
+    """Monitor training via stdout parsing.
+
+    LichtFeld uses the ``indicators`` C++ library which updates the
+    progress bar in-place with ``\\r`` (carriage return) and only emits
+    ``\\n`` when training completes.  A plain ``readline()`` would block
+    until training finishes, so we read raw bytes and split on both
+    ``\\r`` and ``\\n``.
+
+    Expected indicators format::
+
+        Training [████...░░] 50% | 5000/10000 | Loss: 0.1234 | Splats: 45000
+    """
     import re
-    iter_pattern = re.compile(r"iter\s+(\d+).*loss[=:]\s*([\d.]+)", re.IGNORECASE)
 
-    for raw_line in iter(proc.stdout.readline, b""):
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
+    # Match indicators postfix: "5000/10000 | Loss: 0.1234 | Splats: 45000"
+    indicators_pattern = re.compile(
+        r"(\d+)/(\d+)\s*\|\s*Loss:\s*([\d.]+)\s*\|\s*Splats:\s*(\d+)",
+        re.IGNORECASE,
+    )
+    # Also match a simpler "iter N ... loss=X" format as fallback
+    iter_pattern = re.compile(
+        r"iter\s+(\d+).*loss[=:]\s*([\d.]+)", re.IGNORECASE
+    )
+    # Final summary: "✓ Final splats: 45000"
+    final_splats_pattern = re.compile(
+        r"Final splats:\s*(\d+)", re.IGNORECASE
+    )
 
-        if verbose:
-            print(f"[LichtFeld] {line}")
+    buf = b""
+    while True:
+        chunk = proc.stdout.read(4096)
+        if not chunk:
+            break
+        buf += chunk
+        # Split on \r or \n (indicators uses \r for in-place updates)
+        while b"\r" in buf or b"\n" in buf:
+            # Find earliest delimiter
+            r_pos = buf.find(b"\r")
+            n_pos = buf.find(b"\n")
+            if r_pos == -1:
+                pos = n_pos
+            elif n_pos == -1:
+                pos = r_pos
+            else:
+                pos = min(r_pos, n_pos)
+            raw_line = buf[:pos]
+            buf = buf[pos + 1:]
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            if verbose:
+                print(f"[LichtFeld] {line}")
 
-        match = iter_pattern.search(line)
-        if match and report_fn:
-            it = int(match.group(1))
-            loss = float(match.group(2))
-            report_fn(it, loss, 0)
+            m = indicators_pattern.search(line)
+            if m and report_fn:
+                it = int(m.group(1))
+                loss = float(m.group(3))
+                n_gauss = int(m.group(4))
+                report_fn(it, loss, n_gauss)
+                continue
+
+            m = iter_pattern.search(line)
+            if m and report_fn:
+                report_fn(int(m.group(1)), float(m.group(2)), 0)
+                continue
+
+            m = final_splats_pattern.search(line)
+            if m and report_fn:
+                report_fn(config.iterations, 0.0, int(m.group(1)))
 
 
 def _find_checkpoint_ply(output_dir: Path) -> Optional[str]:
