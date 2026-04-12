@@ -20,11 +20,6 @@ if "confluent_kafka" not in sys.modules:
     kafka_module.Producer = MagicMock()
     sys.modules["confluent_kafka"] = kafka_module
 
-if "exif" not in sys.modules:
-    exif_module = types.ModuleType("exif")
-    exif_module.Image = MagicMock()
-    sys.modules["exif"] = exif_module
-
 if "rasterio" not in sys.modules:
     rasterio_module = types.ModuleType("rasterio")
     rasterio_module.open = MagicMock()
@@ -181,41 +176,16 @@ class TestWorkerSupport(unittest.TestCase):
 
 
 class TestRuntimeSupport(unittest.TestCase):
-    def test_build_fusion_chunks_splits_at_target_size(self):
-        entries = ["img1.jpg", "img2.jpg", "img3.jpg"]
-        with patch.object(runtime_support, "estimate_fusion_entry_bytes", side_effect=[3 * 1024**3, 3 * 1024**3, 1 * 1024**3]):
-            chunks = runtime_support.build_fusion_chunks("/tmp/dense", entries, 4000, 4)
-
-        self.assertEqual(chunks, [["img1.jpg"], ["img2.jpg", "img3.jpg"]])
-
-    def test_run_chunked_fusion_single_chunk_delegates_to_run_command(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            stereo_dir = os.path.join(tmp_dir, "stereo")
-            os.makedirs(stereo_dir, exist_ok=True)
-            fusion_cfg_path = os.path.join(stereo_dir, "fusion.cfg")
-            with open(fusion_cfg_path, "w", encoding="utf-8") as handle:
-                handle.write("img1.jpg\nimg2.jpg\n")
-
-            report_fn = MagicMock()
-            run_command_fn = MagicMock()
-            params = {"fusion_chunk_target_memory_gib": "16", "fusion_max_image_size": "4000", "fusion_cache_size": "32"}
-
-            with patch.object(runtime_support, "build_fusion_chunks", return_value=[["img1.jpg", "img2.jpg"]]):
-                runtime_support.run_chunked_fusion(tmp_dir, os.path.join(tmp_dir, "fused.ply"), "vol-9", params, 4, report_fn, run_command_fn)
-
-        run_command_fn.assert_called_once()
-        command = run_command_fn.call_args.args[0]
-        self.assertEqual(command[0:2], ["colmap", "stereo_fusion"])
-        report_fn.assert_not_called()
+    pass
 
 
 class TestPipelineSupport(unittest.TestCase):
-    def test_merge_pipeline_params_defaults_to_gpu_zero(self):
+    def test_merge_pipeline_params_has_expected_defaults(self):
         legacy = pipeline_support.merge_pipeline_params("legacy", {})
         modern = pipeline_support.merge_pipeline_params("modern", {})
 
-        self.assertEqual(legacy["mvs_gpu_index"], "0")
-        self.assertEqual(modern["mvs_gpu_index"], "0")
+        self.assertEqual(legacy["mvs_max_image_size"], "4000")
+        self.assertEqual(modern["mvs_max_image_size"], "4000")
 
     def test_plan_clean_image_copy_skips_when_manifest_matches_hash(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -5,7 +5,8 @@ import sys
 import threading
 import logging
 import numpy as np
-from exif import Image as ExifImage
+from PIL import Image as PILImage
+from PIL.ExifTags import GPSTAGS
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -33,8 +34,7 @@ from pipeline_support import (
     save_copy_manifest,
     plan_clean_image_copy,
 )
-from ortho_support import generate_dummy_ortho, generate_ortho_from_ply
-from runtime_support import has_valid_fused_output, run_chunked_fusion, run_command
+from runtime_support import run_command
 from worker_support import (
     MissionStateTracker,
     WorkerCancellationState,
@@ -162,8 +162,6 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             os.getenv("ALIKED_GPU_INDEX", "0") if feature_family == "ALIKED" else os.getenv("SIFT_GPU_INDEX", "0")
         )
         ba_gpu_index = normalize_gpu_index(os.getenv("COLMAP_BA_GPU_INDEX", "0"))
-        mvs_gpu_index = normalize_gpu_index(params.get("mvs_gpu_index", "0"))
-        params["mvs_gpu_index"] = mvs_gpu_index
         params["feature_type"] = feature_type
         params["matcher_type"] = matcher_type
         report_mission_progress(
@@ -187,7 +185,6 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         sparse_path = os.path.join(workspace_dir, "sparse")
         geo_data_file = os.path.join(workspace_dir, "geo_data.txt")
         dense_path = os.path.join(workspace_dir, "dense")
-        fused_path = os.path.join(dense_path, "fused.ply")
         
         images = [f for f in os.listdir(raw_image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
         report_mission_progress(vol_id, "COPYING_IMAGES", 5, log=f"Checking/Copying {len(images)} images to SSD...")
@@ -285,19 +282,28 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             utm_crs = read_saved_utm_crs(geo_data_file)
             images = [f for f in os.listdir(clean_images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
             if utm_crs is None and images:
-                with open(os.path.join(clean_images_dir, images[0]), 'rb') as src:
-                    try:
-                        exif_img = ExifImage(src)
-                        if hasattr(exif_img, 'gps_latitude') and hasattr(exif_img, 'gps_longitude'):
-                            lat = exif_img.gps_latitude[0] + exif_img.gps_latitude[1]/60 + exif_img.gps_latitude[2]/3600
-                            if getattr(exif_img, 'gps_latitude_ref', 'N') == 'S': lat = -lat
-                            lon = exif_img.gps_longitude[0] + exif_img.gps_longitude[1]/60 + exif_img.gps_longitude[2]/3600
-                            if getattr(exif_img, 'gps_longitude_ref', 'E') == 'W': lon = -lon
-                            zone_number = int((lon + 180) / 6) + 1
-                            is_south = lat < 0
-                            utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
-                    except Exception:
-                        pass
+                try:
+                    img_path = os.path.join(clean_images_dir, images[0])
+                    with PILImage.open(img_path) as pil_img:
+                        exif_data = pil_img._getexif()
+                        if exif_data:
+                            gps_ifd = exif_data.get(0x8825)
+                            if gps_ifd:
+                                gps_info = {GPSTAGS.get(k, k): v for k, v in gps_ifd.items()}
+                                lat_dms = gps_info.get("GPSLatitude")
+                                lon_dms = gps_info.get("GPSLongitude")
+                                if lat_dms and lon_dms:
+                                    lat = float(lat_dms[0]) + float(lat_dms[1]) / 60 + float(lat_dms[2]) / 3600
+                                    if gps_info.get("GPSLatitudeRef", "N") == "S":
+                                        lat = -lat
+                                    lon = float(lon_dms[0]) + float(lon_dms[1]) / 60 + float(lon_dms[2]) / 3600
+                                    if gps_info.get("GPSLongitudeRef", "E") == "W":
+                                        lon = -lon
+                                    zone_number = int((lon + 180) / 6) + 1
+                                    is_south = lat < 0
+                                    utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
+                except Exception:
+                    pass
             save_utm_crs(geo_data_file, utm_crs)
         else:
             utm_crs = extract_gps_data(clean_images_dir, geo_data_file, vol_id, report_mission_progress)
@@ -308,46 +314,12 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         align_tf = os.path.join(workspace_dir, "alignment_transform.json")
         align_tf = align_tf if os.path.exists(align_tf) else None
         dense_sparse_ready = dense_sparse_model_ready(dense_path)
-        depth_maps_dir = os.path.join(dense_path, "stereo", "depth_maps")
-
-        def count_true_ortho_depth_maps():
-            if not os.path.isdir(depth_maps_dir):
-                return 0
-            return len([
-                name for name in os.listdir(depth_maps_dir)
-                if name.endswith(".geometric.bin")
-            ])
-
-        true_ortho_depth_map_count = count_true_ortho_depth_maps()
-        has_fused_output = has_valid_fused_output(fused_path)
-
-        if params["use_mesh_ortho"] and true_ortho_depth_map_count > 0 and not dense_sparse_ready:
-            report_mission_progress(
-                vol_id,
-                "PREPARING",
-                13,
-                log="Existing dense depth maps found but dense sparse model is missing. Clearing dense workspace and rebuilding MVS for true ortho.",
-            )
-            shutil.rmtree(dense_path, ignore_errors=True)
-            has_fused_output = False
-            dense_sparse_ready = False
-            true_ortho_depth_map_count = 0
 
         # Gaussian Splatting only needs dense/sparse + undistorted images.
-        # TrueOrtho DSM needs dense/sparse + geometric depth maps.
-        # PLY fallback needs fused.ply.
         gs_ready = dense_sparse_ready and os.path.isdir(os.path.join(dense_path, "images"))
-        ortho_only_ready = (
-            (gs_ready if params["use_mesh_ortho"] else has_fused_output)
-            or (dense_sparse_ready and true_ortho_depth_map_count >= 3)
-        )
+        ortho_only_ready = gs_ready
         if ortho_only_ready:
-            if params["use_mesh_ortho"] and gs_ready:
-                report_mission_progress(vol_id, "PREPARING", 13, log="Existing undistorted images found. Skipping SfM/MVS/fusion and rebuilding Gaussian Splatting orthomosaic only.")
-            elif params["use_mesh_ortho"]:
-                report_mission_progress(vol_id, "PREPARING", 13, log=f"Existing dense depth maps found ({true_ortho_depth_map_count}). Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
-            else:
-                report_mission_progress(vol_id, "PREPARING", 13, log="Existing dense data found. Skipping SfM/MVS/fusion and rebuilding orthomosaic only.")
+            report_mission_progress(vol_id, "PREPARING", 13, log="Existing undistorted images found. Skipping SfM and rebuilding Gaussian Splatting orthomosaic only.")
 
         # --- 3. SfM: Feature Extraction ---
         sparse_done = os.path.exists(os.path.join(sparse_path, "0", "cameras.bin")) or os.path.exists(os.path.join(sparse_path, "0", "cameras.txt"))
@@ -496,29 +468,11 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         else:
             report_mission_progress(vol_id, "MAPPING", 45, log="Sparse model found. Skipping SfM extraction and matching.")
 
-        # --- 7. MVS ---
-        # IMPORTANT: MVS must run on the NON-geo-aligned sparse model (sparse/0).
-        # The geo-aligned model has huge UTM coordinates (T ~ millions) which cause
-        # float32 precision loss in PatchMatch CUDA, making geometric consistency
-        # filtering reject all pixels. Geo-alignment is applied AFTER fusion.
+        # --- 7. Undistort images for Gaussian Splatting ---
+        # GS only needs the undistorted images + dense/sparse model.
         if ortho_only_ready:
-            if params["use_mesh_ortho"] and gs_ready:
-                report_mission_progress(vol_id, "STEREO_MVS", 75, log="Gaussian Splatting mode: undistorted images found. Skipping PatchMatch and fusion.")
-            elif params["use_mesh_ortho"]:
-                report_mission_progress(vol_id, "STEREO_MVS", 75, log="Existing true-ortho depth maps found. Skipping undistortion, PatchMatch, and fusion.")
-            else:
-                report_mission_progress(vol_id, "STEREO_MVS", 75, log="Existing textured mesh found. Skipping undistortion, PatchMatch, and fusion.")
+            report_mission_progress(vol_id, "UNDISTORT", 75, log="Undistorted images found. Skipping undistortion.")
         else:
-
-            # --- Smart resume: nuke dense dir if fused.ply is empty/invalid ---
-            # The entire dense/ must be rebuilt because the sparse model inside it
-            # may have been produced from the wrong coordinate system.
-            if os.path.exists(fused_path) and os.path.getsize(fused_path) < 100_000:
-                report_mission_progress(vol_id, "PREPARING", 71, log="⚠️ Existing fused.ply is empty/invalid (<100KB). Nuking dense/ for full MVS rebuild.")
-                shutil.rmtree(dense_path, ignore_errors=True)
-            
-            # Undistorter — max_image_size must match PatchMatch to avoid
-            # resolution mismatch between undistorted model and depth maps.
             if not os.path.exists(os.path.join(dense_path, "stereo", "fusion.cfg")):
                 run_command([
                     "colmap", "image_undistorter",
@@ -531,61 +485,14 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 report_mission_progress(vol_id, "UNDISTORT", 70, log="Undistorted images and fusion.cfg found. Skipping undistortion.")
 
             dense_sparse_ready = dense_sparse_model_ready(dense_path)
-
-            # --- Gaussian Splatting mode: skip PatchMatch + Fusion ---
-            # GS only needs the undistorted images + dense/sparse model.
-            if params["use_mesh_ortho"]:
-                report_mission_progress(
-                    vol_id, "STEREO_MVS", 90,
-                    log="Gaussian Splatting mode: skipping PatchMatch stereo and fusion. "
-                        f"Using {len(os.listdir(os.path.join(dense_path, 'images')))} undistorted images directly.",
-                )
-            else:
-                # --- PatchMatchStereo ---
-                # COLMAP natively handles the photometric pass internally before the geometric pass
-                # when geom_consistency is set to 1.
-                report_mission_progress(vol_id, "STEREO_MVS", 75, log=f"Running Multi-View Stereo (PatchMatch) gpu_index={params['mvs_gpu_index']} iterations={params['mvs_num_iterations']} samples={params['mvs_num_samples']}")
-                run_command([
-                    "colmap", "patch_match_stereo",
-                    "--workspace_path", dense_path,
-                    "--PatchMatchStereo.gpu_index", params["mvs_gpu_index"],
-                    "--PatchMatchStereo.max_image_size", params["mvs_max_image_size"],
-                    "--PatchMatchStereo.window_step", params["mvs_window_step"],
-                    "--PatchMatchStereo.num_iterations", params["mvs_num_iterations"],
-                    "--PatchMatchStereo.num_samples", params["mvs_num_samples"],
-                    "--PatchMatchStereo.geom_consistency", "1",
-                    "--PatchMatchStereo.filter", "1",
-                    "--PatchMatchStereo.filter_min_num_consistent", params["mvs_filter_min_num_consistent"],
-                ], vol_id, "STEREO_MVS", 75, report_mission_progress, ensure_not_cancelled)
-
-                dense_sparse_ready = dense_sparse_model_ready(dense_path)
-                true_ortho_depth_map_count = count_true_ortho_depth_maps()
-                # Stereo Fusion — uses geometric depth maps.
-                # Explicit --input_type geometric is required for a successful multi-point fusion.
-                # Clamp min_num_pixels to the number of undistorted images to avoid
-                # requiring more consistent observations than can exist.
-                num_undistorted = len([f for f in os.listdir(os.path.join(dense_path, "images"))
-                                       if f.lower().endswith(('.jpg', '.jpeg', '.png'))]) if os.path.isdir(os.path.join(dense_path, "images")) else 0
-                effective_min_num_pixels = min(int(params["fusion_min_num_pixels"]), num_undistorted) if num_undistorted > 0 else int(params["fusion_min_num_pixels"])
-                effective_min_num_pixels = max(1, effective_min_num_pixels)
-                report_mission_progress(vol_id, "FUSION", 90, log=f"Fusion: {num_undistorted} undistorted images, min_num_pixels={effective_min_num_pixels}")
-                if not os.path.exists(fused_path):
-                    run_chunked_fusion(dense_path, fused_path, vol_id, params, effective_min_num_pixels, report_mission_progress, lambda command, current_vol_id, step, base_progress: run_command(command, current_vol_id, step, base_progress, report_mission_progress, ensure_not_cancelled))
-                else:
-                    report_mission_progress(vol_id, "FUSION", 92, log="Fused point cloud found. Skipping stereo fusion.")
-
-                if not has_valid_fused_output(fused_path):
-                    fused_size = os.path.getsize(fused_path) if os.path.exists(fused_path) else 0
-                    raise RuntimeError(
-                        f"Fusion did not produce a valid fused.ply (size={fused_size} bytes). "
-                        "The fusion process likely terminated early or was killed."
-                    )
+            n_undistorted = len(os.listdir(os.path.join(dense_path, "images"))) if os.path.isdir(os.path.join(dense_path, "images")) else 0
+            report_mission_progress(
+                vol_id, "UNDISTORT", 90,
+                log=f"Using {n_undistorted} undistorted images for Gaussian Splatting.",
+            )
         
-        # --- 8b. Geo-alignment of dense model ---
-        # Now that fusion is done in COLMAP coords, align the fused result to UTM
-        # for geo-referenced orthomosaic generation.
+        # --- 8. Geo-alignment ---
         sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
-        fused_geo_path = os.path.join(dense_path, "fused_geo.ply")
 
         def ensure_alignment_transform():
             nonlocal align_tf
@@ -656,280 +563,111 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
                 report_mission_progress(vol_id, "ALIGNING", 94, log=f"Failed to compute alignment transform ({e}); using raw COLMAP coordinates.")
                 return None
         
-        if params["use_mesh_ortho"]:
-            if true_ortho_depth_map_count >= 3:
-                ensure_alignment_transform()
-            elif align_tf:
-                report_mission_progress(vol_id, "ALIGNING", 94, log="Using saved alignment_transform.json for depth-map TrueOrtho.")
-        elif not ortho_only_ready and os.path.exists(fused_path) and os.path.getsize(fused_path) >= 100_000:
-            if os.path.exists(geo_data_file) and os.path.getsize(geo_data_file) > 0 and not os.path.exists(fused_geo_path):
-                # Align the dense sparse model to UTM using GPS reference
-                os.makedirs(sparse_geo_path, exist_ok=True)
-                align_done = os.path.exists(os.path.join(sparse_geo_path, "cameras.bin"))
-                if not align_done:
-                    run_command([
-                        "colmap", "model_aligner",
-                        "--input_path", os.path.join(sparse_path, "0"),
-                        "--output_path", sparse_geo_path,
-                        "--ref_images_path", geo_data_file,
-                        "--ref_is_gps", "0",
-                        "--alignment_max_error", "0.2"
-                    ], vol_id, "ALIGNING", 93, report_mission_progress, ensure_not_cancelled)
-                
-                # Transform fused.ply to geo-referenced coordinates using pycolmap
-                report_mission_progress(vol_id, "ALIGNING", 94, log="Geo-referencing fused point cloud...")
-                try:
-                    import pycolmap
-                    # Read both reconstructions to compute the alignment transform
-                    rec_src = pycolmap.Reconstruction(os.path.join(sparse_path, "0"))
-                    rec_dst = pycolmap.Reconstruction(sparse_geo_path)
-                    
-                    # Compute Sim3 from source to destination using shared image positions
-                    src_centers = {}
-                    for image_id in rec_src.images:
-                        img = rec_src.images[image_id]
-                        src_centers[img.name] = img.projection_center()
-                    
-                    dst_centers = {}
-                    for image_id in rec_dst.images:
-                        img = rec_dst.images[image_id]
-                        dst_centers[img.name] = img.projection_center()
-                    
-                    # Find common images and compute transform
-                    common = set(src_centers.keys()) & set(dst_centers.keys())
-                    if len(common) >= 3:
-                        src_pts = np.array([src_centers[n] for n in sorted(common)])
-                        dst_pts = np.array([dst_centers[n] for n in sorted(common)])
-                        
-                        # Estimate Sim3 via Umeyama
-                        src_mean = src_pts.mean(axis=0)
-                        dst_mean = dst_pts.mean(axis=0)
-                        src_c = src_pts - src_mean
-                        dst_c = dst_pts - dst_mean
-                        
-                        src_var = np.sum(src_c ** 2) / len(common)
-                        H = dst_c.T @ src_c / len(common)
-                        U, S, Vt = np.linalg.svd(H)
-                        d = np.linalg.det(U) * np.linalg.det(Vt)
-                        D = np.diag([1, 1, 1 if d > 0 else -1])
-                        R = U @ D @ Vt
-                        scale = np.sum(S * np.diag(D)) / src_var
-                        t = dst_mean - scale * R @ src_mean
-                        
-                        # Apply transform to fused.ply
-                        from plyfile import PlyData, PlyElement
-                        plydata = PlyData.read(fused_path)
-                        vertices = plydata['vertex']
-                        xyz = np.column_stack([vertices['x'], vertices['y'], vertices['z']]).astype(np.float64)
-                        nxyz = np.column_stack([vertices['nx'], vertices['ny'], vertices['nz']]).astype(np.float64)
-                        
-                        xyz_geo = (scale * (R @ xyz.T) + t[:, np.newaxis]).T
-                        nxyz_geo = (R @ nxyz.T).T
-                        
-                        # Preserve transformed coordinates in float64 so legacy
-                        # point-cloud ortho fallback does not quantize large CRS values.
-                        promoted_vertex_dtype = []
-                        for field_name in vertices.data.dtype.names:
-                            if field_name in {"x", "y", "z", "nx", "ny", "nz"}:
-                                promoted_vertex_dtype.append((field_name, np.float64))
-                            else:
-                                promoted_vertex_dtype.append((field_name, vertices.data.dtype.fields[field_name][0]))
-
-                        new_vertices = np.empty(len(vertices.data), dtype=promoted_vertex_dtype)
-                        for field_name in vertices.data.dtype.names:
-                            if field_name == 'x':
-                                new_vertices[field_name] = xyz_geo[:, 0]
-                            elif field_name == 'y':
-                                new_vertices[field_name] = xyz_geo[:, 1]
-                            elif field_name == 'z':
-                                new_vertices[field_name] = xyz_geo[:, 2]
-                            elif field_name == 'nx':
-                                new_vertices[field_name] = nxyz_geo[:, 0]
-                            elif field_name == 'ny':
-                                new_vertices[field_name] = nxyz_geo[:, 1]
-                            elif field_name == 'nz':
-                                new_vertices[field_name] = nxyz_geo[:, 2]
-                            else:
-                                new_vertices[field_name] = vertices[field_name]
-                        
-                        el = PlyElement.describe(new_vertices, 'vertex')
-                        PlyData([el], text=False).write(fused_geo_path)
-                        report_mission_progress(vol_id, "ALIGNING", 94, log=f"Geo-referenced {len(xyz)} points (scale={scale:.4f})")
-                        
-                        # Save transform for mesh ortho path
-                        transform_file = os.path.join(workspace_dir, "alignment_transform.json")
-                        with open(transform_file, 'w') as tf:
-                            json.dump({"R": R.tolist(), "scale": scale, "t": t.tolist()}, tf)
-                    else:
-                        report_mission_progress(vol_id, "ALIGNING", 94, log="Not enough common images for alignment, using raw fused.ply")
-                        fused_geo_path = fused_path
-                except Exception as e:
-                    report_mission_progress(vol_id, "ALIGNING", 94, log=f"Geo-referencing failed ({e}), using raw fused.ply")
-                    fused_geo_path = fused_path
-            elif os.path.exists(fused_geo_path):
-                report_mission_progress(vol_id, "ALIGNING", 94, log="Geo-referenced point cloud found. Skipping alignment.")
-            else:
-                fused_geo_path = fused_path
-        elif ortho_only_ready:
-            report_mission_progress(vol_id, "ALIGNING", 94, log="Existing textured mesh found. Skipping dense geo-alignment and using any saved transform if present.")
+        ensure_alignment_transform()
         
-        # --- 9. Orthomosaic Generation ---
+        # --- 9. Gaussian Splatting Orthomosaic ---
         ortho_file = os.path.join(workspace_dir, "orthomosaic.tif")
         
         align_tf_path = os.path.join(workspace_dir, "alignment_transform.json")
         if os.path.exists(align_tf_path):
             align_tf = align_tf_path
 
-        if params["use_mesh_ortho"]:
-            # --- Gaussian Splatting Orthomosaic ---
-            dense_sparse_ready = dense_sparse_model_ready(dense_path)
-            if not dense_sparse_ready:
-                raise RuntimeError(
-                    "Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin). "
-                    f"dense_sparse_ready={dense_sparse_ready}."
-                )
+        dense_sparse_ready = dense_sparse_model_ready(dense_path)
+        if not dense_sparse_ready:
+            raise RuntimeError(
+                "Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin). "
+                f"dense_sparse_ready={dense_sparse_ready}."
+            )
+        try:
+            import gc
+            import traceback as _tb
+            app1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
+            if app1_dir not in sys.path:
+                sys.path.insert(0, app1_dir)
+            from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
+
+            gc.collect()
             try:
-                import sys
-                import gc
-                import traceback as _tb
-                app1_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
-                if app1_dir not in sys.path:
-                    sys.path.insert(0, app1_dir)
-                from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
+                import cupy as _cp
+                _cp.get_default_memory_pool().free_all_blocks()
+                _cp.get_default_pinned_memory_pool().free_all_blocks()
+            except Exception:
+                pass
 
-                # Free any leaked CUDA memory from a previous failed attempt.
-                # A prior OOM/crash can leave the caching allocator with stale
-                # handles that empty_cache() alone cannot fix — we must fully
-                # reset the CUDA context to avoid the
-                # "!handles_.at(i) INTERNAL ASSERT FAILED" assertion.
-                gc.collect()
-                try:
-                    import torch as _torch
-                    if _torch.cuda.is_available():
-                        _torch.cuda.empty_cache()
-                        _torch.cuda.reset_peak_memory_stats()
-                        # Force-release all cached blocks by resetting the
-                        # allocator.  This is the only reliable way to clear
-                        # stale handles after a CUDA error in-process.
-                        try:
-                            _torch.cuda.memory.empty_cache()
-                            # If expandable_segments was previously set we
-                            # re-apply it so the new allocator picks it up.
-                            _torch.cuda.memory._set_allocator_settings("")
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+            ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
 
-                ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
-
-                # Auto data_factor: scale down training images based on dataset size and resolution
-                gs_data_factor_raw = str(params.get("gs_data_factor", "auto"))
-                if gs_data_factor_raw == "auto":
-                    images_dir = os.path.join(dense_path, "images")
-                    image_files = [f for f in os.listdir(images_dir)
-                                   if f.lower().endswith(('.jpg', '.jpeg', '.png'))] if os.path.isdir(images_dir) else []
-                    n_images_count = len(image_files)
-                    # Probe max image dimension from the first image
-                    max_dim = 0
-                    if image_files:
-                        try:
-                            from PIL import Image as PILImage
-                            probe_path = os.path.join(images_dir, image_files[0])
-                            with PILImage.open(probe_path) as img:
-                                max_dim = max(img.size)
-                        except Exception:
-                            pass
-                    # Target: keep training images ≤ 1600px on the long side
-                    # and also limit total pixel throughput for large datasets
-                    if max_dim > 4000 or n_images_count > 800:
-                        gs_data_factor = 8
-                    elif max_dim > 2000 or n_images_count > 500:
-                        gs_data_factor = 4
-                    elif max_dim > 1200:
-                        gs_data_factor = 2
-                    else:
-                        gs_data_factor = 1
-                    report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images, max_dim={max_dim}px")
+            # Auto data_factor: scale down training images based on dataset size and resolution
+            gs_data_factor_raw = str(params.get("gs_data_factor", "auto"))
+            if gs_data_factor_raw == "auto":
+                images_dir = os.path.join(dense_path, "images")
+                image_files = [f for f in os.listdir(images_dir)
+                               if f.lower().endswith(('.jpg', '.jpeg', '.png'))] if os.path.isdir(images_dir) else []
+                n_images_count = len(image_files)
+                max_dim = 0
+                if image_files:
+                    try:
+                        probe_path = os.path.join(images_dir, image_files[0])
+                        with PILImage.open(probe_path) as img:
+                            max_dim = max(img.size)
+                    except Exception:
+                        pass
+                if max_dim > 4000 or n_images_count > 800:
+                    gs_data_factor = 8
+                elif max_dim > 2000 or n_images_count > 500:
+                    gs_data_factor = 4
+                elif max_dim > 1200:
+                    gs_data_factor = 2
                 else:
-                    gs_data_factor = int(gs_data_factor_raw)
-
-                gs_iterations = int(params.get("gs_iterations", 30_000))
-                gs_cap_max = int(params.get("gs_cap_max", 5_000_000))
-                gs_sh_degree = int(params.get("gs_sh_degree", 3))
-                gs_filter_enabled = params.get("gs_filter_enabled", True)
-                gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
-                gs_filter_dist = float(params.get("gs_filter_dist", 1.0))
-                gs_filter_opacity = float(params.get("gs_filter_opacity", 0.005))
-                gs_filter_needle = float(params.get("gs_filter_needle", 0.0))
-                gs_filter_sor = params.get("gs_filter_sor", False)
-                gs_filter_sor_sigma = float(params.get("gs_filter_sor_sigma", 4.0))
-                gs_filter_cc = params.get("gs_filter_cc", False)
-                gs_filter_z_floater = params.get("gs_filter_z_floater", False)
-                gs_nadir_finetune_iters = int(params.get("gs_nadir_finetune_iters", 3000))
-                gs_nadir_finetune_mode = str(params.get("gs_nadir_finetune_mode", "full"))
-                gs_nadir_finetune_angle = float(params.get("gs_nadir_finetune_angle", 15.0))
-
-                checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
-
-                result = generate_gaussian_orthophoto(
-                    dense_path=dense_path,
-                    ortho_file=ortho_file,
-                    utm_crs=utm_crs,
-                    vol_id=vol_id,
-                    transform_file=align_tf,
-                    report_fn=report_mission_progress,
-                    resolution=ortho_resolution,
-                    iterations=gs_iterations,
-                    sh_degree=gs_sh_degree,
-                    data_factor=gs_data_factor,
-                    cap_max=gs_cap_max,
-                    filter_enabled=gs_filter_enabled,
-                    filter_max_scale=gs_filter_max_scale,
-                    filter_dist_multiplier=gs_filter_dist,
-                    filter_opacity_threshold=gs_filter_opacity,
-                    filter_needle_ratio=gs_filter_needle,
-                    filter_sor=gs_filter_sor,
-                    filter_sor_sigma=gs_filter_sor_sigma,
-                    filter_cc=gs_filter_cc,
-                    filter_z_floater=gs_filter_z_floater,
-                    checkpoint_dir=checkpoint_dir,
-                    nadir_finetune_iters=gs_nadir_finetune_iters,
-                    nadir_finetune_mode=gs_nadir_finetune_mode,
-                    nadir_finetune_angle=gs_nadir_finetune_angle,
-                )
-                report_mission_progress(vol_id, "GAUSS", 100,
-                    log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "
-                        f"{result['n_gaussians']} Gaussians, GSD={ortho_resolution}m")
-            except Exception as e:
-                _tb.print_exc()
-                report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
-                raise
-        else:
-            ortho_point_cloud_path = fused_path
-            ortho_point_cloud_transform = align_tf
-            if align_tf is None and os.path.exists(fused_geo_path) and fused_geo_path != fused_path:
-                ortho_point_cloud_path = fused_geo_path
-                report_mission_progress(
-                    vol_id,
-                    "ORTHO",
-                    95,
-                    log="No alignment_transform.json found. Using fused_geo.ply for point-cloud orthomosaic projection.",
-                )
-
-            if ortho_only_ready or has_valid_fused_output(fused_path):
-                try:
-                    ortho_resolution = float(params.get("ortho_mesh_resolution", 0.05))
-                    generate_ortho_from_ply(ortho_point_cloud_path, ortho_file, utm_crs, vol_id, report_mission_progress, transform_file=ortho_point_cloud_transform, resolution=ortho_resolution)
-                except Exception as e:
-                    report_mission_progress(vol_id, "ORTHO", 95, log=f"Error generating ortho: {e}. Using dummy.")
-                    generate_dummy_ortho(ortho_file)
+                    gs_data_factor = 1
+                report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images, max_dim={max_dim}px")
             else:
-                fused_size = os.path.getsize(fused_path) if os.path.exists(fused_path) else 0
-                raise RuntimeError(
-                    f"fused.ply not found or too small after fusion (size={fused_size} bytes). "
-                    "Aborting instead of generating a dummy orthomosaic."
-                )
+                gs_data_factor = int(gs_data_factor_raw)
+
+            gs_iterations = int(params.get("gs_iterations", 30_000))
+            gs_cap_max = int(params.get("gs_cap_max", 5_000_000))
+            gs_sh_degree = int(params.get("gs_sh_degree", 3))
+            gs_filter_enabled = params.get("gs_filter_enabled", True)
+            gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
+            gs_filter_dist = float(params.get("gs_filter_dist", 1.0))
+            gs_filter_opacity = float(params.get("gs_filter_opacity", 0.005))
+            gs_filter_needle = float(params.get("gs_filter_needle", 0.0))
+            gs_filter_sor = params.get("gs_filter_sor", False)
+            gs_filter_sor_sigma = float(params.get("gs_filter_sor_sigma", 4.0))
+            gs_filter_cc = params.get("gs_filter_cc", False)
+            gs_filter_z_floater = params.get("gs_filter_z_floater", False)
+
+            checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
+
+            result = generate_gaussian_orthophoto(
+                dense_path=dense_path,
+                ortho_file=ortho_file,
+                utm_crs=utm_crs,
+                vol_id=vol_id,
+                transform_file=align_tf,
+                report_fn=report_mission_progress,
+                resolution=ortho_resolution,
+                iterations=gs_iterations,
+                sh_degree=gs_sh_degree,
+                data_factor=gs_data_factor,
+                cap_max=gs_cap_max,
+                filter_enabled=gs_filter_enabled,
+                filter_max_scale=gs_filter_max_scale,
+                filter_dist_multiplier=gs_filter_dist,
+                filter_opacity_threshold=gs_filter_opacity,
+                filter_needle_ratio=gs_filter_needle,
+                filter_sor=gs_filter_sor,
+                filter_sor_sigma=gs_filter_sor_sigma,
+                filter_cc=gs_filter_cc,
+                filter_z_floater=gs_filter_z_floater,
+                checkpoint_dir=checkpoint_dir,
+            )
+            report_mission_progress(vol_id, "GAUSS", 100,
+                log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "
+                    f"{result['n_gaussians']} Gaussians, GSD={ortho_resolution}m")
+        except Exception as e:
+            _tb.print_exc()
+            report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
+            raise
         
         report_mission_progress(vol_id, "DONE", 100, status="success", log="Pipeline complete!")
         publish_next_stage_message(producer, TOPIC_OUT, vol_id, ortho_file, mission_params, normalize_ai_backend)
@@ -940,19 +678,12 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
         report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {str(e)}")
     finally:
         # Free RAM/VRAM after every mission (success, cancel, or error).
-        # Aggressively reset the CUDA allocator to prevent stale-handle
-        # assertions on the next mission.
         import gc
         gc.collect()
         try:
-            import torch as _torch
-            if _torch.cuda.is_available():
-                _torch.cuda.empty_cache()
-                _torch.cuda.reset_peak_memory_stats()
-                try:
-                    _torch.cuda.memory._set_allocator_settings("")
-                except Exception:
-                    pass
+            import cupy as _cp
+            _cp.get_default_memory_pool().free_all_blocks()
+            _cp.get_default_pinned_memory_pool().free_all_blocks()
         except Exception:
             pass
 
@@ -961,7 +692,7 @@ def worker_main():
     threading.Thread(target=control_consumer_thread, daemon=True).start()
     consumer = create_consumer(KAFKA_BROKER, TOPIC_IN)
 
-    print("🎧 App 1 (COLMAP 4 — ALIKED/GLOMAP + Legacy Fallback) ready.")
+    print("🎧 App 1 (COLMAP 4 — ALIKED/GLOMAP) ready.")
 
     try:
         while True:

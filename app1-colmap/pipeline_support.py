@@ -6,7 +6,8 @@ import shutil
 import sqlite3
 import subprocess
 
-from exif import Image as ExifImage
+from PIL import Image as PILImage
+from PIL.ExifTags import GPSTAGS
 
 from shared.pipeline_params import (
     merge_mission_pipeline_params,
@@ -130,30 +131,40 @@ def extract_gps_data(image_dir, output_file, vol_id, report_fn):
     with open(output_file, "w", encoding="utf-8") as handle:
         for img_name in images:
             img_path = os.path.join(image_dir, img_name)
-            with open(img_path, "rb") as src:
-                try:
-                    exif_img = ExifImage(src)
-                    if hasattr(exif_img, "gps_latitude") and hasattr(exif_img, "gps_longitude"):
-                        lat = exif_img.gps_latitude[0] + exif_img.gps_latitude[1] / 60 + exif_img.gps_latitude[2] / 3600
-                        if getattr(exif_img, "gps_latitude_ref", "N") == "S":
-                            lat = -lat
-                        lon = exif_img.gps_longitude[0] + exif_img.gps_longitude[1] / 60 + exif_img.gps_longitude[2] / 3600
-                        if getattr(exif_img, "gps_longitude_ref", "E") == "W":
-                            lon = -lon
-                        alt = getattr(exif_img, "gps_altitude", 0)
+            try:
+                with PILImage.open(img_path) as pil_img:
+                    exif_data = pil_img._getexif()
+                    if not exif_data:
+                        continue
+                    gps_ifd = exif_data.get(0x8825)
+                    if not gps_ifd:
+                        continue
+                    gps_info = {GPSTAGS.get(k, k): v for k, v in gps_ifd.items()}
+                    gps_lat = gps_info.get("GPSLatitude")
+                    gps_lon = gps_info.get("GPSLongitude")
+                    if not gps_lat or not gps_lon:
+                        continue
+                    lat = float(gps_lat[0]) + float(gps_lat[1]) / 60 + float(gps_lat[2]) / 3600
+                    if gps_info.get("GPSLatitudeRef", "N") == "S":
+                        lat = -lat
+                    lon = float(gps_lon[0]) + float(gps_lon[1]) / 60 + float(gps_lon[2]) / 3600
+                    if gps_info.get("GPSLongitudeRef", "E") == "W":
+                        lon = -lon
+                    gps_alt = gps_info.get("GPSAltitude", 0)
+                    alt = float(gps_alt) if gps_alt else 0
 
-                        if transformer is None:
-                            zone_number = int((lon + 180) / 6) + 1
-                            is_south = lat < 0
-                            utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
-                            transformer = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+                    if transformer is None:
+                        zone_number = int((lon + 180) / 6) + 1
+                        is_south = lat < 0
+                        utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
+                        transformer = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
 
-                        x, y = transformer.transform(lon, lat)
-                        handle.write(f"{img_name} {x} {y} {alt}\n")
-                        count += 1
-                except Exception as error:
-                    logger.debug("Skipping GPS extraction for %s: %s", img_name, error)
-                    continue
+                    x, y = transformer.transform(lon, lat)
+                    handle.write(f"{img_name} {x} {y} {alt}\n")
+                    count += 1
+            except Exception as error:
+                logger.debug("Skipping GPS extraction for %s: %s", img_name, error)
+                continue
     report_fn(vol_id, "GPS_EXTRACTION", 12, log=f"Extracted GPS from {count}/{len(images)} images using EXIF. Using CRS {utm_crs}")
     return utm_crs
 

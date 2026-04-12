@@ -1,0 +1,291 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 669ce793..cabbcac7 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -13,8 +13,13 @@ endif()
+ 
+ cmake_minimum_required(VERSION 3.30)
+ 
++option(LFS_BUILD_HEADLESS_ONLY "Build headless training only (no GUI/visualizer)" OFF)
+ option(LFS_ENFORCE_LINUX_GUI_BACKENDS "Fail configure when Linux SDL3 would lack X11 and Wayland support" ON)
+ 
++if(LFS_BUILD_HEADLESS_ONLY)
++    set(LFS_ENFORCE_LINUX_GUI_BACKENDS OFF CACHE BOOL "" FORCE)
++endif()
++
+ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinuxGuiSanity.cmake")
+ lfs_linux_preflight_gui_backends()
+ 
+@@ -266,14 +271,16 @@ message(STATUS "CUDA Toolkit ${CUDAToolkit_VERSION} found at ${CUDAToolkit_TARGE
+ # Find packages
+ find_package(TBB REQUIRED)
+ find_package(Threads REQUIRED)
++find_package(glm REQUIRED)
+ find_package(OpenGL REQUIRED)
+ find_package(glad REQUIRED)
+-find_package(SDL3 REQUIRED)
+-lfs_validate_linux_sdl_video_backends()
+-find_package(glm REQUIRED)
+-find_package(imgui REQUIRED)
+-find_package(implot REQUIRED)
+-find_package(nfd CONFIG REQUIRED)
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    find_package(SDL3 REQUIRED)
++    lfs_validate_linux_sdl_video_backends()
++    find_package(imgui REQUIRED)
++    find_package(implot REQUIRED)
++    find_package(nfd CONFIG REQUIRED)
++endif()
+ find_package(nlohmann_json REQUIRED)
+ find_package(args REQUIRED)
+ find_package(spdlog REQUIRED)
+@@ -284,7 +291,9 @@ find_package(OpenImageIO REQUIRED)
+ find_package(OpenSSL REQUIRED)
+ find_package(pxr CONFIG REQUIRED)
+ find_package(assimp REQUIRED)
+-find_package(RmlUi CONFIG REQUIRED)
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    find_package(RmlUi CONFIG REQUIRED)
++endif()
+ 
+ # TORCH_CUDA_ARCH_LIST is already defined by Torch
+ # use it here as the global default CUDA architecture list too
+@@ -373,7 +382,9 @@ add_subdirectory(src/training)   # Training module (lfs::training namespace)
+ add_subdirectory(src/io)         # I/O module (lfs::io namespace)
+ add_subdirectory(src/rendering)  # Rendering module (lfs::rendering namespace)
+ add_subdirectory(src/sequencer)  # Sequencer module (lfs::sequencer namespace)
+-add_subdirectory(src/visualizer) # Visualizer module (lfs::vis namespace)
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    add_subdirectory(src/visualizer) # Visualizer module (lfs::vis namespace)
++endif()
+ add_subdirectory(src/geometry)   # Geometry utilities
+ add_subdirectory(src/mcp)        # MCP server (AI agent integration)
+ add_subdirectory(src/python)
+@@ -386,18 +397,24 @@ add_subdirectory(src/python)
+ # LichtFeld-Studio
+ # -----------------------------------------------------------------------------
+ 
+-add_executable(${PROJECT_NAME}
++set(LFS_APP_SOURCES
+     src/app/main.cpp
+     src/app/application.cpp
+-    src/app/mcp_gui_tools.cpp
+-    src/app/mcp_operator_tools.cpp
+     src/app/mcp_runtime_tools.cpp
+-    src/app/mcp_sequencer_tools.cpp
+-    src/app/mcp_ui_registry_tools.cpp
+     src/app/converter.cpp
+-    src/app/splash_screen.cpp
+     resources/lichtfeld-studio.rc
+ )
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    list(APPEND LFS_APP_SOURCES
++        src/app/mcp_gui_tools.cpp
++        src/app/mcp_operator_tools.cpp
++        src/app/mcp_sequencer_tools.cpp
++        src/app/mcp_ui_registry_tools.cpp
++        src/app/splash_screen.cpp
++    )
++endif()
++
++add_executable(${PROJECT_NAME} ${LFS_APP_SOURCES})
+ 
+ 
+ set_target_properties(${PROJECT_NAME} PROPERTIES
+@@ -411,47 +428,80 @@ target_include_directories(${PROJECT_NAME}
+         ${CMAKE_CURRENT_BINARY_DIR}/include
+         ${CMAKE_CURRENT_SOURCE_DIR}/src/app/include  # For app headers
+         ${CMAKE_CURRENT_SOURCE_DIR}/src              # For training/, visualizer/, etc.
+-        ${CMAKE_CURRENT_SOURCE_DIR}/src/visualizer   # For internal visualizer headers used by GUI MCP
+         ${CMAKE_CURRENT_SOURCE_DIR}/src/rendering/include  # For rendering headers (MCP GUI tools)
+         ${CMAKE_CURRENT_SOURCE_DIR}/external         # For external headers
+         ${CMAKE_CURRENT_SOURCE_DIR}/external/imguizmo
+ 
+         ${CUDAToolkit_INCLUDE_DIRS}
+-        ${OPENGL_INCLUDE_DIRS}
+ )
+-
+-if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
+-    set(LFS_APP_INTERNAL_LINK_LIBS
+-        "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils>"
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    target_include_directories(${PROJECT_NAME} PRIVATE
++        ${CMAKE_CURRENT_SOURCE_DIR}/src/visualizer   # For internal visualizer headers used by GUI MCP
++        ${OPENGL_INCLUDE_DIRS}
+     )
++endif()
++
++if(LFS_BUILD_HEADLESS_ONLY)
++    if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
++        set(LFS_APP_INTERNAL_LINK_LIBS
++            "$<LINK_GROUP:RESCAN,lfs_mcp,lfs_sequencer,lfs_rendering,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils>"
++        )
++    else()
++        set(LFS_APP_INTERNAL_LINK_LIBS
++            lfs_mcp
++            lfs_sequencer
++            lfs_rendering
++            lfs_training
++            lfs_geometry
++            lfs_core
++            lfs_io
++            lfs_video
++            fastlfs_backend
++            lfs_python_utils
++        )
++    endif()
+ else()
+-    set(LFS_APP_INTERNAL_LINK_LIBS
+-        lfs_visualizer
+-        lfs_mcp
+-        lfs_sequencer
+-        lfs_rendering
+-        lfs_training
+-        lfs_geometry
+-        lfs_core
+-        lfs_io
+-        lfs_video
+-        fastlfs_backend
+-        lfs_python_utils
+-    )
++    if(CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED)
++        set(LFS_APP_INTERNAL_LINK_LIBS
++            "$<LINK_GROUP:RESCAN,lfs_visualizer,lfs_mcp,lfs_sequencer,lfs_rendering,lfs_training,lfs_geometry,lfs_core,lfs_io,lfs_video,fastlfs_backend,lfs_python_utils>"
++        )
++    else()
++        set(LFS_APP_INTERNAL_LINK_LIBS
++            lfs_visualizer
++            lfs_mcp
++            lfs_sequencer
++            lfs_rendering
++            lfs_training
++            lfs_geometry
++            lfs_core
++            lfs_io
++            lfs_video
++            fastlfs_backend
++            lfs_python_utils
++        )
++    endif()
+ endif()
+ 
+ target_link_libraries(${PROJECT_NAME}
+         PRIVATE
+         ${LFS_APP_INTERNAL_LINK_LIBS}
+ 
+-        ${OPENGL_LIBRARIES}
+         CUDA::cudart
+         spdlog::spdlog
+         taywee::args
+         OpenImageIO::OpenImageIO
++)
++if(NOT LFS_BUILD_HEADLESS_ONLY)
++    target_link_libraries(${PROJECT_NAME} PRIVATE
++        ${OPENGL_LIBRARIES}
+         glad::glad
+         SDL3::SDL3
+-)
++    )
++endif()
++
++if(LFS_BUILD_HEADLESS_ONLY)
++    target_compile_definitions(${PROJECT_NAME} PRIVATE LFS_HEADLESS_ONLY)
++endif()
+ 
+ # The app embeds Python and loads the nanobind module at runtime for panels,
+ # menus, and operators. Keep the runtime artifact in lockstep with the app.
+diff --git a/src/app/application.cpp b/src/app/application.cpp
+index b0cc5e2d..5208a7c0 100644
+--- a/src/app/application.cpp
++++ b/src/app/application.cpp
+@@ -3,7 +3,9 @@
+  * SPDX-License-Identifier: GPL-3.0-or-later */
+ 
+ #include "app/application.hpp"
++#ifndef LFS_HEADLESS_ONLY
+ #include "app/splash_screen.hpp"
++#endif
+ #include "control/command_api.hpp"
+ #include "core/checkpoint_format.hpp"
+ #include "core/cuda_version.hpp"
+@@ -16,19 +18,27 @@
+ #include "core/scene.hpp"
+ #include "core/tensor.hpp"
+ #include "io/cache_image_loader.hpp"
++#ifndef LFS_HEADLESS_ONLY
+ #include "rendering/framebuffer_factory.hpp"
++#endif
+ #include "training/trainer.hpp"
+ #include "training/training_setup.hpp"
++#ifndef LFS_HEADLESS_ONLY
+ #include "visualizer/visualizer.hpp"
++#endif
+ 
++#ifndef LFS_HEADLESS_ONLY
+ #include "app/mcp_gui_tools.hpp"
++#endif
+ #include "io/video/video_encoder.hpp"
+ #include "mcp/mcp_http_server.hpp"
+ #include "mcp/mcp_tools.hpp"
+ #include "python/runner.hpp"
++#ifndef LFS_HEADLESS_ONLY
+ #include "visualizer/gui/panels/python_scripts_panel.hpp"
+ #include "visualizer/gui/video_widget_interface.hpp"
+ #include "visualizer/gui/windows/video_extractor_dialog.hpp"
++#endif
+ #include <cstdlib>
+ #include <cuda_runtime.h>
+ #include <rasterization_api.h>
+@@ -114,7 +124,9 @@ namespace lfs::app {
+ 
+                     if (!params->python_scripts.empty()) {
+                         trainer->set_python_scripts(params->python_scripts);
++#ifndef LFS_HEADLESS_ONLY
+                         vis::gui::panels::PythonScriptManagerState::getInstance().setScripts(params->python_scripts);
++#endif
+                     }
+ 
+                     if (const auto result = trainer->initialize(checkpoint_params); !result) {
+@@ -158,7 +170,9 @@ namespace lfs::app {
+ 
+                     if (!params->python_scripts.empty()) {
+                         trainer->set_python_scripts(params->python_scripts);
++#ifndef LFS_HEADLESS_ONLY
+                         vis::gui::panels::PythonScriptManagerState::getInstance().setScripts(params->python_scripts);
++#endif
+                     }
+ 
+                     if (const auto result = trainer->initialize(*params); !result) {
+@@ -221,6 +235,7 @@ namespace lfs::app {
+             fast_lfs::rasterization::warmup_kernels();
+         }
+ 
++#ifndef LFS_HEADLESS_ONLY
+         int runGui(std::unique_ptr<lfs::core::param::TrainingParameters> params) {
+             if (params->optimization.no_interop) {
+                 LOG_INFO("CUDA-GL interop disabled");
+@@ -312,6 +327,7 @@ namespace lfs::app {
+ 
+             std::_Exit(0);
+         }
++#endif // !LFS_HEADLESS_ONLY
+ 
+ #ifdef WIN32
+         void hideConsoleWindow() {
+@@ -348,11 +364,16 @@ namespace lfs::app {
+             return runHeadless(std::move(params));
+         }
+ 
++#ifndef LFS_HEADLESS_ONLY
+ #ifdef WIN32
+         hideConsoleWindow();
+ #endif
+ 
+         return runGui(std::move(params));
++#else
++        LOG_ERROR("GUI mode not available in headless-only build");
++        return 1;
++#endif
+     }
+ 
+ } // namespace lfs::app

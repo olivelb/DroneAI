@@ -46,7 +46,17 @@ if [[ "$NO_CACHE" -eq 1 ]]; then
     DOCKER_BUILD_FLAGS+=(--no-cache)
 fi
 
-echo "🔐 Checking required Kubernetes secrets..."
+echo "� Checking external build dependencies..."
+for dep in LichtFeld-Studio/.git .docker-vcpkg/.git app1-colmap/ceres-solver/.git app1-colmap/colmap-local/.git app1-colmap/colmap-deps/poselib.zip; do
+    if [ ! -e "$dep" ]; then
+        echo "❌ Missing dependency: $dep" >&2
+        echo "   Run 'bash setup_deps.sh' first to clone external C++ dependencies." >&2
+        exit 1
+    fi
+done
+echo "✅ All external dependencies present."
+
+echo "�🔐 Checking required Kubernetes secrets..."
 if ! sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
     echo "❌ Missing secret 'hf-token' in namespace 'kafka'."
     echo "   Create it before deploying App 2, for example:"
@@ -63,7 +73,7 @@ fi
 # 0. Base image required by the COLMAP worker
 if [[ "$BUILD_BASE" -eq 1 ]] || ! sudo docker image inspect drone-colmap-base:latest >/dev/null 2>&1; then
     echo "   -> Building Drone COLMAP base image..."
-    sudo docker build "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
+    sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
     echo "   -> Importing Drone COLMAP base image into k3s..."
     sudo docker save drone-colmap-base:latest > drone-colmap-base.tar
     sudo k3s ctr images import drone-colmap-base.tar
@@ -74,23 +84,23 @@ fi
 
 # 1. COLMAP Worker
 echo "   -> Building Drone COLMAP Worker..."
-sudo docker build "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap:latest -f app1-colmap/Dockerfile .
+sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap:latest -f app1-colmap/Dockerfile .
 
 # 2. IA Worker
 echo "   -> Building Drone IA Worker..."
-sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-ia:latest -f app2-ia/Dockerfile .
+sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" -t drone-ia:latest -f app2-ia/Dockerfile .
 
 # 3. Processing Worker
 echo "   -> Building Drone Processing Worker..."
-sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-processing:latest -f app3-processing/Dockerfile .
+sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" -t drone-processing:latest -f app3-processing/Dockerfile .
 
 # 4. Dashboard API
 echo "   -> Building Drone Dashboard API..."
-sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-dashboard-api:latest -f app4-dashboard/api/Dockerfile .
+sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" -t drone-dashboard-api:latest -f app4-dashboard/api/Dockerfile .
 
 # 5. Dashboard Frontend
 echo "   -> Building Drone Dashboard Frontend..."
-sudo docker build "${DOCKER_BUILD_FLAGS[@]}" -t drone-dashboard-frontend:latest -f app4-dashboard/frontend/Dockerfile .
+sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" -t drone-dashboard-frontend:latest -f app4-dashboard/frontend/Dockerfile .
 
 echo "📦 Importation des images dans k3s..."
 

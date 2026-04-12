@@ -159,7 +159,7 @@ Provision these Linux instances:
 - `gpu-ia-1` for app2
 - `storage-1` for NFS
 
-Use Ubuntu 22.04 LTS on all nodes to stay close to the current Dockerfiles and install scripts.
+Use Ubuntu 24.04 LTS on all nodes to match the current Dockerfiles (all stages use Ubuntu 24.04).
 
 ### 1.3 Create networking rules
 
@@ -234,7 +234,7 @@ Validate:
 
 ```bash
 nvidia-smi
-sudo docker run --rm --gpus all nvidia/cuda:12.4.1-runtime-ubuntu22.04 nvidia-smi
+sudo docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu24.04 nvidia-smi
 ```
 
 ## Step 3: Build the Shared Workspace

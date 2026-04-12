@@ -1,5 +1,5 @@
 """
-TDOM generation orchestrator.
+TDOM generation orchestrator (CuPy — no PyTorch).
 
 Loads a trained Gaussian model checkpoint, computes scene extent,
 and renders the full orthographic TDOM (RGB + optional height map).
@@ -7,8 +7,8 @@ and renders the full orthographic TDOM (RGB + optional height map).
 import os
 from pathlib import Path
 
+import cupy as cp
 import numpy as np
-import torch
 
 from .gaussian_model import GaussianModel
 from .ortho_renderer import render_orthophoto, compute_ortho_extent
@@ -19,7 +19,7 @@ def generate_tdom(checkpoint_path: str, gsd: float = 0.02,
                   output_height_path: str = None,
                   sh_degree: int = 3, fagk: bool = True,
                   chunk_size: int = 0,
-                  device: torch.device = None,
+                  device=None,
                   report_fn=None):
     """
     Generate a TDOM from a trained Gaussian model.
@@ -36,22 +36,18 @@ def generate_tdom(checkpoint_path: str, gsd: float = 0.02,
         If given, save height map as .npy.
     sh_degree, fagk : model config.
     chunk_size : max tile pixel dimension.
-    device : CUDA device.
+    device : ignored (kept for API compatibility).
     report_fn : callable for progress logging.
 
     Returns
     -------
     dict with 'rgb', 'height', 'extent', 'gsd'
     """
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     if report_fn:
         report_fn(f"Loading model from {checkpoint_path}")
 
     model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
     model.load_ply(checkpoint_path)
-    model = model.to(device)
     model.active_sh_degree = sh_degree
     if fagk:
         model.active_fagk_degree = model.fagk_max_degree
@@ -66,7 +62,7 @@ def generate_tdom(checkpoint_path: str, gsd: float = 0.02,
 
     result = render_orthophoto(
         model, gsd=gsd, extent=extent,
-        chunk_size=chunk_size, device=device,
+        chunk_size=chunk_size,
     )
 
     if report_fn:

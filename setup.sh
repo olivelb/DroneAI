@@ -62,7 +62,19 @@ if ! grep -q 'export KUBECONFIG=~/.kube/config' ~/.bashrc 2>/dev/null; then
     echo "export KUBECONFIG=~/.kube/config" >> ~/.bashrc
 fi
 
-# 5. Build and Deploy the Pipeline
+# 5. Validate GPU access
+echo "🔍 Checking GPU access..."
+if ! nvidia-smi &>/dev/null; then
+    echo "❌ nvidia-smi failed. Install NVIDIA drivers on the host before proceeding."
+    exit 1
+fi
+echo "✅ GPU detected: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
+
+# 6. Clone external build dependencies (LichtFeld, vcpkg, Ceres, COLMAP)
+echo "📥 Preparing external build dependencies..."
+bash "$SCRIPT_DIR/setup_deps.sh"
+
+# 7. Build and Deploy the Pipeline
 echo "🛠️ Starting the build and deployment process..."
 echo "This will compile COLMAP and build all Docker images. It may take some time."
 bash "$SCRIPT_DIR/build_and_deploy.sh"

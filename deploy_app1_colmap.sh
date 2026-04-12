@@ -43,9 +43,17 @@ if [[ "$BUILD_BASE" -eq 1 ]]; then
 fi
 
 # Build base image only if it doesn't exist yet (or pass --base to force rebuild)
-# This includes COLMAP, Ceres, PyTorch, gsplat, and LichtFeld-Studio in one multi-stage build.
+# This includes COLMAP, Ceres, CuPy, and LichtFeld-Studio in one multi-stage build.
 # BuildKit builds the 3 independent stages (colmap, pip, lichtfeld) in parallel.
+# Dependencies must be cloned first by setup_deps.sh.
 if [[ "$BUILD_BASE" -eq 1 ]] || ! sudo docker image inspect drone-colmap-base:latest &>/dev/null; then
+    for dep in LichtFeld-Studio/.git .docker-vcpkg/.git app1-colmap/ceres-solver/.git app1-colmap/colmap-local/.git app1-colmap/colmap-deps/poselib.zip; do
+        if [ ! -e "$dep" ]; then
+            echo "❌ Missing dependency: $dep" >&2
+            echo "   Run 'bash setup_deps.sh' first to clone external C++ dependencies." >&2
+            exit 1
+        fi
+    done
     echo "🛠️ Building base image (COLMAP + LichtFeld + Python deps)... This is slow but only needed once."
     export DOCKER_BUILDKIT=1
     sudo docker build --network=host "${DOCKER_BUILD_FLAGS[@]}" --progress=plain -t drone-colmap-base:latest -f app1-colmap/Dockerfile.base .

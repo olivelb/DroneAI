@@ -35,17 +35,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "use_view_graph_calibrator": False,
         "read_orientation": False,
         "mvs_max_image_size": "4000",
-        "mvs_gpu_index": "0",
-        "mvs_num_iterations": "3",
-        "mvs_num_samples": "10",
-        "mvs_window_step": "1",
-        "mvs_filter_min_num_consistent": "2",
-        "fusion_max_image_size": "4000",
-        "fusion_min_num_pixels": "5",
-        "fusion_cache_size": "32",
-        "fusion_chunk_target_memory_gib": "16",
         "ortho_mesh_resolution": "0.02",
-        "use_mesh_ortho": True,
         "gs_iterations": "30000",
         "gs_data_factor": "auto",
         "gs_cap_max": "5000000",
@@ -59,9 +49,6 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_filter_cc": False,
         "gs_filter_z_floater": False,
         "gs_filter_sor_sigma": "4.0",
-        "gs_nadir_finetune_iters": "3000",
-        "gs_nadir_finetune_mode": "full",
-        "gs_nadir_finetune_angle": "15.0",
     },
     "modern": {
         "feature_type": "ALIKED_N16ROT",
@@ -73,17 +60,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "use_view_graph_calibrator": True,
         "read_orientation": True,
         "mvs_max_image_size": "4000",
-        "mvs_gpu_index": "0",
-        "mvs_num_iterations": "3",
-        "mvs_num_samples": "15",
-        "mvs_window_step": "1",
-        "mvs_filter_min_num_consistent": "2",
-        "fusion_max_image_size": "4000",
-        "fusion_min_num_pixels": "5",
-        "fusion_cache_size": "32",
-        "fusion_chunk_target_memory_gib": "16",
         "ortho_mesh_resolution": "0.02",
-        "use_mesh_ortho": True,
         "gs_iterations": "30000",
         "gs_data_factor": "auto",
         "gs_cap_max": "5000000",
@@ -97,9 +74,6 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gs_filter_cc": False,
         "gs_filter_z_floater": False,
         "gs_filter_sor_sigma": "4.0",
-        "gs_nadir_finetune_iters": "3000",
-        "gs_nadir_finetune_mode": "full",
-        "gs_nadir_finetune_angle": "15.0",
     },
 }
 
@@ -112,18 +86,8 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "mapper_cmd": {"label": "Mapper Command", "type": "select", "group": "Mapping", "options": ["mapper", "global_mapper"]},
     "use_view_graph_calibrator": {"label": "Use View Graph Calibrator", "type": "bool", "group": "Mapping"},
     "read_orientation": {"label": "Read Orientation", "type": "bool", "group": "Mapping"},
-    "mvs_max_image_size": {"label": "MVS Max Image Size", "type": "int", "group": "Dense Stereo", "min": 256, "max": 12000, "step": 64},
-    "mvs_gpu_index": {"label": "MVS GPU Index", "type": "text", "group": "Dense Stereo"},
-    "mvs_num_iterations": {"label": "MVS Iterations", "type": "int", "group": "Dense Stereo", "min": 1, "max": 20, "step": 1},
-    "mvs_num_samples": {"label": "MVS Samples", "type": "int", "group": "Dense Stereo", "min": 1, "max": 64, "step": 1},
-    "mvs_window_step": {"label": "MVS Window Step", "type": "int", "group": "Dense Stereo", "min": 1, "max": 8, "step": 1},
-    "mvs_filter_min_num_consistent": {"label": "MVS Min Consistent", "type": "int", "group": "Dense Stereo", "min": 1, "max": 16, "step": 1},
-    "fusion_max_image_size": {"label": "Fusion Max Image Size", "type": "int", "group": "Fusion", "min": 256, "max": 12000, "step": 64},
-    "fusion_min_num_pixels": {"label": "Fusion Min Num Pixels", "type": "int", "group": "Fusion", "min": 1, "max": 32, "step": 1},
-    "fusion_cache_size": {"label": "Fusion Cache Size (GiB)", "type": "float", "group": "Fusion", "min": 1, "max": 256, "step": 0.5},
-    "fusion_chunk_target_memory_gib": {"label": "Fusion Chunk Target Memory (GiB)", "type": "float", "group": "Fusion", "min": 4, "max": 256, "step": 1},
+    "mvs_max_image_size": {"label": "Undistort Max Image Size", "type": "int", "group": "Undistortion", "min": 256, "max": 12000, "step": 64},
     "ortho_mesh_resolution": {"label": "Ortho Resolution (m/px)", "type": "float", "group": "Orthomosaic", "min": 0.005, "max": 1, "step": 0.005},
-    "use_mesh_ortho": {"label": "Use Gaussian Splatting Ortho", "type": "bool", "group": "Orthomosaic"},
     "gs_iterations": {"label": "GS Training Iterations (LichtFeld MRNF)", "type": "int", "group": "Orthomosaic", "min": 5000, "max": 100000, "step": 5000},
     "gs_data_factor": {"label": "GS Training Image Scale", "type": "select", "group": "Orthomosaic", "options": ["auto", "1", "2", "4", "8"]},
     "gs_cap_max": {"label": "GS Max Gaussians (MRNF)", "type": "int", "group": "Orthomosaic", "min": 1000000, "max": 10000000, "step": 1000000},
@@ -137,17 +101,9 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "gs_filter_cc": {"label": "GS Connected-Component Filter", "type": "bool", "group": "Orthomosaic"},
     "gs_filter_z_floater": {"label": "GS Z-Floater Removal", "type": "bool", "group": "Orthomosaic"},
     "gs_filter_sor_sigma": {"label": "GS SOR Sigma Multiplier", "type": "float", "group": "Orthomosaic", "min": 1, "max": 10, "step": 0.5},
-    "gs_nadir_finetune_iters": {"label": "GS Nadir Fine-Tune Iterations", "type": "int", "group": "Orthomosaic", "min": 0, "max": 10000, "step": 500},
-    "gs_nadir_finetune_mode": {"label": "GS Nadir Fine-Tune Mode", "type": "select", "group": "Orthomosaic", "options": ["full", "sh_only", "off"]},
-    "gs_nadir_finetune_angle": {"label": "GS Nadir Fine-Tune Max Angle (°)", "type": "float", "group": "Orthomosaic", "min": 5, "max": 45, "step": 1},
 }
 
 PARAM_OVERRIDE_KEYS = sorted(PIPELINE_DEFAULTS["legacy"].keys() | PIPELINE_DEFAULTS["modern"].keys())
-
-FUSION_BYTES_PER_PIXEL = 19
-FUSION_CHUNK_BYTES_PER_PIXEL = 38
-TARGET_CACHED_IMAGES = 8
-RECOMMENDED_IMAGE_SIZES = [512, 768, 1024, 1536, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000]
 
 
 def coerce_param_value(template_value: Any, value: Any) -> Any:

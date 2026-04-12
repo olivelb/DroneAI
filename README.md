@@ -32,6 +32,7 @@ For a working installation, these files are part of the install path and must be
 - `shared/pipeline_params.py`
 - `kafka-local.yaml`
 - `dashboard-api-rbac.yaml`
+- `setup_deps.sh`
 - `build_and_deploy.sh`
 - `setup.sh`
 - `deploy_app1_colmap.sh`
@@ -46,81 +47,95 @@ The rest of the repository is the application source code used by those images.
 
 The Docker build `COPY`s several external source trees into the image. These are **not** bundled in this repository and must be prepared before the first build. Without them, `docker build` will fail immediately.
 
-### 1. Ceres Solver 2.2.0
+### Automated setup (recommended)
+
+Run the dependency setup script once after cloning the repository:
+
+```bash
+bash setup_deps.sh
+```
+
+This script clones pinned versions of all required external repos, downloads the COLMAP FetchContent archives, and applies the LichtFeld headless build patch. It is idempotent and safe to run again.
+
+### What `setup_deps.sh` clones
+
+| Directory | Source | Version / Commit |
+| --- | --- | --- |
+| `LichtFeld-Studio/` | `https://github.com/MrNeRF/LichtFeld-Studio.git` | commit `1004c084` (headless patch applied) |
+| `.docker-vcpkg/` | `https://github.com/microsoft/vcpkg.git` | tag `2026.03.18` |
+| `app1-colmap/ceres-solver/` | `https://github.com/ceres-solver/ceres-solver.git` | tag `2.2.0` |
+| `app1-colmap/colmap-local/` | `https://github.com/colmap/colmap.git` | tag `4.0.1` |
+| `app1-colmap/colmap-deps/` | PoseLib + faiss zip archives | SHA-pinned by COLMAP 4.0.1 |
+
+### Manual setup (alternative)
+
+If you prefer to clone dependencies manually, see the individual steps below.
+
+#### 1. Ceres Solver 2.2.0
 
 ```bash
 git clone --branch 2.2.0 --depth 1 https://github.com/ceres-solver/ceres-solver.git app1-colmap/ceres-solver
 ```
 
-### 2. COLMAP 4.0.1
+#### 2. COLMAP 4.0.1
 
 ```bash
 git clone --branch 4.0.1 --depth 1 https://github.com/colmap/colmap.git app1-colmap/colmap-local
 ```
 
-COLMAP's build uses CMake `FetchContent` to download PoseLib and faiss at configure time. Because Docker BuildKit network access can be unreliable (especially under WSL2), the Dockerfile expects pre-downloaded archives and patches the URLs to `file://` paths. Apply the patch:
+The Dockerfile patches COLMAP's FetchContent URLs at build time to use pre-downloaded archives. Download them:
 
 ```bash
 mkdir -p app1-colmap/colmap-deps
 
-# Download the exact archives that COLMAP 4.0.1 expects (SHA256-verified):
 wget -O app1-colmap/colmap-deps/poselib.zip \
   https://github.com/PoseLib/PoseLib/archive/f119951fca625133112acde48daffa5f20eba451.zip
 
 wget -O app1-colmap/colmap-deps/faiss.zip \
   https://github.com/ahojnnes/faiss/archive/36b77353dc435383e0c23a709e7997a29d049041.zip
-
-# Patch FetchContent URLs to use local file:// paths inside the Docker build:
-sed -i 's|https://github.com/PoseLib/PoseLib/archive/f119951fca625133112acde48daffa5f20eba451.zip|file:///tmp/colmap-deps/poselib.zip|' \
-  app1-colmap/colmap-local/src/thirdparty/CMakeLists.txt
-
-sed -i 's|https://github.com/ahojnnes/faiss/archive/36b77353dc435383e0c23a709e7997a29d049041.zip|file:///tmp/colmap-deps/faiss.zip|' \
-  app1-colmap/colmap-local/src/thirdparty/CMakeLists.txt
 ```
 
-### 3. LichtFeld-Studio
+#### 3. LichtFeld-Studio
 
 ```bash
 git clone https://github.com/MrNeRF/LichtFeld-Studio.git LichtFeld-Studio
-cd LichtFeld-Studio && git submodule update --init --recursive && cd ..
+cd LichtFeld-Studio
+git checkout 1004c0841a3776e3f67866ff34101fbc9677397f
+git submodule update --init --recursive
+cd ..
 ```
 
-### 4. vcpkg (for the LichtFeld build stage)
-
-LichtFeld-Studio pins vcpkg at a specific baseline commit (`c3867e714dd3a51c272826eea77267876517ed99`). The Docker build expects a pre-cloned vcpkg tree at `.docker-vcpkg/`:
+Apply the headless build patch:
 
 ```bash
-git clone https://github.com/microsoft/vcpkg.git .docker-vcpkg
-git -C .docker-vcpkg checkout c3867e714dd3a51c272826eea77267876517ed99
+cd LichtFeld-Studio
+git apply ../app1-colmap/patches/lichtfeld-headless.patch
+cd ..
 ```
 
-### Quick-reference summary
+#### 4. vcpkg (for the LichtFeld build stage)
 
-| Directory | Source | Version / Commit |
-| --- | --- | --- |
-| `app1-colmap/ceres-solver/` | `https://github.com/ceres-solver/ceres-solver.git` | tag `2.2.0` |
-| `app1-colmap/colmap-local/` | `https://github.com/colmap/colmap.git` | tag `4.0.1` (then patch FetchContent URLs) |
-| `app1-colmap/colmap-deps/` | PoseLib + faiss zip archives | see wget commands above |
-| `LichtFeld-Studio/` | `https://github.com/MrNeRF/LichtFeld-Studio.git` | latest (or pin to a known-good commit) |
-| `.docker-vcpkg/` | `https://github.com/microsoft/vcpkg.git` | commit `c3867e714dd3a51c272826eea77267876517ed99` |
+```bash
+git clone --branch 2026.03.18 https://github.com/microsoft/vcpkg.git .docker-vcpkg
+```
 
 ## Docker build architecture
 
 The base image (`app1-colmap/Dockerfile.base`) is a four-stage multi-stage build. Docker BuildKit runs the first three stages in parallel:
 
 ```text
-Stage 1: builder           (nvidia/cuda:12.8.1-devel-ubuntu22.04)
+Stage 1: builder           (nvidia/cuda:12.8.1-devel-ubuntu24.04)
   → Ceres Solver + COLMAP from source
   → Stages selective CUDA runtime libs into /cuda-slim/
 
-Stage 2: pip-builder       (nvidia/cuda:12.8.1-devel-ubuntu22.04)
-  → PyTorch (cu124) + gsplat 1.5.3 + Python packages
+Stage 2: pip-builder       (nvidia/cuda:12.8.1-devel-ubuntu24.04)
+  → CuPy (cupy-cuda12x) + Python packages (rasterio, pycolmap, Pillow, etc.)
 
 Stage 3: lichtfeld-builder (nvidia/cuda:12.8.1-devel-ubuntu24.04)
   → LichtFeld-Studio via gcc-14 + CMake 4.x + vcpkg
-  → Ubuntu 24.04 is required because LichtFeld needs gcc-14
+  → Headless-only build (GUI dependencies stripped)
 
-Stage 4: runtime           (nvidia/cuda:12.8.1-base-ubuntu22.04)
+Stage 4: runtime           (nvidia/cuda:12.8.1-base-ubuntu24.04)
   → Copies outputs from all three builder stages
   → Copies nvimgcodec extension plugins (nvjpeg_ext) for GPU JPEG decoding
   → Only the CUDA libs actually needed at runtime (~1.5 GB vs 2.6 GB full suite)
@@ -133,8 +148,8 @@ The final `Dockerfile` adds the Python application code on top of the base image
 The build currently targets **Ampere** (RTX 3090, A100) and **Ada Lovelace** (RTX 4090) GPUs:
 
 - COLMAP / Ceres: `-DCMAKE_CUDA_ARCHITECTURES="86-real;89-real"`
-- PyTorch / gsplat: `TORCH_CUDA_ARCH_LIST="8.6;8.9"`
 - LichtFeld-Studio: `BUILD_CUDA_PTX_ONLY=ON` (JIT-compiles for any GPU at runtime)
+- CuPy: JIT-compiles CUDA kernels at runtime for the detected GPU (no build-time arch setting needed)
 
 To support different GPUs, edit `Dockerfile.base` and change the architecture values. Common targets:
 
@@ -232,7 +247,9 @@ What `setup.sh` does:
 - installs Docker if it is missing
 - installs the NVIDIA container toolkit if it is missing
 - installs K3s if it is missing
+- validates GPU access with `nvidia-smi`
 - writes kubeconfig to `~/.kube/config`
+- runs `setup_deps.sh` to clone external build dependencies (LichtFeld, vcpkg, Ceres, COLMAP)
 - runs `build_and_deploy.sh`
 
 After the script finishes, verify the deployment:
@@ -291,7 +308,7 @@ sudo systemctl restart docker
 Validate GPU access in Docker:
 
 ```bash
-sudo docker run --rm --gpus all nvidia/cuda:12.4.1-runtime-ubuntu22.04 nvidia-smi
+sudo docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu24.04 nvidia-smi
 ```
 
 ### 4. Install K3s
@@ -319,7 +336,15 @@ kubectl get nodes
 kubectl get pods -A
 ```
 
-### 5. Build and deploy the pipeline
+### 5. Clone external build dependencies
+
+```bash
+bash setup_deps.sh
+```
+
+This clones LichtFeld-Studio, vcpkg, Ceres Solver, and COLMAP at the pinned versions expected by the Docker build. See **Pre-requisite source setup** above for details or manual alternatives.
+
+### 6. Build and deploy the pipeline
 
 From the repository root:
 
@@ -336,6 +361,7 @@ bash build_and_deploy.sh --base
 
 What `build_and_deploy.sh` does:
 
+- checks that external build dependencies are present (exits with an error if `setup_deps.sh` has not been run)
 - checks that the Kubernetes secret `hf-token` exists in namespace `kafka` before deploying the IA worker
 - builds `drone-colmap-base:latest` if it does not already exist
 - imports the base image into K3s
@@ -432,10 +458,9 @@ The pipeline flow is:
 
 ### Current app1 orthomosaic path
 
-- `use_mesh_ortho: true` (now labelled **"Use Gaussian Splatting Ortho"** in the UI) selects the 3D Gaussian Splatting orthophoto pipeline.
-- The GS pipeline trains a 3DGS model directly from COLMAP undistorted images and the sparse reconstruction, **skipping PatchMatch stereo and fusion entirely** — a significant time saving.
+- The orthomosaic pipeline trains a 3D Gaussian Splatting model directly from COLMAP undistorted images and the sparse reconstruction.
 - Training uses **LichtFeld-Studio** (headless CLI mode) with the **MRNF** (Multi-Resolution Neural Field) densification strategy, which grows Gaussians from the initial sparse points to a configurable cap (default 5M). LichtFeld handles image loading, GPU-accelerated NVCODEC decoding, and CUDA rasterisation natively in C++/CUDA with no Python training loop overhead.
-- **gsplat** is retained as a rendering-only dependency: orthographic rasterisation of the final model into the GeoTIFF orthomosaic and height map.
+- **CuPy** with custom CUDA RawKernels handles orthographic rasterisation of the final model into the GeoTIFF orthomosaic and height map.
 - **Fully Anisotropic Gaussian Kernels (FAGK)** with SH-based view-dependent opacity are enabled by default (Tortho-Gaussian).
 - After training, a configurable multi-stage post-processing filter chain cleans the model. Each filter can be individually enabled or disabled in the dashboard UI:
   - **Max scale filter** (`gs_filter_max_scale`): removes oversized Gaussians (default: 1.0 world units per axis)
@@ -446,11 +471,7 @@ The pipeline flow is:
   - **Connected-Component filter** (`gs_filter_cc`): keeps only the largest connected cluster (default: off)
   - **Z-Floater Removal** (`gs_filter_z_floater`): IQR-based fence on the vertical axis (default: off)
 - Filter defaults are deliberately relaxed: LichtFeld's MRNF strategy produces clean models that need minimal post-processing.
-- **Nadir fine-tune** phase: after filtering, the model is fine-tuned using only near-nadir training cameras to adapt SH colour coefficients, Gaussian scales, and opacities for the orthographic view direction. Configurable via:
-  - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`, default 3000, set to 0 to skip)
-  - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full` (SH + scales + opacity), `sh_only`, or `off`
-  - **GS Nadir Fine-Tune Max Angle** (`gs_nadir_finetune_angle`, default 15°): camera selection threshold
-- The cleaned and fine-tuned model is rendered from a virtual orthographic camera into an RGB orthomosaic and a companion height map (DSM) GeoTIFF.
+- The cleaned model is rendered from a virtual orthographic camera into an RGB orthomosaic and a companion height map (DSM) GeoTIFF.
 - **PCA path (no Sim3 transform)**: the model stays in the original COLMAP coordinate frame and a rotation matrix `R_geo` is passed to the renderer to orient the virtual nadir camera. This avoids rotating positions and quaternions without rotating SH coefficients, which previously caused colour artefacts.
 - **Sim3 path (with alignment transform)**: rotation + scale are applied to the model; translation is kept as float64 for the GeoTIFF origin.
 - The height map is shifted to match mean drone EXIF GPS altitude when available, giving real-world elevation values in the output CRS.
@@ -470,11 +491,7 @@ The pipeline flow is:
   - **GS Connected-Component Filter** (`gs_filter_cc`): enable/disable CC filter
   - **GS Z-Floater Removal** (`gs_filter_z_floater`): enable/disable vertical outlier removal
   - **GS SOR Sigma Multiplier** (`gs_filter_sor_sigma`): sigma multiplier for SOR threshold
-  - **GS Nadir Fine-Tune Iterations** (`gs_nadir_finetune_iters`): nadir fine-tune iterations (0 to skip)
-  - **GS Nadir Fine-Tune Mode** (`gs_nadir_finetune_mode`): `full`, `sh_only`, or `off`
-  - **GS Nadir Fine-Tune Max Angle** (`gs_nadir_finetune_angle`): max camera angle from nadir
   - **Ortho Resolution** (`ortho_mesh_resolution`): output GSD in metres/pixel
-- `use_mesh_ortho: false` keeps the legacy point-cloud projection fallback based on `fused.ply` or `fused_geo.ply`, which still requires PatchMatch + fusion.
 
 For SAM 3 missions, access to the gated Hugging Face model must already be approved and the `hf-token` Kubernetes secret must exist before deployment.
 
@@ -666,7 +683,7 @@ Check the host first:
 
 ```bash
 nvidia-smi
-sudo docker run --rm --gpus all nvidia/cuda:12.4.1-runtime-ubuntu22.04 nvidia-smi
+sudo docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu24.04 nvidia-smi
 ```
 
 Then check Kubernetes:
@@ -732,8 +749,8 @@ This pipeline builds on a substantial amount of upstream open-source work. In pa
 
 - COLMAP and PyCOLMAP for SfM, MVS, and reconstruction tooling
 - LichtFeld-Studio for high-performance C++/CUDA Gaussian Splatting training (MRNF strategy)
-- gsplat for differentiable orthographic Gaussian rasterisation (rendering only)
-- PyTorch, NVIDIA CUDA, and NVLabs nvdiffrast for GPU-backed inference and rasterization
+- CuPy for GPU-accelerated orthographic Gaussian rasterisation (custom CUDA RawKernels)
+- NVIDIA CUDA for GPU-backed computation
 - Ultralytics YOLO for OBB detection models and tooling
 - Meta SAM 3 and the Hugging Face Transformers integration for prompt-based segmentation
 - Rasterio, pyproj, and OpenCV for geospatial and image-processing primitives
@@ -771,7 +788,7 @@ COLMAP itself is distributed under the new BSD license. If you redistribute bina
 
 ### Gaussian Splatting citations
 
-The Gaussian Splatting orthophoto pipeline uses LichtFeld-Studio for training (MRNF strategy) and gsplat for orthographic rendering. The following research is foundational:
+The Gaussian Splatting orthophoto pipeline uses LichtFeld-Studio for training (MRNF strategy) and CuPy custom CUDA RawKernels for orthographic rendering. The following research is foundational:
 
 ```bibtex
 @article{kerbl3Dgaussians,
@@ -791,16 +808,6 @@ The Gaussian Splatting orthophoto pipeline uses LichtFeld-Studio for training (M
   journal={Advances in Neural Information Processing Systems},
   volume={37},
   year={2024},
-}
-```
-
-```bibtex
-@article{ye2024gsplatopensourcelibrarygaussian,
-  title={gsplat: An Open-Source Library for Gaussian Splatting},
-  author={Vickie Ye and Ruilong Li and Justin Kerr and Matias Turkulainen and Brent Yi and Zhuoyang Pan and Otto Seiskari and Jianbo Ye and Jeffrey Hu and Matthew Tancik and Angjoo Kanazawa},
-  journal={Journal of Machine Learning Research},
-  year={2025},
-  note={Available at https://github.com/nerfstudio-project/gsplat},
 }
 ```
 
@@ -828,14 +835,12 @@ The Gaussian Splatting orthophoto pipeline uses LichtFeld-Studio for training (M
 | --- | --- | --- | --- |
 | COLMAP / PyCOLMAP | `app1-colmap` | BSD 3-Clause | Keep license and copyright notices in source or binary distributions. |
 | LichtFeld-Studio | `app1-colmap` (Gaussian Splatting training, MRNF strategy) | See LichtFeld-Studio LICENSE | Review the upstream license before redistribution. |
-| gsplat | `app1-colmap` (orthographic Gaussian rasterisation, rendering only) | Apache 2.0 | Keep license notices. |
+| CuPy | `app1-colmap` (GPU-accelerated orthographic rasterisation via custom CUDA RawKernels) | MIT | Keep the license and copyright notice. |
 | Docker CLI / Moby | host install and image builds | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | K3s | local cluster runtime | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | Kubernetes | orchestration API/runtime used through K3s | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | Apache Kafka | broker image in `kafka-local.yaml` | Apache 2.0 | Keep license notices and mark changes if you redistribute modified copies. |
 | confluent-kafka-python | Python services | Apache 2.0 for the source distribution | Keep the package license and bundled third-party notices if you redistribute it. |
-| PyTorch | `app1-colmap`, `app2-ia` | BSD-style permissive license | Keep the upstream license text and notices. |
-| nvdiffrast | `app1-colmap` | NVIDIA Source Code License (1-Way Commercial) | Review NVIDIA's license before redistribution; it is not a standard MIT/BSD license. |
 | Ultralytics YOLO | `app2-ia` | AGPL-3.0 or commercial enterprise license | This is the main license-sensitive dependency in the ML stack. For private or proprietary deployment, review Ultralytics terms carefully and obtain the appropriate license if needed. |
 | Meta SAM 3 code (`facebookresearch/sam3`) | `app2-ia` runtime path and local utility scripts | SAM License according to the upstream GitHub repository | Review the upstream SAM License directly before redistribution or commercial packaging; this is not a standard permissive OSS license. |
 | Hugging Face gated model `facebook/sam3` | `app2-ia` runtime model download | Hugging Face model card shows `License: other` and gated access terms | Treat the checkpoint separately from the source repo: access requires approval, contact-sharing conditions, and compliance with the model card terms plus the upstream SAM License. |
@@ -856,8 +861,7 @@ For this repository, the dependencies that deserve explicit review before any re
 
 1. `ultralytics`
 2. `facebookresearch/sam3` and the gated `facebook/sam3` model distribution
-3. `nvdiffrast`
-4. `react-leaflet`
+3. `react-leaflet`
 
 Those items are not routine MIT/BSD-only cases. If you want a fully permissive redistribution story, review them first and replace them if their terms do not fit your use case.
 

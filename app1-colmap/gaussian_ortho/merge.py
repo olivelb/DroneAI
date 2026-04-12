@@ -6,9 +6,8 @@ by retaining only the Gaussians whose centres fall within the *core*
 (non-overlap) region of each cell, discarding duplicates in overlapping
 borders.
 """
+import cupy as cp
 import numpy as np
-import torch
-import torch.nn as nn
 
 from .gaussian_model import GaussianModel
 from .partition import CellBounds
@@ -35,19 +34,7 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
     Merge multiple per-cell GaussianModels into one.
 
     For each cell, only Gaussians whose XY centre lies within the core
-    (non-overlap) region are kept.  This avoids duplicates at cell borders.
-
-    Parameters
-    ----------
-    cell_models : list of (CellBounds, GaussianModel)
-    scene_x_range : (x_lo, x_hi) of full scene
-    scene_y_range : (y_lo, y_hi) of full scene
-    m, n : grid dimensions
-    overlap : overlap fraction used during partitioning
-
-    Returns
-    -------
-    GaussianModel with merged Gaussians
+    (non-overlap) region are kept.
     """
     x_lo, x_hi = scene_x_range
     y_lo, y_hi = scene_y_range
@@ -66,22 +53,22 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
 
     for cell, model in cell_models:
         core = _core_bounds(cell, dx, dy, overlap)
-        xyz = model._xyz.detach()
+        xyz = model._xyz
         mask = (
             (xyz[:, 0] >= core.x_min) & (xyz[:, 0] <= core.x_max) &
             (xyz[:, 1] >= core.y_min) & (xyz[:, 1] <= core.y_max)
         )
-        if not mask.any():
+        if not cp.any(mask):
             continue
 
         all_xyz.append(xyz[mask])
-        all_dc.append(model._features_dc.detach()[mask])
-        all_rest.append(model._features_rest.detach()[mask])
-        all_scaling.append(model._scaling.detach()[mask])
-        all_rotation.append(model._rotation.detach()[mask])
-        all_opacity.append(model._opacity.detach()[mask])
+        all_dc.append(model._features_dc[mask])
+        all_rest.append(model._features_rest[mask])
+        all_scaling.append(model._scaling[mask])
+        all_rotation.append(model._rotation[mask])
+        all_opacity.append(model._opacity[mask])
         if model.fagk_enabled and model._opacity_sh.shape[1] > 0:
-            all_opacity_sh.append(model._opacity_sh.detach()[mask])
+            all_opacity_sh.append(model._opacity_sh[mask])
 
     merged = GaussianModel(
         sh_degree=reference_model.max_sh_degree,
@@ -89,25 +76,18 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
         fagk_max_degree=reference_model.fagk_max_degree,
     )
 
-    device = all_xyz[0].device
-    merged._xyz = nn.Parameter(torch.cat(all_xyz, dim=0))
-    merged._features_dc = nn.Parameter(torch.cat(all_dc, dim=0))
-    merged._features_rest = nn.Parameter(torch.cat(all_rest, dim=0))
-    merged._scaling = nn.Parameter(torch.cat(all_scaling, dim=0))
-    merged._rotation = nn.Parameter(torch.cat(all_rotation, dim=0))
-    merged._opacity = nn.Parameter(torch.cat(all_opacity, dim=0))
+    merged._xyz = cp.concatenate(all_xyz, axis=0)
+    merged._features_dc = cp.concatenate(all_dc, axis=0)
+    merged._features_rest = cp.concatenate(all_rest, axis=0)
+    merged._scaling = cp.concatenate(all_scaling, axis=0)
+    merged._rotation = cp.concatenate(all_rotation, axis=0)
+    merged._opacity = cp.concatenate(all_opacity, axis=0)
 
     if all_opacity_sh:
-        merged._opacity_sh = nn.Parameter(torch.cat(all_opacity_sh, dim=0))
+        merged._opacity_sh = cp.concatenate(all_opacity_sh, axis=0)
     else:
-        merged._opacity_sh = nn.Parameter(torch.empty(merged._xyz.shape[0], 0, device=device))
+        merged._opacity_sh = cp.empty((merged._xyz.shape[0], 0), dtype=cp.float32)
 
-    n_pts = merged._xyz.shape[0]
-    merged.xyz_gradient_accum = torch.zeros(n_pts, 1, device=device)
-    merged.denom = torch.zeros(n_pts, 1, device=device)
-    merged.max_radii2D = torch.zeros(n_pts, device=device)
-
-    # Set active SH degrees to max (training is done)
     merged.active_sh_degree = reference_model.max_sh_degree
     merged.active_fagk_degree = reference_model.fagk_max_degree
 

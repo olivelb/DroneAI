@@ -1,6 +1,31 @@
 import os
 import numpy as np
-from exif import Image as ExifImage
+from PIL import Image as PILImage
+from PIL.ExifTags import TAGS, GPSTAGS
+
+
+def _get_gps_info(filepath):
+    """Extract GPS IFD from a JPEG/TIFF using Pillow. Returns dict or None."""
+    try:
+        img = PILImage.open(filepath)
+        exif = img._getexif()
+        if exif is None:
+            return None
+        for tag_id, value in exif.items():
+            if TAGS.get(tag_id) == "GPSInfo":
+                gps = {}
+                for gk, gv in value.items():
+                    gps[GPSTAGS.get(gk, gk)] = gv
+                return gps
+    except Exception:
+        pass
+    return None
+
+
+def _dms_to_deg(dms):
+    """Convert (degrees, minutes, seconds) tuple to decimal degrees."""
+    return float(dms[0]) + float(dms[1]) / 60.0 + float(dms[2]) / 3600.0
+
 
 def extract_exif_altitudes(images_dir):
     """
@@ -11,18 +36,16 @@ def extract_exif_altitudes(images_dir):
     for fname in os.listdir(images_dir):
         if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
             continue
-        try:
-            with open(os.path.join(images_dir, fname), "rb") as f:
-                img = ExifImage(f)
-            if hasattr(img, "gps_altitude") and img.gps_altitude is not None:
-                alt = float(img.gps_altitude)
-                # If gps_altitude_ref exists and is 1, it's below sea level
-                if hasattr(img, "gps_altitude_ref") and img.gps_altitude_ref == 1:
-                    alt = -alt
-                altitudes[fname] = alt
-            else:
-                altitudes[fname] = None
-        except Exception:
+        gps = _get_gps_info(os.path.join(images_dir, fname))
+        if gps and "GPSAltitude" in gps:
+            alt = float(gps["GPSAltitude"])
+            ref = gps.get("GPSAltitudeRef", b"\x00")
+            if isinstance(ref, bytes):
+                ref = ref[0] if ref else 0
+            if ref == 1:
+                alt = -alt
+            altitudes[fname] = alt
+        else:
             altitudes[fname] = None
     return altitudes
 
@@ -36,20 +59,16 @@ def extract_exif_gps(images_dir):
     for fname in os.listdir(images_dir):
         if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
             continue
-        try:
-            with open(os.path.join(images_dir, fname), "rb") as f:
-                img = ExifImage(f)
-            if hasattr(img, "gps_latitude") and img.gps_latitude is not None:
-                lat = img.gps_latitude[0] + img.gps_latitude[1] / 60 + img.gps_latitude[2] / 3600
-                if hasattr(img, "gps_latitude_ref") and img.gps_latitude_ref == "S":
-                    lat = -lat
-                lon = img.gps_longitude[0] + img.gps_longitude[1] / 60 + img.gps_longitude[2] / 3600
-                if hasattr(img, "gps_longitude_ref") and img.gps_longitude_ref == "W":
-                    lon = -lon
-                positions[fname] = (lat, lon)
-            else:
-                positions[fname] = None
-        except Exception:
+        gps = _get_gps_info(os.path.join(images_dir, fname))
+        if gps and "GPSLatitude" in gps and "GPSLongitude" in gps:
+            lat = _dms_to_deg(gps["GPSLatitude"])
+            if gps.get("GPSLatitudeRef") == "S":
+                lat = -lat
+            lon = _dms_to_deg(gps["GPSLongitude"])
+            if gps.get("GPSLongitudeRef") == "W":
+                lon = -lon
+            positions[fname] = (lat, lon)
+        else:
             positions[fname] = None
     return positions
 

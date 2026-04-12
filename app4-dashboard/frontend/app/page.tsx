@@ -15,7 +15,6 @@ import {
   Settings,
   Terminal,
   Trash2,
-  Zap,
 } from "lucide-react";
 
 type ServiceName = "COLMAP" | "TILER" | "IA";
@@ -142,53 +141,6 @@ type ParameterConfigResponse = {
   metadata: Record<string, ParameterMeta>;
 };
 
-type ResourceSummary = {
-  memory: {
-    total_bytes: number;
-    available_bytes: number;
-    free_bytes: number;
-    total_gib: number;
-    available_gib: number;
-    free_gib: number;
-  };
-};
-
-type EstimateResponse = {
-  pipeline: string;
-  params: Record<string, ParamValue>;
-  dataset: {
-    path: string;
-    image_count: number;
-    sampled_images: Array<{
-      name: string;
-      width: number;
-      height: number;
-      scaled_width: number;
-      scaled_height: number;
-      pixels: number;
-      fusion_bytes: number;
-    }>;
-  };
-  memory: {
-    formula: string;
-    cache_size_gib: number;
-    cache_size_bytes: number;
-    total_fusion_bytes: number;
-    total_fusion_gib: number;
-    largest_image_bytes: number;
-    largest_image_gib: number;
-    images_fit_in_cache: number;
-    target_cached_images: number;
-    available_ram_gib: number;
-    safe_cache_gib: number;
-  };
-  recommendation: {
-    fusion_cache_size: number;
-    fusion_max_image_size: number;
-    reason: string;
-  };
-};
-
 const SERVICE_ORDER: ServiceName[] = ["COLMAP", "TILER", "IA"];
 const AVAILABLE_CLASSES = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat"];
 const AVAILABLE_AI_BACKENDS: Array<{ value: AIBackend; label: string; description: string }> = [
@@ -227,13 +179,6 @@ const isMissionTerminal = (mission?: MissionSummary | null) => {
     return false;
   }
   return mission.overall_status === "success" || mission.overall_status === "error";
-};
-
-const formatBytesToGib = (bytes?: number | null) => {
-  if (!bytes) {
-    return "0.00 GiB";
-  }
-  return `${(bytes / 1024 ** 3).toFixed(2)} GiB`;
 };
 
 const formatPodPhase = (pod: PodState) => {
@@ -279,9 +224,6 @@ export default function Dashboard() {
   const [pipeline, setPipeline] = useState<PipelineName>("modern");
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, ParamValue>>({});
-  const [estimate, setEstimate] = useState<EstimateResponse | null>(null);
-  const [estimateError, setEstimateError] = useState<string | null>(null);
-  const [resources, setResources] = useState<ResourceSummary | null>(null);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
   const activeVolIdRef = useRef<string | null>(null);
@@ -371,16 +313,6 @@ export default function Dashboard() {
     }
   }, []);
 
-  const refreshResources = useCallback(async () => {
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/system/resources`, { cache: "no-store" });
-      const data = await res.json();
-      setResources(data);
-    } catch (error) {
-      console.error("Resource refresh error:", error);
-    }
-  }, []);
-
   const fetchParameters = useCallback(async (nextPipeline: PipelineName) => {
     try {
       const res = await fetch(`${getApiBaseUrl()}/mission/parameters`, { cache: "no-store" });
@@ -392,55 +324,24 @@ export default function Dashboard() {
     }
   }, []);
 
-  const requestEstimate = useCallback(async (
-    inputDir: string,
-    nextPipeline: PipelineName,
-    nextParams: Record<string, ParamValue>,
-  ) => {
-    if (!inputDir) {
-      setEstimate(null);
-      setEstimateError(null);
-      return;
-    }
-    try {
-      const res = await fetch(`${getApiBaseUrl()}/mission/estimate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          input_dir: inputDir,
-          pipeline: nextPipeline,
-          colmap_params: nextParams,
-        }),
-      });
-      const data = (await res.json()) as EstimateResponse;
-      setEstimate(data);
-      setEstimateError(null);
-    } catch (error) {
-      console.error("Estimate error:", error);
-      setEstimateError(String(error));
-    }
-  }, []);
-
   useEffect(() => {
     void browse(DEFAULT_BROWSER_PATH);
     void fetchParameters("modern");
     void refreshSummary();
     void refreshPods();
-    void refreshResources();
 
     const summaryInterval = setInterval(() => {
       void refreshSummary();
     }, 5000);
     const podInterval = setInterval(() => {
       void refreshPods();
-      void refreshResources();
     }, 10000);
 
     return () => {
       clearInterval(summaryInterval);
       clearInterval(podInterval);
     };
-  }, [browse, fetchParameters, refreshPods, refreshResources, refreshSummary]);
+  }, [browse, fetchParameters, refreshPods, refreshSummary]);
 
   // Synchronise with activeMissionId updates caused manually (if any)
   useEffect(() => {
@@ -551,29 +452,10 @@ export default function Dashboard() {
     setParameterValues(parameterSchema.pipelines[pipeline] ?? {});
   }, [pipeline, parameterSchema]);
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      void requestEstimate(selectedPath, pipeline, parameterValues);
-    }, 350);
-
-    return () => clearTimeout(timer);
-  }, [parameterValues, pipeline, requestEstimate, selectedPath]);
-
   const updateParameter = (key: string, value: ParamValue) => {
     setParameterValues((prev) => ({
       ...prev,
       [key]: value,
-    }));
-  };
-
-  const applyRecommendation = () => {
-    if (!estimate) {
-      return;
-    }
-    setParameterValues((prev) => ({
-      ...prev,
-      fusion_cache_size: String(estimate.recommendation.fusion_cache_size),
-      fusion_max_image_size: String(estimate.recommendation.fusion_max_image_size),
     }));
   };
 
@@ -720,7 +602,7 @@ export default function Dashboard() {
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-700/70 pb-4">
           <div>
             <h1 className="text-3xl font-black tracking-tight text-white">DroneAI Control Center</h1>
-            <p className="mt-1 text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Photogrammetry, fusion diagnostics, and live tuning</p>
+            <p className="mt-1 text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">Photogrammetry and live tuning</p>
           </div>
           <div className="flex gap-3">
             <button
@@ -907,58 +789,6 @@ export default function Dashboard() {
                   )}
                 </div>
 
-                <div className="mt-6 rounded-[24px] border border-emerald-500/30 bg-emerald-500/10 p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div>
-                      <h3 className="flex items-center gap-2 text-base font-black text-emerald-200"><Zap size={18} /> Fusion RAM Estimator</h3>
-                      <p className="mt-1 text-sm text-emerald-50/75">Computed from the selected dataset dimensions after applying the chosen fusion image cap.</p>
-                    </div>
-                    <button onClick={applyRecommendation} disabled={!estimate} className="rounded-2xl bg-emerald-300 px-4 py-2 text-xs font-black uppercase tracking-[0.2em] text-black transition disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400">
-                      Apply Recommendation
-                    </button>
-                  </div>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Available RAM</div>
-                      <div className="mt-2 text-2xl font-black text-white">{resources?.memory.available_gib?.toFixed(2) ?? "0.00"} GiB</div>
-                      <div className="mt-1 text-xs text-slate-400">Host free-for-work estimate</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Configured Cache</div>
-                      <div className="mt-2 text-2xl font-black text-white">{estimate?.memory.cache_size_gib?.toFixed(2) ?? "0.00"} GiB</div>
-                      <div className="mt-1 text-xs text-slate-400">Exact StereoFusion.cache_size reservation</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Largest Image Working Set</div>
-                      <div className="mt-2 text-2xl font-black text-white">{estimate?.memory.largest_image_gib?.toFixed(2) ?? "0.00"} GiB</div>
-                      <div className="mt-1 text-xs text-slate-400">{estimate?.memory.formula ?? "pixels x RGB + depth + normal buffers"}</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Cache Coverage</div>
-                      <div className="mt-2 text-2xl font-black text-white">{estimate?.memory.images_fit_in_cache ?? 0}/{estimate?.memory.target_cached_images ?? 8}</div>
-                      <div className="mt-1 text-xs text-slate-400">Heaviest scaled images fitting in cache</div>
-                    </div>
-                  </div>
-
-                  <div className="mt-4 grid gap-4 md:grid-cols-2">
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Recommended Pair</div>
-                      <div className="mt-2 text-sm text-slate-200">fusion_max_image_size = {estimate?.recommendation.fusion_max_image_size ?? "-"}</div>
-                      <div className="text-sm text-slate-200">fusion_cache_size = {estimate?.recommendation.fusion_cache_size ?? "-"} GiB</div>
-                      <div className="mt-2 text-xs text-slate-400">{estimate?.recommendation.reason ?? "Select a dataset to compute a recommendation."}</div>
-                    </div>
-                    <div className="rounded-2xl border border-slate-700/60 bg-slate-950/70 p-4">
-                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Dataset Summary</div>
-                      <div className="mt-2 text-sm text-slate-200">Images analyzed: {estimate?.dataset.image_count ?? 0}</div>
-                      <div className="text-sm text-slate-200">Total scaled fusion bytes: {estimate ? formatBytesToGib(estimate.memory.total_fusion_bytes) : "0.00 GiB"}</div>
-                      <div className="text-sm text-slate-200">Safe cache from current free RAM: {estimate?.memory.safe_cache_gib?.toFixed(2) ?? "0.00"} GiB</div>
-                    </div>
-                  </div>
-
-                  {estimateError ? <div className="mt-3 text-xs text-red-300">Estimator error: {estimateError}</div> : null}
-                </div>
-
                 <div className="mt-6 space-y-5">
                   {Object.entries(parameterGroups).map(([group, keys]) => (
                     <div key={group} className="rounded-[24px] border border-slate-700 bg-slate-950/40 p-5">
@@ -1132,7 +962,7 @@ export default function Dashboard() {
             <div className="text-center">
               <MapIcon size={36} className="mx-auto mb-3 text-slate-600" />
               <div className="text-lg font-black text-slate-300">Visualization module loading</div>
-              <div className="mt-2 text-sm text-slate-500">Mission control now includes parameter editing, RAM estimation, and OOM diagnostics.</div>
+              <div className="mt-2 text-sm text-slate-500">Mission control now includes parameter editing and OOM diagnostics.</div>
             </div>
           </div>
         )}

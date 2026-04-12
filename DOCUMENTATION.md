@@ -96,7 +96,7 @@ As implemented today:
 - `app1-colmap` imports shared topic names, the default workspace root, and parameter-merge helpers
 - `app2-ia` imports shared topic names
 - `app3-processing` imports shared topic names
-- `app4-dashboard/api` imports shared topic names, workspace defaults, service order, pipeline defaults, parameter metadata, and fusion-planning constants
+- `app4-dashboard/api` imports shared topic names, workspace defaults, service order, pipeline defaults, and parameter metadata
 
 ## Services and responsibilities
 
@@ -145,7 +145,7 @@ Primary responsibilities:
 - fall back to a static pod list when Kubernetes service-account credentials are unavailable
 - expose host memory totals from `/proc/meminfo` through `GET /system/resources`
 - expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
-- estimate fusion memory pressure, cache sizing, and recommended maximum image size for an input directory through `POST /mission/estimate`
+- estimate recommended maximum image size for an input directory through `POST /mission/estimate`
 
 The API still does not persist mission state to disk or a database. Its mission model is in-memory only and is rebuilt from new Kafka traffic after restart.
 
@@ -160,9 +160,7 @@ Its responsibilities are:
 - extract GPS from EXIF and determine a projected UTM CRS
 - select the photogrammetry profile: `modern` or `legacy`
 - run COLMAP feature extraction, matching, mapping, and undistortion
-- when Gaussian Splatting ortho is enabled: skip PatchMatch stereo and fusion entirely (major time saving)
-- when Gaussian Splatting ortho is disabled: run PatchMatch stereo and stereo fusion, then geo-align the reconstructed model
-- generate an orthomosaic using 3D Gaussian Splatting (primary path) or legacy point-cloud projection (fallback)
+- generate an orthomosaic using 3D Gaussian Splatting
 - extract drone EXIF GPS altitude data and use it to shift the height map to real-world elevations
 - publish the orthomosaic event to `images-ortho`
 - publish detailed progress and log events to `pipeline-status`
@@ -302,11 +300,11 @@ Canonical payload shape:
 ```json
 {
   "vol_id": "mission_001",
-  "step": "STEREO_MVS",
+  "step": "GAUSS",
   "progress": 75,
   "status": "processing",
   "service": "COLMAP",
-  "log": "Running Multi-View Stereo"
+  "log": "Training Gaussian Splatting model"
 }
 ```
 
@@ -446,9 +444,6 @@ For a mission with `vol_id=mission_001`, the COLMAP worker typically uses:
   dense/
     sparse/
     images/
-    stereo/         (only present when GS ortho is disabled)
-    fused.ply       (only present when GS ortho is disabled)
-    fused_geo.ply   (only present when GS ortho is disabled)
   alignment_transform.json
   gaussian_checkpoints/
     full/
@@ -474,7 +469,6 @@ Important mission artifacts:
 - `gaussian_checkpoints/final.ply`: final filtered Gaussian model in COLMAP-local coordinates
 - `orthomosaic.tif`: georeferenced RGB orthomosaic
 - `orthomosaic.height.tif`: companion height map (DSM) GeoTIFF with real-world altitudes from drone EXIF
-- `dense/fused.ply`: dense point cloud in COLMAP coordinates (legacy fallback path only)
 - `orthomosaic_annotated.tif`: final annotated orthomosaic produced by app3
 
 ## End-to-end event sequence
@@ -493,9 +487,8 @@ sequenceDiagram
     API->>K: publish vols-bruts
     C->>K: publish pipeline-status PREPARING
     C->>C: copy images, extract GPS, choose profile
-    C->>C: COLMAP SfM + MVS + fusion
-    C->>C: geo-align fused cloud
-    C->>C: build orthomosaic
+    C->>C: COLMAP SfM + undistortion
+    C->>C: train Gaussian Splatting model + build orthomosaic
     C->>K: publish images-ortho
     P->>K: consume images-ortho
     P->>P: open GeoTIFF and compute overlapping tile grid
@@ -523,8 +516,7 @@ stateDiagram-v2
     Submitted --> PreparingWorkspace: vols-bruts consumed
     PreparingWorkspace --> ExtractingGPS
     ExtractingGPS --> SparseReconstruction
-    SparseReconstruction --> DenseReconstruction
-    DenseReconstruction --> GeoAlignment
+    SparseReconstruction --> GeoAlignment
     GeoAlignment --> OrthoConstruction
     OrthoConstruction --> Tiling
     Tiling --> Detecting
@@ -535,7 +527,6 @@ stateDiagram-v2
     PreparingWorkspace --> Failed
     ExtractingGPS --> Failed
     SparseReconstruction --> Failed
-    DenseReconstruction --> Failed
     GeoAlignment --> Failed
     OrthoConstruction --> Failed
     Tiling --> Failed
@@ -546,7 +537,6 @@ stateDiagram-v2
     PreparingWorkspace --> Cancelled: pipeline-control cancel
     ExtractingGPS --> Cancelled: pipeline-control cancel
     SparseReconstruction --> Cancelled: pipeline-control cancel
-    DenseReconstruction --> Cancelled: pipeline-control cancel
     GeoAlignment --> Cancelled: pipeline-control cancel
     OrthoConstruction --> Cancelled: pipeline-control cancel
 ```
@@ -624,14 +614,12 @@ This is important because reusing a database with the wrong feature representati
 
 ### Gaussian Splatting rerun readiness
 
-For `use_mesh_ortho: true` (the default), the Gaussian Splatting path treats the workspace as reusable when:
+The Gaussian Splatting path treats the workspace as reusable when:
 
 - `dense/sparse/cameras.bin` exists
 - `dense/sparse/images.bin` exists
 - `dense/sparse/points3D.bin` exists
 - undistorted images exist in `dense/images/`
-
-Unlike the legacy TrueOrtho path, the GS pipeline does **not** require geometric depth maps. PatchMatch stereo and fusion are skipped entirely.
 
 This readiness is checked at startup and refreshed again after `image_undistorter`. If undistorted images and the sparse model are present, the worker jumps directly to the `GAUSS` stage.
 
@@ -641,8 +629,7 @@ The worker runs COLMAP inside a container, so CUDA device indices are relative t
 
 Consequences:
 
-- if one GPU is visible inside the pod, the only valid COLMAP GPU index is `0`
-- mission payloads that pass `mvs_gpu_index: -1` are normalized to `0`
+- mission payloads that pass GPU index `-1` are normalized to `0`
 - feature extraction, matching, and bundle-adjustment GPU indices also default to `0`
 
 This avoids the common COLMAP abort `selected_gpu_index < num_cuda_devices ... Invalid CUDA GPU selected` when the host GPU is labeled differently from the container-local device list.
@@ -684,13 +671,8 @@ stateDiagram-v2
     Matching --> Mapping: legacy path
     Calibrating --> Mapping
     Mapping --> Undistort
-    Undistort --> GaussianSplatting: GS ortho enabled
-    Undistort --> PatchMatch: GS ortho disabled
+    Undistort --> GaussianSplatting
     GaussianSplatting --> PublishOrtho
-    PatchMatch --> Fusion
-    Fusion --> Alignment
-    Alignment --> OrthoFromPLY
-    OrthoFromPLY --> PublishOrtho
     PublishOrtho --> Completed
 
     Preparing --> Cancelled
@@ -702,10 +684,6 @@ stateDiagram-v2
     Mapping --> Cancelled
     Undistort --> Cancelled
     GaussianSplatting --> Cancelled
-    PatchMatch --> Cancelled
-    Fusion --> Cancelled
-    Alignment --> Cancelled
-    OrthoFromPLY --> Cancelled
 
     Preparing --> Error
     GPS --> Error
@@ -714,40 +692,7 @@ stateDiagram-v2
     Mapping --> Error
     Undistort --> Error
     GaussianSplatting --> Error
-    PatchMatch --> Error
-    Fusion --> Error
-    Alignment --> Error
-    OrthoFromPLY --> Error
 ```
-
-## Why dense reconstruction is not geo-aligned before PatchMatch
-
-This implementation makes an important numeric stability choice.
-
-MVS is run on the non-geo-aligned sparse model under `sparse/0`, not on a UTM-shifted reconstruction.
-
-Reason:
-
-- UTM coordinates can be on the order of millions of meters
-- PatchMatch and related CUDA code paths operate with float32 precision constraints
-- if large world-coordinate translations are injected too early, geometric consistency can collapse and dense reconstruction may reject almost everything
-
-So the pipeline does this instead:
-
-1. run SfM and dense stereo in compact COLMAP-local coordinates
-2. run stereo fusion in those same local coordinates
-3. estimate a Sim3 alignment from sparse-local to sparse-geo
-4. apply that transform only after fusion
-5. use the alignment transform during orthomosaic rasterization
-
-Additional precision guards exist in the orthomosaic code:
-
-- the Gaussian Splatting pipeline splits the Sim3 into R·s (applied in float32 to Gaussian means and axes) and t (kept as a float64 GeoTIFF origin), avoiding precision loss entirely
-- the legacy depth-map path keeps projected-coordinate transforms and camera reprojection math in float64 where large CRS values matter
-- mesh and point-cloud rasterizers shift X, Y, and Z into local scene coordinates before float32 upload or rasterization
-- when app1 writes `fused_geo.ply` for the legacy point-cloud fallback, transformed `x/y/z/nx/ny/nz` fields are preserved as float64 so large projected coordinates are not quantized away
-
-This is a core implementation detail and directly affects output quality.
 
 ## Orthomosaic construction
 
@@ -755,11 +700,11 @@ This section describes the repository-specific orthomosaic logic in detail.
 
 ### Overview
 
-The orthomosaic builder defaults to a **3D Gaussian Splatting (3DGS) pipeline**, with a fallback to legacy direct point-cloud projection.
+The orthomosaic builder uses a **3D Gaussian Splatting (3DGS) pipeline**.
 
-The GS pipeline replaces the previous depth-map TrueOrtho path. It trains a Gaussian radiance field directly from COLMAP undistorted images and the sparse reconstruction, renders an orthographic True Digital Orthophoto Map (TDOM), and writes a georeferenced GeoTIFF with a companion height map shifted to real-world drone EXIF altitudes.
+It trains a Gaussian radiance field directly from COLMAP undistorted images and the sparse reconstruction, renders an orthographic True Digital Orthophoto Map (TDOM), and writes a georeferenced GeoTIFF with a companion height map shifted to real-world drone EXIF altitudes.
 
-Primary path (Gaussian Splatting, `use_mesh_ortho: True`):
+Pipeline steps:
 
 1. Load COLMAP sparse reconstruction and alignment transform from `dense/sparse/`
 2. Extract drone EXIF GPS altitudes from undistorted images
@@ -770,15 +715,9 @@ Primary path (Gaussian Splatting, `use_mesh_ortho: True`):
    - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to model, keep translation as float64 for GeoTIFF origin
    - **PCA path** (no alignment transform): compute `R_geo` rotation matrix from camera PCA, pass it to the renderer — the model stays in the original COLMAP coordinate frame to preserve SH coefficient consistency
 7. Configurable multi-stage post-processing filter chain: max-scale → spatial crop → opacity → needle removal → SOR → connected-component → Z-floater removal (each individually togglable)
-8. Nadir fine-tune: optimise SH coefficients, scales, and opacities using near-nadir training cameras to adapt the model for orthographic view
-9. Render orthographic RGB orthomosaic and height map via gsplat ortho rasterisation (with `R_geo` for PCA path)
-10. Shift height map to match mean drone EXIF GPS altitude
-11. Write GeoTIFF with projected CRS
-
-Fallback path (Direct Point Cloud Projection, `use_mesh_ortho: False`):
-
-1. Requires PatchMatch stereo + fusion (not skipped)
-2. Uses iterative top-down point splatting from `fused.ply` or `fused_geo.ply`
+8. Render orthographic RGB orthomosaic and height map via CuPy CUDA rasteriser (with `R_geo` for PCA path)
+9. Shift height map to match mean drone EXIF GPS altitude
+10. Write GeoTIFF with projected CRS
 
 ### Gaussian Splatting orthophoto pipeline
 
@@ -790,8 +729,8 @@ The implementation draws from several key papers:
 
 - **3D Gaussian Splatting** (Kerbl et al. 2023): core Gaussian scene representation with position, covariance (rotation quaternion + log-scale), opacity, and spherical harmonics colour coefficients
 - **3DGS as MCMC** (Kheradmand et al. 2024): Markov Chain Monte Carlo densification strategy with bounded Gaussian count (`cap_max`), stochastic relocation instead of unbounded clone/split — used by LichtFeld MRNF internally
-- **LichtFeld-Studio** (MRNF strategy): high-performance C++/CUDA training with multi-resolution neural features, progressive resolution scheduling, and built-in VRAM management — replaces the previous Python/gsplat training loop
-- **gsplat** (Ye et al. 2025): differentiable rasterisation library providing orthographic camera model for TDOM rendering, antialiased rendering, and packed sparse rasterisation (used for rendering only, not training)
+- **LichtFeld-Studio** (MRNF strategy): high-performance C++/CUDA training with multi-resolution neural features, progressive resolution scheduling, and built-in VRAM management
+- **CuPy** with custom CUDA RawKernels: lightweight GPU-accelerated orthographic rasteriser for TDOM rendering
 - **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
 - **Tortho-Gaussian** (Wang et al. 2024): Fully Anisotropic Gaussian Kernel (FAGK) with SH-based view-dependent opacity, and orthographic projection matrix formulation (Equation 9)
 
@@ -801,9 +740,9 @@ The implementation draws from several key papers:
 
 **PCA path keeps the model in COLMAP frame entirely.** When no Sim3 alignment is available, a PCA-based rotation `R_geo` is computed from camera positions and passed to the orthographic renderer instead of being applied to the model. This preserves consistency between SH coefficients, positions, and rotations — applying the rotation to positions and quaternions but not to SH coefficients causes a frame mismatch that produces blurry, washed-out colours when rendered from nadir.
 
-**PatchMatch stereo and fusion are skipped entirely.** The GS pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`. This is the biggest time saving over the previous TrueOrtho pipeline.
+**No dense stereo required.** The pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`.
 
-**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress by parsing its `indicators`-library progress bar from stdout, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally. This replaces the previous Python/gsplat training loop and its per-image appearance model, ortho-coverage regularisation, and VRAM-adaptive logic.
+**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress by parsing its `indicators`-library progress bar from stdout, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally.
 
 **EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
 
@@ -833,7 +772,7 @@ LichtFeld-Studio manages all training internals (loss, optimisers, resolution sc
 1. Preparing per-cell COLMAP data directories
 2. Launching and monitoring the subprocess
 3. Loading the resulting PLY
-4. All post-training steps (filtering, nadir fine-tune, rendering, GeoTIFF output)
+4. All post-training steps (filtering, rendering, GeoTIFF output)
 
 Default training parameters (configurable via dashboard UI):
 
@@ -881,23 +820,9 @@ The trained model undergoes a configurable multi-stage filtering pipeline. Each 
 
 All filter parameters are exposed in the **Orthomosaic** parameter group in the dashboard (see tunables table below).
 
-#### Step 5f: Nadir fine-tune
-
-After filtering, the model undergoes a nadir fine-tune phase that adapts Gaussian properties for the orthographic view direction. This step is critical for the PCA path where the model stays in COLMAP frame: the SH coefficients were trained from mixed oblique and nadir views and can produce colour artefacts when rendered from a pure nadir orthographic camera.
-
-The fine-tune selects training cameras whose optical axis is within `gs_nadir_finetune_angle` degrees of the estimated nadir direction, then optimises a subset of Gaussian parameters using these cameras:
-
-- **full** mode (`gs_nadir_finetune_mode = "full"`, default): optimises SH coefficients, scales, and opacities while freezing positions and rotations. This lets Gaussians adapt both colours and shapes for the nadir view. Typical loss improvement: 0.19 → 0.06 over 3000 iterations.
-- **sh_only** mode: optimises only SH coefficients (geometry completely frozen).
-- **off** mode: skip fine-tuning entirely.
-
-The number of iterations is controlled by `gs_nadir_finetune_iters` (default 3000, set to 0 to skip). Progress is reported to the dashboard every 100 iterations with loss values, advancing the progress bar from 90% to 95%.
-
-Fine-tune is implemented in `nadir_finetune.py` as `nadir_finetune_full()` (full mode) and `nadir_finetune()` (SH-only mode).
-
 #### Step 6: Orthographic rendering
 
-The cleaned model is rendered using gsplat's orthographic camera model:
+The cleaned model is rendered using a custom CuPy CUDA rasteriser:
 
 - A virtual top-down camera is positioned above the scene, looking straight down
 - SH degree is capped at 1 for orthographic rendering (all ortho rays are parallel → higher SH bands produce spatially-uniform offset, not banding)
@@ -930,8 +855,7 @@ The `geo_x_min` and `geo_y_max` are computed by adding the float64 `geo_origin` 
 
 ```mermaid
 flowchart TD
-  A[dense/sparse + undistorted images available] --> B{use_mesh_ortho enabled?}
-  B -->|Yes| C0[Extract EXIF GPS altitudes from images]
+  A[dense/sparse + undistorted images available] --> C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
   C --> C1[LichtFeld MRNF training via headless subprocess]
   C1 --> C2{Geo-alignment method}
@@ -939,22 +863,17 @@ flowchart TD
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
   D1 --> D[Multi-stage filtering: max-scale → spatial → opacity → needle → SOR → CC → Z-floater]
   D2 --> D
-  D --> FT[Nadir fine-tune: adapt SH + scales + opacity for top-down view]
-  FT --> E[Render orthographic RGB + height map via gsplat with R_geo]
+  D --> E[Render orthographic RGB + height map via CuPy CUDA rasteriser with R_geo]
   E --> E1[Shift height map to match mean EXIF altitude]
   E1 --> H[Write GeoTIFF + height GeoTIFF]
-  B -->|No| I[PatchMatch + Fusion → Legacy float64 point splatting]
-  I --> H
 ```
 
 ### Gaussian Splatting ortho rerun readiness
 
-For `use_mesh_ortho: true`, app1 does not treat the dense workspace as reusable unless:
+App1 does not treat the dense workspace as reusable unless:
 
 - `dense/sparse/cameras.bin`, `images.bin`, and `points3D.bin` all exist
 - `dense/images/` directory exists with undistorted images
-
-This is simpler than the previous TrueOrtho readiness check (which also required geometric depth maps). The GS pipeline does not need depth maps at all.
 
 ### GS pipeline tunables exposed in the dashboard UI
 
@@ -962,7 +881,6 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |
-| Use Gaussian Splatting Ortho | `use_mesh_ortho` | bool | true | — |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
 | GS Training Iterations | `gs_iterations` | int | 30000 | 1000–100000 |
 | GS Training Image Scale | `gs_data_factor` | select | 1 | 1/2/4/8 |
@@ -977,9 +895,6 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | Z-Floater Removal | `gs_filter_z_floater` | bool | false | — |
 | Needle Removal Ratio | `gs_filter_needle` | float | 0.0 | 0–500 |
 | SOR Sigma Threshold | `gs_filter_sor_sigma` | float | 4.0 | 1.0–10.0 |
-| Nadir Fine-tune Iterations | `gs_nadir_finetune_iters` | int | 3000 | 0–30000 |
-| Nadir Fine-tune Mode | `gs_nadir_finetune_mode` | select | full | full/sh_only/off |
-| Nadir Fine-tune Angle (°) | `gs_nadir_finetune_angle` | float | 15.0 | 5–90 |
 
 ### Scalability
 
@@ -1001,10 +916,9 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, GeoTIFF output |
 | `lichtfeld_trainer.py` | LichtFeld-Studio headless subprocess wrapper, stdout progress parsing, PLY export |
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
-| `nadir_finetune.py` | Nadir fine-tune with gsplat: `nadir_finetune_full()` (SH + scales + opacity) and `nadir_finetune()` (SH-only) |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
-| `rasterizer.py` | Unified rasteriser wrapper (gsplat backend for ortho + perspective) |
+| `cuda_rasterizer.py` | CuPy CUDA rasteriser for orthographic Gaussian splatting |
 | `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |
 | `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |
 | `scene_info.py` | Scene metadata (cameras, point cloud, bounds, radius) |
@@ -1041,7 +955,7 @@ flowchart LR
   L1 --> M
   L2 --> M
 
-  M[Ortho camera over AABB<br/>min_x max_x min_y max_y] --> N[gsplat rasterise ortho tiles<br/>RGB + depth, viewmat includes R_geo]
+  M[Ortho camera over AABB<br/>min_x max_x min_y max_y] --> N[CuPy CUDA rasterise ortho tiles<br/>RGB + depth, viewmat includes R_geo]
   N --> O[Assemble full raster<br/>pixel grid at chosen resolution]
 
   O --> P1[Shift height map<br/>+ float64 t + EXIF altitude]
@@ -1059,121 +973,9 @@ Read it in this order:
 2. `model_aligner` creates a geo-referenced sparse reconstruction.
 3. Shared camera centers between local and geo sparse models estimate a Sim3 or PCA transform.
 4. **Sim3 path**: R·s is applied to Gaussian means and covariance axes in float32; the translation t is kept as a float64 GeoTIFF origin to avoid precision loss. **PCA path**: the model stays in COLMAP frame (preserving SH coefficient consistency); `R_geo` is passed to the renderer which embeds it in the view matrix.
-5. An orthographic camera is set over the axis-aligned bounding box and gsplat renders tiled RGB + depth.
+5. An orthographic camera is set over the axis-aligned bounding box and the CuPy CUDA rasteriser renders tiled RGB + depth.
 6. The height map is shifted by the float64 translation z-component plus mean EXIF GPS altitude.
 7. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
-
-### Legacy mesh rasterization path (when `use_mesh_ortho: false`)
-
-> **Note:** The sections below describe the **legacy** orthomosaic construction path that predates the 3D Gaussian Splatting pipeline. This path is only used when `use_mesh_ortho` is set to `false` in mission parameters, which forces the worker to skip Gaussian Splatting and fall back to the old mesh-rasterization or PLY-projection approach.
-
-<details>
-<summary>Expand legacy mesh rasterization details</summary>
-
-#### Raster bounds and resolution
-
-The mesh rasterizer computes:
-
-- `min_x`, `max_x`, `min_y`, `max_y`, `min_z`, `max_z`
-- physical width and height in projected units
-- target raster resolution
-- raster width and height in pixels
-
-The configured requested resolution comes from:
-
-- environment variables, if set
-- otherwise the chosen pipeline profile defaults
-
-The code also clamps the raster size by increasing the resolution when necessary so the output dimensions stay below the configured maximum raster dimension.
-
-#### Face filtering
-
-Before rasterization, the mesh path filters triangles by surface normal.
-
-Parameters:
-
-- `ortho_mesh_min_normal_cos`
-- `ortho_mesh_require_upward`
-
-Behavior:
-
-- if upward-only mode is enabled, triangles must have sufficiently positive `n_z`
-- otherwise, absolute verticality can be used
-
-Purpose:
-
-- suppress vertical walls, underside faces, and unstable grazing geometry
-- retain mostly horizontal or near-horizontal surfaces that contribute to a top-down orthomosaic
-
-#### CUDA rasterization path
-
-Preferred rasterizer:
-
-- `nvdiffrast` through `nvdiffrast.torch`
-
-High-level steps:
-
-1. initialize a CUDA rasterization context
-2. load the texture atlas into GPU memory
-3. optionally prefilter or resize the texture atlas when full mip construction is not safe
-4. process mesh faces in batches
-5. interpolate UV coordinates for covered pixels
-6. sample the texture atlas
-7. use a depth buffer so the nearest visible surface wins
-8. flip the output vertically into map orientation
-9. run iterative gap filling
-10. write the GeoTIFF with a projected affine transform
-
-#### CPU rasterization fallback
-
-If CUDA rasterization is unavailable or fails, the worker uses a CPU surface sampling fallback.
-
-This path:
-
-1. loads the texture atlas on CPU
-2. samples triangle interiors using a fixed set of barycentric sample points
-3. projects sampled points to raster pixels
-4. performs a z-buffer test using sampled surface heights
-5. writes RGB values into the output raster
-6. runs iterative gap filling
-7. writes the GeoTIFF
-
-#### Iterative gap filling
-
-Both mesh and point-cloud paths run `apply_iterative_gap_fill`.
-
-The gap-fill routine:
-
-1. derives a binary occupancy mask from non-zero RGB pixels
-2. dilates the occupied mask
-3. identifies newly fillable pixels
-4. estimates missing RGB values by local neighborhood averaging
-5. repeats the process for a fixed number of passes
-
-#### GeoTIFF writing
-
-The final orthomosaic is written with:
-
-- 3 RGB bands
-- a projected affine transform built from `from_origin(min_x, max_y, resolution, resolution)`
-- the mission UTM CRS when known
-
-#### PLY fallback path
-
-If the textured mesh is unavailable, the worker falls back to direct point-cloud projection.
-
-That path:
-
-1. reads the point cloud from `fused.ply`
-2. optionally applies the saved Sim3 alignment transform in float64, or uses `fused_geo.ply` when a geo-aligned export already exists
-3. derives raster extents and resolution
-4. converts projected coordinates to pixel indices
-5. sorts points by z so higher points overwrite lower ones
-6. writes the RGB values of the highest visible point per pixel
-7. fills holes iteratively
-8. writes the GeoTIFF
-
-</details>
 
 ## Processing worker detailed behavior
 
@@ -1467,27 +1269,13 @@ If the mission input path does not exist inside the container-visible host mount
 
 If an existing `database.db` belongs to the wrong feature profile, app1 deletes it and rebuilds the feature database.
 
-### Invalid fused point cloud
-
-If `dense/fused.ply` exists but is suspiciously small, app1 deletes the entire `dense/` tree and rebuilds dense products. This protects against resuming from a corrupted or coordinate-mismatched dense stage.
-
 ### Insufficient alignment data
 
-If too few common image centers exist between sparse-local and sparse-geo reconstructions, app1 cannot estimate the Sim3 transform robustly and falls back to using the raw fused cloud.
+If too few common image centers exist between sparse-local and sparse-geo reconstructions, app1 cannot estimate the Sim3 transform robustly and falls back to the PCA alignment path.
 
-### Gaussian Splatting fallback
+### Gaussian Splatting failure
 
-If the Gaussian Splatting training or rendering raises an exception, app1 falls back to the legacy mesh-rasterization or PLY-projection path (when `use_mesh_ortho: false`) or emits an error if no fallback is available.
-
-### Legacy TrueOrtho fallback
-
-When `use_mesh_ortho` is set to `false`, the Gaussian Splatting pipeline is skipped entirely. The worker then requires dense stereo products (depth maps or fused point cloud) and uses the legacy mesh-rasterization or PLY-projection path described in the legacy section above.
-
-### No dense output at all
-
-When the Gaussian Splatting pipeline is active (`use_mesh_ortho: true`, the default), the worker does **not** require dense stereo products. It skips PatchMatch stereo and fusion, training directly from the sparse SfM point cloud.
-
-When the legacy path is active (`use_mesh_ortho: false`), the worker requires either dense depth maps for mesh rasterization or a valid fused point cloud for PLY projection.
+If the Gaussian Splatting training or rendering raises an exception, app1 emits an error status and the mission stops.
 
 ### Processing worker missing orthomosaic
 
@@ -1504,8 +1292,8 @@ These are the assumptions that must remain true for the current implementation t
 1. The host dataset must exist under `/mnt/j/workspace`.
 2. Worker containers must see the host filesystem through `/host`.
 3. The orthomosaic must keep its projected CRS metadata intact.
-4. When using Gaussian Splatting (default), the Sim3 path applies rotation and scale to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. The PCA path keeps the model in COLMAP frame and passes `R_geo` to the renderer to preserve SH coefficient consistency. When using the legacy path, dense stereo must run before geo-alignment to avoid float32 precision problems.
-5. Gaussian Splatting reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment transform (PCA fallback is used if absent). Legacy reruns additionally require dense stereo products (depth maps or `fused.ply`).
+4. The Sim3 path applies rotation and scale to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. The PCA path keeps the model in COLMAP frame and passes `R_geo` to the renderer to preserve SH coefficient consistency.
+5. Reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment transform (PCA fallback is used if absent).
 6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
 7. Tile events must carry the original orthomosaic transform and CRS.
 8. App3 must set `total_tiles` before tile events begin returning.
@@ -1526,11 +1314,7 @@ From app1:
 - `CALIBRATING`
 - `MAPPING`
 - `UNDISTORT`
-- `STEREO_MVS` (skipped in GS mode after undistortion)
-- `FUSION` (skipped in GS mode)
 - `ALIGNING`
-- `MESHING` (legacy path only)
-- `TEXTURING` (legacy path only)
 - `GAUSS` (3D Gaussian Splatting training and ortho rendering)
 - `ORTHO`
 - `DONE`
@@ -1580,8 +1364,6 @@ Use the upstream COLMAP docs for:
 - camera model theory
 - feature extractor details
 - mapper internals
-- PatchMatch algorithm theory
-- mesh texturing theory
 
 Use this document for:
 

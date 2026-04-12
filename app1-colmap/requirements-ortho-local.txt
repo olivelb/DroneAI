@@ -1,5 +1,0 @@
-numpy
-pillow
-pycolmap
-rasterio
-scipy

@@ -10,15 +10,15 @@ Pipeline:
   2. Partition scene (VastGaussian, if m×n > 1×1)
   3. Train Gaussian model per cell via LichtFeld MRNF (C++ headless)
   4. Merge cell models
-  5. Render orthographic TDOM (gsplat rasterisation)
+  5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
   6. Write GeoTIFF
 """
 import json
 import os
 from pathlib import Path
 
+import cupy as cp
 import numpy as np
-import torch
 
 from .colmap_loader import (
     load_colmap_reconstruction,
@@ -72,9 +72,6 @@ def generate_gaussian_orthophoto(
     filter_sor_sigma: float = 4.0,
     filter_cc: bool = False,
     filter_z_floater: bool = False,
-    nadir_finetune_iters: int = 3000,
-    nadir_finetune_mode: str = "full",
-    nadir_finetune_angle: float = 15.0,
     verbose: bool = False,
 ):
     """
@@ -112,28 +109,21 @@ def generate_gaussian_orthophoto(
         Image downscaling factor (used by nadir fine-tune).
     cap_max : int
         Maximum Gaussian count for MRNF strategy.
-    nadir_finetune_iters : int
-        Nadir fine-tune iterations (0 = skip). Default 3000.
-    nadir_finetune_mode : str
-        "full" = optimise SH + scales + opacity (recommended for ortho quality).
-        "sh_only" = optimise only SH coefficients.
-        "off" = skip nadir fine-tuning entirely.
-    nadir_finetune_angle : float
-        Maximum angle from nadir for camera selection during fine-tuning.
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     # Ensure any stale CUDA allocations from a previous crashed run are freed
-    if device.type == "cuda":
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        vram_total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        vram_free = (torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated()) / (1024 ** 3)
+    import gc
+    gc.collect()
+    cp.get_default_memory_pool().free_all_blocks()
+    try:
+        free_bytes, total_bytes = cp.cuda.Device(0).mem_info
+        vram_total = total_bytes / (1024 ** 3)
+        vram_free = free_bytes / (1024 ** 3)
+        dev_name = cp.cuda.runtime.getDeviceProperties(0)["name"]
         _report(vol_id, "GAUSS", 0,
-                f"Starting Gaussian Splatting on {torch.cuda.get_device_name(0)} "
+                f"Starting Gaussian Splatting on {dev_name} "
                 f"({vram_free:.1f}/{vram_total:.1f} GB free)", report_fn)
+    except Exception:
+        _report(vol_id, "GAUSS", 0, "Starting Gaussian Splatting", report_fn)
 
     if checkpoint_dir is None:
         checkpoint_dir = str(Path(ortho_file).parent / "gaussian_checkpoints")
@@ -290,8 +280,7 @@ def generate_gaussian_orthophoto(
     del cells, cell_models
     import gc
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    cp.get_default_memory_pool().free_all_blocks()
 
     # --- 5. Geo-alignment ---
     # IMPORTANT: We split the Sim3 into rotation+scale (applied to the model)
@@ -311,17 +300,17 @@ def generate_gaussian_orthophoto(
     if transform_data:
         _report(vol_id, "GAUSS", 89, "Applying geo-alignment to Gaussian model…", report_fn)
         # Apply only scale + rotation to the model (keeps coords near 0)
-        R = torch.tensor(transform_data["R"], dtype=torch.float32,
-                         device=merged_model._xyz.device)
+        R = cp.array(transform_data["R"], dtype=cp.float32)
         s = float(transform_data["scale"])
         t_f64 = np.array(transform_data["t"], dtype=np.float64)
 
         import math as _math
-        merged_model._xyz.data = (s * (R @ merged_model._xyz.data.T)).T
-        merged_model._scaling.data += _math.log(s)
-        R_quat = merged_model._matrix_to_quaternion(R)
-        merged_model._rotation.data = merged_model._quaternion_multiply(
-            R_quat.unsqueeze(0), merged_model._rotation.data,
+        merged_model._xyz = (s * (R @ merged_model._xyz.T)).T
+        merged_model._scaling += _math.log(s)
+        R_quat = merged_model._matrix_to_quaternion(cp.asnumpy(R))
+        R_quat_cp = cp.array(R_quat, dtype=cp.float32)
+        merged_model._rotation = merged_model._quaternion_multiply(
+            R_quat_cp[None, :], merged_model._rotation,
         )
         geo_origin = t_f64           # stored as float64, used for GeoTIFF only
 
@@ -397,49 +386,7 @@ def generate_gaussian_orthophoto(
         )
         _report(vol_id, "GAUSS", 89, f"After filtering: {merged_model.num_gaussians} Gaussians", report_fn)
 
-    # --- Nadir fine-tune (PCA path only) ---
-    # In the PCA path the model stays in COLMAP frame.  The SH coefficients
-    # were trained from mixed oblique/nadir views and can produce colour
-    # artefacts when rendered from a pure nadir ortho camera.  We fine-tune
-    # SH (and optionally scales + opacity) using only near-nadir training
-    # images so the model adapts to the ortho view.
-    if R_geo is not None and nadir_finetune_iters > 0 and nadir_finetune_mode != "off":
-        from .nadir_finetune import nadir_finetune as _nadir_finetune_sh
-        from .nadir_finetune import nadir_finetune_full as _nadir_finetune_full
-        _report(vol_id, "GAUSS", 90,
-                f"Nadir fine-tune ({nadir_finetune_mode}, {nadir_finetune_iters} iters, "
-                f"angle≤{nadir_finetune_angle}°)…", report_fn)
-
-        def _make_ft_reporter(pct_s, pct_e, total_iters):
-            def _ft_report(it, loss, n):
-                pct = pct_s + int((pct_e - pct_s) * it / max(1, total_iters))
-                _report(vol_id, "GAUSS", pct,
-                        f"fine-tune iter {it}/{total_iters}: loss={loss:.5f}, N={n}",
-                        report_fn)
-            return _ft_report
-
-        if nadir_finetune_mode == "full":
-            merged_model = _nadir_finetune_full(
-                scene, merged_model,
-                iterations=nadir_finetune_iters,
-                data_factor=data_factor,
-                max_angle_deg=nadir_finetune_angle,
-                report_fn=_make_ft_reporter(90, 95, nadir_finetune_iters),
-            )
-        else:
-            merged_model = _nadir_finetune_sh(
-                scene, merged_model,
-                iterations=nadir_finetune_iters,
-                data_factor=data_factor,
-                max_angle_deg=nadir_finetune_angle,
-                report_fn=_make_ft_reporter(90, 95, nadir_finetune_iters),
-            )
-        _report(vol_id, "GAUSS", 95, "Nadir fine-tune complete.", report_fn)
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-    # Re-save final.ply after all filters + fine-tune so the checkpoint is clean.
+    # Re-save final.ply after all filters so the checkpoint is clean.
     merged_model.save_ply(final_ply)
     _report(vol_id, "GAUSS", 95,
             f"Saved filtered model: {final_ply} ({merged_model.num_gaussians} Gaussians)",
@@ -457,8 +404,7 @@ def generate_gaussian_orthophoto(
     render_extent = model_extent
 
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    cp.get_default_memory_pool().free_all_blocks()
 
     # --- 6. Render orthophoto ---
     # Convert metric GSD (metres/pixel) to model-unit GSD for the renderer.
@@ -474,7 +420,7 @@ def generate_gaussian_orthophoto(
             f"Rendering orthographic TDOM at {resolution} m/px "
             f"(local GSD={local_gsd:.6f})…", report_fn)
     result = render_orthophoto(
-        merged_model, gsd=local_gsd, extent=render_extent, device=device,
+        merged_model, gsd=local_gsd, extent=render_extent,
         R_geo=R_geo,
     )
 
