@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: processing-worker
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: processing
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: processing
+  template:
+    metadata:
+      labels:
+        app: processing
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: processing
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.processingWorker.image "tag" .Values.processingWorker.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        env:
+        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        - name: UNTILER_DEDUPE_CENTER_THRESHOLD
+          value: "40"
+        - name: UNTILER_DEDUPE_IOU_THRESHOLD
+          value: "0.05"
+        resources:
+          {{- toYaml .Values.processingWorker.resources | nindent 10 }}

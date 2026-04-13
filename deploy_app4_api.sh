@@ -51,13 +51,13 @@ sudo docker builder prune -f --filter 'until=1h' 2>/dev/null || true
 sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
 sudo docker save drone-dashboard-api:latest | sudo k3s ctr images import -
-echo "🧩 Applying Kubernetes manifests to keep dashboard-api config and RBAC in sync..."
-sudo kubectl apply -f kafka-local.yaml
-sudo kubectl apply -f dashboard-api-rbac.yaml
+echo "🧩 Syncing Helm chart (includes RBAC)..."
+DEPLOY_NS="drone-ai"
+sudo helm upgrade --install drone-ai charts/drone-ai/ --namespace "$DEPLOY_NS" --create-namespace
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then
 	echo "🚀 Restarting dashboard-api deployment..."
-	sudo kubectl rollout restart deployment dashboard-api -n kafka
-	sudo kubectl rollout status deployment dashboard-api -n kafka --timeout=10m
+	sudo kubectl rollout restart deployment dashboard-api -n "$DEPLOY_NS"
+	sudo kubectl rollout status deployment dashboard-api -n "$DEPLOY_NS" --timeout=10m
 	echo "✅ App 4 (Dashboard API) deployed!"
 else
 	echo "✅ App 4 API image staged in k3s; deployment not restarted."

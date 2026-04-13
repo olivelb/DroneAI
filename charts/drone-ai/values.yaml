@@ -1,0 +1,158 @@
+# ==========================================================================
+# DroneAI Helm values — LOCAL K3s defaults
+# For cloud, override with:  helm install -f values-cloud.yaml ...
+# ==========================================================================
+
+global:
+  namespace: drone-ai
+  imageRegistry: ""          # empty = local images (docker save → k3s ctr import)
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+# --------------------------------------------------------------------------
+# Kafka
+# --------------------------------------------------------------------------
+kafka:
+  enabled: true
+  image: apache/kafka:3.7.0
+  clusterId: "droneai-local-cluster-001"
+  persistence:
+    enabled: true
+    hostPath: /mnt/j/droneAI_workspace/kafka-data
+    size: 10Gi
+
+# --------------------------------------------------------------------------
+# MinIO (local S3-compatible object storage — disabled in cloud)
+# --------------------------------------------------------------------------
+minio:
+  enabled: true
+  image: minio/minio:latest
+  consoleNodePort: 30090
+  persistence:
+    hostPath: /mnt/j/droneAI_workspace/minio-data
+    size: 200Gi
+  accessKey: minioadmin
+  secretKey: minioadmin
+  bucket: drone-ai
+
+# --------------------------------------------------------------------------
+# PostgreSQL + PostGIS (local — disabled in cloud, use managed DB)
+# --------------------------------------------------------------------------
+postgres:
+  enabled: true
+  image: postgis/postgis:16-3.5
+  persistence:
+    hostPath: /mnt/j/droneAI_workspace/postgres-data
+    size: 20Gi
+  database: droneai
+  user: droneai
+  password: droneai-local
+
+# --------------------------------------------------------------------------
+# Storage / Database connection strings (consumed by all services)
+# --------------------------------------------------------------------------
+storage:
+  s3Endpoint: "http://minio.drone-ai.svc:9000"
+  s3Bucket: "drone-ai"
+  s3AccessKey: "minioadmin"
+  s3SecretKey: "minioadmin"
+  s3Region: "us-east-1"
+  databaseUrl: "postgresql://droneai:droneai-local@postgres.drone-ai.svc:5432/droneai"
+
+# --------------------------------------------------------------------------
+# COLMAP Worker
+# --------------------------------------------------------------------------
+colmapWorker:
+  image: drone-colmap
+  tag: latest
+  resources:
+    limits:
+      nvidia.com/gpu: "1"
+      memory: "80Gi"
+    requests:
+      memory: "80Gi"
+  workVolume:
+    # emptyDir = fast ext4 on WSL2 disk. Set type: hostPath for /mnt/j fallback.
+    type: emptyDir
+    sizeLimit: 100Gi
+    # hostPath: /mnt/j/droneAI_workspace/colmap-work   # uncomment if SSD too small
+
+# --------------------------------------------------------------------------
+# IA Worker
+# --------------------------------------------------------------------------
+iaWorker:
+  image: drone-ia
+  tag: latest
+  resources:
+    limits:
+      nvidia.com/gpu: "1"
+      memory: "8Gi"
+    requests:
+      memory: "2Gi"
+  modelCache:
+    hostPath: /mnt/j/droneAI_workspace/model-cache
+    size: 30Gi
+
+# --------------------------------------------------------------------------
+# Processing Worker
+# --------------------------------------------------------------------------
+processingWorker:
+  image: drone-processing
+  tag: latest
+  resources:
+    limits:
+      memory: "16Gi"
+    requests:
+      memory: "4Gi"
+
+# --------------------------------------------------------------------------
+# Dashboard API
+# --------------------------------------------------------------------------
+dashboardApi:
+  image: drone-dashboard-api
+  tag: latest
+  resources:
+    limits:
+      memory: "2Gi"
+    requests:
+      memory: "512Mi"
+  service:
+    type: NodePort
+    nodePort: 30080
+  cors:
+    origins: '["http://localhost:30000"]'
+
+# --------------------------------------------------------------------------
+# Dashboard Frontend
+# --------------------------------------------------------------------------
+dashboardFrontend:
+  image: drone-dashboard-frontend
+  tag: latest
+  resources:
+    limits:
+      memory: "512Mi"
+    requests:
+      memory: "128Mi"
+  service:
+    type: NodePort
+    nodePort: 30000
+
+# --------------------------------------------------------------------------
+# Ingress (disabled locally — enable in cloud values)
+# --------------------------------------------------------------------------
+ingress:
+  enabled: false
+
+# --------------------------------------------------------------------------
+# GPU scheduling (no selectors for single-node local)
+# --------------------------------------------------------------------------
+gpu:
+  nodeSelector: {}
+  tolerations: []
+
+# --------------------------------------------------------------------------
+# HuggingFace token (must exist as K8s secret before install)
+# --------------------------------------------------------------------------
+hfToken:
+  existingSecret: hf-token
+  secretKey: HF_TOKEN

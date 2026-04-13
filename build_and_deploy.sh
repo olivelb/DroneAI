@@ -56,12 +56,24 @@ for dep in LichtFeld-Studio/.git .docker-vcpkg/.git app1-colmap/ceres-solver/.gi
 done
 echo "✅ All external dependencies present."
 
-echo "�🔐 Checking required Kubernetes secrets..."
-if ! sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
-    echo "❌ Missing secret 'hf-token' in namespace 'kafka'."
+echo "🔐 Checking required Kubernetes secrets..."
+DEPLOY_NS="drone-ai"
+# Check both old (kafka) and new (drone-ai) namespaces for the secret
+if sudo kubectl get secret hf-token -n "$DEPLOY_NS" >/dev/null 2>&1; then
+    :
+elif sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
+    echo "   ⚠️  Found hf-token in 'kafka' namespace but not in '$DEPLOY_NS'."
+    echo "   Creating namespace '$DEPLOY_NS' if needed and copying secret..."
+    sudo kubectl create namespace "$DEPLOY_NS" --dry-run=client -o yaml | sudo kubectl apply -f -
+    sudo kubectl get secret hf-token -n kafka -o yaml \
+        | sed "s/namespace: kafka/namespace: $DEPLOY_NS/" \
+        | sudo kubectl apply -f -
+else
+    echo "❌ Missing secret 'hf-token'."
     echo "   Create it before deploying App 2, for example:"
-    echo '   export HF_TOKEN=your_huggingface_token'
-    echo '   sudo kubectl -n kafka create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"'
+    echo "   export HF_TOKEN=your_huggingface_token"
+    echo "   sudo kubectl create namespace $DEPLOY_NS"
+    echo "   sudo kubectl -n $DEPLOY_NS create secret generic hf-token --from-literal=HF_TOKEN=\"\$HF_TOKEN\""
     exit 1
 fi
 
@@ -113,11 +125,18 @@ for IMG in "${IMAGES[@]}"; do
     rm "$IMG.tar"
 done
 
-echo "🚀 Déploiement sur Kubernetes..."
-sudo kubectl apply -f kafka-local.yaml
-sudo kubectl apply -f dashboard-api-rbac.yaml
+echo "🚀 Déploiement sur Kubernetes (Helm)..."
 
-# Restart to ensure new images are pulled
-sudo kubectl rollout restart deployment -n kafka
+# Install Helm if not present
+if ! command -v helm &>/dev/null; then
+    echo "   -> Installing Helm..."
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+fi
 
-echo "✅ Pipeline microservices déployé !"
+# Deploy with Helm
+sudo helm upgrade --install drone-ai charts/drone-ai/ \
+    --namespace "$DEPLOY_NS" \
+    --create-namespace \
+    --wait --timeout 5m
+
+echo "✅ Pipeline microservices déployé (namespace: $DEPLOY_NS) !"

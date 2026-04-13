@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: migrate
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for PostgreSQL..."
+          until python3 -c "
+          import sqlalchemy, os
+          e = sqlalchemy.create_engine(os.environ['DATABASE_URL'])
+          e.connect().close()
+          print('Connected.')
+          " 2>/dev/null; do
+            sleep 2
+          done
+          echo "Running Alembic migrations..."
+          cd /app && alembic upgrade head
+          echo "Migrations complete."
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: drone-ai-storage
+              key: database-url

@@ -1,0 +1,94 @@
+# --- PersistentVolume for model cache ---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: model-cache-pv
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: ia
+spec:
+  capacity:
+    storage: {{ .Values.iaWorker.modelCache.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: {{ .Values.iaWorker.modelCache.hostPath }}
+    type: DirectoryOrCreate
+---
+# --- PersistentVolumeClaim ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-cache-pvc
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: ia
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.iaWorker.modelCache.size }}
+  volumeName: model-cache-pv
+---
+# --- Deployment ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ia-worker
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: ia
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ia
+  template:
+    metadata:
+      labels:
+        app: ia
+    spec:
+      {{- with .Values.gpu.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gpu.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: ia
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.iaWorker.image "tag" .Values.iaWorker.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        env:
+        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.hfToken.existingSecret }}
+              key: {{ .Values.hfToken.secretKey }}
+        - name: HF_HOME
+          value: "/cache/huggingface"
+        - name: HF_HUB_CACHE
+          value: "/cache/huggingface/hub"
+        - name: TRANSFORMERS_CACHE
+          value: "/cache/huggingface/transformers"
+        volumeMounts:
+        - name: model-cache
+          mountPath: /cache/huggingface
+        resources:
+          {{- toYaml .Values.iaWorker.resources | nindent 10 }}
+      volumes:
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: model-cache-pvc

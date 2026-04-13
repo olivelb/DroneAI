@@ -71,12 +71,13 @@ sudo docker image prune -f 2>/dev/null || true
 
 echo "📦 Importing app image to k3s..."
 sudo docker save drone-colmap:latest | sudo k3s ctr images import -
-echo "🧩 Applying Kubernetes manifest to keep colmap-worker resources in sync..."
-sudo kubectl apply -f kafka-local.yaml
+echo "🧩 Syncing Helm chart..."
+DEPLOY_NS="drone-ai"
+sudo helm upgrade --install drone-ai charts/drone-ai/ --namespace "$DEPLOY_NS" --create-namespace
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then
     echo "🚀 Restarting colmap-worker deployment..."
-    sudo kubectl rollout restart deployment colmap-worker -n kafka
-    sudo kubectl rollout status deployment colmap-worker -n kafka --timeout=10m
+    sudo kubectl rollout restart deployment colmap-worker -n "$DEPLOY_NS"
+    sudo kubectl rollout status deployment colmap-worker -n "$DEPLOY_NS" --timeout=10m
     echo "✅ App 1 (COLMAP) deployed!"
 else
     echo "✅ App 1 image staged in k3s; deployment not restarted."

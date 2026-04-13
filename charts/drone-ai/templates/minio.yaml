@@ -1,0 +1,169 @@
+{{- if .Values.minio.enabled }}
+# --- PersistentVolume (hostPath on /mnt/j) ---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: minio-pv
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  capacity:
+    storage: {{ .Values.minio.persistence.size }}
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  hostPath:
+    path: {{ .Values.minio.persistence.hostPath }}
+    type: DirectoryOrCreate
+---
+# --- PersistentVolumeClaim ---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: minio-pvc
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.minio.persistence.size }}
+  volumeName: minio-pv
+---
+# --- Deployment ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: {{ .Values.minio.image }}
+        args:
+          - server
+          - /data
+          - --console-address
+          - ":9001"
+        ports:
+        - containerPort: 9000
+          name: api
+        - containerPort: 9001
+          name: console
+        env:
+        - name: MINIO_ROOT_USER
+          value: {{ .Values.minio.accessKey | quote }}
+        - name: MINIO_ROOT_PASSWORD
+          value: {{ .Values.minio.secretKey | quote }}
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        readinessProbe:
+          httpGet:
+            path: /minio/health/ready
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /minio/health/live
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        resources:
+          limits:
+            memory: "1Gi"
+          requests:
+            memory: "256Mi"
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: minio-pvc
+---
+# --- Service ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  ports:
+  - port: 9000
+    targetPort: 9000
+    name: api
+  - port: 9001
+    targetPort: 9001
+    name: console
+  selector:
+    app: minio
+---
+# --- Console NodePort (convenience for local dev) ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-console
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  type: NodePort
+  ports:
+  - port: 9001
+    targetPort: 9001
+    nodePort: {{ .Values.minio.consoleNodePort }}
+  selector:
+    app: minio
+---
+# --- Init Job: create default bucket ---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: minio-init-bucket
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: mc
+        image: minio/mc:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Waiting for MinIO..."
+          until mc alias set myminio http://minio.{{ include "drone-ai.namespace" . }}.svc:9000 {{ .Values.minio.accessKey }} {{ .Values.minio.secretKey }} 2>/dev/null; do
+            sleep 2
+          done
+          mc mb --ignore-existing myminio/{{ .Values.minio.bucket }}
+          echo "Bucket '{{ .Values.minio.bucket }}' ready."
+{{- end }}

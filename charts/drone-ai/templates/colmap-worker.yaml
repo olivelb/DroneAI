@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: colmap-worker
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: colmap
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: colmap
+  template:
+    metadata:
+      labels:
+        app: colmap
+    spec:
+      {{- with .Values.gpu.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gpu.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - name: colmap
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.colmapWorker.image "tag" .Values.colmapWorker.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        env:
+        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        - name: QT_QPA_PLATFORM
+          value: "offscreen"
+        volumeMounts:
+        - name: work
+          mountPath: /work
+        resources:
+          {{- toYaml .Values.colmapWorker.resources | nindent 10 }}
+      volumes:
+      - name: work
+        {{- if eq .Values.colmapWorker.workVolume.type "hostPath" }}
+        hostPath:
+          path: {{ .Values.colmapWorker.workVolume.hostPath }}
+          type: DirectoryOrCreate
+        {{- else }}
+        emptyDir:
+          sizeLimit: {{ .Values.colmapWorker.workVolume.sizeLimit }}
+        {{- end }}

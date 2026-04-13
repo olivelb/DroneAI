@@ -1,0 +1,6 @@
+apiVersion: v2
+name: drone-ai
+description: DroneAI — drone imagery processing pipeline (COLMAP + IA + Tiling)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

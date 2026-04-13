@@ -51,12 +51,13 @@ sudo docker builder prune -f --filter 'until=1h' 2>/dev/null || true
 sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
 sudo docker save drone-processing:latest | sudo k3s ctr images import -
-echo "🧩 Applying Kubernetes manifest to keep processing-worker config in sync..."
-sudo kubectl apply -f kafka-local.yaml
+echo "🧩 Syncing Helm chart..."
+DEPLOY_NS="drone-ai"
+sudo helm upgrade --install drone-ai charts/drone-ai/ --namespace "$DEPLOY_NS" --create-namespace
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then
 	echo "🚀 Restarting processing-worker deployment..."
-	sudo kubectl rollout restart deployment processing-worker -n kafka
-	sudo kubectl rollout status deployment processing-worker -n kafka --timeout=10m
+	sudo kubectl rollout restart deployment processing-worker -n "$DEPLOY_NS"
+	sudo kubectl rollout status deployment processing-worker -n "$DEPLOY_NS" --timeout=10m
 	echo "✅ App 3 (Processing) deployed!"
 else
 	echo "✅ App 3 image staged in k3s; deployment not restarted."
