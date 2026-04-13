@@ -83,7 +83,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Pure Python packages
 RUN pip3 install --no-cache-dir --break-system-packages \
-    confluent-kafka rasterio numpy plyfile pyproj Pillow pycolmap==4.0.1 scipy
+    confluent-kafka rasterio numpy plyfile pyproj Pillow pycolmap==4.0.1 scipy \
+    boto3 sqlalchemy geoalchemy2 psycopg2-binary alembic
 
 # CuPy (replaces PyTorch + gsplat — custom CUDA rasteriser uses CuPy RawKernels)
 RUN pip3 install --no-cache-dir --break-system-packages cupy-cuda12x

@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
     libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir rasterio confluent-kafka opencv-python-headless
+RUN pip install --no-cache-dir rasterio confluent-kafka opencv-python-headless \
+    boto3 sqlalchemy geoalchemy2 psycopg2-binary
 
 COPY shared/ /app/shared/
 COPY app3-processing/ /app/app3-processing/

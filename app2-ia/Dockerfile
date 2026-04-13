@@ -16,7 +16,8 @@ RUN apt-get update && apt-get install -y \
 
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
     && python3 -m pip install --no-cache-dir rasterio pyproj confluent-kafka \
-        transformers accelerate huggingface_hub safetensors sentencepiece
+        transformers accelerate huggingface_hub safetensors sentencepiece \
+        boto3 sqlalchemy geoalchemy2 psycopg2-binary
 
 RUN mkdir -p /opt/modelzoo \
     && python3 - <<'PY'
