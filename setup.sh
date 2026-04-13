@@ -107,19 +107,29 @@ else
     echo "   If using a different path, edit charts/drone-ai/values.yaml before deploying."
 fi
 
-# 5e. Create drone-ai namespace and HF token secret
-echo "🔐 Setting up Kubernetes namespace and secrets..."
-sudo kubectl create namespace drone-ai --dry-run=client -o yaml | sudo kubectl apply -f -
-if ! sudo kubectl get secret hf-token -n drone-ai >/dev/null 2>&1; then
+# 5e. Set up HF token secret
+# Note: the drone-ai namespace is created by Helm (--create-namespace) in build_and_deploy.sh.
+# We only need to handle the hf-token secret here. build_and_deploy.sh checks this too,
+# but we prepare it early so the build script doesn't abort.
+echo "🔐 Setting up HF token..."
+DEPLOY_NS="drone-ai"
+# Create namespace only if it doesn't exist (Helm will adopt it if labels match)
+if ! sudo kubectl get namespace "$DEPLOY_NS" >/dev/null 2>&1; then
+    sudo kubectl create namespace "$DEPLOY_NS"
+    # Label it so Helm can adopt it later
+    sudo kubectl label namespace "$DEPLOY_NS" app.kubernetes.io/managed-by=Helm
+    sudo kubectl annotate namespace "$DEPLOY_NS" meta.helm.sh/release-name=drone-ai meta.helm.sh/release-namespace=drone-ai
+fi
+if ! sudo kubectl get secret hf-token -n "$DEPLOY_NS" >/dev/null 2>&1; then
     if [ -n "${HF_TOKEN:-}" ]; then
-        sudo kubectl -n drone-ai create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"
-        echo "✅ hf-token secret created in drone-ai namespace."
+        sudo kubectl -n "$DEPLOY_NS" create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"
+        echo "✅ hf-token secret created in $DEPLOY_NS namespace."
     elif sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
         echo "   Copying hf-token from kafka namespace..."
         sudo kubectl get secret hf-token -n kafka -o yaml \
-            | sed 's/namespace: kafka/namespace: drone-ai/' \
+            | sed "s/namespace: kafka/namespace: $DEPLOY_NS/" \
             | sudo kubectl apply -f -
-        echo "✅ hf-token copied to drone-ai namespace."
+        echo "✅ hf-token copied to $DEPLOY_NS namespace."
     else
         echo "⚠️  No HF_TOKEN env var set and no existing secret found."
         echo "   Set it before deploying: export HF_TOKEN=hf_... && sudo kubectl -n drone-ai create secret generic hf-token --from-literal=HF_TOKEN=\"\$HF_TOKEN\""
