@@ -15,6 +15,7 @@ import {
   Settings,
   Terminal,
   Trash2,
+  Upload,
 } from "lucide-react";
 
 type ServiceName = "COLMAP" | "TILER" | "IA";
@@ -223,6 +224,10 @@ export default function Dashboard() {
   const [pipeline, setPipeline] = useState<PipelineName>("modern");
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, ParamValue>>({});
+  const [uploadDatasetName, setUploadDatasetName] = useState("");
+  const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ total: number; completed: number; failed: number; status: string } | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
   const activeVolIdRef = useRef<string | null>(null);
@@ -526,6 +531,42 @@ export default function Dashboard() {
     }
   };
 
+  const uploadDataset = async () => {
+    if (!uploadFiles || uploadFiles.length === 0 || !uploadDatasetName.trim()) {
+      return;
+    }
+    setIsUploading(true);
+    setUploadProgress({ total: uploadFiles.length, completed: 0, failed: 0, status: "uploading" });
+
+    const formData = new FormData();
+    for (let i = 0; i < uploadFiles.length; i++) {
+      formData.append("files", uploadFiles[i]);
+    }
+
+    try {
+      const res = await fetch(
+        `${getApiBaseUrl()}/datasets/upload?dataset_name=${encodeURIComponent(uploadDatasetName.trim())}`,
+        { method: "POST", body: formData },
+      );
+      const result = await res.json();
+      setUploadProgress({
+        total: result.total ?? uploadFiles.length,
+        completed: result.completed ?? 0,
+        failed: result.failed ?? 0,
+        status: result.status ?? "done",
+      });
+      if (result.status === "done" || result.status === "partial") {
+        // Refresh browser to show the newly uploaded dataset
+        void browse("datasets/");
+      }
+    } catch (error) {
+      setUploadProgress((prev) => prev ? { ...prev, status: "error" } : null);
+      console.error("Upload error:", error);
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const goUp = () => {
     const parts = currentPath.split("/").filter(Boolean);
     parts.pop();
@@ -647,6 +688,51 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+              <div className="border-t border-slate-700/60 bg-slate-950/70 p-4">
+                <div className="mb-3 text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">Upload Dataset</div>
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    placeholder="Dataset name"
+                    value={uploadDatasetName}
+                    onChange={(e) => setUploadDatasetName(e.target.value)}
+                    className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-100 outline-none focus:border-blue-400"
+                  />
+                  <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-slate-600 bg-slate-900/60 px-3 py-3 text-xs text-slate-400 transition hover:border-blue-400 hover:text-blue-300">
+                    <Upload size={14} />
+                    <span>{uploadFiles && uploadFiles.length > 0 ? `${uploadFiles.length} file${uploadFiles.length > 1 ? "s" : ""} selected` : "Choose images..."}</span>
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => setUploadFiles(e.target.files)}
+                    />
+                  </label>
+                  <button
+                    onClick={uploadDataset}
+                    disabled={isUploading || !uploadFiles || uploadFiles.length === 0 || !uploadDatasetName.trim()}
+                    className="w-full rounded-xl bg-blue-500 px-3 py-2 text-xs font-black text-white transition hover:bg-blue-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-500"
+                  >
+                    {isUploading ? "Uploading..." : "Upload"}
+                  </button>
+                  {uploadProgress ? (
+                    <div className="space-y-1">
+                      <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className={`h-full transition-all ${uploadProgress.status === "error" ? "bg-red-400" : uploadProgress.status === "done" ? "bg-emerald-400" : "bg-blue-400"}`}
+                          style={{ width: `${uploadProgress.total > 0 ? (uploadProgress.completed / uploadProgress.total) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {uploadProgress.completed}/{uploadProgress.total} uploaded
+                        {uploadProgress.failed > 0 ? ` (${uploadProgress.failed} failed)` : ""}
+                        {uploadProgress.status === "done" ? " — Done!" : ""}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
               <div className="border-t border-slate-700/60 bg-slate-950/70 p-4">
@@ -949,12 +1035,76 @@ export default function Dashboard() {
             </section>
           </div>
         ) : (
-          <div className="flex min-h-[420px] items-center justify-center rounded-[32px] border border-slate-700/70 bg-slate-900/70 text-slate-500 backdrop-blur">
-            <div className="text-center">
-              <MapIcon size={36} className="mx-auto mb-3 text-slate-600" />
-              <div className="text-lg font-black text-slate-300">Visualization module loading</div>
-              <div className="mt-2 text-sm text-slate-500">Mission control now includes parameter editing and OOM diagnostics.</div>
-            </div>
+          <div className="grid grid-cols-12 gap-6">
+            <section className="col-span-12 lg:col-span-3 overflow-hidden rounded-[28px] border border-slate-700/70 bg-slate-900/70 backdrop-blur">
+              <div className="border-b border-slate-700/60 p-5">
+                <h2 className="flex items-center gap-2 text-lg font-black text-blue-300"><Activity size={20} /> Mission Results</h2>
+                <p className="mt-1 text-xs text-slate-500">Select a mission to view outputs</p>
+              </div>
+              <div className="max-h-[600px] overflow-y-auto p-3 space-y-2">
+                {Object.values(missions).sort((a, b) => b.updated_at - a.updated_at).map((m) => (
+                  <div
+                    key={m.vol_id}
+                    onClick={() => setActiveMissionId(m.vol_id)}
+                    className={`cursor-pointer rounded-2xl border p-3 transition ${activeMissionId === m.vol_id ? "border-blue-400 bg-blue-500/10" : "border-transparent bg-slate-950/40 hover:border-slate-600"}`}
+                  >
+                    <div className="truncate text-sm font-bold text-slate-100">{m.vol_id}</div>
+                    <div className={`mt-1 text-[10px] font-black uppercase tracking-[0.2em] ${m.overall_status === "success" ? "text-emerald-400" : m.overall_status === "error" ? "text-red-400" : "text-blue-400"}`}>{m.overall_status}</div>
+                  </div>
+                ))}
+                {Object.keys(missions).length === 0 ? <div className="p-4 text-xs text-slate-500">No missions yet.</div> : null}
+              </div>
+            </section>
+            <section className="col-span-12 lg:col-span-9 space-y-6">
+              {activeMission ? (
+                <div className="rounded-[28px] border border-slate-700/70 bg-slate-900/70 p-6 backdrop-blur">
+                  <h2 className="text-lg font-black text-emerald-300">Outputs — {activeMission.vol_id}</h2>
+                  <p className="mt-1 text-xs text-slate-500">Click a link to view or download the artifact via presigned URL.</p>
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <a
+                      href={`${getApiBaseUrl()}/files/missions/${activeMission.vol_id}/orthomosaic.tif`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-100 transition hover:border-emerald-400 hover:bg-emerald-500/10"
+                    >
+                      <MapIcon size={20} className="text-emerald-400" /> Orthomosaic (GeoTIFF)
+                    </a>
+                    <a
+                      href={`${getApiBaseUrl()}/files/missions/${activeMission.vol_id}/orthomosaic_annotated.tif`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-100 transition hover:border-amber-400 hover:bg-amber-500/10"
+                    >
+                      <MapIcon size={20} className="text-amber-400" /> Annotated Orthomosaic
+                    </a>
+                    <a
+                      href={`${getApiBaseUrl()}/browse?prefix=${encodeURIComponent(`missions/${activeMission.vol_id}/tiles/`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-100 transition hover:border-blue-400 hover:bg-blue-500/10"
+                    >
+                      <Folder size={20} className="text-blue-400" /> Tiles
+                    </a>
+                    <a
+                      href={`${getApiBaseUrl()}/browse?prefix=${encodeURIComponent(`missions/${activeMission.vol_id}/sparse/`)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-3 rounded-2xl border border-slate-700 bg-slate-950/60 p-4 text-sm text-slate-100 transition hover:border-cyan-400 hover:bg-cyan-500/10"
+                    >
+                      <Folder size={20} className="text-cyan-400" /> Sparse Reconstruction
+                    </a>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[420px] items-center justify-center rounded-[32px] border border-slate-700/70 bg-slate-900/70 text-slate-500 backdrop-blur">
+                  <div className="text-center">
+                    <MapIcon size={36} className="mx-auto mb-3 text-slate-600" />
+                    <div className="text-lg font-black text-slate-300">Select a mission</div>
+                    <div className="mt-2 text-sm text-slate-500">Choose a completed mission from the sidebar to view its outputs.</div>
+                  </div>
+                </div>
+              )}
+            </section>
           </div>
         )}
       </div>

@@ -7,12 +7,13 @@ import time
 import ssl
 import urllib.error
 import urllib.request
+import uuid
 from datetime import datetime, timezone
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File as FastAPIFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from confluent_kafka import Producer, Consumer
@@ -604,6 +605,110 @@ def get_file(s3_key: str):
         return {"error": "File not found"}
     url = storage.get_presigned_url(s3_key)
     return RedirectResponse(url=url, status_code=302)
+
+
+# ---------------------------------------------------------------------------
+# Dataset upload
+# ---------------------------------------------------------------------------
+
+# In-memory upload progress tracking (keyed by upload_id)
+_upload_progress: dict[str, dict] = {}
+_upload_progress_subscribers: dict[str, list[WebSocket]] = {}
+
+
+@app.post("/datasets/upload")
+async def upload_dataset(
+    dataset_name: str,
+    files: list[UploadFile] = FastAPIFile(...),
+):
+    """Upload one or more image files to S3 under datasets/{dataset_name}/.
+
+    Returns an upload_id that can be used to track progress via the
+    ``/ws/upload/{upload_id}`` WebSocket endpoint.
+    """
+    import re
+
+    # Sanitise dataset name to prevent path traversal
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", dataset_name.strip())
+    if not safe_name:
+        return {"error": "Invalid dataset name"}
+
+    upload_id = uuid.uuid4().hex[:12]
+    total = len(files)
+    _upload_progress[upload_id] = {
+        "upload_id": upload_id,
+        "dataset": safe_name,
+        "total": total,
+        "completed": 0,
+        "failed": 0,
+        "status": "uploading",
+        "files": [],
+    }
+
+    async def _notify(prog: dict):
+        subs = _upload_progress_subscribers.get(upload_id, [])
+        dead = []
+        for ws in subs:
+            try:
+                await ws.send_text(json.dumps(prog))
+            except Exception:
+                dead.append(ws)
+        for d in dead:
+            try:
+                subs.remove(d)
+            except ValueError:
+                pass
+
+    failed_files = []
+    for i, f in enumerate(files):
+        filename = Path(f.filename or f"file_{i}").name  # prevent path traversal
+        s3_key = f"datasets/{safe_name}/{filename}"
+        try:
+            contents = await f.read()
+            storage.put_object(s3_key, contents)
+            _upload_progress[upload_id]["completed"] += 1
+            _upload_progress[upload_id]["files"].append({"name": filename, "s3_key": s3_key, "status": "ok"})
+        except Exception as exc:
+            _upload_progress[upload_id]["failed"] += 1
+            _upload_progress[upload_id]["files"].append({"name": filename, "status": "error", "error": str(exc)})
+            failed_files.append(filename)
+        await _notify(_upload_progress[upload_id])
+
+    _upload_progress[upload_id]["status"] = "done" if not failed_files else "partial"
+    await _notify(_upload_progress[upload_id])
+
+    return _upload_progress[upload_id]
+
+
+@app.get("/datasets/upload/{upload_id}")
+def upload_status(upload_id: str):
+    """Poll upload progress (alternative to WebSocket)."""
+    prog = _upload_progress.get(upload_id)
+    if prog is None:
+        return {"error": "Upload not found"}
+    return prog
+
+
+@app.websocket("/ws/upload/{upload_id}")
+async def upload_progress_ws(websocket: WebSocket, upload_id: str):
+    """WebSocket endpoint to receive real-time upload progress."""
+    await websocket.accept()
+    subs = _upload_progress_subscribers.setdefault(upload_id, [])
+    subs.append(websocket)
+    try:
+        # Send current state immediately
+        prog = _upload_progress.get(upload_id)
+        if prog:
+            await websocket.send_text(json.dumps(prog))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        try:
+            subs.remove(websocket)
+        except ValueError:
+            pass
 
 
 @app.post("/mission")
