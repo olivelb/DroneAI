@@ -12,6 +12,7 @@ spec:
     storage: {{ .Values.minio.persistence.size }}
   accessModes:
     - ReadWriteOnce
+  storageClassName: ""
   persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: {{ .Values.minio.persistence.hostPath }}
@@ -27,6 +28,7 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: minio
 spec:
+  storageClassName: ""
   accessModes:
     - ReadWriteOnce
   resources:

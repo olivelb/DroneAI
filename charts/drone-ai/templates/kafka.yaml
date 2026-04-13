@@ -12,6 +12,7 @@ spec:
     storage: {{ .Values.kafka.persistence.size }}
   accessModes:
     - ReadWriteOnce
+  storageClassName: ""
   persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: {{ .Values.kafka.persistence.hostPath }}
@@ -27,6 +28,7 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: kafka
 spec:
+  storageClassName: ""
   accessModes:
     - ReadWriteOnce
   resources:
