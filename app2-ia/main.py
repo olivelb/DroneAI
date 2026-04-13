@@ -21,6 +21,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
+from shared import storage
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN = TOPIC_IMAGE_TILES
@@ -390,15 +391,6 @@ def control_consumer_thread():
 
 threading.Thread(target=control_consumer_thread, daemon=True).start()
 
-def resolve_host_path(path_value: str) -> str:
-    if path_value.startswith("/host"):
-        return path_value
-
-    if not path_value.startswith("/"):
-        path_value = "/" + path_value
-    return "/host" + path_value
-
-
 def transform_detection_coordinates(ortho_transform, transformer, gx: float, gy: float) -> tuple[float | None, float | None]:
     if not ortho_transform or transformer is None:
         return None, None
@@ -442,22 +434,29 @@ try:
         # 1. Lecture de la tuile
         tile_info = json.loads(msg.value().decode('utf-8'))
         vol_id = tile_info['vol_id']
-        tile_path = tile_info['tile_path']
         total_tiles = int(tile_info.get('total_tiles', 0) or 0)
-        tile_path = resolve_host_path(tile_path)
-            
+
+        # Download tile from S3 to a local temp path
+        tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
+        local_tile_dir = f"/tmp/ia_tiles/{vol_id}"
+        os.makedirs(local_tile_dir, exist_ok=True)
+        tile_filename = tile_s3_key.split('/')[-1] if '/' in tile_s3_key else tile_s3_key
+        tile_path = os.path.join(local_tile_dir, tile_filename)
+
         offset_x = tile_info['offset_x']
         offset_y = tile_info['offset_y']
-        
+
         if cancel_manager.is_cancelled(vol_id):
             continue
-            
+
         # We assume the orthomosaic transform and CRS are passed in the message to compute real-world coordinates
         ortho_transform = tile_info.get('ortho_transform')
         ortho_crs = tile_info.get('ortho_crs')
-        
-        if not os.path.exists(tile_path):
-            report_progress(vol_id, "ERROR", 0, status="error", log=f"Tile not found: {tile_path}")
+
+        try:
+            storage.download_file(tile_s3_key, tile_path)
+        except Exception as dl_err:
+            report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}")
             continue
 
         stats = mission_stats.setdefault(vol_id, {"processed": 0, "detections": 0, "total_tiles": total_tiles})
@@ -524,6 +523,10 @@ try:
             summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
             report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
             mission_stats.pop(vol_id, None)
+            # Clean up local tile files for this mission
+            tile_cleanup_dir = f"/tmp/ia_tiles/{vol_id}"
+            if os.path.isdir(tile_cleanup_dir):
+                shutil.rmtree(tile_cleanup_dir, ignore_errors=True)
             # Free VRAM after each completed mission
             import gc
             gc.collect()

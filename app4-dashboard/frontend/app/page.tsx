@@ -157,7 +157,7 @@ const AVAILABLE_YOLO_MODELS: Array<{ value: YOLOModelVariant; label: string; des
   { value: "yolo11s", label: "YOLO11-S", description: "Smaller YOLO11 OBB model" },
   { value: "yolo11n", label: "YOLO11-N", description: "Lightest YOLO11 OBB model" },
 ];
-const DEFAULT_BROWSER_PATH = "/host/mnt/j";
+const DEFAULT_BROWSER_PATH = "datasets/";
 
 const getApiBaseUrl = () => {
   if (typeof window === "undefined") {
@@ -207,7 +207,6 @@ export default function Dashboard() {
   const [currentPath, setCurrentPath] = useState(DEFAULT_BROWSER_PATH);
   const [items, setItems] = useState<DatasetItem[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
-  const [workspacePath, setWorkspacePath] = useState("/mnt/j/workspace");
   const [volId, setVolId] = useState(`vol_${Math.floor(Math.random() * 1000)}`);
   const [missions, setMissions] = useState<Record<string, MissionSummary>>({});
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
@@ -269,7 +268,7 @@ export default function Dashboard() {
 
   const browse = useCallback(async (path: string) => {
     try {
-      const res = await fetch(`${getApiBaseUrl()}/browse?path=${encodeURIComponent(path)}`);
+      const res = await fetch(`${getApiBaseUrl()}/browse?prefix=${encodeURIComponent(path)}`);
       const data = await res.json();
       if (data.error) {
         console.error(data.error);
@@ -465,8 +464,7 @@ export default function Dashboard() {
     const normalizedPrompt = samPrompt.trim() || "car";
     const params = {
       vol_id: volId,
-      input_dir: selectedPath,
-      workspace_dir: workspacePath,
+      input_dataset: selectedPath,
       epsg: "EPSG:4326",
       camera_model: "PINHOLE",
       pipeline,
@@ -513,9 +511,6 @@ export default function Dashboard() {
 
     try {
       const query = new URLSearchParams({ vol_id: activeMissionId });
-      if (activeMission?.workspace_dir) {
-        query.set("workspace_dir", activeMission.workspace_dir);
-      }
       const res = await fetch(`${getApiBaseUrl()}/mission/resume?${query.toString()}`, {
         method: "POST",
       });
@@ -670,7 +665,7 @@ export default function Dashboard() {
                   <div className="flex gap-2">
                     <button
                       onClick={startPipeline}
-                      disabled={!selectedPath || !workspacePath}
+                      disabled={!selectedPath}
                       className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-black text-black transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
                     >
                       <span className="inline-flex items-center gap-2"><Play size={16} fill="currentColor" /> Run Mission</span>
@@ -691,14 +686,10 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                <div className="mt-6 grid gap-5 md:grid-cols-2">
+                <div className="mt-6 grid gap-5 md:grid-cols-1">
                   <label className="block rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
                     <div className="mb-2 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">Volume ID</div>
                     <input value={volId} onChange={(event) => setVolId(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm outline-none focus:border-blue-400" />
-                  </label>
-                  <label className="block rounded-2xl border border-slate-700 bg-slate-950/70 p-4">
-                    <div className="mb-2 text-[10px] font-black uppercase tracking-[0.24em] text-slate-500">Workspace Directory</div>
-                    <input value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} className="w-full rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 font-mono text-sm outline-none focus:border-blue-400" />
                   </label>
                 </div>
 

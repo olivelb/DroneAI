@@ -5,16 +5,16 @@ import sys
 import threading
 import time
 import ssl
-import math
-from datetime import datetime
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from confluent_kafka import Producer, Consumer
 from pydantic import BaseModel, Field
 
@@ -22,158 +22,99 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from shared.config import DEFAULT_WORKSPACE_DIR, KAFKA_BROKER, SERVICE_ORDER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_STATUS
+from shared.config import KAFKA_BROKER, SERVICE_ORDER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_STATUS
 from shared.pipeline_params import (
     PARAMETER_METADATA,
     PIPELINE_DEFAULTS,
 )
+from shared import storage
+from shared.database import (
+    get_session,
+    get_or_create_mission,
+    Mission,
+    MissionLog,
+)
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
 status_history = deque(maxlen=300)
-mission_state_lock = threading.Lock()
-mission_states: dict[str, dict] = {}
-mission_workspace_dirs: dict[str, str] = {}
 
 TERMINAL_STATUSES = {"success", "error"}
 MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
 
 
-def make_host_path(path: str) -> str:
-    if path.startswith("/host"):
-        return path
-    if not path.startswith("/"):
-        path = "/" + path
-    return "/host" + path
+# ---------------------------------------------------------------------------
+# Mission state helpers (DB-backed, replaces in-memory dicts)
+# ---------------------------------------------------------------------------
 
 
-def resolve_workspace_dir(workspace_value: str | None, vol_id: str) -> str:
-    workspace_root = os.path.normpath(workspace_value or DEFAULT_WORKSPACE_DIR)
-    if os.path.basename(workspace_root) == vol_id:
-        return workspace_root
-    return os.path.join(workspace_root, vol_id)
+def update_mission_state(payload: dict):
+    """Persist a Kafka status message to the DB."""
+    vol_id = payload.get("vol_id")
+    if not vol_id:
+        return
 
+    service = payload.get("service") or "UNKNOWN"
+    step = payload.get("step")
+    progress = payload.get("progress", 0)
+    status = payload.get("status", "processing")
+    log_msg = payload.get("log")
+    details = payload.get("details")
 
-def load_workspace_mission_state(vol_id: str, workspace_dir: str | None = None) -> dict | None:
-    candidate_roots: list[str] = []
-    if workspace_dir:
-        candidate_roots.append(workspace_dir)
+    try:
+        with get_session() as session:
+            mission = get_or_create_mission(session, vol_id)
 
-    with mission_state_lock:
-        tracked_root = mission_workspace_dirs.get(vol_id)
-    if tracked_root:
-        candidate_roots.append(tracked_root)
+            # Update per-service state
+            states = dict(mission.service_states or {})
+            states[service] = payload
+            mission.service_states = states
 
-    candidate_roots.append(DEFAULT_WORKSPACE_DIR)
+            # Update mission-level progress
+            mission.current_step = step
+            mission.progress = progress
+            if status in TERMINAL_STATUSES:
+                mission.status = status
+            elif mission.status not in TERMINAL_STATUSES:
+                mission.status = "processing"
+            mission.updated_at = datetime.now(timezone.utc)
 
-    seen: set[str] = set()
-    for root in candidate_roots:
-        normalized = os.path.normpath(root)
-        if normalized in seen:
-            continue
-        seen.add(normalized)
+            if status == "error" and log_msg:
+                mission.error_message = log_msg
 
-        state_path = os.path.join(make_host_path(resolve_workspace_dir(normalized, vol_id)), "mission_state.json")
-        if not os.path.exists(state_path):
-            continue
-        try:
-            with open(state_path, "r", encoding="utf-8") as handle:
-                return json.load(handle)
-        except (OSError, json.JSONDecodeError):
-            continue
+            # Store command/copy details in resume_info
+            if details:
+                event = details.get("event")
+                resume_info = dict(mission.resume_info or {})
+                if event in ("command_started", "command_finished", "command_failed", "command_cancelled"):
+                    resume_info["last_command_event"] = details
+                elif event == "copy_progress":
+                    resume_info["copy_progress"] = details
+                mission.resume_info = resume_info
 
-    return None
-
-
-def snapshot_mission_state(mission: dict) -> dict:
-    return {
-        "vol_id": mission["vol_id"],
-        "services": dict(mission["services"]),
-        "logs": list(mission["logs"]),
-        "updated_at": mission["updated_at"],
-        "overall_status": mission["overall_status"],
-        "workspace_dir": mission.get("workspace_dir"),
-    }
-
-
-def parse_timestamp(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            normalized = value.replace("Z", "+00:00")
-            return datetime.fromisoformat(normalized).timestamp()
-        except ValueError:
-            return None
-    return None
-
-
-def is_processing_stale(mission_updated_at: float | None, workspace_state: dict | None) -> bool:
-    timestamps = [parse_timestamp(mission_updated_at)]
-    if workspace_state is not None:
-        timestamps.append(parse_timestamp(workspace_state.get("updated_at")))
-
-    valid_timestamps = [timestamp for timestamp in timestamps if timestamp is not None]
-    if not valid_timestamps:
-        return False
-
-    latest_update = max(valid_timestamps)
-    return (time.time() - latest_update) > MISSION_PROCESSING_STALE_SECONDS
-
-class MissionParams(BaseModel):
-    vol_id: str
-    input_dir: str
-    workspace_dir: str = DEFAULT_WORKSPACE_DIR
-    epsg: str = "EPSG:4326"
-    camera_model: str = "PINHOLE"
-    pipeline: str = "modern"
-    tile_size: int = 1024
-    ai_confidence: float = 0.5
-    ai_backend: str = "yolo"
-    ai_model_variant: str = "yolo26l"
-    sam_prompt: str = "car"
-    classes: list[str] = Field(default_factory=lambda: ["car"])
-    colmap_params: dict[str, Any] = Field(default_factory=dict)
-
-
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: list[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        for message in status_history:
-            await websocket.send_text(message)
-
-    def disconnect(self, websocket: WebSocket):
-        try:
-            self.active_connections.remove(websocket)
-        except ValueError:
-            pass
-
-    async def broadcast(self, message: str):
-        dead = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except Exception:
-                dead.append(connection)
-        for d in dead:
-            try:
-                self.active_connections.remove(d)
-            except ValueError:
-                pass
-
-manager = ConnectionManager()
+            # Persist log entry
+            mission_log = MissionLog(
+                mission_id=mission.id,
+                vol_id=vol_id,
+                service=service,
+                step=step,
+                status=status,
+                progress=progress,
+                message=log_msg,
+                details=details,
+            )
+            session.add(mission_log)
+    except Exception as exc:
+        print(f"Failed to persist status to DB for {vol_id}: {exc}")
 
 
 def compute_overall_status(services: dict) -> str:
     if not services:
         return "idle"
 
-    statuses = [payload.get("status", "processing") for payload in services.values()]
+    statuses = [
+        (payload.get("status", "processing") if isinstance(payload, dict) else "processing")
+        for payload in services.values()
+    ]
     if any(status == "error" for status in statuses):
         return "error"
     if services and all(status == "success" for status in statuses if status):
@@ -183,155 +124,115 @@ def compute_overall_status(services: dict) -> str:
     return "processing"
 
 
-def resolve_mission_overall_status(mission: dict, workspace_state: dict | None) -> str:
-    services = mission.get("services", {})
-    workspace_status = workspace_state.get("status") if workspace_state else None
-    has_processing_service = any(payload.get("status") == "processing" for payload in services.values())
-
-    if any(payload.get("status") == "error" for payload in services.values()):
-        return "error"
-
-    if workspace_status in TERMINAL_STATUSES and not has_processing_service:
-        return workspace_status
-
-    computed = compute_overall_status(services)
-    if computed != "processing":
-        return computed
-
-    if has_processing_service and is_processing_stale(mission.get("updated_at"), workspace_state):
-        if workspace_status in TERMINAL_STATUSES:
-            return workspace_status
-        return "error"
-
-    return computed
+def is_mission_stale(mission: Mission) -> bool:
+    if mission.updated_at is None:
+        return False
+    elapsed = (datetime.now(timezone.utc) - mission.updated_at).total_seconds()
+    return elapsed > MISSION_PROCESSING_STALE_SECONDS
 
 
-def update_mission_state(payload: dict):
-    vol_id = payload.get("vol_id")
-    if not vol_id:
-        return
-
-    now = time.time()
-    service = payload.get("service") or "UNKNOWN"
-    log = payload.get("log")
-
-    with mission_state_lock:
-        mission = mission_states.setdefault(
-            vol_id,
-            {
-                "vol_id": vol_id,
-                "services": {},
-                "logs": deque(maxlen=200),
-                "updated_at": now,
-                "overall_status": "idle",
-                "workspace_dir": mission_workspace_dirs.get(vol_id),
-            },
-        )
-        mission["services"][service] = payload
-        mission["updated_at"] = now
-        if mission.get("workspace_dir") is None:
-            mission["workspace_dir"] = mission_workspace_dirs.get(vol_id)
-        if log:
-            mission["logs"].append({
-                "service": service,
-                "step": payload.get("step"),
-                "status": payload.get("status"),
-                "message": log,
-                "ts": now,
-            })
-        mission["overall_status"] = compute_overall_status(mission["services"])
-
-
-def build_colmap_resume_state(services: dict, workspace_state: dict | None, mission_updated_at: float | None = None) -> dict:
+def build_colmap_resume_state(mission: Mission) -> dict:
+    services = mission.service_states or {}
     colmap_service = services.get("COLMAP", {})
-    colmap_status = colmap_service.get("status") or workspace_state.get("status") if workspace_state else None
-    stale_processing = colmap_service.get("status") == "processing" and is_processing_stale(mission_updated_at, workspace_state)
-    downstream_processing = [
-        service_name
-        for service_name, payload in services.items()
-        if service_name != "COLMAP" and payload.get("status") == "processing"
+    colmap_status = colmap_service.get("status") if isinstance(colmap_service, dict) else None
+    stale = colmap_status == "processing" and is_mission_stale(mission)
+
+    downstream = [
+        name
+        for name, svc in services.items()
+        if name != "COLMAP" and isinstance(svc, dict) and svc.get("status") == "processing"
     ]
 
-    if colmap_service.get("status") == "processing" and not stale_processing:
+    if colmap_status == "processing" and not stale:
         return {
             "available": False,
             "state": "running",
             "reason": "COLMAP is currently running. Resume is only relevant after an interruption.",
-            "downstream_processing": downstream_processing,
+            "downstream_processing": downstream,
         }
-    if stale_processing and workspace_state is not None:
+    if stale:
+        has_params = mission.params is not None
         return {
-            "available": True,
-            "state": "checkpointed",
-            "reason": "The last live COLMAP status update is stale. The saved workspace checkpoint can be used to resume the mission.",
-            "downstream_processing": downstream_processing,
+            "available": has_params,
+            "state": "checkpointed" if has_params else "stale",
+            "reason": "The last COLMAP status update is stale. The mission can be resumed." if has_params else "COLMAP is stale and no saved params found.",
+            "downstream_processing": downstream,
         }
-    if stale_processing:
-        return {
-            "available": False,
-            "state": "stale",
-            "reason": "The last live COLMAP status update is stale and no saved workspace checkpoint is available.",
-            "downstream_processing": downstream_processing,
-        }
-    if colmap_status == "success" or (workspace_state and workspace_state.get("step") == "DONE"):
+    if colmap_status == "success":
         return {
             "available": False,
             "state": "completed",
-            "reason": "COLMAP has already completed for this mission. Downstream processing can continue without restarting COLMAP." if downstream_processing else "COLMAP has already completed for this mission.",
-            "downstream_processing": downstream_processing,
+            "reason": "COLMAP has already completed for this mission." + (" Downstream processing can continue." if downstream else ""),
+            "downstream_processing": downstream,
         }
     if colmap_status == "error":
+        has_params = mission.params is not None
         return {
-            "available": True,
-            "state": "resumable",
-            "reason": "COLMAP stopped with an error. A resume action can restart from the saved workspace checkpoint.",
-            "downstream_processing": downstream_processing,
-        }
-    if workspace_state is not None:
-        return {
-            "available": True,
-            "state": "checkpointed",
-            "reason": "A saved COLMAP workspace checkpoint exists. If the worker is no longer running, the mission can restart from that checkpoint.",
-            "downstream_processing": downstream_processing,
+            "available": has_params,
+            "state": "resumable" if has_params else "unavailable",
+            "reason": "COLMAP stopped with an error. A resume action can restart from the last checkpoint." if has_params else "COLMAP errored but no saved mission parameters found.",
+            "downstream_processing": downstream,
         }
     return {
         "available": False,
         "state": "unavailable",
-        "reason": "No saved COLMAP workspace checkpoint has been found yet.",
-        "downstream_processing": downstream_processing,
+        "reason": "No COLMAP state found yet.",
+        "downstream_processing": downstream,
     }
 
 
-def serialize_mission_state(mission: dict) -> dict:
-    services = {
-        name: mission["services"][name]
-        for name in SERVICE_ORDER
-        if name in mission["services"]
+def serialize_mission(mission: Mission) -> dict:
+    services = mission.service_states or {}
+    overall = compute_overall_status(services)
+    if mission.status in TERMINAL_STATUSES:
+        overall = mission.status
+
+    # If processing and stale, mark as error
+    if overall == "processing" and is_mission_stale(mission):
+        overall = "error"
+
+    colmap_resume = build_colmap_resume_state(mission)
+
+    # Build workspace_state-compatible dict for frontend backward compatibility
+    workspace_state = {
+        "vol_id": mission.vol_id,
+        "status": mission.status,
+        "step": mission.current_step,
+        "progress": mission.progress,
+        "updated_at": mission.updated_at.isoformat() if mission.updated_at else None,
+        "started_at": mission.created_at.isoformat() if mission.created_at else None,
+        "last_log": mission.error_message,
+        "resume_info": mission.resume_info,
+        "mission": mission.params,
+        "current_command": (mission.resume_info or {}).get("last_command_event"),
+        "copy_progress": (mission.resume_info or {}).get("copy_progress"),
     }
-    for name, payload in mission["services"].items():
-        if name not in services:
-            services[name] = payload
-    workspace_state = load_workspace_mission_state(mission["vol_id"], mission.get("workspace_dir"))
-    colmap_resume = build_colmap_resume_state(services, workspace_state, mission.get("updated_at"))
-    overall_status = resolve_mission_overall_status(mission, workspace_state)
 
     return {
-        "vol_id": mission["vol_id"],
-        "workspace_dir": mission.get("workspace_dir"),
+        "vol_id": mission.vol_id,
+        "workspace_dir": f"missions/{mission.vol_id}",
         "workspace_state": workspace_state,
         "colmap_resume": colmap_resume,
         "services": services,
-        "logs": list(mission["logs"]),
-        "updated_at": mission["updated_at"],
-        "overall_status": overall_status,
+        "logs": [],
+        "updated_at": mission.updated_at.timestamp() if mission.updated_at else time.time(),
+        "overall_status": overall,
     }
 
 
 def get_status_summary() -> dict:
-    with mission_state_lock:
-        mission_snapshots = [snapshot_mission_state(mission) for mission in mission_states.values()]
-
-    serialized = [serialize_mission_state(mission) for mission in mission_snapshots]
+    try:
+        with get_session() as session:
+            db_missions = (
+                session.query(Mission)
+                .order_by(Mission.updated_at.desc())
+                .limit(50)
+                .all()
+            )
+            serialized = [serialize_mission(m) for m in db_missions]
+    except Exception as exc:
+        print(f"Failed to query missions from DB: {exc}")
+        serialized = []
 
     serialized.sort(key=lambda item: item["updated_at"], reverse=True)
     active = next((item for item in serialized if item["overall_status"] == "processing"), None)
@@ -342,6 +243,11 @@ def get_status_summary() -> dict:
         "active_vol_id": active["vol_id"] if active else None,
         "missions": serialized,
     }
+
+
+# ---------------------------------------------------------------------------
+# Pod states (K8s API — unchanged except default namespace)
+# ---------------------------------------------------------------------------
 
 
 def fallback_pod_states() -> list[dict]:
@@ -356,7 +262,7 @@ def fallback_pod_states() -> list[dict]:
 
 
 def get_pod_states() -> dict:
-    namespace = os.getenv("POD_NAMESPACE", "kafka")
+    namespace = os.getenv("POD_NAMESPACE", "drone-ai")
     token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
     api_host = os.getenv("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
@@ -425,6 +331,69 @@ def get_pod_states() -> dict:
     except Exception as exc:
         return {"available": False, "pods": fallback_pod_states(), "error": str(exc)}
 
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+
+
+class MissionParams(BaseModel):
+    vol_id: str
+    input_dataset: str  # S3 prefix, e.g. "datasets/banyuls_beach"
+    epsg: str = "EPSG:4326"
+    camera_model: str = "PINHOLE"
+    pipeline: str = "modern"
+    tile_size: int = 1024
+    ai_confidence: float = 0.5
+    ai_backend: str = "yolo"
+    ai_model_variant: str = "yolo26l"
+    sam_prompt: str = "car"
+    classes: list[str] = Field(default_factory=lambda: ["car"])
+    colmap_params: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket manager
+# ---------------------------------------------------------------------------
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        for message in status_history:
+            await websocket.send_text(message)
+
+    def disconnect(self, websocket: WebSocket):
+        try:
+            self.active_connections.remove(websocket)
+        except ValueError:
+            pass
+
+    async def broadcast(self, message: str):
+        dead = []
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                dead.append(connection)
+        for d in dead:
+            try:
+                self.active_connections.remove(d)
+            except ValueError:
+                pass
+
+manager = ConnectionManager()
+
+
+# ---------------------------------------------------------------------------
+# Kafka consumer thread
+# ---------------------------------------------------------------------------
+
+
 def kafka_consumer_thread_func(loop):
     consumer = Consumer({
         'bootstrap.servers': KAFKA_BROKER,
@@ -432,7 +401,7 @@ def kafka_consumer_thread_func(loop):
         'auto.offset.reset': 'latest'
     })
     consumer.subscribe([TOPIC_STATUS])
-    
+
     while True:
         try:
             msg = consumer.poll(1.0)
@@ -454,6 +423,12 @@ def kafka_consumer_thread_func(loop):
         except Exception as exc:
             print(f"Kafka status consumer loop error: {exc}")
 
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+
 @asynccontextmanager
 async def lifespan(app_instance: FastAPI):
     loop = asyncio.get_running_loop()
@@ -462,20 +437,19 @@ async def lifespan(app_instance: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Configuration CORS
+cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.post("/mission/cancel")
-async def cancel_mission(vol_id: str):
-    msg = {"vol_id": vol_id, "command": "cancel"}
-    producer.produce(TOPIC_CONTROL, key=vol_id, value=json.dumps(msg))
-    producer.flush()
-    return {"status": "success", "message": f"Cancel command sent for {vol_id}"}
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
 
 @app.get("/")
 def read_root():
@@ -488,51 +462,63 @@ def status_summary():
 
 
 @app.get("/mission/state")
-def mission_workspace_state(vol_id: str, workspace_dir: str | None = None):
-    return {
-        "vol_id": vol_id,
-        "workspace_state": load_workspace_mission_state(vol_id, workspace_dir),
-    }
+def mission_state(vol_id: str):
+    try:
+        with get_session() as session:
+            mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+            if not mission:
+                return {"vol_id": vol_id, "workspace_state": None}
+            return {
+                "vol_id": vol_id,
+                "workspace_state": serialize_mission(mission).get("workspace_state"),
+            }
+    except Exception as exc:
+        return {"vol_id": vol_id, "workspace_state": None, "error": str(exc)}
+
+
+@app.post("/mission/cancel")
+async def cancel_mission(vol_id: str):
+    msg = {"vol_id": vol_id, "command": "cancel"}
+    producer.produce(TOPIC_CONTROL, key=vol_id, value=json.dumps(msg))
+    producer.flush()
+    return {"status": "success", "message": f"Cancel command sent for {vol_id}"}
 
 
 @app.post("/mission/resume")
-async def resume_mission(vol_id: str, workspace_dir: str | None = None):
-    with mission_state_lock:
-        mission = mission_states.get(vol_id)
-        services = dict(mission.get("services", {})) if mission else {}
-        tracked_workspace_dir = workspace_dir or mission_workspace_dirs.get(vol_id)
+async def resume_mission(vol_id: str):
+    try:
+        with get_session() as session:
+            mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+            if not mission:
+                return {"status": "error", "message": f"Mission {vol_id} not found."}
 
-    workspace_state = load_workspace_mission_state(vol_id, tracked_workspace_dir)
-    colmap_resume = build_colmap_resume_state(services, workspace_state)
-    if not colmap_resume["available"]:
-        return {
-            "status": "error",
-            "message": colmap_resume["reason"],
-            "colmap_resume": colmap_resume,
-        }
+            colmap_resume = build_colmap_resume_state(mission)
+            if not colmap_resume["available"]:
+                return {
+                    "status": "error",
+                    "message": colmap_resume["reason"],
+                    "colmap_resume": colmap_resume,
+                }
 
-    if workspace_state is None:
-        return {
-            "status": "error",
-            "message": f"No mission_state.json found for {vol_id}.",
-            "colmap_resume": colmap_resume,
-        }
+            if not mission.params:
+                return {
+                    "status": "error",
+                    "message": f"Saved state for {vol_id} does not contain the original mission payload.",
+                    "colmap_resume": colmap_resume,
+                }
 
-    mission_payload = dict(workspace_state.get("mission") or {})
-    if not mission_payload:
-        return {
-            "status": "error",
-            "message": f"Saved workspace state for {vol_id} does not contain the original mission payload.",
-            "colmap_resume": colmap_resume,
-        }
+            # Resend original mission params to Kafka
+            mission_payload = dict(mission.params)
+            mission_payload["vol_id"] = vol_id
 
-    mission_payload["vol_id"] = vol_id
-    if tracked_workspace_dir:
-        mission_payload["workspace_dir"] = tracked_workspace_dir
+            # Reset mission status
+            mission.status = "processing"
+            mission.current_step = "RESUMING"
+            mission.error_message = None
+            mission.updated_at = datetime.now(timezone.utc)
 
-    with mission_state_lock:
-        if mission_payload.get("workspace_dir"):
-            mission_workspace_dirs[vol_id] = mission_payload["workspace_dir"]
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
 
     producer.produce(TOPIC_MISSION, key=vol_id, value=json.dumps(mission_payload))
     producer.flush()
@@ -557,61 +543,96 @@ def mission_parameters():
 
 
 @app.get("/browse")
-def browse_path(path: str = "/"):
-    if not os.path.exists(path):
-        return {"error": "Path does not exist"}
-    
+def browse_path(prefix: str = "datasets/"):
+    """List S3 objects and prefixes under the given prefix."""
     try:
         items = []
-        for item in os.listdir(path):
-            try:
-                full_path = os.path.join(path, item)
-                is_dir = os.path.isdir(full_path)
+        all_keys = storage.list_objects(prefix, delimiter="/")
+        for key in all_keys:
+            if key.endswith("/") and key != prefix:
+                name = key.rstrip("/").split("/")[-1]
+                children = storage.list_objects(key)
+                img_count = sum(
+                    1 for k in children
+                    if k.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))
+                )
                 items.append({
-                    "name": item,
-                    "path": full_path,
-                    "is_dir": is_dir,
-                    "image_count": len([f for f in os.listdir(full_path) if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))]) if is_dir else 0
+                    "name": name,
+                    "path": key,
+                    "is_dir": True,
+                    "image_count": img_count,
                 })
-            except PermissionError:
-                continue
+            elif not key.endswith("/"):
+                name = key.split("/")[-1]
+                items.append({
+                    "name": name,
+                    "path": key,
+                    "is_dir": False,
+                    "image_count": 0,
+                })
         return sorted(items, key=lambda x: (not x["is_dir"], x["name"]))
-    except PermissionError:
-        return []
-    except Exception as e:
-        return {"error": str(e)}
+    except Exception as exc:
+        return {"error": str(exc)}
+
 
 @app.get("/datasets")
-def list_datasets(base_path: str = os.getenv("INPUT_DIR", "/host/mnt/j/workspace")):
-    if not os.path.exists(base_path):
+def list_datasets():
+    """List top-level dataset folders in S3."""
+    try:
+        prefixes = storage.list_objects("datasets/", delimiter="/")
+        results = []
+        for p in prefixes:
+            if not p.endswith("/"):
+                continue
+            name = p.rstrip("/").split("/")[-1]
+            children = storage.list_objects(p)
+            img_count = sum(
+                1 for k in children
+                if k.lower().endswith(('.jpg', '.jpeg', '.png'))
+            )
+            if img_count > 0:
+                results.append({"name": name, "path": p.rstrip("/"), "image_count": img_count})
+        return results
+    except Exception as exc:
         return []
-    # Liste uniquement les dossiers contenant au moins une image
-    results = []
-    for d in os.listdir(base_path):
-        full_path = os.path.join(base_path, d)
-        if os.path.isdir(full_path):
-            images = [f for f in os.listdir(full_path) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            if images:
-                results.append({"name": d, "path": full_path, "image_count": len(images)})
-    return results
+
+
+@app.get("/files/{s3_key:path}")
+def get_file(s3_key: str):
+    """Return a presigned URL redirect for an S3 object."""
+    if not storage.file_exists(s3_key):
+        return {"error": "File not found"}
+    url = storage.get_presigned_url(s3_key)
+    return RedirectResponse(url=url, status_code=302)
+
 
 @app.post("/mission")
 async def start_mission(params: MissionParams):
-    with mission_state_lock:
-        mission_workspace_dirs[params.vol_id] = params.workspace_dir
-        existing = mission_states.get(params.vol_id)
-        if existing is not None:
-            existing["workspace_dir"] = params.workspace_dir
+    try:
+        with get_session() as session:
+            mission = get_or_create_mission(
+                session,
+                params.vol_id,
+                status="pending",
+                pipeline=params.pipeline,
+                input_dataset=params.input_dataset,
+                workspace_prefix=f"missions/{params.vol_id}",
+                params=params.dict(),
+            )
+    except Exception as exc:
+        print(f"Failed to create mission in DB: {exc}")
+
     msg = params.dict()
     producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(msg))
     producer.flush()
     return {"status": "success", "vol_id": params.vol_id}
+
 
 @app.websocket("/ws/status")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text() # keep alive
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)

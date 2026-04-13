@@ -14,6 +14,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from shared.config import KAFKA_BROKER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_ORTHO, TOPIC_STATUS
+from shared import storage
 from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
@@ -145,7 +146,7 @@ def dense_sparse_model_ready(dense_path):
     )
 
 
-def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
+def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
     try:
         # --- Pipeline selection ---
         pipeline_mode = mission_params.get("pipeline", "modern")
@@ -174,23 +175,39 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             ),
         )
         
+        # --- S3 prefix for this mission ---
+        mission_s3_prefix = f"missions/{vol_id}"
+
         # --- 1. Preparation ---
         report_mission_progress(vol_id, "PREPARING", 2, log=f"Creating workspace at {workspace_dir}")
         os.makedirs(workspace_dir, exist_ok=True)
         
+        raw_image_dir = os.path.join(workspace_dir, "raw_images")
+        os.makedirs(raw_image_dir, exist_ok=True)
         clean_images_dir = os.path.join(workspace_dir, "clean_images")
         os.makedirs(clean_images_dir, exist_ok=True)
-        copy_manifest = load_copy_manifest(clean_images_dir)
+
+        # Download input images from S3
+        report_mission_progress(vol_id, "DOWNLOADING_IMAGES", 3, log=f"Downloading input images from S3 prefix: {input_dataset}")
+        try:
+            n_downloaded = storage.download_directory(input_dataset + "/", raw_image_dir)
+            if n_downloaded == 0:
+                # Try without trailing slash
+                n_downloaded = storage.download_directory(input_dataset, raw_image_dir)
+            report_mission_progress(vol_id, "DOWNLOADING_IMAGES", 5, log=f"Downloaded {n_downloaded} files from S3")
+        except Exception as dl_err:
+            raise RuntimeError(f"Failed to download input dataset from S3: {input_dataset} — {dl_err}") from dl_err
         db_path = os.path.join(workspace_dir, "database.db")
         sparse_path = os.path.join(workspace_dir, "sparse")
         geo_data_file = os.path.join(workspace_dir, "geo_data.txt")
         dense_path = os.path.join(workspace_dir, "dense")
         
         images = [f for f in os.listdir(raw_image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-        report_mission_progress(vol_id, "COPYING_IMAGES", 5, log=f"Checking/Copying {len(images)} images to SSD...")
+        report_mission_progress(vol_id, "COPYING_IMAGES", 5, log=f"Copying {len(images)} images to clean workspace...")
         
         copied_count = 0
         skipped_count = 0
+        copy_manifest = load_copy_manifest(clean_images_dir)
         for i, img in enumerate(images):
             try:
                 cancellation_state.ensure_not_cancelled()
@@ -668,9 +685,36 @@ def run_colmap_pipeline(workspace_dir, raw_image_dir, vol_id, mission_params):
             _tb.print_exc()
             report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
             raise
-        
+
+        # --- Upload key artifacts to S3 ---
+        report_mission_progress(vol_id, "UPLOADING", 98, log="Uploading pipeline artifacts to S3...")
+        try:
+            ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
+            storage.upload_file(ortho_file, ortho_s3_key)
+
+            # Upload sparse reconstruction
+            sparse_0_path = os.path.join(sparse_path, "0")
+            if os.path.isdir(sparse_0_path):
+                storage.upload_directory(sparse_0_path, f"{mission_s3_prefix}/sparse/0/")
+
+            # Upload alignment transform if exists
+            if align_tf and os.path.exists(align_tf):
+                storage.upload_file(align_tf, f"{mission_s3_prefix}/alignment_transform.json")
+
+            # Upload geo data
+            if os.path.exists(geo_data_file):
+                storage.upload_file(geo_data_file, f"{mission_s3_prefix}/geo_data.txt")
+                crs_file = f"{geo_data_file}.crs"
+                if os.path.exists(crs_file):
+                    storage.upload_file(crs_file, f"{mission_s3_prefix}/geo_data.txt.crs")
+
+            report_mission_progress(vol_id, "UPLOADING", 99, log="Artifacts uploaded to S3")
+        except Exception as upload_err:
+            report_mission_progress(vol_id, "UPLOADING", 98, log=f"Warning: S3 upload partially failed: {upload_err}")
+            ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
+
         report_mission_progress(vol_id, "DONE", 100, status="success", log="Pipeline complete!")
-        publish_next_stage_message(producer, TOPIC_OUT, vol_id, ortho_file, mission_params, normalize_ai_backend)
+        publish_next_stage_message(producer, TOPIC_OUT, vol_id, ortho_s3_key, mission_params, normalize_ai_backend)
 
     except PipelineCancelledError as e:
         report_mission_progress(vol_id, "CANCELLED", 0, status="error", log=f"🚫 {str(e)}")
@@ -740,15 +784,15 @@ def worker_main():
                         },
                     )
 
-                if not os.path.exists(mission_context.input_dir):
-                    error_msg = f"Input directory not found: {mission_context.input_dir}"
+                if not mission_context.input_dir:
+                    error_msg = f"No input dataset specified for mission {mission_context.vol_id}"
                     print(f"❌ {error_msg}")
                     report_mission_progress(mission_context.vol_id, "ERROR", 0, status="error", log=error_msg)
                     continue
 
                 run_colmap_pipeline(
                     mission_context.work_dir,
-                    mission_context.input_dir,
+                    mission_context.input_dir,  # S3 prefix for input dataset
                     mission_context.vol_id,
                     mission_context.mission,
                 )

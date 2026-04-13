@@ -16,6 +16,15 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_ORTHO, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
+from shared import storage
+from shared.database import (
+    get_session,
+    get_or_create_mission,
+    Mission,
+    Detection as DBDetection,
+    count_received_tiles,
+    get_mission_detections,
+)
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN_ORTHO = TOPIC_ORTHO
@@ -117,14 +126,6 @@ class MissionRegistry:
 
 
 missions = MissionRegistry()
-
-
-def resolve_host_path(path_value):
-    if path_value.startswith("/host"):
-        return path_value
-    if not path_value.startswith("/"):
-        path_value = "/" + path_value
-    return "/host" + path_value
 
 
 def cleanup_tiles_directory(tiles_dir):
@@ -373,11 +374,40 @@ def draw_detection_label(img, anchor_x, anchor_y, lines):
         cv2.putText(img, line, text_origin, font, font_scale, (255, 255, 0), font_thickness, cv2.LINE_AA)
 
 def generate_final_ortho(vol_id, mission):
-    ortho_path = mission['ortho_path']
-    base, ext = os.path.splitext(ortho_path)
-    output_path = f"{base}_annotated{ext}"
-    raw_detection_count = len(mission['detections'])
-    deduped_detections = dedupe_mission_detections(mission['detections'])
+    ortho_s3_key = mission['ortho_s3_key']
+    local_ortho = f"/tmp/processing/{vol_id}/orthomosaic.tif"
+    os.makedirs(os.path.dirname(local_ortho), exist_ok=True)
+
+    # Download orthomosaic from S3
+    try:
+        storage.download_file(ortho_s3_key, local_ortho)
+    except Exception as dl_err:
+        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download ortho from S3: {dl_err}")
+        return
+
+    # Get detections — prefer DB-backed, fallback to in-memory
+    raw_detections = mission.get('detections', [])
+    if not raw_detections:
+        try:
+            with get_session() as session:
+                db_dets = get_mission_detections(session, vol_id)
+                for d in db_dets:
+                    raw_detections.append({
+                        'class_name': d.class_name,
+                        'confidence': d.confidence,
+                        'global_pixel_x': d.pixel_x,
+                        'global_pixel_y': d.pixel_y,
+                        'geo_lat': d.geo_lat,
+                        'geo_lon': d.geo_lon,
+                        'segment': d.segment,
+                    })
+        except Exception as db_err:
+            logger.warning("Failed to load detections from DB for %s: %s", vol_id, db_err)
+
+    raw_detection_count = len(raw_detections)
+    deduped_detections = dedupe_mission_detections(raw_detections)
+
+    output_path = f"/tmp/processing/{vol_id}/orthomosaic_annotated.tif"
     
     report_progress(
         vol_id,
@@ -386,7 +416,7 @@ def generate_final_ortho(vol_id, mission):
         log=f"Generating annotated orthomosaic with {len(deduped_detections)} merged detections from {raw_detection_count} raw detections...",
     )
     try:
-        with rasterio.open(ortho_path) as src:
+        with rasterio.open(local_ortho) as src:
             meta = src.meta.copy()
             data = src.read()
             
@@ -424,8 +454,6 @@ def generate_final_ortho(vol_id, mission):
                     cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
                     gps_lines = format_detection_gps(det, mission)
                     draw_detection_label(img, cx, cy, gps_lines)
-                    
-                    # Log to DB/File later for dashboard
             
             # Back to C,H,W
             out_data = img.transpose(2, 0, 1)
@@ -437,45 +465,52 @@ def generate_final_ortho(vol_id, mission):
             del data, img, out_data
             import gc
             gc.collect()
-                
+
+        # Upload annotated ortho to S3
+        annotated_s3_key = f"missions/{vol_id}/orthomosaic_annotated.tif"
+        try:
+            storage.upload_file(output_path, annotated_s3_key)
+        except Exception as upload_err:
+            logger.warning("Failed to upload annotated ortho to S3: %s", upload_err)
+
         report_progress(
             vol_id,
             "DONE",
             100,
             status="success",
-            log=f"Annotated orthomosaic saved to {output_path} ({len(deduped_detections)} merged detections from {raw_detection_count} raw detections)",
+            log=f"Annotated orthomosaic saved ({len(deduped_detections)} merged detections from {raw_detection_count} raw detections)",
         )
+
+        # Clean up local temp files
+        import shutil
+        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
         
     except Exception as e:
         logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
 
-def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", ai_model_variant="yolo26l", sam_prompt="car"):
-    """Découpe un GeoTIFF en tuiles et les envoie sur Kafka."""
-    ortho_path = resolve_host_path(ortho_path)
+def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", ai_model_variant="yolo26l", sam_prompt="car"):
+    """Download orthomosaic from S3, tile it locally, upload tiles to S3, and send Kafka messages."""
     ai_backend = normalize_ai_backend(ai_backend)
 
-    # Always scope tiles to the mission id to avoid cross-mission collisions.
-    # An explicit TILES_BASE_DIR still overrides the root location when needed.
-    tiles_base = os.getenv("TILES_BASE_DIR")
-    if tiles_base:
-        if tiles_base.startswith("/host"):
-            tiles_dir = os.path.join(tiles_base, vol_id)
-        else:
-            tiles_dir = os.path.join("/host", tiles_base.lstrip("/"), vol_id)
-    else:
-        tiles_dir = os.path.join(os.path.dirname(ortho_path), "tiles", vol_id)
-    os.makedirs(tiles_dir, exist_ok=True)
-    cleanup_tiles_directory(tiles_dir)
-    
-    report_progress(vol_id, "TILING_START", 0)
-    
-    if not os.path.exists(ortho_path):
-        report_progress(vol_id, "ERROR", 0, status="error", log=f"File not found: {ortho_path}")
+    # Download orthomosaic from S3 to local temp
+    local_ortho = f"/tmp/processing/{vol_id}/orthomosaic.tif"
+    os.makedirs(os.path.dirname(local_ortho), exist_ok=True)
+    try:
+        storage.download_file(ortho_s3_key, local_ortho)
+    except Exception as dl_err:
+        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download orthomosaic from S3: {dl_err}")
         return
 
+    tiles_dir = f"/tmp/processing/{vol_id}/tiles"
+    os.makedirs(tiles_dir, exist_ok=True)
+    cleanup_tiles_directory(tiles_dir)
+    tiles_s3_prefix = f"missions/{vol_id}/tiles"
+    
+    report_progress(vol_id, "TILING_START", 0)
+
     try:
-        with rasterio.open(ortho_path) as src:
+        with rasterio.open(local_ortho) as src:
             width = src.width
             height = src.height
             tile_overlap = max(0, min(tile_size // 2, int(os.getenv("TILE_OVERLAP", str(tile_size // 4)))))
@@ -486,7 +521,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             crs_str = src.crs.to_string() if src.crs else "unknown"
             
             missions.set(vol_id, {
-                "ortho_path": ortho_path,
+                "ortho_s3_key": ortho_s3_key,
                 "transform": transform_list,
                 "crs": crs_str,
                 "tiles_count": 0,
@@ -538,12 +573,17 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
                     with rasterio.open(tile_path, 'w', **tile_meta) as dst:
                         dst.write(tile_data)
                     
-                    # Store path WITHOUT /host for external services if they use a different mount or absolute host paths
-                    # But here we keep it consistent.
+                    # Upload tile to S3
+                    tile_s3_key = f"{tiles_s3_prefix}/{tile_filename}"
+                    try:
+                        storage.upload_file(tile_path, tile_s3_key)
+                    except Exception as upload_err:
+                        logger.warning("Failed to upload tile %s to S3: %s", tile_filename, upload_err)
+
                     tile_msg = {
                         "vol_id": vol_id,
                         "tile_index": tile_index,
-                        "tile_path": tile_path.replace("/host", ""), # Return path as seen by host
+                        "tile_s3_key": tile_s3_key,
                         "offset_x": x,
                         "offset_y": y,
                         "ai_backend": ai_backend,
@@ -570,12 +610,7 @@ def slice_orthomosaic(ortho_path, vol_id, tile_size=1024, classes=["car"], ai_co
             
     except Exception as e:
         logger.exception("Failed to tile orthomosaic for %s", vol_id)
-        error_msg = f"Failed to open orthomosaic: {str(e)}"
-        try:
-            if "simulée" in open(ortho_path, "r", errors="ignore").read():
-                error_msg = "Cannot tile a simulated text file. Need a real GeoTIFF."
-        except Exception:
-            pass
+        error_msg = f"Failed to tile orthomosaic: {str(e)}"
         report_progress(vol_id, "ERROR", 0, status="error", log=error_msg)
         print(f"❌ {error_msg}")
 
@@ -593,14 +628,14 @@ try:
         if topic == TOPIC_IN_ORTHO:
             vol_id = data['vol_id']
             cancel_manager.clear(vol_id)
-            ortho_path = data['ortho_path']
+            ortho_s3_key = data.get('ortho_s3_key') or data.get('ortho_path', '')
             classes = data.get('classes', ['car'])
             ai_confidence = data.get('ai_confidence', 0.3)
             ai_backend = normalize_ai_backend(data.get('ai_backend', 'yolo'))
             ai_model_variant = data.get('ai_model_variant', 'yolo26l')
             sam_prompt = data.get('sam_prompt', 'car')
             slice_orthomosaic(
-                ortho_path,
+                ortho_s3_key,
                 vol_id,
                 classes=classes,
                 ai_confidence=ai_confidence,
@@ -613,7 +648,35 @@ try:
             vol_id = data['vol_id']
             if cancel_manager.is_cancelled(vol_id):
                 continue
-            mission, is_complete = missions.record_tile_detections(vol_id, data['tile_index'], data['detections'])
+
+            # Persist detections to DB
+            tile_detections = data.get('detections', [])
+            tile_index = data['tile_index']
+            try:
+                with get_session() as session:
+                    mission_obj = get_or_create_mission(session, vol_id)
+                    for det in tile_detections:
+                        db_det = DBDetection(
+                            mission_id=mission_obj.id,
+                            vol_id=vol_id,
+                            tile_index=tile_index,
+                            class_name=det.get('class_name', 'unknown'),
+                            class_id=det.get('class_id'),
+                            confidence=float(det.get('confidence', 0)),
+                            pixel_x=det.get('global_pixel_x'),
+                            pixel_y=det.get('global_pixel_y'),
+                            geo_lon=det.get('geo_lon'),
+                            geo_lat=det.get('geo_lat'),
+                            segment=det.get('segment'),
+                        )
+                        session.add(db_det)
+                    # Update tiles_received count
+                    mission_obj.tiles_received = count_received_tiles(session, vol_id)
+            except Exception as db_err:
+                logger.warning("Failed to persist detections to DB for %s tile %s: %s", vol_id, tile_index, db_err)
+
+            # Also track in-memory for annotation generation
+            mission, is_complete = missions.record_tile_detections(vol_id, tile_index, tile_detections)
             if mission is not None and is_complete:
                 report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
                 final_mission = missions.pop(vol_id)
