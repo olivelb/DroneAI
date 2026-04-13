@@ -70,6 +70,58 @@ if ! nvidia-smi &>/dev/null; then
 fi
 echo "✅ GPU detected: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
+# 5b. Install Helm
+if ! command -v helm &>/dev/null; then
+    echo "⎈ Installing Helm..."
+    curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+    echo "✅ Helm installed."
+else
+    echo "✅ Helm is already installed."
+fi
+
+# 5c. Install NVIDIA device plugin with GPU time-slicing (2 replicas)
+echo "🎮 Setting up NVIDIA device plugin for GPU scheduling..."
+if ! sudo helm repo list 2>/dev/null | grep -q nvdp; then
+    sudo helm repo add nvdp https://nvidia.github.io/k8s-device-plugin
+fi
+sudo helm repo update
+sudo helm upgrade --install nvidia-device-plugin nvdp/nvidia-device-plugin \
+    --namespace nvidia-device-plugin --create-namespace \
+    -f "$SCRIPT_DIR/nvdp-values.yaml"
+echo "✅ NVIDIA device plugin installed (GPU time-slicing enabled)."
+
+# 5d. Create persistent data directories
+echo "📂 Creating persistent data directories..."
+DATA_ROOT="/mnt/j/droneAI_workspace"
+if [ -d "/mnt/j" ]; then
+    mkdir -p "$DATA_ROOT"/{minio-data,postgres-data,kafka-data,model-cache}
+    echo "✅ Data directories created under $DATA_ROOT"
+else
+    echo "⚠️  /mnt/j does not exist — persistent data directories not created."
+    echo "   If using a different path, edit charts/drone-ai/values.yaml before deploying."
+fi
+
+# 5e. Create drone-ai namespace and HF token secret
+echo "🔐 Setting up Kubernetes namespace and secrets..."
+sudo kubectl create namespace drone-ai --dry-run=client -o yaml | sudo kubectl apply -f -
+if ! sudo kubectl get secret hf-token -n drone-ai >/dev/null 2>&1; then
+    if [ -n "${HF_TOKEN:-}" ]; then
+        sudo kubectl -n drone-ai create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"
+        echo "✅ hf-token secret created in drone-ai namespace."
+    elif sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
+        echo "   Copying hf-token from kafka namespace..."
+        sudo kubectl get secret hf-token -n kafka -o yaml \
+            | sed 's/namespace: kafka/namespace: drone-ai/' \
+            | sudo kubectl apply -f -
+        echo "✅ hf-token copied to drone-ai namespace."
+    else
+        echo "⚠️  No HF_TOKEN env var set and no existing secret found."
+        echo "   Set it before deploying: export HF_TOKEN=hf_... && sudo kubectl -n drone-ai create secret generic hf-token --from-literal=HF_TOKEN=\"\$HF_TOKEN\""
+    fi
+else
+    echo "✅ hf-token secret already exists."
+fi
+
 # 6. Clone external build dependencies (LichtFeld, vcpkg, Ceres, COLMAP)
 echo "📥 Preparing external build dependencies..."
 bash "$SCRIPT_DIR/setup_deps.sh"
@@ -82,5 +134,8 @@ bash "$SCRIPT_DIR/build_and_deploy.sh"
 echo "========================================================"
 echo "🎉 Installation Complete!"
 echo "If Docker says 'permission denied' when running without sudo, please log out and log back in (or run 'newgrp docker')."
-echo "Check your pods with: kubectl get pods -n kafka"
+echo "Check your pods with: kubectl get pods -n drone-ai"
+echo "Frontend: http://localhost:30000"
+echo "API:      http://localhost:30080"
+echo "MinIO:    http://localhost:30090"
 echo "========================================================"

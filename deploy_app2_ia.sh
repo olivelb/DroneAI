@@ -44,11 +44,20 @@ if [[ "$BUILD_BASE" -eq 1 ]]; then
 fi
 
 echo "🔐 Checking required Kubernetes secrets..."
-if ! sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
-	echo "❌ Missing secret 'hf-token' in namespace 'kafka'."
+DEPLOY_NS="drone-ai"
+if sudo kubectl get secret hf-token -n "$DEPLOY_NS" >/dev/null 2>&1; then
+	:
+elif sudo kubectl get secret hf-token -n kafka >/dev/null 2>&1; then
+	echo "   ⚠️  Found hf-token in 'kafka' namespace but not in '$DEPLOY_NS'. Copying..."
+	sudo kubectl create namespace "$DEPLOY_NS" --dry-run=client -o yaml | sudo kubectl apply -f -
+	sudo kubectl get secret hf-token -n kafka -o yaml \
+		| sed "s/namespace: kafka/namespace: $DEPLOY_NS/" \
+		| sudo kubectl apply -f -
+else
+	echo "❌ Missing secret 'hf-token' in namespace '$DEPLOY_NS'."
 	echo "   Create it before deploying App 2, for example:"
-	echo '   export HF_TOKEN=your_huggingface_token'
-	echo '   sudo kubectl -n kafka create secret generic hf-token --from-literal=HF_TOKEN="$HF_TOKEN"'
+	echo "   export HF_TOKEN=your_huggingface_token"
+	echo "   sudo kubectl -n $DEPLOY_NS create secret generic hf-token --from-literal=HF_TOKEN=\"\$HF_TOKEN\""
 	exit 1
 fi
 
@@ -61,7 +70,6 @@ sudo docker image prune -f 2>/dev/null || true
 echo "📦 Importing image to k3s..."
 sudo docker save drone-ia:latest | sudo k3s ctr images import -
 echo "🧩 Syncing Helm chart..."
-DEPLOY_NS="drone-ai"
 sudo helm upgrade --install drone-ai charts/drone-ai/ --namespace "$DEPLOY_NS" --create-namespace
 if [[ "$RESTART_DEPLOYMENT" -eq 1 ]]; then
 	echo "🚀 Restarting ia-worker deployment..."
