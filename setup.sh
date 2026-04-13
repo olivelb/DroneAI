@@ -26,7 +26,7 @@ else
 fi
 
 # 3. Install NVIDIA Container Toolkit (Crucial for GPU in WSL2)
-if ! dpkg -l | grep -q nvidia-container-toolkit; then
+if ! command -v nvidia-ctk &>/dev/null; then
     echo "🟢 Installing NVIDIA Container Toolkit..."
     curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
       && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
@@ -64,9 +64,15 @@ fi
 
 # 5. Validate GPU access
 echo "🔍 Checking GPU access..."
+# WSL2 puts nvidia-smi in /usr/lib/wsl/lib/ which may not be in PATH
 if ! nvidia-smi &>/dev/null; then
-    echo "❌ nvidia-smi failed. Install NVIDIA drivers on the host before proceeding."
-    exit 1
+    if [ -x /usr/lib/wsl/lib/nvidia-smi ]; then
+        export PATH="$PATH:/usr/lib/wsl/lib"
+        echo "   Added /usr/lib/wsl/lib to PATH (WSL2 GPU driver passthrough)"
+    else
+        echo "❌ nvidia-smi failed. Install NVIDIA drivers on the host before proceeding."
+        exit 1
+    fi
 fi
 echo "✅ GPU detected: $(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)"
 
