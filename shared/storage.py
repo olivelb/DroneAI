@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio.drone-ai.svc:9000")
+S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable MinIO URL
 S3_BUCKET = os.getenv("S3_BUCKET", "drone-ai")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "minioadmin")
@@ -32,6 +33,7 @@ S3_REGION = os.getenv("S3_REGION", "us-east-1")
 # ---------------------------------------------------------------------------
 
 _client = None
+_public_client = None
 
 
 def _get_client():
@@ -53,8 +55,32 @@ def _get_client():
 
 def reset_client():
     """Reset the cached S3 client (useful for testing)."""
-    global _client
+    global _client, _public_client
     _client = None
+    _public_client = None
+
+
+def _get_public_client():
+    """Return a client using the public endpoint for presigned URLs.
+
+    Falls back to the internal client when S3_PUBLIC_ENDPOINT is not set.
+    """
+    global _public_client
+    if not S3_PUBLIC_ENDPOINT:
+        return _get_client()
+    if _public_client is None:
+        _public_client = boto3.client(
+            "s3",
+            endpoint_url=S3_PUBLIC_ENDPOINT,
+            aws_access_key_id=S3_ACCESS_KEY,
+            aws_secret_access_key=S3_SECRET_KEY,
+            region_name=S3_REGION,
+            config=BotoConfig(
+                signature_version="s3v4",
+                retries={"max_attempts": 3, "mode": "standard"},
+            ),
+        )
+    return _public_client
 
 
 # ---------------------------------------------------------------------------
@@ -194,13 +220,29 @@ def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
     return deleted
 
 
-def get_presigned_url(s3_key: str, expires: int = 3600, bucket: Optional[str] = None) -> str:
-    """Generate a presigned GET URL for an S3 object.
+def get_object_stream(s3_key: str, bucket: Optional[str] = None):
+    """Return (stream, content_length, content_type) for an S3 object.
 
-    *expires* is the URL lifetime in seconds (default 1 hour).
+    The caller is responsible for reading and closing the stream.
     """
     bucket = bucket or S3_BUCKET
     client = _get_client()
+    response = client.get_object(Bucket=bucket, Key=s3_key)
+    return (
+        response["Body"],
+        response.get("ContentLength", 0),
+        response.get("ContentType", "application/octet-stream"),
+    )
+
+
+def get_presigned_url(s3_key: str, expires: int = 3600, bucket: Optional[str] = None) -> str:
+    """Generate a presigned GET URL for an S3 object.
+
+    Uses S3_PUBLIC_ENDPOINT when set so the URL is reachable from browsers.
+    *expires* is the URL lifetime in seconds (default 1 hour).
+    """
+    bucket = bucket or S3_BUCKET
+    client = _get_public_client()
     url = client.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": s3_key},

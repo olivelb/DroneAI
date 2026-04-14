@@ -188,6 +188,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         os.makedirs(clean_images_dir, exist_ok=True)
 
         # Download input images from S3
+        # Normalize prefix: strip trailing slashes to avoid double-slash S3 keys
+        input_dataset = input_dataset.rstrip("/")
         report_mission_progress(vol_id, "DOWNLOADING_IMAGES", 3, log=f"Downloading input images from S3 prefix: {input_dataset}")
         try:
             n_downloaded = storage.download_directory(input_dataset + "/", raw_image_dir)
@@ -686,32 +688,97 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             report_mission_progress(vol_id, "ORTHO", 95, log=f"Gaussian Splatting ortho failed: {e}")
             raise
 
-        # --- Upload key artifacts to S3 ---
-        report_mission_progress(vol_id, "UPLOADING", 98, log="Uploading pipeline artifacts to S3...")
+        # --- Upload ALL artifacts to S3 (well-organized folders) ---
+        # S3 layout:
+        #   missions/{vol_id}/
+        #     orthomosaic.tif          — final GeoTIFF
+        #     orthomosaic.height.tif   — height map (if generated)
+        #     alignment_transform.json — Sim3 geo-alignment
+        #     geo_data.txt             — GPS from EXIF
+        #     geo_data.txt.crs         — UTM CRS code
+        #     colmap/
+        #       database.db            — COLMAP feature database
+        #       sparse/0/              — SfM sparse model (cameras.bin, images.bin, points3D.bin)
+        #       sparse_geo/            — Geo-registered sparse model
+        #     dense/
+        #       sparse/0/              — Undistorted model
+        #       images/                — Undistorted images
+        #     gaussian/
+        #       final.ply              — Merged Gaussian splat model
+        #       full/splat_*.ply       — Training output PLY
+        #       full/checkpoints/      — Resume checkpoint
+
+        report_mission_progress(vol_id, "UPLOADING", 90, log="Uploading ALL pipeline artifacts to S3...")
+        upload_count = 0
         try:
+            # 1. Orthomosaic
             ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
-            storage.upload_file(ortho_file, ortho_s3_key)
+            if os.path.exists(ortho_file):
+                storage.upload_file(ortho_file, ortho_s3_key)
+                upload_count += 1
 
-            # Upload sparse reconstruction
-            sparse_0_path = os.path.join(sparse_path, "0")
-            if os.path.isdir(sparse_0_path):
-                storage.upload_directory(sparse_0_path, f"{mission_s3_prefix}/sparse/0/")
+            height_tif = os.path.join(workspace_dir, "orthomosaic.height.tif")
+            if os.path.exists(height_tif):
+                storage.upload_file(height_tif, f"{mission_s3_prefix}/orthomosaic.height.tif")
+                upload_count += 1
 
-            # Upload alignment transform if exists
+            report_mission_progress(vol_id, "UPLOADING", 91, log="Orthomosaic uploaded")
+
+            # 2. Alignment & geo data
             if align_tf and os.path.exists(align_tf):
                 storage.upload_file(align_tf, f"{mission_s3_prefix}/alignment_transform.json")
-
-            # Upload geo data
+                upload_count += 1
             if os.path.exists(geo_data_file):
                 storage.upload_file(geo_data_file, f"{mission_s3_prefix}/geo_data.txt")
+                upload_count += 1
                 crs_file = f"{geo_data_file}.crs"
                 if os.path.exists(crs_file):
                     storage.upload_file(crs_file, f"{mission_s3_prefix}/geo_data.txt.crs")
+                    upload_count += 1
 
-            report_mission_progress(vol_id, "UPLOADING", 99, log="Artifacts uploaded to S3")
+            report_mission_progress(vol_id, "UPLOADING", 92, log="Geo data uploaded")
+
+            # 3. COLMAP database + sparse models
+            if os.path.exists(db_path):
+                storage.upload_file(db_path, f"{mission_s3_prefix}/colmap/database.db")
+                upload_count += 1
+
+            sparse_0_path = os.path.join(sparse_path, "0")
+            if os.path.isdir(sparse_0_path):
+                n = storage.upload_directory(sparse_0_path, f"{mission_s3_prefix}/colmap/sparse/0/")
+                upload_count += n
+
+            sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
+            if os.path.isdir(sparse_geo_path):
+                n = storage.upload_directory(sparse_geo_path, f"{mission_s3_prefix}/colmap/sparse_geo/")
+                upload_count += n
+
+            report_mission_progress(vol_id, "UPLOADING", 94, log="COLMAP sparse models uploaded")
+
+            # 4. Dense reconstruction (undistorted model + images)
+            if os.path.isdir(dense_path):
+                n = storage.upload_directory(dense_path, f"{mission_s3_prefix}/dense/")
+                upload_count += n
+                report_mission_progress(vol_id, "UPLOADING", 96, log=f"Dense reconstruction uploaded ({n} files)")
+
+            # 5. Gaussian splatting outputs (PLY models + checkpoints)
+            checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
+            if os.path.isdir(checkpoint_dir):
+                n = storage.upload_directory(checkpoint_dir, f"{mission_s3_prefix}/gaussian/")
+                upload_count += n
+                report_mission_progress(vol_id, "UPLOADING", 98, log=f"Gaussian models & checkpoints uploaded ({n} files)")
+
+            report_mission_progress(vol_id, "UPLOADING", 99, log=f"All artifacts uploaded to S3 ({upload_count} files total)")
         except Exception as upload_err:
             report_mission_progress(vol_id, "UPLOADING", 98, log=f"Warning: S3 upload partially failed: {upload_err}")
             ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
+
+        # --- Cleanup local workspace to free WSL disk ---
+        try:
+            shutil.rmtree(workspace_dir, ignore_errors=True)
+            report_mission_progress(vol_id, "CLEANUP", 99, log=f"Local workspace {workspace_dir} cleaned up")
+        except Exception as cleanup_err:
+            report_mission_progress(vol_id, "CLEANUP", 99, log=f"Warning: workspace cleanup failed: {cleanup_err}")
 
         report_mission_progress(vol_id, "DONE", 100, status="success", log="Pipeline complete!")
         publish_next_stage_message(producer, TOPIC_OUT, vol_id, ortho_s3_key, mission_params, normalize_ai_backend)

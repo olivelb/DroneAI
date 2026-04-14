@@ -1,5 +1,6 @@
 {{- if .Values.kafka.enabled }}
-# --- PersistentVolume (hostPath on /mnt/j) ---
+{{- if .Values.kafka.persistence.hostPath }}
+# --- PersistentVolume (hostPath — local only) ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -18,6 +19,7 @@ spec:
     path: {{ .Values.kafka.persistence.hostPath }}
     type: DirectoryOrCreate
 ---
+{{- end }}
 # --- PersistentVolumeClaim ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -28,13 +30,19 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: kafka
 spec:
+  {{- if .Values.kafka.persistence.hostPath }}
   storageClassName: ""
+  {{- else if .Values.kafka.persistence.storageClass }}
+  storageClassName: {{ .Values.kafka.persistence.storageClass | quote }}
+  {{- end }}
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: {{ .Values.kafka.persistence.size }}
+  {{- if .Values.kafka.persistence.hostPath }}
   volumeName: kafka-pv
+  {{- end }}
 ---
 # --- Deployment ---
 apiVersion: apps/v1
@@ -57,9 +65,14 @@ spec:
       labels:
         app: kafka
     spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: kafka
         image: {{ .Values.kafka.image }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         ports:
         - containerPort: 9092
         env:

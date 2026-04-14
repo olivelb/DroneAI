@@ -100,12 +100,15 @@ echo "✅ NVIDIA device plugin installed (GPU time-slicing enabled)."
 echo "📂 Creating persistent data directories..."
 DATA_ROOT="/mnt/j/droneAI_workspace"
 if [ -d "/mnt/j" ]; then
-    mkdir -p "$DATA_ROOT"/{minio-data,postgres-data,kafka-data,model-cache}
+    mkdir -p "$DATA_ROOT"/{minio-data,kafka-data,model-cache}
     echo "✅ Data directories created under $DATA_ROOT"
 else
     echo "⚠️  /mnt/j does not exist — persistent data directories not created."
     echo "   If using a different path, edit charts/drone-ai/values.yaml before deploying."
 fi
+# Postgres needs a Linux-native filesystem (NTFS doesn't support chmod/chown)
+sudo mkdir -p /var/lib/droneai/postgres-data
+echo "✅ Postgres data directory created at /var/lib/droneai/postgres-data"
 
 # 5e. Set up HF token secret
 # Note: the drone-ai namespace is created by Helm (--create-namespace) in build_and_deploy.sh.

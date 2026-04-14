@@ -559,7 +559,7 @@ def browse_path(prefix: str = "datasets/"):
                 )
                 items.append({
                     "name": name,
-                    "path": key,
+                    "path": key.rstrip("/"),
                     "is_dir": True,
                     "image_count": img_count,
                 })
@@ -600,7 +600,7 @@ def list_datasets():
 
 @app.get("/files/{s3_key:path}")
 def get_file(s3_key: str):
-    """Return a presigned URL redirect for an S3 object."""
+    """Redirect to a presigned URL using the public S3 endpoint."""
     if not storage.file_exists(s3_key):
         return {"error": "File not found"}
     url = storage.get_presigned_url(s3_key)

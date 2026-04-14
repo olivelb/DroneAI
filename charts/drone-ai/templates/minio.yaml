@@ -1,5 +1,6 @@
 {{- if .Values.minio.enabled }}
-# --- PersistentVolume (hostPath on /mnt/j) ---
+{{- if .Values.minio.persistence.hostPath }}
+# --- PersistentVolume (hostPath — local only) ---
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -18,6 +19,7 @@ spec:
     path: {{ .Values.minio.persistence.hostPath }}
     type: DirectoryOrCreate
 ---
+{{- end }}
 # --- PersistentVolumeClaim ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -28,13 +30,19 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: minio
 spec:
+  {{- if .Values.minio.persistence.hostPath }}
   storageClassName: ""
+  {{- else if .Values.minio.persistence.storageClass }}
+  storageClassName: {{ .Values.minio.persistence.storageClass | quote }}
+  {{- end }}
   accessModes:
     - ReadWriteOnce
   resources:
     requests:
       storage: {{ .Values.minio.persistence.size }}
+  {{- if .Values.minio.persistence.hostPath }}
   volumeName: minio-pv
+  {{- end }}
 ---
 # --- Deployment ---
 apiVersion: apps/v1
@@ -57,9 +65,14 @@ spec:
       labels:
         app: minio
     spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: minio
         image: {{ .Values.minio.image }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         args:
           - server
           - /data
@@ -138,6 +151,24 @@ spec:
   selector:
     app: minio
 ---
+# --- API NodePort (so browsers can reach presigned URLs) ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-api
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: minio
+spec:
+  type: NodePort
+  ports:
+  - port: 9000
+    targetPort: 9000
+    nodePort: {{ .Values.minio.apiNodePort }}
+  selector:
+    app: minio
+---
 # --- Init Job: create default bucket ---
 apiVersion: batch/v1
 kind: Job
@@ -155,9 +186,14 @@ spec:
   template:
     spec:
       restartPolicy: OnFailure
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
       - name: mc
         image: minio/mc:latest
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command:
         - /bin/sh
         - -c

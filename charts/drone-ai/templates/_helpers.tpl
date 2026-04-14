@@ -48,6 +48,8 @@ Common environment variables injected into all worker pods
       key: s3-secret-key
 - name: S3_REGION
   value: {{ .Values.storage.s3Region | quote }}
+- name: S3_PUBLIC_ENDPOINT
+  value: {{ .Values.storage.s3PublicEndpoint | quote }}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:

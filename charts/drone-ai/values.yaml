@@ -18,7 +18,8 @@ kafka:
   clusterId: "droneai-local-cluster-001"
   persistence:
     enabled: true
-    hostPath: /mnt/j/droneAI_workspace/kafka-data
+    hostPath: /mnt/j/droneAI_workspace/kafka-data   # local only; remove for cloud
+    storageClass: ""                                 # set to cloud class (e.g. "gp3") when hostPath is removed
     size: 10Gi
 
 # --------------------------------------------------------------------------
@@ -28,8 +29,10 @@ minio:
   enabled: true
   image: minio/minio:latest
   consoleNodePort: 30090
+  apiNodePort: 30091
   persistence:
-    hostPath: /mnt/j/droneAI_workspace/minio-data
+    hostPath: /mnt/j/droneAI_workspace/minio-data   # local only; remove for cloud
+    storageClass: ""                                 # set to cloud class when hostPath is removed
     size: 200Gi
   accessKey: minioadmin
   secretKey: minioadmin
@@ -42,7 +45,8 @@ postgres:
   enabled: true
   image: postgis/postgis:16-3.5
   persistence:
-    hostPath: /mnt/j/droneAI_workspace/postgres-data
+    hostPath: /var/lib/droneai/postgres-data         # local only; remove for cloud
+    storageClass: ""                                 # set to cloud class when hostPath is removed
     size: 20Gi
   database: droneai
   user: droneai
@@ -53,6 +57,7 @@ postgres:
 # --------------------------------------------------------------------------
 storage:
   s3Endpoint: "http://minio.drone-ai.svc:9000"
+  s3PublicEndpoint: ""   # Set to browser-reachable MinIO URL; empty = auto-detect via apiNodePort
   s3Bucket: "drone-ai"
   s3AccessKey: "minioadmin"
   s3SecretKey: "minioadmin"
@@ -90,7 +95,8 @@ iaWorker:
     requests:
       memory: "2Gi"
   modelCache:
-    hostPath: /mnt/j/droneAI_workspace/model-cache
+    hostPath: /mnt/j/droneAI_workspace/model-cache   # local only; remove for cloud
+    storageClass: ""                                  # set to cloud class when hostPath is removed
     size: 30Gi
 
 # --------------------------------------------------------------------------
@@ -120,7 +126,7 @@ dashboardApi:
     type: NodePort
     nodePort: 30080
   cors:
-    origins: '["http://localhost:30000"]'
+    origins: "*"
 
 # --------------------------------------------------------------------------
 # Dashboard Frontend
@@ -142,6 +148,23 @@ dashboardFrontend:
 # --------------------------------------------------------------------------
 ingress:
   enabled: false
+  className: ""
+  annotations: {}
+  # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts: []
+  # - host: droneai.example.fr
+  #   paths:
+  #     - path: /
+  #       service: dashboard-frontend
+  # - host: api.droneai.example.fr
+  #   paths:
+  #     - path: /
+  #       service: dashboard-api
+  tls: []
+  # - secretName: droneai-tls
+  #   hosts:
+  #     - droneai.example.fr
+  #     - api.droneai.example.fr
 
 # --------------------------------------------------------------------------
 # GPU scheduling (no selectors for single-node local)
