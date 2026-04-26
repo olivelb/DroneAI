@@ -170,8 +170,15 @@ class MissionContext:
 
 def build_mission_context(mission):
     vol_id = mission["vol_id"]
-    # Local work directory on emptyDir (fast ext4) — no more /host prefix
-    work_dir = os.path.join("/work", vol_id)
+    # Pick work drive from mission params or env default
+    work_drive = mission.get("colmap_params", {}).get("work_drive") or mission.get("work_drive")
+    if not work_drive:
+        work_drive = os.getenv("WORK_DRIVE_DEFAULT", "system")
+    work_base = os.path.join("/work", work_drive)
+    if not os.path.isdir(work_base):
+        print(f"⚠️ Work drive '{work_drive}' not mounted at {work_base}, falling back to /work/system")
+        work_base = "/work/system"
+    work_dir = os.path.join(work_base, vol_id)
     # Input: S3 prefix for the dataset (downloaded at runtime)
     input_dataset = mission.get("input_dataset", "")
     return MissionContext(mission=mission, vol_id=vol_id, input_dir=input_dataset, work_dir=work_dir)

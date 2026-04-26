@@ -447,6 +447,10 @@ try:
         offset_y = tile_info['offset_y']
 
         if cancel_manager.is_cancelled(vol_id):
+            # Clean up any downloaded tiles for this cancelled mission
+            if os.path.isdir(local_tile_dir):
+                shutil.rmtree(local_tile_dir, ignore_errors=True)
+            mission_stats.pop(vol_id, None)
             continue
 
         # We assume the orthomosaic transform and CRS are passed in the message to compute real-world coordinates

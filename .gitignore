@@ -115,6 +115,9 @@ plat
 # === Local helper scripts ===
 /scripts/
 
+# === Local editor/runtime state ===
+.zed_server/
+
 # === Docker build dependencies (cloned externally, not source) ===
 .docker-vcpkg/
 app1-colmap/ceres-solver/

@@ -56,3 +56,11 @@ Common environment variables injected into all worker pods
       name: drone-ai-storage
       key: database-url
 {{- end }}
+
+{{/*
+JSON array of available work drives for the colmap worker.
+Each entry: {"name": "...", "label": "...", "mount": "/work/..."}
+*/}}
+{{- define "colmap.workDrivesJson" -}}
+[{{- range $i, $d := .Values.colmapWorker.workVolume.drives }}{{- if $i }},{{ end }}{"name":"{{ $d.name }}","label":"{{ $d.label }}","mount":"/work/{{ $d.name }}"}{{- end }}]
+{{- end }}

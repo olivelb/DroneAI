@@ -351,6 +351,7 @@ class MissionParams(BaseModel):
     sam_prompt: str = "car"
     classes: list[str] = Field(default_factory=lambda: ["car"])
     colmap_params: dict[str, Any] = Field(default_factory=dict)
+    work_drive: str = ""  # chosen work drive name, empty = use default
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +486,36 @@ async def cancel_mission(vol_id: str):
     return {"status": "success", "message": f"Cancel command sent for {vol_id}"}
 
 
+@app.delete("/mission/{vol_id}")
+def delete_mission(vol_id: str):
+    """Delete a mission: remove all S3 files and database records."""
+    # Delete S3 objects under the mission prefix
+    s3_prefix = f"missions/{vol_id}/"
+    deleted_count = 0
+    try:
+        deleted_count = storage.delete_prefix(s3_prefix)
+    except Exception as exc:
+        print(f"S3 delete error for {vol_id}: {exc}")
+
+    # Delete DB records (Mission cascades to logs + detections)
+    db_deleted = False
+    try:
+        with get_session() as session:
+            mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+            if mission:
+                session.delete(mission)
+                db_deleted = True
+    except Exception as exc:
+        return {"status": "error", "message": f"S3 cleaned ({deleted_count} objects) but DB delete failed: {exc}"}
+
+    return {
+        "status": "success",
+        "message": f"Mission {vol_id} deleted.",
+        "s3_objects_deleted": deleted_count,
+        "db_deleted": db_deleted,
+    }
+
+
 @app.post("/mission/resume")
 async def resume_mission(vol_id: str):
     try:
@@ -530,6 +561,72 @@ async def resume_mission(vol_id: str):
     }
 
 
+class PhaseRerunParams(BaseModel):
+    vol_id: str
+    phase: str  # "reconstruction" | "gaussian" | "detection"
+    pipeline: str = ""
+    colmap_params: dict[str, Any] = Field(default_factory=dict)
+    ai_backend: str = ""
+    ai_model_variant: str = ""
+    ai_confidence: float = 0
+    sam_prompt: str = ""
+    classes: list[str] = Field(default_factory=list)
+
+
+@app.post("/mission/phase")
+async def rerun_phase(params: PhaseRerunParams):
+    """Rerun a specific phase of an existing mission.
+
+    This re-sends the original mission params to Kafka with a ``start_phase``
+    field so that workers can skip to the requested phase.
+    """
+    try:
+        with get_session() as session:
+            mission = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
+            if not mission:
+                return {"status": "error", "message": f"Mission {params.vol_id} not found."}
+            if not mission.params:
+                return {"status": "error", "message": "No saved params — cannot rerun."}
+
+            payload = dict(mission.params)
+            payload["vol_id"] = params.vol_id
+            payload["start_phase"] = params.phase
+
+            # Merge any overridden parameters
+            if params.pipeline:
+                payload["pipeline"] = params.pipeline
+            if params.colmap_params:
+                existing_colmap = payload.get("colmap_params", {})
+                existing_colmap.update(params.colmap_params)
+                payload["colmap_params"] = existing_colmap
+            if params.ai_backend:
+                payload["ai_backend"] = params.ai_backend
+            if params.ai_model_variant:
+                payload["ai_model_variant"] = params.ai_model_variant
+            if params.ai_confidence > 0:
+                payload["ai_confidence"] = params.ai_confidence
+            if params.sam_prompt:
+                payload["sam_prompt"] = params.sam_prompt
+            if params.classes:
+                payload["classes"] = params.classes
+
+            # Reset mission status
+            mission.status = "processing"
+            mission.current_step = f"RERUN_{params.phase.upper()}"
+            mission.error_message = None
+            mission.updated_at = datetime.now(timezone.utc)
+
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+    producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(payload))
+    producer.flush()
+    return {
+        "status": "success",
+        "message": f"Phase '{params.phase}' rerun sent for {params.vol_id}.",
+    }
+
+
 @app.get("/pods")
 def pod_statuses():
     return get_pod_states()
@@ -537,9 +634,18 @@ def pod_statuses():
 
 @app.get("/mission/parameters")
 def mission_parameters():
+    # Work drives config is passed via WORK_DRIVES env (JSON array from Helm)
+    import json as _json
+    drives_raw = os.environ.get("WORK_DRIVES", "")
+    try:
+        drives = _json.loads(drives_raw) if drives_raw else []
+    except Exception:
+        drives = []
     return {
         "pipelines": PIPELINE_DEFAULTS,
         "metadata": PARAMETER_METADATA,
+        "work_drives": drives,
+        "work_drive_default": os.environ.get("WORK_DRIVE_DEFAULT", ""),
     }
 
 
@@ -576,6 +682,111 @@ def browse_path(prefix: str = "datasets/"):
         return {"error": str(exc)}
 
 
+@app.get("/preview/{s3_key:path}")
+def preview_image(s3_key: str, max_size: int = 4096, colormap: str = ""):
+    """Return a PNG preview of a GeoTIFF (or any image) stored in S3.
+
+    Resizes large images so the longest side ≤ *max_size* (capped at 8192).
+    Use ``colormap=depth`` to apply a blue → red gradient (for height maps).
+    """
+    from fastapi.responses import StreamingResponse
+    from PIL import Image
+    import io as _io
+    import struct as _struct
+    import array as _array
+
+    Image.MAX_IMAGE_PIXELS = 500_000_000  # allow large orthos
+    max_size = min(max(256, max_size), 8192)
+
+    if not storage.file_exists(s3_key):
+        return {"error": "File not found"}
+
+    try:
+        stream, length, _ = storage.get_object_stream(s3_key)
+        raw = stream.read()
+        stream.close()
+
+        img = Image.open(_io.BytesIO(raw))
+
+        # --- Depth colormap (blue → red) for single-channel data ---
+        if colormap == "depth" and img.mode in ("I;16", "I", "F", "L"):
+            # Extract raw float/int pixel values
+            if img.mode == "F":
+                pixels = list(img.getdata())
+            elif img.mode == "I":
+                pixels = list(img.getdata())
+            elif img.mode == "I;16":
+                data = img.tobytes()
+                pixels = list(_struct.unpack(f"<{len(data)//2}H", data))
+            else:  # L
+                pixels = list(img.getdata())
+
+            lo = min(pixels)
+            hi = max(pixels)
+            rng = float(hi - lo) if hi != lo else 1.0
+
+            # Blue(0) → Cyan → Green → Yellow → Red(1)
+            def depth_color(t: float) -> tuple:
+                if t < 0.25:
+                    s = t / 0.25
+                    return (0, int(s * 255), 255)              # blue → cyan
+                elif t < 0.5:
+                    s = (t - 0.25) / 0.25
+                    return (0, 255, int((1 - s) * 255))        # cyan → green
+                elif t < 0.75:
+                    s = (t - 0.5) / 0.25
+                    return (int(s * 255), 255, 0)              # green → yellow
+                else:
+                    s = (t - 0.75) / 0.25
+                    return (255, int((1 - s) * 255), 0)        # yellow → red
+
+            w, h = img.size
+            rgb = _array.array("B", [0] * (w * h * 3))
+            for i, p in enumerate(pixels):
+                t = (p - lo) / rng
+                r, g, b = depth_color(t)
+                rgb[i * 3] = r
+                rgb[i * 3 + 1] = g
+                rgb[i * 3 + 2] = b
+            img = Image.frombytes("RGB", (w, h), bytes(rgb))
+
+        # --- Standard mode conversions ---
+        elif img.mode in ("P", "CMYK"):
+            img = img.convert("RGB")
+        elif img.mode == "I;16":
+            data = img.tobytes()
+            pixels = _struct.unpack(f"<{len(data)//2}H", data)
+            lo, hi = min(pixels), max(pixels)
+            rng = hi - lo if hi != lo else 1
+            norm = bytes(int((p - lo) / rng * 255) for p in pixels)
+            img = Image.frombytes("L", img.size, norm).convert("RGB")
+        elif img.mode in ("I", "F"):
+            # 32-bit int/float → normalize to 8-bit grayscale
+            pixels = list(img.getdata())
+            lo, hi = min(pixels), max(pixels)
+            rng = float(hi - lo) if hi != lo else 1.0
+            norm = bytes(int((p - lo) / rng * 255) for p in pixels)
+            img = Image.frombytes("L", img.size, norm).convert("RGB")
+        elif img.mode not in ("RGB", "RGBA", "L"):
+            img = img.convert("RGB")
+
+        # Resize if needed
+        w, h = img.size
+        if max(w, h) > max_size:
+            scale = max_size / max(w, h)
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+        buf = _io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        buf.seek(0)
+
+        return StreamingResponse(buf, media_type="image/png", headers={
+            "Cache-Control": "public, max-age=3600",
+        })
+    except Exception as exc:
+        return {"error": f"Preview generation failed: {exc}"}
+
+
 @app.get("/datasets")
 def list_datasets():
     """List top-level dataset folders in S3."""
@@ -598,6 +809,21 @@ def list_datasets():
         return []
 
 
+@app.delete("/datasets/{name}")
+def delete_dataset(name: str):
+    """Delete a dataset and all its files from S3."""
+    import re
+    safe_name = re.sub(r"[^a-zA-Z0-9_\-\.]", "", name.strip())
+    if not safe_name or safe_name != name.strip():
+        return {"status": "error", "message": "Invalid dataset name"}
+    prefix = f"datasets/{safe_name}/"
+    try:
+        deleted = storage.delete_prefix(prefix)
+        return {"status": "success", "message": f"Dataset '{safe_name}' deleted.", "objects_deleted": deleted}
+    except Exception as exc:
+        return {"status": "error", "message": str(exc)}
+
+
 @app.get("/files/{s3_key:path}")
 def get_file(s3_key: str):
     """Redirect to a presigned URL using the public S3 endpoint."""
@@ -608,34 +834,53 @@ def get_file(s3_key: str):
 
 
 # ---------------------------------------------------------------------------
-# Dataset upload
+# Dataset upload – single-file endpoint for reliability with large datasets
 # ---------------------------------------------------------------------------
 
-# In-memory upload progress tracking (keyed by upload_id)
-_upload_progress: dict[str, dict] = {}
-_upload_progress_subscribers: dict[str, list[WebSocket]] = {}
+import re as _re
+from fastapi import Query
+
+
+@app.post("/datasets/upload-file")
+async def upload_single_file(
+    dataset_name: str = Query(...),
+    file: UploadFile = FastAPIFile(...),
+):
+    """Upload a single file to S3 under datasets/{dataset_name}/.
+
+    The frontend calls this endpoint once per file, enabling per-file
+    progress tracking and avoiding giant multipart requests that break
+    with large drone datasets.
+    """
+    safe_name = _re.sub(r"[^a-zA-Z0-9_\-]", "_", dataset_name.strip())
+    if not safe_name:
+        return {"error": "Invalid dataset name"}, 400
+
+    filename = Path(file.filename or "file").name  # prevent path traversal
+    s3_key = f"datasets/{safe_name}/{filename}"
+    try:
+        # Stream directly to S3 using the file-like object (avoids loading
+        # the entire file into memory).
+        storage.put_object(s3_key, file.file)
+        return {"name": filename, "s3_key": s3_key, "status": "ok"}
+    except Exception as exc:
+        print(f"[upload] ERROR uploading {filename} to {s3_key}: {exc}")
+        return {"name": filename, "status": "error", "error": str(exc)}
 
 
 @app.post("/datasets/upload")
-async def upload_dataset(
-    dataset_name: str,
+async def upload_dataset_batch(
+    dataset_name: str = Query(...),
     files: list[UploadFile] = FastAPIFile(...),
 ):
-    """Upload one or more image files to S3 under datasets/{dataset_name}/.
-
-    Returns an upload_id that can be used to track progress via the
-    ``/ws/upload/{upload_id}`` WebSocket endpoint.
-    """
-    import re
-
-    # Sanitise dataset name to prevent path traversal
-    safe_name = re.sub(r"[^a-zA-Z0-9_\-]", "_", dataset_name.strip())
+    """Batch upload (kept for backward compatibility but prefer /upload-file)."""
+    safe_name = _re.sub(r"[^a-zA-Z0-9_\-]", "_", dataset_name.strip())
     if not safe_name:
         return {"error": "Invalid dataset name"}
 
     upload_id = uuid.uuid4().hex[:12]
     total = len(files)
-    _upload_progress[upload_id] = {
+    result = {
         "upload_id": upload_id,
         "dataset": safe_name,
         "total": total,
@@ -645,70 +890,20 @@ async def upload_dataset(
         "files": [],
     }
 
-    async def _notify(prog: dict):
-        subs = _upload_progress_subscribers.get(upload_id, [])
-        dead = []
-        for ws in subs:
-            try:
-                await ws.send_text(json.dumps(prog))
-            except Exception:
-                dead.append(ws)
-        for d in dead:
-            try:
-                subs.remove(d)
-            except ValueError:
-                pass
-
-    failed_files = []
     for i, f in enumerate(files):
-        filename = Path(f.filename or f"file_{i}").name  # prevent path traversal
+        filename = Path(f.filename or f"file_{i}").name
         s3_key = f"datasets/{safe_name}/{filename}"
         try:
-            contents = await f.read()
-            storage.put_object(s3_key, contents)
-            _upload_progress[upload_id]["completed"] += 1
-            _upload_progress[upload_id]["files"].append({"name": filename, "s3_key": s3_key, "status": "ok"})
+            storage.put_object(s3_key, f.file)
+            result["completed"] += 1
+            result["files"].append({"name": filename, "s3_key": s3_key, "status": "ok"})
         except Exception as exc:
-            _upload_progress[upload_id]["failed"] += 1
-            _upload_progress[upload_id]["files"].append({"name": filename, "status": "error", "error": str(exc)})
-            failed_files.append(filename)
-        await _notify(_upload_progress[upload_id])
+            print(f"[upload] ERROR uploading {filename}: {exc}")
+            result["failed"] += 1
+            result["files"].append({"name": filename, "status": "error", "error": str(exc)})
 
-    _upload_progress[upload_id]["status"] = "done" if not failed_files else "partial"
-    await _notify(_upload_progress[upload_id])
-
-    return _upload_progress[upload_id]
-
-
-@app.get("/datasets/upload/{upload_id}")
-def upload_status(upload_id: str):
-    """Poll upload progress (alternative to WebSocket)."""
-    prog = _upload_progress.get(upload_id)
-    if prog is None:
-        return {"error": "Upload not found"}
-    return prog
-
-
-@app.websocket("/ws/upload/{upload_id}")
-async def upload_progress_ws(websocket: WebSocket, upload_id: str):
-    """WebSocket endpoint to receive real-time upload progress."""
-    await websocket.accept()
-    subs = _upload_progress_subscribers.setdefault(upload_id, [])
-    subs.append(websocket)
-    try:
-        # Send current state immediately
-        prog = _upload_progress.get(upload_id)
-        if prog:
-            await websocket.send_text(json.dumps(prog))
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        pass
-    finally:
-        try:
-            subs.remove(websocket)
-        except ValueError:
-            pass
+    result["status"] = "done" if result["failed"] == 0 else "partial"
+    return result
 
 
 @app.post("/mission")

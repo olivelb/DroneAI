@@ -22,7 +22,7 @@ LICHTFELD_COMMIT="1004c0841a3776e3f67866ff34101fbc9677397f"
 VCPKG_REPO="https://github.com/microsoft/vcpkg.git"
 VCPKG_TAG="2026.03.18"
 CERES_REPO="https://github.com/ceres-solver/ceres-solver.git"
-CERES_TAG="2.2.0"
+CERES_TAG="master"  # >= 2.3.0 required for cuDSS GPU sparse solvers
 COLMAP_REPO="https://github.com/colmap/colmap.git"
 COLMAP_TAG="4.0.1"
 
@@ -77,6 +77,13 @@ else
     info "Cloning Ceres Solver $CERES_TAG..."
     git clone --depth 1 --branch "$CERES_TAG" "$CERES_REPO" app1-colmap/ceres-solver
 fi
+# Ensure bundled abseil submodule is populated (system libabsl is too old for Ceres 2.3+)
+cd app1-colmap/ceres-solver
+if [ ! -f "third_party/abseil-cpp/CMakeLists.txt" ]; then
+    info "Initialising Ceres abseil-cpp submodule..."
+    git submodule update --init third_party/abseil-cpp
+fi
+cd "$SCRIPT_DIR"
 
 # ---- COLMAP ----
 if [ -d "app1-colmap/colmap-local/.git" ]; then

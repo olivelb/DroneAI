@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import subprocess
 import sys
 import threading
 import logging
@@ -248,6 +249,12 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     },
                 )
 
+        # Free disk: remove raw_images now that clean_images is ready.
+        # On re-run, images will be re-downloaded from S3 (fast over local network).
+        if os.path.isdir(raw_image_dir):
+            shutil.rmtree(raw_image_dir)
+            report_mission_progress(vol_id, "COPYING_IMAGES", 5, log="Removed raw_images to free disk space")
+
         if copied_count > 0:
             invalidate_pipeline_artifacts(
                 clean_images_dir,
@@ -416,13 +423,18 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             
             # --- 6. SfM: Mapping ---
             os.makedirs(sparse_path, exist_ok=True)
+            mapper_cmd = params["mapper_cmd"]
+            # hierarchical_mapper was removed in COLMAP 4.x, fall back to mapper
+            if mapper_cmd == "hierarchical_mapper":
+                logger.warning("hierarchical_mapper not available in COLMAP 4.x, falling back to mapper")
+                mapper_cmd = "mapper"
             map_cmd = [
-                "colmap", params["mapper_cmd"],
+                "colmap", mapper_cmd,
                 "--database_path", db_path,
                 "--image_path", clean_images_dir,
                 "--output_path", sparse_path,
             ]
-            if params["mapper_cmd"] == "global_mapper":
+            if mapper_cmd == "global_mapper":
                 map_cmd += [
                     "--GlobalMapper.ba_ceres_use_gpu", "1",
                     "--GlobalMapper.ba_ceres_gpu_index", ba_gpu_index,
@@ -433,7 +445,27 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "--Mapper.ba_gpu_index", ba_gpu_index,
                 ]
             
-            run_command(map_cmd, vol_id, "MAPPING", 45, report_mission_progress, ensure_not_cancelled)
+            try:
+                run_command(map_cmd, vol_id, "MAPPING", 45, report_mission_progress, ensure_not_cancelled)
+            except (RuntimeError, subprocess.CalledProcessError) as e:
+                if "SIGABRT" in str(e) and "--Mapper.ba_use_gpu" in " ".join(map_cmd):
+                    report_mission_progress(
+                        vol_id, "MAPPING", 45,
+                        log="GPU bundle adjustment crashed (likely OOM on large dataset). Retrying with CPU BA...",
+                    )
+                    shutil.rmtree(sparse_path, ignore_errors=True)
+                    os.makedirs(sparse_path, exist_ok=True)
+                    # Rebuild command without GPU BA
+                    cpu_map_cmd = [
+                        "colmap", mapper_cmd,
+                        "--database_path", db_path,
+                        "--image_path", clean_images_dir,
+                        "--output_path", sparse_path,
+                        "--Mapper.ba_use_gpu", "0",
+                    ]
+                    run_command(cpu_map_cmd, vol_id, "MAPPING", 45, report_mission_progress, ensure_not_cancelled)
+                else:
+                    raise
 
             sparse_model_path = os.path.join(sparse_path, "0")
             registered_images, sparse_points = inspect_sparse_reconstruction(sparse_model_path)
@@ -788,6 +820,13 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
     except Exception as e:
         report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {str(e)}")
     finally:
+        # Always clean up local workspace to avoid filling the system disk.
+        if os.path.isdir(workspace_dir):
+            try:
+                shutil.rmtree(workspace_dir, ignore_errors=True)
+                report_mission_progress(vol_id, "CLEANUP", 99, log=f"Local workspace {workspace_dir} cleaned up (finally)")
+            except Exception:
+                pass
         # Free RAM/VRAM after every mission (success, cancel, or error).
         import gc
         gc.collect()

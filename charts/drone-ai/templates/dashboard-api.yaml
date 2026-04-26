@@ -71,6 +71,10 @@ spec:
         {{- include "drone-ai.commonEnv" . | nindent 8 }}
         - name: CORS_ORIGINS
           value: {{ .Values.dashboardApi.cors.origins | quote }}
+        - name: WORK_DRIVES
+          value: {{ include "colmap.workDrivesJson" . | quote }}
+        - name: WORK_DRIVE_DEFAULT
+          value: {{ .Values.colmapWorker.workVolume.default | quote }}
         ports:
         - containerPort: 8000
         readinessProbe:

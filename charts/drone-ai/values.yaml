@@ -77,10 +77,20 @@ colmapWorker:
     requests:
       memory: "80Gi"
   workVolume:
-    # emptyDir = fast ext4 on WSL2 disk. Set type: hostPath for /mnt/j fallback.
-    type: emptyDir
     sizeLimit: 100Gi
-    # hostPath: /mnt/j/droneAI_workspace/colmap-work   # uncomment if SSD too small
+    # Available work drives mounted into the pod.
+    # The user picks one per-mission from the dashboard UI.
+    drives:
+      - name: system
+        hostPath: ""          # emptyDir on root disk (fast but limited)
+        label: "System SSD (fast, limited)"
+      - name: drive-i
+        hostPath: /mnt/i/droneAI_workspace/colmap-work
+        label: "Drive I: (1.9 TB HDD)"
+      - name: drive-j
+        hostPath: /mnt/j/droneAI_workspace/colmap-work
+        label: "Drive J: (1.9 TB HDD)"
+    default: drive-i
 
 # --------------------------------------------------------------------------
 # IA Worker

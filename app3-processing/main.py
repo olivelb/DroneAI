@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import shutil
 import sys
 import threading
 import numpy as np
@@ -488,6 +489,10 @@ def generate_final_ortho(vol_id, mission):
     except Exception as e:
         logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
+    finally:
+        # Always clean up temp files to avoid filling the system disk.
+        import shutil
+        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
 
 def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", ai_model_variant="yolo26l", sam_prompt="car"):
     """Download orthomosaic from S3, tile it locally, upload tiles to S3, and send Kafka messages."""
@@ -545,6 +550,7 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
                 for x in x_starts:
                     if cancel_manager.is_cancelled(vol_id):
                         logger.info("Tiling cancelled mid-loop for %s", vol_id)
+                        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
                         return
                     window = Window(x, y, min(tile_size, width - x), min(tile_size, height - y))
                     
@@ -613,6 +619,7 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
         error_msg = f"Failed to tile orthomosaic: {str(e)}"
         report_progress(vol_id, "ERROR", 0, status="error", log=error_msg)
         print(f"❌ {error_msg}")
+        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
 
 print("🎧 App 3 (Tiler/Aggregator) en attente...")
 

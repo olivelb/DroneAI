@@ -13,28 +13,39 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libatlas-base-dev libeigen3-dev liblz4-dev libmetis-dev \
     libopencv-dev libopenblas-dev libpng-dev libjpeg-dev libtiff-dev \
     libopenimageio-dev openimageio-tools libopenexr-dev libsqlite3-dev libflann-dev libssl-dev \
-    libcudnn9-dev-cuda-12 libcudss0-dev-cuda-12 \
+    libcudnn9-dev-cuda-12 libcudss0-dev-cuda-12 libcudss0-static-cuda-12 \
     libopengl-dev libglew-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Ceres Solver 2.2.0 with CUDA + cuDSS (cloned by setup_deps.sh)
+# Ceres Solver 2.3.0 (master) with CUDA + cuDSS (cloned by setup_deps.sh)
+# cuDSS support requires Ceres >= 2.3.0 — 2.2.0 silently ignores USE_CUDSS
 COPY app1-colmap/ceres-solver /tmp/ceres-solver
-RUN set -eux; \
-    cd /tmp/ceres-solver; mkdir build; cd build; \
+# Fix cuDSS header lookup: cmake config expects headers relative to its own dir
+RUN ln -sf /usr/include/libcudss/12 /usr/lib/x86_64-linux-gnu/libcudss/12/include
+# Configure Ceres
+RUN cd /tmp/ceres-solver && mkdir build && cd build && \
     cmake .. -GNinja \
         -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
-        -DUSE_CUDA=ON -DUSE_CUDSS=ON \
+        -DUSE_CUDA=ON \
+        -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
         -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
-        -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12 \
-        2>&1 | tee /tmp/ceres-cmake.log; \
-    grep -Ei 'cuda|cudss|suitesparse|sparse' /tmp/ceres-cmake.log || true; \
-    ninja install; \
-    test -f /usr/local/include/ceres/internal/config.h; \
-    if grep -q '^#define CERES_NO_CUDA' /usr/local/include/ceres/internal/config.h \
-        || grep -q '^#define CERES_NO_CUDSS' /usr/local/include/ceres/internal/config.h; then \
-        echo 'Ceres was installed without CUDA/cuDSS support.' >&2; exit 1; \
+        -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
+        -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12
+# Build and install Ceres
+RUN cd /tmp/ceres-solver/build && ninja install
+# Verify cuDSS + CUDA support is compiled in
+# In config.h, enabled features have their #define commented out (// #define CERES_NO_X)
+# A disabled feature has an uncommented #define CERES_NO_X
+RUN set -e; \
+    config=/usr/local/include/ceres/internal/config.h; \
+    if grep -qP '^#define CERES_NO_CUDSS\b' "$config"; then \
+        echo 'ERROR: Ceres was installed without cuDSS support!' >&2; exit 1; \
     fi; \
-    cd /; rm -rf /tmp/ceres-solver /tmp/ceres-cmake.log
+    if grep -qP '^#define CERES_NO_CUDA\b' "$config"; then \
+        echo 'ERROR: Ceres was installed without CUDA support!' >&2; exit 1; \
+    fi; \
+    echo "Ceres cuDSS + CUDA support verified OK"; \
+    rm -rf /tmp/ceres-solver
 
 # COLMAP 4.0.1 (cloned by setup_deps.sh)
 # Pre-downloaded FetchContent deps avoid network calls during cmake
@@ -54,6 +65,8 @@ RUN cd /tmp/colmap \
         -DIPO_ENABLED=OFF \
         -DOPENGL_ENABLED=OFF \
         -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
+        -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
+        -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
     && ninja install \
     && rm -rf /tmp/colmap /tmp/colmap-deps
 

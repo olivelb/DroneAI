@@ -38,18 +38,30 @@ spec:
         {{- include "drone-ai.commonEnv" . | nindent 8 }}
         - name: QT_QPA_PLATFORM
           value: "offscreen"
+        - name: WORK_DRIVES
+          value: {{ include "colmap.workDrivesJson" . | quote }}
+        - name: WORK_DRIVE_DEFAULT
+          value: {{ .Values.colmapWorker.workVolume.default | quote }}
         volumeMounts:
-        - name: work
-          mountPath: /work
+        - name: work-system
+          mountPath: /work/system
+        {{- range .Values.colmapWorker.workVolume.drives }}
+        {{- if .hostPath }}
+        - name: work-{{ .name }}
+          mountPath: /work/{{ .name }}
+        {{- end }}
+        {{- end }}
         resources:
           {{- toYaml .Values.colmapWorker.resources | nindent 10 }}
       volumes:
-      - name: work
-        {{- if eq .Values.colmapWorker.workVolume.type "hostPath" }}
-        hostPath:
-          path: {{ .Values.colmapWorker.workVolume.hostPath }}
-          type: DirectoryOrCreate
-        {{- else }}
+      - name: work-system
         emptyDir:
           sizeLimit: {{ .Values.colmapWorker.workVolume.sizeLimit }}
-        {{- end }}
+      {{- range .Values.colmapWorker.workVolume.drives }}
+      {{- if .hostPath }}
+      - name: work-{{ .name }}
+        hostPath:
+          path: {{ .hostPath }}
+          type: DirectoryOrCreate
+      {{- end }}
+      {{- end }}
