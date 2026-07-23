@@ -114,6 +114,36 @@ from 334.10 to 375.64 m. This is a display-oriented relative surface, not a
 surveyed elevation product: the EXIF altitude has no verified vertical datum
 and no GCP, RTK, or PPK observation constrains it independently.
 
+## Local YOLO OBB experiment
+
+The infrastructure-free detector then consumed
+`orthomosaic.low-memory.tif`. The full profile used YOLO26l OBB, four
+1,024 px tiles with 256 px overlap, and a 0.20 confidence threshold.
+
+| Metric | Result |
+|---|---:|
+| Tiles | 4 |
+| Raw tile detections | 5 |
+| Deduplicated objects | 2 |
+| Warm-cache total time | 2.8 s |
+| Warm-cache inference time | 2.7 s |
+| Classes | 1 small vehicle, 1 large vehicle |
+| Confidence range | 0.20–0.89 |
+| Output CRS | EPSG:32631 |
+
+Both retained OBBs correspond to visible vehicle-like objects: the white
+vehicle group beside the lower house and the long vehicle or trailer beside
+the road. Their centers were exported in pixels, EPSG:32631 coordinates, and
+WGS84 longitude/latitude. The five raw observations demonstrate that the
+overlap merger removes repeated detections from adjacent tiles.
+
+This is an integration case study, not an accuracy benchmark. There is no
+labelled ground truth, the Gaussian orthophoto blurs some small vehicles, and
+the detector misses other plausible objects. Lowering the threshold from 0.20
+to 0.10 did not add candidates. A 640 px tile experiment increased confidence
+but retained the same two objects, so the production-aligned 1,024 px profile
+was kept.
+
 ## Interpretation
 
 The dataset has strong visual overlap and is internally consistent: all images
@@ -131,3 +161,7 @@ The Gaussian experiment confirms that the production training and rendering
 code can be exercised locally on an 8 GiB GPU. It does not validate absolute
 orthophoto accuracy. Keeping Gaussian training separate preserves the validated
 sparse baseline and avoids requiring the service stack.
+
+The detection experiment confirms the downstream tiling, aerial OBB inference,
+overlap deduplication, annotated GeoTIFF, and GeoJSON path. Precision, recall,
+and mAP cannot be claimed without an independently labelled evaluation set.

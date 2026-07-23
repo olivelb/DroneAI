@@ -80,7 +80,11 @@ The repository contains a shared Python package under `shared/` that is imported
 Current files:
 
 - `shared/config.py`
+- `shared/database.py`
+- `shared/geo_alignment.py`
 - `shared/pipeline_params.py`
+- `shared/storage.py`
+- `shared/validation.py`
 
 Current responsibilities:
 
@@ -90,13 +94,24 @@ Current responsibilities:
 - define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard
 - define parameter metadata used by the frontend to render editable controls
 - provide helper functions that merge mission overrides with the selected pipeline preset
+- persist missions, logs, and detections through SQLAlchemy
+- expose S3-compatible storage helpers used with MinIO
+- validate mission identifiers and contained filesystem paths
+- compute and serialize the Sim3 transform between raw and aligned COLMAP models
 
 As implemented today:
 
-- `app1-colmap` imports shared topic names, the default workspace root, and parameter-merge helpers
-- `app2-ia` imports shared topic names
-- `app3-processing` imports shared topic names
-- `app4-dashboard/api` imports shared topic names, workspace defaults, service order, pipeline defaults, and parameter metadata
+- `app1-colmap` imports configuration, parameter, database, storage, validation,
+  and geo-alignment helpers
+- `app2-ia` imports shared topic names and S3 storage helpers
+- `app3-processing` imports shared topic names, S3 storage, and database helpers
+- `app4-dashboard/api` imports configuration, pipeline defaults, validation,
+  database, and storage helpers
+
+The worker-specific `app2-ia/detection_core.py` and
+`app3-processing/processing_core.py` modules contain reusable detection,
+tiling, deduplication, rendering, and GIS-export logic. The Kafka loops and the
+infrastructure-free local runner call the same core functions.
 
 ## Services and responsibilities
 
@@ -137,7 +152,7 @@ Primary responsibilities:
 - publish cancellation commands to `pipeline-control`
 - consume `pipeline-status`
 - buffer recent raw status messages in memory
-- aggregate per-mission in-memory state keyed by `vol_id`
+- persist mission state and logs in PostgreSQL
 - compute an `overall_status` from the shared service order `COLMAP -> TILER -> IA`
 - replay buffered history to newly connected WebSocket clients
 - expose a summary view of known missions through `GET /status/summary`
@@ -147,7 +162,9 @@ Primary responsibilities:
 - expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
 - estimate recommended maximum image size for an input directory through `POST /mission/estimate`
 
-The API still does not persist mission state to disk or a database. Its mission model is in-memory only and is rebuilt from new Kafka traffic after restart.
+The bounded WebSocket replay buffer remains in memory, but mission state,
+service progress, logs, original parameters, and resume metadata are persisted
+in PostgreSQL. Alembic owns the database schema.
 
 ### COLMAP worker (`app1-colmap`)
 
@@ -333,7 +350,7 @@ Payload shape:
 ```json
 {
   "vol_id": "mission_001",
-  "ortho_path": "/host/mnt/j/workspace/mission_001/orthomosaic.tif",
+  "ortho_s3_key": "missions/mission_001/orthomosaic.tif",
   "classes": ["car"],
   "ai_confidence": 0.3
 }
@@ -341,8 +358,8 @@ Payload shape:
 
 Notes:
 
-- `ortho_path` points to the GeoTIFF emitted by app1.
-- The processing worker normalizes the path to ensure container access through `/host`.
+- `ortho_s3_key` points to the GeoTIFF uploaded by app1.
+- The processing worker downloads it into its own temporary workspace.
 
 ### `image-tiles`
 
@@ -993,7 +1010,11 @@ This allows one process to own both halves of the post-processing lifecycle:
 1. initial orthomosaic slicing
 2. final detection aggregation and annotation
 
-The in-memory `missions` dictionary is the bridge between those two halves.
+The in-memory mission registry coordinates tiling completion and final
+rendering inside one processing-worker lifetime. Individual detections and
+tile counts are also persisted in PostgreSQL, but automatic reconstruction of
+an interrupted registry after a processing-worker restart remains future
+hardening work.
 
 ### Per-mission state structure
 

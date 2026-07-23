@@ -199,3 +199,52 @@ runner forwards image scaling as LichtFeld's actual `--resize_factor` option
 and enables its memory-saving tile mode. Every profile writes separate
 checkpoints, GeoTIFFs, height maps, and a `gaussian_run.<profile>.json`
 manifest. Existing profile outputs are preserved unless `--force` is passed.
+
+## Optional local YOLO OBB detection
+
+The detector can consume a generated orthomosaic without Kafka, MinIO,
+Postgres, K3s, or the dashboard. It reuses the production YOLO extraction and
+processing-worker deduplication code.
+
+Prerequisites:
+
+- the existing `drone-ia:latest` image;
+- NVIDIA Container Toolkit;
+- a marked local workspace containing a georeferenced orthomosaic.
+
+Run one tile first:
+
+```bash
+./tools/run_local_detection.sh \
+  "$HOME/droneAI-workspaces/gajan-r2s-full" \
+  --profile smoke
+```
+
+Then run every overlapping tile with the larger aerial OBB model:
+
+```bash
+./tools/run_local_detection.sh \
+  "$HOME/droneAI-workspaces/gajan-r2s-full" \
+  --profile full
+```
+
+| Profile | Model | Tile size | Overlap | Confidence | Tile limit |
+|---|---|---:|---:|---:|---:|
+| `smoke` | YOLO26n OBB | 1,024 px | 256 px | 0.20 | 1 |
+| `full` | YOLO26l OBB | 1,024 px | 256 px | 0.20 | all |
+
+The wrapper mounts the repository read-only, the marked workspace read-write,
+and a persistent model cache from
+`$HOME/.cache/droneai/models`. `DRONEAI_IA_IMAGE` and
+`DRONEAI_MODEL_CACHE` can override those defaults.
+
+Each profile writes under `detection_runs/<profile>/`:
+
+- `detection_run.json`: parameters, timings, per-tile attempts, and summary;
+- `detections.raw.json`: tile-level observations before overlap merging;
+- `detections.json`: deduplicated objects with pixel, projected, and GPS centers;
+- `detections.geojson`: WGS84 OBB polygons;
+- `orthomosaic.annotated.tif`: georeferenced annotated RGB output.
+
+Existing outputs are preserved unless `--force` is passed. Custom source and
+output paths must remain inside the marked workspace.
