@@ -12,6 +12,7 @@ TOPIC_STATUS = "pipeline-status"
 TOPIC_CONTROL = "pipeline-control"
 TOPIC_IMAGE_TILES = "image-tiles"
 TOPIC_TILE_DETECTIONS = "tile-detections"
+TOPIC_DEAD_LETTER = os.getenv("TOPIC_DEAD_LETTER", "pipeline-dead-letter")
 
 # ---------------------------------------------------------------------------
 # S3 / Object Storage (MinIO locally, managed S3 in cloud)

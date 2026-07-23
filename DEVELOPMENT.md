@@ -1,7 +1,9 @@
 # Development guide
 
-DroneAI is an exploratory, single-replica pipeline. The lightweight checks in
-this guide do not require Kafka, S3, Postgres, Kubernetes, or a CUDA GPU.
+DroneAI is an exploratory pipeline. Its distributed path has at-least-once
+delivery primitives but is not an exactly-once or high-availability system.
+The lightweight checks in this guide do not require Kafka, S3, Postgres,
+Kubernetes, or a CUDA GPU.
 
 ## Supported toolchain
 
@@ -27,6 +29,10 @@ make compile
 make lint
 make test
 ```
+
+The tests include architecture checks for the API composition root, public
+route inventory, shared worker messaging, versioned event contracts, retry and
+dead-letter behavior, and local orchestrator resumability.
 
 GPU and external-service tests are excluded from the default test command:
 

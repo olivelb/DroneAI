@@ -18,7 +18,25 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
+from shared.config import (
+    KAFKA_BROKER,
+    TOPIC_CONTROL,
+    TOPIC_DEAD_LETTER,
+    TOPIC_IMAGE_TILES,
+    TOPIC_STATUS,
+    TOPIC_TILE_DETECTIONS,
+)
+from shared.event_contracts import deterministic_event_id, make_event
+from shared.kafka_reliability import (
+    process_message,
+    publish_json,
+    reliable_consumer_config,
+)
+from shared.pipeline_params import normalize_ai_backend as normalize_backend_name
+from shared.worker_messaging import (
+    make_progress_publisher,
+    run_control_consumer,
+)
 from shared import storage
 from detection_core import polygon_center, run_yolo_detection
 
@@ -52,13 +70,6 @@ def load_sam3_model() -> tuple[Sam3Model, Sam3Processor]:
     _sam3_model = Sam3Model.from_pretrained(SAM3_MODEL_ID).to(device_type)
     _sam3_processor = Sam3Processor.from_pretrained(SAM3_MODEL_ID)
     return _sam3_model, _sam3_processor
-
-
-def normalize_backend_name(value: str | None) -> str:
-    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
-    if normalized in {"sam", "sam3", "sam-3", "meta-sam3", "meta-sam-3", "segment-anything-3"}:
-        return "sam3"
-    return "yolo"
 
 
 def resolve_sam3_prompt(tile_info: dict) -> str:
@@ -136,14 +147,26 @@ def run_sam3_detection(tile_path: str, prompt: str, requested_conf: float) -> tu
 
     return detections, {"label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}"}
 
-consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'ia-tile-workers',
-    'auto.offset.reset': 'earliest'
-})
-consumer.subscribe([TOPIC_IN])
+CONSUMER_GROUP = "ia-tile-workers"
+
+
+def create_work_consumer():
+    work_consumer = Consumer(
+        reliable_consumer_config(
+            KAFKA_BROKER,
+            CONSUMER_GROUP,
+            offset_reset="earliest",
+        )
+    )
+    work_consumer.subscribe([TOPIC_IN])
+    return work_consumer
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+progress_publisher = make_progress_publisher(
+    producer,
+    TOPIC_STATUS,
+    service_name="IA",
+)
 mission_stats = {}
 
 
@@ -159,26 +182,23 @@ class CancelManager:
 cancel_manager = CancelManager()
 
 def control_consumer_thread():
-    control_consumer = Consumer({
-        'bootstrap.servers': KAFKA_BROKER,
-        'group.id': 'ia-control-workers',
-        'auto.offset.reset': 'latest'
-    })
-    control_consumer.subscribe([TOPIC_CONTROL])
-    while True:
-        msg = control_consumer.poll(1.0)
-        if msg is None or msg.error(): continue
-        try:
-            data = json.loads(msg.value().decode('utf-8'))
-            if data.get("command") == "cancel":
-                vid = data.get("vol_id")
-                if vid:
-                    cancel_manager.cancel(vid)
-                    logger.info("⚠️ Cancel requested for %s", vid)
-        except Exception:
-            pass
+    def handle_control(data):
+        if data.get("command") != "cancel":
+            return
+        vol_id = data.get("vol_id")
+        if vol_id:
+            cancel_manager.cancel(vol_id)
+            logger.info("⚠️ Cancel requested for %s", vol_id)
 
-threading.Thread(target=control_consumer_thread, daemon=True).start()
+    run_control_consumer(
+        kafka_broker=KAFKA_BROKER,
+        topic=TOPIC_CONTROL,
+        consumer_group="ia-control-workers",
+        producer=producer,
+        dead_letter_topic=TOPIC_DEAD_LETTER,
+        handler=handle_control,
+        logger=logger,
+    )
 
 def transform_detection_coordinates(ortho_transform, transformer, gx: float, gy: float) -> tuple[float | None, float | None]:
     if not ortho_transform or transformer is None:
@@ -197,12 +217,15 @@ def translate_segment(segment: list[list[float]], offset_x: float, offset_y: flo
     ]
 
 def report_progress(vol_id: str, step: str, progress: int, status: str = "processing", log: str | None = None) -> None:
-    msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "IA"}
     if log:
-        msg["log"] = log
         print(f"[{step}] {log}")
-    producer.produce(TOPIC_STATUS, key=vol_id, value=json.dumps(msg))
-    producer.flush()
+    progress_publisher(
+        vol_id,
+        step,
+        progress,
+        status=status,
+        log=log,
+    )
 
 def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
     backend = normalize_backend_name(tile_info.get("ai_backend"))
@@ -212,121 +235,135 @@ def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
         return run_sam3_detection(tile_path, resolve_sam3_prompt(tile_info), requested_conf)
     return run_yolo_detection(tile_path, requested_classes, requested_conf, tile_info.get("ai_model_variant"))
 
-print("App 2 (IA Workers) waiting for tiles on Kafka...")
+def process_tile(tile_info):
+    vol_id = tile_info['vol_id']
+    total_tiles = int(tile_info.get('total_tiles', 0) or 0)
 
-try:
-    while True:
-        msg = consumer.poll(1.0)
-        if msg is None: continue
-        if msg.error(): continue
-            
-        # 1. Lecture de la tuile
-        tile_info = json.loads(msg.value().decode('utf-8'))
-        vol_id = tile_info['vol_id']
-        total_tiles = int(tile_info.get('total_tiles', 0) or 0)
+    tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
+    local_tile_dir = f"/tmp/ia_tiles/{vol_id}"
+    os.makedirs(local_tile_dir, exist_ok=True)
+    tile_filename = tile_s3_key.split('/')[-1] if '/' in tile_s3_key else tile_s3_key
+    tile_path = os.path.join(local_tile_dir, tile_filename)
 
-        # Download tile from S3 to a local temp path
-        tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
-        local_tile_dir = f"/tmp/ia_tiles/{vol_id}"
-        os.makedirs(local_tile_dir, exist_ok=True)
-        tile_filename = tile_s3_key.split('/')[-1] if '/' in tile_s3_key else tile_s3_key
-        tile_path = os.path.join(local_tile_dir, tile_filename)
+    offset_x = tile_info['offset_x']
+    offset_y = tile_info['offset_y']
 
-        offset_x = tile_info['offset_x']
-        offset_y = tile_info['offset_y']
+    if cancel_manager.is_cancelled(vol_id):
+        if os.path.isdir(local_tile_dir):
+            shutil.rmtree(local_tile_dir, ignore_errors=True)
+        mission_stats.pop(vol_id, None)
+        return
 
-        if cancel_manager.is_cancelled(vol_id):
-            # Clean up any downloaded tiles for this cancelled mission
-            if os.path.isdir(local_tile_dir):
-                shutil.rmtree(local_tile_dir, ignore_errors=True)
-            mission_stats.pop(vol_id, None)
-            continue
+    ortho_transform = tile_info.get('ortho_transform')
+    ortho_crs = tile_info.get('ortho_crs')
 
-        # We assume the orthomosaic transform and CRS are passed in the message to compute real-world coordinates
-        ortho_transform = tile_info.get('ortho_transform')
-        ortho_crs = tile_info.get('ortho_crs')
+    try:
+        storage.download_file(tile_s3_key, tile_path)
+    except Exception as dl_err:
+        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}")
+        raise
 
+    stats = mission_stats.setdefault(vol_id, {"processed": 0, "detections": 0, "total_tiles": total_tiles})
+    if total_tiles:
+        stats["total_tiles"] = total_tiles
+
+    detections_for_tile, attempt = run_detection(tile_path, tile_info)
+    detections = []
+
+    proj_transformer = None
+    if ortho_crs and ortho_crs != "unknown":
         try:
-            storage.download_file(tile_s3_key, tile_path)
-        except Exception as dl_err:
-            report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}")
-            continue
+            proj_transformer = Transformer.from_crs(ortho_crs, "EPSG:4326", always_xy=True)
+        except Exception as e:
+            logger.warning("Failed to create CRS transformer for %s: %s", vol_id, e)
 
-        stats = mission_stats.setdefault(vol_id, {"processed": 0, "detections": 0, "total_tiles": total_tiles})
-        if total_tiles:
-            stats["total_tiles"] = total_tiles
+    for detection in detections_for_tile:
+        gx = detection["center_x"] + offset_x
+        gy = detection["center_y"] + offset_y
 
-        detections_for_tile, attempt = run_detection(tile_path, tile_info)
-        
-        detections = []
-        
-        # Geolocation transformer setup if CRS is available
-        proj_transformer = None
-        if ortho_crs and ortho_crs != "unknown":
+        geo_lat = None
+        geo_lon = None
+        if ortho_transform and proj_transformer:
             try:
-                proj_transformer = Transformer.from_crs(ortho_crs, "EPSG:4326", always_xy=True)
-            except Exception as e:
-                logger.warning("Failed to create CRS transformer for %s: %s", vol_id, e)
+                geo_lon, geo_lat = transform_detection_coordinates(ortho_transform, proj_transformer, gx, gy)
+            except Exception as error:
+                logger.debug("Failed to geolocate detection for %s tile %s: %s", vol_id, tile_info['tile_index'], error)
 
-        for detection in detections_for_tile:
-            gx = detection["center_x"] + offset_x
-            gy = detection["center_y"] + offset_y
+        global_segment = translate_segment(detection["polygon"], offset_x, offset_y)
+        detections.append({
+            "vol_id": vol_id,
+            "global_pixel_x": float(gx),
+            "global_pixel_y": float(gy),
+            "geo_lon": geo_lon,
+            "geo_lat": geo_lat,
+            "confidence": round(float(detection["confidence"]), 2),
+            "class_id": int(detection["class_id"]),
+            "class_name": detection["class_name"],
+            "segment": global_segment,
+        })
 
-            geo_lat = None
-            geo_lon = None
-            if ortho_transform and proj_transformer:
-                try:
-                    geo_lon, geo_lat = transform_detection_coordinates(ortho_transform, proj_transformer, gx, gy)
-                except Exception as error:
-                    logger.debug("Failed to geolocate detection for %s tile %s: %s", vol_id, tile_info['tile_index'], error)
-
-            global_segment = translate_segment(detection["polygon"], offset_x, offset_y)
-
-            detections.append({
-                "vol_id": vol_id,
-                "global_pixel_x": float(gx),
-                "global_pixel_y": float(gy),
-                "geo_lon": geo_lon,
-                "geo_lat": geo_lat,
-                "confidence": round(float(detection["confidence"]), 2),
-                "class_id": int(detection["class_id"]),
-                "class_name": detection["class_name"],
-                "segment": global_segment,
-            })
-
-        stats["processed"] += 1
-        stats["detections"] += len(detections)
-        total = stats.get("total_tiles") or stats["processed"]
-        progress = min(99, int((stats["processed"] / max(total, 1)) * 100))
-        if detections:
-            report_progress(vol_id, "DETECTING", progress, log=f"Tile {tile_info['tile_index']} produced {len(detections)} detections via {attempt['label']}")
-        elif stats["processed"] == 1 or stats["processed"] % 10 == 0:
-            report_progress(vol_id, "DETECTING", progress, log=f"Processed {stats['processed']}/{total} tiles, detections={stats['detections']} ({attempt['label']})")
-        
-        # 3. Envoi des détections de la tuile à l'agrégateur (App 3)
-        tile_result = {
+    tile_result = make_event(
+        "tile_detection",
+        {
             "vol_id": vol_id,
             "tile_index": tile_info['tile_index'],
-            "detections": detections
-        }
-        producer.produce(TOPIC_OUT, key=str(vol_id), value=json.dumps(tile_result))
-        producer.flush()
+            "detections": detections,
+        },
+        event_id=deterministic_event_id(
+            "tile_detection",
+            vol_id,
+            tile_info["tile_index"],
+        ),
+        correlation_id=tile_info.get("correlation_id"),
+        causation_id=tile_info.get("event_id"),
+    )
+    publish_json(producer, TOPIC_OUT, tile_result, key=str(vol_id))
 
-        if total_tiles and stats["processed"] >= total_tiles:
-            summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
-            report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
-            mission_stats.pop(vol_id, None)
-            # Clean up local tile files for this mission
-            tile_cleanup_dir = f"/tmp/ia_tiles/{vol_id}"
-            if os.path.isdir(tile_cleanup_dir):
-                shutil.rmtree(tile_cleanup_dir, ignore_errors=True)
-            # Free VRAM after each completed mission
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+    stats["processed"] += 1
+    stats["detections"] += len(detections)
+    total = stats.get("total_tiles") or stats["processed"]
+    progress = min(99, int((stats["processed"] / max(total, 1)) * 100))
+    if detections:
+        report_progress(vol_id, "DETECTING", progress, log=f"Tile {tile_info['tile_index']} produced {len(detections)} detections via {attempt['label']}")
+    elif stats["processed"] == 1 or stats["processed"] % 10 == 0:
+        report_progress(vol_id, "DETECTING", progress, log=f"Processed {stats['processed']}/{total} tiles, detections={stats['detections']} ({attempt['label']})")
 
-except KeyboardInterrupt:
-    print("Shutdown requested by user.")
-finally:
-    consumer.close()
+    if total_tiles and stats["processed"] >= total_tiles:
+        summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
+        report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
+        mission_stats.pop(vol_id, None)
+        if os.path.isdir(local_tile_dir):
+            shutil.rmtree(local_tile_dir, ignore_errors=True)
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+
+def worker_main():
+    work_consumer = create_work_consumer()
+    threading.Thread(target=control_consumer_thread, daemon=True).start()
+    print("App 2 (IA Workers) waiting for tiles on Kafka...")
+    try:
+        while True:
+            message = work_consumer.poll(1.0)
+            if message is None or message.error():
+                continue
+            process_message(
+                consumer=work_consumer,
+                producer=producer,
+                message=message,
+                consumer_group=CONSUMER_GROUP,
+                expected_type="image_tile",
+                dead_letter_topic=TOPIC_DEAD_LETTER,
+                handler=process_tile,
+                logger=logger,
+            )
+    except KeyboardInterrupt:
+        print("Shutdown requested by user.")
+    finally:
+        work_consumer.close()
+
+
+if __name__ == "__main__":
+    worker_main()

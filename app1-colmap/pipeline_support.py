@@ -11,6 +11,7 @@ from PIL.ExifTags import GPSTAGS
 
 from shared.pipeline_params import (
     merge_mission_pipeline_params,
+    normalize_ai_backend,
     normalize_feature_type,
     normalize_matcher_type,
 )
@@ -19,13 +20,6 @@ from shared.pipeline_params import (
 logger = logging.getLogger("app1-colmap.support")
 
 COPY_MANIFEST_FILENAME = ".copy_manifest.json"
-
-
-def normalize_ai_backend(value):
-    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
-    if normalized in {"sam", "sam3", "sam-3", "meta-sam3", "meta-sam-3", "segment-anything-3"}:
-        return "sam3"
-    return "yolo"
 
 
 def is_aliked_feature_type(feature_type):

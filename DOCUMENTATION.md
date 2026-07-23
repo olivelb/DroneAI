@@ -81,10 +81,13 @@ Current files:
 
 - `shared/config.py`
 - `shared/database.py`
+- `shared/event_contracts.py`
 - `shared/geo_alignment.py`
+- `shared/kafka_reliability.py`
 - `shared/pipeline_params.py`
 - `shared/storage.py`
 - `shared/validation.py`
+- `shared/worker_messaging.py`
 
 Current responsibilities:
 
@@ -98,6 +101,10 @@ Current responsibilities:
 - expose S3-compatible storage helpers used with MinIO
 - validate mission identifiers and contained filesystem paths
 - compute and serialize the Sim3 transform between raw and aligned COLMAP models
+- validate and enrich versioned Kafka events
+- provide broker-independent retry, dead-letter, and manual-commit primitives
+- provide one shared progress publisher and control-consumer loop for workers
+- normalize the selected IA backend through one shared policy
 
 As implemented today:
 
@@ -112,6 +119,9 @@ The worker-specific `app2-ia/detection_core.py` and
 `app3-processing/processing_core.py` modules contain reusable detection,
 tiling, deduplication, rendering, and GIS-export logic. The Kafka loops and the
 infrastructure-free local runner call the same core functions.
+
+Worker modules are safe to import: their Kafka poll loops and control threads
+start only from `worker_main()` under a `__main__` guard.
 
 ## Services and responsibilities
 
@@ -139,9 +149,11 @@ Primary endpoints:
 - `GET /datasets`
 - `GET /status/summary`
 - `GET /pods`
-- `GET /system/resources`
 - `GET /mission/parameters`
-- `POST /mission/estimate`
+- `POST /mission/resume`
+- `DELETE /mission/{vol_id}`
+- `POST /datasets/upload-file`
+- `GET /preview/{s3_key}`
 - `GET /`
 - `WS /ws/status`
 
@@ -158,13 +170,27 @@ Primary responsibilities:
 - expose a summary view of known missions through `GET /status/summary`
 - expose pod health and restart information through `GET /pods`
 - fall back to a static pod list when Kubernetes service-account credentials are unavailable
-- expose host memory totals from `/proc/meminfo` through `GET /system/resources`
 - expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
-- estimate recommended maximum image size for an input directory through `POST /mission/estimate`
 
 The bounded WebSocket replay buffer remains in memory, but mission state,
 service progress, logs, original parameters, and resume metadata are persisted
 in PostgreSQL. Alembic owns the database schema.
+
+The API package is split by responsibility:
+
+| Module | Responsibility |
+|---|---|
+| `main.py` | application factory, middleware, router composition, lifespan |
+| `mission_state.py` | mission persistence, status policy, serialization, resume policy |
+| `messaging.py` | mission/control Kafka publication |
+| `realtime.py` | status consumer, bounded history, WebSocket fan-out |
+| `kubernetes_status.py` | read-only Kubernetes pod adapter |
+| `image_preview.py` | framework-independent image conversion |
+| `routers/missions.py` | mission and operational HTTP endpoints |
+| `routers/datasets.py` | S3 browsing, preview, upload, download, deletion |
+
+HTTP routes do not own Kafka polling, image conversion, Kubernetes parsing, or
+mission-state policy. `main.py` is intentionally only the composition root.
 
 ### COLMAP worker (`app1-colmap`)
 
@@ -229,6 +255,56 @@ Its runtime responsibilities are:
 - publish status and throughput updates to `pipeline-status`
 
 ## Kafka topics and event contracts
+
+### Common event envelope
+
+All newly produced events use schema version 1. Consumers still accept the
+pre-envelope payloads from older deployments and normalize them at the edge.
+Every event contains:
+
+```json
+{
+  "schema_version": 1,
+  "event_type": "image_tile",
+  "event_id": "image_tile:8c5d...",
+  "correlation_id": "mission_001",
+  "causation_id": "orthomosaic:4a71...",
+  "attempt": 0,
+  "emitted_at": "2026-07-23T12:00:00+00:00"
+}
+```
+
+`image-tiles`, `tile-detections`, and orthomosaic hand-off events use
+deterministic identifiers derived from their mission and logical item. This
+makes duplicates observable and gives a durable inbox/outbox implementation a
+stable key if one is added later.
+
+### Delivery and failure semantics
+
+The COLMAP, IA, processing, and dashboard-status consumers disable Kafka
+automatic offset commits. A message offset is committed synchronously only
+after its handler succeeds and required output publication is flushed.
+
+Handler failures use a bounded exponential retry policy:
+
+- `KAFKA_RETRY_MAX_ATTEMPTS`, default `3`
+- `KAFKA_RETRY_BASE_DELAY_SECONDS`, default `1`
+- `KAFKA_RETRY_MAX_DELAY_SECONDS`, default `30`
+
+After the last failure, the original message, source topic/partition/offset,
+consumer group, expected contract, attempt count, and sanitized error are
+published to `pipeline-dead-letter`. The poison-message offset is committed
+only after that publication is confirmed. If dead-letter delivery itself
+fails, the source offset remains uncommitted.
+
+These guarantees are **at-least-once**, not exactly-once. A crash between an
+external side effect and the Kafka commit can still replay that side effect.
+Deterministic event IDs and process-local tile deduplication reduce the impact,
+but cross-replica exactly-once processing would require a durable inbox/outbox
+and a transaction boundary shared with the database/object-store writes.
+
+The contract and retry machinery is covered with broker-free fakes, so its
+state transitions are testable without Kafka, Postgres, MinIO, or Kubernetes.
 
 ### `vols-bruts`
 
@@ -444,6 +520,11 @@ Important details:
 - `global_pixel_x` and `global_pixel_y` are already offset back into orthomosaic coordinates by app2.
 - `segment` points are also returned in global orthomosaic coordinates.
 - `geo_lat` and `geo_lon` may be present directly, but app3 can recompute them from the orthomosaic transform if needed.
+
+### `pipeline-dead-letter`
+
+Produced by any consumer whose bounded retries are exhausted. It is intended
+for diagnosis and explicit replay; no automatic DLQ replayer is provided.
 
 ## Mission workspace layout
 
@@ -1395,3 +1476,16 @@ Use this document for:
 - orthomosaic generation logic
 - processing worker behavior
 - failure handling and invariants
+
+The remaining distributed limitations are deliberate and explicit:
+
+- no durable consumer inbox or producer outbox
+- no transaction spanning Postgres, S3, and Kafka
+- processing aggregation still has in-memory state for zero-detection tiles
+- no automated dead-letter replay policy
+- no multi-replica or broker-failover integration test in CI
+
+The local orchestrator is the deterministic, infrastructure-free execution
+path. The Kafka path provides stronger failure handling than before, but must
+still be validated against real broker rebalances and service restarts before
+any production claim.
