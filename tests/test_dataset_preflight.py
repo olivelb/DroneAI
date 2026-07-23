@@ -1,0 +1,92 @@
+from pathlib import Path
+
+import pytest
+
+from tools.dataset_preflight import (
+    build_geojson,
+    build_report,
+    dms_to_decimal,
+    haversine_distance_m,
+    utm_epsg,
+)
+
+
+def _record(
+    name: str,
+    latitude: float | None,
+    longitude: float | None,
+    altitude: float | None = 100.0,
+) -> dict:
+    gps = None
+    if latitude is not None and longitude is not None:
+        gps = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude_m": altitude,
+            "horizontal_error_m": None,
+        }
+    return {
+        "file": name,
+        "size_bytes": 10,
+        "readable": True,
+        "gps": gps,
+        "error": None,
+        "width": 100,
+        "height": 80,
+        "format": "JPEG",
+        "camera_make": "DJI",
+        "camera_model": "FC3411",
+        "captured_at": "2024:10:30 15:40:17",
+        "focal_length_mm": 8.38,
+    }
+
+
+def test_dms_conversion_honors_hemisphere():
+    assert dms_to_decimal((43, 1, 30), "N") == pytest.approx(43.025)
+    assert dms_to_decimal((1, 7, 30), "W") == pytest.approx(-1.125)
+
+
+@pytest.mark.parametrize(
+    ("latitude", "longitude", "expected"),
+    [
+        (43.0, 1.0, "EPSG:32631"),
+        (-33.0, 18.0, "EPSG:32734"),
+        (0.0, 180.0, "EPSG:32660"),
+    ],
+)
+def test_utm_epsg(latitude, longitude, expected):
+    assert utm_epsg(latitude, longitude) == expected
+
+
+def test_report_summarizes_gps_coverage_and_warns_for_standard_gnss():
+    records = [
+        _record("DJI_0001.JPG", 43.0, 1.0, 100.0),
+        _record("DJI_0002.JPG", 43.0001, 1.0001, 102.0),
+        _record("DJI_0003.JPG", None, None),
+    ]
+
+    report = build_report(records, dataset=Path("/data"), gps_quality="standard")
+
+    assert report["summary"]["image_count"] == 3
+    assert report["summary"]["gps_count"] == 2
+    assert report["summary"]["gps_coverage_percent"] == pytest.approx(66.67)
+    assert report["summary"]["recommended_projected_crs"] == "EPSG:32631"
+    assert report["summary"]["camera_models"] == {"FC3411": 3}
+    assert len(report["warnings"]) == 2
+
+
+def test_geojson_contains_flight_path_and_camera_points():
+    records = [
+        _record("DJI_0001.JPG", 43.0, 1.0),
+        _record("DJI_0002.JPG", 43.0001, 1.0001),
+    ]
+
+    geojson = build_geojson(records)
+
+    assert geojson["type"] == "FeatureCollection"
+    assert geojson["features"][0]["geometry"]["type"] == "LineString"
+    assert len(geojson["features"]) == 3
+
+
+def test_haversine_distance_is_zero_for_same_position():
+    assert haversine_distance_m((43.0, 1.0), (43.0, 1.0)) == pytest.approx(0.0)

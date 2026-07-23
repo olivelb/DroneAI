@@ -66,6 +66,7 @@ Tortho_Gaussian/
 
 # === Runtime / generated data ===
 workspace/
+.local-workspaces/
 output/
 runs/
 datasets/eagle_yolo11_obb/

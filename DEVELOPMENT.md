@@ -38,6 +38,9 @@ pytest -m integration
 `tools/smoke_cupy_ortho.py` is a manual diagnostic script. It requires a CUDA
 GPU and mission-specific reconstruction artifacts and is not part of CI.
 
+The infrastructure-free dataset and sparse reconstruction workflow is
+documented in [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
+
 ## Dependency locks
 
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
