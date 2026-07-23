@@ -559,7 +559,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "--output_path", sparse_geo_path,
                     "--ref_images_path", geo_data_file,
                     "--ref_is_gps", "0",
-                    "--alignment_max_error", "0.2"
+                    "--alignment_max_error", str(params["alignment_max_error"]),
                 ], vol_id, "ALIGNING", 93, report_mission_progress, ensure_not_cancelled)
 
             if align_tf and os.path.exists(align_tf):

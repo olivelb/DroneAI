@@ -57,6 +57,14 @@ def test_pipeline_overrides_reject_unknown_and_out_of_range_values():
         validate_pipeline_overrides({"gs_iterations": 1})
 
 
+def test_pipeline_overrides_validate_non_rtk_alignment_tolerance():
+    assert validate_pipeline_overrides({"alignment_max_error": 10.0}) == {
+        "alignment_max_error": 10.0
+    }
+    with pytest.raises(ValueError, match="alignment_max_error must be >="):
+        validate_pipeline_overrides({"alignment_max_error": 0})
+
+
 def test_legacy_thread_default_is_allowed():
     assert validate_pipeline_overrides({"feature_num_threads": "-1"}) == {"feature_num_threads": "-1"}
 
