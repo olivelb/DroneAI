@@ -32,7 +32,8 @@ make test
 
 The tests include architecture checks for the API composition root, public
 route inventory, shared worker messaging, versioned event contracts, retry and
-dead-letter behavior, and local orchestrator resumability.
+dead-letter behavior, transactional inbox/outbox rollback and retry using
+SQLite, and local orchestrator resumability.
 
 GPU and external-service tests are excluded from the default test command:
 

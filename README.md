@@ -3,7 +3,8 @@
 > [!IMPORTANT]
 > DroneAI is an exploratory learning project, not a production system. The
 > distributed path now uses versioned events, manual Kafka commits, bounded
-> retries, and a dead-letter topic, but it is not an exactly-once or
+> retries, a dead-letter topic, and a transactional inbox/outbox for API
+> mission commands and status persistence. It is still not an exactly-once or
 > high-availability system.
 
 This repository contains a complete local photogrammetry and detection pipeline built from five microservices:

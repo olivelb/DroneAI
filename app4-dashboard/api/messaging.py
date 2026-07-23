@@ -30,6 +30,42 @@ def get_producer():
     return _producer
 
 
+def build_cancel_event(vol_id: str) -> dict:
+    return make_event("control", {"vol_id": vol_id, "command": "cancel"})
+
+
+def build_new_mission_event(payload: dict) -> dict:
+    vol_id = payload["vol_id"]
+    return make_event(
+        "mission",
+        payload,
+        event_id=deterministic_event_id(
+            "mission",
+            vol_id,
+            time.time_ns(),
+        ),
+        correlation_id=vol_id,
+    )
+
+
+def build_resume_event(payload: dict) -> dict:
+    vol_id = payload["vol_id"]
+    return make_event(
+        "mission",
+        payload,
+        event_id=deterministic_event_id("mission", vol_id, "resume"),
+        correlation_id=vol_id,
+    )
+
+
+def publish_outbox_event(
+    topic: str,
+    payload: dict,
+    key: str | None,
+) -> None:
+    publish_json(get_producer(), topic, payload, key=key)
+
+
 def publish_cancel(
     vol_id: str,
     *,
@@ -37,7 +73,7 @@ def publish_cancel(
 ) -> None:
     if kafka_producer is None:
         kafka_producer = get_producer()
-    event = make_event("control", {"vol_id": vol_id, "command": "cancel"})
+    event = build_cancel_event(vol_id)
     publish_json(kafka_producer, TOPIC_CONTROL, event, key=vol_id)
 
 
@@ -49,16 +85,7 @@ def publish_new_mission(
     if kafka_producer is None:
         kafka_producer = get_producer()
     vol_id = payload["vol_id"]
-    event = make_event(
-        "mission",
-        payload,
-        event_id=deterministic_event_id(
-            "mission",
-            vol_id,
-            time.time_ns(),
-        ),
-        correlation_id=vol_id,
-    )
+    event = build_new_mission_event(payload)
     publish_json(kafka_producer, TOPIC_MISSION, event, key=vol_id)
     return event
 
@@ -71,11 +98,6 @@ def publish_resume(
     if kafka_producer is None:
         kafka_producer = get_producer()
     vol_id = payload["vol_id"]
-    event = make_event(
-        "mission",
-        payload,
-        event_id=deterministic_event_id("mission", vol_id, "resume"),
-        correlation_id=vol_id,
-    )
+    event = build_resume_event(payload)
     publish_json(kafka_producer, TOPIC_MISSION, event, key=vol_id)
     return event

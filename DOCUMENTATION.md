@@ -300,11 +300,57 @@ fails, the source offset remains uncommitted.
 These guarantees are **at-least-once**, not exactly-once. A crash between an
 external side effect and the Kafka commit can still replay that side effect.
 Deterministic event IDs and process-local tile deduplication reduce the impact,
-but cross-replica exactly-once processing would require a durable inbox/outbox
-and a transaction boundary shared with the database/object-store writes.
+but cross-replica exactly-once processing for worker side effects would require
+extending the inbox/outbox boundary and coordinating database/object-store
+writes.
 
 The contract and retry machinery is covered with broker-free fakes, so its
 state transitions are testable without Kafka, Postgres, MinIO, or Kubernetes.
+
+### Transactional inbox/outbox
+
+Migration `0002_inbox_outbox.py` adds:
+
+- `inbox_events`, unique on `(consumer_group, event_id)`
+- `outbox_events`, unique on `event_id`
+
+The first integration boundary covers the dashboard control plane:
+
+- creating a mission and enqueuing its `vols-bruts` event share one database
+  transaction
+- transitioning a mission to resume and enqueuing the resume event share one
+  transaction
+- cancellation commands are durably enqueued before the API returns success
+- consuming `pipeline-status`, updating mission state, writing the mission log,
+  and completing the inbox receipt share one transaction
+
+The API lifespan runs an outbox dispatcher. It selects pending or retryable
+rows with `FOR UPDATE SKIP LOCKED`, publishes their already-versioned payload,
+and marks them published. Multiple API replicas can therefore dispatch without
+claiming the same row concurrently.
+
+Publication remains at-least-once: a process can publish successfully and die
+before committing `published`. The row will then be retried with the same
+deterministic `event_id`, and the consumer inbox suppresses the duplicate
+domain mutation.
+
+The dispatcher uses the same bounded exponential retry policy as direct Kafka
+handling. Failed rows keep the error, attempt count, and next `available_at`.
+The state machine and shared-transaction rollback are tested with SQLite and
+publisher doubles; no broker or PostgreSQL server is required for those tests.
+
+Run the schema migration before deploying this code:
+
+```bash
+alembic upgrade head
+```
+
+Current boundary: mission/control/status events use the transactional
+inbox/outbox. Heavy worker outputs that cross GPU, S3, and Kafka still use
+deterministic IDs plus manual commits. Extending the outbox to those workers
+requires deciding where their long-running external side effects end and the
+short database transaction begins; holding a database transaction throughout
+COLMAP or inference is explicitly avoided.
 
 ### `vols-bruts`
 
@@ -1479,8 +1525,8 @@ Use this document for:
 
 The remaining distributed limitations are deliberate and explicit:
 
-- no durable consumer inbox or producer outbox
-- no transaction spanning Postgres, S3, and Kafka
+- inbox/outbox currently covers the API control plane, not every worker output
+- no transaction can span Postgres, S3, GPU work, and Kafka
 - processing aggregation still has in-memory state for zero-detection tiles
 - no automated dead-letter replay policy
 - no multi-replica or broker-failover integration test in CI

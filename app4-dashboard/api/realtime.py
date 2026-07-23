@@ -16,10 +16,16 @@ from shared.config import (
     TOPIC_DEAD_LETTER,
     TOPIC_STATUS,
 )
-from shared.kafka_reliability import process_message, reliable_consumer_config
+from shared.database import get_session
+from shared.inbox_outbox import InboxResult, process_inbox_transaction
+from shared.kafka_reliability import (
+    message_location,
+    process_message,
+    reliable_consumer_config,
+)
 
 from .messaging import get_producer
-from .mission_state import update_mission_state
+from .mission_state import apply_mission_state
 
 
 class StatusHub:
@@ -66,11 +72,17 @@ def handle_status_message(
     hub: StatusHub,
     loop: asyncio.AbstractEventLoop,
 ) -> bool:
-    handled: dict[str, dict] = {}
+    handled: dict[str, Any] = {}
 
     def persist(event: dict) -> None:
-        update_mission_state(event)
         handled["event"] = event
+        handled["inbox_result"] = process_inbox_transaction(
+            get_session,
+            consumer_group="dashboard-api",
+            event=event,
+            source=message_location(message),
+            handler=apply_mission_state,
+        )
 
     succeeded = process_message(
         consumer=consumer,
@@ -83,6 +95,8 @@ def handle_status_message(
     )
     if not succeeded:
         return False
+    if handled["inbox_result"] == InboxResult.DUPLICATE:
+        return True
     payload = hub.remember(handled["event"])
     print(f"STATUS {payload}")
     future = asyncio.run_coroutine_threadsafe(
