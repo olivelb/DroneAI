@@ -1,6 +1,27 @@
 from typing import Any
 
 
+SAM3_BACKEND_ALIASES = {
+    "sam",
+    "sam3",
+    "sam-3",
+    "meta-sam3",
+    "meta-sam-3",
+    "segment-anything-3",
+}
+
+
+def normalize_ai_backend(value: str | None) -> str:
+    normalized = (
+        str(value or "yolo")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .replace(" ", "-")
+    )
+    return "sam3" if normalized in SAM3_BACKEND_ALIASES else "yolo"
+
+
 FEATURE_TYPES = ["SIFT", "ALIKED_N16ROT", "ALIKED_N32"]
 MATCHER_TYPES = ["STANDARD", "LIGHTGLUE"]
 

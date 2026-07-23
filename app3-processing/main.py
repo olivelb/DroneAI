@@ -16,7 +16,25 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from shared.config import KAFKA_BROKER, TOPIC_IMAGE_TILES, TOPIC_ORTHO, TOPIC_STATUS, TOPIC_TILE_DETECTIONS, TOPIC_CONTROL
+from shared.config import (
+    KAFKA_BROKER,
+    TOPIC_CONTROL,
+    TOPIC_DEAD_LETTER,
+    TOPIC_IMAGE_TILES,
+    TOPIC_ORTHO,
+    TOPIC_STATUS,
+    TOPIC_TILE_DETECTIONS,
+)
+from shared.event_contracts import deterministic_event_id, make_event
+from shared.kafka_reliability import (
+    process_message,
+    reliable_consumer_config,
+)
+from shared.pipeline_params import normalize_ai_backend
+from shared.worker_messaging import (
+    make_progress_publisher,
+    run_control_consumer,
+)
 from shared import storage
 from shared.database import (
     get_session,
@@ -42,15 +60,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger("app3-processing")
 
-consumer = Consumer({
-    'bootstrap.servers': KAFKA_BROKER,
-    'group.id': 'processing-group',
-    'auto.offset.reset': 'earliest',
-    'max.poll.interval.ms': 7200000 # 2 hours
-})
-consumer.subscribe([TOPIC_IN_ORTHO, TOPIC_IN_DETECTIONS])
+CONSUMER_GROUP = "processing-group"
+
+
+def create_work_consumer():
+    work_consumer = Consumer(
+        reliable_consumer_config(
+            KAFKA_BROKER,
+            CONSUMER_GROUP,
+            offset_reset="earliest",
+            **{"max.poll.interval.ms": 7200000},
+        )
+    )
+    work_consumer.subscribe([TOPIC_IN_ORTHO, TOPIC_IN_DETECTIONS])
+    return work_consumer
 
 producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+progress_publisher = make_progress_publisher(
+    producer,
+    TOPIC_STATUS,
+    service_name="TILER",
+)
 
 class CancelManager:
     def __init__(self):
@@ -72,28 +102,23 @@ class CancelManager:
 cancel_manager = CancelManager()
 
 def control_consumer_thread():
-    control_consumer = Consumer({
-        'bootstrap.servers': KAFKA_BROKER,
-        'group.id': 'processing-control-workers',
-        'auto.offset.reset': 'latest'
-    })
-    control_consumer.subscribe([TOPIC_CONTROL])
-    
-    while True:
-        msg = control_consumer.poll(1.0)
-        if msg is None or msg.error(): continue
-        try:
-            data = json.loads(msg.value().decode('utf-8'))
-            if data.get("command") == "cancel":
-                vol_id = data.get("vol_id")
-                if vol_id:
-                    cancel_manager.cancel(vol_id)
-                    logger.info("⚠️ Cancel requested for %s", vol_id)
-        except Exception:
-            pass
+    def handle_control(data):
+        if data.get("command") != "cancel":
+            return
+        vol_id = data.get("vol_id")
+        if vol_id:
+            cancel_manager.cancel(vol_id)
+            logger.info("⚠️ Cancel requested for %s", vol_id)
 
-threading.Thread(target=control_consumer_thread, daemon=True).start()
-
+    run_control_consumer(
+        kafka_broker=KAFKA_BROKER,
+        topic=TOPIC_CONTROL,
+        consumer_group="processing-control-workers",
+        producer=producer,
+        dead_letter_topic=TOPIC_DEAD_LETTER,
+        handler=handle_control,
+        logger=logger,
+    )
 
 class MissionRegistry:
     def __init__(self):
@@ -119,6 +144,9 @@ class MissionRegistry:
             mission = self._missions.get(vol_id)
             if mission is None:
                 return None, False
+            if tile_index in mission['received_tiles']:
+                total = mission.get('total_tiles')
+                return mission, total is not None and len(mission['received_tiles']) == total
             mission['detections'].extend(detections)
             mission['received_tiles'].add(tile_index)
             total = mission.get('total_tiles')
@@ -143,18 +171,13 @@ def cleanup_tiles_directory(tiles_dir):
 
 
 def report_progress(vol_id, step, progress, status="processing", log=None):
-    msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "TILER"}
-    if log:
-        msg["log"] = log
-    producer.produce(TOPIC_STATUS, key=vol_id, value=json.dumps(msg))
-    producer.flush()
-
-
-def normalize_ai_backend(value):
-    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
-    if normalized in {"sam", "sam3", "sam-3", "meta-sam3", "meta-sam-3", "segment-anything-3"}:
-        return "sam3"
-    return "yolo"
+    progress_publisher(
+        vol_id,
+        step,
+        progress,
+        status=status,
+        log=log,
+    )
 
 
 def resolve_detection_gps(det, mission):
@@ -267,7 +290,7 @@ def generate_final_ortho(vol_id, mission):
         storage.download_file(ortho_s3_key, local_ortho)
     except Exception as dl_err:
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download ortho from S3: {dl_err}")
-        return
+        raise
 
     # Get detections — prefer DB-backed, fallback to in-memory
     raw_detections = mission.get('detections', [])
@@ -372,6 +395,7 @@ def generate_final_ortho(vol_id, mission):
     except Exception as e:
         logger.exception("Failed to generate final image for %s", vol_id)
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
+        raise
     finally:
         # Always clean up temp files to avoid filling the system disk.
         import shutil
@@ -388,7 +412,7 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
         storage.download_file(ortho_s3_key, local_ortho)
     except Exception as dl_err:
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download orthomosaic from S3: {dl_err}")
-        return
+        raise
 
     tiles_dir = f"/tmp/processing/{vol_id}/tiles"
     os.makedirs(tiles_dir, exist_ok=True)
@@ -467,7 +491,9 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
                     try:
                         storage.upload_file(tile_path, tile_s3_key)
                     except Exception as upload_err:
-                        logger.warning("Failed to upload tile %s to S3: %s", tile_filename, upload_err)
+                        raise RuntimeError(
+                            f"Failed to upload tile {tile_filename}: {upload_err}"
+                        ) from upload_err
 
                     tile_msg = {
                         "vol_id": vol_id,
@@ -484,6 +510,16 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
                         "ortho_transform": transform_list,
                         "ortho_crs": crs_str
                     }
+                    tile_msg = make_event(
+                        "image_tile",
+                        tile_msg,
+                        event_id=deterministic_event_id(
+                            "image_tile",
+                            vol_id,
+                            tile_index,
+                        ),
+                        correlation_id=vol_id,
+                    )
                     producer.produce(TOPIC_OUT_TILES, key=f"{vol_id}_{tile_index}", value=json.dumps(tile_msg))
                     
                     tile_index += 1
@@ -493,7 +529,8 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
             
             # Update to exact count (may differ from estimate if loop was interrupted)
             missions.set_total_tiles(vol_id, tile_index)
-            producer.flush()
+            if producer.flush():
+                raise RuntimeError("one or more tile events were not delivered")
             report_progress(vol_id, "TILING_DONE", 100, status="success")
             print(f"📦 Orthomosaïque découpée en {tile_index} tuiles pour le vol {vol_id}.")
             
@@ -503,50 +540,46 @@ def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_
         report_progress(vol_id, "ERROR", 0, status="error", log=error_msg)
         print(f"❌ {error_msg}")
         shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
+        raise
 
-print("🎧 App 3 (Tiler/Aggregator) en attente...")
+def process_pipeline_event(data, topic):
+    if topic == TOPIC_IN_ORTHO:
+        vol_id = data['vol_id']
+        cancel_manager.clear(vol_id)
+        ortho_s3_key = data.get('ortho_s3_key') or data.get('ortho_path', '')
+        slice_orthomosaic(
+            ortho_s3_key,
+            vol_id,
+            classes=data.get('classes', ['car']),
+            ai_confidence=data.get('ai_confidence', 0.3),
+            ai_backend=normalize_ai_backend(data.get('ai_backend', 'yolo')),
+            ai_model_variant=data.get('ai_model_variant', 'yolo26l'),
+            sam_prompt=data.get('sam_prompt', 'car'),
+        )
+        return
 
-try:
-    while True:
-        msg = consumer.poll(1.0)
-        if msg is None: continue
-        if msg.error(): continue
-        
-        data = json.loads(msg.value().decode('utf-8'))
-        topic = msg.topic()
-        
-        if topic == TOPIC_IN_ORTHO:
-            vol_id = data['vol_id']
-            cancel_manager.clear(vol_id)
-            ortho_s3_key = data.get('ortho_s3_key') or data.get('ortho_path', '')
-            classes = data.get('classes', ['car'])
-            ai_confidence = data.get('ai_confidence', 0.3)
-            ai_backend = normalize_ai_backend(data.get('ai_backend', 'yolo'))
-            ai_model_variant = data.get('ai_model_variant', 'yolo26l')
-            sam_prompt = data.get('sam_prompt', 'car')
-            slice_orthomosaic(
-                ortho_s3_key,
-                vol_id,
-                classes=classes,
-                ai_confidence=ai_confidence,
-                ai_backend=ai_backend,
-                ai_model_variant=ai_model_variant,
-                sam_prompt=sam_prompt,
+    vol_id = data['vol_id']
+    if cancel_manager.is_cancelled(vol_id):
+        return
+
+    tile_detections = data.get('detections', [])
+    tile_index = data['tile_index']
+    try:
+        with get_session() as session:
+            mission_obj = get_or_create_mission(session, vol_id)
+            already_persisted = (
+                session.query(DBDetection.id)
+                .filter(
+                    DBDetection.vol_id == vol_id,
+                    DBDetection.tile_index == tile_index,
+                )
+                .first()
+                is not None
             )
-            
-        elif topic == TOPIC_IN_DETECTIONS:
-            vol_id = data['vol_id']
-            if cancel_manager.is_cancelled(vol_id):
-                continue
-
-            # Persist detections to DB
-            tile_detections = data.get('detections', [])
-            tile_index = data['tile_index']
-            try:
-                with get_session() as session:
-                    mission_obj = get_or_create_mission(session, vol_id)
-                    for det in tile_detections:
-                        db_det = DBDetection(
+            if not already_persisted:
+                for det in tile_detections:
+                    session.add(
+                        DBDetection(
                             mission_id=mission_obj.id,
                             vol_id=vol_id,
                             tile_index=tile_index,
@@ -559,21 +592,59 @@ try:
                             geo_lat=det.get('geo_lat'),
                             segment=det.get('segment'),
                         )
-                        session.add(db_det)
-                    # Update tiles_received count
-                    mission_obj.tiles_received = count_received_tiles(session, vol_id)
-            except Exception as db_err:
-                logger.warning("Failed to persist detections to DB for %s tile %s: %s", vol_id, tile_index, db_err)
+                    )
+            mission_obj.tiles_received = count_received_tiles(session, vol_id)
+    except Exception:
+        logger.exception(
+            "Failed to persist detections to DB for %s tile %s",
+            vol_id,
+            tile_index,
+        )
+        raise
 
-            # Also track in-memory for annotation generation
-            mission, is_complete = missions.record_tile_detections(vol_id, tile_index, tile_detections)
-            if mission is not None and is_complete:
-                report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
-                final_mission = missions.pop(vol_id)
-                if final_mission is not None:
-                    generate_final_ortho(vol_id, final_mission)
+    mission, is_complete = missions.record_tile_detections(
+        vol_id,
+        tile_index,
+        tile_detections,
+    )
+    if mission is not None and is_complete:
+        report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+        generate_final_ortho(vol_id, mission)
+        missions.pop(vol_id)
 
-except KeyboardInterrupt:
-    pass
-finally:
-    consumer.close()
+
+def worker_main():
+    work_consumer = create_work_consumer()
+    threading.Thread(target=control_consumer_thread, daemon=True).start()
+    print("🎧 App 3 (Tiler/Aggregator) en attente...")
+    try:
+        while True:
+            message = work_consumer.poll(1.0)
+            if message is None or message.error():
+                continue
+            topic = message.topic()
+            expected_type = (
+                "orthomosaic"
+                if topic == TOPIC_IN_ORTHO
+                else "tile_detection"
+            )
+            process_message(
+                consumer=work_consumer,
+                producer=producer,
+                message=message,
+                consumer_group=CONSUMER_GROUP,
+                expected_type=expected_type,
+                dead_letter_topic=TOPIC_DEAD_LETTER,
+                handler=lambda data, message_topic=topic: (
+                    process_pipeline_event(data, message_topic)
+                ),
+                logger=logger,
+            )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        work_consumer.close()
+
+
+if __name__ == "__main__":
+    worker_main()

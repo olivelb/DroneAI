@@ -8,6 +8,12 @@ from confluent_kafka import Consumer, Producer
 
 from shared.config import DEFAULT_WORKSPACE_DIR
 from shared import storage
+from shared.event_contracts import deterministic_event_id, make_event
+from shared.kafka_reliability import publish_json, reliable_consumer_config
+from shared.worker_messaging import (
+    make_progress_publisher,
+    run_control_consumer,
+)
 from shared.database import (
     get_session,
     get_or_create_mission,
@@ -209,12 +215,14 @@ def log_mission_start(mission_context):
 
 
 def create_consumer(kafka_broker, topic_in):
-    consumer = Consumer({
-        "bootstrap.servers": kafka_broker,
-        "group.id": "colmap-workers-v4",
-        "auto.offset.reset": "latest",
-        "max.poll.interval.ms": 86400000,
-    })
+    consumer = Consumer(
+        reliable_consumer_config(
+            kafka_broker,
+            "colmap-workers-v4",
+            offset_reset="latest",
+            **{"max.poll.interval.ms": 86400000},
+        )
+    )
     consumer.subscribe([topic_in])
     return consumer
 
@@ -231,51 +239,75 @@ def resolve_workspace_dir(workspace_value, vol_id):
 
 
 def make_progress_reporter(producer, topic_status, service_name="COLMAP"):
-    def report_progress(vol_id, step, progress, status="processing", log=None, details=None):
-        msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": service_name}
+    publish = make_progress_publisher(
+        producer,
+        topic_status,
+        service_name=service_name,
+    )
+
+    def report_progress(
+        vol_id,
+        step,
+        progress,
+        status="processing",
+        log=None,
+        details=None,
+    ):
         if log:
-            msg["log"] = log
             print(f"[{step}] {log}")
-        if details is not None:
-            msg["details"] = details
-        producer.produce(topic_status, key=vol_id, value=json.dumps(msg))
-        producer.flush()
+        publish(
+            vol_id,
+            step,
+            progress,
+            status=status,
+            log=log,
+            details=details,
+        )
 
     return report_progress
 
 
 def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, mission_params, normalize_ai_backend_fn):
-    message = {
-        "vol_id": vol_id,
-        "ortho_s3_key": ortho_s3_key,
-        "classes": mission_params.get("classes", ["car"]),
-        "ai_confidence": mission_params.get("ai_confidence", 0.3),
-        "ai_backend": normalize_ai_backend_fn(mission_params.get("ai_backend", "yolo")),
-        "ai_model_variant": mission_params.get("ai_model_variant", "yolo26l"),
-        "sam_prompt": mission_params.get("sam_prompt", "car"),
-        "tile_size": mission_params.get("tile_size", 1024),
-    }
-    producer.produce(topic_out, key=vol_id, value=json.dumps(message))
-    producer.flush()
+    message = make_event(
+        "orthomosaic",
+        {
+            "vol_id": vol_id,
+            "ortho_s3_key": ortho_s3_key,
+            "classes": mission_params.get("classes", ["car"]),
+            "ai_confidence": mission_params.get("ai_confidence", 0.3),
+            "ai_backend": normalize_ai_backend_fn(mission_params.get("ai_backend", "yolo")),
+            "ai_model_variant": mission_params.get("ai_model_variant", "yolo26l"),
+            "sam_prompt": mission_params.get("sam_prompt", "car"),
+            "tile_size": mission_params.get("tile_size", 1024),
+        },
+        event_id=deterministic_event_id("orthomosaic", vol_id),
+        correlation_id=mission_params.get("correlation_id") or vol_id,
+        causation_id=mission_params.get("event_id"),
+    )
+    publish_json(producer, topic_out, message, key=vol_id)
 
 
-def control_consumer_loop(kafka_broker, topic_control, should_cancel_fn, on_cancel_fn, logger):
-    control_consumer = Consumer({
-        "bootstrap.servers": kafka_broker,
-        "group.id": "colmap-control-workers",
-        "auto.offset.reset": "latest",
-    })
-    control_consumer.subscribe([topic_control])
+def control_consumer_loop(
+    kafka_broker,
+    topic_control,
+    should_cancel_fn,
+    on_cancel_fn,
+    logger,
+    producer,
+    dead_letter_topic,
+):
+    def handle_control(data):
+        if data.get("command") == "cancel" and should_cancel_fn(
+            data.get("vol_id")
+        ):
+            on_cancel_fn(data.get("vol_id"))
 
-    while True:
-        msg = control_consumer.poll(1.0)
-        if msg is None:
-            continue
-        if msg.error():
-            continue
-        try:
-            data = json.loads(msg.value().decode("utf-8"))
-            if data.get("command") == "cancel" and should_cancel_fn(data.get("vol_id")):
-                on_cancel_fn(data.get("vol_id"))
-        except Exception as error:
-            logger.warning("Failed to parse control message: %s", error)
+    run_control_consumer(
+        kafka_broker=kafka_broker,
+        topic=topic_control,
+        consumer_group="colmap-control-workers",
+        producer=producer,
+        dead_letter_topic=dead_letter_topic,
+        handler=handle_control,
+        logger=logger,
+    )

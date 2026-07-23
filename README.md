@@ -2,8 +2,9 @@
 
 > [!IMPORTANT]
 > DroneAI is an exploratory learning project, not a production system. The
-> current orchestration assumes one replica per worker and has not yet been
-> hardened for distributed retries, idempotency, or high availability.
+> distributed path now uses versioned events, manual Kafka commits, bounded
+> retries, and a dead-letter topic, but it is not an exactly-once or
+> high-availability system.
 
 This repository contains a complete local photogrammetry and detection pipeline built from five microservices:
 
@@ -21,6 +22,19 @@ For CPU-only tests, linting, dependency locks, and frontend checks, see
 For reconstruction, Gaussian orthophotos, and local YOLO detection without the
 distributed infrastructure, see
 [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
+
+The simplest end-to-end path uses one local, resumable orchestrator and does
+not start Kafka, Postgres, MinIO, Kubernetes, or the dashboard:
+
+```bash
+./tools/run_local_pipeline.sh /path/to/drone/photos /path/to/workspace \
+  --profile standard
+```
+
+Use `--profile smoke` for a smaller 25-image validation. The orchestrator
+validates existing outputs before skipping a stage, propagates forced rebuilds
+to dependent stages, streams one log per stage, and writes
+`pipeline_run.json` in the marked workspace.
 
 ## Showcase
 

@@ -20,6 +20,53 @@ reuse that workspace without starting any service infrastructure.
 - What are the point reprojection errors?
 - Is standard drone GNSS sufficient for approximate model alignment?
 
+## Unified local orchestrator
+
+`run_local_pipeline.sh` is the preferred entry point when the goal is to run
+the whole chain. It delegates to the existing COLMAP, Gaussian, and detection
+runners; it does not duplicate their scientific logic.
+
+```bash
+./tools/run_local_pipeline.sh \
+  "/mnt/d/GAJAN/GAJAN R2S" \
+  "$HOME/droneAI-workspaces/gajan-r2s-full" \
+  --profile standard
+```
+
+Profiles:
+
+- `smoke`: 25 contiguous images, sequential matching, Gaussian `smoke`,
+  one-tile YOLO smoke detection
+- `standard`: all readable images, spatial matching, Gaussian `low-memory`,
+  full YOLO detection
+
+Resume and control examples:
+
+```bash
+# Show what would run without changing the workspace
+./tools/run_local_pipeline.sh DATASET WORKSPACE --profile standard --dry-run
+
+# Re-run Gaussian and automatically invalidate/re-run detection
+./tools/run_local_pipeline.sh DATASET WORKSPACE \
+  --profile standard \
+  --from-stage gaussian \
+  --force-stage gaussian
+
+# Run only the final stage when its prerequisites already exist
+./tools/run_local_pipeline.sh DATASET WORKSPACE \
+  --profile standard \
+  --from-stage detection
+```
+
+Completion is based on artifact validation, not merely on the previous process
+exit code. The global `pipeline_run.json` records commands, timings, skips,
+validation evidence, errors, and stage log paths. Before COLMAP creates the
+workspace safety marker, the running manifest stays beside the workspace as a
+hidden sidecar; it is moved inside after the marker exists.
+
+Forcing an upstream stage also forces every selected downstream stage so that
+an old orthomosaic or detection output cannot be silently reused.
+
 ## Prerequisites
 
 - Docker with NVIDIA Container Toolkit for GPU execution

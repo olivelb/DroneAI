@@ -85,6 +85,7 @@ class TestWorkerSupport(unittest.TestCase):
 
     def test_publish_next_stage_message_uses_current_contract(self):
         producer = MagicMock()
+        producer.flush.return_value = 0
 
         worker_support.publish_next_stage_message(
             producer,
@@ -104,19 +105,18 @@ class TestWorkerSupport(unittest.TestCase):
         kwargs = producer.produce.call_args.kwargs
         payload = json.loads(kwargs["value"])
         self.assertEqual(kwargs["key"], "vol-3")
-        self.assertEqual(
-            payload,
-            {
-                "vol_id": "vol-3",
-                "ortho_s3_key": "missions/vol-3/orthomosaic.tif",
-                "classes": ["truck"],
-                "ai_confidence": 0.8,
-                "ai_backend": "sam3",
-                "ai_model_variant": "yolo26l",
-                "sam_prompt": "vehicle",
-                "tile_size": 2048,
-            },
-        )
+        self.assertEqual(payload["vol_id"], "vol-3")
+        self.assertEqual(payload["ortho_s3_key"], "missions/vol-3/orthomosaic.tif")
+        self.assertEqual(payload["classes"], ["truck"])
+        self.assertEqual(payload["ai_confidence"], 0.8)
+        self.assertEqual(payload["ai_backend"], "sam3")
+        self.assertEqual(payload["ai_model_variant"], "yolo26l")
+        self.assertEqual(payload["sam_prompt"], "vehicle")
+        self.assertEqual(payload["tile_size"], 2048)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["event_type"], "orthomosaic")
+        self.assertEqual(payload["correlation_id"], "vol-3")
+        self.assertTrue(payload["event_id"].startswith("orthomosaic:"))
         producer.flush.assert_called_once()
 
     def test_mission_state_tracker_loads_database_state(self):

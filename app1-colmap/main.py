@@ -44,11 +44,12 @@ from worker_support import (
     control_consumer_loop,
     create_consumer,
     create_producer,
-    decode_mission_message,
     log_mission_start,
     make_progress_reporter,
     publish_next_stage_message,
 )
+from shared.config import TOPIC_DEAD_LETTER
+from shared.kafka_reliability import process_message
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN = TOPIC_MISSION
@@ -67,7 +68,15 @@ class PipelineCancelledError(Exception):
     pass
 
 def control_consumer_thread():
-    control_consumer_loop(KAFKA_BROKER, TOPIC_CONTROL, cancellation_state.should_cancel, cancellation_state.on_cancel, logger)
+    control_consumer_loop(
+        KAFKA_BROKER,
+        TOPIC_CONTROL,
+        cancellation_state.should_cancel,
+        cancellation_state.on_cancel,
+        logger,
+        producer,
+        TOPIC_DEAD_LETTER,
+    )
 
 
 producer = create_producer(KAFKA_BROKER)
@@ -802,6 +811,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         report_mission_progress(vol_id, "CANCELLED", 0, status="error", log=f"🚫 {str(e)}")
     except Exception as e:
         report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {str(e)}")
+        raise
     finally:
         # Always clean up local workspace to avoid filling the system disk.
         if os.path.isdir(workspace_dir):
@@ -827,6 +837,61 @@ def worker_main():
 
     print("🎧 App 1 (COLMAP 4 — ALIKED/GLOMAP) ready.")
 
+    def process_mission(mission):
+        mission_context = None
+        try:
+            mission_context = build_mission_context(mission)
+            cancellation_state.start_mission(mission_context.vol_id)
+            previous_state = mission_state_tracker.start_mission(mission_context)
+
+            log_mission_start(mission_context)
+            if previous_state:
+                resume_progress = previous_state.get("progress")
+                if not isinstance(resume_progress, (int, float)):
+                    resume_progress = 0
+                resume_message = (
+                    "Resuming from saved workspace state: "
+                    f"status={previous_state.get('status', 'unknown')}, "
+                    f"step={previous_state.get('step', 'unknown')}, "
+                    f"progress={int(resume_progress)}%"
+                )
+                previous_log = previous_state.get("last_log")
+                if previous_log:
+                    resume_message += f", last_log={previous_log}"
+                print(f"↻ {resume_message}")
+                report_mission_progress(
+                    mission_context.vol_id,
+                    "RESUMING",
+                    int(resume_progress),
+                    log=resume_message,
+                    details={
+                        "event": "resume_detected",
+                        "previous_state": {
+                            "status": previous_state.get("status"),
+                            "step": previous_state.get("step"),
+                            "progress": previous_state.get("progress"),
+                            "updated_at": previous_state.get("updated_at"),
+                            "last_log": previous_state.get("last_log"),
+                        },
+                    },
+                )
+
+            if not mission_context.input_dir:
+                raise ValueError(
+                    f"No input dataset specified for mission {mission_context.vol_id}"
+                )
+
+            run_colmap_pipeline(
+                mission_context.work_dir,
+                mission_context.input_dir,
+                mission_context.vol_id,
+                mission_context.mission,
+            )
+        finally:
+            if mission_context is not None:
+                mission_state_tracker.clear_mission(mission_context.vol_id)
+            cancellation_state.clear()
+
     try:
         while True:
             msg = consumer.poll(1.0)
@@ -834,64 +899,16 @@ def worker_main():
                 continue
             if msg.error():
                 continue
-
-            mission_context = None
-            try:
-                mission_context = build_mission_context(decode_mission_message(msg.value()))
-                cancellation_state.start_mission(mission_context.vol_id)
-                previous_state = mission_state_tracker.start_mission(mission_context)
-
-                log_mission_start(mission_context)
-                if previous_state:
-                    resume_progress = previous_state.get("progress")
-                    if not isinstance(resume_progress, (int, float)):
-                        resume_progress = 0
-                    resume_message = (
-                        "Resuming from saved workspace state: "
-                        f"status={previous_state.get('status', 'unknown')}, "
-                        f"step={previous_state.get('step', 'unknown')}, "
-                        f"progress={int(resume_progress)}%"
-                    )
-                    previous_log = previous_state.get("last_log")
-                    if previous_log:
-                        resume_message += f", last_log={previous_log}"
-                    print(f"↻ {resume_message}")
-                    report_mission_progress(
-                        mission_context.vol_id,
-                        "RESUMING",
-                        int(resume_progress),
-                        log=resume_message,
-                        details={
-                            "event": "resume_detected",
-                            "previous_state": {
-                                "status": previous_state.get("status"),
-                                "step": previous_state.get("step"),
-                                "progress": previous_state.get("progress"),
-                                "updated_at": previous_state.get("updated_at"),
-                                "last_log": previous_state.get("last_log"),
-                            },
-                        },
-                    )
-
-                if not mission_context.input_dir:
-                    error_msg = f"No input dataset specified for mission {mission_context.vol_id}"
-                    print(f"❌ {error_msg}")
-                    report_mission_progress(mission_context.vol_id, "ERROR", 0, status="error", log=error_msg)
-                    continue
-
-                run_colmap_pipeline(
-                    mission_context.work_dir,
-                    mission_context.input_dir,  # S3 prefix for input dataset
-                    mission_context.vol_id,
-                    mission_context.mission,
-                )
-
-            except Exception as e:
-                print(f"Loop error: {e}")
-            finally:
-                if mission_context is not None:
-                    mission_state_tracker.clear_mission(mission_context.vol_id)
-                cancellation_state.clear()
+            process_message(
+                consumer=consumer,
+                producer=producer,
+                message=msg,
+                consumer_group="colmap-workers-v4",
+                expected_type="mission",
+                dead_letter_topic=TOPIC_DEAD_LETTER,
+                handler=process_mission,
+                logger=logger,
+            )
     except KeyboardInterrupt:
         pass
     finally:
