@@ -1,9 +1,8 @@
 "use client";
 
 import React from "react";
-import { RotateCcw, Search } from "lucide-react";
+import { Search } from "lucide-react";
 import { useStore } from "../lib/store";
-import { postPhaseRerun } from "../lib/api";
 import {
   AVAILABLE_AI_BACKENDS, AVAILABLE_YOLO_MODELS, AVAILABLE_CLASSES,
 } from "../lib/types";
@@ -11,9 +10,9 @@ import type { AIBackend, YOLOModelVariant } from "../lib/types";
 
 export default function PhaseDetection() {
   const {
-    volId, aiConfidence, setAiConfidence, aiBackend, setAiBackend,
+    aiConfidence, setAiConfidence, aiBackend, setAiBackend,
     aiModelVariant, setAiModelVariant, samPrompt, setSamPrompt,
-    selectedClasses, setSelectedClasses, setLogs, activeMission, refreshSummary,
+    selectedClasses, setSelectedClasses, activeMission,
   } = useStore();
 
   const tilerSvc = activeMission?.services?.["TILER"];
@@ -28,24 +27,6 @@ export default function PhaseDetection() {
     );
   };
 
-  const handleRerun = async () => {
-    const prompt = samPrompt.trim() || "car";
-    setLogs((p) => [...p, "[SYSTEM] Rerunning tiling + detection…"]);
-    try {
-      await postPhaseRerun(volId, "detection", {
-        ai_backend: aiBackend,
-        ai_model_variant: aiModelVariant,
-        ai_confidence: aiConfidence,
-        sam_prompt: prompt,
-        classes: aiBackend === "sam3" ? [prompt] : selectedClasses,
-      });
-      setLogs((p) => [...p, "[SYSTEM] Detection rerun requested."]);
-      void refreshSummary();
-    } catch (e) {
-      setLogs((p) => [...p, `[SYSTEM] Rerun error: ${e}`]);
-    }
-  };
-
   return (
     <div className="space-y-6">
       {/* Actions */}
@@ -53,13 +34,6 @@ export default function PhaseDetection() {
         <h2 className="mr-auto text-lg font-bold text-gray-800">
           Phase 3 — Tiling & Detection
         </h2>
-        <button
-          onClick={handleRerun}
-          disabled={!hasOrtho}
-          className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-100 disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-400"
-        >
-          <RotateCcw size={15} /> {hasOrtho ? "Rerun Detection" : "Needs Orthomosaic"}
-        </button>
       </div>
 
       {/* Availability */}

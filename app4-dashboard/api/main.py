@@ -17,12 +17,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File as
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from confluent_kafka import Producer, Consumer
-from pydantic import BaseModel, Field
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
+from .schemas import MissionParams
 from shared.config import KAFKA_BROKER, SERVICE_ORDER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_STATUS
 from shared.pipeline_params import (
     PARAMETER_METADATA,
@@ -334,27 +334,6 @@ def get_pod_states() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-
-
-class MissionParams(BaseModel):
-    vol_id: str
-    input_dataset: str  # S3 prefix, e.g. "datasets/banyuls_beach"
-    epsg: str = "EPSG:4326"
-    camera_model: str = "PINHOLE"
-    pipeline: str = "modern"
-    tile_size: int = 1024
-    ai_confidence: float = 0.5
-    ai_backend: str = "yolo"
-    ai_model_variant: str = "yolo26l"
-    sam_prompt: str = "car"
-    classes: list[str] = Field(default_factory=lambda: ["car"])
-    colmap_params: dict[str, Any] = Field(default_factory=dict)
-    work_drive: str = ""  # chosen work drive name, empty = use default
-
-
-# ---------------------------------------------------------------------------
 # WebSocket manager
 # ---------------------------------------------------------------------------
 
@@ -558,72 +537,6 @@ async def resume_mission(vol_id: str):
         "status": "success",
         "message": f"Resume command sent for {vol_id}.",
         "colmap_resume": colmap_resume,
-    }
-
-
-class PhaseRerunParams(BaseModel):
-    vol_id: str
-    phase: str  # "reconstruction" | "gaussian" | "detection"
-    pipeline: str = ""
-    colmap_params: dict[str, Any] = Field(default_factory=dict)
-    ai_backend: str = ""
-    ai_model_variant: str = ""
-    ai_confidence: float = 0
-    sam_prompt: str = ""
-    classes: list[str] = Field(default_factory=list)
-
-
-@app.post("/mission/phase")
-async def rerun_phase(params: PhaseRerunParams):
-    """Rerun a specific phase of an existing mission.
-
-    This re-sends the original mission params to Kafka with a ``start_phase``
-    field so that workers can skip to the requested phase.
-    """
-    try:
-        with get_session() as session:
-            mission = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
-            if not mission:
-                return {"status": "error", "message": f"Mission {params.vol_id} not found."}
-            if not mission.params:
-                return {"status": "error", "message": "No saved params — cannot rerun."}
-
-            payload = dict(mission.params)
-            payload["vol_id"] = params.vol_id
-            payload["start_phase"] = params.phase
-
-            # Merge any overridden parameters
-            if params.pipeline:
-                payload["pipeline"] = params.pipeline
-            if params.colmap_params:
-                existing_colmap = payload.get("colmap_params", {})
-                existing_colmap.update(params.colmap_params)
-                payload["colmap_params"] = existing_colmap
-            if params.ai_backend:
-                payload["ai_backend"] = params.ai_backend
-            if params.ai_model_variant:
-                payload["ai_model_variant"] = params.ai_model_variant
-            if params.ai_confidence > 0:
-                payload["ai_confidence"] = params.ai_confidence
-            if params.sam_prompt:
-                payload["sam_prompt"] = params.sam_prompt
-            if params.classes:
-                payload["classes"] = params.classes
-
-            # Reset mission status
-            mission.status = "processing"
-            mission.current_step = f"RERUN_{params.phase.upper()}"
-            mission.error_message = None
-            mission.updated_at = datetime.now(timezone.utc)
-
-    except Exception as exc:
-        return {"status": "error", "message": str(exc)}
-
-    producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(payload))
-    producer.flush()
-    return {
-        "status": "success",
-        "message": f"Phase '{params.phase}' rerun sent for {params.vol_id}.",
     }
 
 
@@ -908,22 +821,22 @@ async def upload_dataset_batch(
 
 @app.post("/mission")
 async def start_mission(params: MissionParams):
+    mission_payload = params.model_dump()
     try:
         with get_session() as session:
-            mission = get_or_create_mission(
+            get_or_create_mission(
                 session,
                 params.vol_id,
                 status="pending",
                 pipeline=params.pipeline,
                 input_dataset=params.input_dataset,
                 workspace_prefix=f"missions/{params.vol_id}",
-                params=params.dict(),
+                params=mission_payload,
             )
     except Exception as exc:
         print(f"Failed to create mission in DB: {exc}")
 
-    msg = params.dict()
-    producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(msg))
+    producer.produce(TOPIC_MISSION, key=params.vol_id, value=json.dumps(mission_payload))
     producer.flush()
     return {"status": "success", "vol_id": params.vol_id}
 

@@ -5,8 +5,8 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic confluent-kafka websockets \
-    boto3 sqlalchemy geoalchemy2 psycopg2-binary alembic python-multipart pillow
+COPY requirements/api.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --requirement /tmp/requirements.txt
 
 COPY shared/ /app/shared/
 # Ensure we copy the whole app4-dashboard/api to maintain import paths

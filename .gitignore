@@ -3,7 +3,6 @@
 .bashrc
 .profile
 .motd_shown
-.github/
 .kube/
 .sudo_as_admin_successful
 .gitconfig

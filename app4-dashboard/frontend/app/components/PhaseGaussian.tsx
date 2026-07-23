@@ -1,9 +1,7 @@
 "use client";
 
 import React from "react";
-import { Play, RotateCcw } from "lucide-react";
 import { useStore } from "../lib/store";
-import { postPhaseRerun } from "../lib/api";
 import { ParamField } from "./ParamField";
 import type { ParameterMeta } from "../lib/types";
 
@@ -15,24 +13,12 @@ const GAUSSIAN_PARAMS = [
 
 export default function PhaseGaussian() {
   const {
-    volId, pipeline, parameterSchema, parameterValues, updateParameter,
-    setLogs, activeMission, refreshSummary,
+    parameterSchema, parameterValues, updateParameter, activeMission,
   } = useStore();
 
   const metadata = parameterSchema?.metadata ?? {};
   const colmapSvc = activeMission?.services?.["COLMAP"];
   const hasReconData = colmapSvc && (colmapSvc.progress ?? 0) >= 70;
-
-  const handleRerun = async () => {
-    setLogs((p) => [...p, "[SYSTEM] Rerunning Gaussian training & ortho generation…"]);
-    try {
-      await postPhaseRerun(volId, "gaussian", { colmap_params: parameterValues, pipeline });
-      setLogs((p) => [...p, "[SYSTEM] Gaussian rerun requested."]);
-      void refreshSummary();
-    } catch (e) {
-      setLogs((p) => [...p, `[SYSTEM] Rerun error: ${e}`]);
-    }
-  };
 
   const trainingParams = GAUSSIAN_PARAMS.filter((k) => !k.startsWith("gs_filter_"));
   const filterParams = GAUSSIAN_PARAMS.filter((k) => k.startsWith("gs_filter_"));
@@ -44,13 +30,6 @@ export default function PhaseGaussian() {
         <h2 className="mr-auto text-lg font-bold text-gray-800">
           Phase 2 — Gaussian Training & Ortho
         </h2>
-        <button
-          onClick={handleRerun}
-          disabled={!hasReconData}
-          className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-100 disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-400"
-        >
-          <RotateCcw size={15} /> {hasReconData ? "Rerun with New Parameters" : "Needs Reconstruction Data"}
-        </button>
       </div>
 
       {/* Data availability */}

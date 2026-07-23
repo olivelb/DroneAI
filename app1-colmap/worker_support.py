@@ -13,6 +13,13 @@ from shared.database import (
     get_or_create_mission,
     Mission,
 )
+from shared.validation import (
+    configured_work_drive_names,
+    safe_child_path,
+    validate_dataset_prefix,
+    validate_mission_id,
+    validate_work_drive,
+)
 
 
 class WorkerCancellationState:
@@ -169,19 +176,25 @@ class MissionContext:
 
 
 def build_mission_context(mission):
-    vol_id = mission["vol_id"]
+    vol_id = validate_mission_id(mission["vol_id"])
     # Pick work drive from mission params or env default
     work_drive = mission.get("colmap_params", {}).get("work_drive") or mission.get("work_drive")
     if not work_drive:
         work_drive = os.getenv("WORK_DRIVE_DEFAULT", "system")
-    work_base = os.path.join("/work", work_drive)
-    if not os.path.isdir(work_base):
+    work_drive = validate_work_drive(work_drive, configured_names=configured_work_drive_names())
+    work_base = safe_child_path("/work", work_drive, field_name="work_drive")
+    if not work_base.is_dir():
         print(f"⚠️ Work drive '{work_drive}' not mounted at {work_base}, falling back to /work/system")
-        work_base = "/work/system"
-    work_dir = os.path.join(work_base, vol_id)
+        work_base = safe_child_path("/work", "system", field_name="work_drive")
+    work_dir = safe_child_path(work_base, vol_id, field_name="vol_id")
     # Input: S3 prefix for the dataset (downloaded at runtime)
-    input_dataset = mission.get("input_dataset", "")
-    return MissionContext(mission=mission, vol_id=vol_id, input_dir=input_dataset, work_dir=work_dir)
+    input_dataset = validate_dataset_prefix(mission.get("input_dataset", ""))
+    return MissionContext(
+        mission=mission,
+        vol_id=vol_id,
+        input_dir=input_dataset,
+        work_dir=str(work_dir),
+    )
 
 
 def decode_mission_message(message_value):
@@ -240,6 +253,7 @@ def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, missio
         "ai_backend": normalize_ai_backend_fn(mission_params.get("ai_backend", "yolo")),
         "ai_model_variant": mission_params.get("ai_model_variant", "yolo26l"),
         "sam_prompt": mission_params.get("sam_prompt", "car"),
+        "tile_size": mission_params.get("tile_size", 1024),
     }
     producer.produce(topic_out, key=vol_id, value=json.dumps(message))
     producer.flush()

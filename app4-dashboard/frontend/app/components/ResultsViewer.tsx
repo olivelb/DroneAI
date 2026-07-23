@@ -37,14 +37,6 @@ function ImageViewer({ src, alt, depthMode }: { src: string; alt: string; depthM
     setBaseScale(scale);
   }, []);
 
-  useEffect(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-    setLoaded(false);
-    setError(false);
-    setBaseScale(1);
-  }, [src]);
-
   // Recompute fit on load and on resize
   useEffect(() => {
     if (!loaded) return;
@@ -153,58 +145,52 @@ export default function ResultsViewer() {
     [missions],
   );
 
-  // Auto-select the most recent mission when the list arrives and nothing is picked yet
-  useEffect(() => {
-    if (!selectedVol && !activeMission && sortedMissions.length > 0) {
-      setSelectedVol(sortedMissions[0].vol_id);
-    }
-  }, [selectedVol, activeMission, sortedMissions]);
-
   const mission = selectedVol ? missions[selectedVol] : activeMission;
   const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
 
   // Fetch available files for the selected mission (top-level + key subdirs)
-  const refreshFiles = useCallback(async (volId: string) => {
-    try {
-      const prefix = `missions/${volId}/`;
-      const [top, sparse, gaussian] = await Promise.all([
-        fetchBrowse(prefix).catch(() => []),
-        fetchBrowse(`${prefix}sparse/0/`).catch(() => []),
-        fetchBrowse(`${prefix}gaussian/`).catch(() => []),
-      ]);
-      const all = [...(top as Record<string, string>[]), ...(sparse as Record<string, string>[]), ...(gaussian as Record<string, string>[])];
-      const paths = all.map((d) => d.path ?? d.name ?? "");
-      setAvailableFiles(paths);
-    } catch { setAvailableFiles([]); }
-  }, []);
-
   useEffect(() => {
-    if (missionId) refreshFiles(missionId);
-  }, [missionId, refreshFiles]);
+    if (!missionId) return;
+    let cancelled = false;
+
+    const loadFiles = async () => {
+      try {
+        const prefix = `missions/${missionId}/`;
+        const [top, sparse, gaussian] = await Promise.all([
+          fetchBrowse(prefix).catch(() => []),
+          fetchBrowse(`${prefix}colmap/sparse/0/`).catch(() => []),
+          fetchBrowse(`${prefix}gaussian/`).catch(() => []),
+        ]);
+        const all = [...(top as Record<string, string>[]), ...(sparse as Record<string, string>[]), ...(gaussian as Record<string, string>[])];
+        const paths = all.map((d) => d.path ?? d.name ?? "");
+        if (!cancelled) setAvailableFiles(paths);
+      } catch {
+        if (!cancelled) setAvailableFiles([]);
+      }
+    };
+
+    void loadFiles();
+    return () => { cancelled = true; };
+  }, [missionId]);
 
   const hasFile = useCallback(
     (suffix: string) => availableFiles.some((f) => f.endsWith(suffix)),
     [availableFiles],
   );
 
+  const effectiveLayer = useMemo<ViewerLayer>(() => {
+    if (hasFile(LAYER_META[activeLayer].s3Suffix)) return activeLayer;
+    return (Object.entries(LAYER_META) as [ViewerLayer, { s3Suffix: string }][])
+      .find(([, meta]) => hasFile(meta.s3Suffix))?.[0] ?? activeLayer;
+  }, [activeLayer, hasFile]);
+
   // Use the preview endpoint (TIF→PNG) instead of the raw file
   const imageUrl = useMemo(() => {
     if (!missionId) return null;
-    const suffix = LAYER_META[activeLayer].s3Suffix;
-    const cmap = activeLayer === "depth" ? "depth" : "";
+    const suffix = LAYER_META[effectiveLayer].s3Suffix;
+    const cmap = effectiveLayer === "depth" ? "depth" : "";
     return getPreviewUrl(`missions/${missionId}/${suffix}`, 4096, cmap);
-  }, [missionId, activeLayer]);
-
-  // Auto-switch to an available layer
-  useEffect(() => {
-    if (!missionId) return;
-    const current = LAYER_META[activeLayer].s3Suffix;
-    if (!hasFile(current)) {
-      const fallback = (Object.entries(LAYER_META) as [ViewerLayer, { s3Suffix: string }][])
-        .find(([, meta]) => hasFile(meta.s3Suffix));
-      if (fallback) setActiveLayer(fallback[0]);
-    }
-  }, [availableFiles, activeLayer, missionId, hasFile]);
+  }, [missionId, effectiveLayer]);
 
   // Detect point cloud files
   const hasPointCloud = hasFile("points3D.bin") || hasFile("points3D.ply");
@@ -258,7 +244,7 @@ export default function ResultsViewer() {
                   className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
                     !available
                       ? "border-gray-50 text-gray-300 cursor-not-allowed"
-                      : activeLayer === key
+                      : effectiveLayer === key
                         ? "border-blue-400 bg-blue-50 text-blue-700"
                         : "border-gray-100 text-gray-600 hover:border-gray-200"
                   }`}
@@ -303,7 +289,7 @@ export default function ResultsViewer() {
             )}
             {hasPointCloud && (
               <a
-                href={getFileUrl(`missions/${missionId}/${hasFile("points3D.ply") ? "sparse/0/points3D.ply" : "sparse/0/points3D.bin"}`)}
+                href={getFileUrl(`missions/${missionId}/colmap/sparse/0/${hasFile("points3D.ply") ? "points3D.ply" : "points3D.bin"}`)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-600"
@@ -326,9 +312,10 @@ export default function ResultsViewer() {
       {/* Main viewer */}
       <div className="flex-1 rounded-2xl border border-gray-100 bg-gray-900 shadow-sm overflow-hidden">
         <ImageViewer
+          key={imageUrl}
           src={imageUrl!}
-          alt={LAYER_META[activeLayer].label}
-          depthMode={activeLayer === "depth"}
+          alt={LAYER_META[effectiveLayer].label}
+          depthMode={effectiveLayer === "depth"}
         />
       </div>
     </div>

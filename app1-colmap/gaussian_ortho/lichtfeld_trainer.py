@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import signal
+import struct
 import subprocess
 import sys
 import time

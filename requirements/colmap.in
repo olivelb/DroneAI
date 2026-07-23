@@ -1,0 +1,14 @@
+alembic
+boto3
+confluent-kafka
+cupy-cuda12x
+geoalchemy2
+numpy
+pillow
+plyfile
+psycopg2-binary
+pycolmap==4.0.1
+pyproj
+rasterio
+scipy
+sqlalchemy

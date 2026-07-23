@@ -1,0 +1,12 @@
+alembic
+boto3
+confluent-kafka
+fastapi
+geoalchemy2
+pillow
+psycopg2-binary
+pydantic
+python-multipart
+sqlalchemy
+uvicorn[standard]
+websockets

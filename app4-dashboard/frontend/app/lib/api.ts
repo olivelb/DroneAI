@@ -11,7 +11,14 @@ export const getWsBaseUrl = () => {
 
 const api = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
   const res = await fetch(`${getApiBaseUrl()}${path}`, { cache: "no-store", ...init });
-  return res.json() as Promise<T>;
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = payload && typeof payload === "object" && "detail" in payload
+      ? String(payload.detail)
+      : `HTTP ${res.status}`;
+    throw new Error(detail);
+  }
+  return payload as T;
 };
 
 export const fetchSummary = () => api<{ missions?: Array<Record<string, unknown>>; active_vol_id?: string }>("/status/summary");
@@ -33,13 +40,6 @@ export const deleteDataset = (name: string) =>
 
 export const postResume = (volId: string) =>
   api(`/mission/resume?vol_id=${encodeURIComponent(volId)}`, { method: "POST" });
-
-export const postPhaseRerun = (volId: string, phase: string, params: Record<string, unknown>) =>
-  api("/mission/phase", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ vol_id: volId, phase, ...params }),
-  });
 
 export const uploadDataset = async (
   datasetName: string,
@@ -76,9 +76,11 @@ export const uploadDataset = async (
   return { total, completed, failed, status: failed === 0 ? "done" : "partial", files: results };
 };
 
-export const getFileUrl = (s3Key: string) => `${getApiBaseUrl()}/files/${s3Key}`;
+const encodeS3Key = (s3Key: string) => s3Key.split("/").map(encodeURIComponent).join("/");
+
+export const getFileUrl = (s3Key: string) => `${getApiBaseUrl()}/files/${encodeS3Key(s3Key)}`;
 export const getPreviewUrl = (s3Key: string, maxSize = 4096, colormap = "") => {
   const params = new URLSearchParams({ max_size: String(maxSize) });
   if (colormap) params.set("colormap", colormap);
-  return `${getApiBaseUrl()}/preview/${s3Key}?${params.toString()}`;
+  return `${getApiBaseUrl()}/preview/${encodeS3Key(s3Key)}?${params.toString()}`;
 };

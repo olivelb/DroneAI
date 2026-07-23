@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState } from "react";
-import { Activity, CheckCircle, AlertCircle, Cpu, Terminal, Trash2 } from "lucide-react";
+import { Activity, Cpu, Terminal, Trash2 } from "lucide-react";
 import { useStore } from "../lib/store";
 import { deleteMission } from "../lib/api";
 import type { ServiceName, PodState, StatusPayload } from "../lib/types";

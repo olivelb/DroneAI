@@ -1,0 +1,30 @@
+[project]
+name = "droneai"
+version = "0.1.0"
+description = "Exploratory aerial imagery processing pipeline"
+requires-python = ">=3.11,<3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["app1-colmap", "tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "gpu: requires CUDA and a compatible CuPy installation",
+    "integration: requires external services such as Kafka, S3, or Postgres",
+    "slow: long-running test",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [
+    "app1-colmap/patches",
+    "app1-colmap/ceres-solver",
+    "app1-colmap/colmap-local",
+]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff.lint.per-file-ignores]
+"app1-colmap/test_*.py" = ["E402"]
+"app1-colmap/gaussian_ortho/tests/*.py" = ["E402"]
