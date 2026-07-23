@@ -9,9 +9,11 @@ import os
 import sys
 import tempfile
 
-import cupy as cp
 import numpy as np
 import pytest
+
+cp = pytest.importorskip("cupy")
+pytestmark = pytest.mark.gpu
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -267,4 +269,3 @@ class TestGeoWriter:
                           height_map=height, height_output_path=h_path)
             assert os.path.exists(rgb_path)
             assert os.path.exists(h_path)
-"""

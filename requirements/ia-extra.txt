@@ -1,0 +1,16 @@
+# Direct dependencies installed on top of the pinned Ultralytics base image.
+#
+# Do not add torch, CUDA, or NVIDIA wheels here: those are supplied by the
+# base image and must stay compatible with its Ultralytics installation.
+accelerate==1.14.0
+boto3==1.43.54
+confluent-kafka==2.15.0
+geoalchemy2==0.20.0
+huggingface-hub==1.24.0
+psycopg2-binary==2.9.12
+pyproj==3.7.2
+rasterio==1.4.4
+safetensors==0.8.0
+sentencepiece==0.2.2
+sqlalchemy==2.0.51
+transformers==5.14.1

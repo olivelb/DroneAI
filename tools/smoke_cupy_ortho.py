@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """
-Test the CuPy ortho rendering pipeline using an existing final.ply.
+Manually test the CuPy ortho rendering pipeline using an existing final.ply.
 Skips training entirely — just loads the PLY, applies geo-alignment,
 filters, renders, and writes GeoTIFF.
 
 Usage (inside the pod):
   python3 /app/test_cupy_ortho.py
+
+This file is intentionally outside the automated pytest suite because it
+requires a CUDA GPU and mission-specific reconstruction artifacts.
 """
 import gc
 import os

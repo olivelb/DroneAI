@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { ChevronRight, File, Folder, Home, Trash2, Upload } from "lucide-react";
 import { useStore } from "../lib/store";
-import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi, getApiBaseUrl } from "../lib/api";
+import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi } from "../lib/api";
 
 export default function PhaseSetup() {
   const {
@@ -240,7 +240,7 @@ export default function PhaseSetup() {
         {/* Existing missions */}
         <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
           <h3 className="text-sm font-bold text-gray-700">Previous Missions</h3>
-          <p className="mt-1 text-xs text-gray-400">Select an existing mission to view or rerun phases</p>
+          <p className="mt-1 text-xs text-gray-400">Select an existing mission to inspect its phases and results</p>
           <div className="mt-3 max-h-[250px] space-y-1.5 overflow-y-auto">
             {Object.values(missions).sort((a, b) => b.updated_at - a.updated_at).map((m) => (
               <button

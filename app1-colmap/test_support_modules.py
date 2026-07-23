@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 
@@ -30,10 +31,16 @@ if "rasterio.transform" not in sys.modules:
     rasterio_transform_module.from_origin = MagicMock()
     sys.modules["rasterio.transform"] = rasterio_transform_module
 
-import runtime_support
+import main as app1_main
 import pipeline_support
 import worker_support
-import main as app1_main
+
+
+def session_context(session):
+    context = MagicMock()
+    context.__enter__.return_value = session
+    context.__exit__.return_value = False
+    return context
 
 
 class TestWorkerSupport(unittest.TestCase):
@@ -52,131 +59,113 @@ class TestWorkerSupport(unittest.TestCase):
         state.ensure_not_cancelled()
         self.assertFalse(state.should_cancel("vol-1"))
 
-    def test_build_mission_context_normalizes_host_paths(self):
-        mission_context = worker_support.build_mission_context(
-            {
-                "vol_id": "vol-7",
-                "workspace_dir": "/tmp/workspaces",
-                "input_dir": "data/input",
-                "pipeline": "modern",
-            }
-        )
+    def test_build_mission_context_uses_s3_input_and_contained_work_path(self):
+        drives = '[{"name":"system"},{"name":"drive-i"}]'
+        with patch.dict(
+            os.environ,
+            {"WORK_DRIVES": drives, "WORK_DRIVE_DEFAULT": "system"},
+            clear=False,
+        ):
+            with patch("pathlib.Path.is_dir", return_value=True):
+                mission_context = worker_support.build_mission_context(
+                    {
+                        "vol_id": "vol-007",
+                        "input_dataset": "datasets/banyuls",
+                        "pipeline": "modern",
+                        "work_drive": "drive-i",
+                    }
+                )
 
-        self.assertEqual(mission_context.vol_id, "vol-7")
-        self.assertEqual(mission_context.input_dir, "/host/data/input")
-        self.assertEqual(mission_context.work_dir, "/host/tmp/workspaces/vol-7")
+        self.assertEqual(mission_context.vol_id, "vol-007")
+        self.assertEqual(mission_context.input_dir, "datasets/banyuls")
+        self.assertEqual(mission_context.work_dir, "/work/drive-i/vol-007")
 
-    def test_publish_next_stage_message_uses_normalized_backend(self):
+    def test_publish_next_stage_message_uses_current_contract(self):
         producer = MagicMock()
 
         worker_support.publish_next_stage_message(
             producer,
             "topic-out",
             "vol-3",
-            "/tmp/orthomosaic.tif",
-            {"ai_backend": "sam-3", "classes": ["truck"], "ai_confidence": 0.8, "sam_prompt": "vehicle"},
+            "missions/vol-3/orthomosaic.tif",
+            {
+                "ai_backend": "sam-3",
+                "classes": ["truck"],
+                "ai_confidence": 0.8,
+                "sam_prompt": "vehicle",
+                "tile_size": 2048,
+            },
             lambda value: "sam3" if value == "sam-3" else value,
         )
 
         kwargs = producer.produce.call_args.kwargs
+        payload = json.loads(kwargs["value"])
         self.assertEqual(kwargs["key"], "vol-3")
-        self.assertEqual(kwargs["value"], '{"vol_id": "vol-3", "ortho_path": "/tmp/orthomosaic.tif", "classes": ["truck"], "ai_confidence": 0.8, "ai_backend": "sam3", "sam_prompt": "vehicle"}')
+        self.assertEqual(
+            payload,
+            {
+                "vol_id": "vol-3",
+                "ortho_s3_key": "missions/vol-3/orthomosaic.tif",
+                "classes": ["truck"],
+                "ai_confidence": 0.8,
+                "ai_backend": "sam3",
+                "ai_model_variant": "yolo26l",
+                "sam_prompt": "vehicle",
+                "tile_size": 2048,
+            },
+        )
         producer.flush.assert_called_once()
 
-    def test_mission_state_tracker_writes_state_and_history(self):
+    def test_mission_state_tracker_loads_database_state(self):
+        mission = MagicMock(
+            vol_id="vol-11",
+            status="processing",
+            current_step="MATCHING",
+            progress=30,
+            updated_at=datetime(2026, 3, 26, tzinfo=timezone.utc),
+            error_message=None,
+            params={"pipeline": "modern"},
+            resume_info={"copy_progress": {"processed": 10}},
+        )
+        session = MagicMock()
+        session.query.return_value.filter.return_value.first.return_value = mission
+
+        with patch.object(worker_support, "get_session", return_value=session_context(session)):
+            state = worker_support.MissionStateTracker().load_state("vol-11")
+
+        self.assertEqual(state["vol_id"], "vol-11")
+        self.assertEqual(state["step"], "MATCHING")
+        self.assertEqual(state["resume_info"]["copy_progress"]["processed"], 10)
+
+    def test_mission_state_tracker_preserves_resume_metadata(self):
+        previous_state = {
+            "status": "processing",
+            "step": "FUSION",
+            "progress": 90,
+            "updated_at": "2026-03-26T00:00:00+00:00",
+            "last_log": "Fusion interrupted",
+        }
+        mission = MagicMock(resume_info={})
         tracker = worker_support.MissionStateTracker()
+        mission_context = worker_support.MissionContext(
+            mission={
+                "pipeline": "modern",
+                "input_dataset": "datasets/banyuls",
+            },
+            vol_id="vol-012",
+            input_dir="datasets/banyuls",
+            work_dir="/work/system/vol-012",
+        )
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            mission_context = worker_support.MissionContext(
-                mission={"pipeline": "modern"},
-                vol_id="vol-11",
-                input_dir="/host/data/in",
-                work_dir=tmp_dir,
-            )
+        with patch.object(tracker, "load_state", return_value=previous_state):
+            with patch.object(worker_support, "get_session", return_value=session_context(MagicMock())):
+                with patch.object(worker_support, "get_or_create_mission", return_value=mission):
+                    result = tracker.start_mission(mission_context)
 
-            tracker.start_mission(mission_context)
-            tracker.record_progress(
-                "vol-11",
-                "COPYING_IMAGES",
-                5,
-                log="Processed 10/20 images",
-                details={
-                    "event": "copy_progress",
-                    "processed": 10,
-                    "total": 20,
-                    "copied": 8,
-                    "skipped": 2,
-                },
-            )
-            tracker.record_progress(
-                "vol-11",
-                "MATCHING",
-                30,
-                log="Executing matcher",
-                details={"event": "command_started", "command": ["colmap", "spatial_matcher"]},
-            )
-            tracker.record_progress(
-                "vol-11",
-                "DONE",
-                100,
-                status="success",
-                log="Pipeline complete!",
-                details={"event": "command_finished", "command": ["colmap", "spatial_matcher"], "return_code": 0},
-            )
-
-            with open(os.path.join(tmp_dir, "mission_state.json"), "r", encoding="utf-8") as handle:
-                state = json.load(handle)
-
-            self.assertEqual(state["vol_id"], "vol-11")
-            self.assertEqual(state["step"], "DONE")
-            self.assertEqual(state["status"], "success")
-            self.assertEqual(state["copy_progress"]["processed"], 10)
-            self.assertIsNone(state["current_command"])
-            self.assertEqual(state["last_command"]["event"], "command_finished")
-
-            with open(os.path.join(tmp_dir, "mission_state_history.jsonl"), "r", encoding="utf-8") as handle:
-                events = [json.loads(line) for line in handle if line.strip()]
-
-            self.assertEqual(events[0]["event"], "mission_started")
-            self.assertEqual(events[-1]["status"], "success")
-
-    def test_mission_state_tracker_preserves_previous_state_for_resume(self):
-        tracker = worker_support.MissionStateTracker()
-
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            with open(os.path.join(tmp_dir, "mission_state.json"), "w", encoding="utf-8") as handle:
-                json.dump(
-                    {
-                        "vol_id": "vol-12",
-                        "status": "processing",
-                        "step": "FUSION",
-                        "progress": 90,
-                        "updated_at": "2026-03-26T00:00:00+00:00",
-                        "last_log": "Fusion chunk 2/3 still pending",
-                    },
-                    handle,
-                )
-
-            mission_context = worker_support.MissionContext(
-                mission={"pipeline": "modern"},
-                vol_id="vol-12",
-                input_dir="/host/data/in",
-                work_dir=tmp_dir,
-            )
-
-            previous_state = tracker.start_mission(mission_context)
-
-            self.assertEqual(previous_state["step"], "FUSION")
-
-            with open(os.path.join(tmp_dir, "mission_state.json"), "r", encoding="utf-8") as handle:
-                state = json.load(handle)
-
-            self.assertEqual(state["resume_info"]["resumed_from"]["step"], "FUSION")
-            self.assertEqual(state["resume_info"]["resumed_from"]["progress"], 90)
-
-
-class TestRuntimeSupport(unittest.TestCase):
-    pass
+        self.assertEqual(result, previous_state)
+        self.assertEqual(mission.status, "processing")
+        self.assertEqual(mission.current_step, "STARTING")
+        self.assertEqual(mission.resume_info["resumed_from"]["step"], "FUSION")
 
 
 class TestPipelineSupport(unittest.TestCase):

@@ -1,11 +1,11 @@
 "use client";
 
 import React from "react";
-import { Play, RotateCcw, Square, HardDrive } from "lucide-react";
+import { Play, Square, HardDrive } from "lucide-react";
 import { useStore } from "../lib/store";
-import { postMission, postCancel, postPhaseRerun } from "../lib/api";
+import { postMission, postCancel } from "../lib/api";
 import { ParamField } from "./ParamField";
-import type { ParameterMeta, ParamValue } from "../lib/types";
+import type { ParameterMeta } from "../lib/types";
 
 const RECONSTRUCTION_PARAMS = [
   "feature_type", "feature_max_image_size", "feature_num_threads", "feature_max_num_features",
@@ -19,7 +19,7 @@ export default function PhaseReconstruction() {
     volId, selectedPath, pipeline, setPipeline, parameterSchema,
     parameterValues, updateParameter, setLogs, activeMission,
     setActiveMissionId, aiConfidence, aiBackend, aiModelVariant,
-    samPrompt, selectedClasses, refreshSummary, workDrive, setWorkDrive,
+    samPrompt, selectedClasses, workDrive, setWorkDrive,
   } = useStore();
 
   const metadata = parameterSchema?.metadata ?? {};
@@ -27,16 +27,12 @@ export default function PhaseReconstruction() {
   const colmapSvc = activeMission?.services?.["COLMAP"];
   const isRunning = activeMission?.overall_status === "processing";
 
-  const canRerun = activeMission && (activeMission.overall_status === "success" || activeMission.overall_status === "error");
-
   const handleRun = async () => {
     setLogs(["[SYSTEM] Starting full pipeline…"]);
     setActiveMissionId(volId);
     const params = {
       vol_id: volId,
       input_dataset: selectedPath,
-      epsg: "EPSG:4326",
-      camera_model: "PINHOLE",
       pipeline,
       tile_size: 1024,
       ai_confidence: aiConfidence,
@@ -52,17 +48,6 @@ export default function PhaseReconstruction() {
       setLogs((p) => [...p, `[SYSTEM] Mission ${volId} started.`]);
     } catch (e) {
       setLogs((p) => [...p, `[SYSTEM] Error: ${e}`]);
-    }
-  };
-
-  const handleRerun = async () => {
-    setLogs((p) => [...p, "[SYSTEM] Rerunning reconstruction phase…"]);
-    try {
-      await postPhaseRerun(volId, "reconstruction", { colmap_params: parameterValues, pipeline });
-      setLogs((p) => [...p, "[SYSTEM] Reconstruction rerun requested."]);
-      void refreshSummary();
-    } catch (e) {
-      setLogs((p) => [...p, `[SYSTEM] Rerun error: ${e}`]);
     }
   };
 
@@ -94,14 +79,6 @@ export default function PhaseReconstruction() {
             className="flex items-center gap-2 rounded-xl bg-blue-500 px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-600 disabled:bg-gray-200 disabled:text-gray-400"
           >
             <Play size={15} /> Run Full Pipeline
-          </button>
-        )}
-        {canRerun && (
-          <button
-            onClick={handleRerun}
-            className="flex items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-5 py-2.5 text-sm font-semibold text-blue-600 hover:bg-blue-100"
-          >
-            <RotateCcw size={15} /> Rerun Reconstruction
           </button>
         )}
         {isRunning && (

@@ -1,5 +1,10 @@
 # DroneAI Pipeline
 
+> [!IMPORTANT]
+> DroneAI is an exploratory learning project, not a production system. The
+> current orchestration assumes one replica per worker and has not yet been
+> hardened for distributed retries, idempotency, or high availability.
+
 This repository contains a complete local photogrammetry and detection pipeline built from five microservices:
 
 1. `app1-colmap`: COLMAP reconstruction and orthomosaic generation
@@ -11,6 +16,8 @@ This repository contains a complete local photogrammetry and detection pipeline 
 The stack runs locally on Kubernetes via K3s. Kafka is deployed inside the cluster from `kafka-local.yaml`; you do not install Kafka separately on the host.
 
 For runtime architecture, Kafka contracts, orthomosaic construction details, and processing-worker behavior, see `DOCUMENTATION.md`.
+For CPU-only tests, linting, dependency locks, and frontend checks, see
+[`DEVELOPMENT.md`](DEVELOPMENT.md).
 
 ## Showcase
 

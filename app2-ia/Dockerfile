@@ -14,10 +14,9 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+COPY requirements/ia-extra.txt /tmp/requirements.txt
 RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir rasterio pyproj confluent-kafka \
-        transformers accelerate huggingface_hub safetensors sentencepiece \
-        boto3 sqlalchemy geoalchemy2 psycopg2-binary
+    && python3 -m pip install --no-cache-dir --requirement /tmp/requirements.txt
 
 RUN mkdir -p /opt/modelzoo \
     && python3 - <<'PY'

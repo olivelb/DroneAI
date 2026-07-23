@@ -4,7 +4,7 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY app4-dashboard/frontend/package*.json ./
-RUN npm install
+RUN npm ci
 
 COPY app4-dashboard/frontend/ ./
 RUN npm run build

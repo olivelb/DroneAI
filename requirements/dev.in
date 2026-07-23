@@ -1,0 +1,7 @@
+-r api.in
+
+numpy
+pip-tools
+pyproj
+pytest
+ruff

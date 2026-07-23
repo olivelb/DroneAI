@@ -1,9 +1,9 @@
 "use client";
 
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useId, useRef, useState } from "react";
 import type {
   AIBackend, DatasetItem, MissionLog, MissionSummary, ParameterConfigResponse,
-  ParamValue, PipelineName, PodState, ServiceName, StatusPayload, YOLOModelVariant,
+  ParamValue, PipelineName, PodState, StatusPayload, YOLOModelVariant,
   PhaseId,
 } from "./types";
 import { SERVICE_ORDER } from "./types";
@@ -95,10 +95,11 @@ const autoSelectMission = (
 };
 
 export function StoreProvider({ children }: { children: React.ReactNode }) {
+  const generatedMissionId = useId().replace(/[^A-Za-z0-9]/g, "") || "new";
   const [currentPath, setCurrentPath] = useState(DEFAULT_BROWSER_PATH);
   const [items, setItems] = useState<DatasetItem[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
-  const [volId, setVolId] = useState(`vol_${Math.floor(Math.random() * 1000)}`);
+  const [volId, setVolId] = useState(`mission-${generatedMissionId}`);
   const [missions, setMissions] = useState<Record<string, MissionSummary>>({});
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
@@ -191,13 +192,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   // Init
   useEffect(() => {
-    void browse(DEFAULT_BROWSER_PATH);
-    void loadParameters();
-    void refreshSummary();
-    void refreshPodsData();
+    const initialLoad = window.setTimeout(() => {
+      void browse(DEFAULT_BROWSER_PATH);
+      void loadParameters();
+      void refreshSummary();
+      void refreshPodsData();
+    }, 0);
     const si = setInterval(() => void refreshSummary(), 5000);
     const pi = setInterval(() => void refreshPodsData(), 10000);
-    return () => { clearInterval(si); clearInterval(pi); };
+    return () => {
+      window.clearTimeout(initialLoad);
+      clearInterval(si);
+      clearInterval(pi);
+    };
   }, [browse, loadParameters, refreshSummary, refreshPodsData]);
 
   useEffect(() => { activeVolIdRef.current = activeMissionId; }, [activeMissionId]);

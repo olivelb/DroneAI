@@ -1,0 +1,7 @@
+boto3
+confluent-kafka
+geoalchemy2
+opencv-python-headless
+psycopg2-binary
+rasterio
+sqlalchemy
