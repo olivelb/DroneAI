@@ -15,18 +15,21 @@ if APP_DIR not in sys.path:
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-if "confluent_kafka" not in sys.modules:
+try:
+    import confluent_kafka  # noqa: F401
+except ImportError:
     kafka_module = types.ModuleType("confluent_kafka")
     kafka_module.Consumer = MagicMock()
     kafka_module.Producer = MagicMock()
     sys.modules["confluent_kafka"] = kafka_module
 
-if "rasterio" not in sys.modules:
+try:
+    import rasterio  # noqa: F401
+    import rasterio.transform  # noqa: F401
+except ImportError:
     rasterio_module = types.ModuleType("rasterio")
     rasterio_module.open = MagicMock()
     sys.modules["rasterio"] = rasterio_module
-
-if "rasterio.transform" not in sys.modules:
     rasterio_transform_module = types.ModuleType("rasterio.transform")
     rasterio_transform_module.from_origin = MagicMock()
     sys.modules["rasterio.transform"] = rasterio_transform_module

@@ -18,7 +18,8 @@ The stack runs locally on Kubernetes via K3s. Kafka is deployed inside the clust
 For runtime architecture, Kafka contracts, orthomosaic construction details, and processing-worker behavior, see `DOCUMENTATION.md`.
 For CPU-only tests, linting, dependency locks, and frontend checks, see
 [`DEVELOPMENT.md`](DEVELOPMENT.md).
-For sparse reconstruction without the distributed infrastructure, see
+For reconstruction, Gaussian orthophotos, and local YOLO detection without the
+distributed infrastructure, see
 [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
 
 ## Showcase

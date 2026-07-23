@@ -26,6 +26,10 @@ from shared.database import (
     count_received_tiles,
     get_mission_detections,
 )
+from processing_core import (
+    build_tile_starts,
+    dedupe_mission_detections as dedupe_detection_core,
+)
 
 # --- CONFIGURATION KAFKA ---
 TOPIC_IN_ORTHO = TOPIC_ORTHO
@@ -138,16 +142,6 @@ def cleanup_tiles_directory(tiles_dir):
                 logger.warning("Failed to remove stale tile %s: %s", entry, error)
 
 
-def build_tile_starts(full_size, tile_size, overlap):
-    if full_size <= tile_size:
-        return [0]
-    stride = max(1, tile_size - overlap)
-    starts = list(range(0, max(full_size - tile_size, 0) + 1, stride))
-    last_start = full_size - tile_size
-    if starts[-1] != last_start:
-        starts.append(last_start)
-    return starts
-
 def report_progress(vol_id, step, progress, status="processing", log=None):
     msg = {"vol_id": vol_id, "step": step, "progress": progress, "status": status, "service": "TILER"}
     if log:
@@ -206,125 +200,14 @@ def format_detection_gps(det, mission):
     return [f"lat {lat:.6f}", f"lon {lon:.6f}"]
 
 
-def polygon_area(points):
-    if not points or len(points) < 3:
-        return 0.0
-    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
-    return float(abs(cv2.contourArea(contour)))
-
-
-def polygon_bbox(points):
-    xs = [float(point[0]) for point in points]
-    ys = [float(point[1]) for point in points]
-    return min(xs), min(ys), max(xs), max(ys)
-
-
-def polygon_contains_point(points, point_x, point_y):
-    if not points or len(points) < 3:
-        return False
-    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
-    return cv2.pointPolygonTest(contour, (float(point_x), float(point_y)), False) >= 0
-
-
-def polygon_centroid(points):
-    if not points or len(points) < 3:
-        return None
-    contour = np.asarray(points, dtype=np.float32).reshape((-1, 1, 2))
-    moments = cv2.moments(contour)
-    if moments["m00"]:
-        return float(moments["m10"] / moments["m00"]), float(moments["m01"] / moments["m00"])
-    xs = [float(point[0]) for point in points]
-    ys = [float(point[1]) for point in points]
-    return float(sum(xs) / len(xs)), float(sum(ys) / len(ys))
-
-
-def bbox_iou(left_bbox, right_bbox):
-    left_x1, left_y1, left_x2, left_y2 = left_bbox
-    right_x1, right_y1, right_x2, right_y2 = right_bbox
-
-    inter_x1 = max(left_x1, right_x1)
-    inter_y1 = max(left_y1, right_y1)
-    inter_x2 = min(left_x2, right_x2)
-    inter_y2 = min(left_y2, right_y2)
-    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
-        return 0.0
-
-    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
-    left_area = max(0.0, left_x2 - left_x1) * max(0.0, left_y2 - left_y1)
-    right_area = max(0.0, right_x2 - right_x1) * max(0.0, right_y2 - right_y1)
-    union_area = left_area + right_area - inter_area
-    if union_area <= 0.0:
-        return 0.0
-    return inter_area / union_area
-
-
-def are_duplicate_detections(candidate, kept, center_threshold, iou_threshold):
-    if candidate.get('class_name') != kept.get('class_name'):
-        return False
-
-    candidate_segment = candidate.get('_segment') or []
-    kept_segment = kept.get('_segment') or []
-
-    # Evaluate polygon containment before the coarse center-distance gate. The
-    # previous ordering rejected true overlaps when the two tile-local centers were
-    # farther apart than the threshold, even though one smaller polygon clearly sat
-    # inside the larger polygon from an overlapping tile.
-    candidate_centroid = polygon_centroid(candidate_segment)
-    if candidate_centroid and polygon_contains_point(kept_segment, candidate_centroid[0], candidate_centroid[1]):
-        return True
-
-    for point_x, point_y in candidate_segment:
-        if polygon_contains_point(kept_segment, point_x, point_y):
-            return True
-
-    delta_x = float(candidate['global_pixel_x']) - float(kept['global_pixel_x'])
-    delta_y = float(candidate['global_pixel_y']) - float(kept['global_pixel_y'])
-    if abs(delta_x) > center_threshold or abs(delta_y) > center_threshold:
-        return False
-
-    candidate_bbox = candidate['_bbox']
-    kept_bbox = kept['_bbox']
-    return bbox_iou(candidate_bbox, kept_bbox) >= iou_threshold
-
-
 def dedupe_mission_detections(detections):
     center_threshold = float(os.getenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "40"))
     iou_threshold = float(os.getenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.05"))
-
-    prepared = []
-    for detection in detections:
-        segment = detection.get('segment') or []
-        if len(segment) < 3:
-            prepared.append(detection)
-            continue
-
-        enriched = dict(detection)
-        enriched['_area'] = polygon_area(segment)
-        enriched['_bbox'] = polygon_bbox(segment)
-        enriched['_segment'] = segment
-        prepared.append(enriched)
-
-    kept = []
-    for detection in sorted(
-        prepared,
-        key=lambda item: (item.get('_area', 0.0), float(item.get('confidence', 0.0))),
-        reverse=True,
-    ):
-        if '_bbox' not in detection:
-            kept.append(detection)
-            continue
-        if any(are_duplicate_detections(detection, existing, center_threshold, iou_threshold) for existing in kept if '_bbox' in existing):
-            continue
-        kept.append(detection)
-
-    deduped = []
-    for detection in kept:
-        cleaned = dict(detection)
-        cleaned.pop('_area', None)
-        cleaned.pop('_bbox', None)
-        cleaned.pop('_segment', None)
-        deduped.append(cleaned)
-    return deduped
+    return dedupe_detection_core(
+        detections,
+        center_threshold=center_threshold,
+        iou_threshold=iou_threshold,
+    )
 
 
 def draw_detection_label(img, anchor_x, anchor_y, lines):

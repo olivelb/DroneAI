@@ -1,4 +1,5 @@
 -r api.in
+-r processing.in
 
 numpy
 pip-tools
