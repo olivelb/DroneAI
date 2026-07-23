@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DroneAI dashboard frontend
 
-## Getting Started
+Next.js 16 and React 19 operator UI for the DroneAI pipeline.
 
-First, run the development server:
+The frontend:
+
+- uploads and browses S3-backed datasets through the dashboard API;
+- submits, resumes, cancels and deletes missions;
+- renders pipeline parameters and configured COLMAP work drives;
+- displays persisted mission summaries and live WebSocket status;
+- previews mission rasters and links to generated S3 objects.
+
+## Local development
+
+The dashboard API must be reachable on port `30080` of the same host used to
+open the frontend.
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`. The client calls
+`http://localhost:30080` and connects to
+`ws://localhost:30080/ws/status`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Checks
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run lint
+npm run build
+```
 
-## Learn More
+Use the committed `package-lock.json`; do not replace `npm ci` with an
+unreviewed dependency update.
 
-To learn more about Next.js, take a look at the following resources:
+## Production image
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+From the repository root:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+docker build \
+  -f app4-dashboard/frontend/Dockerfile \
+  -t drone-dashboard-frontend:latest \
+  .
+```
 
-## Deploy on Vercel
+The image runs `npm run start` on container port `3000`. The local Helm values
+publish it on NodePort `30000`.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Current endpoint limitation
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`app/lib/api.ts` currently derives the API and WebSocket endpoints from the
+browser hostname and fixed port `30080`. It does not consume a
+`NEXT_PUBLIC_API_URL` setting yet.
+
+This works for the local NodePort deployment. A TLS ingress, separate API
+hostname, reverse-proxy path, or non-default port requires updating the
+endpoint resolution and rebuilding the frontend. Do not assume the generic
+two-host ingress example is usable until that configuration surface is added.
+
+See the repository-level [`README.md`](../../README.md) for the full stack and
+[`DEVELOPMENT.md`](../../DEVELOPMENT.md) for the supported Node/npm workflow.

@@ -25,33 +25,42 @@ The pipeline is a local event-driven photogrammetry and detection system compose
 
 The runtime data path is:
 
-1. A mission is created from the dashboard.
-2. The API publishes the mission to Kafka topic `vols-bruts`.
-3. The COLMAP worker consumes the mission, reconstructs the scene, and writes `orthomosaic.tif`.
-4. The COLMAP worker publishes an orthomosaic event to Kafka topic `images-ortho`.
-5. The processing worker consumes the orthomosaic event, slices the image into overlapping tiles, and publishes one Kafka event per tile to `image-tiles`.
-6. The IA worker consumes tiles, runs either YOLO OBB or SAM 3 prompt-based detection, and publishes detections to `tile-detections`.
-7. The processing worker consumes all tile detections, merges overlap duplicates, reprojects them back into orthomosaic pixel coordinates, and writes the final annotated orthomosaic.
-8. All workers emit progress events to `pipeline-status` and the dashboard API forwards them over WebSocket to the frontend.
+1. Images are uploaded below an S3 prefix such as `datasets/site-a/`.
+2. The API persists the mission and its `vols-bruts` outbox row in one
+   transaction.
+3. The API outbox dispatcher publishes the mission to Kafka.
+4. The COLMAP worker downloads the selected dataset into `/work/<drive>/<id>`,
+   reconstructs the scene, uploads durable artifacts below
+   `missions/<id>/`, and publishes `images-ortho`.
+5. The processing worker downloads the orthomosaic, creates overlapping tiles,
+   uploads them to S3, and publishes `image-tiles`.
+6. The IA worker downloads each tile, runs YOLO OBB or SAM 3, and publishes
+   `tile-detections`.
+7. The processing worker merges overlap duplicates, persists detections,
+   writes an annotated GeoTIFF, and uploads the raster to S3.
+8. Workers emit `pipeline-status`; the API applies each unique event to
+   PostgreSQL through its inbox transaction and forwards it over WebSocket.
 
 The control path is:
 
 1. The dashboard asks the API to cancel a mission.
-2. The API publishes a control event to `pipeline-control`.
-3. The COLMAP worker's dedicated control thread marks cancellation in shared state.
-4. Long-running subprocess loops periodically check that state and abort the mission.
+2. The API durably enqueues a `pipeline-control` outbox event.
+3. The dispatcher publishes it to Kafka.
+4. Dedicated control consumers in the COLMAP, IA and processing workers mark
+   the mission as cancelled in process-local state.
+5. Long-running loops check that state at their available cancellation points.
 
 ## Deployment topology
 
-The deployed runtime is driven by two manifests:
-
-- `kafka-local.yaml`: namespace, broker, services, deployments, volumes, ports, and resource requests
-- `dashboard-api-rbac.yaml`: the dashboard API service account and pod-reader RBAC in namespace `kafka`
+The current deployed runtime is driven by the Helm chart under
+`charts/drone-ai/`.
 
 Main runtime objects:
 
-- namespace: `kafka`
-- Kafka broker service: `my-kafka.kafka.svc.cluster.local:9092`
+- namespace: `drone-ai` by default (`global.namespace`)
+- Kafka broker service: `my-kafka.drone-ai.svc.cluster.local:9092`
+- MinIO services: `minio`, `minio-api`, and `minio-console`
+- PostgreSQL service: `postgres`
 - COLMAP worker deployment: `colmap-worker`
 - IA worker deployment: `ia-worker`
 - processing worker deployment: `processing-worker`
@@ -60,18 +69,24 @@ Main runtime objects:
 
 Operational notes:
 
-- The host root `/` is mounted into the worker pods at `/host`.
-- The logical workspace root used by the pipeline is `/mnt/j/workspace`.
-- Inside containers, the same host files are accessed through `/host/mnt/j/workspace`.
+- Mission inputs and durable outputs live in S3-compatible object storage.
+- The COLMAP worker uses `/work/system` as an `emptyDir` and optionally mounts
+  configured host work drives below `/work/<name>`.
+- The selected mission work drive is temporary scratch space. App1 uploads
+  durable artifacts to S3 and cleans the local mission directory.
 - The COLMAP worker and IA worker both request one NVIDIA GPU.
 - The IA worker reads `HF_TOKEN` from the Kubernetes secret `hf-token` for approved access to the gated Hugging Face `facebook/sam3` model distribution.
-- The IA worker mounts a persistent Hugging Face cache at `/cache/huggingface`, backed by `/var/lib/drone-ai/huggingface-cache` on the host.
-- The processing worker receives explicit overlap-deduplication env vars from `kafka-local.yaml`.
+- The IA worker mounts a persistent model cache at `/cache/huggingface`.
+- The processing worker receives explicit overlap-deduplication values from the
+  Helm template.
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
 - The dashboard API deployment runs as service account `dashboard-api-sa`.
-- `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods in namespace `kafka` so the API can serve `/pods`.
-- `build_and_deploy.sh` applies both manifests for a full stack rollout.
-- The incremental deploy scripts also reapply the relevant manifest before restart so env, mounts, and RBAC changes are not skipped.
+- `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods so the API
+  can serve `/pods`.
+- `build_and_deploy.sh` and every incremental deploy script run
+  `helm upgrade --install`.
+- The chart's `db-migrate` hook currently enables PostGIS and calls SQLAlchemy
+  `Base.metadata.create_all()`. It does not execute Alembic migrations.
 
 ## Shared Python package
 
@@ -83,6 +98,7 @@ Current files:
 - `shared/database.py`
 - `shared/event_contracts.py`
 - `shared/geo_alignment.py`
+- `shared/inbox_outbox.py`
 - `shared/kafka_reliability.py`
 - `shared/pipeline_params.py`
 - `shared/storage.py`
@@ -92,7 +108,7 @@ Current files:
 Current responsibilities:
 
 - define the Kafka broker and topic names used across services
-- define the default workspace root (`/mnt/j/workspace` unless overridden by `WORKSPACE_DIR`)
+- define legacy workspace defaults still used by compatibility helpers
 - define the service completion order used by the dashboard API (`COLMAP`, `TILER`, `IA`)
 - define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard
 - define parameter metadata used by the frontend to render editable controls
@@ -103,17 +119,21 @@ Current responsibilities:
 - compute and serialize the Sim3 transform between raw and aligned COLMAP models
 - validate and enrich versioned Kafka events
 - provide broker-independent retry, dead-letter, and manual-commit primitives
+- provide transactional inbox claims, durable outbox enqueueing and the API
+  dispatcher
 - provide one shared progress publisher and control-consumer loop for workers
 - normalize the selected IA backend through one shared policy
 
 As implemented today:
 
 - `app1-colmap` imports configuration, parameter, database, storage, validation,
-  and geo-alignment helpers
-- `app2-ia` imports shared topic names and S3 storage helpers
-- `app3-processing` imports shared topic names, S3 storage, and database helpers
+  event, reliability, messaging, and geo-alignment helpers
+- `app2-ia` imports shared topic, event, messaging, reliability, validation,
+  and S3 storage helpers
+- `app3-processing` imports shared topic, event, messaging, reliability, S3
+  storage, and database helpers
 - `app4-dashboard/api` imports configuration, pipeline defaults, validation,
-  database, and storage helpers
+  database, storage, reliability, event, and inbox/outbox helpers
 
 The worker-specific `app2-ia/detection_core.py` and
 `app3-processing/processing_core.py` modules contain reusable detection,
@@ -133,7 +153,7 @@ The frontend is the operator interface. Its responsibilities are:
 - submit missions
 - display streaming mission status
 - allow cancellation
-- guide the user toward the workspace path used by the deployed pipeline
+- select an uploaded S3 dataset prefix and an advertised COLMAP work drive
 
 The frontend does not perform any heavy computation. It depends on the API for mission submission and on the WebSocket stream for live status.
 
@@ -174,7 +194,9 @@ Primary responsibilities:
 
 The bounded WebSocket replay buffer remains in memory, but mission state,
 service progress, logs, original parameters, and resume metadata are persisted
-in PostgreSQL. Alembic owns the database schema.
+in PostgreSQL. Alembic defines versioned migrations for manually managed
+databases; the current Helm hook only creates missing tables from SQLAlchemy
+metadata.
 
 The API package is split by responsibility:
 
@@ -182,7 +204,7 @@ The API package is split by responsibility:
 |---|---|
 | `main.py` | application factory, middleware, router composition, lifespan |
 | `mission_state.py` | mission persistence, status policy, serialization, resume policy |
-| `messaging.py` | mission/control Kafka publication |
+| `messaging.py` | mission/control event construction and outbox publisher gateway |
 | `realtime.py` | status consumer, bounded history, WebSocket fan-out |
 | `kubernetes_status.py` | read-only Kubernetes pod adapter |
 | `image_preview.py` | framework-independent image conversion |
@@ -199,12 +221,14 @@ The COLMAP worker is the photogrammetry and orthomosaic service.
 Its responsibilities are:
 
 - receive raw mission metadata from `vols-bruts`
-- materialize the mission workspace under the mounted host filesystem
+- download the selected S3 dataset into the chosen `/work` scratch drive
 - extract GPS from EXIF and determine a projected UTM CRS
 - select the photogrammetry profile: `modern` or `legacy`
 - run COLMAP feature extraction, matching, mapping, and undistortion
 - generate an orthomosaic using 3D Gaussian Splatting
 - extract drone EXIF GPS altitude data and use it to shift the height map to real-world elevations
+- upload durable mission artifacts below `missions/<vol_id>/` and clean local
+  scratch data
 - publish the orthomosaic event to `images-ortho`
 - publish detailed progress and log events to `pipeline-status`
 - honor cancellation commands from `pipeline-control`
@@ -276,8 +300,9 @@ Every event contains:
 
 `image-tiles`, `tile-detections`, and orthomosaic hand-off events use
 deterministic identifiers derived from their mission and logical item. This
-makes duplicates observable and gives a durable inbox/outbox implementation a
-stable key if one is added later.
+makes duplicates observable. The API inbox/outbox already uses stable event
+IDs for mission, control, and status boundaries; worker hand-offs use the same
+ID discipline but are not yet backed by durable worker outboxes.
 
 ### Delivery and failure semantics
 
@@ -339,11 +364,17 @@ handling. Failed rows keep the error, attempt count, and next `available_at`.
 The state machine and shared-transaction rollback are tested with SQLite and
 publisher doubles; no broker or PostgreSQL server is required for those tests.
 
-Run the schema migration before deploying this code:
+For a manually managed database, apply the schema migration before deploying
+this code:
 
 ```bash
 alembic upgrade head
 ```
+
+For a manually managed database, Alembic is the authoritative path. The
+current Helm hook instead creates missing tables with SQLAlchemy metadata. That
+is sufficient for a new empty database, but it is not a replacement for
+versioned in-place schema migration.
 
 Current boundary: mission/control/status events use the transactional
 inbox/outbox. Heavy worker outputs that cross GPU, S3, and Kafka still use
@@ -371,24 +402,26 @@ Expected payload shape:
 ```json
 {
   "vol_id": "mission_001",
-  "input_dir": "/host/mnt/j/workspace/mission_001",
-  "workspace_dir": "/mnt/j/workspace",
-  "epsg": "EPSG:4326",
-  "camera_model": "PINHOLE",
+  "input_dataset": "datasets/site-a",
   "pipeline": "modern",
   "tile_size": 1024,
   "ai_confidence": 0.5,
   "ai_backend": "sam3",
+  "ai_model_variant": "yolo26l",
   "sam_prompt": "car",
-  "classes": ["car"]
+  "classes": ["car"],
+  "colmap_params": {},
+  "work_drive": "drive-i"
 }
 ```
 
 Notes:
 
-- `workspace_dir` is the base root, not necessarily the mission directory itself.
-- The COLMAP worker normalizes it and appends `vol_id` when required.
+- `input_dataset` must be a normalized S3 prefix below `datasets/`.
+- `work_drive` must be one of the drives advertised by
+  `GET /mission/parameters`.
 - `pipeline` selects the parameter profile.
+- The common schema-version/event-ID envelope surrounds these domain fields.
 
 ### `pipeline-control`
 
@@ -399,6 +432,8 @@ Produced by:
 Consumed by:
 
 - COLMAP worker control thread
+- IA worker control thread
+- processing worker control thread
 
 Semantic meaning:
 
@@ -415,8 +450,9 @@ Expected payload shape:
 
 Notes:
 
-- Cancellation only interrupts the COLMAP worker directly.
-- The rest of the pipeline reacts indirectly because the orthomosaic event is never published when the mission is cancelled early.
+- Cancellation is cooperative rather than pre-emptive.
+- Each worker stops at the cancellation checks implemented around its current
+  long-running or per-item work.
 
 ### `pipeline-status`
 
@@ -451,7 +487,10 @@ Important details:
 
 - `service` can be `COLMAP`, `TILER`, or `IA`.
 - `step` is service-defined and reused by the dashboard as the public progress vocabulary.
-- The API stores only a bounded in-memory history of recent status messages.
+- The API persists mission state and one `MissionLog` row per unique status
+  event in the inbox transaction.
+- The WebSocket hub separately keeps the latest 300 messages in memory for
+  replay to newly connected clients.
 
 ### `images-ortho`
 
@@ -503,7 +542,7 @@ Payload shape:
 {
   "vol_id": "mission_001",
   "tile_index": 12,
-  "tile_path": "/mnt/j/workspace/mission_001/tiles/mission_001/tile_12.jpg",
+  "tile_s3_key": "missions/mission_001/tiles/tile_12.jpg",
   "offset_x": 2048,
   "offset_y": 1024,
   "ai_backend": "sam3",
@@ -518,8 +557,8 @@ Payload shape:
 
 Important details:
 
-- `tile_path` is published without the `/host` prefix so downstream services can remap it as needed.
-- the default tile output is mission-scoped under `tiles/<vol_id>/` to avoid cross-mission collisions.
+- `tile_s3_key` points to the JPEG uploaded by the processing worker.
+- Tile output is mission-scoped below `missions/<vol_id>/tiles/`.
 - `offset_x` and `offset_y` anchor the tile within the full orthomosaic.
 - `ai_backend` selects the detector backend in app2.
 - `sam_prompt` carries the text concept for SAM 3 missions.
@@ -574,10 +613,11 @@ for diagnosis and explicit replay; no automatic DLQ replayer is provided.
 
 ## Mission workspace layout
 
-For a mission with `vol_id=mission_001`, the COLMAP worker typically uses:
+For `vol_id=mission_001`, the COLMAP worker uses temporary scratch space:
 
 ```text
-/host/mnt/j/workspace/mission_001/
+/work/<selected-drive>/mission_001/
+  raw_images/
   clean_images/
   database.db
   geo_data.txt
@@ -590,20 +630,35 @@ For a mission with `vol_id=mission_001`, the COLMAP worker typically uses:
     images/
   alignment_transform.json
   gaussian_checkpoints/
-    full/
-      point_cloud_iter7000.ply
     final.ply
   orthomosaic.tif
   orthomosaic.height.tif
-  orthomosaic_annotated.tif
-  tiles/
-    mission_001/
-      tile_0.jpg
-      tile_1.jpg
-      ...
 ```
 
-Important mission artifacts:
+After upload, app1 removes this local mission directory. Durable objects use
+the S3 layout:
+
+```text
+datasets/<dataset-name>/...
+missions/mission_001/
+  orthomosaic.tif
+  orthomosaic.height.tif
+  alignment_transform.json
+  geo_data.txt
+  geo_data.txt.crs
+  colmap/
+    database.db
+    sparse/...
+    sparse_geo/...
+  gaussian_checkpoints/...
+  tiles/
+    tile_0.jpg
+    tile_1.jpg
+    ...
+  orthomosaic_annotated.tif
+```
+
+Important mission artifacts include:
 
 - `geo_data.txt`: image-to-projected-coordinate reference file used for alignment
 - `geo_data.txt.crs`: persisted projected CRS selected during GPS extraction
@@ -622,31 +677,42 @@ sequenceDiagram
     autonumber
     participant UI as Dashboard Frontend
     participant API as Dashboard API
+    participant DB as PostgreSQL
+    participant S3 as Object Storage
     participant K as Kafka
     participant C as app1-colmap
     participant P as app3-processing
     participant IA as app2-ia
 
     UI->>API: POST /mission
-    API->>K: publish vols-bruts
+    API->>DB: mission + vols-bruts outbox
+    API->>K: outbox dispatcher publishes vols-bruts
+    C->>S3: download datasets/<name>
     C->>K: publish pipeline-status PREPARING
-    C->>C: copy images, extract GPS, choose profile
+    C->>C: extract GPS, choose profile
     C->>C: COLMAP SfM + undistortion
     C->>C: train Gaussian Splatting model + build orthomosaic
+    C->>S3: upload mission artifacts
     C->>K: publish images-ortho
     P->>K: consume images-ortho
+    P->>S3: download orthomosaic
     P->>P: open GeoTIFF and compute overlapping tile grid
     loop for each tile
+        P->>S3: upload tile
         P->>K: publish image-tiles
         IA->>K: consume image-tiles
-        IA->>IA: run YOLO OBB detection
+        IA->>S3: download tile
+        IA->>IA: run YOLO OBB or SAM 3
         IA->>K: publish tile-detections
     end
     P->>K: consume tile-detections
     P->>P: aggregate all detections
     P->>P: render masks, centers, and GPS labels
+    P->>DB: persist detections
+    P->>S3: upload annotated GeoTIFF
     P->>K: publish pipeline-status DONE
     K->>API: pipeline-status stream
+    API->>DB: inbox + mission state + log
     API->>UI: WebSocket status updates
 ```
 
@@ -692,12 +758,16 @@ stateDiagram-v2
 When a mission is received, the worker:
 
 1. reads the JSON mission event
-2. stores `current_mission_id`
+2. validates `vol_id` and the `datasets/...` S3 prefix
 3. clears the mission cancellation flag
-4. normalizes the workspace path so it points inside the container-visible `/host` mount
-5. normalizes the input dataset path the same way
+4. validates the requested work-drive name against `WORK_DRIVES`
+5. resolves the scratch directory below `/work/<drive>/<vol_id>`
+6. falls back to `/work/system/<vol_id>` if the configured drive is not
+   mounted
 
-This matters because the API and frontend speak in host paths, but the worker process runs inside Kubernetes and accesses the mounted host filesystem through `/host`.
+The API and frontend exchange S3 prefixes, not host paths. Host paths are an
+operator-level Helm concern used only to back optional `/work/<drive>`
+mounts.
 
 ### Cancellation model
 
@@ -1409,9 +1479,11 @@ These optional values reduce work for app3, but app3 can recompute them if neces
 
 ## Failure modes and fallbacks
 
-### Input directory missing
+### Input dataset missing
 
-If the mission input path does not exist inside the container-visible host mount, app1 emits an `ERROR` status and the mission stops before reconstruction.
+If the selected `datasets/...` S3 prefix is invalid, unavailable, or contains
+no downloadable images, app1 emits an `ERROR` status and stops before
+reconstruction.
 
 ### Incompatible reconstruction database
 
@@ -1427,7 +1499,8 @@ If the Gaussian Splatting training or rendering raises an exception, app1 emits 
 
 ### Processing worker missing orthomosaic
 
-If app3 cannot open the orthomosaic file, it emits an error status and stops processing that mission.
+If app3 cannot download or open the orthomosaic object, it emits an error
+status and stops processing that mission.
 
 ### Partial tile-return problem
 
@@ -1437,16 +1510,19 @@ The processing worker waits for all tile indices. If the IA worker never returns
 
 These are the assumptions that must remain true for the current implementation to behave correctly.
 
-1. The host dataset must exist under `/mnt/j/workspace`.
-2. Worker containers must see the host filesystem through `/host`.
+1. Mission input must be a normalized S3 prefix below `datasets/`.
+2. The chosen work drive must be advertised through `WORK_DRIVES` and mounted
+   below `/work`; otherwise app1 falls back to `/work/system`.
 3. The orthomosaic must keep its projected CRS metadata intact.
 4. The Sim3 path applies rotation and scale to Gaussian means/axes in float32 while the translation is kept as a float64 GeoTIFF origin. The PCA path keeps the model in COLMAP frame and passes `R_geo` to the renderer to preserve SH coefficient consistency.
 5. Reruns require the sparse SfM model (`sparse/{cameras,images,points3D}.bin`) and optionally the alignment transform (PCA fallback is used if absent).
 6. Inside worker containers, COLMAP GPU indices are relative to visible devices, so a single visible GPU always means index `0`.
 7. Tile events must carry the original orthomosaic transform and CRS.
 8. App3 must set `total_tiles` before tile events begin returning.
-9. `tile_index` uniqueness is the aggregator's completion key.
+9. `tile_index` uniqueness is the process-local aggregator's completion key.
 10. The final annotated GeoTIFF is written by app3, not app1.
+11. Durable mission artifacts must be uploaded before temporary worker
+    directories are removed.
 
 ## Operator-oriented stage map
 
@@ -1455,6 +1531,7 @@ These are the major progress stages you will typically see on the dashboard.
 From app1:
 
 - `PREPARING`
+- `DOWNLOADING_IMAGES`
 - `COPYING_IMAGES`
 - `GPS_EXTRACTION`
 - `FEATURES`
@@ -1465,6 +1542,8 @@ From app1:
 - `ALIGNING`
 - `GAUSS` (3D Gaussian Splatting training and ortho rendering)
 - `ORTHO`
+- `UPLOADING`
+- `CLEANUP`
 - `DONE`
 - `ERROR`
 - `CANCELLED`
@@ -1490,18 +1569,24 @@ From app2:
 If you are changing the pipeline, read the implementation in this order:
 
 1. `app4-dashboard/api/main.py`
-2. `app1-colmap/main.py`
-3. `app3-processing/main.py`
-4. `app2-ia/main.py`
-5. `kafka-local.yaml`
+2. `app4-dashboard/api/routers/`, `messaging.py`, `mission_state.py`, and
+   `realtime.py`
+3. `shared/event_contracts.py`, `shared/kafka_reliability.py`, and
+   `shared/inbox_outbox.py`
+4. `app1-colmap/main.py` and `app1-colmap/worker_support.py`
+5. `app3-processing/main.py` and `app3-processing/processing_core.py`
+6. `app2-ia/main.py` and `app2-ia/detection_core.py`
+7. `charts/drone-ai/templates/` and `charts/drone-ai/values.yaml`
 
 Reason:
 
-- the API defines the mission contract
+- the API routers and gateways define the mission/control contract
+- shared modules define the event and delivery semantics
 - app1 defines the workspace and orthomosaic contract
 - app3 defines the tile and final annotated-image contract
 - app2 fills the detection contract
-- the manifest defines the runtime filesystem and broker topology those contracts rely on
+- the Helm chart defines the runtime storage, broker, database, filesystem and
+  RBAC topology
 
 ## Scope boundaries
 

@@ -4,6 +4,15 @@ Deploy the DroneAI pipeline on a cloud K3s cluster with GPU support.
 
 The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that works both locally and in the cloud. Local mode uses `hostPath` PVs and Docker-imported images. Cloud mode uses a `storageClass` for dynamic provisioning and a container registry for images. The same chart serves both — you override values with a `values-cloud.yaml` file.
 
+> [!WARNING]
+> This is an experimental deployment guide, not a validated production
+> runbook. In particular, the current frontend hard-codes the browser hostname
+> and API port `30080`. The separate TLS frontend/API hostnames shown below
+> require an endpoint-configuration change in
+> `app4-dashboard/frontend/app/lib/api.ts` and a rebuilt frontend image.
+> The current chart also initializes missing tables with SQLAlchemy
+> `create_all()` rather than running Alembic migrations.
+
 ## Target setup
 
 - Provider: OVHcloud (or any provider with GPU instances)
@@ -129,7 +138,8 @@ nvidia-smi
 sudo docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu24.04 nvidia-smi
 ```
 
-Driver must support CUDA 12.8.1 (driver ≥ 550).
+Use a host driver that is compatible with the CUDA 12.8.1 container images and
+validate it with the container command above.
 
 ## Step 3: Install K3s cluster
 
@@ -195,7 +205,11 @@ kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main
 ### 4.4 cert-manager
 
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.17.1/cert-manager.yaml
+helm repo add jetstack https://charts.jetstack.io
+helm repo update
+helm upgrade --install cert-manager jetstack/cert-manager \
+  --namespace cert-manager --create-namespace \
+  --set crds.enabled=true
 ```
 
 Create a ClusterIssuer:
@@ -226,12 +240,14 @@ REGISTRY="ghcr.io/<your-org>"
 docker login ghcr.io
 
 # Base image (COLMAP + Ceres + LichtFeld — heavy, build once)
-docker build -t $REGISTRY/drone-colmap-base:latest -f app1-colmap/Dockerfile.base .
+docker build \
+  -t drone-colmap-base:latest \
+  -t $REGISTRY/drone-colmap-base:latest \
+  -f app1-colmap/Dockerfile.base .
 docker push $REGISTRY/drone-colmap-base:latest
 
 # Application images
-docker build -t $REGISTRY/drone-colmap:latest -f app1-colmap/Dockerfile \
-  --build-arg BASE_IMAGE=$REGISTRY/drone-colmap-base:latest .
+docker build -t $REGISTRY/drone-colmap:latest -f app1-colmap/Dockerfile .
 docker build -t $REGISTRY/drone-ia:latest -f app2-ia/Dockerfile .
 docker build -t $REGISTRY/drone-processing:latest -f app3-processing/Dockerfile .
 docker build -t $REGISTRY/drone-dashboard-api:latest -f app4-dashboard/api/Dockerfile .
@@ -300,11 +316,15 @@ iaWorker:
     storageClass: "csi-cinder-high-speed"
     size: 50Gi
 
-# --- COLMAP work volume ---
+# --- COLMAP scratch volume ---
 colmapWorker:
   workVolume:
-    type: emptyDir                        # fast local SSD (or switch to hostPath)
     sizeLimit: 200Gi
+    drives:
+      - name: system
+        hostPath: ""                      # /work/system is an emptyDir
+        label: "Ephemeral node storage"
+    default: system
 
 # --- Storage connection strings ---
 # If using managed S3, override these:
@@ -314,6 +334,7 @@ colmapWorker:
 #   s3AccessKey: "<key>"
 #   s3SecretKey: "<secret>"
 #   s3Region: "gra"
+#   s3PublicEndpoint: "https://s3.gra.cloud.ovh.net"
 
 # If using managed PostgreSQL, override:
 # storage:
@@ -325,7 +346,7 @@ dashboardApi:
     type: ClusterIP
     nodePort: null
   cors:
-    origins: '["https://droneai.example.fr"]'
+    origins: "https://droneai.example.fr"
 
 dashboardFrontend:
   service:
@@ -374,6 +395,7 @@ minio:
 
 storage:
   s3Endpoint: "https://s3.gra.cloud.ovh.net"
+  s3PublicEndpoint: "https://s3.gra.cloud.ovh.net"
   s3Bucket: "drone-ai"
   s3AccessKey: "<access-key>"
   s3SecretKey: "<secret-key>"
@@ -381,6 +403,10 @@ storage:
 ```
 
 All services use `shared/storage.py` (a `boto3` wrapper), so any S3-compatible backend works transparently.
+
+When MinIO remains in-cluster, expose a browser-reachable S3 endpoint and set
+`storage.s3PublicEndpoint`; otherwise presigned download URLs contain the
+cluster-internal MinIO hostname.
 
 ### Using managed PostgreSQL instead of in-cluster
 
@@ -394,7 +420,12 @@ storage:
   databaseUrl: "postgresql://droneai:<password>@<managed-db-host>:5432/droneai"
 ```
 
-Ensure the managed instance has PostGIS enabled. The `db-migrate` Helm hook runs Alembic migrations automatically on each deploy.
+Ensure the managed instance has PostGIS enabled. The current `db-migrate` Helm
+hook calls `Base.metadata.create_all()`; it does not run Alembic. Apply
+`alembic upgrade head` separately for an existing managed database until the
+hook itself invokes Alembic. The database role also needs permission to create
+the PostGIS extension, or the extension must be installed by an administrator
+beforehand.
 
 ## Step 7: Create secrets
 
@@ -439,7 +470,9 @@ minio-xxx                             1/1     Running   # if enabled
 postgres-xxx                          1/1     Running   # if enabled
 ```
 
-The `db-migrate` job runs automatically as a Helm post-install/post-upgrade hook.
+The `db-migrate` job runs automatically as a Helm post-install/post-upgrade
+hook. Despite its name, it currently enables PostGIS and calls SQLAlchemy
+`create_all()`; it does not run Alembic.
 
 ## Step 9: Validate
 
@@ -465,8 +498,8 @@ kubectl describe pod -n drone-ai -l app=ia     | grep -A3 "nvidia.com/gpu"
 # Kafka
 kubectl logs deployment/kafka-broker -n drone-ai --tail=20
 
-# Database connectivity
-kubectl logs job/db-migrate -n drone-ai
+# Schema hook definition (successful hook jobs are deleted)
+helm get hooks drone-ai -n drone-ai
 
 # API
 curl https://api.droneai.example.fr/
@@ -482,7 +515,8 @@ open https://droneai.example.fr
 2. Submit the mission
 3. Watch progress via WebSocket in the frontend
 4. Verify `orthomosaic.tif` and `orthomosaic_annotated.tif` appear in S3
-5. Check detection data in PostgreSQL via the API
+5. Check the mission summary through `/status/summary` and inspect the
+   `detections` table directly when database-level validation is needed
 
 ## How the Helm chart works (local vs cloud)
 

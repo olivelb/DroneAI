@@ -69,9 +69,12 @@ an old orthomosaic or detection output cannot be silently reused.
 
 ## Prerequisites
 
+- Python 3.11 or 3.12 for the lightweight orchestrator
 - Docker with NVIDIA Container Toolkit for GPU execution
-- a built `drone-colmap:latest` image
-- a lightweight API image containing Pillow
+- `droneai-api:local` for EXIF/dataset preflight
+- `drone-colmap:latest` for reconstruction
+- `droneai-gaussian-local:latest` for Gaussian generation
+- `drone-ia:latest` for YOLO detection
 
 Build the lightweight image from the repository root:
 
@@ -82,8 +85,12 @@ docker build \
   .
 ```
 
-The image names can be overridden with `DRONEAI_COLMAP_IMAGE` and
-`DRONEAI_PREFLIGHT_IMAGE`.
+The full orchestrator needs all four images. A restricted `--to-stage` or
+`--from-stage` run only needs the images used by the selected stages.
+
+Image names can be overridden with `DRONEAI_PREFLIGHT_IMAGE`,
+`DRONEAI_COLMAP_IMAGE`, `DRONEAI_GAUSSIAN_IMAGE`, and
+`DRONEAI_IA_IMAGE`.
 
 ## Accessing a Windows dataset from WSL
 
@@ -188,7 +195,7 @@ differs from the target GIS product.
 
 This part needs one additional local image containing the pinned, patched
 LichtFeld binary and the Python rendering dependencies. It does not install or
-start Kubernetes, Kafka, S3, Postgres, RabbitMQ, or the dashboard.
+start Kubernetes, Kafka, S3, Postgres, or the dashboard.
 
 Only LichtFeld and its C++ package manager are needed to build it:
 

@@ -76,11 +76,15 @@ npm run lint
 npm run build
 ```
 
-As of July 2026, `npm audit --omit=dev` still reports three high-severity
-transitive advisories inherited through Next.js (`postcss` and `sharp`).
-Next.js itself is pinned to the patched 16.2.11 release. Do not apply the
-currently suggested `npm audit fix --force`: npm proposes an incompatible
-Next.js downgrade. Reassess these advisories when upgrading Next.js.
+The lock currently pins Next.js `16.2.11`. Security advisories change over
+time, so verify the current dependency graph locally:
+
+```bash
+npm audit --omit=dev
+```
+
+Review proposed major-version or forced changes before applying them; do not
+use `npm audit fix --force` as an unreviewed lock-file rewrite.
 
 ## Full pipeline
 
