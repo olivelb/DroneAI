@@ -46,7 +46,44 @@ class LichtFeldTrainConfig:
     cap_max: int = 5_000_000          # MRNF sweet spot for 24GB VRAM
     data_path: str = ""               # Root dir containing sparse/ and images/
     output_path: str = ""             # Checkpoint output directory
-    data_factor: int = 1              # Image downscaling (auto-scheduled internally by MRNF)
+    data_factor: int = 1              # LichtFeld --resize_factor (1, 2, 4, or 8)
+    max_width: int = 3840             # Hard limit after resize_factor
+    tile_mode: int = 1                # 1, 2, or 4 training tiles
+
+
+def build_lichtfeld_command(binary: str, config: LichtFeldTrainConfig) -> list[str]:
+    """Validate a training configuration and build the headless CLI command."""
+
+    if config.iterations <= 0:
+        raise ValueError("iterations must be positive")
+    if config.strategy not in {"mrnf", "mcmc", "igs+"}:
+        raise ValueError("strategy must be mrnf, mcmc, or igs+")
+    if config.sh_degree not in {0, 1, 2, 3}:
+        raise ValueError("sh_degree must be 0, 1, 2, or 3")
+    if config.cap_max <= 0:
+        raise ValueError("cap_max must be positive")
+    if config.data_factor not in {1, 2, 4, 8}:
+        raise ValueError("data_factor must be 1, 2, 4, or 8")
+    if not 1 <= config.max_width <= 4096:
+        raise ValueError("max_width must be between 1 and 4096")
+    if config.tile_mode not in {1, 2, 4}:
+        raise ValueError("tile_mode must be 1, 2, or 4")
+
+    return [
+        binary,
+        "--headless",
+        "--train",
+        "--data-path", str(config.data_path),
+        "--output-path", str(config.output_path),
+        "--iter", str(config.iterations),
+        "--strategy", config.strategy,
+        "--sh-degree", str(config.sh_degree),
+        "--max-cap", str(config.cap_max),
+        # The pinned LichtFeld CLI deliberately uses an underscore here.
+        "--resize_factor", str(config.data_factor),
+        "--max-width", str(config.max_width),
+        "--tile-mode", str(config.tile_mode),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -217,17 +254,7 @@ def train_with_lichtfeld(
     output_path.mkdir(parents=True, exist_ok=True)
 
     # Build command
-    cmd = [
-        binary,
-        "--headless",
-        "--train",
-        "--data-path", str(data_path),
-        "--output-path", str(output_path),
-        "--iter", str(config.iterations),
-        "--strategy", config.strategy,
-        "--sh-degree", str(config.sh_degree),
-        "--max-cap", str(config.cap_max),
-    ]
+    cmd = build_lichtfeld_command(binary, config)
 
     # Log the command
     if verbose:

@@ -567,48 +567,29 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
 
             report_mission_progress(vol_id, "ALIGNING", 94, log="Computing sparse-model alignment transform for orthorectification...")
             try:
-                import pycolmap
+                from shared.geo_alignment import (
+                    compute_reconstruction_alignment,
+                    write_alignment_transform,
+                )
 
-                rec_src = pycolmap.Reconstruction(os.path.join(sparse_path, "0"))
-                rec_dst = pycolmap.Reconstruction(sparse_geo_path)
-
-                src_centers = {}
-                for image_id in rec_src.images:
-                    img = rec_src.images[image_id]
-                    src_centers[img.name] = img.projection_center()
-
-                dst_centers = {}
-                for image_id in rec_dst.images:
-                    img = rec_dst.images[image_id]
-                    dst_centers[img.name] = img.projection_center()
-
-                common = set(src_centers.keys()) & set(dst_centers.keys())
-                if len(common) < 3:
-                    report_mission_progress(vol_id, "ALIGNING", 94, log="Not enough common images for alignment transform; using raw COLMAP coordinates.")
-                    return None
-
-                src_pts = np.array([src_centers[n] for n in sorted(common)])
-                dst_pts = np.array([dst_centers[n] for n in sorted(common)])
-
-                src_mean = src_pts.mean(axis=0)
-                dst_mean = dst_pts.mean(axis=0)
-                src_c = src_pts - src_mean
-                dst_c = dst_pts - dst_mean
-
-                src_var = np.sum(src_c ** 2) / len(common)
-                H = dst_c.T @ src_c / len(common)
-                U, S, Vt = np.linalg.svd(H)
-                d = np.linalg.det(U) * np.linalg.det(Vt)
-                D = np.diag([1, 1, 1 if d > 0 else -1])
-                R = U @ D @ Vt
-                scale = np.sum(S * np.diag(D)) / src_var
-                t = dst_mean - scale * R @ src_mean
-
+                transform = compute_reconstruction_alignment(
+                    os.path.join(sparse_path, "0"),
+                    sparse_geo_path,
+                )
                 transform_file = os.path.join(workspace_dir, "alignment_transform.json")
-                with open(transform_file, 'w') as tf:
-                    json.dump({"R": R.tolist(), "scale": scale, "t": t.tolist()}, tf)
+                write_alignment_transform(transform_file, transform)
                 align_tf = transform_file
-                report_mission_progress(vol_id, "ALIGNING", 94, log=f"Saved sparse-model alignment transform using {len(common)} images (scale={scale:.4f})")
+                fit = transform["fit"]
+                report_mission_progress(
+                    vol_id,
+                    "ALIGNING",
+                    94,
+                    log=(
+                        "Saved sparse-model alignment transform using "
+                        f"{fit['correspondences']} images "
+                        f"(scale={transform['scale']:.4f}, RMSE={fit['rmse']:.3f} m)"
+                    ),
+                )
                 return align_tf
             except Exception as e:
                 report_mission_progress(vol_id, "ALIGNING", 94, log=f"Failed to compute alignment transform ({e}); using raw COLMAP coordinates.")
@@ -700,6 +681,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 iterations=gs_iterations,
                 sh_degree=gs_sh_degree,
                 data_factor=gs_data_factor,
+                max_width=int(params.get("gs_max_width", 3840)),
+                tile_mode=int(params.get("gs_tile_mode", 1)),
                 cap_max=gs_cap_max,
                 filter_enabled=gs_filter_enabled,
                 filter_max_scale=gs_filter_max_scale,

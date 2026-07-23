@@ -62,6 +62,8 @@ def generate_gaussian_orthophoto(
     fagk: bool = True,
     checkpoint_dir: str = None,
     data_factor: int = 1,
+    max_width: int = 3840,
+    tile_mode: int = 1,
     cap_max: int = 5_000_000,
     filter_enabled: bool = True,
     filter_max_scale: float = 1.0,
@@ -106,7 +108,11 @@ def generate_gaussian_orthophoto(
     checkpoint_dir : str, optional
         Directory for training checkpoints.
     data_factor : int
-        Image downscaling factor (used by nadir fine-tune).
+        LichtFeld image downscaling factor (1, 2, 4, or 8).
+    max_width : int
+        Maximum training image dimension after downscaling.
+    tile_mode : int
+        LichtFeld memory-saving tile mode (1, 2, or 4).
     cap_max : int
         Maximum Gaussian count for MRNF strategy.
     """
@@ -223,6 +229,8 @@ def generate_gaussian_orthophoto(
             data_path=lf_data_path,
             output_path=cell_output,
             data_factor=data_factor,
+            max_width=max_width,
+            tile_mode=tile_mode,
         )
 
         def make_lf_reporter(pct_s, pct_e, vid, rfn, total):
