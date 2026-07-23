@@ -1,0 +1,17 @@
+ARG LICHTFELD_IMAGE=lichtfeld-runtime:latest
+FROM ${LICHTFELD_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV LICHTFELD_BIN=/opt/lichtfeld/LichtFeld-Studio
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements/local-gaussian.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir --break-system-packages \
+    --requirement /tmp/requirements.txt
+
+CMD ["python3", "--version"]

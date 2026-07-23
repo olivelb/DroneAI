@@ -75,8 +75,44 @@ The full sparse model also contains:
 - mean 3,304.67 observations per image;
 - one shared OPENCV camera model.
 
-The generated full workspace occupies approximately 1.2 GiB, including a
-206 MiB COLMAP database and a 780 KiB georeferenced sparse PLY export.
+Before undistortion, the generated full workspace occupied approximately
+1.2 GiB, including a 206 MiB COLMAP database and a 780 KiB georeferenced
+sparse PLY export.
+
+The full 111-image undistortion then completed successfully in 1.14 minutes.
+It produced 111 undistorted images and a COLMAP sparse model under `dense/`,
+occupying another 449 MiB. The source dataset remained mounted read-only.
+
+## Gaussian orthophoto experiment
+
+Both local profiles completed on an RTX 4070 Laptop GPU with 8 GiB VRAM,
+without starting the service stack:
+
+| Metric | 25-image `smoke` | 111-image `low-memory` |
+|---|---:|---:|
+| Total runner time | 57.6 s | 92.0 s |
+| LichtFeld training | 28.5 s | 61.6 s |
+| Iterations | 500 | 5,000 |
+| Final splats before filtering | 10,675 | 284,448 |
+| Splats written to final PLY | 10,675 | 264,556 |
+| Output dimensions | 413 × 333 px | 1,295 × 1,084 px |
+| Ground sampling distance | 0.25 m/px | 0.10 m/px |
+| CRS | EPSG:32631 | EPSG:32631 |
+| RGB GeoTIFF size | — | 3.7 MiB |
+| Height GeoTIFF size | — | 4.4 MiB |
+| Final PLY size | — | 24 MiB |
+
+The full orthophoto covers approximately 129.5 × 108.4 m. Its central area is
+recognisable and useful for validating the pipeline: roads, roofs, the pool,
+and the main parcel are coherent. Peripheral areas are visibly blurred or
+stretched where view support is weak. The renderer currently fills the entire
+raster extent, so a non-zero-pixel coverage statistic would misleadingly
+report 100%; a confidence or footprint mask is still required.
+
+The height raster was shifted to the mean EXIF altitude (358.92 m) and ranges
+from 334.10 to 375.64 m. This is a display-oriented relative surface, not a
+surveyed elevation product: the EXIF altitude has no verified vertical datum
+and no GCP, RTK, or PPK observation constrains it independently.
 
 ## Interpretation
 
@@ -91,7 +127,7 @@ accuracy. Without RTK, PPK, or surveyed control points, the result must not be
 presented as centimetric. EXIF altitude also lacks an independently verified
 vertical datum.
 
-The next technically meaningful experiment is image undistortion followed by a
-reduced-memory Gaussian Splatting profile for the available 8 GiB GPU. It
-should remain a separate step so the validated sparse baseline stays
-reproducible.
+The Gaussian experiment confirms that the production training and rendering
+code can be exercised locally on an 8 GiB GPU. It does not validate absolute
+orthophoto accuracy. Keeping Gaussian training separate preserves the validated
+sparse baseline and avoids requiring the service stack.

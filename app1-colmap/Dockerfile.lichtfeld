@@ -1,5 +1,4 @@
-# Multi-stage build for LichtFeld-Studio headless training binary.
-# Produces a slim runtime image (~400MB) with just the binary + shared libs.
+# Multi-stage build for the pipeline-minimal LichtFeld headless trainer.
 #
 # Usage:
 #   docker build --network=host -t lichtfeld-runtime:latest -f app1-colmap/Dockerfile.lichtfeld .
@@ -18,16 +17,13 @@ FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS builder
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /build
 
-# Build tools + system libs needed by vcpkg ports
+# Build tools + system libs needed by the minimal vcpkg ports
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git curl ca-certificates wget unzip zip \
         pkg-config ninja-build nasm yasm \
         autoconf autoconf-archive automake libtool \
         python3 python3-dev python3-pip \
-        libx11-dev libxft-dev libxrandr-dev libxinerama-dev libxcursor-dev \
-        libxi-dev libxext-dev libxtst-dev libwayland-dev libxkbcommon-dev \
-        libibus-1.0-dev libdbus-1-dev libpulse-dev libasound2-dev \
-        libffi-dev libgl1-mesa-dev libglu1-mesa-dev libegl1-mesa-dev \
+        libffi-dev libgl1-mesa-dev libegl1-mesa-dev \
     && apt-get install -y gcc-14 g++-14 \
     && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
     && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 60 \
@@ -55,16 +51,15 @@ ENV VCPKG_ROOT=/opt/vcpkg
 COPY LichtFeld-Studio/ /build/LichtFeld-Studio/
 WORKDIR /build/LichtFeld-Studio
 
-# Init submodules (libvterm)
-RUN git submodule update --init --recursive 2>/dev/null || true
-# Fallback: if .git is missing (COPY strips it), clone libvterm directly
-RUN if [ ! -f external/libvterm/src/encoding.c ]; then \
-        rm -rf external/libvterm && \
-        git clone --depth 1 https://github.com/neovim/libvterm.git external/libvterm; \
-    fi
-
 # Clean any stale host build artefacts (CMakeCache.txt paths won't match)
 RUN rm -rf build
+
+# The repository patch removes GUI, USD, mesh, video, and SOG requirements.
+RUN python3 -c "\
+import json; \
+manifest = json.load(open('vcpkg.json')); \
+manifest['default-features'] = []; \
+json.dump(manifest, open('vcpkg.json', 'w'), indent=2)"
 
 # Pre-install vcpkg dependencies (sources are pre-downloaded in .docker-vcpkg/downloads/).
 RUN /opt/vcpkg/vcpkg install --triplet x64-linux
@@ -73,6 +68,8 @@ RUN /opt/vcpkg/vcpkg install --triplet x64-linux
 RUN cmake -S . -B build \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DLFS_BUILD_PIPELINE_MINIMAL=ON \
+    -DENABLE_CUDA_GL_INTEROP=OFF \
     -DBUILD_CUDA_PTX_ONLY=ON \
     -DBUILD_PYTHON_STUBS=OFF \
     -DBUILD_TESTS=OFF \
@@ -97,8 +94,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Minimal runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libx11-6 libdbus-1-3 libgomp1 libcap2 \
-        libxcb1 liblz4-1 liblzma5 libzstd1 \
+        python3 libgomp1 libcap2 liblz4-1 liblzma5 libzstd1 \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Create LichtFeld directory
@@ -107,20 +103,17 @@ RUN mkdir -p /opt/lichtfeld/lib
 # Copy binary
 COPY --from=builder /build/LichtFeld-Studio/build/LichtFeld-Studio /opt/lichtfeld/
 
-# Copy LFS shared libs
-COPY --from=builder /build/LichtFeld-Studio/build/liblfs_*.so /opt/lichtfeld/lib/
+# Copy the pipeline-minimal LFS shared libraries
+COPY --from=builder /build/LichtFeld-Studio/build/liblfs_core.so /opt/lichtfeld/lib/
+COPY --from=builder /build/LichtFeld-Studio/build/liblfs_logger.so /opt/lichtfeld/lib/
+COPY --from=builder /build/LichtFeld-Studio/build/liblfs_event_bridge.so /opt/lichtfeld/lib/
+COPY --from=builder /build/LichtFeld-Studio/build/liblfs_python_runtime.so /opt/lichtfeld/lib/
 
 # Copy nvImageCodec
 COPY --from=builder /build/LichtFeld-Studio/build/libnvimgcodec.so* /opt/lichtfeld/lib/
 
-# Copy USD shared libs (required at runtime)
-COPY --from=builder /build/LichtFeld-Studio/build/vcpkg_installed/x64-linux/lib/libusd_*.so /opt/lichtfeld/lib/
-
-# Copy TBB (required by USD/OpenColorIO)
-COPY --from=builder /build/LichtFeld-Studio/build/vcpkg_installed/x64-linux/lib/libtbb*.so* /opt/lichtfeld/lib/
-
-# Copy resources (shaders, fonts, etc.)
-COPY --from=builder /build/LichtFeld-Studio/build/resources/ /opt/lichtfeld/resources/
+# Python runtime extensions are still required by the headless application.
+COPY --from=builder /build/LichtFeld-Studio/build/extensions/ /opt/lichtfeld/extensions/
 
 # Copy GPL-3.0 license (required by license terms)
 COPY --from=builder /build/LichtFeld-Studio/LICENSE /opt/lichtfeld/LICENSE
@@ -128,6 +121,7 @@ COPY --from=builder /build/LichtFeld-Studio/THIRD_PARTY_LICENSES.md /opt/lichtfe
 
 # Set up library path
 ENV LD_LIBRARY_PATH="/opt/lichtfeld/lib:${LD_LIBRARY_PATH}"
+ENV LICHTFELD_BIN="/opt/lichtfeld/LichtFeld-Studio"
 
 # Verify the binary runs
 RUN /opt/lichtfeld/LichtFeld-Studio --version || true

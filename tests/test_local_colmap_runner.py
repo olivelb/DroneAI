@@ -9,6 +9,7 @@ from tools.run_local_colmap import (
     stage_images,
     write_colmap_references,
 )
+from shared.geo_alignment import estimate_sim3
 
 
 def _records(count: int) -> list[dict]:
@@ -100,3 +101,13 @@ def test_reference_file_uses_recommended_projected_crs(tmp_path):
     assert len(references) == 3
     assert (tmp_path / "geo_data.txt.crs").read_text(encoding="utf-8") == "EPSG:32631\n"
     assert len((tmp_path / "geo_data.txt").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_alignment_transform_schema_is_accepted_by_gaussian_loader():
+    transform = estimate_sim3(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+        [[10, 20, 30], [12, 20, 30], [10, 22, 30]],
+    )
+
+    assert set(("R", "scale", "t")) <= transform.keys()
+    assert transform["fit"]["correspondences"] == 3

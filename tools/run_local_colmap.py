@@ -34,6 +34,7 @@ GENERATED_PATHS = (
     "dense",
     "sparse.ply",
     "sparse_geo.ply",
+    "alignment_transform.json",
     "metrics.json",
     "model_analyzer.txt",
 )
@@ -335,6 +336,23 @@ def run_alignment(
     return aligned_path
 
 
+def write_alignment_transform(
+    sparse_model: Path,
+    aligned_model: Path,
+    workspace: Path,
+) -> Path:
+    from shared.geo_alignment import (
+        compute_reconstruction_alignment,
+        write_alignment_transform as write_transform,
+    )
+
+    transform_path = workspace / "alignment_transform.json"
+    if transform_path.is_file():
+        return transform_path
+    transform = compute_reconstruction_alignment(sparse_model, aligned_model)
+    return write_transform(transform_path, transform)
+
+
 def _percentile(values: list[float], percentile: float) -> float | None:
     if not values:
         return None
@@ -491,6 +509,7 @@ def main() -> int:
             references,
             args.alignment_max_error,
         )
+        write_alignment_transform(sparse_model, aligned_model, args.workspace)
         result_model = aligned_model
         metrics = analyze_model(
             aligned_model,
