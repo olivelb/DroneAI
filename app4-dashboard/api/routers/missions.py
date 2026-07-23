@@ -8,15 +8,21 @@ import os
 from fastapi import APIRouter
 
 from shared import storage
+from shared.config import TOPIC_CONTROL, TOPIC_MISSION
 from shared.database import Mission, get_or_create_mission, get_session
+from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 
 from ..kubernetes_status import get_pod_states
-from ..messaging import publish_cancel, publish_new_mission, publish_resume
+from ..messaging import (
+    build_cancel_event,
+    build_new_mission_event,
+    build_resume_event,
+)
 from ..mission_state import (
     get_mission_state,
     get_status_summary,
-    prepare_resume,
+    prepare_resume_in_session,
 )
 from ..schemas import MissionParams
 
@@ -46,10 +52,16 @@ def mission_state(vol_id: str):
 
 @router.post("/mission/cancel")
 async def cancel_mission(vol_id: str):
-    publish_cancel(vol_id)
+    with get_session() as session:
+        enqueue_outbox(
+            session,
+            topic=TOPIC_CONTROL,
+            event=build_cancel_event(vol_id),
+            key=vol_id,
+        )
     return {
         "status": "success",
-        "message": f"Cancel command sent for {vol_id}",
+        "message": f"Cancel command queued for {vol_id}",
     }
 
 
@@ -96,12 +108,19 @@ def delete_mission(vol_id: str):
 @router.post("/mission/resume")
 async def resume_mission(vol_id: str):
     try:
-        payload, response = prepare_resume(vol_id)
+        with get_session() as session:
+            payload, response = prepare_resume_in_session(session, vol_id)
+            if payload is not None:
+                enqueue_outbox(
+                    session,
+                    topic=TOPIC_MISSION,
+                    event=build_resume_event(payload),
+                    key=vol_id,
+                )
     except Exception as error:
         return {"status": "error", "message": str(error)}
     if payload is None:
         return response
-    publish_resume(payload)
     return response
 
 
@@ -138,11 +157,16 @@ async def start_mission(params: MissionParams):
                 workspace_prefix=f"missions/{params.vol_id}",
                 params=payload,
             )
+            enqueue_outbox(
+                session,
+                topic=TOPIC_MISSION,
+                event=build_new_mission_event(payload),
+                key=params.vol_id,
+            )
     except Exception as error:
         return {
             "status": "error",
             "vol_id": params.vol_id,
             "message": f"Failed to persist mission: {error}",
         }
-    publish_new_mission(payload)
     return {"status": "success", "vol_id": params.vol_id}

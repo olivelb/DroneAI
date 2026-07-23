@@ -16,6 +16,7 @@ from typing import Optional
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
+    BigInteger,
     Column,
     DateTime,
     Enum,
@@ -23,6 +24,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -252,6 +254,75 @@ class MissionLog(Base):
 
     def __repr__(self):
         return f"<MissionLog(vol_id={self.vol_id!r}, service={self.service!r}, step={self.step!r})>"
+
+
+PORTABLE_JSON = JSON().with_variant(JSONB(), "postgresql")
+PORTABLE_BIGINT = BigInteger().with_variant(Integer(), "sqlite")
+
+
+class InboxEvent(Base):
+    """Durable consumer receipt used to suppress event reprocessing."""
+
+    __tablename__ = "inbox_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "consumer_group",
+            "event_id",
+            name="uq_inbox_consumer_event",
+        ),
+        Index("ix_inbox_source_offset", "source_topic", "source_partition", "source_offset"),
+    )
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    consumer_group = Column(String(256), nullable=False)
+    event_id = Column(String(128), nullable=False)
+    event_type = Column(String(64), nullable=False)
+    source_topic = Column(String(256), nullable=True)
+    source_partition = Column(Integer, nullable=True)
+    source_offset = Column(BigInteger, nullable=True)
+    payload = Column(PORTABLE_JSON, nullable=False)
+    status = Column(String(32), nullable=False, default="processing")
+    attempts = Column(Integer, nullable=False, default=1)
+    last_error = Column(Text, nullable=True)
+    received_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class OutboxEvent(Base):
+    """Event persisted in the same transaction as its domain mutation."""
+
+    __tablename__ = "outbox_events"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_outbox_event_id"),
+        Index("ix_outbox_dispatch", "status", "available_at", "created_at"),
+    )
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    event_id = Column(String(128), nullable=False)
+    event_type = Column(String(64), nullable=False)
+    topic = Column(String(256), nullable=False)
+    message_key = Column(String(512), nullable=True)
+    payload = Column(PORTABLE_JSON, nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    attempts = Column(Integer, nullable=False, default=0)
+    available_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    locked_by = Column(String(256), nullable=True)
+    last_error = Column(Text, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    published_at = Column(DateTime(timezone=True), nullable=True)
 
 
 # ---------------------------------------------------------------------------

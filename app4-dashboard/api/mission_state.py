@@ -16,9 +16,8 @@ MISSION_PROCESSING_STALE_SECONDS = float(
 )
 
 
-def update_mission_state(payload: dict) -> None:
-    """Persist one validated pipeline status event."""
-
+def apply_mission_state(session, payload: dict) -> None:
+    """Apply one validated status event to an existing DB transaction."""
     vol_id = payload.get("vol_id")
     if not vol_id:
         raise ValueError("status event has no vol_id")
@@ -30,47 +29,53 @@ def update_mission_state(payload: dict) -> None:
     log_message = payload.get("log")
     details = payload.get("details")
 
-    with get_session() as session:
-        mission = get_or_create_mission(session, vol_id)
-        states = dict(mission.service_states or {})
-        states[service] = payload
-        mission.service_states = states
-        mission.current_step = step
-        mission.progress = progress
-        if status in TERMINAL_STATUSES:
-            mission.status = status
-        elif mission.status not in TERMINAL_STATUSES:
-            mission.status = "processing"
-        mission.updated_at = datetime.now(timezone.utc)
+    mission = get_or_create_mission(session, vol_id)
+    states = dict(mission.service_states or {})
+    states[service] = payload
+    mission.service_states = states
+    mission.current_step = step
+    mission.progress = progress
+    if status in TERMINAL_STATUSES:
+        mission.status = status
+    elif mission.status not in TERMINAL_STATUSES:
+        mission.status = "processing"
+    mission.updated_at = datetime.now(timezone.utc)
 
-        if status == "error" and log_message:
-            mission.error_message = log_message
-        if details:
-            event = details.get("event")
-            resume_info = dict(mission.resume_info or {})
-            if event in {
-                "command_started",
-                "command_finished",
-                "command_failed",
-                "command_cancelled",
-            }:
-                resume_info["last_command_event"] = details
-            elif event == "copy_progress":
-                resume_info["copy_progress"] = details
-            mission.resume_info = resume_info
+    if status == "error" and log_message:
+        mission.error_message = log_message
+    if details:
+        event = details.get("event")
+        resume_info = dict(mission.resume_info or {})
+        if event in {
+            "command_started",
+            "command_finished",
+            "command_failed",
+            "command_cancelled",
+        }:
+            resume_info["last_command_event"] = details
+        elif event == "copy_progress":
+            resume_info["copy_progress"] = details
+        mission.resume_info = resume_info
 
-        session.add(
-            MissionLog(
-                mission_id=mission.id,
-                vol_id=vol_id,
-                service=service,
-                step=step,
-                status=status,
-                progress=progress,
-                message=log_message,
-                details=details,
-            )
+    session.add(
+        MissionLog(
+            mission_id=mission.id,
+            vol_id=vol_id,
+            service=service,
+            step=step,
+            status=status,
+            progress=progress,
+            message=log_message,
+            details=details,
         )
+    )
+
+
+def update_mission_state(payload: dict) -> None:
+    """Persist one status event using its own transaction."""
+
+    with get_session() as session:
+        apply_mission_state(session, payload)
 
 
 def compute_overall_status(services: dict) -> str:
@@ -236,42 +241,46 @@ def get_mission_state(vol_id: str) -> dict:
         }
 
 
-def prepare_resume(vol_id: str) -> tuple[dict | None, dict]:
-    """Prepare and persist a resume transition; publication stays elsewhere."""
-
-    with get_session() as session:
-        mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
-        if mission is None:
-            return None, {
-                "status": "error",
-                "message": f"Mission {vol_id} not found.",
-            }
-        resume_state = build_colmap_resume_state(mission)
-        if not resume_state["available"]:
-            return None, {
-                "status": "error",
-                "message": resume_state["reason"],
-                "colmap_resume": resume_state,
-            }
-        if not mission.params:
-            return None, {
-                "status": "error",
-                "message": (
-                    f"Saved state for {vol_id} does not contain the original "
-                    "mission payload."
-                ),
-                "colmap_resume": resume_state,
-            }
-
-        payload = dict(mission.params)
-        payload["vol_id"] = vol_id
-        mission.status = "processing"
-        mission.current_step = "RESUMING"
-        mission.error_message = None
-        mission.updated_at = datetime.now(timezone.utc)
-        response = {
-            "status": "success",
-            "message": f"Resume command sent for {vol_id}.",
+def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
+    mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+    if mission is None:
+        return None, {
+            "status": "error",
+            "message": f"Mission {vol_id} not found.",
+        }
+    resume_state = build_colmap_resume_state(mission)
+    if not resume_state["available"]:
+        return None, {
+            "status": "error",
+            "message": resume_state["reason"],
             "colmap_resume": resume_state,
         }
+    if not mission.params:
+        return None, {
+            "status": "error",
+            "message": (
+                f"Saved state for {vol_id} does not contain the original "
+                "mission payload."
+            ),
+            "colmap_resume": resume_state,
+        }
+
+    payload = dict(mission.params)
+    payload["vol_id"] = vol_id
+    mission.status = "processing"
+    mission.current_step = "RESUMING"
+    mission.error_message = None
+    mission.updated_at = datetime.now(timezone.utc)
+    response = {
+        "status": "success",
+        "message": f"Resume command queued for {vol_id}.",
+        "colmap_resume": resume_state,
+    }
     return payload, response
+
+
+def prepare_resume(vol_id: str) -> tuple[dict | None, dict]:
+    """Compatibility wrapper using its own transaction."""
+
+    with get_session() as session:
+        return prepare_resume_in_session(session, vol_id)

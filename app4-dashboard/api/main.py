@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 from contextlib import asynccontextmanager
@@ -10,8 +11,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
+from shared.database import get_session
+from shared.inbox_outbox import run_outbox_dispatcher
+
 from .kubernetes_status import fallback_pod_states, get_pod_states
-from .messaging import get_producer
+from .messaging import get_producer, publish_outbox_event
 from .mission_state import (
     build_colmap_resume_state,
     compute_overall_status,
@@ -25,6 +29,9 @@ from .routers.datasets import router as datasets_router
 from .routers.missions import router as missions_router
 
 
+logger = logging.getLogger("droneai.api")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     loop = asyncio.get_running_loop()
@@ -35,12 +42,24 @@ async def lifespan(_app: FastAPI):
         kwargs={"stop_event": stop_event},
         daemon=True,
     )
+    outbox_thread = threading.Thread(
+        target=run_outbox_dispatcher,
+        args=(get_session,),
+        kwargs={
+            "publisher": publish_outbox_event,
+            "stop_event": stop_event,
+            "logger": logger,
+        },
+        daemon=True,
+    )
     consumer_thread.start()
+    outbox_thread.start()
     try:
         yield
     finally:
         stop_event.set()
         consumer_thread.join(timeout=2)
+        outbox_thread.join(timeout=2)
 
 
 def create_app() -> FastAPI:
