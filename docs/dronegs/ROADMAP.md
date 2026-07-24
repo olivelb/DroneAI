@@ -20,11 +20,16 @@ Each completed phase has one focused commit and an annotated
 
 ## Current status
 
-- Completed phase: Phase 3.
-- Current version: 0.4.0.
+- Completed tagged phase: Phase 3.
+- Current development version: 0.5.0-dev.1.
 - Production backend: LichtFeld.
-- DroneGS native backend: fixed-topology vertical slice; opt-in only.
-- Next phase: differentiable rasterizer and optimizer.
+- DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
+- Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
+  additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
+- Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
+  gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
+- Large-scene blocker: the development prototype decodes every training image into
+  host RAM; bounded asynchronous caching is required before 1,000+ image tests.
 
 ## Versioning rules
 
@@ -36,19 +41,18 @@ Each completed phase has one focused commit and an annotated
 
 ## Provisional reference and gates
 
-GAJAN currently provides integration reference numbers, not a statistical
-quality baseline:
+The clean pinned GAJAN Phase 3 suite provides a repeatable performance oracle,
+but not yet a held-out image-quality baseline. Full details are in
+`benchmarks/phase3-gajan-lichtfeld-2026-07-24.md`.
 
 | Workload | Reference |
 |---|---:|
-| 111 images, LichtFeld training | 61.6 s |
-| 111 images, total Gaussian runner | 92.0 s |
+| 111 images, LichtFeld median wall time (5 runs) | 89.785 s |
+| LichtFeld wall-time range | 85.869-90.471 s |
 | Iterations | 5,000 |
-| Splats before filtering | 284,448 |
+| Median splats before filtering | 284,418 |
+| Median peak VRAM total-memory delta | 1,484 MiB |
 | GPU | RTX 4070 Laptop, 8 GiB |
-
-Before Phase 6, every reference workload is repeated at least five times with
-a pinned image, driver, GPU power profile, seed, and dataset fingerprint.
 
 | Metric | Non-regression gate |
 |---|---:|

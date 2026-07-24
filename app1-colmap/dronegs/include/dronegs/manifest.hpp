@@ -13,8 +13,12 @@ struct RunMeasurements {
     std::string started_at;
     std::string finished_at;
     double loading_seconds = 0.0;
+    double startup_seconds = 0.0;
+    double training_seconds = 0.0;
     double export_seconds = 0.0;
     double wall_seconds = 0.0;
+    float initial_loss = 0.0F;
+    float final_loss = 0.0F;
 };
 
 std::string utc_timestamp();

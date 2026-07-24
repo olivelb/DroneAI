@@ -91,6 +91,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(scene.images.size() == 1, "image count mismatch");
     check(scene.points.size() == 2, "point count mismatch");
     check(scene.images.front().name == "frame.jpg", "image name mismatch");
+    check(scene.images.front().qvec[0] == 1.0, "image quaternion mismatch");
+    check(scene.images.front().tvec[2] == 0.0, "image translation mismatch");
     check(scene.cameras.front().parameters.size() == 4, "camera parameter count mismatch");
     check(dronegs::dataset_fingerprint(scene).starts_with("fnv1a64:"),
           "fingerprint kind mismatch");
@@ -138,8 +140,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .started_at = "2026-07-24T10:00:00Z",
         .finished_at = "2026-07-24T10:00:01Z",
         .loading_seconds = 0.1,
+        .startup_seconds = 0.05,
+        .training_seconds = 0.15,
         .export_seconds = 0.2,
         .wall_seconds = 0.3,
+        .initial_loss = 0.4F,
+        .final_loss = 0.2F,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,

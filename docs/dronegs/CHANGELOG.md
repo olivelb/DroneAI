@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.1 - Phase 4 experimental
+
+- Preserved COLMAP world-to-camera poses and added native JPEG decoding.
+- Added PINHOLE and SIMPLE_PINHOLE projection with resized intrinsics.
+- Added an original CUDA additive Gaussian rasterizer and analytical backward pass.
+- Added Adam optimization for DC color and opacity with deterministic camera order.
+- Added initial/final anchor loss and training time to run-manifest v1.
+- Added an end-to-end GPU convergence test and a GAJAN 25-image smoke report.
+- Kept positions, scales, rotations, topology, and non-DC SH coefficients fixed.
+- Did not tag `dronegs-v0.5.0`: ordered alpha compositing and the fixed-topology
+  quality parity exit gate are not complete.
+
 ## 0.4.0 - Phase 3
 
 - Added the original MIT C++23/CUDA DroneGS project and development image.

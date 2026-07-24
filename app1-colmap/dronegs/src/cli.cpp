@@ -46,7 +46,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS fixed-topology native slice 0.4.0\n"
+        "DroneGS fixed-topology additive prototype 0.5.0-dev.1\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH\n";
@@ -98,7 +98,7 @@ void validate_options(const Options& options) {
         throw std::invalid_argument("--iter must be positive");
     }
     if (options.strategy != "mrnf") {
-        throw std::invalid_argument("the 0.4 native slice only accepts strategy mrnf");
+        throw std::invalid_argument("the fixed-topology prototype only accepts strategy mrnf");
     }
     if (options.sh_degree > 3) {
         throw std::invalid_argument("--sh-degree must be between 0 and 3");

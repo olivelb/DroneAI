@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.28)
 
-project(DroneGS VERSION 0.4.0 LANGUAGES CXX CUDA)
+project(DroneGS VERSION 0.5.0 LANGUAGES CXX CUDA)
 
 option(DRONEGS_BUILD_TESTS "Build DroneGS native tests" ON)
+
+find_package(JPEG REQUIRED)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,15 +16,17 @@ if(NOT CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "89-real;89-virtual")
 endif()
 
+get_filename_component(DRONEGS_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
 execute_process(
-    COMMAND git rev-parse HEAD
+    COMMAND git -c safe.directory=${DRONEGS_REPOSITORY_ROOT} rev-parse HEAD
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE DRONEGS_GIT_REVISION
     OUTPUT_STRIP_TRAILING_WHITESPACE
     ERROR_QUIET
 )
 execute_process(
-    COMMAND git status --porcelain
+    COMMAND git -c safe.directory=${DRONEGS_REPOSITORY_ROOT} status --porcelain
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE DRONEGS_GIT_DIRTY
     OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -37,19 +41,25 @@ endif()
 add_library(dronegs_core
     src/cli.cpp
     src/colmap.cpp
+    src/image.cpp
     src/model.cpp
     src/ply.cpp
     src/manifest.cpp
 )
 target_include_directories(dronegs_core PUBLIC include)
+target_link_libraries(dronegs_core PUBLIC JPEG::JPEG)
 target_compile_definitions(
     dronegs_core PRIVATE DRONEGS_GIT_REVISION="${DRONEGS_GIT_REVISION}")
 target_compile_options(dronegs_core PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Werror>
 )
 
-add_library(dronegs_cuda cuda/loss.cu)
+add_library(dronegs_cuda
+    cuda/loss.cu
+    cuda/trainer.cu
+)
 target_include_directories(dronegs_cuda PUBLIC include)
+target_link_libraries(dronegs_cuda PUBLIC dronegs_core)
 set_target_properties(dronegs_cuda PROPERTIES
     CUDA_SEPARABLE_COMPILATION ON
     POSITION_INDEPENDENT_CODE ON
@@ -72,6 +82,12 @@ if(DRONEGS_BUILD_TESTS)
     target_link_libraries(dronegs_cuda_tests PRIVATE dronegs_cuda)
     set_target_properties(dronegs_cuda_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_cuda_tests COMMAND dronegs_cuda_tests)
+
+    add_executable(dronegs_training_tests tests/test_training.cu)
+    target_link_libraries(dronegs_training_tests PRIVATE dronegs_cuda)
+    set_target_properties(
+        dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
 endif()
 
 install(TARGETS dronegs RUNTIME DESTINATION bin)

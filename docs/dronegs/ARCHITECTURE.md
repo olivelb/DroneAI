@@ -1,8 +1,9 @@
 # DroneGS architecture
 
-Status: implemented through Phase 3
+Status: Phase 3 released; Phase 4 experimental trainer in progress
+
 Contract version: 1  
-Project version: 0.4.0
+Project version: 0.5.0-dev.1
 
 ## Decision
 
@@ -58,12 +59,28 @@ LichtFeld spellings.
 - C++23 control plane and CUDA 12.8 or newer.
 - CMake and Ninja.
 - Purpose-built structure-of-arrays buffers rather than a general tensor API.
-- GoogleTest for native unit and gradient checks.
+- CTest-driven native unit, finite-difference, and convergence checks.
 - JSON Lines progress events and a versioned JSON final manifest.
 - Standard 3DGS PLY as the inference/export boundary.
 
 Any adapted source is recorded in `GPL_COMPONENTS.md` with its exact upstream
 revision, license, copyright, and local paths.
+
+## Phase 4 development slice
+
+The current development slice projects fixed sparse Gaussians with COLMAP
+world-to-camera poses, rasterizes bounded isotropic screen-space kernels into
+weighted RGB accumulators, computes active-pixel L1, back-propagates analytical
+gradients, and updates DC color plus opacity with Adam.
+
+This is a gradient/convergence scaffold, not the parity rasterizer. It has no
+front-to-back alpha ordering, visibility sort, anisotropic covariance projection,
+position/scale/rotation gradients, DSSIM, progressive SH, split/prune/grow, or
+held-out quality evaluation. It supports only SIMPLE_PINHOLE and PINHOLE inputs.
+
+The prototype currently caches all decoded training images in host RAM. That is
+acceptable for the 25-image smoke gate but explicitly blocks representative
+1,000+ image tests until a bounded asynchronous image cache is implemented.
 
 ## Planned layout
 
@@ -81,10 +98,12 @@ app1-colmap/gaussian_training/
 
 ## Reproducibility
 
-Every run records trainer version, Git revision, contract version, GPU, driver,
-CUDA runtime, parameters, seed, dataset fingerprint, timings, peak VRAM,
-artifact hashes, and final Gaussian count. Benchmark seeds are mandatory.
-Dataset inputs are read-only and outputs use a new run directory.
+Run-manifest v1 reserves trainer, source, hardware, parameter, timing, metric,
+and artifact provenance. The development prototype records its version, Git
+revision, contract, parameters, seed, dataset fingerprint, training losses,
+timings, and final Gaussian count. GPU/driver/peak-VRAM fields and artifact
+hashes are not yet populated by the native binary. Benchmark seeds are
+mandatory. Dataset inputs are read-only and outputs use a new run directory.
 
 ## Large-scene performance principles
 

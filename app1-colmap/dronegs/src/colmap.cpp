@@ -104,7 +104,12 @@ std::vector<Image> load_images(const std::filesystem::path& path) {
     for (std::uint64_t index = 0; index < count; ++index) {
         Image image;
         image.id = read_value<std::uint32_t>(stream, "image id");
-        skip_bytes(stream, 7U * sizeof(double), "image pose");
+        for (double& quaternion_component : image.qvec) {
+            quaternion_component = read_value<double>(stream, "image quaternion");
+        }
+        for (double& translation_component : image.tvec) {
+            translation_component = read_value<double>(stream, "image translation");
+        }
         image.camera_id = read_value<std::uint32_t>(stream, "image camera id");
         image.name = read_c_string(stream);
         const auto observation_count = read_value<std::uint64_t>(stream, "observation count");

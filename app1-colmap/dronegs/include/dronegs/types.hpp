@@ -35,6 +35,8 @@ struct Image {
     std::uint32_t id = 0;
     std::uint32_t camera_id = 0;
     std::string name;
+    std::array<double, 4> qvec{};
+    std::array<double, 3> tvec{};
 };
 
 struct SparsePoint {
