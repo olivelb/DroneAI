@@ -12,6 +12,7 @@ level. This is an engineering inventory, not legal advice.
 | LichtFeld minimal patches | `app1-colmap/patches/lichtfeld-*.patch` | Modifications to GPL work | Headless/minimal build changes | Treat patches and resulting binary as GPL-covered modifications |
 | LichtFeld runtime image | `Dockerfile.lichtfeld` and LichtFeld stage in `Dockerfile.base` | Contains GPL binary | Subprocess runtime | Bundle notices and ensure corresponding source is obtainable |
 | LichtFeld Python adapters | `gaussian_ortho/lichtfeld_trainer.py`, `gaussian_training/backends.py` | Original DroneAI code; process boundary | CLI adapters and PLY consumer | Keep process boundary; do not copy GPL implementation into wrappers |
+| DroneGS native slice | `app1-colmap/dronegs/` | MIT; original DroneAI code | Native trainer implementation | No LichtFeld source copied; record any future adapted file separately before import |
 | gsplat | Official `nerfstudio-project/gsplat`; revision not selected | Apache-2.0 | Candidate future rasterizer source | Import from official source, pin revision, retain notices, list adapted files |
 | INRIA 3DGS code | Reference implementation; revision not selected | Custom research license | Algorithmic reference only | Do not copy source until separately approved |
 | ImprovedGS+ | Revision and license not audited | To be determined | Post-parity experiment candidate | No source import until audited |

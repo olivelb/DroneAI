@@ -16,6 +16,7 @@ from gaussian_training.benchmark import (  # noqa: E402
     BenchmarkBackend,
     BenchmarkCase,
     BenchmarkSuite,
+    VramSampler,
     dataset_inventory,
     expand_command,
     load_benchmark_suite,
@@ -122,6 +123,17 @@ def test_percentile_and_summary():
     assert percentile_nearest_rank([1, 2, 3, 4, 5], 0.95) == 5
     assert summary["successful_runs"] == 5
     assert summary["wall_seconds"]["median"] == 3.0
+
+
+def test_vram_sampler_uses_total_delta_only_as_fallback():
+    sampler = VramSampler(pid=123)
+    sampler.peak_total_delta_mib = 456.0
+    assert sampler.stop() == 456.0
+
+    sampler_with_pid = VramSampler(pid=123)
+    sampler_with_pid.peak_mib = 321.0
+    sampler_with_pid.peak_total_delta_mib = 456.0
+    assert sampler_with_pid.stop() == 321.0
 
 
 def test_end_to_end_fake_trainer(tmp_path, monkeypatch):

@@ -22,6 +22,18 @@ python tools/benchmark_gaussian_trainers.py \
   --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
+When LichtFeld is available as the local runtime image instead of a host
+binary, use the versioned container suite:
+
+```bash
+export LICHTFELD_IMAGE=lichtfeld-runtime:latest
+export GAJAN_DENSE_PATH="$HOME/droneAI-workspaces/gajan-r2s-full/dense"
+
+python tools/benchmark_gaussian_trainers.py \
+  docs/dronegs/benchmarks/gajan-v1.docker.json \
+  --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
 Each run contains logs, trainer artifacts, and `benchmark_run.json`. The suite
 directory contains `benchmark_summary.json` with min/median/P95/max wall time
 and best-effort per-process peak VRAM.

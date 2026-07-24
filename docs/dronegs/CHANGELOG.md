@@ -2,6 +2,17 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.4.0 - Phase 3
+
+- Added the original MIT C++23/CUDA DroneGS project and development image.
+- Added strict parsing of trainer CLI contract v1.
+- Added bounded COLMAP binary camera, image, and sparse-point loading.
+- Added fixed-topology Gaussian initialization and atomic binary PLY export.
+- Added atomic run-manifest-v1 output with Git provenance.
+- Added native COLMAP/CLI/PLY tests and a finite-difference CUDA gradient test.
+- Verified the native PLY with DroneAI's existing CuPy `GaussianModel` on GPU.
+- Added a containerized LichtFeld baseline suite and Docker-aware VRAM sampling.
+
 ## 0.3.0 - Phase 2
 
 - Added a validated backend-neutral training request and normalized result.

@@ -242,12 +242,33 @@ def read_ply_vertex_count(path: Path) -> int | None:
 class VramSampler:
     """Best-effort per-process NVIDIA VRAM sampler."""
 
-    def __init__(self, pid: int, interval_seconds: float = 0.25):
+    def __init__(
+        self,
+        pid: int,
+        interval_seconds: float = 0.25,
+        baseline_total_mib: float | None = None,
+    ):
         self.pid = pid
         self.interval_seconds = interval_seconds
         self.peak_mib: float | None = None
+        self.baseline_total_mib = baseline_total_mib
+        self.peak_total_delta_mib: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    @staticmethod
+    def total_used_mib() -> float | None:
+        if shutil.which("nvidia-smi") is None:
+            return None
+        try:
+            result = subprocess.run(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                check=False, capture_output=True, text=True, timeout=2,
+            )
+            values = [float(line.strip()) for line in result.stdout.splitlines() if line.strip()]
+            return sum(values) if values else None
+        except (OSError, subprocess.SubprocessError, ValueError):
+            return None
 
     def start(self) -> None:
         if shutil.which("nvidia-smi") is None:
@@ -259,7 +280,9 @@ class VramSampler:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2)
-        return self.peak_mib
+        if self.peak_mib is not None:
+            return self.peak_mib
+        return self.peak_total_delta_mib
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -282,6 +305,14 @@ class VramSampler:
                         self.peak_mib = used if self.peak_mib is None else max(self.peak_mib, used)
             except (OSError, subprocess.SubprocessError, ValueError):
                 pass
+            if self.baseline_total_mib is not None:
+                total_used = self.total_used_mib()
+                if total_used is not None:
+                    delta = max(0.0, total_used - self.baseline_total_mib)
+                    self.peak_total_delta_mib = (
+                        delta if self.peak_total_delta_mib is None
+                        else max(self.peak_total_delta_mib, delta)
+                    )
             self._stop.wait(self.interval_seconds)
 
 
@@ -329,9 +360,10 @@ def run_one(
     monotonic_start = time.perf_counter()
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
+    baseline_total_mib = VramSampler.total_used_mib()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
-        sampler = VramSampler(process.pid)
+        sampler = VramSampler(process.pid, baseline_total_mib=baseline_total_mib)
         sampler.start()
         return_code = process.wait()
         peak_vram_mib = sampler.stop()

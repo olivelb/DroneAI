@@ -1,8 +1,8 @@
 # DroneGS architecture
 
-Status: implemented through Phase 2
+Status: implemented through Phase 3
 Contract version: 1  
-Project version: 0.3.0
+Project version: 0.4.0
 
 ## Decision
 
