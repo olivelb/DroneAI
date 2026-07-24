@@ -20,11 +20,11 @@ Each completed phase has one focused commit and an annotated
 
 ## Current status
 
-- Completed phase: Phase 1.
-- Current version: 0.2.0.
+- Completed phase: Phase 2.
+- Current version: 0.3.0.
 - Production backend: LichtFeld.
-- DroneGS backend: not implemented.
-- Next phase: backend boundary.
+- DroneGS adapter: implemented; native executable not yet implemented.
+- Next phase: native vertical slice.
 
 ## Versioning rules
 

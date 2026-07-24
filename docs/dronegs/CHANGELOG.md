@@ -2,6 +2,14 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.3.0 - Phase 2
+
+- Added a validated backend-neutral training request and normalized result.
+- Added LichtFeld and contract-v1 DroneGS subprocess adapters.
+- Kept LichtFeld as the default while adding explicit environment and mission selection.
+- Wired the existing partitioned orthophoto workflow through the backend boundary.
+- Documented the pinned LichtFeld CLI's lack of user-controlled seed support.
+
 ## 0.2.0 - Phase 1
 
 - Added a versioned, backend-neutral benchmark suite format.

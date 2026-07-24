@@ -703,6 +703,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 filter_cc=gs_filter_cc,
                 filter_z_floater=gs_filter_z_floater,
                 checkpoint_dir=checkpoint_dir,
+                trainer_backend=params.get("gs_backend"),
+                training_seed=int(params.get("gs_seed", 0)),
             )
             report_mission_progress(vol_id, "GAUSS", 100,
                 log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "

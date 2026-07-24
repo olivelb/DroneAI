@@ -8,7 +8,7 @@ to swap in from the existing pipeline.
 Pipeline:
   1. Load COLMAP reconstruction + alignment transform
   2. Partition scene (VastGaussian, if m×n > 1×1)
-  3. Train Gaussian model per cell via LichtFeld MRNF (C++ headless)
+  3. Train Gaussian model per cell via the selected headless backend
   4. Merge cell models
   5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
   6. Write GeoTIFF
@@ -27,10 +27,9 @@ from .colmap_loader import (
 from .scene_info import build_scene_info
 from .gaussian_model import GaussianModel
 from .lichtfeld_trainer import (
-    LichtFeldTrainConfig,
-    train_with_lichtfeld,
     export_colmap_subset,
 )
+from gaussian_training import TrainingRequest, resolve_training_backend
 from .partition import partition_scene
 from .merge import merge_models
 from .ortho_renderer import render_orthophoto, compute_ortho_extent
@@ -75,6 +74,8 @@ def generate_gaussian_orthophoto(
     filter_cc: bool = False,
     filter_z_floater: bool = False,
     verbose: bool = False,
+    trainer_backend: str | None = None,
+    training_seed: int = 0,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -115,6 +116,12 @@ def generate_gaussian_orthophoto(
         LichtFeld memory-saving tile mode (1, 2, or 4).
     cap_max : int
         Maximum Gaussian count for MRNF strategy.
+    trainer_backend : str, optional
+        ``lichtfeld`` (default) or ``dronegs``. The environment variable
+        DRONEAI_GAUSSIAN_BACKEND is used when omitted.
+    training_seed : int
+        Requested base seed; each partition receives the base plus its index.
+        The pinned LichtFeld CLI cannot enforce this value.
     """
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
@@ -133,6 +140,7 @@ def generate_gaussian_orthophoto(
 
     if checkpoint_dir is None:
         checkpoint_dir = str(Path(ortho_file).parent / "gaussian_checkpoints")
+    backend = resolve_training_backend(trainer_backend)
 
     # --- 1. Load COLMAP reconstruction ---
     _report(vol_id, "GAUSS", 5, "Loading COLMAP reconstruction…", report_fn)
@@ -185,7 +193,7 @@ def generate_gaussian_orthophoto(
     else:
         cells = [(None, scene)]
 
-    # --- 3. Train per cell (LichtFeld MRNF) ---
+    # --- 3. Train per cell through the stable backend boundary ---
     cell_models = []
     n_cells = len(cells)
 
@@ -195,12 +203,12 @@ def generate_gaussian_orthophoto(
         pct_end = 15 + int(65 * (i + 1) / n_cells)
 
         _report(vol_id, "GAUSS", pct_start,
-                f"[LichtFeld MRNF] Training {cell_label}: "
+                f"[{backend.name} MRNF] Training {cell_label}: "
                 f"{len(cell_scene.train_cameras)} cameras, "
                 f"{cell_scene.point_cloud.points.shape[0]} points",
                 report_fn)
 
-        # Prepare per-cell COLMAP data for LichtFeld
+        # Prepare per-cell COLMAP data for the selected trainer.
         cell_output = os.path.join(checkpoint_dir, cell_label)
         sparse_dir = os.path.join(dense_path, "sparse", "0")
         if not os.path.isdir(sparse_dir):
@@ -217,41 +225,44 @@ def generate_gaussian_orthophoto(
                 camera_names=camera_names,
                 images_dir=images_dir_path,
             )
-            lf_data_path = cell_workspace
+            training_data_path = cell_workspace
         else:
-            lf_data_path = dense_path
+            training_data_path = dense_path
 
-        lf_config = LichtFeldTrainConfig(
+        training_request = TrainingRequest(
+            data_path=training_data_path,
+            output_path=cell_output,
             iterations=iterations,
             strategy="mrnf",
             sh_degree=sh_degree,
-            cap_max=cap_max,
-            data_path=lf_data_path,
-            output_path=cell_output,
-            data_factor=data_factor,
+            max_cap=cap_max,
+            resize_factor=data_factor,
             max_width=max_width,
             tile_mode=tile_mode,
+            seed=training_seed + i,
         )
 
-        def make_lf_reporter(pct_s, pct_e, vid, rfn, total):
+        def make_training_reporter(pct_s, pct_e, vid, rfn, total):
             def reporter(it, loss_val, n_gauss):
                 pct = pct_s + int((pct_e - pct_s) * it / max(1, total))
                 _report(vid, "GAUSS", pct,
                         f"[MRNF] iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
             return reporter
 
-        ply_path = train_with_lichtfeld(
-            lf_config,
-            report_fn=make_lf_reporter(pct_start, pct_end, vol_id, report_fn,
-                                       iterations),
+        training_result = backend.train(
+            training_request,
+            report_fn=make_training_reporter(
+                pct_start, pct_end, vol_id, report_fn, iterations,
+            ),
             verbose=verbose,
         )
+        ply_path = str(training_result.ply_path)
 
         # Load the exported PLY into our GaussianModel
         model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
         model.load_ply(ply_path)
         _report(vol_id, "GAUSS", pct_end,
-                f"[LichtFeld] Loaded {model.num_gaussians} Gaussians from {ply_path}",
+                f"[{backend.name}] Loaded {model.num_gaussians} Gaussians from {ply_path}",
                 report_fn)
 
         cell_models.append((cell_bounds, model))

@@ -12,6 +12,10 @@ TRAINER --data-path DATASET --output-path OUTPUT --iter ITERATIONS \
 An adapter may translate canonical options to a backend-specific spelling such
 as LichtFeld's `--resize_factor`.
 
+The pinned LichtFeld CLI does not expose a verified user-controlled global
+seed or emit a v1 manifest. Its migration adapter therefore reports the seed
+as ineffective and supplies no native manifest; these are known legacy gaps.
+
 ## Arguments
 
 | Option | Constraint |

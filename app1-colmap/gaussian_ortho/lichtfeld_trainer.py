@@ -209,6 +209,7 @@ def train_with_lichtfeld(
     report_fn: Optional[Callable] = None,
     mcp_port: int = LFS_MCP_PORT,
     verbose: bool = False,
+    binary: Optional[str] = None,
 ) -> str:
     """
     Run LichtFeld-Studio headless training and return the exported PLY path.
@@ -236,7 +237,7 @@ def train_with_lichtfeld(
     RuntimeError
         If training fails.
     """
-    binary = find_lichtfeld_binary()
+    binary = binary or find_lichtfeld_binary()
     if not binary:
         raise FileNotFoundError(
             "LichtFeld-Studio binary not found. "
