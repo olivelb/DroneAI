@@ -2,14 +2,18 @@
 #include "dronegs/image.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <csetjmp>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <jpeglib.h>
@@ -133,12 +137,95 @@ ImageData load_training_image(const std::filesystem::path& path,
             const auto target_offset =
                 (static_cast<std::size_t>(y) * target_width + x) * 3U;
             for (std::size_t channel = 0; channel < 3U; ++channel) {
-                result.rgb[target_offset + channel] =
-                    static_cast<float>(source.rgb[source_offset + channel]) / 255.0F;
+                result.rgb[target_offset + channel] = source.rgb[source_offset + channel];
             }
         }
     }
     return result;
+}
+
+ImageCache::ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loader loader)
+    : item_count_(item_count),
+      capacity_bytes_(capacity_bytes),
+      loader_(std::move(loader)) {
+    if (item_count_ == 0U) {
+        throw std::invalid_argument("image cache requires at least one item");
+    }
+    if (capacity_bytes_ == 0U) {
+        throw std::invalid_argument("image cache capacity must be positive");
+    }
+    if (!loader_) {
+        throw std::invalid_argument("image cache loader is required");
+    }
+}
+
+const ImageData& ImageCache::get(std::size_t index) {
+    if (index >= item_count_) {
+        throw std::out_of_range("image cache index is out of range");
+    }
+    ++stats_.requests;
+    auto found = entries_.find(index);
+    if (found != entries_.end()) {
+        ++stats_.hits;
+        touch(found);
+        return found->second.image;
+    }
+
+    ++stats_.misses;
+    const auto loading_start = std::chrono::steady_clock::now();
+    auto image = loader_(index);
+    stats_.loading_seconds += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - loading_start).count();
+    const std::size_t bytes = image.rgb.size() * sizeof(std::uint8_t);
+    if (bytes == 0U) {
+        throw std::runtime_error("image cache loader returned an empty image");
+    }
+    if (bytes > capacity_bytes_) {
+        throw std::runtime_error("decoded training image exceeds host cache capacity");
+    }
+    make_room(bytes);
+    recency_.push_front(index);
+    auto [inserted, was_inserted] = entries_.emplace(
+        index, Entry{
+            .image = std::move(image),
+            .recency = recency_.begin(),
+            .bytes = bytes,
+        });
+    if (!was_inserted) {
+        throw std::logic_error("image cache insertion failed");
+    }
+    stats_.resident_bytes += bytes;
+    stats_.peak_resident_bytes =
+        std::max(stats_.peak_resident_bytes, stats_.resident_bytes);
+    return inserted->second.image;
+}
+
+const ImageCacheStats& ImageCache::stats() const noexcept {
+    return stats_;
+}
+
+std::size_t ImageCache::capacity_bytes() const noexcept {
+    return capacity_bytes_;
+}
+
+void ImageCache::touch(std::unordered_map<std::size_t, Entry>::iterator entry) {
+    recency_.erase(entry->second.recency);
+    recency_.push_front(entry->first);
+    entry->second.recency = recency_.begin();
+}
+
+void ImageCache::make_room(std::size_t bytes) {
+    while (!recency_.empty() && stats_.resident_bytes + bytes > capacity_bytes_) {
+        const std::size_t victim = recency_.back();
+        const auto found = entries_.find(victim);
+        if (found == entries_.end()) {
+            throw std::logic_error("image cache LRU state is inconsistent");
+        }
+        stats_.resident_bytes -= found->second.bytes;
+        entries_.erase(found);
+        recency_.pop_back();
+        ++stats_.evictions;
+    }
 }
 
 }  // namespace dronegs

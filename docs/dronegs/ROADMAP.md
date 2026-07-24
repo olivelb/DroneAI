@@ -21,15 +21,17 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.1.
+- Current development version: 0.5.0-dev.2.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
+- Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
+  cardinality stress test, and cache telemetry.
 - Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
   gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
-- Large-scene blocker: the development prototype decodes every training image into
-  host RAM; bounded asynchronous caching is required before 1,000+ image tests.
+- Large-scene throughput blocker: decode is synchronous; asynchronous prefetch and
+  a representative 1,000+ photograph benchmark are still required.
 
 ## Versioning rules
 

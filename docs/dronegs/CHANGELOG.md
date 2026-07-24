@@ -2,6 +2,16 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.2 - Phase 4 large-scene memory
+
+- Changed decoded training targets and GPU transfers from float32 RGB to RGB8.
+- Replaced eager all-image decoding with a lazy 256 MiB byte-bounded LRU cache.
+- Added cache hit, miss, eviction, capacity, peak-residency, and decode timings.
+- Added a 2,048-image cardinality stress test for the memory bound.
+- Reduced the GAJAN-25 decoded target peak by 75% to 15.12 MB.
+- Reduced the median 500-iteration training loop by 11.6% at equivalent anchor loss.
+- Kept `dronegs-v0.5.0` untagged; this is a scaling sub-gate, not quality parity.
+
 ## 0.5.0-dev.1 - Phase 4 experimental
 
 - Preserved COLMAP world-to-camera poses and added native JPEG decoding.

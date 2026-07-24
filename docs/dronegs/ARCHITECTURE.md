@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.1
+Project version: 0.5.0-dev.2
 
 ## Decision
 
@@ -78,9 +78,10 @@ front-to-back alpha ordering, visibility sort, anisotropic covariance projection
 position/scale/rotation gradients, DSSIM, progressive SH, split/prune/grow, or
 held-out quality evaluation. It supports only SIMPLE_PINHOLE and PINHOLE inputs.
 
-The prototype currently caches all decoded training images in host RAM. That is
-acceptable for the 25-image smoke gate but explicitly blocks representative
-1,000+ image tests until a bounded asynchronous image cache is implemented.
+Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
+payload therefore stays bounded independently of image count, and cache
+hit/miss/eviction/peak-byte metrics are recorded. Decode remains synchronous;
+prefetch, pinned staging buffers, and overlap with GPU work are still pending.
 
 ## Planned layout
 

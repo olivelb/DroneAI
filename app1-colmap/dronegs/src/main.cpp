@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
-        std::cout << "DroneGS 0.5.0-dev.1 fixed-topology additive prototype\n";
+        std::cout << "DroneGS 0.5.0-dev.2 fixed-topology additive prototype\n";
         return 0;
     }
 
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.1 uses experimental additive splatting; "
+        std::cerr << "DroneGS 0.5.0-dev.2 uses experimental additive splatting; "
                      "ordered alpha compositing and parity are not implemented yet.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
@@ -60,6 +60,11 @@ int main(int argc, char** argv) {
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;
         measurements.final_loss = training.final_loss;
+        measurements.image_cache_hits = training.image_cache_hits;
+        measurements.image_cache_misses = training.image_cache_misses;
+        measurements.image_cache_evictions = training.image_cache_evictions;
+        measurements.image_cache_capacity_bytes = training.image_cache_capacity_bytes;
+        measurements.peak_image_cache_bytes = training.peak_image_cache_bytes;
         measurements.export_seconds =
             std::chrono::duration<double>(export_end - export_start).count();
         measurements.wall_seconds =

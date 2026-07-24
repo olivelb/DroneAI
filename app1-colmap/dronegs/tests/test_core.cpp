@@ -14,6 +14,7 @@
 #include "dronegs/colmap.hpp"
 #include "dronegs/manifest.hpp"
 #include "dronegs/model.hpp"
+#include "dronegs/image.hpp"
 #include "dronegs/ply.hpp"
 
 namespace {
@@ -146,6 +147,11 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .wall_seconds = 0.3,
         .initial_loss = 0.4F,
         .final_loss = 0.2F,
+        .image_cache_hits = 3U,
+        .image_cache_misses = 2U,
+        .image_cache_evictions = 1U,
+        .image_cache_capacity_bytes = 1024U,
+        .peak_image_cache_bytes = 512U,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,
@@ -157,6 +163,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest contract version missing");
     check(manifest_text.find("\"git_revision\": null") == std::string::npos,
           "manifest Git revision missing");
+    check(manifest_text.find("\"image_cache_hits\": 3") != std::string::npos,
+          "manifest image cache metrics missing");
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
@@ -191,6 +199,67 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     }
     check(rejected, "CLI accepted max-width above contract limit");
 }
+void test_image_cache() {
+    std::uint64_t loads = 0U;
+    dronegs::ImageCache cache(
+        3U, 12U,
+        [&loads](std::size_t index) {
+            ++loads;
+            dronegs::ImageData image{
+                .width = 2U,
+                .height = 1U,
+                .source_to_image_x = 1.0F,
+                .source_to_image_y = 1.0F,
+                .rgb = std::vector<std::uint8_t>(6U, static_cast<std::uint8_t>(index)),
+            };
+            return image;
+        });
+    static_cast<void>(cache.get(0U));
+    static_cast<void>(cache.get(1U));
+    static_cast<void>(cache.get(0U));
+    static_cast<void>(cache.get(2U));
+    check(loads == 3U, "image cache loader count mismatch");
+    check(cache.stats().requests == 4U, "image cache request count mismatch");
+    check(cache.stats().hits == 1U, "image cache hit count mismatch");
+    check(cache.stats().misses == 3U, "image cache miss count mismatch");
+    check(cache.stats().evictions == 1U, "image cache eviction count mismatch");
+    check(cache.stats().resident_bytes == 12U, "image cache resident bytes mismatch");
+    check(cache.stats().peak_resident_bytes <= cache.capacity_bytes(),
+          "image cache exceeded its byte capacity");
+
+    bool oversized_rejected = false;
+    try {
+        dronegs::ImageCache oversized(
+            1U, 5U, [](std::size_t) {
+                return dronegs::ImageData{.width = 2U, .height = 1U, .rgb = {0, 0, 0, 0, 0, 0}};
+            });
+        static_cast<void>(oversized.get(0U));
+    } catch (const std::runtime_error&) {
+        oversized_rejected = true;
+    }
+    check(oversized_rejected, "image cache accepted an oversized decoded image");
+    constexpr std::size_t large_item_count = 2048U;
+    constexpr std::size_t large_item_bytes = 1024U;
+    constexpr std::size_t large_capacity = 8U * large_item_bytes;
+    dronegs::ImageCache large_cache(
+        large_item_count, large_capacity,
+        [](std::size_t index) {
+            return dronegs::ImageData{
+                .width = 1U,
+                .height = 1U,
+                .rgb = std::vector<std::uint8_t>(
+                    large_item_bytes, static_cast<std::uint8_t>(index % 256U)),
+            };
+        });
+    for (std::size_t pass = 0; pass < 2U; ++pass) {
+        for (std::size_t index = 0; index < large_item_count; ++index) {
+            static_cast<void>(large_cache.get(index));
+        }
+    }
+    check(large_cache.stats().peak_resident_bytes <= large_capacity,
+          "large-cardinality image cache exceeded its byte capacity");
+}
+
 
 }  // namespace
 
@@ -203,6 +272,7 @@ int main() {
     try {
         test_scene_and_ply(data);
         test_cli(data, output);
+        test_image_cache();
         std::filesystem::remove_all(base);
         std::cout << "DroneGS core tests passed\n";
         return 0;

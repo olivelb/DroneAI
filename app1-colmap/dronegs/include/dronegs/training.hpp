@@ -15,6 +15,11 @@ struct TrainingMetrics {
     double image_loading_seconds = 0.0;
     double setup_seconds = 0.0;
     double training_seconds = 0.0;
+    std::uint64_t image_cache_hits = 0;
+    std::uint64_t image_cache_misses = 0;
+    std::uint64_t image_cache_evictions = 0;
+    std::uint64_t image_cache_capacity_bytes = 0;
+    std::uint64_t peak_image_cache_bytes = 0;
 };
 
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,

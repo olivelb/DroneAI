@@ -106,7 +106,7 @@ struct DeviceCamera {
 };
 
 struct TrainingFrame {
-    ImageData image;
+    const ImageData* image = nullptr;
     DeviceCamera camera;
 };
 
@@ -205,7 +205,7 @@ __global__ void render_additive_kernel(const Gaussian* gaussians,
 
 __global__ void normalize_and_loss_kernel(const float* accumulated_rgb,
                                           const float* accumulated_weight,
-                                          const float* target,
+                                          const std::uint8_t* target,
                                           float* prediction,
                                           float* loss_sum,
                                           unsigned int* active_pixels,
@@ -227,14 +227,15 @@ __global__ void normalize_and_loss_kernel(const float* accumulated_rgb,
         const auto offset = pixel * 3U + channel;
         const float value = accumulated_rgb[offset] / weight;
         prediction[offset] = value;
-        pixel_loss += fabsf(value - target[offset]);
+        const float target_value = static_cast<float>(target[offset]) / 255.0F;
+        pixel_loss += fabsf(value - target_value);
     }
     atomicAdd(loss_sum, pixel_loss);
     atomicAdd(active_pixels, 1U);
 }
 
 __global__ void image_gradient_kernel(const float* prediction,
-                                      const float* target,
+                                      const std::uint8_t* target,
                                       const float* accumulated_weight,
                                       float* image_gradient,
                                       float normalizer,
@@ -247,7 +248,8 @@ __global__ void image_gradient_kernel(const float* prediction,
     const bool active = accumulated_weight[pixel] > minimum_weight;
     for (std::size_t channel = 0; channel < 3U; ++channel) {
         const auto offset = pixel * 3U + channel;
-        const float difference = prediction[offset] - target[offset];
+        const float target_value = static_cast<float>(target[offset]) / 255.0F;
+        const float difference = prediction[offset] - target_value;
         image_gradient[offset] =
             active ? (difference > 0.0F ? normalizer :
                       (difference < 0.0F ? -normalizer : 0.0F)) : 0.0F;
@@ -443,21 +445,64 @@ DeviceCamera make_device_camera(const Camera& camera, const Image& image,
     return result;
 }
 
-std::vector<TrainingFrame> load_frames(const Options& options, const Scene& scene) {
-    std::vector<TrainingFrame> frames;
-    frames.reserve(scene.images.size());
+struct FrameDescriptor {
+    const Image* image = nullptr;
+    const Camera* camera = nullptr;
+};
+
+std::pair<std::uint32_t, std::uint32_t> training_dimensions(
+    const Camera& camera, const Options& options) {
+    double effective_factor = static_cast<double>(options.resize_factor);
+    if (camera.width > options.max_width) {
+        effective_factor = std::max(
+            effective_factor,
+            static_cast<double>(camera.width) / static_cast<double>(options.max_width));
+    }
+    const double width = static_cast<double>(camera.width) / effective_factor;
+    const double height = static_cast<double>(camera.height) / effective_factor;
+    if (width > static_cast<double>(std::numeric_limits<std::uint32_t>::max()) ||
+        height > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error("scaled training image dimensions exceed uint32");
+    }
+    return {
+        std::max(1U, static_cast<std::uint32_t>(width)),
+        std::max(1U, static_cast<std::uint32_t>(height)),
+    };
+}
+
+std::vector<FrameDescriptor> make_frame_descriptors(
+    const Options& options, const Scene& scene, std::size_t& maximum_pixels) {
+    std::vector<FrameDescriptor> descriptors;
+    descriptors.reserve(scene.images.size());
+    maximum_pixels = 0U;
     for (const auto& image : scene.images) {
-        auto decoded = load_training_image(
-            options.data_path / "images" / image.name,
-            options.resize_factor, options.max_width);
         const auto& camera = find_camera(scene, image.camera_id);
-        const auto device_camera = make_device_camera(camera, image, decoded);
-        frames.push_back({
-            .image = std::move(decoded),
-            .camera = device_camera,
+        const auto [width, height] = training_dimensions(camera, options);
+        const std::size_t pixels = static_cast<std::size_t>(width) * height;
+        maximum_pixels = std::max(maximum_pixels, pixels);
+        descriptors.push_back({
+            .image = &image,
+            .camera = &camera,
         });
     }
-    return frames;
+    return descriptors;
+}
+
+TrainingFrame frame_from_cache(ImageCache& cache,
+                               const std::vector<FrameDescriptor>& descriptors,
+                               std::size_t index, const Options& options) {
+    const auto& descriptor = descriptors.at(index);
+    const auto& decoded = cache.get(index);
+    const auto [expected_width, expected_height] =
+        training_dimensions(*descriptor.camera, options);
+    if (decoded.width != expected_width || decoded.height != expected_height) {
+        throw std::runtime_error(
+            "decoded training image dimensions do not match COLMAP camera");
+    }
+    return {
+        .image = &decoded,
+        .camera = make_device_camera(*descriptor.camera, *descriptor.image, decoded),
+    };
 }
 
 struct TrainingWorkspace {
@@ -483,7 +528,7 @@ struct TrainingWorkspace {
     }
 
     DeviceBuffer<Gaussian> gaussians;
-    DeviceBuffer<float> target;
+    DeviceBuffer<std::uint8_t> target;
     DeviceBuffer<float> accumulated_rgb;
     DeviceBuffer<float> accumulated_weight;
     DeviceBuffer<float> prediction;
@@ -500,9 +545,12 @@ struct TrainingWorkspace {
 
 float render_loss(TrainingWorkspace& workspace, const TrainingFrame& frame,
                   std::size_t gaussian_count, bool compute_gradient) {
+    if (frame.image == nullptr) {
+        throw std::invalid_argument("training frame has no decoded image");
+    }
     const std::size_t pixel_count =
-        static_cast<std::size_t>(frame.image.width) * frame.image.height;
-    workspace.target.copy_from_host(frame.image.rgb.data(), pixel_count * 3U);
+        static_cast<std::size_t>(frame.image->width) * frame.image->height;
+    workspace.target.copy_from_host(frame.image->rgb.data(), pixel_count * 3U);
     workspace.accumulated_rgb.zero(pixel_count * 3U);
     workspace.accumulated_weight.zero(pixel_count);
     workspace.loss_sum.zero(1U);
@@ -552,29 +600,36 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     if (gaussians.empty() || scene.images.empty()) {
         throw std::invalid_argument("training requires images and initialized Gaussians");
     }
-    const auto image_loading_start = std::chrono::steady_clock::now();
-    const auto frames = load_frames(options, scene);
-    const auto image_loading_end = std::chrono::steady_clock::now();
-    const auto largest_frame = std::max_element(
-        frames.begin(), frames.end(),
-        [](const TrainingFrame& left, const TrainingFrame& right) {
-            return static_cast<std::size_t>(left.image.width) * left.image.height <
-                   static_cast<std::size_t>(right.image.width) * right.image.height;
+    constexpr std::size_t host_cache_capacity = 256U * 1024U * 1024U;
+    std::size_t maximum_pixels = 0U;
+    const auto descriptors = make_frame_descriptors(options, scene, maximum_pixels);
+    ImageCache cache(
+        descriptors.size(), host_cache_capacity,
+        [&descriptors, &options](std::size_t index) {
+            const auto* image = descriptors.at(index).image;
+            return load_training_image(
+                options.data_path / "images" / image->name,
+                options.resize_factor, options.max_width);
         });
-    const std::size_t maximum_pixels =
-        static_cast<std::size_t>(largest_frame->image.width) * largest_frame->image.height;
+
+    const auto setup_start = std::chrono::steady_clock::now();
     TrainingWorkspace workspace(gaussians.size(), maximum_pixels);
     workspace.gaussians.copy_from_host(gaussians.data(), gaussians.size());
 
     TrainingMetrics metrics{
         .iterations = options.iterations,
     };
-    metrics.initial_loss = render_loss(
-        workspace, frames.front(), gaussians.size(), false);
-    const auto setup_start = image_loading_end;
+    const auto initial_frame = frame_from_cache(cache, descriptors, 0U, options);
+    metrics.initial_loss =
+        render_loss(workspace, initial_frame, gaussians.size(), false);
     const auto training_start = std::chrono::steady_clock::now();
+    const double setup_wall_seconds =
+        std::chrono::duration<double>(training_start - setup_start).count();
+    metrics.setup_seconds = std::max(
+        0.0, setup_wall_seconds - cache.stats().loading_seconds);
+    const double loading_seconds_before_training = cache.stats().loading_seconds;
 
-    std::vector<std::size_t> camera_order(frames.size());
+    std::vector<std::size_t> camera_order(descriptors.size());
     for (std::size_t index = 0; index < camera_order.size(); ++index) {
         camera_order[index] = index;
     }
@@ -584,11 +639,6 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     constexpr float beta_second = 0.999F;
     float beta_first_power = 1.0F;
     float beta_second_power = 1.0F;
-    metrics.image_loading_seconds = std::chrono::duration<double>(
-        image_loading_end - image_loading_start).count();
-
-    metrics.setup_seconds = std::chrono::duration<double>(
-        training_start - setup_start).count();
     const std::uint64_t progress_interval = std::max<std::uint64_t>(
         1U, options.iterations / 20U);
     for (std::uint64_t iteration = 1; iteration <= options.iterations; ++iteration) {
@@ -597,7 +647,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         if (order_index == 0U && iteration > 1U) {
             std::shuffle(camera_order.begin(), camera_order.end(), random);
         }
-        const auto& frame = frames[camera_order[order_index]];
+        const auto frame = frame_from_cache(
+            cache, descriptors, camera_order[order_index], options);
         const float loss = render_loss(workspace, frame, gaussians.size(), true);
         beta_first_power *= beta_first;
         beta_second_power *= beta_second;
@@ -623,10 +674,34 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         }
     }
     require_cuda(cudaDeviceSynchronize(), "synchronize fixed-topology training");
-    metrics.training_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - training_start).count();
-    metrics.final_loss = render_loss(
-        workspace, frames.front(), gaussians.size(), false);
+    const auto training_end = std::chrono::steady_clock::now();
+    const double training_wall_seconds =
+        std::chrono::duration<double>(training_end - training_start).count();
+    const double training_loading_seconds =
+        cache.stats().loading_seconds - loading_seconds_before_training;
+    metrics.training_seconds = std::max(
+        0.0, training_wall_seconds - training_loading_seconds);
+
+    const auto final_evaluation_start = std::chrono::steady_clock::now();
+    const double loading_seconds_before_final = cache.stats().loading_seconds;
+    const auto final_frame = frame_from_cache(cache, descriptors, 0U, options);
+    metrics.final_loss =
+        render_loss(workspace, final_frame, gaussians.size(), false);
+    const double final_evaluation_wall_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - final_evaluation_start).count();
+    const double final_loading_seconds =
+        cache.stats().loading_seconds - loading_seconds_before_final;
+    metrics.setup_seconds += std::max(
+        0.0, final_evaluation_wall_seconds - final_loading_seconds);
+
+    metrics.image_loading_seconds = cache.stats().loading_seconds;
+    metrics.image_cache_hits = cache.stats().hits;
+    metrics.image_cache_misses = cache.stats().misses;
+    metrics.image_cache_evictions = cache.stats().evictions;
+    metrics.image_cache_capacity_bytes =
+        static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.peak_image_cache_bytes =
+        static_cast<std::uint64_t>(cache.stats().peak_resident_bytes);
     workspace.gaussians.copy_to_host(gaussians.data(), gaussians.size());
     return metrics;
 }
