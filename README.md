@@ -391,7 +391,7 @@ Important review points:
 
 - COLMAP: BSD-3-Clause, with academic citations requested by upstream;
 - Ceres Solver: BSD-3-Clause;
-- LichtFeld-Studio: BSD-3-Clause, plus licenses of bundled dependencies;
+- LichtFeld-Studio: GPL-3.0-or-later, plus licenses of bundled dependencies;
 - Ultralytics YOLO: AGPL-3.0 or a commercial enterprise license;
 - Meta SAM 3 source and the gated `facebook/sam3` checkpoint: separate
   upstream terms, not covered by this repository’s MIT license;
