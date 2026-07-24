@@ -1,4 +1,5 @@
 import json
+import struct
 
 import pytest
 
@@ -7,6 +8,7 @@ from tools.run_local_colmap import (
     ensure_workspace,
     select_records,
     stage_images,
+    sparse_model_path,
     write_colmap_references,
 )
 from shared.geo_alignment import estimate_sim3
@@ -91,6 +93,19 @@ def test_stage_images_only_writes_to_marked_workspace(tmp_path):
     assert json.loads((workspace / "selection.json").read_text(encoding="utf-8"))[0][
         "file"
     ] == "DJI_0000.JPG"
+
+
+def test_sparse_model_path_selects_most_registered_images(tmp_path):
+    sparse_root = tmp_path / "sparse"
+    for name, image_count in (("0", 3), ("1", 25), ("2", 8)):
+        model = sparse_root / name
+        model.mkdir(parents=True)
+        (model / "cameras.bin").write_bytes(b"camera")
+        (model / "images.bin").write_bytes(struct.pack("<Q", image_count))
+
+    selected = sparse_model_path(tmp_path)
+
+    assert selected == sparse_root / "1"
 
 
 def test_reference_file_uses_recommended_projected_crs(tmp_path):
