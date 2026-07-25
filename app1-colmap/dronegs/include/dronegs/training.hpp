@@ -28,6 +28,12 @@ struct ImageObjectiveOutput {
     std::vector<float> transmittance;
 };
 
+struct TopologyRefinementResult {
+    std::size_t candidates = 0U;
+    std::size_t added = 0U;
+    std::size_t gaussian_count = 0U;
+};
+
 struct TrainingMetrics {
     float initial_loss = 0.0F;
     float final_loss = 0.0F;
@@ -46,6 +52,8 @@ struct TrainingMetrics {
     std::uint64_t image_prefetch_ready = 0;
     std::uint64_t training_image_count = 0;
     std::uint64_t held_out_image_count = 0;
+    std::uint64_t topology_refinements = 0;
+    std::uint64_t gaussians_added = 0;
     double evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
@@ -59,7 +67,7 @@ DatasetSplit make_dataset_split(
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians);
 
-TrainingMetrics train_fixed_topology_ordered(
+TrainingMetrics train_ordered_mrnf(
     const Options& options, const Scene& scene,
     std::vector<Gaussian>& gaussians);
 

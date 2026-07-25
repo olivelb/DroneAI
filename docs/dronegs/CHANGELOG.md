@@ -2,6 +2,27 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.15 - Phase 4 MRNF growth isolation
+
+- Added capacity-aware persistent Gaussian, gradient, statistic, and Adam
+  buffers up to `--max-cap`.
+- Added SSIM-error-map normalization and per-Gaussian contribution-weighted
+  refinement statistics accumulated over 200-step windows.
+- Added deterministic score/index selection at threshold `0.003`, 7% growth,
+  and a rotated longest-axis parent/child split with reset optimizer moments.
+- Added topology events with candidate/addition counts and manifest fields for
+  protocol, refinement count, total additions, and final population.
+- Added a forced 1-to-2 CUDA split test covering geometry, copied attributes,
+  opacity, capacity, and statistic reset; all five native executables pass.
+- The Albagnac 500-step run grows by 148,483 to 1,173,576 Gaussians, only 36
+  above pinned LichtFeld's final population.
+- Held-out quality regresses dev.14 by 0.0556 dB and 0.001321 SSIM while
+  trainer compute rises 36.1%; population parity alone is rejected as a
+  quality solution.
+- Conservatively relicensed `cuda/rasterization.cu` and `cuda/trainer.cu`
+  under GPL-3.0-or-later because dev.15 adapts pinned LichtFeld MRNF behavior;
+  exact upstream/local paths are recorded in `GPL_COMPONENTS.md`.
+
 ## 0.5.0-dev.14 - Phase 4 analytical DSSIM objective
 
 - Replaced the ordered trainer's pure active-pixel L1 objective with

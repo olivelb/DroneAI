@@ -21,10 +21,10 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.14.
+- Current development version: 0.5.0-dev.15.
 - Production backend: LichtFeld.
-- DroneGS native backend: experimental fixed-topology anisotropic
-  ordered-alpha trainer with held-out PSNR/SSIM; opt-in only.
+- DroneGS native backend: experimental anisotropic ordered-alpha trainer with
+  deterministic MRNF growth and held-out PSNR/SSIM; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
@@ -85,15 +85,21 @@ Each completed phase has one focused commit and an annotated
   trainer. On Albagnac it improves SSIM on 171 of 172 held-out views.
 - The dev.14 mean is 17.1154 dB / 0.246278 SSIM. Versus dev.13 this is
   -0.0058 dB / +0.004378 SSIM at a 4.4% trainer-compute cost.
-- Phase 4 exit gate still open: the pinned-control gaps are 3.9532 dB and
-  0.3848 SSIM; LPIPS, progressive SH, topology, and parity remain open.
+- MRNF contribution/error weighting, 200-step cadence, threshold, 7% growth,
+  capacity reservation, and rotated long-axis split are integrated in dev.15.
+- Albagnac grows from 1,025,093 to 1,173,576 Gaussians, only 36 above the
+  pinned LichtFeld population. Quality nevertheless regresses dev.14 by
+  0.0556 dB and 0.001321 SSIM; trainer compute rises from 41.052 to 55.865 s.
+- Phase 4 exit gate remains open: dev.15 reaches 17.0597 dB / 0.244958 SSIM,
+  leaving pinned-control gaps of 4.0088 dB and 0.38609 SSIM. LPIPS,
+  progressive SH, full MRNF selection/schedules, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 correctness priority is MRNF topology. Progressive SH
-  follows for nonzero-SH controls. Topology is already a demonstrated factor:
-  LichtFeld grows from 1,025,093 to 1,173,540 Gaussians in the 500-step
-  held-out control while DroneGS stays fixed.
+- The immediate Phase 4 priority is no longer raw population growth. The next
+  controlled MRNF factors are stochastic weighted selection plus edge
+  guidance, followed by strategy-specific parameter schedules. Progressive SH
+  follows for a nonzero-SH control.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

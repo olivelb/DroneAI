@@ -46,8 +46,8 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS fixed-topology anisotropic geometry-optimized "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.14\n"
+        "DroneGS anisotropic geometry-optimized MRNF-growth "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.15\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -128,7 +128,8 @@ void validate_options(const Options& options) {
         throw std::invalid_argument("--iter must be positive");
     }
     if (options.strategy != "mrnf") {
-        throw std::invalid_argument("the fixed-topology prototype only accepts strategy mrnf");
+        throw std::invalid_argument(
+            "the native topology-growth prototype only accepts strategy mrnf");
     }
     if (options.sh_degree > 3) {
         throw std::invalid_argument("--sh-degree must be between 0 and 3");

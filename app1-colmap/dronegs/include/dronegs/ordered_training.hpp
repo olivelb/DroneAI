@@ -16,7 +16,8 @@ public:
     OrderedAlphaTrainingContext(
         const std::vector<Gaussian>& gaussians,
         std::size_t maximum_pixels,
-        std::uint64_t maximum_steps);
+        std::uint64_t maximum_steps,
+        std::size_t maximum_gaussians = 0U);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(
@@ -41,6 +42,10 @@ public:
     float train_step(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes);
+    TopologyRefinementResult refine_topology(
+        float gradient_threshold = 0.003F,
+        float grow_fraction = 0.07F);
+    std::size_t size() const noexcept;
     void download(std::vector<Gaussian>& gaussians) const;
 
 private:

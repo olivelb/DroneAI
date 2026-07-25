@@ -163,6 +163,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .image_prefetch_ready = 2U,
         .training_image_count = 7U,
         .held_out_image_count = 1U,
+        .topology_refinements = 2U,
+        .gaussians_added = 15U,
         .initial_held_out_psnr = 10.0F,
         .initial_held_out_ssim = 0.2F,
         .final_held_out_psnr = 12.0F,
@@ -194,6 +196,20 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
           "manifest held-out split count missing");
+    check(manifest_text.find("\"topology_refinements\": 2") !=
+              std::string::npos,
+          "manifest topology refinement count missing");
+    check(manifest_text.find("\"gaussians_added\": 15") !=
+              std::string::npos,
+          "manifest Gaussian growth count missing");
+    check(manifest_text.find("\"growth_gradient_threshold\": 0.003") !=
+              std::string::npos,
+          "manifest topology growth protocol missing");
+    check(manifest_text.find(
+              "\"growth_score\": "
+              "\"max_normalized_ssim_error_weighted_alpha_contribution\"") !=
+              std::string::npos,
+          "manifest topology score definition missing");
     check(manifest_text.find("\"psnr\": 12") != std::string::npos,
           "manifest held-out PSNR missing");
     check(manifest_text.find("\"ssim\": 0.300000") != std::string::npos,

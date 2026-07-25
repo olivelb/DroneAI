@@ -1,4 +1,13 @@
-// SPDX-License-Identifier: MIT
+/* SPDX-FileCopyrightText: 2026 DroneAI authors
+ * SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * The dev.15 refine cadence, threshold, growth fraction, and growth window
+ * are adapted from the pinned LichtFeld MRNF strategy. The pre-existing
+ * DroneGS orchestration in this file was original MIT code; this combined
+ * translation unit is conservatively distributed under GPL-3.0-or-later
+ * from dev.15 onward.
+ */
 #include "dronegs/training.hpp"
 
 #include <cuda_runtime.h>
@@ -952,7 +961,7 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     return metrics;
 }
 
-TrainingMetrics train_fixed_topology_ordered(
+TrainingMetrics train_ordered_mrnf(
     const Options& options, const Scene& scene,
     std::vector<Gaussian>& gaussians) {
     if (gaussians.empty() || scene.images.empty()) {
@@ -979,7 +988,8 @@ TrainingMetrics train_fixed_topology_ordered(
 
     const auto setup_start = std::chrono::steady_clock::now();
     OrderedAlphaTrainingContext workspace(
-        gaussians, maximum_pixels, options.iterations);
+        gaussians, maximum_pixels, options.iterations,
+        static_cast<std::size_t>(options.max_cap));
     TrainingMetrics metrics{
         .iterations = options.iterations,
         .training_image_count =
@@ -1034,6 +1044,20 @@ TrainingMetrics train_fixed_topology_ordered(
         const float loss = workspace.train_step(
             raster_camera, frame.image->rgb.data(),
             frame.image->rgb.size());
+        if (iteration % 200U == 0U && iteration < 15'000U) {
+            const auto refinement =
+                workspace.refine_topology(0.003F, 0.07F);
+            ++metrics.topology_refinements;
+            metrics.gaussians_added += refinement.added;
+            std::cout
+                << "{\"event\":\"topology_refinement\",\"iteration\":"
+                << iteration
+                << ",\"candidates\":" << refinement.candidates
+                << ",\"added\":" << refinement.added
+                << ",\"gaussians\":" << refinement.gaussian_count
+                << "}\n"
+                << std::flush;
+        }
         if (iteration == 1U ||
             iteration == options.iterations ||
             iteration % progress_interval == 0U) {
@@ -1042,7 +1066,7 @@ TrainingMetrics train_fixed_topology_ordered(
                 << iteration
                 << ",\"iterations\":" << options.iterations
                 << ",\"loss\":" << loss
-                << ",\"gaussians\":" << gaussians.size()
+                << ",\"gaussians\":" << workspace.size()
                 << "}\n"
                 << std::flush;
         }

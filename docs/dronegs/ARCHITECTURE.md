@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.14
+Project version: 0.5.0-dev.15
 
 ## Decision
 
@@ -68,7 +68,7 @@ revision, license, copyright, and local paths.
 
 ## Phase 4 development slice
 
-The current development slice projects fixed sparse Gaussians with COLMAP
+The current development slice initializes sparse Gaussians from COLMAP
 world-to-camera poses, transforms normalized quaternion rotations and
 non-uniform exponential scales into camera space, projects the covariance
 through the pinhole Jacobian, sorts visible splats deterministically into 16x16
@@ -77,10 +77,13 @@ tiles, composites bounded anisotropic kernels front-to-back, computes
 opacity, position, log-scale, and normalized-quaternion gradients. The
 persistent trainer retains those
 gradients and all Adam moments on device and updates the five parameter
-families after every training frame.
+families after every training frame. At 200-step windows it can grow topology
+up to `max_cap` using normalized SSIM-error-weighted alpha contributions and a
+rotated longest-axis parent/child split.
 
-This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no progressive SH, split/prune/grow, or LPIPS. It supports only
+This is still an incomplete MRNF scaffold, not the parity rasterizer. It has
+growth and split but no prune/replacement, Gumbel sampling, edge guidance,
+noise, decay, compaction, progressive SH, or LPIPS. It supports only
 SIMPLE_PINHOLE and PINHOLE inputs.
 
 An opt-in held-out protocol uses the same index rule as LichtFeld:
@@ -165,6 +168,22 @@ trainer image gradient; a CPU oracle plus eight central finite differences
 guard the implementation. The Albagnac result isolates DSSIM from topology:
 SSIM improves by 0.004378 while PSNR is effectively unchanged, leaving MRNF
 growth as the next controlled parity factor.
+Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
+capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
+blending weight and the same weight multiplied by a normalized `1-SSIM` map.
+Every 200 steps, candidates above `0.003` are sorted deterministically by
+weight/source index; 7% are split along the longest rotated 3D scale axis,
+with 0.5/0.85 scale shrink, opacity redistribution, appended children, and
+zeroed parent/child moments. This reproduces LichtFeld's final 500-step
+Albagnac population within 36 Gaussians but slightly reduces held-out quality.
+It therefore proves that population count and split geometry alone do not
+explain parity.
+
+The dev.15 behavior was adapted after inspection of pinned LichtFeld GPL
+sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
+GPL-3.0-or-later and recorded with exact upstream/local paths in
+`GPL_COMPONENTS.md`. The remaining original DroneGS units retain their
+existing MIT identifiers; the linked dev.15 native binary is GPL-covered.
 
 ## Planned layout
 

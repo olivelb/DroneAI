@@ -325,6 +325,81 @@ int main() {
             throw std::runtime_error(
                 "insufficient DSSIM finite-difference probes");
         }
+        dronegs::Gaussian split_parent{
+            .xyz = {-0.2F, 0.1F, 2.0F},
+            .dc = {0.0F, 0.0F, 0.0F},
+            .log_scale = {
+                std::log(0.2F),
+                std::log(0.1F),
+                std::log(0.08F),
+            },
+            .rotation = {1.0F, 0.0F, 0.0F, 0.0F},
+            .opacity_logit = 0.0F,
+        };
+        std::vector<std::uint8_t> split_target(32U * 32U * 3U, 0U);
+        for (std::size_t y = 0U; y < 32U; ++y) {
+            for (std::size_t x = 16U; x < 32U; ++x) {
+                split_target[(y * 32U + x) * 3U + 1U] = 255U;
+            }
+        }
+        dronegs::OrderedAlphaTrainingContext split_context(
+            {split_parent}, 32U * 32U, 2U, 2U);
+        static_cast<void>(split_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto refinement =
+            split_context.refine_topology(0.0F, 1.0F);
+        std::vector<dronegs::Gaussian> split_gaussians;
+        split_context.download(split_gaussians);
+        if (refinement.candidates != 1U ||
+            refinement.added != 1U ||
+            refinement.gaussian_count != 2U ||
+            split_context.size() != 2U ||
+            split_gaussians.size() != 2U) {
+            throw std::runtime_error(
+                "deterministic topology growth count mismatch");
+        }
+        const auto& first_split = split_gaussians[0];
+        const auto& second_split = split_gaussians[1];
+        double split_distance_squared = 0.0;
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            const double difference =
+                static_cast<double>(first_split.xyz[axis]) -
+                second_split.xyz[axis];
+            split_distance_squared += difference * difference;
+            if (std::abs(
+                    first_split.log_scale[axis] -
+                    second_split.log_scale[axis]) > 1.0e-6F ||
+                std::abs(
+                    first_split.dc[axis] -
+                    second_split.dc[axis]) > 1.0e-6F) {
+                throw std::runtime_error(
+                    "long-axis split child parameter mismatch");
+            }
+        }
+        const auto longest_axis = static_cast<std::size_t>(
+            std::max_element(
+                first_split.log_scale.begin(),
+                first_split.log_scale.end()) -
+            first_split.log_scale.begin());
+        const double expected_split_distance =
+            2.0 * std::exp(first_split.log_scale[longest_axis]);
+        if (std::abs(
+                std::sqrt(split_distance_squared) -
+                expected_split_distance) > 2.0e-5 ||
+            std::abs(
+                first_split.opacity_logit -
+                second_split.opacity_logit) > 1.0e-6F) {
+            throw std::runtime_error(
+                "long-axis split geometry/opacity mismatch");
+        }
+        const auto empty_refinement =
+            split_context.refine_topology(0.0F, 1.0F);
+        if (empty_refinement.candidates != 0U ||
+            empty_refinement.added != 0U ||
+            empty_refinement.gaussian_count != 2U) {
+            throw std::runtime_error(
+                "topology statistics did not reset after refinement");
+        }
         auto additive_gaussians = initialized;
         auto ordered_initial = initialized;
         ordered_initial.front().log_scale[0] += std::log(1.7F);
@@ -350,7 +425,7 @@ int main() {
         const auto additive_metrics = dronegs::train_fixed_topology(
             options, scene, additive_gaussians);
         const auto ordered_metrics =
-            dronegs::train_fixed_topology_ordered(
+            dronegs::train_ordered_mrnf(
                 options, scene, ordered_gaussians);
         if (!(additive_metrics.final_loss <
               additive_metrics.initial_loss * 0.95F)) {
@@ -418,12 +493,12 @@ int main() {
         }
         std::filesystem::remove_all(root);
         std::cout
-            << "DroneGS ordered fixed-topology convergence test passed\n";
+            << "DroneGS ordered MRNF-growth convergence test passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::filesystem::remove_all(root);
         std::cerr
-                  << "DroneGS ordered fixed-topology convergence test failed: "
+                  << "DroneGS ordered MRNF-growth convergence test failed: "
                   << error.what() << "\n";
         return 1;
     }

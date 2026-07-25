@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.14 fixed-topology anisotropic "
+            << "DroneGS 0.5.0-dev.15 anisotropic MRNF-growth "
                "L1+DSSIM held-out evaluation prototype\n";
         return 0;
     }
@@ -32,11 +32,11 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.14 uses experimental fixed-topology "
-                     "anisotropic geometry-optimized ordered-alpha training; "
+        std::cerr << "DroneGS 0.5.0-dev.15 uses experimental anisotropic "
+                     "ordered-alpha training with deterministic MRNF growth; "
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
-                     "PSNR/SSIM are available, while topology, SH, LPIPS, "
-                     "and quality parity remain open.\n";
+                     "PSNR/SSIM are available, while prune/noise/decay, SH, "
+                     "LPIPS, and quality parity remain open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("sparse point count exceeds --max-cap");
         }
         auto gaussians = dronegs::initialize_fixed_topology(scene);
-        const auto training = dronegs::train_fixed_topology_ordered(
+        const auto training = dronegs::train_ordered_mrnf(
             options, scene, gaussians);
 
         const auto ply_path = options.output_path / "point_cloud.ply";
@@ -80,6 +80,10 @@ int main(int argc, char** argv) {
             training.training_image_count;
         measurements.held_out_image_count =
             training.held_out_image_count;
+        measurements.topology_refinements =
+            training.topology_refinements;
+        measurements.gaussians_added =
+            training.gaussians_added;
         measurements.initial_held_out_psnr =
             training.initial_held_out_psnr;
         measurements.initial_held_out_ssim =
