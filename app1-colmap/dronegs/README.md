@@ -3,13 +3,15 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.8` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.9` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
 - decodes JPEG training images and scales pinhole intrinsics;
 - stores decoded RGB as bytes in a lazy 256 MiB LRU cache;
-- overlaps one JPEG decode with GPU work through a persistent prefetch worker;
+- provides a bounded ordered JPEG prefetch queue with a configurable worker
+  pool while retaining the measured one-slot/one-worker default;
+- exposes an opt-in libjpeg reduced-IDCT path for reproducible decode A/B tests;
 - defines a tested CPU oracle for depth-sorted front-to-back alpha composition;
 - provides a forward CUDA renderer with GPU projection, stable radix sorting,
   GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
@@ -33,7 +35,11 @@ front-to-back ordered-alpha composition, while the additive path remains only
 as a convergence control. Positions, scales, rotations, topology, and non-DC
 SH coefficients remain fixed. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
-measured. Decoded images use a bounded LRU plus one in-flight prefetch slot.
+measured. Decoded images use a bounded LRU plus a bounded in-flight queue.
+Albagnac measurements rejected multiple decode workers as the default because
+CPU/GPU power contention outweighed the removed foreground wait. Reduced-IDCT
+targets are also opt-in because their filtered pixels change the loss target
+and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
@@ -76,5 +82,9 @@ allocation, projection, sorting, tile construction, rendering, and host readback
   --resize-factor 4 --max-width 1600 --tile-mode 4 \
   --seed 42 --run-manifest /tmp/dronegs-run/trainer_run.json
 ```
+
+Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
+and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
+the dev.8 decode behavior.
 
 The output directory must be empty and must not contain the source dataset.

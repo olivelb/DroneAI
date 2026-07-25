@@ -54,6 +54,9 @@
         "max_width": {"type": "integer", "minimum": 1, "maximum": 4096},
         "tile_mode": {"enum": [1, 2, 4]},
         "seed": {"type": "integer", "minimum": 0},
+        "prefetch_depth": {"type": "integer", "minimum": 1, "maximum": 64},
+        "decode_workers": {"type": "integer", "minimum": 1, "maximum": 16},
+        "jpeg_idct_scale": {"enum": [0, 1]},
         "host_image_storage": {"type": "string"},
         "host_image_cache_bytes": {"type": "integer", "minimum": 1}
       }

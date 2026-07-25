@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.8
+Project version: 0.5.0-dev.9
 
 ## Decision
 
@@ -80,9 +80,11 @@ supports only SIMPLE_PINHOLE and PINHOLE inputs.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache
-hit/miss/eviction/peak-byte metrics are recorded. A persistent worker decodes
-at most one scheduled image ahead while the main thread owns all LRU mutation.
-The manifest separates cumulative decoder service time from foreground wait.
+hit/miss/eviction/peak-byte metrics are recorded. A bounded ordered queue can
+feed one or more persistent decoder workers while the main thread remains the
+sole owner of LRU mutation. The measured default stays at one slot and one
+worker. The manifest separates cumulative decoder service time from foreground
+wait and records the queue depth, worker count, and reduced-IDCT mode.
 Pinned double-buffered target staging was prototyped and rejected for this
 slice: measured upload service was about 0.06 seconds per 500-iteration
 Albagnac run, below timing variance and not worth the added synchronization.
@@ -105,6 +107,12 @@ mark. RGB8 targets are uploaded per frame; L1 image gradients, reverse
 composition, and Adam remain on device. The experimental DroneGS binary now uses
 this ordered-alpha path. The additive implementation remains a test control,
 while LichtFeld remains the production backend until quality gates pass.
+Version 0.5.0-dev.9 generalizes the single prefetch slot into a bounded ordered
+queue and adds an opt-in libjpeg reduced-IDCT path. Multi-worker decode and
+reduced IDCT remain measured experiments rather than defaults: the former
+regressed 500-iteration Albagnac wall time through laptop CPU/GPU power
+contention, while the latter changes filtered target pixels and lacks a
+held-out quality gate.
 
 ## Planned layout
 

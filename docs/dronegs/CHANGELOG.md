@@ -2,6 +2,25 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.9 - Phase 4 bounded JPEG decode experiments
+
+- Replaced the single outstanding prefetch state with an ordered, bounded
+  queue that supports multiple decoder workers without concurrent LRU mutation.
+- Added concurrency, queue-capacity, refill, duplicate-decode, and CLI tests.
+- Added optional `--prefetch-depth`, `--decode-workers`, and
+  `--jpeg-idct-scale` controls and recorded them in the run manifest.
+- Added an opt-in reduced-IDCT libjpeg path that decodes at the closest native
+  1/2, 1/4, or 1/8 scale before any final resize.
+- Benchmarked five short queue configurations and three 500-iteration
+  Albagnac configurations.
+- Rejected multi-worker decode as the default: depth 8 / two workers removed
+  nearly all foreground wait but was 3.6% slower than the single-worker
+  control because of CPU/GPU power contention on the laptop.
+- Kept reduced IDCT opt-in: its 500-iteration wall time was 2.1% shorter than
+  the same-cycle control, but its filtered target pixels changed anchor L1 and
+  require held-out quality validation.
+- Preserved the dev.8 defaults: one prefetch slot, one worker, full JPEG decode.
+
 ## 0.5.0-dev.8 - Phase 4 persistent ordered-alpha trainer
 
 - Added an opaque persistent CUDA training context that retains Gaussians,

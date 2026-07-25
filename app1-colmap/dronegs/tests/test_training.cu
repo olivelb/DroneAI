@@ -13,6 +13,7 @@
 
 #include <jpeglib.h>
 
+#include "dronegs/image.hpp"
 #include "dronegs/model.hpp"
 #include "dronegs/training.hpp"
 
@@ -92,6 +93,19 @@ int main() {
     try {
         std::filesystem::create_directories(root / "images");
         write_solid_jpeg(root / "images" / "frame.jpg");
+        const auto full_decode = dronegs::load_training_image(
+            root / "images" / "frame.jpg", 4U, 32U, false);
+        const auto scaled_decode = dronegs::load_training_image(
+            root / "images" / "frame.jpg", 4U, 32U, true);
+        if (full_decode.width != 8U || full_decode.height != 8U ||
+            scaled_decode.width != full_decode.width ||
+            scaled_decode.height != full_decode.height ||
+            scaled_decode.rgb.size() != full_decode.rgb.size() ||
+            scaled_decode.source_to_image_x != 0.25F ||
+            scaled_decode.source_to_image_y != 0.25F) {
+            throw std::runtime_error(
+                "scaled-IDCT training image contract mismatch");
+        }
         const auto scene = make_scene();
         const auto initialized =
             dronegs::initialize_fixed_topology(scene);

@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.8.
+- Current development version: 0.5.0-dev.9.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -49,6 +49,12 @@ Each completed phase has one focused commit and an annotated
 - The integrated Albagnac 500-iteration Release/sm_89 run completed in 25.80
   seconds with a
   651 MiB sampled total-VRAM delta and reduced anchor L1 by 22.6%.
+- Bounded JPEG decode experiments completed. A depth-8 / two-worker queue made
+  all 499 scheduled prefetches ready but regressed 500-iteration wall time by
+  3.6% versus the same-cycle one-worker control on the RTX 4070 Laptop.
+- Reduced-IDCT JPEG decode remains opt-in: it shortened the same-cycle
+  500-iteration control by 2.1%, but changes filtered RGB targets and therefore
+  cannot become the default before held-out quality validation.
 - Phase 4 exit gate still open: anisotropic projection,
   geometry/scale/rotation gradients, DSSIM, progressive SH, held-out quality
   metrics, and LichtFeld parity.
@@ -57,10 +63,12 @@ Each completed phase has one focused commit and an annotated
   while both tested orchestrations regressed median wall time.
 - The immediate Phase 4 correctness priority is anisotropic covariance plus
   position/scale/rotation gradients, followed by held-out quality metrics.
-  For large-scene throughput, the one-image JPEG prefetch is now too shallow:
-  Albagnac foreground wait is 10.32 seconds because ordered CUDA compute
-  outruns decode. A deeper bounded decode queue is the next measured
-  performance candidate.
+  For large-scene throughput, JPEG service remains material, but deeper and
+  parallel CPU queues are now rejected on the current laptop. The next
+  throughput candidate should reduce decoder work without changing targets,
+  or move decode to a separately quality-gated GPU path. The immediate
+  correctness priority remains anisotropic covariance and
+  position/scale/rotation gradients.
 
 ## Versioning rules
 

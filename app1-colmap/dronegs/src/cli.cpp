@@ -46,10 +46,12 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS fixed-topology ordered-alpha prototype 0.5.0-dev.8\n"
+        "DroneGS fixed-topology ordered-alpha prototype 0.5.0-dev.9\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
-        "--max-width N --tile-mode N --seed N --run-manifest PATH\n";
+        "--max-width N --tile-mode N --seed N --run-manifest PATH "
+        "[--prefetch-depth N] [--decode-workers N] "
+        "[--jpeg-idct-scale 0|1]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -57,6 +59,12 @@ Options parse_options(int argc, char** argv) {
         throw std::invalid_argument("contract-v1 options must be supplied as name/value pairs");
     }
     const std::unordered_set<std::string> known{
+        "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
+        "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
+        "--run-manifest", "--prefetch-depth", "--decode-workers",
+        "--jpeg-idct-scale",
+    };
+    const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest",
@@ -71,7 +79,7 @@ Options parse_options(int argc, char** argv) {
             throw std::invalid_argument("duplicate option: " + option);
         }
     }
-    for (const auto& option : known) {
+    for (const auto& option : required) {
         if (!values.contains(option)) {
             throw std::invalid_argument("missing required option: " + option);
         }
@@ -89,6 +97,18 @@ Options parse_options(int argc, char** argv) {
     options.max_width = parse_u32(values.at("--max-width"), "--max-width");
     options.tile_mode = parse_u32(values.at("--tile-mode"), "--tile-mode");
     options.seed = parse_unsigned(values.at("--seed"), "--seed");
+    if (values.contains("--prefetch-depth")) {
+        options.prefetch_depth =
+            parse_u32(values.at("--prefetch-depth"), "--prefetch-depth");
+    }
+    if (values.contains("--decode-workers")) {
+        options.decode_workers =
+            parse_u32(values.at("--decode-workers"), "--decode-workers");
+    }
+    if (values.contains("--jpeg-idct-scale")) {
+        options.jpeg_idct_scale =
+            parse_u32(values.at("--jpeg-idct-scale"), "--jpeg-idct-scale");
+    }
     validate_options(options);
     return options;
 }
@@ -115,6 +135,19 @@ void validate_options(const Options& options) {
     }
     if (options.tile_mode != 1 && options.tile_mode != 2 && options.tile_mode != 4) {
         throw std::invalid_argument("--tile-mode must be 1, 2, or 4");
+    }
+    if (options.prefetch_depth == 0U || options.prefetch_depth > 64U) {
+        throw std::invalid_argument("--prefetch-depth must be between 1 and 64");
+    }
+    if (options.decode_workers == 0U || options.decode_workers > 16U) {
+        throw std::invalid_argument("--decode-workers must be between 1 and 16");
+    }
+    if (options.decode_workers > options.prefetch_depth) {
+        throw std::invalid_argument(
+            "--decode-workers must not exceed --prefetch-depth");
+    }
+    if (options.jpeg_idct_scale > 1U) {
+        throw std::invalid_argument("--jpeg-idct-scale must be 0 or 1");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

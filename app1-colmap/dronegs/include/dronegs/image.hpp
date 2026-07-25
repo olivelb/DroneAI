@@ -4,14 +4,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <condition_variable>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <functional>
 #include <list>
 #include <mutex>
-#include <optional>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace dronegs {
@@ -26,7 +27,8 @@ struct ImageData {
 
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
-                              std::uint32_t max_width);
+                              std::uint32_t max_width,
+                              bool use_scaled_idct = false);
 
 struct ImageCacheStats {
     std::uint64_t requests = 0;
@@ -46,13 +48,17 @@ class ImageCache {
 public:
     using Loader = std::function<ImageData(std::size_t)>;
 
-    ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loader loader);
+    ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loader loader,
+               std::size_t prefetch_capacity = 1U,
+               std::size_t worker_count = 1U);
     ~ImageCache();
 
     const ImageData& get(std::size_t index);
     void prefetch(std::size_t index);
     const ImageCacheStats& stats() const noexcept;
     std::size_t capacity_bytes() const noexcept;
+    std::size_t prefetch_capacity() const noexcept;
+    std::size_t worker_count() const noexcept;
 
 private:
     struct Entry {
@@ -74,6 +80,8 @@ private:
 
     std::size_t item_count_ = 0;
     std::size_t capacity_bytes_ = 0;
+    std::size_t prefetch_capacity_ = 0;
+    std::size_t worker_count_ = 0;
     Loader loader_;
     std::list<std::size_t> recency_;
     std::unordered_map<std::size_t, Entry> entries_;
@@ -81,12 +89,12 @@ private:
     std::mutex pending_mutex_;
     std::condition_variable pending_condition_;
     std::condition_variable ready_condition_;
-    std::optional<std::size_t> pending_index_;
-    std::optional<LoadedImage> pending_result_;
-    std::exception_ptr pending_error_;
-    bool worker_busy_ = false;
+    std::deque<std::size_t> pending_indices_;
+    std::unordered_set<std::size_t> outstanding_indices_;
+    std::unordered_map<std::size_t, LoadedImage> ready_results_;
+    std::unordered_map<std::size_t, std::exception_ptr> ready_errors_;
     bool stop_worker_ = false;
-    std::thread worker_;
+    std::vector<std::thread> workers_;
 };
 
 }  // namespace dronegs

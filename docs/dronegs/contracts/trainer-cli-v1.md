@@ -6,7 +6,9 @@
 TRAINER --data-path DATASET --output-path OUTPUT --iter ITERATIONS \
   --strategy STRATEGY --sh-degree DEGREE --max-cap COUNT \
   --resize-factor FACTOR --max-width PIXELS --tile-mode MODE \
-  --seed SEED --run-manifest MANIFEST
+  --seed SEED --run-manifest MANIFEST \
+  [--prefetch-depth DEPTH] [--decode-workers WORKERS] \
+  [--jpeg-idct-scale 0|1]
 ```
 
 An adapter may translate canonical options to a backend-specific spelling such
@@ -31,6 +33,18 @@ as ineffective and supplies no native manifest; these are known legacy gaps.
 | `--tile-mode` | 1, 2, or 4 |
 | `--seed` | Unsigned integer; mandatory for benchmarks |
 | `--run-manifest` | Final manifest conforming to the v1 schema |
+
+DroneGS accepts three optional, backend-specific performance controls. They do
+not alter the mandatory canonical contract:
+
+| Option | Constraint / default |
+|---|---|
+| `--prefetch-depth` | 1 through 64; default 1 |
+| `--decode-workers` | 1 through 16 and no greater than depth; default 1 |
+| `--jpeg-idct-scale` | 0 or 1; default 0 |
+
+Reduced-IDCT decode is experimental because libjpeg's scaled filtering changes
+the RGB training target. Benchmark manifests record all three values.
 
 ## Artifacts
 

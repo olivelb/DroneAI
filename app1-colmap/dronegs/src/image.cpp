@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -37,12 +38,17 @@ void jpeg_error_exit(j_common_ptr common) {
 }
 
 struct DecodedImage {
+    std::uint32_t source_width = 0;
+    std::uint32_t source_height = 0;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
 };
 
-DecodedImage decode_jpeg(const std::filesystem::path& path) {
+DecodedImage decode_jpeg(const std::filesystem::path& path,
+                         std::uint32_t resize_factor,
+                         std::uint32_t max_width,
+                         bool use_scaled_idct) {
     auto* file = std::fopen(path.string().c_str(), "rb");
     if (file == nullptr) {
         throw std::runtime_error("cannot open training image: " + path.string());
@@ -62,6 +68,34 @@ DecodedImage decode_jpeg(const std::filesystem::path& path) {
     jpeg_create_decompress(&decoder);
     jpeg_stdio_src(&decoder, file);
     static_cast<void>(jpeg_read_header(&decoder, TRUE));
+    if (decoder.image_width > std::numeric_limits<std::uint32_t>::max() ||
+        decoder.image_height > std::numeric_limits<std::uint32_t>::max()) {
+        jpeg_destroy_decompress(&decoder);
+        std::fclose(file);
+        throw std::runtime_error("unsupported JPEG dimensions: " + path.string());
+    }
+    const auto source_width =
+        static_cast<std::uint32_t>(decoder.image_width);
+    const auto source_height =
+        static_cast<std::uint32_t>(decoder.image_height);
+    if (use_scaled_idct) {
+        double effective_factor =
+            static_cast<double>(std::max(resize_factor, 1U));
+        if (max_width > 0U && source_width > max_width) {
+            effective_factor = std::max(
+                effective_factor,
+                static_cast<double>(source_width) /
+                    static_cast<double>(max_width));
+        }
+        decoder.scale_num = 1U;
+        if (effective_factor >= 8.0) {
+            decoder.scale_denom = 8U;
+        } else if (effective_factor >= 4.0) {
+            decoder.scale_denom = 4U;
+        } else if (effective_factor >= 2.0) {
+            decoder.scale_denom = 2U;
+        }
+    }
     decoder.out_color_space = JCS_RGB;
     static_cast<void>(jpeg_start_decompress(&decoder));
     if (decoder.output_components != 3U ||
@@ -73,6 +107,8 @@ DecodedImage decode_jpeg(const std::filesystem::path& path) {
     }
 
     DecodedImage image{
+        .source_width = source_width,
+        .source_height = source_height,
         .width = static_cast<std::uint32_t>(decoder.output_width),
         .height = static_cast<std::uint32_t>(decoder.output_height),
         .rgb = {},
@@ -100,30 +136,39 @@ DecodedImage decode_jpeg(const std::filesystem::path& path) {
 
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
-                              std::uint32_t max_width) {
-    const auto source = decode_jpeg(path);
+                              std::uint32_t max_width,
+                              bool use_scaled_idct) {
+    auto source = decode_jpeg(
+        path, resize_factor, max_width, use_scaled_idct);
     double effective_factor = static_cast<double>(std::max(resize_factor, 1U));
-    if (max_width > 0U && source.width > max_width) {
+    if (max_width > 0U && source.source_width > max_width) {
         effective_factor = std::max(
             effective_factor,
-            static_cast<double>(source.width) / static_cast<double>(max_width));
+            static_cast<double>(source.source_width) /
+                static_cast<double>(max_width));
     }
     const auto target_width = std::max(
         1U, static_cast<std::uint32_t>(
-                static_cast<double>(source.width) / effective_factor));
+                static_cast<double>(source.source_width) / effective_factor));
     const auto target_height = std::max(
         1U, static_cast<std::uint32_t>(
-                static_cast<double>(source.height) / effective_factor));
+                static_cast<double>(source.source_height) / effective_factor));
 
     ImageData result{
         .width = target_width,
         .height = target_height,
         .source_to_image_x =
-            static_cast<float>(target_width) / static_cast<float>(source.width),
+            static_cast<float>(target_width) /
+                static_cast<float>(source.source_width),
         .source_to_image_y =
-            static_cast<float>(target_height) / static_cast<float>(source.height),
+            static_cast<float>(target_height) /
+                static_cast<float>(source.source_height),
         .rgb = {},
     };
+    if (source.width == target_width && source.height == target_height) {
+        result.rgb = std::move(source.rgb);
+        return result;
+    }
     result.rgb.resize(static_cast<std::size_t>(target_width) * target_height * 3U);
     for (std::uint32_t y = 0; y < target_height; ++y) {
         const auto source_y = std::min(
@@ -147,9 +192,13 @@ ImageData load_training_image(const std::filesystem::path& path,
     return result;
 }
 
-ImageCache::ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loader loader)
+ImageCache::ImageCache(std::size_t item_count, std::size_t capacity_bytes,
+                       Loader loader, std::size_t prefetch_capacity,
+                       std::size_t worker_count)
     : item_count_(item_count),
       capacity_bytes_(capacity_bytes),
+      prefetch_capacity_(prefetch_capacity),
+      worker_count_(worker_count),
       loader_(std::move(loader)) {
     if (item_count_ == 0U) {
         throw std::invalid_argument("image cache requires at least one item");
@@ -160,7 +209,31 @@ ImageCache::ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loade
     if (!loader_) {
         throw std::invalid_argument("image cache loader is required");
     }
-    worker_ = std::thread([this]() { worker_loop(); });
+    if (prefetch_capacity_ == 0U) {
+        throw std::invalid_argument("image cache prefetch capacity must be positive");
+    }
+    if (worker_count_ == 0U || worker_count_ > prefetch_capacity_) {
+        throw std::invalid_argument(
+            "image cache worker count must be between one and prefetch capacity");
+    }
+    workers_.reserve(worker_count_);
+    try {
+        for (std::size_t index = 0U; index < worker_count_; ++index) {
+            workers_.emplace_back([this]() { worker_loop(); });
+        }
+    } catch (...) {
+        {
+            const std::lock_guard lock(pending_mutex_);
+            stop_worker_ = true;
+        }
+        pending_condition_.notify_all();
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        throw;
+    }
 }
 
 ImageCache::~ImageCache() {
@@ -168,9 +241,11 @@ ImageCache::~ImageCache() {
         const std::lock_guard lock(pending_mutex_);
         stop_worker_ = true;
     }
-    pending_condition_.notify_one();
-    if (worker_.joinable()) {
-        worker_.join();
+    pending_condition_.notify_all();
+    for (auto& worker : workers_) {
+        if (worker.joinable()) {
+            worker.join();
+        }
     }
 }
 
@@ -191,28 +266,30 @@ const ImageData& ImageCache::get(std::size_t index) {
     std::optional<LoadedImage> loaded;
     {
         std::unique_lock lock(pending_mutex_);
-        if (pending_index_.has_value() && *pending_index_ != index) {
-            throw std::logic_error(
-                "image cache demand does not match outstanding prefetch");
-        }
-        if (pending_index_.has_value()) {
+        if (outstanding_indices_.contains(index)) {
             ++stats_.prefetch_consumed;
-            if (pending_result_.has_value() || pending_error_) {
+            if (ready_results_.contains(index) || ready_errors_.contains(index)) {
                 ++stats_.prefetch_ready;
             }
-            ready_condition_.wait(lock, [this]() {
-                return pending_result_.has_value() || pending_error_;
+            ready_condition_.wait(lock, [this, index]() {
+                return ready_results_.contains(index) ||
+                       ready_errors_.contains(index);
             });
-            if (pending_error_) {
-                auto error = pending_error_;
-                pending_error_ = nullptr;
-                pending_index_.reset();
+            const auto error = ready_errors_.find(index);
+            if (error != ready_errors_.end()) {
+                auto captured = error->second;
+                ready_errors_.erase(error);
+                outstanding_indices_.erase(index);
                 lock.unlock();
-                std::rethrow_exception(error);
+                std::rethrow_exception(captured);
             }
-            loaded = std::move(*pending_result_);
-            pending_result_.reset();
-            pending_index_.reset();
+            auto result = ready_results_.find(index);
+            if (result == ready_results_.end()) {
+                throw std::logic_error("image cache ready state is inconsistent");
+            }
+            loaded = std::move(result->second);
+            ready_results_.erase(result);
+            outstanding_indices_.erase(index);
         }
     }
     if (!loaded.has_value()) {
@@ -232,17 +309,16 @@ void ImageCache::prefetch(std::size_t index) {
     }
     {
         const std::lock_guard lock(pending_mutex_);
-        if (pending_index_.has_value()) {
-            if (*pending_index_ == index) {
-                return;
-            }
+        if (outstanding_indices_.contains(index)) {
+            return;
+        }
+        if (outstanding_indices_.size() >= prefetch_capacity_) {
             throw std::logic_error(
-                "image cache supports only one outstanding prefetch");
+                "image cache prefetch queue is at capacity");
         }
         ++stats_.prefetch_started;
-        pending_index_ = index;
-        pending_result_.reset();
-        pending_error_ = nullptr;
+        outstanding_indices_.insert(index);
+        pending_indices_.push_back(index);
     }
     pending_condition_.notify_one();
 }
@@ -253,29 +329,26 @@ void ImageCache::worker_loop() {
         {
             std::unique_lock lock(pending_mutex_);
             pending_condition_.wait(lock, [this]() {
-                return stop_worker_ ||
-                       (pending_index_.has_value() && !worker_busy_ &&
-                        !pending_result_.has_value() && !pending_error_);
+                return stop_worker_ || !pending_indices_.empty();
             });
             if (stop_worker_) {
                 return;
             }
-            index = *pending_index_;
-            worker_busy_ = true;
+            index = pending_indices_.front();
+            pending_indices_.pop_front();
         }
         try {
             auto loaded = load(index);
             {
                 const std::lock_guard lock(pending_mutex_);
-                pending_result_ = std::move(loaded);
-                worker_busy_ = false;
+                static_cast<void>(
+                    ready_results_.emplace(index, std::move(loaded)));
             }
         } catch (...) {
             const std::lock_guard lock(pending_mutex_);
-            pending_error_ = std::current_exception();
-            worker_busy_ = false;
+            ready_errors_.insert_or_assign(index, std::current_exception());
         }
-        ready_condition_.notify_one();
+        ready_condition_.notify_all();
     }
 }
 
@@ -321,6 +394,14 @@ const ImageCacheStats& ImageCache::stats() const noexcept {
 
 std::size_t ImageCache::capacity_bytes() const noexcept {
     return capacity_bytes_;
+}
+
+std::size_t ImageCache::prefetch_capacity() const noexcept {
+    return prefetch_capacity_;
+}
+
+std::size_t ImageCache::worker_count() const noexcept {
+    return worker_count_;
 }
 
 void ImageCache::touch(std::unordered_map<std::size_t, Entry>::iterator entry) {

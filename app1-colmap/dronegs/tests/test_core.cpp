@@ -2,12 +2,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iostream>
 #include <iterator>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -176,6 +178,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest image decode timing missing");
     check(manifest_text.find("\"image_prefetch_consumed\": 3") != std::string::npos,
           "manifest image prefetch metrics missing");
+    check(manifest_text.find("\"prefetch_depth\": 1") != std::string::npos,
+          "manifest prefetch depth missing");
+    check(manifest_text.find("\"decode_workers\": 1") != std::string::npos,
+          "manifest decode worker count missing");
+    check(manifest_text.find("\"jpeg_idct_scale\": 0") != std::string::npos,
+          "manifest JPEG IDCT mode missing");
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
@@ -198,6 +206,22 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         static_cast<int>(arguments.size()), arguments.data());
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
+    check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
+    check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
+    check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
+
+    values.insert(values.end(), {
+        "--prefetch-depth", "12",
+        "--decode-workers", "3",
+        "--jpeg-idct-scale", "0",
+    });
+    arguments = mutable_arguments(values);
+    const auto tuned = dronegs::parse_options(
+        static_cast<int>(arguments.size()), arguments.data());
+    check(tuned.prefetch_depth == 12U, "CLI prefetch depth mismatch");
+    check(tuned.decode_workers == 3U, "CLI decode worker count mismatch");
+    check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
+    values.resize(values.size() - 6U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
@@ -314,6 +338,72 @@ void test_image_cache() {
     async_cache.prefetch(1U);
     check(async_cache.stats().prefetch_started == 1U,
           "prefetch unexpectedly decoded an already resident image");
+
+    std::mutex parallel_mutex;
+    std::condition_variable parallel_started;
+    std::promise<void> release_parallel_loaders;
+    const auto release_parallel_future =
+        release_parallel_loaders.get_future().share();
+    std::atomic<std::uint64_t> parallel_loads{0U};
+    std::atomic<std::uint64_t> active_loads{0U};
+    std::atomic<std::uint64_t> peak_active_loads{0U};
+    dronegs::ImageCache parallel_cache(
+        4U, 24U,
+        [&parallel_mutex, &parallel_started, release_parallel_future,
+         &parallel_loads, &active_loads,
+         &peak_active_loads](std::size_t index) {
+            ++parallel_loads;
+            const auto active = ++active_loads;
+            auto peak = peak_active_loads.load();
+            while (active > peak &&
+                   !peak_active_loads.compare_exchange_weak(
+                       peak, active)) {
+            }
+            parallel_started.notify_all();
+            release_parallel_future.wait();
+            --active_loads;
+            return dronegs::ImageData{
+                .width = 2U,
+                .height = 1U,
+                .rgb = std::vector<std::uint8_t>(
+                    6U, static_cast<std::uint8_t>(index)),
+            };
+        },
+        3U, 2U);
+    check(parallel_cache.prefetch_capacity() == 3U,
+          "parallel cache prefetch capacity mismatch");
+    check(parallel_cache.worker_count() == 2U,
+          "parallel cache worker count mismatch");
+    parallel_cache.prefetch(0U);
+    parallel_cache.prefetch(1U);
+    parallel_cache.prefetch(2U);
+    {
+        std::unique_lock lock(parallel_mutex);
+        const bool started = parallel_started.wait_for(
+            lock, std::chrono::seconds(2), [&parallel_loads]() {
+                return parallel_loads.load() >= 2U;
+            });
+        check(started, "parallel image cache workers did not start");
+    }
+    check(peak_active_loads.load() >= 2U,
+          "image cache did not decode concurrently");
+    bool bounded_queue_rejected = false;
+    try {
+        parallel_cache.prefetch(3U);
+    } catch (const std::logic_error&) {
+        bounded_queue_rejected = true;
+    }
+    check(bounded_queue_rejected,
+          "parallel image cache exceeded its prefetch capacity");
+    release_parallel_loaders.set_value();
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        const auto& image = parallel_cache.get(index);
+        check(image.rgb.front() == index,
+              "parallel prefetch image contents mismatch");
+    }
+    parallel_cache.prefetch(3U);
+    check(parallel_cache.get(3U).rgb.front() == 3U,
+          "parallel cache failed after refilling the bounded queue");
 }
 
 

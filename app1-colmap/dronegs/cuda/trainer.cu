@@ -530,6 +530,19 @@ std::vector<std::size_t> make_training_schedule(
     return schedule;
 }
 
+void prefetch_schedule_window(
+    ImageCache& cache, const std::vector<std::size_t>& schedule,
+    std::size_t next_index, std::size_t depth) {
+    if (next_index >= schedule.size()) {
+        return;
+    }
+    const auto count =
+        std::min(depth, schedule.size() - next_index);
+    for (std::size_t offset = 0U; offset < count; ++offset) {
+        cache.prefetch(schedule[next_index + offset]);
+    }
+}
+
 TrainingFrame frame_from_cache(ImageCache& cache,
                                const std::vector<FrameDescriptor>& descriptors,
                                std::size_t index, const Options& options) {
@@ -651,8 +664,10 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
             const auto* image = descriptors.at(index).image;
             return load_training_image(
                 options.data_path / "images" / image->name,
-                options.resize_factor, options.max_width);
-        });
+                options.resize_factor, options.max_width,
+                options.jpeg_idct_scale != 0U);
+        },
+        options.prefetch_depth, options.decode_workers);
 
     const auto setup_start = std::chrono::steady_clock::now();
     TrainingWorkspace workspace(gaussians.size(), maximum_pixels);
@@ -664,7 +679,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const auto schedule = make_training_schedule(
         descriptors.size(), options.iterations, options.seed);
     const auto initial_frame = frame_from_cache(cache, descriptors, 0U, options);
-    cache.prefetch(schedule.front());
+    prefetch_schedule_window(
+        cache, schedule, 0U, options.prefetch_depth);
     metrics.initial_loss =
         render_loss(workspace, initial_frame, gaussians.size(), false);
     const auto training_start = std::chrono::steady_clock::now();
@@ -684,9 +700,9 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         const auto schedule_index = static_cast<std::size_t>(iteration - 1U);
         const auto frame = frame_from_cache(
             cache, descriptors, schedule[schedule_index], options);
-        if (schedule_index + 1U < schedule.size()) {
-            cache.prefetch(schedule[schedule_index + 1U]);
-        }
+        prefetch_schedule_window(
+            cache, schedule, schedule_index + 1U,
+            options.prefetch_depth);
         const float loss = render_loss(workspace, frame, gaussians.size(), true);
         beta_first_power *= beta_first;
         beta_second_power *= beta_second;
@@ -766,8 +782,10 @@ TrainingMetrics train_fixed_topology_ordered(
             const auto* image = descriptors.at(index).image;
             return load_training_image(
                 options.data_path / "images" / image->name,
-                options.resize_factor, options.max_width);
-        });
+                options.resize_factor, options.max_width,
+                options.jpeg_idct_scale != 0U);
+        },
+        options.prefetch_depth, options.decode_workers);
 
     const auto setup_start = std::chrono::steady_clock::now();
     OrderedAlphaTrainingContext workspace(
@@ -779,7 +797,8 @@ TrainingMetrics train_fixed_topology_ordered(
         descriptors.size(), options.iterations, options.seed);
     const auto initial_frame =
         frame_from_cache(cache, descriptors, 0U, options);
-    cache.prefetch(schedule.front());
+    prefetch_schedule_window(
+        cache, schedule, 0U, options.prefetch_depth);
     const auto initial_camera =
         make_raster_camera(initial_frame.camera);
     metrics.initial_loss = workspace.evaluate(
@@ -804,9 +823,9 @@ TrainingMetrics train_fixed_topology_ordered(
             static_cast<std::size_t>(iteration - 1U);
         const auto frame = frame_from_cache(
             cache, descriptors, schedule[schedule_index], options);
-        if (schedule_index + 1U < schedule.size()) {
-            cache.prefetch(schedule[schedule_index + 1U]);
-        }
+        prefetch_schedule_window(
+            cache, schedule, schedule_index + 1U,
+            options.prefetch_depth);
         const auto raster_camera =
             make_raster_camera(frame.camera);
         const float loss = workspace.train_step(
