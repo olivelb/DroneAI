@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.11` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.12` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -26,20 +26,24 @@ Version `0.5.0-dev.11` is an experimental fixed-topology training slice. It:
   projection, CUB, tile, gradient, and Adam buffers;
 - computes active-pixel RGB8 L1 gradients, ordered-alpha backward, and Adam
   updates on device without copying Gaussian gradients through the host;
+- retains projected-conic and position/scale/rotation gradients plus their
+  Adam moments on device across iterations;
+- applies a scene-diagonal-scaled exponential position schedule, independent
+  scale/rotation rates, bounded log-scales, and quaternion renormalization;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
-- updates DC color and opacity with Adam in deterministic camera order;
+- updates DC color, opacity, position, scale, and rotation with Adam in
+  deterministic camera order;
 - exports a DroneAI-compatible binary PLY;
 - writes a run-manifest-v1 document;
 - provides finite-difference and end-to-end convergence tests.
 
 It is not a LichtFeld replacement yet. The experimental training path now uses
 front-to-back anisotropic ordered-alpha composition, while the additive path
-remains only as a convergence control. The public validation API returns
-geometry gradients, but persistent training still applies Adam only to DC and
-opacity. Positions, scales, rotations, topology, and non-DC SH coefficients
-therefore remain fixed until dev.12 integration. Only
+remains only as a convergence control. Persistent training now optimizes
+position, log-scale, and normalized rotation in addition to DC and opacity.
+Topology and non-DC SH coefficients remain fixed. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
 measured. Decoded images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -49,7 +53,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-fixed-topology-ordered-alpha-prototype` and remains opt-in.
+`dronegs-fixed-topology-anisotropic-geometry-prototype` and remains opt-in.
 
 ## Container build
 

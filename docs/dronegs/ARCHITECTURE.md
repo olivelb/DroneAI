@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.11
+Project version: 0.5.0-dev.12
 
 ## Decision
 
@@ -74,12 +74,13 @@ non-uniform exponential scales into camera space, projects the covariance
 through the pinhole Jacobian, sorts visible splats deterministically into 16x16
 tiles, composites bounded anisotropic kernels front-to-back, computes
 active-pixel L1, and exposes analytical DC, opacity, position, log-scale, and
-normalized-quaternion gradients. The persistent trainer currently applies
-only DC/opacity Adam on device.
+normalized-quaternion gradients. The persistent trainer retains those
+gradients and all Adam moments on device and updates the five parameter
+families after every training frame.
 
 This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no persistent geometry optimizer integration, DSSIM, progressive SH,
-split/prune/grow, or held-out quality evaluation. It supports only
+It has no DSSIM, progressive SH, split/prune/grow, or held-out quality
+evaluation. It supports only
 SIMPLE_PINHOLE and PINHOLE inputs.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
@@ -132,7 +133,14 @@ scale, rotation matrix, and quaternion normalization once per Gaussian.
 Discrete visibility, tile/support selection, depth sorting, contribution
 thresholds, and early exit are stop-gradient decisions. A CPU oracle and a
 direct all-component CUDA finite-difference fixture guard the smooth branch.
-Persistent geometry Adam is deferred to dev.12.
+That version intentionally deferred persistent geometry Adam.
+Version 0.5.0-dev.12 adds persistent gradients and first/second moments for
+position, log-scale, and quaternion rotation. Position LR is the initial
+Gaussian bounding-box diagonal times an exponential `1.6e-4` to `1.6e-6`
+schedule over the requested training steps. Log-scale uses `0.005`, rotation
+uses `0.001`, log-scales stay within four natural-log units of the initialized
+global range, and quaternions are normalized after every update. No geometry
+gradient or moment is read back during training.
 
 ## Planned layout
 

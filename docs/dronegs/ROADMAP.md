@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.11.
+- Current development version: 0.5.0-dev.12.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -66,14 +66,19 @@ Each completed phase has one focused commit and an annotated
   finite differences on a branch-stable fixture.
 - The million-Gaussian public-call medians are 40.528 ms forward and 91.601 ms
   forward+geometry-backward. Persistent geometry Adam remains open.
-- Phase 4 exit gate still open: persistent geometry Adam and schedules, DSSIM,
-  progressive SH, held-out quality metrics, and LichtFeld parity.
+- Persistent geometry Adam is complete: gradients and moments remain on
+  device, position uses a scene-scaled exponential schedule, log-scales are
+  bounded, and rotations are renormalized.
+- Albagnac 500-iteration anchor L1 reaches 0.104295, a 48.0% reduction from
+  initialization and 32.8% below the dev.11 fixed-geometry result. Trainer
+  compute is 39.552 seconds with an 838 MiB sampled total-VRAM delta.
+- Phase 4 exit gate still open: DSSIM, progressive SH, held-out quality
+  metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 correctness priority is persistent integration of the
-  validated geometry gradients and Adam state, followed by held-out quality
-  metrics.
+- The immediate Phase 4 correctness priority is held-out quality measurement,
+  followed by DSSIM and progressive SH.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

@@ -789,7 +789,7 @@ TrainingMetrics train_fixed_topology_ordered(
 
     const auto setup_start = std::chrono::steady_clock::now();
     OrderedAlphaTrainingContext workspace(
-        gaussians, maximum_pixels);
+        gaussians, maximum_pixels, options.iterations);
     TrainingMetrics metrics{
         .iterations = options.iterations,
     };

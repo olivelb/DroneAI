@@ -37,8 +37,8 @@ void write_gaussian_ply(const std::filesystem::path& path,
     }
     stream << "ply\n"
            << "format binary_little_endian 1.0\n"
-           << "comment DroneGS fixed-topology anisotropic ordered-alpha "
-              "prototype 0.5.0-dev.11\n"
+           << "comment DroneGS fixed-topology anisotropic "
+              "geometry-optimized ordered-alpha prototype 0.5.0-dev.12\n"
            << "element vertex " << gaussians.size() << "\n"
            << "property float x\n"
            << "property float y\n"

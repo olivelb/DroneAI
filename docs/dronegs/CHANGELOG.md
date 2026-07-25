@@ -2,6 +2,22 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.12 - Phase 4 persistent geometry Adam
+
+- Retained projected-conic and position/log-scale/quaternion gradients in the
+  persistent CUDA context without per-step host readback.
+- Added first/second Adam moments for all ten geometry parameters.
+- Added a scene-diagonal-scaled position LR decaying from `1.6e-4` to
+  `1.6e-6`, scale LR `0.005`, and rotation LR `0.001`.
+- Bounded log-scales to the initialized global range plus/minus 4 and
+  renormalized every quaternion after its update.
+- Extended convergence coverage to require finite geometry, movement in all
+  three parameter families, and unit quaternions.
+- Reduced Albagnac anchor L1 from 0.200559 to 0.104295 over 500 iterations,
+  versus 0.155307 with geometry fixed.
+- Measured 39.552 seconds of trainer compute, 41.851 seconds wall, and an
+  838 MiB sampled total-VRAM delta with no OOM.
+
 ## 0.5.0-dev.11 - Phase 4 anisotropic geometry backward
 
 - Extended public backward with position, three log-scale, and normalized

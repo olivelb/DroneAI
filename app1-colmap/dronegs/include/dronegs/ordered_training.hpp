@@ -15,7 +15,8 @@ class OrderedAlphaTrainingContext {
 public:
     OrderedAlphaTrainingContext(
         const std::vector<Gaussian>& gaussians,
-        std::size_t maximum_pixels);
+        std::size_t maximum_pixels,
+        std::uint64_t maximum_steps);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(

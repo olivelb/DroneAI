@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -110,7 +112,14 @@ int main() {
         const auto initialized =
             dronegs::initialize_fixed_topology(scene);
         auto additive_gaussians = initialized;
-        auto ordered_gaussians = initialized;
+        auto ordered_initial = initialized;
+        ordered_initial.front().log_scale[0] += std::log(1.7F);
+        ordered_initial.front().log_scale[1] += std::log(0.65F);
+        constexpr float rotation_w = 0.9659258263F;
+        constexpr float rotation_z = 0.2588190451F;
+        ordered_initial.front().rotation = {
+            rotation_w, 0.0F, 0.0F, rotation_z};
+        auto ordered_gaussians = ordered_initial;
         const dronegs::Options options{
             .data_path = root,
             .output_path = root.parent_path() / "unused-output",
@@ -144,6 +153,54 @@ int main() {
             additive_metrics.training_seconds <= 0.0 ||
             ordered_metrics.training_seconds <= 0.0) {
             throw std::runtime_error("invalid fixed-topology training metrics");
+        }
+        float maximum_position_delta = 0.0F;
+        float maximum_scale_delta = 0.0F;
+        float maximum_rotation_delta = 0.0F;
+        for (std::size_t gaussian = 0U;
+             gaussian < ordered_gaussians.size(); ++gaussian) {
+            float quaternion_norm_squared = 0.0F;
+            for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                maximum_position_delta = std::max(
+                    maximum_position_delta,
+                    std::abs(
+                        ordered_gaussians[gaussian].xyz[axis] -
+                        ordered_initial[gaussian].xyz[axis]));
+                maximum_scale_delta = std::max(
+                    maximum_scale_delta,
+                    std::abs(
+                        ordered_gaussians[gaussian].log_scale[axis] -
+                        ordered_initial[gaussian].log_scale[axis]));
+                if (!std::isfinite(
+                        ordered_gaussians[gaussian].xyz[axis]) ||
+                    !std::isfinite(
+                        ordered_gaussians[gaussian].log_scale[axis])) {
+                    throw std::runtime_error(
+                        "ordered geometry update produced non-finite values");
+                }
+            }
+            for (std::size_t component = 0U;
+                 component < 4U; ++component) {
+                maximum_rotation_delta = std::max(
+                    maximum_rotation_delta,
+                    std::abs(
+                        ordered_gaussians[gaussian].rotation[component] -
+                        ordered_initial[gaussian].rotation[component]));
+                quaternion_norm_squared +=
+                    ordered_gaussians[gaussian].rotation[component] *
+                    ordered_gaussians[gaussian].rotation[component];
+            }
+            if (std::abs(std::sqrt(quaternion_norm_squared) - 1.0F) >
+                2.0e-5F) {
+                throw std::runtime_error(
+                    "ordered geometry update did not normalize rotation");
+            }
+        }
+        if (maximum_position_delta <= 1.0e-7F ||
+            maximum_scale_delta <= 1.0e-7F ||
+            maximum_rotation_delta <= 1.0e-7F) {
+            throw std::runtime_error(
+                "ordered geometry parameters did not all update");
         }
         std::filesystem::remove_all(root);
         std::cout
