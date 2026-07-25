@@ -15,12 +15,21 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 type ProgressData = {
   status: "running" | "completed" | "stalled" | "error" | "unavailable";
-  stage: "preparation" | "extraction" | "matching" | "mapping" | "completed";
+  stage:
+    | "preparation"
+    | "extraction"
+    | "matching"
+    | "mapping"
+    | "alignment"
+    | "undistortion"
+    | "completed";
   progress: number;
   totalImages: number;
   extracted: number;
   matched: number;
   registered: number;
+  undistorted: number;
+  alignmentSucceeded: boolean;
   completedModels: number;
   elapsedSeconds: number;
   lastActivityAt: string;
@@ -40,7 +49,9 @@ const stages = [
   { id: "extraction", label: "Extraction SIFT" },
   { id: "matching", label: "Matching spatial" },
   { id: "mapping", label: "Mapping & BA" },
-  { id: "completed", label: "Validation" },
+  { id: "alignment", label: "Alignement RTK" },
+  { id: "undistortion", label: "Undistortion" },
+  { id: "completed", label: "Prêt pour DroneGS" },
 ] as const;
 
 const stageOrder = {
@@ -48,7 +59,9 @@ const stageOrder = {
   extraction: 0,
   matching: 1,
   mapping: 2,
-  completed: 3,
+  alignment: 3,
+  undistortion: 4,
+  completed: 5,
 };
 
 function formatDuration(seconds: number) {
@@ -114,10 +127,10 @@ export default function ProgressPage() {
               DroneAI · Albagnac Mavic 3E RTK
             </div>
             <h1 className="text-3xl font-semibold tracking-tight sm:text-5xl">
-              Reconstruction en cours
+              Préparation DroneGS
             </h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-400 sm:text-base">
-              Suivi minute par minute du traitement COLMAP sur les 1 376 prises de vue du vol Oblique8.
+              Suivi minute par minute de la reconstruction, de l’alignement RTK et de l’undistortion des 1 376 prises de vue.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -158,6 +171,10 @@ export default function ProgressPage() {
               <p className="mt-1 font-medium text-cyan-300">
                 {data?.stage === "mapping"
                   ? "Mapping & bundle adjustment"
+                  : data?.stage === "alignment"
+                    ? "Alignement RTK"
+                    : data?.stage === "undistortion"
+                      ? "Undistortion des images"
                   : data?.stage === "matching"
                     ? "Matching spatial"
                     : data?.stage === "extraction"
@@ -174,7 +191,7 @@ export default function ProgressPage() {
               style={{ width: `${data?.progress ?? 0}%` }}
             />
           </div>
-          <div className="mt-6 grid gap-3 sm:grid-cols-4">
+          <div className="mt-6 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {stages.map((stage, index) => {
               const complete = currentStage > index || data?.status === "completed";
               const active = currentStage === index && data?.status !== "completed";
@@ -210,7 +227,7 @@ export default function ProgressPage() {
             { icon: Camera, label: "Caméras enregistrées", value: data ? `${data.registered.toLocaleString("fr-FR")} / ${data.totalImages.toLocaleString("fr-FR")}` : "—" },
             { icon: Clock3, label: "Temps écoulé", value: data ? formatDuration(data.elapsedSeconds) : "—" },
             { icon: Cpu, label: "GPU / VRAM", value: data?.gpu ? `${data.gpu.utilization}% · ${data.gpu.memoryUsed} Mio` : "Indisponible" },
-            { icon: Database, label: "Modèles finalisés", value: data ? data.completedModels.toString() : "—" },
+            { icon: Database, label: "Images undistordues", value: data ? `${data.undistorted.toLocaleString("fr-FR")} / ${data.totalImages.toLocaleString("fr-FR")}` : "—" },
           ].map(({ icon: Icon, label, value }) => (
             <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.035] p-5">
               <Icon size={18} className="mb-5 text-cyan-300" />
@@ -263,6 +280,10 @@ export default function ProgressPage() {
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-500">Matching</dt>
                 <dd className="font-mono text-slate-300">{data?.matched ?? "—"} / 1376</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-slate-500">Alignement RTK</dt>
+                <dd className="font-mono text-slate-300">{data?.alignmentSucceeded ? "OK" : "En attente"}</dd>
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-slate-500">Température GPU</dt>

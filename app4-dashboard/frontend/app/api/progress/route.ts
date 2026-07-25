@@ -13,9 +13,19 @@ const workspace =
 const logPath =
   process.env.COLMAP_PROGRESS_LOG ??
   "/home/olivier/droneAI-workspaces/.albagnac-mavic3e-full.sparse.log";
+const followupLogPath =
+  process.env.COLMAP_PROGRESS_FOLLOWUP_LOG ??
+  "/home/olivier/droneAI-workspaces/.albagnac-mavic3e-full.align-undistort.log";
 const totalImages = Number(process.env.COLMAP_PROGRESS_TOTAL_IMAGES ?? "1376");
 
-type Stage = "preparation" | "extraction" | "matching" | "mapping" | "completed";
+type Stage =
+  | "preparation"
+  | "extraction"
+  | "matching"
+  | "mapping"
+  | "alignment"
+  | "undistortion"
+  | "completed";
 
 function maximumMatch(content: string, expression: RegExp): number {
   let maximum = 0;
@@ -27,7 +37,7 @@ function maximumMatch(content: string, expression: RegExp): number {
 
 function recentEvents(content: string): string[] {
   const interesting =
-    /Processed file \[|Processing image \[|Registering image #|Global bundle adjustment|Keeping successful reconstruction|Elapsed time:/;
+    /Processed file \[|Processing image \[|Registering image #|Global bundle adjustment|Keeping successful reconstruction|Alignment error:|Alignment succeeded|Undistorting image \[|Elapsed time:/;
   return content
     .split(/\r?\n/)
     .filter((line) => interesting.test(line))
@@ -55,11 +65,16 @@ function stageProgress(
   extracted: number,
   matched: number,
   registered: number,
+  undistorted: number,
 ): number {
   if (stage === "completed") return 100;
-  if (stage === "extraction") return (extracted / totalImages) * 25;
-  if (stage === "matching") return 25 + (matched / totalImages) * 25;
-  if (stage === "mapping") return 50 + (registered / totalImages) * 50;
+  if (stage === "extraction") return (extracted / totalImages) * 15;
+  if (stage === "matching") return 15 + (matched / totalImages) * 15;
+  if (stage === "mapping") return 30 + (registered / totalImages) * 55;
+  if (stage === "alignment") return 85;
+  if (stage === "undistortion") {
+    return 90 + (undistorted / totalImages) * 10;
+  }
   return 0;
 }
 
@@ -81,11 +96,22 @@ async function gpuSnapshot() {
 
 export async function GET() {
   try {
-    const [content, logStats, gpu] = await Promise.all([
+    const [content, sparseLogStats, gpu] = await Promise.all([
       fs.readFile(logPath, "utf8"),
       fs.stat(logPath),
       gpuSnapshot(),
     ]);
+    let followupContent = "";
+    let followupLogStats: Awaited<ReturnType<typeof fs.stat>> | null = null;
+    try {
+      [followupContent, followupLogStats] = await Promise.all([
+        fs.readFile(followupLogPath, "utf8"),
+        fs.stat(followupLogPath),
+      ]);
+    } catch {
+      followupContent = "";
+      followupLogStats = null;
+    }
     const metricsPath = `${workspace}/metrics.json`;
     let metrics: Record<string, number | string> | null = null;
     try {
@@ -106,17 +132,36 @@ export async function GET() {
       content,
       /Registering image #\d+ \(num_reg_frames=(\d+)\)/g,
     );
+    const undistorted = maximumMatch(
+      followupContent,
+      /Undistorting image \[(\d+)\/\d+\]/g,
+    );
+    const alignmentSucceeded = followupContent.includes("Alignment succeeded");
+    const followupCompleted =
+      undistorted >= totalImages &&
+      followupContent.includes('"gps_residuals_m"');
     const registered = Number(metrics?.registered_images ?? registeredInLog);
-    const stage = stageFromLog(content, metrics !== null);
+    const stage: Stage = followupContent
+      ? followupCompleted
+        ? "completed"
+        : alignmentSucceeded
+          ? "undistortion"
+          : "alignment"
+      : stageFromLog(content, metrics !== null);
     const progress = Math.min(
       100,
-      Math.max(0, stageProgress(stage, extracted, matched, registered)),
+      Math.max(
+        0,
+        stageProgress(stage, extracted, matched, registered, undistorted),
+      ),
     );
+    const activeContent = followupContent || content;
+    const activeLogStats = followupLogStats ?? sparseLogStats;
     const ageSeconds = Math.max(
       0,
-      (Date.now() - logStats.mtimeMs) / 1000,
+      (Date.now() - activeLogStats.mtimeMs) / 1000,
     );
-    const fatalLines = content
+    const fatalLines = activeContent
       .split(/\r?\n/)
       .filter((line) =>
         /Traceback|out of memory|CUDA error|returned non-zero exit status/i.test(
@@ -142,18 +187,20 @@ export async function GET() {
         extracted,
         matched,
         registered,
+        undistorted,
+        alignmentSucceeded,
         completedModels: (content.match(/Keeping successful reconstruction/g) ?? [])
           .length,
         elapsedSeconds: Math.max(
           0,
-          (Date.now() - logStats.birthtimeMs) / 1000,
+          (Date.now() - activeLogStats.birthtimeMs) / 1000,
         ),
-        lastActivityAt: logStats.mtime.toISOString(),
+        lastActivityAt: activeLogStats.mtime.toISOString(),
         updatedAt: new Date().toISOString(),
         gpu,
         metrics,
         fatalLines,
-        events: recentEvents(content),
+        events: recentEvents(activeContent),
       },
       { headers: { "Cache-Control": "no-store" } },
     );
