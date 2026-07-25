@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.3.
+- Current development version: 0.5.0-dev.4.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -32,13 +32,16 @@ Each completed phase has one focused commit and an annotated
   Gaussians, 309 evictions, 267.3 MB peak image cache, and no CUDA OOM.
 - Large-scene decode-overlap sub-gate completed: persistent one-slot prefetch,
   0.954 s median image wait, and 15.9% lower warm wall time than dev.2.
+- Ordered-alpha correctness foundation completed: CPU reference renderer,
+  transmittance contract, stable depth ordering, thresholds, and native tests.
 - Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
   gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
 - Next performance work must be selected from a GPU kernel profile. The immediate
-  Phase 4 priority remains ordered alpha compositing and measured quality parity.
+  Phase 4 priority is a tiled CUDA forward renderer matching the alpha oracle,
+  followed by its backward pass and measured quality parity.
 
 ## Versioning rules
 

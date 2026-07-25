@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.3
+Project version: 0.5.0-dev.4
 
 ## Decision
 
@@ -86,6 +86,12 @@ The manifest separates cumulative decoder service time from foreground wait.
 Pinned double-buffered target staging was prototyped and rejected for this
 slice: measured upload service was about 0.06 seconds per 500-iteration
 Albagnac run, below timing variance and not worth the added synchronization.
+
+Version 0.5.0-dev.4 adds a separate CPU correctness oracle for stable,
+depth-sorted front-to-back alpha composition. It records RGB, residual
+transmittance, visible splats, evaluated pairs, and contributing pairs. The
+production training kernel remains additive until a tiled CUDA forward pass
+matches this oracle and a validated backward pass is available.
 
 ## Planned layout
 

@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.4 - Phase 4 ordered-alpha oracle
+
+- Added an original CPU reference for depth-sorted front-to-back alpha composition.
+- Defined the raster camera, RGB, transmittance, and contribution-stat contracts.
+- Matched the current projection and isotropic support rules while introducing
+  bounded alpha, minimum-contribution, and early-transmittance thresholds.
+- Added tests for single-splat contribution, depth order, background, culling,
+  transmittance, and invalid cameras.
+- Kept the CUDA training path additive until a tiled forward renderer matches
+  the oracle and its backward pass is validated.
+- Kept `dronegs-v0.5.0` untagged; this is a correctness foundation, not parity.
+
 ## 0.5.0-dev.3 - Phase 4 large-scene decode overlap
 
 - Added a persistent, single-slot JPEG prefetch worker without concurrent LRU mutation.

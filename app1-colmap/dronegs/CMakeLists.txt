@@ -45,6 +45,7 @@ add_library(dronegs_core
     src/model.cpp
     src/ply.cpp
     src/manifest.cpp
+    src/rasterization.cpp
 )
 target_include_directories(dronegs_core PUBLIC include)
 target_link_libraries(dronegs_core PUBLIC JPEG::JPEG)
@@ -77,6 +78,10 @@ if(DRONEGS_BUILD_TESTS)
     add_executable(dronegs_core_tests tests/test_core.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_core_tests COMMAND dronegs_core_tests)
+
+    add_executable(dronegs_rasterization_tests tests/test_rasterization.cpp)
+    target_link_libraries(dronegs_rasterization_tests PRIVATE dronegs_core)
+    add_test(NAME dronegs_rasterization_tests COMMAND dronegs_rasterization_tests)
 
     add_executable(dronegs_cuda_tests tests/test_loss.cu)
     target_link_libraries(dronegs_cuda_tests PRIVATE dronegs_cuda)
