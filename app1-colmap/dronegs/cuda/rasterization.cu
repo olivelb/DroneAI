@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "dronegs/rasterization.hpp"
+#include "dronegs/ordered_training.hpp"
 
 #include <cub/cub.cuh>
 #include <cuda_runtime.h>
@@ -81,6 +82,89 @@ public:
 private:
     T* data_ = nullptr;
     std::size_t count_ = 0;
+};
+
+template <typename T>
+class ReusableDeviceAllocation {
+public:
+    ReusableDeviceAllocation() = default;
+    ~ReusableDeviceAllocation() {
+        if (data_ != nullptr) {
+            static_cast<void>(cudaFree(data_));
+        }
+    }
+    ReusableDeviceAllocation(const ReusableDeviceAllocation&) = delete;
+    ReusableDeviceAllocation& operator=(
+        const ReusableDeviceAllocation&) = delete;
+
+    void ensure(std::size_t count) {
+        if (count == 0U) {
+            throw std::invalid_argument(
+                "invalid reusable CUDA raster allocation size");
+        }
+        if (count <= capacity_) {
+            return;
+        }
+        if (count >
+            std::numeric_limits<std::size_t>::max() / sizeof(T)) {
+            throw std::invalid_argument(
+                "reusable CUDA raster allocation size overflows");
+        }
+        T* replacement = nullptr;
+        require_cuda(
+            cudaMalloc(
+                reinterpret_cast<void**>(&replacement),
+                count * sizeof(T)),
+            "cudaMalloc reusable alpha buffer");
+        if (data_ != nullptr) {
+            require_cuda(
+                cudaFree(data_), "cudaFree replaced alpha buffer");
+        }
+        data_ = replacement;
+        capacity_ = count;
+    }
+
+    T* data() { return data_; }
+    const T* data() const { return data_; }
+    std::size_t capacity() const { return capacity_; }
+
+    void zero(std::size_t count) {
+        if (count > capacity_) {
+            throw std::out_of_range(
+                "reusable CUDA memset exceeds capacity");
+        }
+        require_cuda(
+            cudaMemset(data_, 0, count * sizeof(T)),
+            "zero reusable alpha buffer");
+    }
+
+    void copy_from_host(const T* source, std::size_t count) {
+        if (count > capacity_) {
+            throw std::out_of_range(
+                "reusable host-to-device copy exceeds capacity");
+        }
+        require_cuda(
+            cudaMemcpy(
+                data_, source, count * sizeof(T),
+                cudaMemcpyHostToDevice),
+            "copy reusable alpha buffer to device");
+    }
+
+    void copy_to_host(T* destination, std::size_t count) const {
+        if (count > capacity_) {
+            throw std::out_of_range(
+                "reusable device-to-host copy exceeds capacity");
+        }
+        require_cuda(
+            cudaMemcpy(
+                destination, data_, count * sizeof(T),
+                cudaMemcpyDeviceToHost),
+            "copy reusable alpha buffer to host");
+    }
+
+private:
+    T* data_ = nullptr;
+    std::size_t capacity_ = 0U;
 };
 
 struct DeviceRasterCamera {
@@ -426,8 +510,10 @@ __global__ void render_alpha_tiles_kernel(
     rgb[pixel * 3U + 1U] = green + remaining * background_g;
     rgb[pixel * 3U + 2U] = blue + remaining * background_b;
     transmittance[pixel] = remaining;
-    atomicAdd(&stats->evaluated_pairs, evaluated);
-    atomicAdd(&stats->contributing_pairs, contributing);
+    if (stats != nullptr) {
+        atomicAdd(&stats->evaluated_pairs, evaluated);
+        atomicAdd(&stats->contributing_pairs, contributing);
+    }
 }
 
 __global__ void backward_alpha_tiles_kernel(
@@ -553,6 +639,104 @@ __global__ void backward_alpha_tiles_kernel(
         }
         transmittance_after = transmittance_before;
     }
+}
+
+__global__ void ordered_l1_loss_kernel(
+    const float* prediction, const float* transmittance,
+    const std::uint8_t* target, float* loss_sum,
+    unsigned int* active_pixels, std::size_t pixel_count) {
+    const std::size_t pixel =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (pixel >= pixel_count ||
+        transmittance[pixel] >= 1.0F) {
+        return;
+    }
+    float pixel_loss = 0.0F;
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        const auto offset = pixel * 3U + channel;
+        const float target_value =
+            static_cast<float>(target[offset]) / 255.0F;
+        pixel_loss += fabsf(prediction[offset] - target_value);
+    }
+    atomicAdd(loss_sum, pixel_loss);
+    atomicAdd(active_pixels, 1U);
+}
+
+__global__ void ordered_l1_gradient_kernel(
+    const float* prediction, const float* transmittance,
+    const std::uint8_t* target, const unsigned int* active_pixels,
+    float* image_gradient, std::size_t pixel_count) {
+    const std::size_t pixel =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (pixel >= pixel_count) {
+        return;
+    }
+    const unsigned int active = *active_pixels;
+    const bool contributes =
+        active != 0U && transmittance[pixel] < 1.0F;
+    const float normalizer =
+        contributes
+            ? 1.0F / (3.0F * static_cast<float>(active))
+            : 0.0F;
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        const auto offset = pixel * 3U + channel;
+        const float target_value =
+            static_cast<float>(target[offset]) / 255.0F;
+        const float difference = prediction[offset] - target_value;
+        image_gradient[offset] =
+            difference > 0.0F
+                ? normalizer
+                : (difference < 0.0F ? -normalizer : 0.0F);
+    }
+}
+
+__global__ void ordered_adam_update_kernel(
+    Gaussian* gaussians, std::size_t gaussian_count,
+    const float* dc_gradient, const float* opacity_gradient,
+    float* first_dc, float* second_dc,
+    float* first_opacity, float* second_opacity,
+    float inverse_bias_first, float inverse_bias_second) {
+    const std::size_t gaussian_index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (gaussian_index >= gaussian_count) {
+        return;
+    }
+    constexpr float beta_first = 0.9F;
+    constexpr float beta_second = 0.999F;
+    constexpr float color_learning_rate = 0.05F;
+    constexpr float opacity_learning_rate = 0.01F;
+    constexpr float epsilon = 1.0e-8F;
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        const auto offset = gaussian_index * 3U + channel;
+        const float gradient = dc_gradient[offset];
+        first_dc[offset] =
+            beta_first * first_dc[offset] +
+            (1.0F - beta_first) * gradient;
+        second_dc[offset] =
+            beta_second * second_dc[offset] +
+            (1.0F - beta_second) * gradient * gradient;
+        const float corrected_first =
+            first_dc[offset] * inverse_bias_first;
+        const float corrected_second =
+            second_dc[offset] * inverse_bias_second;
+        gaussians[gaussian_index].dc[channel] -=
+            color_learning_rate * corrected_first /
+            (sqrtf(corrected_second) + epsilon);
+    }
+    const float opacity = opacity_gradient[gaussian_index];
+    first_opacity[gaussian_index] =
+        beta_first * first_opacity[gaussian_index] +
+        (1.0F - beta_first) * opacity;
+    second_opacity[gaussian_index] =
+        beta_second * second_opacity[gaussian_index] +
+        (1.0F - beta_second) * opacity * opacity;
+    const float corrected_first =
+        first_opacity[gaussian_index] * inverse_bias_first;
+    const float corrected_second =
+        second_opacity[gaussian_index] * inverse_bias_second;
+    gaussians[gaussian_index].opacity_logit -=
+        opacity_learning_rate * corrected_first /
+        (sqrtf(corrected_second) + epsilon);
 }
 
 void sort_projected_records(
@@ -814,6 +998,342 @@ AlphaRenderBackwardOutput render_alpha_tiled_cuda_backward(
     const std::array<float, 3>& background) {
     return render_alpha_cuda_impl(
         gaussians, camera, background, &image_gradient);
+}
+
+struct OrderedAlphaTrainingContext::Impl {
+    Impl(
+        const std::vector<Gaussian>& initial_gaussians,
+        std::size_t maximum_pixel_count)
+        : gaussian_count(initial_gaussians.size()),
+          maximum_pixels(maximum_pixel_count) {
+        if (gaussian_count == 0U ||
+            gaussian_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max() - 1)) {
+            throw std::invalid_argument(
+                "ordered training requires a supported Gaussian count");
+        }
+        if (maximum_pixels == 0U ||
+            maximum_pixels >
+                std::numeric_limits<std::size_t>::max() / 3U) {
+            throw std::invalid_argument(
+                "ordered training requires a valid pixel capacity");
+        }
+        gaussians.ensure(gaussian_count);
+        records.ensure(gaussian_count);
+        sorted_records.ensure(gaussian_count);
+        depth_keys.ensure(gaussian_count);
+        sorted_depth_keys.ensure(gaussian_count);
+        pair_counts.ensure(gaussian_count + 1U);
+        pair_offsets.ensure(gaussian_count + 1U);
+        visible_splats.ensure(1U);
+        target.ensure(maximum_pixels * 3U);
+        rgb.ensure(maximum_pixels * 3U);
+        transmittance.ensure(maximum_pixels);
+        image_gradient.ensure(maximum_pixels * 3U);
+        loss_sum.ensure(1U);
+        active_pixels.ensure(1U);
+        dc_gradient.ensure(gaussian_count * 3U);
+        opacity_gradient.ensure(gaussian_count);
+        first_dc.ensure(gaussian_count * 3U);
+        second_dc.ensure(gaussian_count * 3U);
+        first_opacity.ensure(gaussian_count);
+        second_opacity.ensure(gaussian_count);
+        gaussians.copy_from_host(
+            initial_gaussians.data(), gaussian_count);
+        first_dc.zero(gaussian_count * 3U);
+        second_dc.zero(gaussian_count * 3U);
+        first_opacity.zero(gaussian_count);
+        second_opacity.zero(gaussian_count);
+    }
+
+    void sort_records() {
+        std::size_t temporary_bytes = 0U;
+        require_cuda(
+            cub::DeviceRadixSort::SortPairs(
+                nullptr, temporary_bytes,
+                depth_keys.data(), sorted_depth_keys.data(),
+                records.data(), sorted_records.data(),
+                static_cast<int>(gaussian_count)),
+            "query persistent projected sort storage");
+        temporary_storage.ensure(std::max<std::size_t>(
+            1U, temporary_bytes));
+        require_cuda(
+            cub::DeviceRadixSort::SortPairs(
+                temporary_storage.data(), temporary_bytes,
+                depth_keys.data(), sorted_depth_keys.data(),
+                records.data(), sorted_records.data(),
+                static_cast<int>(gaussian_count)),
+            "sort persistent projected splats");
+    }
+
+    void scan_counts() {
+        std::size_t temporary_bytes = 0U;
+        require_cuda(
+            cub::DeviceScan::ExclusiveSum(
+                nullptr, temporary_bytes,
+                pair_counts.data(), pair_offsets.data(),
+                static_cast<int>(gaussian_count + 1U)),
+            "query persistent pair scan storage");
+        temporary_storage.ensure(std::max<std::size_t>(
+            1U, temporary_bytes));
+        require_cuda(
+            cub::DeviceScan::ExclusiveSum(
+                temporary_storage.data(), temporary_bytes,
+                pair_counts.data(), pair_offsets.data(),
+                static_cast<int>(gaussian_count + 1U)),
+            "scan persistent tile pair counts");
+    }
+
+    void sort_pairs(std::uint32_t pair_items) {
+        std::size_t temporary_bytes = 0U;
+        require_cuda(
+            cub::DeviceRadixSort::SortPairs(
+                nullptr, temporary_bytes,
+                tile_depth_keys.data(),
+                sorted_tile_depth_keys.data(),
+                record_indices.data(),
+                sorted_record_indices.data(),
+                static_cast<int>(pair_items)),
+            "query persistent pair sort storage");
+        temporary_storage.ensure(std::max<std::size_t>(
+            1U, temporary_bytes));
+        require_cuda(
+            cub::DeviceRadixSort::SortPairs(
+                temporary_storage.data(), temporary_bytes,
+                tile_depth_keys.data(),
+                sorted_tile_depth_keys.data(),
+                record_indices.data(),
+                sorted_record_indices.data(),
+                static_cast<int>(pair_items)),
+            "sort persistent tile pairs");
+    }
+
+    float render_loss(
+        const RasterCamera& camera, const std::uint8_t* target_rgb,
+        std::size_t target_bytes, bool update) {
+        if (target_rgb == nullptr) {
+            throw std::invalid_argument(
+                "ordered training target is null");
+        }
+        const auto pixel_count =
+            static_cast<std::size_t>(camera.width) * camera.height;
+        if (camera.width == 0U || camera.height == 0U ||
+            !std::isfinite(camera.fx) || !std::isfinite(camera.fy) ||
+            camera.fx <= 0.0F || camera.fy <= 0.0F ||
+            pixel_count > maximum_pixels ||
+            target_bytes != pixel_count * 3U) {
+            throw std::invalid_argument(
+                "ordered training frame shape is invalid");
+        }
+        target.copy_from_host(target_rgb, target_bytes);
+        const auto device_camera = make_device_camera(camera);
+        const auto gaussian_items =
+            static_cast<std::uint32_t>(gaussian_count);
+        constexpr std::uint32_t block_size = 256U;
+        const auto gaussian_blocks =
+            (gaussian_items + block_size - 1U) / block_size;
+        visible_splats.zero(1U);
+        project_alpha_splats_kernel<<<gaussian_blocks, block_size>>>(
+            gaussians.data(), gaussian_items, device_camera,
+            records.data(), depth_keys.data(), visible_splats.data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent alpha projection");
+        sort_records();
+
+        const auto count_blocks =
+            (gaussian_items + 1U + block_size - 1U) / block_size;
+        extract_pair_counts_kernel<<<count_blocks, block_size>>>(
+            sorted_records.data(), gaussian_items, pair_counts.data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent pair count extraction");
+        scan_counts();
+        std::uint64_t pair_count = 0U;
+        require_cuda(
+            cudaMemcpy(
+                &pair_count, pair_offsets.data() + gaussian_items,
+                sizeof(pair_count), cudaMemcpyDeviceToHost),
+            "copy persistent tile pair count");
+        if (pair_count == 0U ||
+            pair_count >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<int>::max())) {
+            throw std::runtime_error(
+                pair_count == 0U
+                    ? "no sparse Gaussian projects into the selected training image"
+                    : "ordered training pair count exceeds CUB item limit");
+        }
+        const auto pair_items =
+            static_cast<std::uint32_t>(pair_count);
+        tile_depth_keys.ensure(pair_items);
+        sorted_tile_depth_keys.ensure(pair_items);
+        record_indices.ensure(pair_items);
+        sorted_record_indices.ensure(pair_items);
+        duplicate_tile_pairs_kernel<<<gaussian_blocks, block_size>>>(
+            sorted_records.data(), gaussian_items,
+            pair_offsets.data(), device_camera.tiles_x,
+            tile_depth_keys.data(), record_indices.data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent tile pair duplication");
+        sort_pairs(pair_items);
+
+        const auto tile_count =
+            static_cast<std::size_t>(device_camera.tiles_x) *
+            device_camera.tiles_y;
+        tile_starts.ensure(tile_count);
+        tile_ends.ensure(tile_count);
+        tile_starts.zero(tile_count);
+        tile_ends.zero(tile_count);
+        const auto pair_blocks =
+            (pair_items + block_size - 1U) / block_size;
+        build_tile_ranges_kernel<<<pair_blocks, block_size>>>(
+            sorted_tile_depth_keys.data(), pair_items,
+            tile_starts.data(), tile_ends.data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent tile range construction");
+
+        loss_sum.zero(1U);
+        active_pixels.zero(1U);
+        const dim3 render_threads(
+            alpha_tile_width, alpha_tile_height);
+        const dim3 render_blocks(
+            device_camera.tiles_x, device_camera.tiles_y);
+        render_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
+            sorted_records.data(), sorted_record_indices.data(),
+            tile_starts.data(), tile_ends.data(),
+            camera.width, camera.height,
+            0.0F, 0.0F, 0.0F,
+            rgb.data(), transmittance.data(), nullptr);
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent ordered renderer");
+        const auto pixel_blocks = static_cast<std::uint32_t>(
+            (pixel_count + block_size - 1U) / block_size);
+        ordered_l1_loss_kernel<<<pixel_blocks, block_size>>>(
+            rgb.data(), transmittance.data(), target.data(),
+            loss_sum.data(), active_pixels.data(), pixel_count);
+        require_cuda(
+            cudaGetLastError(),
+            "launch persistent ordered L1 loss");
+
+        float host_loss_sum = 0.0F;
+        unsigned int host_active_pixels = 0U;
+        loss_sum.copy_to_host(&host_loss_sum, 1U);
+        active_pixels.copy_to_host(&host_active_pixels, 1U);
+        if (host_active_pixels == 0U) {
+            throw std::runtime_error(
+                "ordered training render has no active pixels");
+        }
+        const float normalizer =
+            1.0F /
+            (3.0F * static_cast<float>(host_active_pixels));
+        if (update) {
+            ordered_l1_gradient_kernel<<<pixel_blocks, block_size>>>(
+                rgb.data(), transmittance.data(), target.data(),
+                active_pixels.data(), image_gradient.data(), pixel_count);
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent ordered image gradient");
+            dc_gradient.zero(gaussian_count * 3U);
+            opacity_gradient.zero(gaussian_count);
+            backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
+                sorted_records.data(), sorted_record_indices.data(),
+                tile_starts.data(), tile_ends.data(),
+                camera.width, camera.height,
+                0.0F, 0.0F, 0.0F,
+                image_gradient.data(), dc_gradient.data(),
+                opacity_gradient.data());
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent ordered backward");
+            beta_first_power *= 0.9F;
+            beta_second_power *= 0.999F;
+            const float inverse_bias_first =
+                1.0F / (1.0F - beta_first_power);
+            const float inverse_bias_second =
+                1.0F / (1.0F - beta_second_power);
+            ordered_adam_update_kernel<<<gaussian_blocks, block_size>>>(
+                gaussians.data(), gaussian_count,
+                dc_gradient.data(), opacity_gradient.data(),
+                first_dc.data(), second_dc.data(),
+                first_opacity.data(), second_opacity.data(),
+                inverse_bias_first, inverse_bias_second);
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent ordered Adam");
+        }
+        return host_loss_sum * normalizer;
+    }
+
+    std::size_t gaussian_count = 0U;
+    std::size_t maximum_pixels = 0U;
+    float beta_first_power = 1.0F;
+    float beta_second_power = 1.0F;
+    ReusableDeviceAllocation<Gaussian> gaussians;
+    ReusableDeviceAllocation<DeviceProjectedRecord> records;
+    ReusableDeviceAllocation<DeviceProjectedRecord> sorted_records;
+    ReusableDeviceAllocation<std::uint64_t> depth_keys;
+    ReusableDeviceAllocation<std::uint64_t> sorted_depth_keys;
+    ReusableDeviceAllocation<std::uint64_t> pair_counts;
+    ReusableDeviceAllocation<std::uint64_t> pair_offsets;
+    ReusableDeviceAllocation<unsigned long long> visible_splats;
+    ReusableDeviceAllocation<std::uint64_t> tile_depth_keys;
+    ReusableDeviceAllocation<std::uint64_t> sorted_tile_depth_keys;
+    ReusableDeviceAllocation<std::uint32_t> record_indices;
+    ReusableDeviceAllocation<std::uint32_t> sorted_record_indices;
+    ReusableDeviceAllocation<std::uint64_t> tile_starts;
+    ReusableDeviceAllocation<std::uint64_t> tile_ends;
+    ReusableDeviceAllocation<std::uint8_t> temporary_storage;
+    ReusableDeviceAllocation<std::uint8_t> target;
+    ReusableDeviceAllocation<float> rgb;
+    ReusableDeviceAllocation<float> transmittance;
+    ReusableDeviceAllocation<float> image_gradient;
+    ReusableDeviceAllocation<float> loss_sum;
+    ReusableDeviceAllocation<unsigned int> active_pixels;
+    ReusableDeviceAllocation<float> dc_gradient;
+    ReusableDeviceAllocation<float> opacity_gradient;
+    ReusableDeviceAllocation<float> first_dc;
+    ReusableDeviceAllocation<float> second_dc;
+    ReusableDeviceAllocation<float> first_opacity;
+    ReusableDeviceAllocation<float> second_opacity;
+};
+
+OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
+    const std::vector<Gaussian>& gaussians,
+    std::size_t maximum_pixels)
+    : impl_(std::make_unique<Impl>(gaussians, maximum_pixels)) {}
+
+OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
+
+OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
+    OrderedAlphaTrainingContext&&) noexcept = default;
+
+OrderedAlphaTrainingContext& OrderedAlphaTrainingContext::operator=(
+    OrderedAlphaTrainingContext&&) noexcept = default;
+
+float OrderedAlphaTrainingContext::evaluate(
+    const RasterCamera& camera, const std::uint8_t* target_rgb,
+    std::size_t target_bytes) {
+    return impl_->render_loss(
+        camera, target_rgb, target_bytes, false);
+}
+
+float OrderedAlphaTrainingContext::train_step(
+    const RasterCamera& camera, const std::uint8_t* target_rgb,
+    std::size_t target_bytes) {
+    return impl_->render_loss(
+        camera, target_rgb, target_bytes, true);
+}
+
+void OrderedAlphaTrainingContext::download(
+    std::vector<Gaussian>& output) const {
+    output.resize(impl_->gaussian_count);
+    impl_->gaussians.copy_to_host(
+        output.data(), impl_->gaussian_count);
 }
 
 }  // namespace dronegs

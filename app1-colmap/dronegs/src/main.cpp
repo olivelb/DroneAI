@@ -19,7 +19,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
-        std::cout << "DroneGS 0.5.0-dev.7 fixed-topology additive prototype\n";
+        std::cout
+            << "DroneGS 0.5.0-dev.8 fixed-topology ordered-alpha prototype\n";
         return 0;
     }
 
@@ -30,8 +31,9 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.7 uses experimental additive splatting; "
-                     "ordered alpha compositing and parity are not implemented yet.\n";
+        std::cerr << "DroneGS 0.5.0-dev.8 uses experimental fixed-topology "
+                     "ordered-alpha training; full parameter and quality "
+                     "parity are not implemented yet.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -43,7 +45,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("sparse point count exceeds --max-cap");
         }
         auto gaussians = dronegs::initialize_fixed_topology(scene);
-        const auto training = dronegs::train_fixed_topology(
+        const auto training = dronegs::train_fixed_topology_ordered(
             options, scene, gaussians);
 
         const auto ply_path = options.output_path / "point_cloud.ply";

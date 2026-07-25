@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.7.
+- Current development version: 0.5.0-dev.8.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -44,16 +44,23 @@ Each completed phase has one focused commit and an annotated
   and CPU/CUDA gradient parity.
 - Forward+backward measured 52.889 ms at 1,025,093 splats and 800x580 in
   Release/sm_89, including per-call allocation and host readback.
-- Phase 4 exit gate still open: persistent ordered-alpha training integration,
+- Persistent ordered-alpha training sub-gate completed: reusable CUDA/CUB/tile
+  buffers, device-side L1 gradient, ordered backward, and Adam.
+- The integrated Albagnac 500-iteration Release/sm_89 run completed in 25.80
+  seconds with a
+  651 MiB sampled total-VRAM delta and reduced anchor L1 by 22.6%.
+- Phase 4 exit gate still open: anisotropic projection,
   geometry/scale/rotation gradients, DSSIM, progressive SH, held-out quality
   metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is persistent device-resident integration of
-  ordered-alpha forward/backward with the loss and optimizer. Anisotropic
-  covariance and measured held-out quality parity follow. Further performance
-  work must be selected from a GPU kernel profile.
+- The immediate Phase 4 correctness priority is anisotropic covariance plus
+  position/scale/rotation gradients, followed by held-out quality metrics.
+  For large-scene throughput, the one-image JPEG prefetch is now too shallow:
+  Albagnac foreground wait is 10.32 seconds because ordered CUDA compute
+  outruns decode. A deeper bounded decode queue is the next measured
+  performance candidate.
 
 ## Versioning rules
 

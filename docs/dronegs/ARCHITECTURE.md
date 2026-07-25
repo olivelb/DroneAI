@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.7
+Project version: 0.5.0-dev.8
 
 ## Decision
 
@@ -69,14 +69,14 @@ revision, license, copyright, and local paths.
 ## Phase 4 development slice
 
 The current development slice projects fixed sparse Gaussians with COLMAP
-world-to-camera poses, rasterizes bounded isotropic screen-space kernels into
-weighted RGB accumulators, computes active-pixel L1, back-propagates analytical
-gradients, and updates DC color plus opacity with Adam.
+world-to-camera poses, sorts visible splats deterministically into 16x16 tiles,
+composites bounded isotropic kernels front-to-back, computes active-pixel L1,
+back-propagates analytical DC/opacity gradients, and applies Adam on device.
 
-This is a gradient/convergence scaffold, not the parity rasterizer. It has no
-front-to-back alpha ordering, visibility sort, anisotropic covariance projection,
-position/scale/rotation gradients, DSSIM, progressive SH, split/prune/grow, or
-held-out quality evaluation. It supports only SIMPLE_PINHOLE and PINHOLE inputs.
+This is still a fixed-topology convergence scaffold, not the parity rasterizer.
+It has no anisotropic covariance projection, position/scale/rotation gradients,
+DSSIM, progressive SH, split/prune/grow, or held-out quality evaluation. It
+supports only SIMPLE_PINHOLE and PINHOLE inputs.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache
@@ -98,9 +98,13 @@ Version 0.5.0-dev.7 adds CPU and CUDA backward paths for DC color and opacity.
 For each pixel, reverse composition carries the color produced by all later
 splats and reconstructs pre-splat transmittance from the final residual. This
 matches finite differences while respecting contribution clamps and early exit.
-The production training kernel remains additive because the public validation
-API still allocates and copies per call; persistent device buffers, device-side
-loss gradients, and optimizer integration are the next sub-gate.
+Version 0.5.0-dev.8 adds a separate persistent training context. Gaussian,
+projection, CUB temporary, tile, gradient, and Adam allocations survive across
+iterations and grow only when a camera exceeds a previous pair/tile high-water
+mark. RGB8 targets are uploaded per frame; L1 image gradients, reverse
+composition, and Adam remain on device. The experimental DroneGS binary now uses
+this ordered-alpha path. The additive implementation remains a test control,
+while LichtFeld remains the production backend until quality gates pass.
 
 ## Planned layout
 

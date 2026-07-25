@@ -2,6 +2,27 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.8 - Phase 4 persistent ordered-alpha trainer
+
+- Added an opaque persistent CUDA training context that retains Gaussians,
+  projected records, CUB storage, tile pairs/ranges, image gradients, and Adam
+  moments across iterations.
+- Added grow-on-demand pair and tile capacities so repeated camera frames avoid
+  per-iteration CUDA allocation after reaching their high-water marks.
+- Connected RGB8 active-pixel L1, ordered-alpha backward, and DC/opacity Adam
+  entirely on device; only pair-count and loss/active-pixel scalars return to
+  the host during a step.
+- Switched the experimental DroneGS binary to the ordered-alpha trainer and
+  retained the additive trainer as a synthetic convergence control.
+- Added side-by-side additive and ordered-alpha convergence coverage.
+- Completed a real 1,376-image / 1,025,093-Gaussian Albagnac run at 500
+  iterations in 25.80 seconds in Release/sm_89, reducing anchor L1 from
+  0.200559 to 0.155306.
+- Measured 14.35 seconds of trainer compute and a 651 MiB sampled peak
+  total-VRAM delta; JPEG foreground wait is now a material 10.32-second cost.
+- Renamed the manifest mode to
+  `dronegs-fixed-topology-ordered-alpha-prototype`.
+
 ## 0.5.0-dev.7 - Phase 4 ordered-alpha backward
 
 - Added public ordered-alpha backward outputs for DC color and opacity-logit

@@ -29,4 +29,8 @@ struct TrainingMetrics {
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians);
 
+TrainingMetrics train_fixed_topology_ordered(
+    const Options& options, const Scene& scene,
+    std::vector<Gaussian>& gaussians);
+
 }  // namespace dronegs

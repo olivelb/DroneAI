@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "dronegs/image.hpp"
+#include "dronegs/ordered_training.hpp"
 
 namespace dronegs {
 namespace {
@@ -445,6 +446,24 @@ DeviceCamera make_device_camera(const Camera& camera, const Image& image,
     return result;
 }
 
+RasterCamera make_raster_camera(const DeviceCamera& camera) {
+    RasterCamera result{
+        .fx = camera.fx,
+        .fy = camera.fy,
+        .cx = camera.cx,
+        .cy = camera.cy,
+        .width = camera.width,
+        .height = camera.height,
+    };
+    for (std::size_t index = 0U; index < result.rotation.size(); ++index) {
+        result.rotation[index] = camera.rotation[index];
+    }
+    for (std::size_t index = 0U; index < result.translation.size(); ++index) {
+        result.translation[index] = camera.translation[index];
+    }
+    return result;
+}
+
 struct FrameDescriptor {
     const Image* image = nullptr;
     const Camera* camera = nullptr;
@@ -726,6 +745,140 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     metrics.image_prefetch_consumed = cache.stats().prefetch_consumed;
     metrics.image_prefetch_ready = cache.stats().prefetch_ready;
     workspace.gaussians.copy_to_host(gaussians.data(), gaussians.size());
+    return metrics;
+}
+
+TrainingMetrics train_fixed_topology_ordered(
+    const Options& options, const Scene& scene,
+    std::vector<Gaussian>& gaussians) {
+    if (gaussians.empty() || scene.images.empty()) {
+        throw std::invalid_argument(
+            "ordered training requires images and initialized Gaussians");
+    }
+    constexpr std::size_t host_cache_capacity =
+        256U * 1024U * 1024U;
+    std::size_t maximum_pixels = 0U;
+    const auto descriptors =
+        make_frame_descriptors(options, scene, maximum_pixels);
+    ImageCache cache(
+        descriptors.size(), host_cache_capacity,
+        [&descriptors, &options](std::size_t index) {
+            const auto* image = descriptors.at(index).image;
+            return load_training_image(
+                options.data_path / "images" / image->name,
+                options.resize_factor, options.max_width);
+        });
+
+    const auto setup_start = std::chrono::steady_clock::now();
+    OrderedAlphaTrainingContext workspace(
+        gaussians, maximum_pixels);
+    TrainingMetrics metrics{
+        .iterations = options.iterations,
+    };
+    const auto schedule = make_training_schedule(
+        descriptors.size(), options.iterations, options.seed);
+    const auto initial_frame =
+        frame_from_cache(cache, descriptors, 0U, options);
+    cache.prefetch(schedule.front());
+    const auto initial_camera =
+        make_raster_camera(initial_frame.camera);
+    metrics.initial_loss = workspace.evaluate(
+        initial_camera, initial_frame.image->rgb.data(),
+        initial_frame.image->rgb.size());
+
+    const auto training_start = std::chrono::steady_clock::now();
+    const double setup_wall_seconds =
+        std::chrono::duration<double>(
+            training_start - setup_start)
+            .count();
+    metrics.setup_seconds = std::max(
+        0.0, setup_wall_seconds - cache.stats().wait_seconds);
+    const double wait_seconds_before_training =
+        cache.stats().wait_seconds;
+    const std::uint64_t progress_interval =
+        std::max<std::uint64_t>(
+            1U, options.iterations / 20U);
+    for (std::uint64_t iteration = 1U;
+         iteration <= options.iterations; ++iteration) {
+        const auto schedule_index =
+            static_cast<std::size_t>(iteration - 1U);
+        const auto frame = frame_from_cache(
+            cache, descriptors, schedule[schedule_index], options);
+        if (schedule_index + 1U < schedule.size()) {
+            cache.prefetch(schedule[schedule_index + 1U]);
+        }
+        const auto raster_camera =
+            make_raster_camera(frame.camera);
+        const float loss = workspace.train_step(
+            raster_camera, frame.image->rgb.data(),
+            frame.image->rgb.size());
+        if (iteration == 1U ||
+            iteration == options.iterations ||
+            iteration % progress_interval == 0U) {
+            std::cout
+                << "{\"event\":\"progress\",\"iteration\":"
+                << iteration
+                << ",\"iterations\":" << options.iterations
+                << ",\"loss\":" << loss
+                << ",\"gaussians\":" << gaussians.size()
+                << "}\n"
+                << std::flush;
+        }
+    }
+    require_cuda(
+        cudaDeviceSynchronize(),
+        "synchronize ordered fixed-topology training");
+    const auto training_end = std::chrono::steady_clock::now();
+    const double training_wall_seconds =
+        std::chrono::duration<double>(
+            training_end - training_start)
+            .count();
+    const double training_wait_seconds =
+        cache.stats().wait_seconds -
+        wait_seconds_before_training;
+    metrics.training_seconds = std::max(
+        0.0, training_wall_seconds - training_wait_seconds);
+
+    const auto final_evaluation_start =
+        std::chrono::steady_clock::now();
+    const double wait_seconds_before_final =
+        cache.stats().wait_seconds;
+    const auto final_frame =
+        frame_from_cache(cache, descriptors, 0U, options);
+    const auto final_camera =
+        make_raster_camera(final_frame.camera);
+    metrics.final_loss = workspace.evaluate(
+        final_camera, final_frame.image->rgb.data(),
+        final_frame.image->rgb.size());
+    const double final_evaluation_wall_seconds =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() -
+            final_evaluation_start)
+            .count();
+    const double final_wait_seconds =
+        cache.stats().wait_seconds -
+        wait_seconds_before_final;
+    metrics.setup_seconds += std::max(
+        0.0,
+        final_evaluation_wall_seconds - final_wait_seconds);
+
+    metrics.image_loading_seconds = cache.stats().wait_seconds;
+    metrics.image_decode_seconds = cache.stats().loading_seconds;
+    metrics.image_cache_hits = cache.stats().hits;
+    metrics.image_cache_misses = cache.stats().misses;
+    metrics.image_cache_evictions = cache.stats().evictions;
+    metrics.image_cache_capacity_bytes =
+        static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.peak_image_cache_bytes =
+        static_cast<std::uint64_t>(
+            cache.stats().peak_resident_bytes);
+    metrics.image_prefetch_started =
+        cache.stats().prefetch_started;
+    metrics.image_prefetch_consumed =
+        cache.stats().prefetch_consumed;
+    metrics.image_prefetch_ready =
+        cache.stats().prefetch_ready;
+    workspace.download(gaussians);
     return metrics;
 }
 

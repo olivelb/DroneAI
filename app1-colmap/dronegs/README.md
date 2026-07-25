@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.7` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.8` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -16,6 +16,10 @@ Version `0.5.0-dev.7` is an experimental fixed-topology training slice. It:
   alpha oracle;
 - provides tested CPU and CUDA ordered-alpha gradients for DC color and opacity,
   including equal-depth ordering, alpha clamping, and early-transmittance exit;
+- trains through a persistent ordered-alpha CUDA context with reusable
+  projection, CUB, tile, gradient, and Adam buffers;
+- computes active-pixel RGB8 L1 gradients, ordered-alpha backward, and Adam
+  updates on device without copying Gaussian gradients through the host;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -24,16 +28,16 @@ Version `0.5.0-dev.7` is an experimental fixed-topology training slice. It:
 - writes a run-manifest-v1 document;
 - provides finite-difference and end-to-end convergence tests.
 
-It is not a LichtFeld replacement yet. Rendering is additive rather than
-front-to-back alpha composited in the training path; the separate ordered-alpha
-forward/backward API is not yet wired into the persistent trainer buffers.
-Positions, scales, rotations, topology, and non-DC SH coefficients remain fixed. Only
+It is not a LichtFeld replacement yet. The experimental training path now uses
+front-to-back ordered-alpha composition, while the additive path remains only
+as a convergence control. Positions, scales, rotations, topology, and non-DC
+SH coefficients remain fixed. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
 measured. Decoded images use a bounded LRU plus one in-flight prefetch slot.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-fixed-topology-additive-prototype` and remains opt-in.
+`dronegs-fixed-topology-ordered-alpha-prototype` and remains opt-in.
 
 ## Container build
 

@@ -18,6 +18,11 @@ if(NOT CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 get_filename_component(DRONEGS_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set_property(
+    DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${DRONEGS_REPOSITORY_ROOT}/.git/HEAD"
+    "${DRONEGS_REPOSITORY_ROOT}/.git/index"
+)
 
 execute_process(
     COMMAND git -c safe.directory=${DRONEGS_REPOSITORY_ROOT} rev-parse HEAD

@@ -93,7 +93,10 @@ int main() {
         std::filesystem::create_directories(root / "images");
         write_solid_jpeg(root / "images" / "frame.jpg");
         const auto scene = make_scene();
-        auto gaussians = dronegs::initialize_fixed_topology(scene);
+        const auto initialized =
+            dronegs::initialize_fixed_topology(scene);
+        auto additive_gaussians = initialized;
+        auto ordered_gaussians = initialized;
         const dronegs::Options options{
             .data_path = root,
             .output_path = root.parent_path() / "unused-output",
@@ -107,21 +110,35 @@ int main() {
             .tile_mode = 1U,
             .seed = 7U,
         };
-        const auto metrics = dronegs::train_fixed_topology(
-            options, scene, gaussians);
-        if (!(metrics.final_loss < metrics.initial_loss * 0.95F)) {
-            throw std::runtime_error("fixed-topology training did not reduce anchor loss");
+        const auto additive_metrics = dronegs::train_fixed_topology(
+            options, scene, additive_gaussians);
+        const auto ordered_metrics =
+            dronegs::train_fixed_topology_ordered(
+                options, scene, ordered_gaussians);
+        if (!(additive_metrics.final_loss <
+              additive_metrics.initial_loss * 0.95F)) {
+            throw std::runtime_error(
+                "additive fixed-topology control did not reduce anchor loss");
         }
-        if (metrics.iterations != options.iterations ||
-            metrics.training_seconds <= 0.0) {
+        if (!(ordered_metrics.final_loss <
+              ordered_metrics.initial_loss * 0.95F)) {
+            throw std::runtime_error(
+                "ordered fixed-topology training did not reduce anchor loss");
+        }
+        if (additive_metrics.iterations != options.iterations ||
+            ordered_metrics.iterations != options.iterations ||
+            additive_metrics.training_seconds <= 0.0 ||
+            ordered_metrics.training_seconds <= 0.0) {
             throw std::runtime_error("invalid fixed-topology training metrics");
         }
         std::filesystem::remove_all(root);
-        std::cout << "DroneGS fixed-topology convergence test passed\n";
+        std::cout
+            << "DroneGS ordered fixed-topology convergence test passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::filesystem::remove_all(root);
-        std::cerr << "DroneGS fixed-topology convergence test failed: "
+        std::cerr
+                  << "DroneGS ordered fixed-topology convergence test failed: "
                   << error.what() << "\n";
         return 1;
     }
