@@ -46,8 +46,8 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS MRNF optimizer-ablation "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.19\n"
+        "DroneGS MRNF optimizer-combination "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.20\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -57,7 +57,7 @@ const char* help_text() {
         "[--optimizer-profile dronegs-dev16|lichtfeld-absolute|"
         "lichtfeld-dc-only|lichtfeld-position-only|"
         "lichtfeld-opacity-only|lichtfeld-scale-only|"
-        "lichtfeld-rotation-only]\n";
+        "lichtfeld-rotation-only|lichtfeld-dc-opacity]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -188,11 +188,12 @@ void validate_options(const Options& options) {
         options.optimizer_profile != "lichtfeld-position-only" &&
         options.optimizer_profile != "lichtfeld-opacity-only" &&
         options.optimizer_profile != "lichtfeld-scale-only" &&
-        options.optimizer_profile != "lichtfeld-rotation-only") {
+        options.optimizer_profile != "lichtfeld-rotation-only" &&
+        options.optimizer_profile != "lichtfeld-dc-opacity") {
         throw std::invalid_argument(
             "--optimizer-profile must be dronegs-dev16, "
             "lichtfeld-absolute, lichtfeld-dc-only, or "
-            "a lichtfeld-*-only family ablation");
+            "a supported LichtFeld family ablation/combination");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

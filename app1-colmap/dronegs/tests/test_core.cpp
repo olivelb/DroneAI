@@ -251,7 +251,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--save-eval-images", "1",
-        "--optimizer-profile", "lichtfeld-dc-only",
+        "--optimizer-profile", "lichtfeld-dc-opacity",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -262,7 +262,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
     check(
-        tuned.optimizer_profile == "lichtfeld-dc-only",
+        tuned.optimizer_profile == "lichtfeld-dc-opacity",
         "CLI optimizer profile mismatch");
     values.resize(values.size() - 12U);
 

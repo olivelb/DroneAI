@@ -1,13 +1,13 @@
 # DroneGS native trainer
 
 This directory contains the C++23/CUDA DroneAI Gaussian trainer. The
-pre-dev.15 native implementation is original MIT code. Dev.15-dev.19 adapt
+pre-dev.15 native implementation is original MIT code. Dev.15-dev.20 adapt
 MRNF error weighting, cadence, long-axis split, weighted-Gumbel selection, and
 edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.19` is an experimental MRNF optimizer-ablation slice. It:
+Version `0.5.0-dev.20` is an experimental MRNF optimizer-combination slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -42,8 +42,8 @@ Version `0.5.0-dev.19` is an experimental MRNF optimizer-ablation slice. It:
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
 - exposes the accepted `dronegs-dev16` quality-anchor profile, the experimental
-  `lichtfeld-absolute` profile, and five exact one-family ablations, with dev16
-  retained as the default;
+  `lichtfeld-absolute` profile, five exact one-family ablations, and a strict
+  DC-plus-opacity combination, with dev16 retained as the default;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -75,13 +75,13 @@ Topology, weighted Gumbel selection, and edge guidance now run, but
 prune/replacement, noise injection, decay, compaction, and non-DC SH
 coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. Dev.19's same-binary Albagnac control reaches 17.0720 dB / 0.245501
-SSIM. Position-only is decisively rejected at 15.9451 dB / 0.216089. DC-only
-gains 0.0818 dB but loses 0.000269 SSIM. Opacity-only is the first
-no-compromise candidate at +0.0162 dB / +0.000283 SSIM, improving 137/172 PSNR
-views and 142/172 SSIM views. Scale and rotation are neutral at 500 steps.
-The absolute LichtFeld profile remains an opt-in negative calibration result,
-not an accepted quality improvement. LPIPS remains unevaluated.
+measured. At 1,000 steps, dev.20's same-binary control reaches 17.5140 dB /
+0.251635 SSIM. Opacity-only reaches 17.5211 dB / 0.251892 and improves SSIM on
+130/172 views. DC-plus-opacity reaches the best PSNR, 17.6319 dB, while still
+improving mean SSIM to 0.251785; however, SSIM regresses on 106/172 views and
+its median per-view SSIM delta is negative. It is retained as a strong PSNR
+candidate, not made default. The next calibration should test intermediate DC
+rates with LichtFeld opacity. LPIPS remains unevaluated.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -149,5 +149,7 @@ The `lichtfeld-dc-only`, `lichtfeld-position-only`,
 `lichtfeld-opacity-only`, `lichtfeld-scale-only`, and
 `lichtfeld-rotation-only` values change exactly one family for reproducible
 ablation.
+`lichtfeld-dc-opacity` combines only the LichtFeld DC and opacity behaviors;
+position, scale, and rotation remain exactly dev16.
 
 The output directory must be empty and must not contain the source dataset.

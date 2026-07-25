@@ -6,10 +6,10 @@
  * plus the dev.16 Gumbel selection and edge-guidance behavior and dev.17 MRNF
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
  * Dev.18 dual-profile selection and update telemetry and dev.19 family-isolated
- * epsilon/rate ablations are DroneAI additions. The pre-existing DroneGS
- * rasterizer, loss, gradient, and optimizer code in this file was original MIT
- * code; this combined translation unit is conservatively distributed under
- * GPL-3.0-or-later from dev.15 onward.
+ * epsilon/rate ablations and the dev.20 DC-plus-opacity combination are
+ * DroneAI additions. The pre-existing DroneGS rasterizer, loss, gradient, and
+ * optimizer code in this file was original MIT code; this combined translation
+ * unit is conservatively distributed under GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
@@ -2519,13 +2519,15 @@ static MrnfLearningRates mrnf_learning_rates(
         profile == MrnfOptimizerProfile::lichtfeld_absolute;
     const bool lichtfeld_dc =
         lichtfeld_all ||
-        profile == MrnfOptimizerProfile::lichtfeld_dc_only;
+        profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
+        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity;
     const bool lichtfeld_position =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_position_only;
     const bool lichtfeld_opacity =
         lichtfeld_all ||
-        profile == MrnfOptimizerProfile::lichtfeld_opacity_only;
+        profile == MrnfOptimizerProfile::lichtfeld_opacity_only ||
+        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity;
     const bool lichtfeld_scale =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_scale_only;

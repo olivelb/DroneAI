@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.20 - Phase 4 DC-plus-opacity combination
+
+- Added `lichtfeld-dc-opacity`, combining the two promising dev.19 families
+  while retaining dev16 position, scale, rotation, and their epsilons.
+- Extended CLI, manifest, JSON schedule events, version identifiers, direct
+  CUDA schedule tests, and GPL provenance.
+- Passed all five native CPU/CUDA test executables.
+- The 500-step gate reaches 17.20034 dB / 0.245740 SSIM, approximately
+  +0.1284 dB / +0.000239 versus the dev16 quality anchor.
+- Replayed dev16 control, opacity-only, and DC-plus-opacity for 1,000 steps
+  with the exact same final binary and five topology refinements.
+- At 1,000 steps, opacity-only improves the control by +0.00706 dB /
+  +0.000257 SSIM and wins on 109/172 PSNR and 130/172 SSIM views.
+- DC-plus-opacity improves the control by +0.11791 dB / +0.000150 SSIM and
+  wins on 142/172 PSNR views, but SSIM regresses on 106/172 views.
+- Keep dev16 as the default. Retain opacity-only as the most homogeneous
+  candidate and DC-plus-opacity as the best-PSNR candidate.
+- The next calibration should sweep intermediate DC rates with LichtFeld
+  opacity rather than selecting either endpoint.
+
 ## 0.5.0-dev.19 - Phase 4 MRNF one-family optimizer ablations
 
 - Added five explicit profiles that replace exactly one dev16 parameter family

@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.19 MRNF optimizer ablations "
+            << "DroneGS 0.5.0-dev.20 MRNF optimizer combinations "
                "L1+DSSIM held-out evaluation prototype\n";
         return 0;
     }
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.19 uses experimental anisotropic "
+        std::cerr << "DroneGS 0.5.0-dev.20 uses experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
                      "Gumbel MRNF growth, Sobel edge guidance, and MRNF "
                      "optimizer profiles and sampled update telemetry; "

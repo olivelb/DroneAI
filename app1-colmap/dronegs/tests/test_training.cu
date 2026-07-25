@@ -492,6 +492,35 @@ int main() {
         require_rate(
             opacity_only_rates.dc, native_rates.dc,
             1.0e-8F, "opacity-only DC isolation");
+        dronegs::OrderedAlphaTrainingContext dc_opacity_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_dc_opacity);
+        const auto dc_opacity_rates =
+            dc_opacity_context.current_learning_rates();
+        require_rate(
+            dc_opacity_rates.dc, initial_rates.dc,
+            1.0e-8F, "DC-opacity DC");
+        require_rate(
+            dc_opacity_rates.opacity, initial_rates.opacity,
+            1.0e-8F, "DC-opacity opacity");
+        require_rate(
+            dc_opacity_rates.position, native_rates.position,
+            1.0e-9F, "DC-opacity position isolation");
+        require_rate(
+            dc_opacity_rates.scale, native_rates.scale,
+            1.0e-8F, "DC-opacity scale isolation");
+        require_rate(
+            dc_opacity_rates.rotation, native_rates.rotation,
+            1.0e-8F, "DC-opacity rotation isolation");
+        require_rate(
+            dc_opacity_rates.dc_epsilon, 1.0e-15F,
+            1.0e-20F, "DC-opacity DC epsilon");
+        require_rate(
+            dc_opacity_rates.opacity_epsilon, 1.0e-15F,
+            1.0e-20F, "DC-opacity opacity epsilon");
+        require_rate(
+            dc_opacity_rates.position_epsilon, 1.0e-8F,
+            1.0e-12F, "DC-opacity position epsilon isolation");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);

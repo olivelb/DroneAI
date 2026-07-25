@@ -49,6 +49,7 @@ enum class MrnfOptimizerProfile {
     lichtfeld_opacity_only,
     lichtfeld_scale_only,
     lichtfeld_rotation_only,
+    lichtfeld_dc_opacity,
 };
 
 struct MrnfParameterTelemetry {

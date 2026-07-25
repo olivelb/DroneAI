@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.19
+Project version: 0.5.0-dev.20
 
 ## Decision
 
@@ -225,7 +225,15 @@ regression. Opacity-only improves both aggregates to 17.08820 dB / 0.245784;
 DC-only trades +0.08181 dB for -0.000269 SSIM; scale and rotation are neutral.
 Dev16 remains the default pending a longer-budget opacity confirmation.
 
-The dev.15-dev.19 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.20 adds a strict DC-plus-opacity profile. On the identical
+1,000-step Albagnac protocol, dev16 reaches 17.51403 dB / 0.251635 SSIM,
+opacity-only reaches 17.52109 dB / 0.251892, and DC-plus-opacity reaches
+17.63194 dB / 0.251785. The combination improves aggregate PSNR and SSIM but
+regresses SSIM on 106/172 views, whereas opacity-only improves 130/172 SSIM
+views. Dev16 therefore remains the default; the next slice should sweep
+intermediate DC rates while keeping LichtFeld opacity and dev16 geometry.
+
+The dev.15-dev.20 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their

@@ -74,13 +74,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile == "lichtfeld-absolute";
     const bool lichtfeld_dc =
         lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-dc-only";
+        options.optimizer_profile == "lichtfeld-dc-only" ||
+        options.optimizer_profile == "lichtfeld-dc-opacity";
     const bool lichtfeld_position =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-position-only";
     const bool lichtfeld_opacity =
         lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-opacity-only";
+        options.optimizer_profile == "lichtfeld-opacity-only" ||
+        options.optimizer_profile == "lichtfeld-dc-opacity";
     const bool lichtfeld_scale =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-scale-only";
@@ -98,8 +100,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-mrnf-optimizer-ablation-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.19\",\n"
+           << "  \"backend\": \"dronegs-mrnf-optimizer-combination-prototype\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.20\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -208,7 +210,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"host_image_storage\": \"rgb8\",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
            << "    \"mode\": "
-              "\"mrnf-optimizer-ablation-anisotropic-dssim-held-out-prototype\"\n"
+              "\"mrnf-optimizer-combination-anisotropic-dssim-held-out-prototype\"\n"
            << "  },\n"
            << "  \"timings\": {\n"
            << "    \"startup_seconds\": " << measurements.startup_seconds << ",\n"

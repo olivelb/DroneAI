@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.19.
+- Current development version: 0.5.0-dev.20.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -118,19 +118,23 @@ Each completed phase has one focused commit and an annotated
 - Opacity-only is the first no-compromise candidate at +0.0162 dB /
   +0.000283 SSIM. DC-only gains +0.0818 dB but loses 0.000269 SSIM; scale and
   rotation are neutral at 500 steps.
+- Dev.20 combines DC and opacity without changing the other families. At
+  1,000 steps it improves the same-binary control by +0.11791 dB and
+  +0.000150 mean SSIM, but 106/172 individual SSIM views regress.
+- Opacity-only remains the most homogeneous candidate at 1,000 steps:
+  +0.00706 dB / +0.000257 SSIM, with 130/172 SSIM views improving.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17-dev.19 retain the negative optimizer experiments and the
-  opacity candidate. LPIPS,
+  while dev.17-dev.20 retain the optimizer experiments and candidates. LPIPS,
   progressive SH, prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is a DC-plus-opacity profile followed by a
-  longer-budget confirmation of opacity-only and the combination. Position
-  must remain on the dev16 normalization/schedule. A future instrumented
-  LichtFeld control would improve equivalence calibration. Progressive SH
-  should follow only after optimizer behavior is resolved. The edge
-  implementation also remains a candidate for fusion or
+- The immediate Phase 4 priority is an intermediate-DC sweep with LichtFeld
+  opacity, targeting the combination's PSNR gain without its broad per-view
+  SSIM tradeoff. Position must remain on the dev16 normalization/schedule.
+  A future instrumented LichtFeld control would improve equivalence
+  calibration. Progressive SH should follow only after optimizer behavior is
+  resolved. The edge implementation also remains a candidate for fusion or
   refinement-window-only accumulation.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
