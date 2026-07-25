@@ -57,6 +57,7 @@ target_compile_options(dronegs_core PRIVATE
 
 add_library(dronegs_cuda
     cuda/loss.cu
+    cuda/rasterization.cu
     cuda/trainer.cu
 )
 target_include_directories(dronegs_cuda PUBLIC include)
@@ -87,6 +88,15 @@ if(DRONEGS_BUILD_TESTS)
     target_link_libraries(dronegs_cuda_tests PRIVATE dronegs_cuda)
     set_target_properties(dronegs_cuda_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_cuda_tests COMMAND dronegs_cuda_tests)
+
+    add_executable(
+        dronegs_rasterization_cuda_tests tests/test_rasterization_cuda.cu)
+    target_link_libraries(dronegs_rasterization_cuda_tests PRIVATE dronegs_cuda)
+    set_target_properties(
+        dronegs_rasterization_cuda_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(
+        NAME dronegs_rasterization_cuda_tests
+        COMMAND dronegs_rasterization_cuda_tests)
 
     add_executable(dronegs_training_tests tests/test_training.cu)
     target_link_libraries(dronegs_training_tests PRIVATE dronegs_cuda)

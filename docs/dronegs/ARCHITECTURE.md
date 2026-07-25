@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.4
+Project version: 0.5.0-dev.5
 
 ## Decision
 
@@ -90,8 +90,10 @@ Albagnac run, below timing variance and not worth the added synchronization.
 Version 0.5.0-dev.4 adds a separate CPU correctness oracle for stable,
 depth-sorted front-to-back alpha composition. It records RGB, residual
 transmittance, visible splats, evaluated pairs, and contributing pairs. The
-production training kernel remains additive until a tiled CUDA forward pass
-matches this oracle and a validated backward pass is available.
+0.5.0-dev.5 adds a matching forward CUDA implementation: host-built per-tile
+depth lists feed 16x16 CUDA blocks, and each block cooperatively stages splat
+batches in shared memory. The production training kernel remains additive until
+GPU binning and a validated ordered-alpha backward pass are available.
 
 ## Planned layout
 

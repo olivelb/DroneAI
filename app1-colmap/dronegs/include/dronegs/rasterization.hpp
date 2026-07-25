@@ -10,6 +10,12 @@
 
 namespace dronegs {
 
+inline constexpr float alpha_minimum_contribution = 1.0F / 255.0F;
+inline constexpr float alpha_maximum = 0.99F;
+inline constexpr float alpha_minimum_transmittance = 1.0e-4F;
+inline constexpr std::uint32_t alpha_tile_width = 16U;
+inline constexpr std::uint32_t alpha_tile_height = 16U;
+
 struct RasterCamera {
     std::array<float, 9> rotation{
         1.0F, 0.0F, 0.0F,
@@ -39,7 +45,24 @@ struct AlphaRenderOutput {
     AlphaRenderStats stats;
 };
 
+struct ProjectedAlphaSplat {
+    std::size_t source_index = 0;
+    float depth = 0.0F;
+    float x = 0.0F;
+    float y = 0.0F;
+    float sigma = 0.0F;
+    float opacity = 0.0F;
+    std::array<float, 3> color{};
+};
+
+std::vector<ProjectedAlphaSplat> project_alpha_splats(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera);
+
 AlphaRenderOutput render_alpha_reference(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+
+AlphaRenderOutput render_alpha_tiled_cuda(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
 

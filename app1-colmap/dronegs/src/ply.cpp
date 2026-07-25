@@ -37,7 +37,7 @@ void write_gaussian_ply(const std::filesystem::path& path,
     }
     stream << "ply\n"
            << "format binary_little_endian 1.0\n"
-           << "comment DroneGS fixed-topology additive prototype 0.5.0-dev.4\n"
+           << "comment DroneGS fixed-topology additive prototype 0.5.0-dev.5\n"
            << "element vertex " << gaussians.size() << "\n"
            << "property float x\n"
            << "property float y\n"

@@ -2,6 +2,20 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.5 - Phase 4 tiled-alpha CUDA forward
+
+- Added a 16x16 tiled CUDA front-to-back alpha renderer.
+- Added host reference binning into per-tile splat lists that preserve stable
+  global depth order.
+- Loaded splat batches cooperatively into shared memory and rendered one thread
+  per pixel without RGB or transmittance atomics.
+- Matched CPU RGB, residual transmittance, evaluated-pair, and
+  contributing-pair outputs on multi-tile synthetic scenes.
+- Added CUDA coverage for backgrounds, input-order independence, empty scenes,
+  culling, contribution thresholds, and early-transmittance exit.
+- Kept the trainer on the validated additive backward path; GPU binning,
+  anisotropic covariance, and ordered-alpha backward remain open.
+
 ## 0.5.0-dev.4 - Phase 4 ordered-alpha oracle
 
 - Added an original CPU reference for depth-sorted front-to-back alpha composition.

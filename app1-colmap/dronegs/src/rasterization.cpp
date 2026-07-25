@@ -15,27 +15,14 @@ namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float minimum_depth = 1.0e-4F;
-constexpr float minimum_alpha = 1.0F / 255.0F;
-constexpr float maximum_alpha = 0.99F;
-constexpr float minimum_transmittance = 1.0e-4F;
 
 float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
 }
 
-struct ProjectedSplat {
-    std::size_t source_index = 0;
-    float depth = 0.0F;
-    float x = 0.0F;
-    float y = 0.0F;
-    float sigma = 0.0F;
-    float opacity = 0.0F;
-    std::array<float, 3> color{};
-};
-
-std::vector<ProjectedSplat> project_visible(
+std::vector<ProjectedAlphaSplat> project_visible(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera) {
-    std::vector<ProjectedSplat> projected;
+    std::vector<ProjectedAlphaSplat> projected;
     projected.reserve(gaussians.size());
     const float focal = 0.5F * (camera.fx + camera.fy);
     for (std::size_t index = 0; index < gaussians.size(); ++index) {
@@ -84,7 +71,7 @@ std::vector<ProjectedSplat> project_visible(
     }
     std::stable_sort(
         projected.begin(), projected.end(),
-        [](const ProjectedSplat& left, const ProjectedSplat& right) {
+        [](const ProjectedAlphaSplat& left, const ProjectedAlphaSplat& right) {
             if (left.depth != right.depth) {
                 return left.depth < right.depth;
             }
@@ -107,6 +94,12 @@ void validate_camera(const RasterCamera& camera) {
 }
 
 }  // namespace
+
+std::vector<ProjectedAlphaSplat> project_alpha_splats(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera) {
+    validate_camera(camera);
+    return project_visible(gaussians, camera);
+}
 
 AlphaRenderOutput render_alpha_reference(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
@@ -147,7 +140,8 @@ AlphaRenderOutput render_alpha_reference(
                 const auto pixel =
                     static_cast<std::size_t>(y) * camera.width +
                     static_cast<std::size_t>(x);
-                if (output.transmittance[pixel] <= minimum_transmittance) {
+                if (output.transmittance[pixel] <=
+                    alpha_minimum_transmittance) {
                     continue;
                 }
                 ++output.stats.evaluated_pairs;
@@ -159,8 +153,8 @@ AlphaRenderOutput render_alpha_reference(
                     -(delta_x * delta_x + delta_y * delta_y) *
                     inverse_two_variance);
                 const float alpha = std::min(
-                    maximum_alpha, splat.opacity * gaussian_weight);
-                if (alpha < minimum_alpha) {
+                    alpha_maximum, splat.opacity * gaussian_weight);
+                if (alpha < alpha_minimum_contribution) {
                     continue;
                 }
                 ++output.stats.contributing_pairs;
