@@ -400,6 +400,75 @@ int main() {
             throw std::runtime_error(
                 "topology statistics did not reset after refinement");
         }
+        std::vector<dronegs::Gaussian> gumbel_parents(8U, split_parent);
+        for (std::size_t index = 0U;
+             index < gumbel_parents.size(); ++index) {
+            gumbel_parents[index].xyz[0] +=
+                0.002F * static_cast<float>(index);
+            gumbel_parents[index].dc[0] =
+                -0.05F + 0.01F * static_cast<float>(index);
+        }
+        dronegs::OrderedAlphaTrainingContext seeded_first(
+            gumbel_parents, 32U * 32U, 2U, 10U);
+        dronegs::OrderedAlphaTrainingContext seeded_repeat(
+            gumbel_parents, 32U * 32U, 2U, 10U);
+        dronegs::OrderedAlphaTrainingContext seeded_other(
+            gumbel_parents, 32U * 32U, 2U, 10U);
+        static_cast<void>(seeded_first.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        static_cast<void>(seeded_repeat.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        static_cast<void>(seeded_other.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto seeded_first_result =
+            seeded_first.refine_topology(0.0F, 0.25F, 42U);
+        const auto seeded_repeat_result =
+            seeded_repeat.refine_topology(0.0F, 0.25F, 42U);
+        const auto seeded_other_result =
+            seeded_other.refine_topology(0.0F, 0.25F, 43U);
+        std::vector<dronegs::Gaussian> seeded_first_gaussians;
+        std::vector<dronegs::Gaussian> seeded_repeat_gaussians;
+        std::vector<dronegs::Gaussian> seeded_other_gaussians;
+        seeded_first.download(seeded_first_gaussians);
+        seeded_repeat.download(seeded_repeat_gaussians);
+        seeded_other.download(seeded_other_gaussians);
+        const auto geometry_matches = [](
+            const std::vector<dronegs::Gaussian>& left,
+            const std::vector<dronegs::Gaussian>& right) {
+            if (left.size() != right.size()) {
+                return false;
+            }
+            for (std::size_t index = 0U;
+                 index < left.size(); ++index) {
+                for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                    if (left[index].xyz[axis] !=
+                            right[index].xyz[axis] ||
+                        left[index].log_scale[axis] !=
+                            right[index].log_scale[axis]) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+        if (seeded_first_result.candidates != 8U ||
+            seeded_first_result.added != 2U ||
+            seeded_repeat_result.candidates != 8U ||
+            seeded_repeat_result.added != 2U ||
+            !geometry_matches(
+                seeded_first_gaussians,
+                seeded_repeat_gaussians)) {
+            throw std::runtime_error(
+                "weighted Gumbel selection is not reproducible");
+        }
+        if (seeded_other_result.candidates != 8U ||
+            seeded_other_result.added != 2U ||
+            geometry_matches(
+                seeded_first_gaussians,
+                seeded_other_gaussians)) {
+            throw std::runtime_error(
+                "weighted Gumbel selection ignored its seed");
+        }
         auto additive_gaussians = initialized;
         auto ordered_initial = initialized;
         ordered_initial.front().log_scale[0] += std::log(1.7F);

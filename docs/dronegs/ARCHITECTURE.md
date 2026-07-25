@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.15
+Project version: 0.5.0-dev.16
 
 ## Decision
 
@@ -179,11 +179,23 @@ Albagnac population within 36 Gaussians but slightly reduces held-out quality.
 It therefore proves that population count and split geometry alone do not
 explain parity.
 
-The dev.15 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.16 replaces the deterministic descending selection with
+weighted Gumbel top-K. The refinement seed is a stable function of the CLI
+seed and iteration; SplitMix64 generates one open-interval uniform variate per
+source index before applying `log(weight) - log(-log(u))`. During each
+already-scheduled training backward, a luminance Sobel map contributes
+`transmittance_before * alpha * edge_magnitude` to each Gaussian. At
+refinement, positive edge scores are normalized by their median and multiply
+the growth weight by `1 + 0.25 * normalized_edge`. This preserves LichtFeld's
+guidance semantics without its separate Canny and additional full-dataset
+raster samples. The tradeoff is measurable: a small held-out gain over dev.15
+at an 8.6% trainer-compute cost.
+
+The dev.15/dev.16 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their
-existing MIT identifiers; the linked dev.15 native binary is GPL-covered.
+existing MIT identifiers; the linked dev.15+ native binary is GPL-covered.
 
 ## Planned layout
 

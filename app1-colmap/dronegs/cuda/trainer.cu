@@ -2,8 +2,9 @@
  * SPDX-FileCopyrightText: 2025 LichtFeld Studio Authors
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * The dev.15 refine cadence, threshold, growth fraction, and growth window
- * are adapted from the pinned LichtFeld MRNF strategy. The pre-existing
+ * The dev.15 refine cadence, threshold, growth fraction, and growth window,
+ * plus the dev.16 weighted-Gumbel seed protocol, are adapted from the pinned
+ * LichtFeld MRNF strategy. The pre-existing
  * DroneGS orchestration in this file was original MIT code; this combined
  * translation unit is conservatively distributed under GPL-3.0-or-later
  * from dev.15 onward.
@@ -1045,8 +1046,12 @@ TrainingMetrics train_ordered_mrnf(
             raster_camera, frame.image->rgb.data(),
             frame.image->rgb.size());
         if (iteration % 200U == 0U && iteration < 15'000U) {
+            const auto refinement_seed =
+                static_cast<std::uint64_t>(options.seed) ^
+                (iteration * 0x9E3779B97F4A7C15ULL);
             const auto refinement =
-                workspace.refine_topology(0.003F, 0.07F);
+                workspace.refine_topology(
+                    0.003F, 0.07F, refinement_seed);
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             std::cout
@@ -1055,6 +1060,7 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"candidates\":" << refinement.candidates
                 << ",\"added\":" << refinement.added
                 << ",\"gaussians\":" << refinement.gaussian_count
+                << ",\"selection_seed\":" << refinement_seed
                 << "}\n"
                 << std::flush;
         }

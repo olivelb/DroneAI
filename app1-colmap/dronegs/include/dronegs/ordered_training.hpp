@@ -44,7 +44,8 @@ public:
         std::size_t target_bytes);
     TopologyRefinementResult refine_topology(
         float gradient_threshold = 0.003F,
-        float grow_fraction = 0.07F);
+        float grow_fraction = 0.07F,
+        std::uint64_t selection_seed = 0U);
     std::size_t size() const noexcept;
     void download(std::vector<Gaussian>& gaussians) const;
 

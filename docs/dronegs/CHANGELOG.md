@@ -2,6 +2,27 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.16 - Phase 4 reproducible Gumbel and edge guidance
+
+- Replaced deterministic descending-score growth selection with weighted
+  Gumbel top-K over the existing MRNF refinement score.
+- Made selection reproducible by deriving each refinement seed from the CLI
+  seed and iteration, then each per-Gaussian variate with SplitMix64.
+- Added a luminance Sobel map on each already-scheduled training view and
+  accumulated edge-weighted alpha contribution in the existing backward pass.
+- Normalized positive per-Gaussian edge scores by their refinement-window
+  median and applied LichtFeld's `1 + 0.25 * normalized_edge` guidance factor.
+- Avoided LichtFeld's extra Canny plus full-raster passes over at least 8% of
+  the dataset at every refinement; dev.16 performs zero extra edge renders.
+- Added CUDA coverage proving same-seed bit-identical growth, different-seed
+  selection, and retained split/capacity/statistic correctness.
+- On Albagnac, dev.16 ends at 1,173,573 Gaussians, three below dev.15, and
+  improves held-out quality by 0.01195 dB and 0.000550 SSIM.
+- Trainer compute rises from 55.865 to 60.683 seconds (+8.6%); the small
+  quality gain does not yet justify accepting the overhead as final.
+- Extended the GPL provenance entry to the inspected LichtFeld Gumbel and edge
+  rasterizer sources; the same two combined CUDA units remain GPL-covered.
+
 ## 0.5.0-dev.15 - Phase 4 MRNF growth isolation
 
 - Added capacity-aware persistent Gaussian, gradient, statistic, and Adam

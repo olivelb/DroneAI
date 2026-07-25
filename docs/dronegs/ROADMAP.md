@@ -21,10 +21,11 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.15.
+- Current development version: 0.5.0-dev.16.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
-  deterministic MRNF growth and held-out PSNR/SSIM; opt-in only.
+  reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
+  PSNR/SSIM; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
@@ -90,16 +91,23 @@ Each completed phase has one focused commit and an annotated
 - Albagnac grows from 1,025,093 to 1,173,576 Gaussians, only 36 above the
   pinned LichtFeld population. Quality nevertheless regresses dev.14 by
   0.0556 dB and 0.001321 SSIM; trainer compute rises from 41.052 to 55.865 s.
-- Phase 4 exit gate remains open: dev.15 reaches 17.0597 dB / 0.244958 SSIM,
-  leaving pinned-control gaps of 4.0088 dB and 0.38609 SSIM. LPIPS,
-  progressive SH, full MRNF selection/schedules, and parity remain open.
+- Weighted Gumbel top-K and edge guidance are integrated in dev.16. Selection
+  is deterministic for a CLI seed; Sobel edge contribution is accumulated in
+  existing training renders, avoiding extra Canny/raster passes.
+- Dev.16 reaches 17.0717 dB / 0.245508 SSIM and 1,173,573 Gaussians. It
+  improves dev.15 by 0.01195 dB / 0.000550 SSIM, but trainer compute rises
+  another 8.6% to 60.683 s.
+- Phase 4 exit gate remains open: pinned-control gaps are still 3.9964 dB and
+  0.38554 SSIM. LPIPS, progressive SH, remaining MRNF schedules,
+  prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is no longer raw population growth. The next
-  controlled MRNF factors are stochastic weighted selection plus edge
-  guidance, followed by strategy-specific parameter schedules. Progressive SH
-  follows for a nonzero-SH control.
+- The immediate Phase 4 priority is no longer raw population growth or
+  selection. The next controlled MRNF factor is strategy-specific parameter
+  schedules, followed by progressive SH for a nonzero-SH control. The dev.16
+  edge implementation should also be profiled for a fused or refinement-only
+  variant before acceptance.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

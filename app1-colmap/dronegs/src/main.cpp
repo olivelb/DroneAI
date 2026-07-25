@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.15 anisotropic MRNF-growth "
+            << "DroneGS 0.5.0-dev.16 anisotropic MRNF Gumbel-edge "
                "L1+DSSIM held-out evaluation prototype\n";
         return 0;
     }
@@ -32,8 +32,9 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.15 uses experimental anisotropic "
-                     "ordered-alpha training with deterministic MRNF growth; "
+        std::cerr << "DroneGS 0.5.0-dev.16 uses experimental anisotropic "
+                     "ordered-alpha training with reproducible weighted-"
+                     "Gumbel MRNF growth and Sobel edge guidance; "
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
                      "PSNR/SSIM are available, while prune/noise/decay, SH, "
                      "LPIPS, and quality parity remain open.\n";

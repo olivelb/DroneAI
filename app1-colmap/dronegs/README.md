@@ -1,12 +1,13 @@
 # DroneGS native trainer
 
 This directory contains the C++23/CUDA DroneAI Gaussian trainer. The
-pre-dev.15 native implementation is original MIT code. Dev.15 adapts MRNF
-error weighting, cadence, and long-axis split behavior from pinned LichtFeld
-inside two explicitly GPL-3.0-or-later CUDA translation units; see
+pre-dev.15 native implementation is original MIT code. Dev.15/dev.16 adapt
+MRNF error weighting, cadence, long-axis split, weighted-Gumbel selection, and
+edge-guidance behavior from pinned LichtFeld inside two explicitly
+GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.15` is an experimental topology-growth training slice. It:
+Version `0.5.0-dev.16` is an experimental MRNF selection/edge training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -33,8 +34,11 @@ Version `0.5.0-dev.15` is an experimental topology-growth training slice. It:
 - retains projected-conic and position/scale/rotation gradients plus their
   Adam moments on device across iterations;
 - accumulates normalized SSIM-error-weighted visibility between 200-step
-  refinement windows, selects the highest deterministic scores above 0.003,
-  and splits 7% along each parent's longest rotated 3D axis;
+  refinement windows, selects 7% above 0.003 through reproducible weighted
+  Gumbel top-K, and splits along each parent's longest rotated 3D axis;
+- accumulates Sobel luminance edge contribution inside existing training
+  backward passes, normalizes positive scores by their median, and applies a
+  0.25 edge-guidance factor without extra edge-render passes;
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
 - applies a scene-diagonal-scaled exponential position schedule, independent
@@ -59,13 +63,13 @@ It is not a LichtFeld replacement yet. The experimental training path now uses
 front-to-back anisotropic ordered-alpha composition, while the additive path
 remains only as a convergence control. Persistent training now optimizes
 position, log-scale, and normalized rotation in addition to DC and opacity.
-Topology now grows, but prune/replacement, stochastic Gumbel sampling,
-edge guidance, noise injection, decay, compaction, and non-DC SH coefficients
-remain absent. Only
+Topology, weighted Gumbel selection, and edge guidance now run, but
+prune/replacement, noise injection, decay, compaction, and non-DC SH
+coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. Dev.15 reaches 1,173,576 Gaussians, only 36 above the pinned
-LichtFeld control, but slightly regresses dev.14 quality to 17.0597 dB and
-0.244958 SSIM. Population parity alone is therefore insufficient. LPIPS
+measured. Dev.16 reaches 1,173,573 Gaussians, only 33 above the pinned
+LichtFeld control, and reaches 17.0717 dB / 0.245508 SSIM. This is only a
+small gain over dev.15 and remains far from quality parity. LPIPS
 remains unevaluated. Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -75,7 +79,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-growth-anisotropic-dssim-prototype` and remains opt-in.
+`dronegs-mrnf-gumbel-edge-anisotropic-dssim-prototype` and remains opt-in.
 
 ## Container build
 
