@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The dev.15 MRNF error-weighted contribution and long-axis split behavior,
- * plus the dev.16 Gumbel selection and edge-guidance behavior, are adapted
- * from the pinned LichtFeld implementation. The pre-existing
+ * plus the dev.16 Gumbel selection and edge-guidance behavior and dev.17 MRNF
+ * optimizer schedules, are adapted from the pinned LichtFeld implementation.
+ * The pre-existing
  * DroneGS rasterizer, loss, gradient, and optimizer code in this file was
  * original MIT code; this combined translation unit is conservatively
  * distributed under GPL-3.0-or-later from dev.15 onward.
@@ -41,6 +42,14 @@ constexpr std::uint32_t ssim_window_radius = 5U;
 constexpr float l1_objective_weight = 0.8F;
 constexpr float dssim_objective_weight = 0.2F;
 constexpr float mrnf_edge_score_weight = 0.25F;
+constexpr float mrnf_position_learning_rate_initial = 2.0e-5F;
+constexpr float mrnf_position_learning_rate_final = 2.0e-7F;
+constexpr float mrnf_dc_learning_rate = 2.0e-3F;
+constexpr float mrnf_opacity_learning_rate = 1.2e-2F;
+constexpr float mrnf_scale_learning_rate_initial = 7.0e-3F;
+constexpr float mrnf_scale_learning_rate_final = 5.0e-3F;
+constexpr float mrnf_rotation_learning_rate = 2.0e-3F;
+constexpr float mrnf_adam_epsilon = 1.0e-15F;
 
 __device__ __constant__ float ssim_gaussian_weights[11]{
     0.0010283801F,
@@ -1846,8 +1855,10 @@ __global__ void ordered_adam_update_kernel(
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
     float inverse_bias_first, float inverse_bias_second,
-    float position_learning_rate, float minimum_log_scale,
-    float maximum_log_scale) {
+    float position_learning_rate, float color_learning_rate,
+    float opacity_learning_rate, float scale_learning_rate,
+    float rotation_learning_rate, float epsilon,
+    float minimum_log_scale, float maximum_log_scale) {
     const std::size_t gaussian_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (gaussian_index >= gaussian_count) {
@@ -1855,11 +1866,6 @@ __global__ void ordered_adam_update_kernel(
     }
     constexpr float beta_first = 0.9F;
     constexpr float beta_second = 0.999F;
-    constexpr float color_learning_rate = 0.05F;
-    constexpr float opacity_learning_rate = 0.01F;
-    constexpr float scale_learning_rate = 0.005F;
-    constexpr float rotation_learning_rate = 0.001F;
-    constexpr float epsilon = 1.0e-8F;
     for (std::size_t channel = 0U; channel < 3U; ++channel) {
         const auto offset = gaussian_index * 3U + channel;
         const float gradient = dc_gradient[offset];
@@ -2339,6 +2345,66 @@ static float positive_median(std::vector<float> values) {
     return 0.5F * (lower + upper);
 }
 
+static float percentile80_median_size(
+    const std::vector<Gaussian>& gaussians) {
+    if (gaussians.empty()) {
+        return 0.0F;
+    }
+    const auto low_index = static_cast<std::size_t>(
+        0.1 * static_cast<double>(gaussians.size() - 1U));
+    const auto high_index = static_cast<std::size_t>(
+        0.9 * static_cast<double>(gaussians.size() - 1U));
+    std::array<float, 3> widths{};
+    std::vector<float> values(gaussians.size());
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        for (std::size_t index = 0U;
+             index < gaussians.size(); ++index) {
+            values[index] = gaussians[index].xyz[axis];
+        }
+        std::nth_element(
+            values.begin(), values.begin() + low_index, values.end());
+        const float lower = values[low_index];
+        std::nth_element(
+            values.begin(), values.begin() + high_index, values.end());
+        const float upper = values[high_index];
+        widths[axis] = std::max(0.0F, upper - lower);
+    }
+    std::sort(widths.begin(), widths.end());
+    return widths[1U];
+}
+
+static MrnfLearningRates mrnf_learning_rates(
+    std::uint64_t optimizer_step, std::uint64_t maximum_steps,
+    float position_scale) {
+    const double progress =
+        optimizer_step <= 1U || maximum_steps == 0U
+            ? 0.0
+            : std::min(
+                  1.0,
+                  static_cast<double>(optimizer_step - 1U) /
+                      static_cast<double>(maximum_steps));
+    const auto exponential = [progress](
+        float initial, float final) {
+        return static_cast<float>(std::exp(
+            std::log(static_cast<double>(initial)) *
+                (1.0 - progress) +
+            std::log(static_cast<double>(final)) * progress));
+    };
+    return {
+        .position =
+            position_scale * exponential(
+                mrnf_position_learning_rate_initial,
+                mrnf_position_learning_rate_final),
+        .dc = mrnf_dc_learning_rate,
+        .opacity = mrnf_opacity_learning_rate,
+        .scale = exponential(
+            mrnf_scale_learning_rate_initial,
+            mrnf_scale_learning_rate_final),
+        .rotation = mrnf_rotation_learning_rate,
+        .epsilon = mrnf_adam_epsilon,
+    };
+}
+
 struct OrderedAlphaTrainingContext::Impl {
     Impl(
         const std::vector<Gaussian>& initial_gaussians,
@@ -2411,16 +2477,6 @@ struct OrderedAlphaTrainingContext::Impl {
         frame_refinement_weight.ensure(gaussian_capacity);
         frame_visibility_weight.ensure(gaussian_capacity);
         frame_edge_weight.ensure(gaussian_capacity);
-        std::array<float, 3> minimum_position{
-            std::numeric_limits<float>::max(),
-            std::numeric_limits<float>::max(),
-            std::numeric_limits<float>::max(),
-        };
-        std::array<float, 3> maximum_position{
-            std::numeric_limits<float>::lowest(),
-            std::numeric_limits<float>::lowest(),
-            std::numeric_limits<float>::lowest(),
-        };
         float initial_minimum_log_scale =
             std::numeric_limits<float>::max();
         float initial_maximum_log_scale =
@@ -2432,10 +2488,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     throw std::invalid_argument(
                         "ordered training requires finite geometry");
                 }
-                minimum_position[axis] = std::min(
-                    minimum_position[axis], gaussian.xyz[axis]);
-                maximum_position[axis] = std::max(
-                    maximum_position[axis], gaussian.xyz[axis]);
                 initial_minimum_log_scale = std::min(
                     initial_minimum_log_scale,
                     gaussian.log_scale[axis]);
@@ -2444,15 +2496,10 @@ struct OrderedAlphaTrainingContext::Impl {
                     gaussian.log_scale[axis]);
             }
         }
-        double diagonal_squared = 0.0;
-        for (std::size_t axis = 0U; axis < 3U; ++axis) {
-            const double extent =
-                static_cast<double>(maximum_position[axis]) -
-                minimum_position[axis];
-            diagonal_squared += extent * extent;
-        }
-        position_learning_rate_scale = static_cast<float>(
-            std::max(std::sqrt(diagonal_squared), 1.0e-6));
+        position_learning_rate_scale =
+            percentile80_median_size(initial_gaussians);
+        learning_rates = mrnf_learning_rates(
+            1U, maximum_steps, position_learning_rate_scale);
         minimum_log_scale = initial_minimum_log_scale - 4.0F;
         maximum_log_scale = initial_maximum_log_scale + 4.0F;
         gaussians.copy_from_host(
@@ -2844,23 +2891,9 @@ struct OrderedAlphaTrainingContext::Impl {
                     1.0F / (1.0F - beta_first_power);
                 const float inverse_bias_second =
                     1.0F / (1.0F - beta_second_power);
-                const float schedule_progress =
-                    maximum_steps <= 1U
-                        ? 0.0F
-                        : fminf(
-                              1.0F,
-                              static_cast<float>(optimizer_steps - 1U) /
-                                  static_cast<float>(
-                                      maximum_steps - 1U));
-                constexpr float initial_position_rate = 1.6e-4F;
-                constexpr float final_position_rate = 1.6e-6F;
-                const float position_learning_rate =
-                    position_learning_rate_scale *
-                    std::exp(
-                        std::log(initial_position_rate) *
-                            (1.0F - schedule_progress) +
-                        std::log(final_position_rate) *
-                            schedule_progress);
+                learning_rates = mrnf_learning_rates(
+                    optimizer_steps, maximum_steps,
+                    position_learning_rate_scale);
                 ordered_adam_update_kernel<<<
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
@@ -2873,8 +2906,13 @@ struct OrderedAlphaTrainingContext::Impl {
                     first_log_scale.data(), second_log_scale.data(),
                     first_rotation.data(), second_rotation.data(),
                     inverse_bias_first, inverse_bias_second,
-                    position_learning_rate, minimum_log_scale,
-                    maximum_log_scale);
+                    learning_rates.position,
+                    learning_rates.dc,
+                    learning_rates.opacity,
+                    learning_rates.scale,
+                    learning_rates.rotation,
+                    learning_rates.epsilon,
+                    minimum_log_scale, maximum_log_scale);
                 require_cuda(
                     cudaGetLastError(),
                     "launch persistent ordered Adam");
@@ -3011,6 +3049,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::uint64_t maximum_steps = 1U;
     std::uint64_t optimizer_steps = 0U;
     float position_learning_rate_scale = 1.0F;
+    MrnfLearningRates learning_rates{};
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
     float beta_first_power = 1.0F;
@@ -3128,6 +3167,11 @@ OrderedAlphaTrainingContext::refine_topology(
     std::uint64_t selection_seed) {
     return impl_->refine_topology(
         gradient_threshold, grow_fraction, selection_seed);
+}
+
+MrnfLearningRates
+OrderedAlphaTrainingContext::current_learning_rates() const noexcept {
+    return impl_->learning_rates;
 }
 
 std::size_t OrderedAlphaTrainingContext::size() const noexcept {

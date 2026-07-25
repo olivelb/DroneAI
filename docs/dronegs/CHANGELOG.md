@@ -2,6 +2,28 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.17 - Phase 4 MRNF optimizer schedule isolation
+
+- Replaced the dev.16 optimizer constants with the pinned LichtFeld MRNF
+  profile for DC, opacity, scale, rotation, position, and Adam epsilon.
+- Added the MRNF 80% spatial bound: the median of the three initial Gaussian
+  axis widths between the 10th and 90th percentiles.
+- Added exponential position `2e-5 -> 2e-7` and scale `0.007 -> 0.005`
+  schedules using the optimizer step and total iteration count.
+- Added a public read-only learning-rate diagnostic plus initial/final JSON
+  events and exact manifest fields.
+- Added direct CUDA tests for the 80% bound, all five initial learning rates,
+  epsilon `1e-15`, first-step behavior, and exponential decay.
+- Quantified the Albagnac position LR change from `0.00832225` in dev.16 to
+  `0.000135236` in dev.17, a 61.5x reduction; DC falls 25x.
+- The 500-step run ends at 1,173,577 Gaussians but regresses dev.16 by
+  0.95662 dB and 0.026034 SSIM; 169/172 PSNR views and all SSIM views regress.
+- Reject direct absolute-LR copying as a quality solution. The result proves
+  that DroneGS gradient/parameter scale must be calibrated before using
+  LichtFeld's optimizer values.
+- Extended the GPL provenance entry to the inspected LichtFeld optimizer,
+  schedule, bounds, and Adam sources.
+
 ## 0.5.0-dev.16 - Phase 4 reproducible Gumbel and edge guidance
 
 - Replaced deterministic descending-score growth selection with weighted

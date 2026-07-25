@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <jpeglib.h>
@@ -342,6 +343,57 @@ int main() {
                 split_target[(y * 32U + x) * 3U + 1U] = 255U;
             }
         }
+        std::vector<dronegs::Gaussian> rate_fixture(
+            8U, split_parent);
+        for (std::size_t index = 0U;
+             index < rate_fixture.size(); ++index) {
+            const float coordinate = static_cast<float>(index);
+            rate_fixture[index].xyz = {
+                -0.035F + 0.01F * coordinate,
+                -0.07F + 0.02F * coordinate,
+                2.0F + 0.03F * coordinate,
+            };
+        }
+        dronegs::OrderedAlphaTrainingContext rate_context(
+            rate_fixture, 32U * 32U, 2U, 8U);
+        const auto initial_rates =
+            rate_context.current_learning_rates();
+        const auto require_rate = [](
+            float actual, float expected, float tolerance,
+            const char* label) {
+            if (std::abs(actual - expected) > tolerance) {
+                throw std::runtime_error(
+                    std::string("MRNF learning rate mismatch: ") +
+                    label);
+            }
+        };
+        require_rate(initial_rates.position, 2.4e-6F, 1.0e-10F, "position");
+        require_rate(initial_rates.dc, 2.0e-3F, 1.0e-8F, "dc");
+        require_rate(initial_rates.opacity, 1.2e-2F, 1.0e-8F, "opacity");
+        require_rate(initial_rates.scale, 7.0e-3F, 1.0e-8F, "scale");
+        require_rate(initial_rates.rotation, 2.0e-3F, 1.0e-8F, "rotation");
+        require_rate(initial_rates.epsilon, 1.0e-15F, 1.0e-20F, "epsilon");
+        static_cast<void>(rate_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto first_step_rates =
+            rate_context.current_learning_rates();
+        require_rate(
+            first_step_rates.position,
+            initial_rates.position, 1.0e-12F, "first position");
+        require_rate(
+            first_step_rates.scale,
+            initial_rates.scale, 1.0e-12F, "first scale");
+        static_cast<void>(rate_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto second_step_rates =
+            rate_context.current_learning_rates();
+        require_rate(
+            second_step_rates.position, 2.4e-7F,
+            1.0e-11F, "decayed position");
+        require_rate(
+            second_step_rates.scale,
+            std::sqrt(7.0e-3F * 5.0e-3F),
+            1.0e-8F, "decayed scale");
         dronegs::OrderedAlphaTrainingContext split_context(
             {split_parent}, 32U * 32U, 2U, 2U);
         static_cast<void>(split_context.train_step(

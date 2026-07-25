@@ -28,6 +28,15 @@ struct ImageObjectiveOutput {
     std::vector<float> transmittance;
 };
 
+struct MrnfLearningRates {
+    float position = 0.0F;
+    float dc = 0.0F;
+    float opacity = 0.0F;
+    float scale = 0.0F;
+    float rotation = 0.0F;
+    float epsilon = 0.0F;
+};
+
 struct TopologyRefinementResult {
     std::size_t candidates = 0U;
     std::size_t added = 0U;

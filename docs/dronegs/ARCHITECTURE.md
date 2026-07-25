@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.16
+Project version: 0.5.0-dev.17
 
 ## Decision
 
@@ -191,7 +191,18 @@ guidance semantics without its separate Canny and additional full-dataset
 raster samples. The tradeoff is measurable: a small held-out gain over dev.15
 at an 8.6% trainer-compute cost.
 
-The dev.15/dev.16 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.17 isolates the pinned MRNF optimizer profile. Initial
+Gaussian positions are reduced to three 10th-90th percentile axis widths; the
+median width scales an exponential position schedule from `2e-5` to `2e-7`.
+Scale decays from `0.007` to `0.005`; DC, opacity, and rotation remain constant
+at `0.002`, `0.012`, and `0.002`, and Adam epsilon is `1e-15`. The learning
+rates are observable through a read-only context diagnostic and JSON events.
+On Albagnac this exact profile is a negative result: it reduces position LR
+61.5x and DC LR 25x, then loses 0.9566 dB and 0.02603 SSIM versus dev.16 while
+preserving population. Therefore optimizer values are not portable across the
+two gradient/parameter conventions without effective-update calibration.
+
+The dev.15-dev.17 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their

@@ -3,8 +3,9 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * The dev.15 refine cadence, threshold, growth fraction, and growth window,
- * plus the dev.16 weighted-Gumbel seed protocol, are adapted from the pinned
- * LichtFeld MRNF strategy. The pre-existing
+ * plus the dev.16 weighted-Gumbel seed protocol and dev.17 optimizer
+ * schedules, are adapted from the pinned LichtFeld MRNF strategy. The
+ * pre-existing
  * DroneGS orchestration in this file was original MIT code; this combined
  * translation unit is conservatively distributed under GPL-3.0-or-later
  * from dev.15 onward.
@@ -991,6 +992,18 @@ TrainingMetrics train_ordered_mrnf(
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap));
+    const auto initial_learning_rates =
+        workspace.current_learning_rates();
+    std::cout
+        << "{\"event\":\"optimizer_schedule\",\"stage\":\"initial\","
+        << "\"position_lr\":" << initial_learning_rates.position
+        << ",\"dc_lr\":" << initial_learning_rates.dc
+        << ",\"opacity_lr\":" << initial_learning_rates.opacity
+        << ",\"scale_lr\":" << initial_learning_rates.scale
+        << ",\"rotation_lr\":" << initial_learning_rates.rotation
+        << ",\"epsilon\":" << initial_learning_rates.epsilon
+        << "}\n"
+        << std::flush;
     TrainingMetrics metrics{
         .iterations = options.iterations,
         .training_image_count =
@@ -1077,6 +1090,18 @@ TrainingMetrics train_ordered_mrnf(
                 << std::flush;
         }
     }
+    const auto final_learning_rates =
+        workspace.current_learning_rates();
+    std::cout
+        << "{\"event\":\"optimizer_schedule\",\"stage\":\"final\","
+        << "\"position_lr\":" << final_learning_rates.position
+        << ",\"dc_lr\":" << final_learning_rates.dc
+        << ",\"opacity_lr\":" << final_learning_rates.opacity
+        << ",\"scale_lr\":" << final_learning_rates.scale
+        << ",\"rotation_lr\":" << final_learning_rates.rotation
+        << ",\"epsilon\":" << final_learning_rates.epsilon
+        << "}\n"
+        << std::flush;
     require_cuda(
         cudaDeviceSynchronize(),
         "synchronize ordered fixed-topology training");

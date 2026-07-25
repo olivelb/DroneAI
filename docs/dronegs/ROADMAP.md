@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.16.
+- Current development version: 0.5.0-dev.17.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -97,17 +97,25 @@ Each completed phase has one focused commit and an annotated
 - Dev.16 reaches 17.0717 dB / 0.245508 SSIM and 1,173,573 Gaussians. It
   improves dev.15 by 0.01195 dB / 0.000550 SSIM, but trainer compute rises
   another 8.6% to 60.683 s.
-- Phase 4 exit gate remains open: pinned-control gaps are still 3.9964 dB and
-  0.38554 SSIM. LPIPS, progressive SH, remaining MRNF schedules,
+- Exact MRNF optimizer constants and exponential position/scale schedules are
+  integrated in dev.17. Albagnac's position LR falls 61.5x because the spatial
+  normalization changes from the full bounding-box diagonal to the median
+  10th-90th percentile axis width; DC LR falls 25x.
+- Dev.17 reaches only 16.1151 dB / 0.219473 SSIM despite ending at 1,173,577
+  Gaussians. It regresses dev.16 on 169/172 PSNR views and every SSIM view.
+  Direct absolute-rate copying is rejected without gradient-scale calibration.
+- Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
+  while dev.17 is a negative optimizer experiment. LPIPS, progressive SH,
   prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is no longer raw population growth or
-  selection. The next controlled MRNF factor is strategy-specific parameter
-  schedules, followed by progressive SH for a nonzero-SH control. The dev.16
-  edge implementation should also be profiled for a fused or refinement-only
-  variant before acceptance.
+- The immediate Phase 4 priority is optimizer calibration, not another direct
+  feature port. Measure per-parameter gradient and normalized Adam update
+  magnitudes against the pinned control, then derive DroneGS-equivalent
+  effective rates one parameter family at a time. Progressive SH should follow
+  only after restoring the dev.16 quality anchor. The edge implementation also
+  remains a candidate for fusion or refinement-window-only accumulation.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

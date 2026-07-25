@@ -46,6 +46,7 @@ public:
         float gradient_threshold = 0.003F,
         float grow_fraction = 0.07F,
         std::uint64_t selection_seed = 0U);
+    MrnfLearningRates current_learning_rates() const noexcept;
     std::size_t size() const noexcept;
     void download(std::vector<Gaussian>& gaussians) const;
 
