@@ -39,6 +39,17 @@ dronegs::Gaussian centered(float depth, const std::array<float, 3>& color,
     return gaussian;
 }
 
+dronegs::Gaussian anisotropic_centered(
+    const std::array<float, 3>& scale,
+    const std::array<float, 4>& rotation = {1.0F, 0.0F, 0.0F, 0.0F}) {
+    auto gaussian = centered(1.0F, {0.8F, 0.4F, 0.2F});
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        gaussian.log_scale[axis] = std::log(scale[axis]);
+    }
+    gaussian.rotation = rotation;
+    return gaussian;
+}
+
 dronegs::RasterCamera camera() {
     return {
         .fx = 10.0F,
@@ -109,6 +120,59 @@ void test_invalid_camera() {
         rejected = true;
     }
     check(rejected, "invalid alpha-reference camera was accepted");
+}
+
+void test_anisotropic_projection() {
+    const auto horizontal = anisotropic_centered(
+        {0.2F, 0.05F, 0.05F});
+    const auto horizontal_projection =
+        dronegs::project_alpha_splats({horizontal}, camera());
+    check(horizontal_projection.size() == 1U,
+          "anisotropic horizontal splat was culled");
+    check_close(horizontal_projection.front().radius_x, 5.0F, 1.0e-5F,
+                "anisotropic horizontal radius-x mismatch");
+    check_close(horizontal_projection.front().radius_y, 1.875F, 1.0e-5F,
+                "anisotropic horizontal radius-y mismatch");
+    check_close(horizontal_projection.front().conic_xx, 0.25F, 1.0e-5F,
+                "anisotropic horizontal conic-x mismatch");
+    check_close(
+        horizontal_projection.front().conic_yy,
+        1.0F / (0.75F * 0.75F), 1.0e-5F,
+        "anisotropic horizontal conic-y mismatch");
+    check_close(horizontal_projection.front().conic_xy, 0.0F, 1.0e-6F,
+                "axis-aligned anisotropic conic has cross term");
+
+    constexpr float inverse_sqrt_two = 0.7071067811865475F;
+    const auto vertical = anisotropic_centered(
+        {0.2F, 0.05F, 0.05F},
+        {inverse_sqrt_two, 0.0F, 0.0F, inverse_sqrt_two});
+    const auto vertical_projection =
+        dronegs::project_alpha_splats({vertical}, camera());
+    check(vertical_projection.size() == 1U,
+          "rotated anisotropic splat was culled");
+    check_close(vertical_projection.front().radius_x, 1.875F, 1.0e-5F,
+                "rotation did not swap anisotropic radius-x");
+    check_close(vertical_projection.front().radius_y, 5.0F, 1.0e-5F,
+                "rotation did not swap anisotropic radius-y");
+    check_close(
+        vertical_projection.front().conic_xx,
+        1.0F / (0.75F * 0.75F), 1.0e-5F,
+        "rotation did not swap anisotropic conic-x");
+    check_close(vertical_projection.front().conic_yy, 0.25F, 1.0e-5F,
+                "rotation did not swap anisotropic conic-y");
+
+    auto extreme = anisotropic_centered({1000.0F, 0.1F, 0.1F});
+    const auto extreme_projection =
+        dronegs::project_alpha_splats({extreme}, camera());
+    check(extreme_projection.size() == 1U,
+          "spectrally clamped splat was culled");
+    check(extreme_projection.front().radius_x <= 20.0001F,
+          "anisotropic maximum eigenvalue clamp failed");
+
+    auto invalid = horizontal;
+    invalid.rotation = {0.0F, 0.0F, 0.0F, 0.0F};
+    check(dronegs::project_alpha_splats({invalid}, camera()).empty(),
+          "zero quaternion produced a projected covariance");
 }
 
 float objective(
@@ -187,6 +251,7 @@ int main() {
         test_depth_order_is_input_independent();
         test_background_and_culling();
         test_invalid_camera();
+        test_anisotropic_projection();
         test_backward_finite_difference();
         std::cout << "DroneGS alpha reference tests passed\n";
         return 0;

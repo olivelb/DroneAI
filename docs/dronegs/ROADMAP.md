@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.9.
+- Current development version: 0.5.0-dev.10.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -55,20 +55,23 @@ Each completed phase has one focused commit and an annotated
 - Reduced-IDCT JPEG decode remains opt-in: it shortened the same-cycle
   500-iteration control by 2.1%, but changes filtered RGB targets and therefore
   cannot become the default before held-out quality validation.
-- Phase 4 exit gate still open: anisotropic projection,
-  geometry/scale/rotation gradients, DSSIM, progressive SH, held-out quality
-  metrics, and LichtFeld parity.
+- Anisotropic covariance forward completed: normalized Gaussian quaternion and
+  non-uniform scale are transformed through the camera and perspective
+  Jacobian into a bounded inverse 2D conic on CPU and CUDA.
+- The anisotropic million-Gaussian benchmark measures 44.934 ms forward and
+  64.416 ms forward+backward. The Albagnac 500-iteration run completed in
+  30.316 seconds and reduced anchor L1 by 22.6% without OOM.
+- Phase 4 exit gate still open: position/scale/rotation gradients, DSSIM,
+  progressive SH, held-out quality metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 correctness priority is anisotropic covariance plus
-  position/scale/rotation gradients, followed by held-out quality metrics.
+- The immediate Phase 4 correctness priority is position/scale/rotation
+  gradients, followed by held-out quality metrics.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,
-  or move decode to a separately quality-gated GPU path. The immediate
-  correctness priority remains anisotropic covariance and
-  position/scale/rotation gradients.
+  or move decode to a separately quality-gated GPU path.
 
 ## Versioning rules
 

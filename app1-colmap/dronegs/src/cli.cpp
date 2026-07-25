@@ -46,7 +46,8 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS fixed-topology ordered-alpha prototype 0.5.0-dev.9\n"
+        "DroneGS fixed-topology anisotropic ordered-alpha prototype "
+        "0.5.0-dev.10\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "

@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.9
+Project version: 0.5.0-dev.10
 
 ## Decision
 
@@ -69,14 +69,17 @@ revision, license, copyright, and local paths.
 ## Phase 4 development slice
 
 The current development slice projects fixed sparse Gaussians with COLMAP
-world-to-camera poses, sorts visible splats deterministically into 16x16 tiles,
-composites bounded isotropic kernels front-to-back, computes active-pixel L1,
-back-propagates analytical DC/opacity gradients, and applies Adam on device.
+world-to-camera poses, transforms normalized quaternion rotations and
+non-uniform exponential scales into camera space, projects the covariance
+through the pinhole Jacobian, sorts visible splats deterministically into 16x16
+tiles, composites bounded anisotropic kernels front-to-back, computes
+active-pixel L1, back-propagates analytical DC/opacity gradients, and applies
+Adam on device.
 
 This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no anisotropic covariance projection, position/scale/rotation gradients,
-DSSIM, progressive SH, split/prune/grow, or held-out quality evaluation. It
-supports only SIMPLE_PINHOLE and PINHOLE inputs.
+It has no position/scale/rotation gradients, DSSIM, progressive SH,
+split/prune/grow, or held-out quality evaluation. It supports only
+SIMPLE_PINHOLE and PINHOLE inputs.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache
@@ -113,6 +116,13 @@ reduced IDCT remain measured experiments rather than defaults: the former
 regressed 500-iteration Albagnac wall time through laptop CPU/GPU power
 contention, while the latter changes filtered target pixels and lacks a
 held-out quality gate.
+Version 0.5.0-dev.10 replaces scalar projected sigma with a full symmetric 2D
+covariance. The implementation forms
+`J * R_camera * R_gaussian * diag(exp(log_scale))`, multiplies that matrix by
+its transpose, clamps both eigenvalues to the previous pixel-footprint safety
+range, and stores the inverse conic. CPU and CUDA use the same quaternion
+`w,x,y,z` convention and perspective Jacobian. Scale and rotation affect the
+forward image but remain fixed until their gradients are implemented.
 
 ## Planned layout
 

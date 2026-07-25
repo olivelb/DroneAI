@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.9` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.10` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -13,6 +13,8 @@ Version `0.5.0-dev.9` is an experimental fixed-topology training slice. It:
   pool while retaining the measured one-slot/one-worker default;
 - exposes an opt-in libjpeg reduced-IDCT path for reproducible decode A/B tests;
 - defines a tested CPU oracle for depth-sorted front-to-back alpha composition;
+- projects normalized 3D quaternion/scale covariances through the full pinhole
+  Jacobian into bounded anisotropic 2D conics;
 - provides a forward CUDA renderer with GPU projection, stable radix sorting,
   GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
   alpha oracle;
@@ -31,9 +33,10 @@ Version `0.5.0-dev.9` is an experimental fixed-topology training slice. It:
 - provides finite-difference and end-to-end convergence tests.
 
 It is not a LichtFeld replacement yet. The experimental training path now uses
-front-to-back ordered-alpha composition, while the additive path remains only
-as a convergence control. Positions, scales, rotations, topology, and non-DC
-SH coefficients remain fixed. Only
+front-to-back anisotropic ordered-alpha composition, while the additive path
+remains only as a convergence control. Positions, scales, rotations, topology,
+and non-DC SH coefficients remain fixed; dev.10 consumes their anisotropic
+values but does not optimize them yet. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
 measured. Decoded images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because

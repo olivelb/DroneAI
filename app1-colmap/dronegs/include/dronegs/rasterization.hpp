@@ -60,7 +60,11 @@ struct ProjectedAlphaSplat {
     float depth = 0.0F;
     float x = 0.0F;
     float y = 0.0F;
-    float sigma = 0.0F;
+    float radius_x = 0.0F;
+    float radius_y = 0.0F;
+    float conic_xx = 0.0F;
+    float conic_xy = 0.0F;
+    float conic_yy = 0.0F;
     float opacity = 0.0F;
     std::array<float, 3> color{};
 };

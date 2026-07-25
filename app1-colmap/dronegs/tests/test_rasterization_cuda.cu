@@ -29,6 +29,20 @@ dronegs::Gaussian splat(
     return gaussian;
 }
 
+dronegs::Gaussian anisotropic_splat(
+    const std::array<float, 3>& xyz,
+    const std::array<float, 3>& color,
+    const std::array<float, 3>& scale,
+    const std::array<float, 4>& rotation,
+    float opacity_logit) {
+    auto gaussian = splat(xyz, color, scale[0], opacity_logit);
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        gaussian.log_scale[axis] = std::log(scale[axis]);
+    }
+    gaussian.rotation = rotation;
+    return gaussian;
+}
+
 dronegs::RasterCamera camera() {
     return {
         .fx = 18.0F,
@@ -223,6 +237,68 @@ void test_multi_tile_scene() {
     }
 }
 
+void test_anisotropic_reference_parity() {
+    constexpr float cosine_pi_over_eight = 0.9238795325112867F;
+    constexpr float sine_pi_over_eight = 0.3826834323650898F;
+    const std::vector<dronegs::Gaussian> gaussians{
+        anisotropic_splat(
+            {0.0F, 0.0F, 1.2F}, {0.9F, 0.2F, 0.1F},
+            {0.28F, 0.06F, 0.1F},
+            {1.0F, 0.0F, 0.0F, 0.0F}, 0.8F),
+        anisotropic_splat(
+            {-0.22F, 0.18F, 1.5F}, {0.1F, 0.8F, 0.3F},
+            {0.25F, 0.05F, 0.09F},
+            {cosine_pi_over_eight, 0.0F, 0.0F,
+             sine_pi_over_eight},
+            0.4F),
+        anisotropic_splat(
+            {0.36F, -0.2F, 1.9F}, {0.2F, 0.3F, 1.0F},
+            {0.08F, 0.24F, 0.12F},
+            {0.9659258263F, 0.2588190451F, 0.0F, 0.0F},
+            -0.2F),
+    };
+    auto raster_camera = multi_tile_camera();
+    constexpr float camera_cosine = 0.9961946981F;
+    constexpr float camera_sine = 0.0871557427F;
+    raster_camera.rotation = {
+        camera_cosine, 0.0F, camera_sine,
+        0.0F, 1.0F, 0.0F,
+        -camera_sine, 0.0F, camera_cosine,
+    };
+    constexpr std::array<float, 3> background{0.01F, 0.03F, 0.05F};
+    const auto projected =
+        dronegs::project_alpha_splats(gaussians, raster_camera);
+    if (projected.size() != gaussians.size() ||
+        std::abs(projected[1].conic_xy) < 1.0e-4F) {
+        throw std::runtime_error(
+            "anisotropic fixture did not produce rotated conics");
+    }
+    const auto expected = dronegs::render_alpha_reference(
+        gaussians, raster_camera, background);
+    const auto actual = dronegs::render_alpha_tiled_cuda(
+        gaussians, raster_camera, background);
+    compare(actual, expected, 5.0e-5F);
+
+    const auto value_count =
+        static_cast<std::size_t>(raster_camera.width) *
+        raster_camera.height * 3U;
+    std::vector<float> image_gradient(value_count);
+    for (std::size_t index = 0U; index < value_count; ++index) {
+        image_gradient[index] =
+            static_cast<float>(
+                static_cast<int>(index % 11U) - 5) *
+            0.013F;
+    }
+    const auto expected_backward =
+        dronegs::render_alpha_reference_backward(
+            gaussians, raster_camera, image_gradient, background);
+    const auto actual_backward =
+        dronegs::render_alpha_tiled_cuda_backward(
+            gaussians, raster_camera, image_gradient, background);
+    compare_backward(
+        actual_backward, expected_backward, 5.0e-5F, 6.0e-4F);
+}
+
 void test_backward_reference_parity() {
     const std::vector<dronegs::Gaussian> gaussians{
         splat({0.0F, 0.0F, 1.1F}, {0.7F, 0.2F, 0.4F}, 0.15F, 0.4F),
@@ -350,6 +426,7 @@ int main() {
         test_early_transmittance_exit();
         test_equal_depth_stability();
         test_multi_tile_scene();
+        test_anisotropic_reference_parity();
         test_backward_reference_parity();
         test_backward_early_exit();
         test_backward_cuda_finite_difference();

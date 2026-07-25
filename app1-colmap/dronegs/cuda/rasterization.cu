@@ -22,6 +22,9 @@ namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float minimum_depth = 1.0e-4F;
+constexpr float minimum_projected_variance = 0.75F * 0.75F;
+constexpr float maximum_projected_variance = 8.0F * 8.0F;
+constexpr float gaussian_support = 2.5F;
 constexpr std::uint32_t threads_per_block = 256U;
 
 static_assert(std::is_trivially_copyable_v<Gaussian>);
@@ -257,6 +260,156 @@ void validate_inputs(
     }
 }
 
+__device__ bool project_covariance_device(
+    const Gaussian& gaussian, DeviceRasterCamera camera,
+    float camera_x, float camera_y, float camera_z,
+    float& radius_x, float& radius_y,
+    float& conic_xx, float& conic_xy, float& conic_yy) {
+    const float quaternion_norm = sqrtf(
+        gaussian.rotation[0] * gaussian.rotation[0] +
+        gaussian.rotation[1] * gaussian.rotation[1] +
+        gaussian.rotation[2] * gaussian.rotation[2] +
+        gaussian.rotation[3] * gaussian.rotation[3]);
+    if (!isfinite(quaternion_norm) ||
+        quaternion_norm <= 1.0e-12F) {
+        return false;
+    }
+    const float w = gaussian.rotation[0] / quaternion_norm;
+    const float x = gaussian.rotation[1] / quaternion_norm;
+    const float y = gaussian.rotation[2] / quaternion_norm;
+    const float z = gaussian.rotation[3] / quaternion_norm;
+    const float gaussian_rotation[9]{
+        1.0F - 2.0F * (y * y + z * z),
+        2.0F * (x * y - z * w),
+        2.0F * (x * z + y * w),
+        2.0F * (x * y + z * w),
+        1.0F - 2.0F * (x * x + z * z),
+        2.0F * (y * z - x * w),
+        2.0F * (x * z - y * w),
+        2.0F * (y * z + x * w),
+        1.0F - 2.0F * (x * x + y * y),
+    };
+    float camera_gaussian_rotation[9]{};
+    for (std::uint32_t row = 0U; row < 3U; ++row) {
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 3U; ++inner) {
+                camera_gaussian_rotation[row * 3U + column] +=
+                    camera.rotation[row * 3U + inner] *
+                    gaussian_rotation[inner * 3U + column];
+            }
+        }
+    }
+    float scale[3]{};
+    for (std::uint32_t axis = 0U; axis < 3U; ++axis) {
+        scale[axis] = expf(gaussian.log_scale[axis]);
+        if (!isfinite(scale[axis]) || scale[axis] <= 0.0F) {
+            return false;
+        }
+    }
+    const float inverse_depth = 1.0F / camera_z;
+    const float inverse_depth_squared =
+        inverse_depth * inverse_depth;
+    const float jacobian_xx = camera.fx * inverse_depth;
+    const float jacobian_xz =
+        -camera.fx * camera_x * inverse_depth_squared;
+    const float jacobian_yy = camera.fy * inverse_depth;
+    const float jacobian_yz =
+        -camera.fy * camera_y * inverse_depth_squared;
+    float projected_row_x[3]{};
+    float projected_row_y[3]{};
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        projected_row_x[column] =
+            (jacobian_xx * camera_gaussian_rotation[column] +
+             jacobian_xz *
+                 camera_gaussian_rotation[2U * 3U + column]) *
+            scale[column];
+        projected_row_y[column] =
+            (jacobian_yy *
+                 camera_gaussian_rotation[1U * 3U + column] +
+             jacobian_yz *
+                 camera_gaussian_rotation[2U * 3U + column]) *
+            scale[column];
+    }
+    float covariance_xx = 0.0F;
+    float covariance_xy = 0.0F;
+    float covariance_yy = 0.0F;
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        covariance_xx +=
+            projected_row_x[column] * projected_row_x[column];
+        covariance_xy +=
+            projected_row_x[column] * projected_row_y[column];
+        covariance_yy +=
+            projected_row_y[column] * projected_row_y[column];
+    }
+    if (!isfinite(covariance_xx) ||
+        !isfinite(covariance_xy) ||
+        !isfinite(covariance_yy)) {
+        return false;
+    }
+    const float trace = covariance_xx + covariance_yy;
+    const float difference = covariance_xx - covariance_yy;
+    const float spectral_gap = sqrtf(fmaxf(
+        0.0F,
+        difference * difference +
+            4.0F * covariance_xy * covariance_xy));
+    const float eigenvalue_maximum =
+        0.5F * (trace + spectral_gap);
+    const float eigenvalue_minimum =
+        0.5F * (trace - spectral_gap);
+    const float clamped_maximum = fminf(
+        maximum_projected_variance,
+        fmaxf(minimum_projected_variance, eigenvalue_maximum));
+    const float clamped_minimum = fminf(
+        maximum_projected_variance,
+        fmaxf(minimum_projected_variance, eigenvalue_minimum));
+    if (spectral_gap > 1.0e-8F) {
+        const float projector_xx =
+            (covariance_xx - eigenvalue_minimum) / spectral_gap;
+        const float projector_xy =
+            covariance_xy / spectral_gap;
+        const float projector_yy =
+            (covariance_yy - eigenvalue_minimum) / spectral_gap;
+        const float clamped_gap =
+            clamped_maximum - clamped_minimum;
+        covariance_xx =
+            clamped_minimum + clamped_gap * projector_xx;
+        covariance_xy = clamped_gap * projector_xy;
+        covariance_yy =
+            clamped_minimum + clamped_gap * projector_yy;
+    } else {
+        const float variance = fminf(
+            maximum_projected_variance,
+            fmaxf(minimum_projected_variance, 0.5F * trace));
+        covariance_xx = variance;
+        covariance_xy = 0.0F;
+        covariance_yy = variance;
+    }
+    const float determinant =
+        covariance_xx * covariance_yy -
+        covariance_xy * covariance_xy;
+    if (!isfinite(determinant) || determinant <= 1.0e-12F) {
+        return false;
+    }
+    radius_x = gaussian_support * sqrtf(covariance_xx);
+    radius_y = gaussian_support * sqrtf(covariance_yy);
+    conic_xx = covariance_yy / determinant;
+    conic_xy = -covariance_xy / determinant;
+    conic_yy = covariance_xx / determinant;
+    return isfinite(radius_x) && isfinite(radius_y) &&
+           isfinite(conic_xx) && isfinite(conic_xy) &&
+           isfinite(conic_yy);
+}
+
+__device__ float gaussian_weight_device(
+    const ProjectedAlphaSplat& splat, float delta_x, float delta_y) {
+    const float squared_distance = fmaxf(
+        0.0F,
+        splat.conic_xx * delta_x * delta_x +
+            2.0F * splat.conic_xy * delta_x * delta_y +
+            splat.conic_yy * delta_y * delta_y);
+    return expf(-0.5F * squared_distance);
+}
+
 __global__ void project_alpha_splats_kernel(
     const Gaussian* gaussians, std::uint32_t gaussian_count,
     DeviceRasterCamera camera, DeviceProjectedRecord* records,
@@ -286,32 +439,37 @@ __global__ void project_alpha_splats_kernel(
     if (camera_z > minimum_depth && isfinite(camera_z)) {
         const float x = camera.fx * camera_x / camera_z + camera.cx;
         const float y = camera.fy * camera_y / camera_z + camera.cy;
-        const float world_sigma = expf(
-            (gaussian.log_scale[0] + gaussian.log_scale[1] +
-             gaussian.log_scale[2]) /
-            3.0F);
-        const float focal = 0.5F * (camera.fx + camera.fy);
-        const float sigma =
-            fminf(8.0F, fmaxf(0.75F, world_sigma * focal / camera_z));
-        const float support = 2.5F * sigma;
+        float radius_x = 0.0F;
+        float radius_y = 0.0F;
+        float conic_xx = 0.0F;
+        float conic_xy = 0.0F;
+        float conic_yy = 0.0F;
+        const bool valid_covariance =
+            project_covariance_device(
+                gaussian, camera, camera_x, camera_y, camera_z,
+                radius_x, radius_y, conic_xx, conic_xy, conic_yy);
         const bool visible =
-            isfinite(x) && isfinite(y) && isfinite(sigma) &&
-            x + support >= 0.0F && y + support >= 0.0F &&
-            x - support < static_cast<float>(camera.width) &&
-            y - support < static_cast<float>(camera.height);
+            isfinite(x) && isfinite(y) && valid_covariance &&
+            x + radius_x >= 0.0F && y + radius_y >= 0.0F &&
+            x - radius_x < static_cast<float>(camera.width) &&
+            y - radius_y < static_cast<float>(camera.height);
         if (visible) {
-            const int pixel_support =
-                static_cast<int>(ceilf(2.5F * sigma));
+            const int pixel_support_x =
+                static_cast<int>(ceilf(radius_x));
+            const int pixel_support_y =
+                static_cast<int>(ceilf(radius_y));
             const int center_x = static_cast<int>(floorf(x));
             const int center_y = static_cast<int>(floorf(y));
-            const int minimum_x = max(0, center_x - pixel_support);
+            const int minimum_x =
+                max(0, center_x - pixel_support_x);
             const int maximum_x = min(
                 static_cast<int>(camera.width) - 1,
-                center_x + pixel_support);
-            const int minimum_y = max(0, center_y - pixel_support);
+                center_x + pixel_support_x);
+            const int minimum_y =
+                max(0, center_y - pixel_support_y);
             const int maximum_y = min(
                 static_cast<int>(camera.height) - 1,
-                center_y + pixel_support);
+                center_y + pixel_support_y);
             record.minimum_tile_x =
                 static_cast<std::uint32_t>(minimum_x) / alpha_tile_width;
             record.maximum_tile_x =
@@ -329,7 +487,11 @@ __global__ void project_alpha_splats_kernel(
                 .depth = camera_z,
                 .x = x,
                 .y = y,
-                .sigma = sigma,
+                .radius_x = radius_x,
+                .radius_y = radius_y,
+                .conic_xx = conic_xx,
+                .conic_xy = conic_xy,
+                .conic_yy = conic_yy,
                 .opacity =
                     1.0F / (1.0F + expf(-gaussian.opacity_logit)),
                 .color = {
@@ -463,14 +625,16 @@ __global__ void render_alpha_tiles_kernel(
         if (valid_pixel && remaining > alpha_minimum_transmittance) {
             for (std::uint32_t index = 0; index < batch_count; ++index) {
                 const auto& splat = batch[index];
-                const int support =
-                    static_cast<int>(ceilf(2.5F * splat.sigma));
+                const int support_x =
+                    static_cast<int>(ceilf(splat.radius_x));
+                const int support_y =
+                    static_cast<int>(ceilf(splat.radius_y));
                 const int center_x = static_cast<int>(floorf(splat.x));
                 const int center_y = static_cast<int>(floorf(splat.y));
-                if (static_cast<int>(x) < center_x - support ||
-                    static_cast<int>(x) > center_x + support ||
-                    static_cast<int>(y) < center_y - support ||
-                    static_cast<int>(y) > center_y + support) {
+                if (static_cast<int>(x) < center_x - support_x ||
+                    static_cast<int>(x) > center_x + support_x ||
+                    static_cast<int>(y) < center_y - support_y ||
+                    static_cast<int>(y) > center_y + support_y) {
                     continue;
                 }
                 ++evaluated;
@@ -478,11 +642,8 @@ __global__ void render_alpha_tiles_kernel(
                     (static_cast<float>(x) + 0.5F) - splat.x;
                 const float delta_y =
                     (static_cast<float>(y) + 0.5F) - splat.y;
-                const float inverse_two_variance =
-                    0.5F / (splat.sigma * splat.sigma);
-                const float gaussian_weight = expf(
-                    -(delta_x * delta_x + delta_y * delta_y) *
-                    inverse_two_variance);
+                const float gaussian_weight =
+                    gaussian_weight_device(splat, delta_x, delta_y);
                 const float alpha = fminf(
                     alpha_maximum, splat.opacity * gaussian_weight);
                 if (alpha < alpha_minimum_contribution) {
@@ -547,23 +708,24 @@ __global__ void backward_alpha_tiles_kernel(
             break;
         }
         const auto& splat = records[record_indices[pair]].splat;
-        const int support =
-            static_cast<int>(ceilf(2.5F * splat.sigma));
+        const int support_x =
+            static_cast<int>(ceilf(splat.radius_x));
+        const int support_y =
+            static_cast<int>(ceilf(splat.radius_y));
         const int center_x = static_cast<int>(floorf(splat.x));
         const int center_y = static_cast<int>(floorf(splat.y));
-        if (static_cast<int>(x) < center_x - support ||
-            static_cast<int>(x) > center_x + support ||
-            static_cast<int>(y) < center_y - support ||
-            static_cast<int>(y) > center_y + support) {
+        if (static_cast<int>(x) < center_x - support_x ||
+            static_cast<int>(x) > center_x + support_x ||
+            static_cast<int>(y) < center_y - support_y ||
+            static_cast<int>(y) > center_y + support_y) {
             continue;
         }
         const float delta_x =
             (static_cast<float>(x) + 0.5F) - splat.x;
         const float delta_y =
             (static_cast<float>(y) + 0.5F) - splat.y;
-        const float gaussian_weight = expf(
-            -(delta_x * delta_x + delta_y * delta_y) *
-            (0.5F / (splat.sigma * splat.sigma)));
+        const float gaussian_weight =
+            gaussian_weight_device(splat, delta_x, delta_y);
         const float alpha = fminf(
             alpha_maximum, splat.opacity * gaussian_weight);
         if (alpha < alpha_minimum_contribution) {
@@ -588,23 +750,24 @@ __global__ void backward_alpha_tiles_kernel(
     for (std::uint64_t cursor = active_end; cursor > start; --cursor) {
         const auto& splat =
             records[record_indices[cursor - 1U]].splat;
-        const int support =
-            static_cast<int>(ceilf(2.5F * splat.sigma));
+        const int support_x =
+            static_cast<int>(ceilf(splat.radius_x));
+        const int support_y =
+            static_cast<int>(ceilf(splat.radius_y));
         const int center_x = static_cast<int>(floorf(splat.x));
         const int center_y = static_cast<int>(floorf(splat.y));
-        if (static_cast<int>(x) < center_x - support ||
-            static_cast<int>(x) > center_x + support ||
-            static_cast<int>(y) < center_y - support ||
-            static_cast<int>(y) > center_y + support) {
+        if (static_cast<int>(x) < center_x - support_x ||
+            static_cast<int>(x) > center_x + support_x ||
+            static_cast<int>(y) < center_y - support_y ||
+            static_cast<int>(y) > center_y + support_y) {
             continue;
         }
         const float delta_x =
             (static_cast<float>(x) + 0.5F) - splat.x;
         const float delta_y =
             (static_cast<float>(y) + 0.5F) - splat.y;
-        const float gaussian_weight = expf(
-            -(delta_x * delta_x + delta_y * delta_y) *
-            (0.5F / (splat.sigma * splat.sigma)));
+        const float gaussian_weight =
+            gaussian_weight_device(splat, delta_x, delta_y);
         const float raw_alpha = splat.opacity * gaussian_weight;
         const float alpha = fminf(alpha_maximum, raw_alpha);
         if (alpha < alpha_minimum_contribution) {

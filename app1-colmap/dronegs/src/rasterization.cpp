@@ -16,6 +16,9 @@ namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float minimum_depth = 1.0e-4F;
+constexpr float minimum_projected_variance = 0.75F * 0.75F;
+constexpr float maximum_projected_variance = 8.0F * 8.0F;
+constexpr float gaussian_support = 2.5F;
 
 struct AlphaPixelContribution {
     std::size_t projected_index = 0U;
@@ -29,11 +32,171 @@ float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
 }
 
+struct ProjectedCovariance {
+    float radius_x = 0.0F;
+    float radius_y = 0.0F;
+    float conic_xx = 0.0F;
+    float conic_xy = 0.0F;
+    float conic_yy = 0.0F;
+};
+
+bool project_covariance(
+    const Gaussian& gaussian, const RasterCamera& camera,
+    float camera_x, float camera_y, float camera_z,
+    ProjectedCovariance& projected) {
+    const float quaternion_norm = std::sqrt(
+        gaussian.rotation[0] * gaussian.rotation[0] +
+        gaussian.rotation[1] * gaussian.rotation[1] +
+        gaussian.rotation[2] * gaussian.rotation[2] +
+        gaussian.rotation[3] * gaussian.rotation[3]);
+    if (!std::isfinite(quaternion_norm) ||
+        quaternion_norm <= 1.0e-12F) {
+        return false;
+    }
+    const float w = gaussian.rotation[0] / quaternion_norm;
+    const float x = gaussian.rotation[1] / quaternion_norm;
+    const float y = gaussian.rotation[2] / quaternion_norm;
+    const float z = gaussian.rotation[3] / quaternion_norm;
+    const std::array<float, 9> gaussian_rotation{
+        1.0F - 2.0F * (y * y + z * z),
+        2.0F * (x * y - z * w),
+        2.0F * (x * z + y * w),
+        2.0F * (x * y + z * w),
+        1.0F - 2.0F * (x * x + z * z),
+        2.0F * (y * z - x * w),
+        2.0F * (x * z - y * w),
+        2.0F * (y * z + x * w),
+        1.0F - 2.0F * (x * x + y * y),
+    };
+    std::array<float, 9> camera_gaussian_rotation{};
+    for (std::size_t row = 0U; row < 3U; ++row) {
+        for (std::size_t column = 0U; column < 3U; ++column) {
+            for (std::size_t inner = 0U; inner < 3U; ++inner) {
+                camera_gaussian_rotation[row * 3U + column] +=
+                    camera.rotation[row * 3U + inner] *
+                    gaussian_rotation[inner * 3U + column];
+            }
+        }
+    }
+    std::array<float, 3> scale{};
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        scale[axis] = std::exp(gaussian.log_scale[axis]);
+        if (!std::isfinite(scale[axis]) || scale[axis] <= 0.0F) {
+            return false;
+        }
+    }
+    const float inverse_depth = 1.0F / camera_z;
+    const float inverse_depth_squared =
+        inverse_depth * inverse_depth;
+    const float jacobian_xx = camera.fx * inverse_depth;
+    const float jacobian_xz =
+        -camera.fx * camera_x * inverse_depth_squared;
+    const float jacobian_yy = camera.fy * inverse_depth;
+    const float jacobian_yz =
+        -camera.fy * camera_y * inverse_depth_squared;
+    std::array<float, 3> projected_row_x{};
+    std::array<float, 3> projected_row_y{};
+    for (std::size_t column = 0U; column < 3U; ++column) {
+        projected_row_x[column] =
+            (jacobian_xx * camera_gaussian_rotation[column] +
+             jacobian_xz *
+                 camera_gaussian_rotation[2U * 3U + column]) *
+            scale[column];
+        projected_row_y[column] =
+            (jacobian_yy *
+                 camera_gaussian_rotation[1U * 3U + column] +
+             jacobian_yz *
+                 camera_gaussian_rotation[2U * 3U + column]) *
+            scale[column];
+    }
+    float covariance_xx = 0.0F;
+    float covariance_xy = 0.0F;
+    float covariance_yy = 0.0F;
+    for (std::size_t column = 0U; column < 3U; ++column) {
+        covariance_xx +=
+            projected_row_x[column] * projected_row_x[column];
+        covariance_xy +=
+            projected_row_x[column] * projected_row_y[column];
+        covariance_yy +=
+            projected_row_y[column] * projected_row_y[column];
+    }
+    if (!std::isfinite(covariance_xx) ||
+        !std::isfinite(covariance_xy) ||
+        !std::isfinite(covariance_yy)) {
+        return false;
+    }
+    const float trace = covariance_xx + covariance_yy;
+    const float difference = covariance_xx - covariance_yy;
+    const float spectral_gap = std::sqrt(std::max(
+        0.0F,
+        difference * difference +
+            4.0F * covariance_xy * covariance_xy));
+    const float eigenvalue_maximum =
+        0.5F * (trace + spectral_gap);
+    const float eigenvalue_minimum =
+        0.5F * (trace - spectral_gap);
+    const float clamped_maximum = std::clamp(
+        eigenvalue_maximum, minimum_projected_variance,
+        maximum_projected_variance);
+    const float clamped_minimum = std::clamp(
+        eigenvalue_minimum, minimum_projected_variance,
+        maximum_projected_variance);
+    if (spectral_gap > 1.0e-8F) {
+        const float projector_xx =
+            (covariance_xx - eigenvalue_minimum) / spectral_gap;
+        const float projector_xy =
+            covariance_xy / spectral_gap;
+        const float projector_yy =
+            (covariance_yy - eigenvalue_minimum) / spectral_gap;
+        const float clamped_gap =
+            clamped_maximum - clamped_minimum;
+        covariance_xx =
+            clamped_minimum + clamped_gap * projector_xx;
+        covariance_xy = clamped_gap * projector_xy;
+        covariance_yy =
+            clamped_minimum + clamped_gap * projector_yy;
+    } else {
+        const float variance = std::clamp(
+            0.5F * trace, minimum_projected_variance,
+            maximum_projected_variance);
+        covariance_xx = variance;
+        covariance_xy = 0.0F;
+        covariance_yy = variance;
+    }
+    const float determinant =
+        covariance_xx * covariance_yy -
+        covariance_xy * covariance_xy;
+    if (!std::isfinite(determinant) || determinant <= 1.0e-12F) {
+        return false;
+    }
+    projected.radius_x =
+        gaussian_support * std::sqrt(covariance_xx);
+    projected.radius_y =
+        gaussian_support * std::sqrt(covariance_yy);
+    projected.conic_xx = covariance_yy / determinant;
+    projected.conic_xy = -covariance_xy / determinant;
+    projected.conic_yy = covariance_xx / determinant;
+    return std::isfinite(projected.radius_x) &&
+           std::isfinite(projected.radius_y) &&
+           std::isfinite(projected.conic_xx) &&
+           std::isfinite(projected.conic_xy) &&
+           std::isfinite(projected.conic_yy);
+}
+
+float gaussian_weight(
+    const ProjectedAlphaSplat& splat, float delta_x, float delta_y) {
+    const float squared_distance = std::max(
+        0.0F,
+        splat.conic_xx * delta_x * delta_x +
+            2.0F * splat.conic_xy * delta_x * delta_y +
+            splat.conic_yy * delta_y * delta_y);
+    return std::exp(-0.5F * squared_distance);
+}
+
 std::vector<ProjectedAlphaSplat> project_visible(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera) {
     std::vector<ProjectedAlphaSplat> projected;
     projected.reserve(gaussians.size());
-    const float focal = 0.5F * (camera.fx + camera.fy);
     for (std::size_t index = 0; index < gaussians.size(); ++index) {
         const auto& gaussian = gaussians[index];
         const float camera_x =
@@ -53,15 +216,17 @@ std::vector<ProjectedAlphaSplat> project_visible(
         }
         const float x = camera.fx * camera_x / camera_z + camera.cx;
         const float y = camera.fy * camera_y / camera_z + camera.cy;
-        const float world_sigma = std::exp(
-            (gaussian.log_scale[0] + gaussian.log_scale[1] +
-             gaussian.log_scale[2]) / 3.0F);
-        const float sigma = std::clamp(
-            world_sigma * focal / camera_z, 0.75F, 8.0F);
-        const float support = 2.5F * sigma;
-        if (x + support < 0.0F || y + support < 0.0F ||
-            x - support >= static_cast<float>(camera.width) ||
-            y - support >= static_cast<float>(camera.height)) {
+        ProjectedCovariance covariance{};
+        if (!std::isfinite(x) || !std::isfinite(y) ||
+            !project_covariance(
+                gaussian, camera, camera_x, camera_y, camera_z,
+                covariance) ||
+            x + covariance.radius_x < 0.0F ||
+            y + covariance.radius_y < 0.0F ||
+            x - covariance.radius_x >=
+                static_cast<float>(camera.width) ||
+            y - covariance.radius_y >=
+                static_cast<float>(camera.height)) {
             continue;
         }
         projected.push_back({
@@ -69,7 +234,11 @@ std::vector<ProjectedAlphaSplat> project_visible(
             .depth = camera_z,
             .x = x,
             .y = y,
-            .sigma = sigma,
+            .radius_x = covariance.radius_x,
+            .radius_y = covariance.radius_y,
+            .conic_xx = covariance.conic_xx,
+            .conic_xy = covariance.conic_xy,
+            .conic_yy = covariance.conic_yy,
             .opacity = sigmoid(gaussian.opacity_logit),
             .color = {
                 std::clamp(0.5F + sh_c0 * gaussian.dc[0], 0.0F, 1.0F),
@@ -131,19 +300,20 @@ AlphaRenderOutput render_alpha_reference(
     const auto projected = project_visible(gaussians, camera);
     output.stats.visible_splats = projected.size();
     for (const auto& splat : projected) {
-        const int support = static_cast<int>(std::ceil(2.5F * splat.sigma));
+        const int support_x =
+            static_cast<int>(std::ceil(splat.radius_x));
+        const int support_y =
+            static_cast<int>(std::ceil(splat.radius_y));
         const int minimum_x = std::max(
-            0, static_cast<int>(std::floor(splat.x)) - support);
+            0, static_cast<int>(std::floor(splat.x)) - support_x);
         const int maximum_x = std::min(
             static_cast<int>(camera.width) - 1,
-            static_cast<int>(std::floor(splat.x)) + support);
+            static_cast<int>(std::floor(splat.x)) + support_x);
         const int minimum_y = std::max(
-            0, static_cast<int>(std::floor(splat.y)) - support);
+            0, static_cast<int>(std::floor(splat.y)) - support_y);
         const int maximum_y = std::min(
             static_cast<int>(camera.height) - 1,
-            static_cast<int>(std::floor(splat.y)) + support);
-        const float inverse_two_variance =
-            0.5F / (splat.sigma * splat.sigma);
+            static_cast<int>(std::floor(splat.y)) + support_y);
         for (int y = minimum_y; y <= maximum_y; ++y) {
             for (int x = minimum_x; x <= maximum_x; ++x) {
                 const auto pixel =
@@ -158,11 +328,10 @@ AlphaRenderOutput render_alpha_reference(
                     (static_cast<float>(x) + 0.5F) - splat.x;
                 const float delta_y =
                     (static_cast<float>(y) + 0.5F) - splat.y;
-                const float gaussian_weight = std::exp(
-                    -(delta_x * delta_x + delta_y * delta_y) *
-                    inverse_two_variance);
+                const float weight =
+                    gaussian_weight(splat, delta_x, delta_y);
                 const float alpha = std::min(
-                    alpha_maximum, splat.opacity * gaussian_weight);
+                    alpha_maximum, splat.opacity * weight);
                 if (alpha < alpha_minimum_contribution) {
                     continue;
                 }
@@ -211,26 +380,27 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                     break;
                 }
                 const auto& splat = projected[index];
-                const int support =
-                    static_cast<int>(std::ceil(2.5F * splat.sigma));
+                const int support_x =
+                    static_cast<int>(std::ceil(splat.radius_x));
+                const int support_y =
+                    static_cast<int>(std::ceil(splat.radius_y));
                 const int center_x =
                     static_cast<int>(std::floor(splat.x));
                 const int center_y =
                     static_cast<int>(std::floor(splat.y));
-                if (static_cast<int>(x) < center_x - support ||
-                    static_cast<int>(x) > center_x + support ||
-                    static_cast<int>(y) < center_y - support ||
-                    static_cast<int>(y) > center_y + support) {
+                if (static_cast<int>(x) < center_x - support_x ||
+                    static_cast<int>(x) > center_x + support_x ||
+                    static_cast<int>(y) < center_y - support_y ||
+                    static_cast<int>(y) > center_y + support_y) {
                     continue;
                 }
                 const float delta_x =
                     (static_cast<float>(x) + 0.5F) - splat.x;
                 const float delta_y =
                     (static_cast<float>(y) + 0.5F) - splat.y;
-                const float gaussian_weight = std::exp(
-                    -(delta_x * delta_x + delta_y * delta_y) *
-                    (0.5F / (splat.sigma * splat.sigma)));
-                const float raw_alpha = splat.opacity * gaussian_weight;
+                const float weight =
+                    gaussian_weight(splat, delta_x, delta_y);
+                const float raw_alpha = splat.opacity * weight;
                 const float alpha =
                     std::min(alpha_maximum, raw_alpha);
                 if (alpha < alpha_minimum_contribution) {
@@ -239,7 +409,7 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                 contributions.push_back({
                     .projected_index = index,
                     .transmittance_before = remaining,
-                    .gaussian_weight = gaussian_weight,
+                    .gaussian_weight = weight,
                     .alpha = alpha,
                     .alpha_is_unclamped = raw_alpha < alpha_maximum,
                 });

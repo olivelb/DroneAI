@@ -2,6 +2,25 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.10 - Phase 4 anisotropic covariance forward
+
+- Replaced the projected scalar sigma with an inverse 2D conic and independent
+  axis-aligned support radii.
+- Added normalized quaternion rotation, non-uniform exponential scales, camera
+  rotation, and the full perspective Jacobian to the CPU and CUDA projection.
+- Added spectral clamping of both projected covariance eigenvalues to
+  `[0.75², 8²]` pixels, preserving the previous footprint safety bounds.
+- Routed the anisotropic conic through tiled forward rendering, reverse
+  composition, persistent training, tile bounds, culling, and statistics.
+- Added CPU rotation/swap, zero-quaternion rejection, extreme-scale clamp, and
+  CUDA forward/backward parity tests with rotated cameras and conics.
+- Measured 44.934 ms forward and 64.416 ms forward+backward medians at
+  1,025,093 Gaussians / 800x580 across two order-balanced seven-run sets.
+- Completed the real 1,376-image Albagnac 500-iteration run in 30.316 seconds,
+  reducing anchor L1 from 0.200559 to 0.155307 with no OOM.
+- Kept geometry fixed: position, scale, and rotation gradients are the next
+  correctness sub-gate.
+
 ## 0.5.0-dev.9 - Phase 4 bounded JPEG decode experiments
 
 - Replaced the single outstanding prefetch state with an ordered, bounded
