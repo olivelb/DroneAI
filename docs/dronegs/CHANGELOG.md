@@ -2,6 +2,24 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.13 - Phase 4 held-out quality gate
+
+- Added an opt-in LichtFeld-compatible split where
+  `scene_index % test_every == 0` is excluded from every Adam schedule.
+- Added persistent CUDA PSNR and separable Gaussian 11x11 SSIM evaluation
+  using LichtFeld's data range and valid-padding conventions.
+- Added initial/final aggregate metrics, per-view CSV output, active-pixel
+  coverage, evaluation timings, and optional lossless PPM predictions.
+- Extended CLI and manifest v1 with the split, metric protocol, counts, and
+  held-out artifacts while leaving legacy no-evaluation runs unchanged.
+- Added deterministic split tests and a direct CPU oracle for GPU PSNR/SSIM.
+- On Albagnac, reserved 172 of 1,376 views and improved held-out quality from
+  14.0631 to 17.1212 dB and from 0.1811 to 0.2419 SSIM over 500 iterations.
+- Ran the pinned GPL LichtFeld control on the identical split and settings:
+  21.0686 dB, 0.6310 SSIM, and 1,173,540 final Gaussians.
+- Kept the Phase 4 tag open: the gaps are 3.9474 dB and 0.3891 SSIM; LPIPS
+  remains null because no local model/runtime is installed.
+
 ## 0.5.0-dev.12 - Phase 4 persistent geometry Adam
 
 - Retained projected-conic and position/log-scale/quaternion gradients in the

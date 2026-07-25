@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "dronegs/types.hpp"
@@ -18,6 +19,7 @@ struct RunMeasurements {
     double image_wait_seconds = 0.0;
     double startup_seconds = 0.0;
     double training_seconds = 0.0;
+    double evaluation_seconds = 0.0;
     double export_seconds = 0.0;
     double wall_seconds = 0.0;
     float initial_loss = 0.0F;
@@ -30,6 +32,12 @@ struct RunMeasurements {
     std::uint64_t image_prefetch_started = 0;
     std::uint64_t image_prefetch_consumed = 0;
     std::uint64_t image_prefetch_ready = 0;
+    std::uint64_t training_image_count = 0;
+    std::uint64_t held_out_image_count = 0;
+    std::optional<float> initial_held_out_psnr;
+    std::optional<float> initial_held_out_ssim;
+    std::optional<float> final_held_out_psnr;
+    std::optional<float> final_held_out_ssim;
 };
 
 std::string utc_timestamp();

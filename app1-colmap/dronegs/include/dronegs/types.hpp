@@ -24,6 +24,8 @@ struct Options {
     std::uint32_t prefetch_depth = 1;
     std::uint32_t decode_workers = 1;
     std::uint32_t jpeg_idct_scale = 0;
+    std::uint32_t test_every = 0;
+    std::uint32_t save_eval_images = 0;
 };
 
 struct Camera {

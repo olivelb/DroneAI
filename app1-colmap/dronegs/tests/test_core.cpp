@@ -161,6 +161,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .image_prefetch_started = 4U,
         .image_prefetch_consumed = 3U,
         .image_prefetch_ready = 2U,
+        .training_image_count = 7U,
+        .held_out_image_count = 1U,
+        .initial_held_out_psnr = 10.0F,
+        .initial_held_out_ssim = 0.2F,
+        .final_held_out_psnr = 12.0F,
+        .final_held_out_ssim = 0.3F,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,
@@ -184,6 +190,14 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest decode worker count missing");
     check(manifest_text.find("\"jpeg_idct_scale\": 0") != std::string::npos,
           "manifest JPEG IDCT mode missing");
+    check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
+          "manifest training split count missing");
+    check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
+          "manifest held-out split count missing");
+    check(manifest_text.find("\"psnr\": 12") != std::string::npos,
+          "manifest held-out PSNR missing");
+    check(manifest_text.find("\"ssim\": 0.300000") != std::string::npos,
+          "manifest held-out SSIM missing");
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
@@ -209,11 +223,15 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
     check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
+    check(parsed.test_every == 0U, "CLI held-out split default mismatch");
+    check(parsed.save_eval_images == 0U, "CLI eval export default mismatch");
 
     values.insert(values.end(), {
         "--prefetch-depth", "12",
         "--decode-workers", "3",
         "--jpeg-idct-scale", "0",
+        "--test-every", "8",
+        "--save-eval-images", "1",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -221,7 +239,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.prefetch_depth == 12U, "CLI prefetch depth mismatch");
     check(tuned.decode_workers == 3U, "CLI decode worker count mismatch");
     check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
-    values.resize(values.size() - 6U);
+    check(tuned.test_every == 8U, "CLI held-out stride mismatch");
+    check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
+    values.resize(values.size() - 10U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

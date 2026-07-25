@@ -40,6 +40,15 @@ std::string json_escape(const std::string& value) {
     return escaped.str();
 }
 
+std::string json_number(const std::optional<float>& value) {
+    if (!value.has_value()) {
+        return "null";
+    }
+    std::ostringstream stream;
+    stream << std::setprecision(10) << *value;
+    return stream.str();
+}
+
 }  // namespace
 
 std::string utc_timestamp() {
@@ -69,8 +78,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-fixed-topology-anisotropic-geometry-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.12\",\n"
+           << "  \"backend\": \"dronegs-held-out-anisotropic-geometry-prototype\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.13\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -79,6 +88,10 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"path\": \"" << json_escape(options.data_path.string()) << "\",\n"
            << "    \"fingerprint\": \"" << json_escape(fingerprint) << "\",\n"
            << "    \"image_count\": " << scene.images.size() << ",\n"
+           << "    \"training_image_count\": "
+           << measurements.training_image_count << ",\n"
+           << "    \"held_out_image_count\": "
+           << measurements.held_out_image_count << ",\n"
            << "    \"source_pixels\": null\n"
            << "  },\n"
            << "  \"hardware\": {\n"
@@ -97,6 +110,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"prefetch_depth\": " << options.prefetch_depth << ",\n"
            << "    \"decode_workers\": " << options.decode_workers << ",\n"
            << "    \"jpeg_idct_scale\": " << options.jpeg_idct_scale << ",\n"
+           << "    \"test_every\": " << options.test_every << ",\n"
+           << "    \"save_eval_images\": "
+           << options.save_eval_images << ",\n"
+           << "    \"held_out_rule\": "
+              "\"scene_index_modulo_test_every_equals_zero\",\n"
+           << "    \"quality_data_range\": 1.0,\n"
+           << "    \"ssim_window\": 11,\n"
+           << "    \"ssim_sigma\": 1.5,\n"
+           << "    \"ssim_padding\": \"valid\",\n"
            << "    \"position_lr_initial_factor\": 0.00016,\n"
            << "    \"position_lr_final_factor\": 0.0000016,\n"
            << "    \"position_lr_scale\": \"initial_gaussian_bbox_diagonal\",\n"
@@ -105,7 +127,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"log_scale_limit_delta\": 4.0,\n"
            << "    \"host_image_storage\": \"rgb8\",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
-           << "    \"mode\": \"fixed-topology-anisotropic-geometry-ordered-alpha-prototype\"\n"
+           << "    \"mode\": "
+              "\"fixed-topology-anisotropic-geometry-held-out-ordered-alpha-prototype\"\n"
            << "  },\n"
            << "  \"timings\": {\n"
            << "    \"startup_seconds\": " << measurements.startup_seconds << ",\n"
@@ -113,6 +136,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"image_decode_seconds\": " << measurements.image_decode_seconds << ",\n"
            << "    \"image_wait_seconds\": " << measurements.image_wait_seconds << ",\n"
            << "    \"training_seconds\": " << measurements.training_seconds << ",\n"
+           << "    \"evaluation_seconds\": "
+           << measurements.evaluation_seconds << ",\n"
            << "    \"checkpoint_seconds\": " << measurements.export_seconds << ",\n"
            << "    \"wall_seconds\": " << measurements.wall_seconds << "\n"
            << "  },\n"
@@ -131,14 +156,35 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << measurements.image_prefetch_consumed << ",\n"
            << "    \"image_prefetch_ready\": "
            << measurements.image_prefetch_ready << ",\n"
-           << "    \"psnr\": null, \"ssim\": null, \"lpips\": null\n"
+           << "    \"initial_held_out_psnr\": "
+           << json_number(measurements.initial_held_out_psnr) << ",\n"
+           << "    \"initial_held_out_ssim\": "
+           << json_number(measurements.initial_held_out_ssim) << ",\n"
+           << "    \"psnr\": "
+           << json_number(measurements.final_held_out_psnr) << ",\n"
+           << "    \"ssim\": "
+           << json_number(measurements.final_held_out_ssim)
+           << ", \"lpips\": null\n"
            << "  },\n"
            << "  \"artifacts\": {\n"
            << "    \"point_cloud.ply\": {\n"
            << "      \"path\": \"" << json_escape(ply_path.string()) << "\",\n"
            << "      \"sha256\": null, \"bytes\": " << std::filesystem::file_size(ply_path) << "\n"
-           << "    }\n"
-           << "  },\n"
+           << "    }";
+    const auto evaluation_csv =
+        options.output_path / "evaluation" / "metrics.csv";
+    if (std::filesystem::is_regular_file(evaluation_csv)) {
+        stream
+            << ",\n"
+            << "    \"evaluation/metrics.csv\": {\n"
+            << "      \"path\": \""
+            << json_escape(evaluation_csv.string()) << "\",\n"
+            << "      \"sha256\": null, \"bytes\": "
+            << std::filesystem::file_size(evaluation_csv) << "\n"
+            << "    }";
+    }
+    stream
+           << "\n  },\n"
            << "  \"error\": null\n"
            << "}\n";
     stream.close();

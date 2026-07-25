@@ -17,6 +17,8 @@
 
 #include "dronegs/image.hpp"
 #include "dronegs/model.hpp"
+#include "dronegs/ordered_training.hpp"
+#include "dronegs/rasterization.hpp"
 #include "dronegs/training.hpp"
 
 namespace {
@@ -86,6 +88,75 @@ dronegs::Scene make_scene() {
     return scene;
 }
 
+float reference_ssim(
+    const std::vector<float>& prediction,
+    const std::vector<std::uint8_t>& target,
+    std::uint32_t width, std::uint32_t height) {
+    constexpr std::array<float, 11> weights{
+        0.0010283801F, 0.0075987581F, 0.0360007721F,
+        0.1093606895F, 0.2130055377F, 0.2660117249F,
+        0.2130055377F, 0.1093606895F, 0.0360007721F,
+        0.0075987581F, 0.0010283801F,
+    };
+    constexpr int radius = 5;
+    constexpr float c1 = 0.01F * 0.01F;
+    constexpr float c2 = 0.03F * 0.03F;
+    double sum = 0.0;
+    std::size_t count = 0U;
+    for (std::uint32_t y = radius; y + radius < height; ++y) {
+        for (std::uint32_t x = radius; x + radius < width; ++x) {
+            for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                double prediction_mean = 0.0;
+                double target_mean = 0.0;
+                double prediction_square = 0.0;
+                double target_square = 0.0;
+                double cross = 0.0;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    for (int dx = -radius; dx <= radius; ++dx) {
+                        const auto sample =
+                            (static_cast<std::size_t>(
+                                 static_cast<int>(y) + dy) *
+                                 width +
+                             static_cast<std::size_t>(
+                                 static_cast<int>(x) + dx)) *
+                                3U +
+                            channel;
+                        const double weight =
+                            static_cast<double>(weights[dy + radius]) *
+                            weights[dx + radius];
+                        const double predicted = prediction[sample];
+                        const double expected =
+                            static_cast<double>(target[sample]) / 255.0;
+                        prediction_mean += weight * predicted;
+                        target_mean += weight * expected;
+                        prediction_square +=
+                            weight * predicted * predicted;
+                        target_square += weight * expected * expected;
+                        cross += weight * predicted * expected;
+                    }
+                }
+                const double prediction_variance = std::max(
+                    0.0,
+                    prediction_square -
+                        prediction_mean * prediction_mean);
+                const double target_variance = std::max(
+                    0.0,
+                    target_square - target_mean * target_mean);
+                const double covariance =
+                    cross - prediction_mean * target_mean;
+                sum +=
+                    ((2.0 * prediction_mean * target_mean + c1) *
+                     (2.0 * covariance + c2)) /
+                    ((prediction_mean * prediction_mean +
+                      target_mean * target_mean + c1) *
+                     (prediction_variance + target_variance + c2));
+                ++count;
+            }
+        }
+    }
+    return static_cast<float>(sum / static_cast<double>(count));
+}
+
 }  // namespace
 
 int main() {
@@ -111,6 +182,56 @@ int main() {
         const auto scene = make_scene();
         const auto initialized =
             dronegs::initialize_fixed_topology(scene);
+        const auto split = dronegs::make_dataset_split(17U, 8U);
+        if (split.training.size() != 14U ||
+            split.held_out !=
+                std::vector<std::size_t>{0U, 8U, 16U} ||
+            std::find(
+                split.training.begin(), split.training.end(), 8U) !=
+                split.training.end()) {
+            throw std::runtime_error(
+                "LichtFeld-compatible held-out split mismatch");
+        }
+        const auto quality_target = dronegs::load_training_image(
+            root / "images" / "frame.jpg", 1U, 32U, false);
+        dronegs::OrderedAlphaTrainingContext quality_context(
+            initialized, 32U * 32U, 1U);
+        const dronegs::RasterCamera quality_camera{
+            .fx = 30.0F,
+            .fy = 30.0F,
+            .cx = 16.0F,
+            .cy = 16.0F,
+            .width = 32U,
+            .height = 32U,
+        };
+        std::vector<float> quality_prediction;
+        const auto quality = quality_context.evaluate_quality(
+            quality_camera, quality_target.rgb.data(),
+            quality_target.rgb.size(), &quality_prediction);
+        double squared_error_sum = 0.0;
+        for (std::size_t sample = 0U;
+             sample < quality_prediction.size(); ++sample) {
+            const double target =
+                static_cast<double>(quality_target.rgb[sample]) / 255.0;
+            const double difference =
+                static_cast<double>(quality_prediction[sample]) - target;
+            squared_error_sum += difference * difference;
+        }
+        const double mse = std::max(
+            squared_error_sum /
+                static_cast<double>(quality_prediction.size()),
+            1.0e-10);
+        const float expected_psnr =
+            static_cast<float>(10.0 * std::log10(1.0 / mse));
+        const float expected_ssim = reference_ssim(
+            quality_prediction, quality_target.rgb, 32U, 32U);
+        if (std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
+            std::abs(quality.ssim - expected_ssim) > 2.0e-4F ||
+            quality.active_pixel_fraction <= 0.0F ||
+            quality.active_pixel_fraction > 1.0F) {
+            throw std::runtime_error(
+                "GPU held-out PSNR/SSIM mismatch");
+        }
         auto additive_gaussians = initialized;
         auto ordered_initial = initialized;
         ordered_initial.front().log_scale[0] += std::log(1.7F);

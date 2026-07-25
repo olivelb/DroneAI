@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "dronegs/rasterization.hpp"
-#include "dronegs/types.hpp"
+#include "dronegs/training.hpp"
 
 namespace dronegs {
 
@@ -31,6 +31,10 @@ public:
     float evaluate(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes);
+    ImageQualityMetrics evaluate_quality(
+        const RasterCamera& camera, const std::uint8_t* target_rgb,
+        std::size_t target_bytes,
+        std::vector<float>* prediction = nullptr);
     float train_step(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes);

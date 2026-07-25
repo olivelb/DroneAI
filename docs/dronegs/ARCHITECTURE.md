@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.12
+Project version: 0.5.0-dev.13
 
 ## Decision
 
@@ -79,9 +79,15 @@ gradients and all Adam moments on device and updates the five parameter
 families after every training frame.
 
 This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no DSSIM, progressive SH, split/prune/grow, or held-out quality
-evaluation. It supports only
+It has no DSSIM, progressive SH, split/prune/grow, or LPIPS. It supports only
 SIMPLE_PINHOLE and PINHOLE inputs.
+
+An opt-in held-out protocol uses the same index rule as LichtFeld:
+`scene_index % test_every == 0`. Those descriptors never enter the shuffled
+training schedule. Initial and final passes report full-frame RGB PSNR and
+Gaussian 11x11 SSIM with sigma 1.5 and valid padding. PSNR/SSIM reductions
+remain on CUDA; optional final predictions are downloaded only for lossless
+PPM export and external perceptual evaluation.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache
@@ -141,6 +147,14 @@ schedule over the requested training steps. Log-scale uses `0.005`, rotation
 uses `0.001`, log-scales stay within four natural-log units of the initialized
 global range, and quaternions are normalized after every update. No geometry
 gradient or moment is read back during training.
+Version 0.5.0-dev.13 adds a deterministic train/held-out split and persistent
+quality workspace. Squared-error samples and separable SSIM moments are
+reduced with CUB; only per-view scalar metrics return to the host unless
+lossless prediction export is requested. The manifest records the split rule,
+metric constants, train/held-out cardinalities, initial/final aggregates, and
+per-view CSV artifact. The matching Albagnac control is executed through the
+pinned GPL LichtFeld runtime image; no LichtFeld metric source is copied into
+the original MIT CUDA implementation.
 
 ## Planned layout
 

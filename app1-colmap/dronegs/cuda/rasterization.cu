@@ -26,6 +26,21 @@ constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
 constexpr float gaussian_support = 2.5F;
 constexpr std::uint32_t threads_per_block = 256U;
+constexpr std::uint32_t ssim_window_radius = 5U;
+
+__device__ __constant__ float ssim_gaussian_weights[11]{
+    0.0010283801F,
+    0.0075987581F,
+    0.0360007721F,
+    0.1093606895F,
+    0.2130055377F,
+    0.2660117249F,
+    0.2130055377F,
+    0.1093606895F,
+    0.0360007721F,
+    0.0075987581F,
+    0.0010283801F,
+};
 
 static_assert(std::is_trivially_copyable_v<Gaussian>);
 static_assert(std::is_trivially_copyable_v<ProjectedAlphaSplat>);
@@ -1321,6 +1336,128 @@ __global__ void ordered_l1_loss_kernel(
     atomicAdd(active_pixels, 1U);
 }
 
+__global__ void squared_error_values_kernel(
+    const float* prediction, const std::uint8_t* target,
+    float* values, std::size_t sample_count) {
+    const std::size_t sample =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (sample >= sample_count) {
+        return;
+    }
+    const float target_value =
+        static_cast<float>(target[sample]) / 255.0F;
+    const float difference = prediction[sample] - target_value;
+    values[sample] = difference * difference;
+}
+
+__global__ void horizontal_ssim_moments_kernel(
+    const float* prediction, const std::uint8_t* target,
+    float* moments, std::uint32_t width, std::uint32_t height) {
+    const std::size_t sample =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const std::size_t sample_count =
+        static_cast<std::size_t>(width) * height * 3U;
+    if (sample >= sample_count) {
+        return;
+    }
+    const std::size_t pixel = sample / 3U;
+    const auto channel = static_cast<std::uint32_t>(sample % 3U);
+    const auto x = static_cast<std::uint32_t>(pixel % width);
+    if (x < ssim_window_radius ||
+        x + ssim_window_radius >= width) {
+        return;
+    }
+    float prediction_mean = 0.0F;
+    float target_mean = 0.0F;
+    float prediction_square = 0.0F;
+    float target_square = 0.0F;
+    float cross = 0.0F;
+    for (int offset = -static_cast<int>(ssim_window_radius);
+         offset <= static_cast<int>(ssim_window_radius); ++offset) {
+        const auto source_x = static_cast<std::uint32_t>(
+            static_cast<int>(x) + offset);
+        const auto source_sample =
+            (pixel - x + source_x) * 3U + channel;
+        const float prediction_value = prediction[source_sample];
+        const float target_value =
+            static_cast<float>(target[source_sample]) / 255.0F;
+        const float weight =
+            ssim_gaussian_weights[offset +
+                                  static_cast<int>(ssim_window_radius)];
+        prediction_mean += weight * prediction_value;
+        target_mean += weight * target_value;
+        prediction_square +=
+            weight * prediction_value * prediction_value;
+        target_square += weight * target_value * target_value;
+        cross += weight * prediction_value * target_value;
+    }
+    const auto output = sample * 5U;
+    moments[output] = prediction_mean;
+    moments[output + 1U] = target_mean;
+    moments[output + 2U] = prediction_square;
+    moments[output + 3U] = target_square;
+    moments[output + 4U] = cross;
+}
+
+__global__ void ssim_values_kernel(
+    const float* horizontal_moments, float* values,
+    std::uint32_t width, std::uint32_t height) {
+    const auto valid_width = width - 2U * ssim_window_radius;
+    const auto valid_height = height - 2U * ssim_window_radius;
+    const std::size_t valid_sample_count =
+        static_cast<std::size_t>(valid_width) * valid_height * 3U;
+    const std::size_t output =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (output >= valid_sample_count) {
+        return;
+    }
+    const auto channel = static_cast<std::uint32_t>(output % 3U);
+    const std::size_t valid_pixel = output / 3U;
+    const auto x = static_cast<std::uint32_t>(
+        valid_pixel % valid_width) + ssim_window_radius;
+    const auto y = static_cast<std::uint32_t>(
+        valid_pixel / valid_width) + ssim_window_radius;
+    float prediction_mean = 0.0F;
+    float target_mean = 0.0F;
+    float prediction_square = 0.0F;
+    float target_square = 0.0F;
+    float cross = 0.0F;
+    for (int offset = -static_cast<int>(ssim_window_radius);
+         offset <= static_cast<int>(ssim_window_radius); ++offset) {
+        const auto source_y = static_cast<std::uint32_t>(
+            static_cast<int>(y) + offset);
+        const auto sample =
+            (static_cast<std::size_t>(source_y) * width + x) * 3U +
+            channel;
+        const auto input = sample * 5U;
+        const float weight =
+            ssim_gaussian_weights[offset +
+                                  static_cast<int>(ssim_window_radius)];
+        prediction_mean += weight * horizontal_moments[input];
+        target_mean += weight * horizontal_moments[input + 1U];
+        prediction_square += weight * horizontal_moments[input + 2U];
+        target_square += weight * horizontal_moments[input + 3U];
+        cross += weight * horizontal_moments[input + 4U];
+    }
+    const float prediction_variance =
+        fmaxf(0.0F, prediction_square -
+                         prediction_mean * prediction_mean);
+    const float target_variance =
+        fmaxf(0.0F, target_square - target_mean * target_mean);
+    const float covariance =
+        cross - prediction_mean * target_mean;
+    constexpr float c1 = 0.01F * 0.01F;
+    constexpr float c2 = 0.03F * 0.03F;
+    const float numerator =
+        (2.0F * prediction_mean * target_mean + c1) *
+        (2.0F * covariance + c2);
+    const float denominator =
+        (prediction_mean * prediction_mean +
+         target_mean * target_mean + c1) *
+        (prediction_variance + target_variance + c2);
+    values[output] = numerator / denominator;
+}
+
 __global__ void ordered_l1_gradient_kernel(
     const float* prediction, const float* transmittance,
     const std::uint8_t* target, const unsigned int* active_pixels,
@@ -1826,7 +1963,10 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         if (maximum_pixels == 0U ||
             maximum_pixels >
-                std::numeric_limits<std::size_t>::max() / 3U) {
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max()) / 3U ||
+            maximum_pixels >
+                std::numeric_limits<std::size_t>::max() / 15U) {
             throw std::invalid_argument(
                 "ordered training requires a valid pixel capacity");
         }
@@ -1844,6 +1984,9 @@ struct OrderedAlphaTrainingContext::Impl {
         image_gradient.ensure(maximum_pixels * 3U);
         loss_sum.ensure(1U);
         active_pixels.ensure(1U);
+        metric_values.ensure(maximum_pixels * 3U);
+        metric_horizontal_moments.ensure(maximum_pixels * 15U);
+        metric_sum.ensure(1U);
         dc_gradient.ensure(gaussian_count * 3U);
         opacity_gradient.ensure(gaussian_count);
         projected_geometry_gradient.ensure(gaussian_count * 5U);
@@ -1980,9 +2123,39 @@ struct OrderedAlphaTrainingContext::Impl {
             "sort persistent tile pairs");
     }
 
+    float reduce_metric_values(std::size_t value_count) {
+        if (value_count == 0U ||
+            value_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max())) {
+            throw std::invalid_argument(
+                "ordered quality metric item count is invalid");
+        }
+        std::size_t temporary_bytes = 0U;
+        require_cuda(
+            cub::DeviceReduce::Sum(
+                nullptr, temporary_bytes,
+                metric_values.data(), metric_sum.data(),
+                static_cast<int>(value_count)),
+            "query ordered quality reduction storage");
+        temporary_storage.ensure(std::max<std::size_t>(
+            1U, temporary_bytes));
+        require_cuda(
+            cub::DeviceReduce::Sum(
+                temporary_storage.data(), temporary_bytes,
+                metric_values.data(), metric_sum.data(),
+                static_cast<int>(value_count)),
+            "reduce ordered quality values");
+        float result = 0.0F;
+        metric_sum.copy_to_host(&result, 1U);
+        return result;
+    }
+
     float render_loss(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes, bool update) {
+        std::size_t target_bytes, bool update,
+        ImageQualityMetrics* quality,
+        std::vector<float>* prediction) {
         if (target_rgb == nullptr) {
             throw std::invalid_argument(
                 "ordered training target is null");
@@ -2102,6 +2275,70 @@ struct OrderedAlphaTrainingContext::Impl {
         const float normalizer =
             1.0F /
             (3.0F * static_cast<float>(host_active_pixels));
+        if (quality != nullptr) {
+            if (camera.width <= 2U * ssim_window_radius ||
+                camera.height <= 2U * ssim_window_radius) {
+                throw std::invalid_argument(
+                    "ordered quality evaluation requires images larger "
+                    "than the 11x11 SSIM window");
+            }
+            const std::size_t sample_count = pixel_count * 3U;
+            const auto sample_blocks = static_cast<std::uint32_t>(
+                (sample_count + block_size - 1U) / block_size);
+            squared_error_values_kernel<<<sample_blocks, block_size>>>(
+                rgb.data(), target.data(), metric_values.data(),
+                sample_count);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered squared-error metric");
+            const float squared_error_sum =
+                reduce_metric_values(sample_count);
+            const float mean_squared_error = fmaxf(
+                squared_error_sum /
+                    static_cast<float>(sample_count),
+                1.0e-10F);
+
+            horizontal_ssim_moments_kernel<<<
+                sample_blocks, block_size>>>(
+                rgb.data(), target.data(),
+                metric_horizontal_moments.data(),
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered horizontal SSIM moments");
+            const std::size_t valid_sample_count =
+                static_cast<std::size_t>(
+                    camera.width - 2U * ssim_window_radius) *
+                (camera.height - 2U * ssim_window_radius) * 3U;
+            const auto valid_blocks = static_cast<std::uint32_t>(
+                (valid_sample_count + block_size - 1U) / block_size);
+            ssim_values_kernel<<<valid_blocks, block_size>>>(
+                metric_horizontal_moments.data(),
+                metric_values.data(),
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered SSIM metric");
+            const float ssim_sum =
+                reduce_metric_values(valid_sample_count);
+            quality->psnr =
+                10.0F * std::log10(1.0F / mean_squared_error);
+            quality->ssim =
+                ssim_sum / static_cast<float>(valid_sample_count);
+            quality->active_pixel_fraction =
+                static_cast<float>(host_active_pixels) /
+                static_cast<float>(pixel_count);
+            if (!std::isfinite(quality->psnr) ||
+                !std::isfinite(quality->ssim) ||
+                !std::isfinite(quality->active_pixel_fraction)) {
+                throw std::runtime_error(
+                    "ordered quality evaluation produced non-finite metrics");
+            }
+            if (prediction != nullptr) {
+                prediction->resize(sample_count);
+                rgb.copy_to_host(prediction->data(), sample_count);
+            }
+        }
         if (update) {
             ordered_l1_gradient_kernel<<<pixel_blocks, block_size>>>(
                 rgb.data(), transmittance.data(), target.data(),
@@ -2208,6 +2445,9 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> image_gradient;
     ReusableDeviceAllocation<float> loss_sum;
     ReusableDeviceAllocation<unsigned int> active_pixels;
+    ReusableDeviceAllocation<float> metric_values;
+    ReusableDeviceAllocation<float> metric_horizontal_moments;
+    ReusableDeviceAllocation<float> metric_sum;
     ReusableDeviceAllocation<float> dc_gradient;
     ReusableDeviceAllocation<float> opacity_gradient;
     ReusableDeviceAllocation<float> projected_geometry_gradient;
@@ -2245,14 +2485,24 @@ float OrderedAlphaTrainingContext::evaluate(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
     std::size_t target_bytes) {
     return impl_->render_loss(
-        camera, target_rgb, target_bytes, false);
+        camera, target_rgb, target_bytes, false, nullptr, nullptr);
+}
+
+ImageQualityMetrics OrderedAlphaTrainingContext::evaluate_quality(
+    const RasterCamera& camera, const std::uint8_t* target_rgb,
+    std::size_t target_bytes,
+    std::vector<float>* prediction) {
+    ImageQualityMetrics result;
+    static_cast<void>(impl_->render_loss(
+        camera, target_rgb, target_bytes, false, &result, prediction));
+    return result;
 }
 
 float OrderedAlphaTrainingContext::train_step(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
     std::size_t target_bytes) {
     return impl_->render_loss(
-        camera, target_rgb, target_bytes, true);
+        camera, target_rgb, target_bytes, true, nullptr, nullptr);
 }
 
 void OrderedAlphaTrainingContext::download(

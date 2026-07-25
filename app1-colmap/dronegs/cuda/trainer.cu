@@ -10,11 +10,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -508,16 +512,18 @@ std::vector<FrameDescriptor> make_frame_descriptors(
 }
 
 std::vector<std::size_t> make_training_schedule(
-    std::size_t frame_count, std::uint64_t iterations, std::uint64_t seed) {
+    const std::vector<std::size_t>& training_indices,
+    std::uint64_t iterations, std::uint64_t seed) {
     if (iterations > std::numeric_limits<std::size_t>::max()) {
         throw std::runtime_error("iteration count exceeds host address space");
     }
+    if (training_indices.empty()) {
+        throw std::invalid_argument(
+            "training schedule requires at least one training image");
+    }
     std::vector<std::size_t> schedule;
     schedule.reserve(static_cast<std::size_t>(iterations));
-    std::vector<std::size_t> camera_order(frame_count);
-    for (std::size_t index = 0; index < camera_order.size(); ++index) {
-        camera_order[index] = index;
-    }
+    std::vector<std::size_t> camera_order = training_indices;
     std::mt19937_64 random(seed);
     while (schedule.size() < static_cast<std::size_t>(iterations)) {
         std::shuffle(camera_order.begin(), camera_order.end(), random);
@@ -557,6 +563,154 @@ TrainingFrame frame_from_cache(ImageCache& cache,
     return {
         .image = &decoded,
         .camera = make_device_camera(*descriptor.camera, *descriptor.image, decoded),
+    };
+}
+
+std::string csv_escape(const std::string& value) {
+    std::string result{"\""};
+    for (const char character : value) {
+        if (character == '"') {
+            result += "\"\"";
+        } else {
+            result += character;
+        }
+    }
+    result += '"';
+    return result;
+}
+
+void write_prediction_ppm(
+    const std::filesystem::path& path,
+    const std::vector<float>& prediction,
+    std::uint32_t width, std::uint32_t height) {
+    const std::size_t sample_count =
+        static_cast<std::size_t>(width) * height * 3U;
+    if (prediction.size() != sample_count) {
+        throw std::invalid_argument(
+            "prediction size does not match PPM dimensions");
+    }
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error(
+            "cannot create held-out prediction: " + path.string());
+    }
+    stream << "P6\n" << width << ' ' << height << "\n255\n";
+    std::vector<std::uint8_t> quantized(sample_count);
+    for (std::size_t sample = 0U; sample < sample_count; ++sample) {
+        quantized[sample] = static_cast<std::uint8_t>(
+            std::lround(
+                std::clamp(prediction[sample], 0.0F, 1.0F) * 255.0F));
+    }
+    stream.write(
+        reinterpret_cast<const char*>(quantized.data()),
+        static_cast<std::streamsize>(quantized.size()));
+    if (!stream) {
+        throw std::runtime_error(
+            "failed to write held-out prediction: " + path.string());
+    }
+}
+
+struct HeldOutAggregate {
+    float psnr = 0.0F;
+    float ssim = 0.0F;
+    double seconds = 0.0;
+};
+
+HeldOutAggregate evaluate_held_out(
+    const Options& options, ImageCache& cache,
+    const std::vector<FrameDescriptor>& descriptors,
+    const std::vector<std::size_t>& held_out_indices,
+    OrderedAlphaTrainingContext& workspace,
+    std::string_view stage, bool save_predictions) {
+    if (held_out_indices.empty()) {
+        throw std::invalid_argument(
+            "held-out evaluation requires held-out images");
+    }
+    const auto evaluation_directory =
+        options.output_path / "evaluation";
+    std::filesystem::create_directories(evaluation_directory);
+    const auto csv_path = evaluation_directory / "metrics.csv";
+    std::ofstream csv(
+        csv_path,
+        stage == "initial"
+            ? std::ios::trunc
+            : std::ios::app);
+    if (!csv) {
+        throw std::runtime_error(
+            "cannot create held-out metrics CSV: " + csv_path.string());
+    }
+    if (stage == "initial") {
+        csv << "stage,held_out_index,scene_index,image_name,"
+               "psnr,ssim,active_pixel_fraction\n";
+    }
+    const auto prediction_directory =
+        evaluation_directory / "predictions";
+    if (save_predictions) {
+        std::filesystem::create_directories(prediction_directory);
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    double psnr_sum = 0.0;
+    double ssim_sum = 0.0;
+    const std::size_t progress_interval =
+        std::max<std::size_t>(1U, held_out_indices.size() / 10U);
+    for (std::size_t held_out_index = 0U;
+         held_out_index < held_out_indices.size(); ++held_out_index) {
+        const auto scene_index = held_out_indices[held_out_index];
+        const auto frame = frame_from_cache(
+            cache, descriptors, scene_index, options);
+        if (held_out_index + 1U < held_out_indices.size()) {
+            cache.prefetch(held_out_indices[held_out_index + 1U]);
+        }
+        const auto raster_camera =
+            make_raster_camera(frame.camera);
+        std::vector<float> prediction;
+        const auto quality = workspace.evaluate_quality(
+            raster_camera, frame.image->rgb.data(),
+            frame.image->rgb.size(),
+            save_predictions ? &prediction : nullptr);
+        psnr_sum += quality.psnr;
+        ssim_sum += quality.ssim;
+        csv << stage << ','
+            << held_out_index << ','
+            << scene_index << ','
+            << csv_escape(descriptors[scene_index].image->name) << ','
+            << std::setprecision(9) << quality.psnr << ','
+            << quality.ssim << ','
+            << quality.active_pixel_fraction << '\n';
+        if (save_predictions) {
+            std::ostringstream filename;
+            filename << std::setw(6) << std::setfill('0')
+                     << held_out_index << ".ppm";
+            write_prediction_ppm(
+                prediction_directory / filename.str(),
+                prediction, raster_camera.width, raster_camera.height);
+        }
+        if (held_out_index == 0U ||
+            held_out_index + 1U == held_out_indices.size() ||
+            (held_out_index + 1U) % progress_interval == 0U) {
+            std::cout
+                << "{\"event\":\"evaluation\",\"stage\":\""
+                << stage << "\",\"view\":"
+                << (held_out_index + 1U)
+                << ",\"views\":" << held_out_indices.size()
+                << ",\"psnr\":" << quality.psnr
+                << ",\"ssim\":" << quality.ssim << "}\n"
+                << std::flush;
+        }
+    }
+    csv.close();
+    if (!csv) {
+        throw std::runtime_error(
+            "failed to finalize held-out metrics CSV");
+    }
+    const double count =
+        static_cast<double>(held_out_indices.size());
+    return {
+        .psnr = static_cast<float>(psnr_sum / count),
+        .ssim = static_cast<float>(ssim_sum / count),
+        .seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - start).count(),
     };
 }
 
@@ -650,6 +804,32 @@ float render_loss(TrainingWorkspace& workspace, const TrainingFrame& frame,
 
 }  // namespace
 
+DatasetSplit make_dataset_split(
+    std::size_t image_count, std::uint32_t test_every) {
+    if (image_count == 0U) {
+        throw std::invalid_argument(
+            "dataset split requires at least one image");
+    }
+    DatasetSplit split;
+    split.training.reserve(image_count);
+    split.held_out.reserve(
+        test_every == 0U
+            ? 0U
+            : (image_count + test_every - 1U) / test_every);
+    for (std::size_t index = 0U; index < image_count; ++index) {
+        if (test_every != 0U && index % test_every == 0U) {
+            split.held_out.push_back(index);
+        } else {
+            split.training.push_back(index);
+        }
+    }
+    if (split.training.empty()) {
+        throw std::invalid_argument(
+            "dataset split leaves no training images");
+    }
+    return split;
+}
+
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians) {
     if (gaussians.empty() || scene.images.empty()) {
@@ -658,6 +838,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     constexpr std::size_t host_cache_capacity = 256U * 1024U * 1024U;
     std::size_t maximum_pixels = 0U;
     const auto descriptors = make_frame_descriptors(options, scene, maximum_pixels);
+    const auto split = make_dataset_split(
+        descriptors.size(), options.test_every);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -675,10 +857,15 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
 
     TrainingMetrics metrics{
         .iterations = options.iterations,
+        .training_image_count =
+            static_cast<std::uint64_t>(split.training.size()),
+        .held_out_image_count =
+            static_cast<std::uint64_t>(split.held_out.size()),
     };
     const auto schedule = make_training_schedule(
-        descriptors.size(), options.iterations, options.seed);
-    const auto initial_frame = frame_from_cache(cache, descriptors, 0U, options);
+        split.training, options.iterations, options.seed);
+    const auto initial_frame = frame_from_cache(
+        cache, descriptors, split.training.front(), options);
     prefetch_schedule_window(
         cache, schedule, 0U, options.prefetch_depth);
     metrics.initial_loss =
@@ -738,7 +925,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
 
     const auto final_evaluation_start = std::chrono::steady_clock::now();
     const double wait_seconds_before_final = cache.stats().wait_seconds;
-    const auto final_frame = frame_from_cache(cache, descriptors, 0U, options);
+    const auto final_frame = frame_from_cache(
+        cache, descriptors, split.training.front(), options);
     metrics.final_loss =
         render_loss(workspace, final_frame, gaussians.size(), false);
     const double final_evaluation_wall_seconds = std::chrono::duration<double>(
@@ -776,6 +964,8 @@ TrainingMetrics train_fixed_topology_ordered(
     std::size_t maximum_pixels = 0U;
     const auto descriptors =
         make_frame_descriptors(options, scene, maximum_pixels);
+    const auto split = make_dataset_split(
+        descriptors.size(), options.test_every);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -792,26 +982,39 @@ TrainingMetrics train_fixed_topology_ordered(
         gaussians, maximum_pixels, options.iterations);
     TrainingMetrics metrics{
         .iterations = options.iterations,
+        .training_image_count =
+            static_cast<std::uint64_t>(split.training.size()),
+        .held_out_image_count =
+            static_cast<std::uint64_t>(split.held_out.size()),
     };
     const auto schedule = make_training_schedule(
-        descriptors.size(), options.iterations, options.seed);
+        split.training, options.iterations, options.seed);
     const auto initial_frame =
-        frame_from_cache(cache, descriptors, 0U, options);
-    prefetch_schedule_window(
-        cache, schedule, 0U, options.prefetch_depth);
+        frame_from_cache(
+            cache, descriptors, split.training.front(), options);
     const auto initial_camera =
         make_raster_camera(initial_frame.camera);
     metrics.initial_loss = workspace.evaluate(
         initial_camera, initial_frame.image->rgb.data(),
         initial_frame.image->rgb.size());
-
-    const auto training_start = std::chrono::steady_clock::now();
+    const auto setup_end = std::chrono::steady_clock::now();
     const double setup_wall_seconds =
         std::chrono::duration<double>(
-            training_start - setup_start)
-            .count();
+            setup_end - setup_start).count();
     metrics.setup_seconds = std::max(
         0.0, setup_wall_seconds - cache.stats().wait_seconds);
+    if (!split.held_out.empty()) {
+        const auto held_out = evaluate_held_out(
+            options, cache, descriptors, split.held_out,
+            workspace, "initial", false);
+        metrics.initial_held_out_psnr = held_out.psnr;
+        metrics.initial_held_out_ssim = held_out.ssim;
+        metrics.evaluation_seconds += held_out.seconds;
+    }
+    prefetch_schedule_window(
+        cache, schedule, 0U, options.prefetch_depth);
+
+    const auto training_start = std::chrono::steady_clock::now();
     const double wait_seconds_before_training =
         cache.stats().wait_seconds;
     const std::uint64_t progress_interval =
@@ -863,23 +1066,31 @@ TrainingMetrics train_fixed_topology_ordered(
     const double wait_seconds_before_final =
         cache.stats().wait_seconds;
     const auto final_frame =
-        frame_from_cache(cache, descriptors, 0U, options);
+        frame_from_cache(
+            cache, descriptors, split.training.front(), options);
     const auto final_camera =
         make_raster_camera(final_frame.camera);
     metrics.final_loss = workspace.evaluate(
         final_camera, final_frame.image->rgb.data(),
         final_frame.image->rgb.size());
-    const double final_evaluation_wall_seconds =
+    const auto final_anchor_end =
+        std::chrono::steady_clock::now();
+    const double final_anchor_wall_seconds =
         std::chrono::duration<double>(
-            std::chrono::steady_clock::now() -
-            final_evaluation_start)
-            .count();
-    const double final_wait_seconds =
-        cache.stats().wait_seconds -
-        wait_seconds_before_final;
+            final_anchor_end - final_evaluation_start).count();
+    const double final_anchor_wait_seconds =
+        cache.stats().wait_seconds - wait_seconds_before_final;
     metrics.setup_seconds += std::max(
         0.0,
-        final_evaluation_wall_seconds - final_wait_seconds);
+        final_anchor_wall_seconds - final_anchor_wait_seconds);
+    if (!split.held_out.empty()) {
+        const auto held_out = evaluate_held_out(
+            options, cache, descriptors, split.held_out,
+            workspace, "final", options.save_eval_images != 0U);
+        metrics.final_held_out_psnr = held_out.psnr;
+        metrics.final_held_out_ssim = held_out.ssim;
+        metrics.evaluation_seconds += held_out.seconds;
+    }
 
     metrics.image_loading_seconds = cache.stats().wait_seconds;
     metrics.image_decode_seconds = cache.stats().loading_seconds;

@@ -47,12 +47,13 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS fixed-topology anisotropic geometry-optimized "
-        "ordered-alpha prototype 0.5.0-dev.12\n"
+        "ordered-alpha held-out evaluation prototype 0.5.0-dev.13\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--prefetch-depth N] [--decode-workers N] "
-        "[--jpeg-idct-scale 0|1]\n";
+        "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
+        "[--save-eval-images 0|1]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -63,7 +64,7 @@ Options parse_options(int argc, char** argv) {
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
-        "--jpeg-idct-scale",
+        "--jpeg-idct-scale", "--test-every", "--save-eval-images",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -110,6 +111,14 @@ Options parse_options(int argc, char** argv) {
         options.jpeg_idct_scale =
             parse_u32(values.at("--jpeg-idct-scale"), "--jpeg-idct-scale");
     }
+    if (values.contains("--test-every")) {
+        options.test_every =
+            parse_u32(values.at("--test-every"), "--test-every");
+    }
+    if (values.contains("--save-eval-images")) {
+        options.save_eval_images = parse_u32(
+            values.at("--save-eval-images"), "--save-eval-images");
+    }
     validate_options(options);
     return options;
 }
@@ -149,6 +158,19 @@ void validate_options(const Options& options) {
     }
     if (options.jpeg_idct_scale > 1U) {
         throw std::invalid_argument("--jpeg-idct-scale must be 0 or 1");
+    }
+    if (options.test_every == 1U) {
+        throw std::invalid_argument(
+            "--test-every must be 0 (disabled) or at least 2");
+    }
+    if (options.save_eval_images > 1U) {
+        throw std::invalid_argument(
+            "--save-eval-images must be 0 or 1");
+    }
+    if (options.save_eval_images != 0U &&
+        options.test_every == 0U) {
+        throw std::invalid_argument(
+            "--save-eval-images requires --test-every");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

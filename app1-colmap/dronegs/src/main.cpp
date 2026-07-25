@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.12 fixed-topology anisotropic "
-               "geometry-optimized ordered-alpha prototype\n";
+            << "DroneGS 0.5.0-dev.13 fixed-topology anisotropic "
+               "geometry-optimized held-out evaluation prototype\n";
         return 0;
     }
 
@@ -32,10 +32,10 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.12 uses experimental fixed-topology "
+        std::cerr << "DroneGS 0.5.0-dev.13 uses experimental fixed-topology "
                      "anisotropic geometry-optimized ordered-alpha training; "
-                     "topology, SH, DSSIM, and quality "
-                     "parity are not implemented yet.\n";
+                     "held-out PSNR/SSIM are available, while topology, SH, "
+                     "DSSIM, LPIPS, and quality parity remain open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
         measurements.image_decode_seconds = training.image_decode_seconds;
         measurements.image_wait_seconds = training.image_loading_seconds;
         measurements.training_seconds = training.training_seconds;
+        measurements.evaluation_seconds = training.evaluation_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;
         measurements.final_loss = training.final_loss;
@@ -74,6 +75,18 @@ int main(int argc, char** argv) {
         measurements.image_prefetch_started = training.image_prefetch_started;
         measurements.image_prefetch_consumed = training.image_prefetch_consumed;
         measurements.image_prefetch_ready = training.image_prefetch_ready;
+        measurements.training_image_count =
+            training.training_image_count;
+        measurements.held_out_image_count =
+            training.held_out_image_count;
+        measurements.initial_held_out_psnr =
+            training.initial_held_out_psnr;
+        measurements.initial_held_out_ssim =
+            training.initial_held_out_ssim;
+        measurements.final_held_out_psnr =
+            training.final_held_out_psnr;
+        measurements.final_held_out_ssim =
+            training.final_held_out_ssim;
         measurements.export_seconds =
             std::chrono::duration<double>(export_end - export_start).count();
         measurements.wall_seconds =

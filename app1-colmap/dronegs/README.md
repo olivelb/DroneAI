@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.12` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.13` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -30,6 +30,12 @@ Version `0.5.0-dev.12` is an experimental fixed-topology training slice. It:
   Adam moments on device across iterations;
 - applies a scene-diagonal-scaled exponential position schedule, independent
   scale/rotation rates, bounded log-scales, and quaternion renormalization;
+- supports an explicit LichtFeld-compatible held-out stride that excludes
+  validation views from every shuffled training schedule;
+- computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
+  and after training, with a tested CPU oracle;
+- writes per-view quality CSV data and can export final lossless PPM
+  predictions for an external LPIPS pass;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -44,8 +50,10 @@ front-to-back anisotropic ordered-alpha composition, while the additive path
 remains only as a convergence control. Persistent training now optimizes
 position, log-scale, and normalized rotation in addition to DC and opacity.
 Topology and non-DC SH coefficients remain fixed. Only
-`SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
-measured. Decoded images use a bounded LRU plus a bounded in-flight queue.
+`SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
+measured, but the Albagnac control shows gaps of 3.9474 dB and 0.3891 SSIM
+against pinned LichtFeld at 500 iterations. LPIPS remains unevaluated. Decoded
+images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
 CPU/GPU power contention outweighed the removed foreground wait. Reduced-IDCT
 targets are also opt-in because their filtered pixels change the loss target
@@ -53,7 +61,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-fixed-topology-anisotropic-geometry-prototype` and remains opt-in.
+`dronegs-held-out-anisotropic-geometry-prototype` and remains opt-in.
 
 ## Container build
 
@@ -90,8 +98,14 @@ allocation, projection, sorting, tile construction, rendering, and host readback
   --output-path /tmp/dronegs-run \
   --iter 1 --strategy mrnf --sh-degree 0 --max-cap 500000 \
   --resize-factor 4 --max-width 1600 --tile-mode 4 \
-  --seed 42 --run-manifest /tmp/dronegs-run/trainer_run.json
+  --seed 42 --run-manifest /tmp/dronegs-run/trainer_run.json \
+  --test-every 8 --save-eval-images 1
 ```
+
+`--test-every 0` (the default) preserves the previous all-images training
+behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,
+matching LichtFeld. `--save-eval-images 1` writes only final predictions and
+requires a non-zero held-out stride.
 
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
 and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
