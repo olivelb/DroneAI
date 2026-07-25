@@ -2,6 +2,29 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.21 - Phase 4 intermediate-DC calibration
+
+- Added `calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and
+  `calibrated-dc-0.020-opacity`; each changes only DC learning rate and epsilon
+  plus the already isolated LichtFeld opacity family.
+- Extended CLI validation, schedule events, manifest fields, native CUDA
+  schedule tests, version identifiers, and GPL provenance.
+- Passed all five native CPU/CUDA test executables.
+- Replayed the dev16 control, both dev.20 endpoints, and all three intermediate
+  rates for 500 steps with the exact same binary on the 1,376-image Albagnac
+  split.
+- At 500 steps, DC=0.010 gives the best mean PSNR gain (+0.18180 dB), while
+  DC=0.020 gives the best mean SSIM gain (+0.001563) and improves SSIM on
+  154/172 held-out views.
+- Validated dev16, DC=0.010, and DC=0.020 for 1,000 steps with the same binary.
+  DC=0.010 reaches 17.66035 dB / 0.252962 SSIM, improving the control by
+  +0.14583 dB / +0.001328 and winning on 168/172 PSNR and 143/172 SSIM views.
+- DC=0.020 reaches 17.63374 dB / 0.253027 SSIM, improving the control by
+  +0.11923 dB / +0.001393 and winning on 171/172 PSNR and 161/172 SSIM views.
+- Retain DC=0.010 as the primary balanced-quality candidate and DC=0.020 as the
+  robust-view candidate. Keep dev16 as the default pending a second-scene
+  replication and LPIPS.
+
 ## 0.5.0-dev.20 - Phase 4 DC-plus-opacity combination
 
 - Added `lichtfeld-dc-opacity`, combining the two promising dev.19 families

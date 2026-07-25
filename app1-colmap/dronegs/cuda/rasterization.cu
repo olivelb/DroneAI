@@ -6,10 +6,11 @@
  * plus the dev.16 Gumbel selection and edge-guidance behavior and dev.17 MRNF
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
  * Dev.18 dual-profile selection and update telemetry and dev.19 family-isolated
- * epsilon/rate ablations and the dev.20 DC-plus-opacity combination are
- * DroneAI additions. The pre-existing DroneGS rasterizer, loss, gradient, and
- * optimizer code in this file was original MIT code; this combined translation
- * unit is conservatively distributed under GPL-3.0-or-later from dev.15 onward.
+ * epsilon/rate ablations, the dev.20 DC-plus-opacity combination, and the
+ * dev.21 intermediate-DC sweep are DroneAI additions. The pre-existing DroneGS
+ * rasterizer, loss, gradient, and optimizer code in this file was original MIT
+ * code; this combined translation unit is conservatively distributed under
+ * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
@@ -2517,17 +2518,23 @@ static MrnfLearningRates mrnf_learning_rates(
     float position_scale, MrnfOptimizerProfile profile) {
     const bool lichtfeld_all =
         profile == MrnfOptimizerProfile::lichtfeld_absolute;
+    const bool calibrated_dc_opacity =
+        profile == MrnfOptimizerProfile::calibrated_dc_005_opacity ||
+        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity ||
+        profile == MrnfOptimizerProfile::calibrated_dc_020_opacity;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
-        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity;
+        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity ||
+        calibrated_dc_opacity;
     const bool lichtfeld_position =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_position_only;
     const bool lichtfeld_opacity =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_opacity_only ||
-        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity;
+        profile == MrnfOptimizerProfile::lichtfeld_dc_opacity ||
+        calibrated_dc_opacity;
     const bool lichtfeld_scale =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_scale_only;
@@ -2556,6 +2563,21 @@ static MrnfLearningRates mrnf_learning_rates(
                 (1.0 - progress) +
             std::log(static_cast<double>(final)) * progress));
     };
+    float dc_learning_rate = lichtfeld_dc
+        ? mrnf_dc_learning_rate
+        : dev16_dc_learning_rate;
+    if (profile ==
+        MrnfOptimizerProfile::calibrated_dc_005_opacity) {
+        dc_learning_rate = 5.0e-3F;
+    } else if (
+        profile ==
+        MrnfOptimizerProfile::calibrated_dc_010_opacity) {
+        dc_learning_rate = 1.0e-2F;
+    } else if (
+        profile ==
+        MrnfOptimizerProfile::calibrated_dc_020_opacity) {
+        dc_learning_rate = 2.0e-2F;
+    }
     return {
         .position =
             position_scale * exponential(
@@ -2568,9 +2590,7 @@ static MrnfLearningRates mrnf_learning_rates(
                 lichtfeld_position
                     ? mrnf_position_learning_rate_final
                     : dev16_position_learning_rate_final),
-        .dc = lichtfeld_dc
-            ? mrnf_dc_learning_rate
-            : dev16_dc_learning_rate,
+        .dc = dc_learning_rate,
         .opacity = lichtfeld_opacity
             ? mrnf_opacity_learning_rate
             : dev16_opacity_learning_rate,

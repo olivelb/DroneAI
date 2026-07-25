@@ -6,7 +6,8 @@
  * plus the dev.16 weighted-Gumbel seed protocol and dev.17 optimizer
  * schedules, are adapted from the pinned LichtFeld MRNF strategy. Dev.18
  * profile selection and telemetry emission, dev.19 family-isolated ablations,
- * and the dev.20 DC-plus-opacity combination are DroneAI additions. The
+ * the dev.20 DC-plus-opacity combination, and the dev.21 intermediate-DC sweep
+ * are DroneAI additions. The
  * pre-existing DroneGS orchestration in this file was original MIT code; this
  * combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -1011,6 +1012,15 @@ TrainingMetrics train_ordered_mrnf(
         }
         if (options.optimizer_profile == "lichtfeld-dc-opacity") {
             return MrnfOptimizerProfile::lichtfeld_dc_opacity;
+        }
+        if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
+            return MrnfOptimizerProfile::calibrated_dc_005_opacity;
+        }
+        if (options.optimizer_profile == "calibrated-dc-0.010-opacity") {
+            return MrnfOptimizerProfile::calibrated_dc_010_opacity;
+        }
+        if (options.optimizer_profile == "calibrated-dc-0.020-opacity") {
+            return MrnfOptimizerProfile::calibrated_dc_020_opacity;
         }
         return MrnfOptimizerProfile::lichtfeld_absolute;
     }();

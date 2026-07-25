@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.20.
+- Current development version: 0.5.0-dev.21.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -123,18 +123,26 @@ Each completed phase has one focused commit and an annotated
   +0.000150 mean SSIM, but 106/172 individual SSIM views regress.
 - Opacity-only remains the most homogeneous candidate at 1,000 steps:
   +0.00706 dB / +0.000257 SSIM, with 130/172 SSIM views improving.
+- Dev.21 sweeps intermediate DC rates `0.005`, `0.010`, and `0.020` with
+  LichtFeld opacity while keeping dev16 geometry. At 500 steps, `0.010` has
+  the best mean PSNR and `0.020` the best mean SSIM and per-view coverage.
+- The 1,000-step confirmation selects DC=0.010 as the primary balanced-quality
+  candidate: +0.14583 dB / +0.001328 versus the same-binary control, with
+  168/172 PSNR and 143/172 SSIM views improving. DC=0.020 is the robust-view
+  candidate at +0.11923 dB / +0.001393, with 171/172 PSNR and 161/172 SSIM
+  views improving.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17-dev.20 retain the optimizer experiments and candidates. LPIPS,
+  while dev.17-dev.21 retain the optimizer experiments and candidates. LPIPS,
   progressive SH, prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is an intermediate-DC sweep with LichtFeld
-  opacity, targeting the combination's PSNR gain without its broad per-view
-  SSIM tradeoff. Position must remain on the dev16 normalization/schedule.
+- The immediate Phase 4 priority is to replicate DC=0.010 and DC=0.020 on a
+  second scene, add LPIPS, and then decide whether either can replace dev16 as
+  the default. Position must remain on the dev16 normalization/schedule.
   A future instrumented LichtFeld control would improve equivalence
-  calibration. Progressive SH should follow only after optimizer behavior is
-  resolved. The edge implementation also remains a candidate for fusion or
+  calibration. Progressive SH should follow the optimizer replication. The
+  edge implementation also remains a candidate for fusion or
   refinement-window-only accumulation.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next

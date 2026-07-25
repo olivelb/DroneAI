@@ -1,13 +1,14 @@
 # DroneGS native trainer
 
 This directory contains the C++23/CUDA DroneAI Gaussian trainer. The
-pre-dev.15 native implementation is original MIT code. Dev.15-dev.20 adapt
+pre-dev.15 native implementation is original MIT code. Dev.15-dev.21 adapt
 MRNF error weighting, cadence, long-axis split, weighted-Gumbel selection, and
 edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.20` is an experimental MRNF optimizer-combination slice. It:
+Version `0.5.0-dev.21` is an experimental MRNF intermediate-DC calibration
+slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -42,8 +43,9 @@ Version `0.5.0-dev.20` is an experimental MRNF optimizer-combination slice. It:
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
 - exposes the accepted `dronegs-dev16` quality-anchor profile, the experimental
-  `lichtfeld-absolute` profile, five exact one-family ablations, and a strict
-  DC-plus-opacity combination, with dev16 retained as the default;
+  `lichtfeld-absolute` profile, five exact one-family ablations, a strict
+  DC-plus-opacity combination, and three intermediate-DC-plus-opacity
+  calibration profiles, with dev16 retained as the default;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -75,13 +77,15 @@ Topology, weighted Gumbel selection, and edge guidance now run, but
 prune/replacement, noise injection, decay, compaction, and non-DC SH
 coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. At 1,000 steps, dev.20's same-binary control reaches 17.5140 dB /
-0.251635 SSIM. Opacity-only reaches 17.5211 dB / 0.251892 and improves SSIM on
-130/172 views. DC-plus-opacity reaches the best PSNR, 17.6319 dB, while still
-improving mean SSIM to 0.251785; however, SSIM regresses on 106/172 views and
-its median per-view SSIM delta is negative. It is retained as a strong PSNR
-candidate, not made default. The next calibration should test intermediate DC
-rates with LichtFeld opacity. LPIPS remains unevaluated.
+measured. Dev.21 sweeps DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
+opacity while retaining dev16 geometry. At 1,000 steps, the same-binary dev16
+control reaches 17.51451 dB / 0.251634 SSIM. DC=0.010 reaches the best mean
+PSNR, 17.66035 dB, and 0.252962 SSIM; it improves 168/172 PSNR views and
+143/172 SSIM views. DC=0.020 reaches 17.63374 dB / 0.253027 SSIM and is the
+most uniform candidate, improving 171/172 PSNR views and 161/172 SSIM views.
+DC=0.010 is retained as the primary balanced-quality candidate and DC=0.020 as
+the robust-view candidate. Dev16 remains the default until the result is
+replicated on another scene and LPIPS is evaluated.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -91,7 +95,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-optimizer-calibration-prototype` and remains
+`dronegs-mrnf-intermediate-dc-calibration-prototype` and remains
 opt-in.
 
 ## Container build
@@ -151,5 +155,10 @@ The `lichtfeld-dc-only`, `lichtfeld-position-only`,
 ablation.
 `lichtfeld-dc-opacity` combines only the LichtFeld DC and opacity behaviors;
 position, scale, and rotation remain exactly dev16.
+`calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and
+`calibrated-dc-0.020-opacity` keep the LichtFeld opacity behavior and use the
+named intermediate DC rate; all other parameter families remain exactly
+dev16. The `0.010` profile is the current balanced-quality candidate and
+`0.020` is the current per-view robustness candidate.
 
 The output directory must be empty and must not contain the source dataset.

@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.20
+Project version: 0.5.0-dev.21
 
 ## Decision
 
@@ -233,7 +233,16 @@ regresses SSIM on 106/172 views, whereas opacity-only improves 130/172 SSIM
 views. Dev16 therefore remains the default; the next slice should sweep
 intermediate DC rates while keeping LichtFeld opacity and dev16 geometry.
 
-The dev.15-dev.20 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.21 adds DC=0.005, 0.010, and 0.020 calibration profiles with
+LichtFeld opacity and otherwise unchanged dev16 behavior. The same-binary
+1,000-step control reaches 17.51451 dB / 0.251634 SSIM. DC=0.010 reaches
+17.66035 dB / 0.252962 and improves 168/172 PSNR and 143/172 SSIM views;
+DC=0.020 reaches 17.63374 dB / 0.253027 and improves 171/172 PSNR and 161/172
+SSIM views. The former is the primary balanced-quality candidate and the latter
+the robust-view candidate. Neither replaces the default before second-scene
+replication and LPIPS.
+
+The dev.15-dev.21 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their

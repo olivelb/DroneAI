@@ -72,17 +72,23 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               std::size_t gaussian_count) {
     const bool lichtfeld_all =
         options.optimizer_profile == "lichtfeld-absolute";
+    const bool calibrated_dc_opacity =
+        options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
+        options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
+        options.optimizer_profile == "calibrated-dc-0.020-opacity";
     const bool lichtfeld_dc =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-dc-only" ||
-        options.optimizer_profile == "lichtfeld-dc-opacity";
+        options.optimizer_profile == "lichtfeld-dc-opacity" ||
+        calibrated_dc_opacity;
     const bool lichtfeld_position =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-position-only";
     const bool lichtfeld_opacity =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-opacity-only" ||
-        options.optimizer_profile == "lichtfeld-dc-opacity";
+        options.optimizer_profile == "lichtfeld-dc-opacity" ||
+        calibrated_dc_opacity;
     const bool lichtfeld_scale =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-scale-only";
@@ -92,6 +98,16 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     const bool mixed_epsilon =
         options.optimizer_profile != "dronegs-dev16" &&
         !lichtfeld_all;
+    const char* dc_learning_rate = lichtfeld_dc ? "0.002" : "0.05";
+    if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
+        dc_learning_rate = "0.005";
+    } else if (
+        options.optimizer_profile == "calibrated-dc-0.010-opacity") {
+        dc_learning_rate = "0.01";
+    } else if (
+        options.optimizer_profile == "calibrated-dc-0.020-opacity") {
+        dc_learning_rate = "0.02";
+    }
     const auto temporary = options.run_manifest.string() + ".tmp";
     std::ofstream stream(temporary, std::ios::trunc);
     if (!stream) {
@@ -100,8 +116,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-mrnf-optimizer-combination-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.20\",\n"
+           << "  \"backend\": \"dronegs-mrnf-intermediate-dc-calibration-prototype\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.21\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -176,7 +192,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"rotation_adam_epsilon\": "
            << (lichtfeld_rotation ? "1e-15" : "1e-8") << ",\n"
            << "    \"dc_lr\": "
-           << (lichtfeld_dc ? "0.002" : "0.05") << ",\n"
+           << dc_learning_rate << ",\n"
            << "    \"opacity_lr\": "
            << (lichtfeld_opacity ? "0.012" : "0.01") << ",\n"
            << "    \"position_lr_initial_factor\": "
@@ -210,7 +226,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"host_image_storage\": \"rgb8\",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
            << "    \"mode\": "
-              "\"mrnf-optimizer-combination-anisotropic-dssim-held-out-prototype\"\n"
+              "\"mrnf-intermediate-dc-calibration-anisotropic-dssim-held-out-prototype\"\n"
            << "  },\n"
            << "  \"timings\": {\n"
            << "    \"startup_seconds\": " << measurements.startup_seconds << ",\n"

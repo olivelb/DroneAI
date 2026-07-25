@@ -521,6 +521,45 @@ int main() {
         require_rate(
             dc_opacity_rates.position_epsilon, 1.0e-8F,
             1.0e-12F, "DC-opacity position epsilon isolation");
+        const auto require_calibrated_dc =
+            [&](dronegs::MrnfOptimizerProfile profile,
+                float expected_dc, const char* label) {
+                dronegs::OrderedAlphaTrainingContext context(
+                    rate_fixture, 32U * 32U, 2U, 8U, profile);
+                const auto rates = context.current_learning_rates();
+                require_rate(
+                    rates.dc, expected_dc, 1.0e-8F, label);
+                require_rate(
+                    rates.opacity, initial_rates.opacity,
+                    1.0e-8F, "calibrated opacity");
+                require_rate(
+                    rates.position, native_rates.position,
+                    1.0e-9F, "calibrated position isolation");
+                require_rate(
+                    rates.scale, native_rates.scale,
+                    1.0e-8F, "calibrated scale isolation");
+                require_rate(
+                    rates.rotation, native_rates.rotation,
+                    1.0e-8F, "calibrated rotation isolation");
+                require_rate(
+                    rates.dc_epsilon, 1.0e-15F,
+                    1.0e-20F, "calibrated DC epsilon");
+                require_rate(
+                    rates.opacity_epsilon, 1.0e-15F,
+                    1.0e-20F, "calibrated opacity epsilon");
+                require_rate(
+                    rates.position_epsilon, 1.0e-8F,
+                    1.0e-12F, "calibrated position epsilon");
+            };
+        require_calibrated_dc(
+            dronegs::MrnfOptimizerProfile::calibrated_dc_005_opacity,
+            5.0e-3F, "calibrated DC 0.005");
+        require_calibrated_dc(
+            dronegs::MrnfOptimizerProfile::calibrated_dc_010_opacity,
+            1.0e-2F, "calibrated DC 0.010");
+        require_calibrated_dc(
+            dronegs::MrnfOptimizerProfile::calibrated_dc_020_opacity,
+            2.0e-2F, "calibrated DC 0.020");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);
