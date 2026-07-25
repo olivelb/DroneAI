@@ -28,6 +28,8 @@ Each completed phase has one focused commit and an annotated
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
   cardinality stress test, and cache telemetry.
+- Real large-scene gate completed on Albagnac: 1,376 images, 1,025,093 fixed
+  Gaussians, 309 evictions, 267.3 MB peak image cache, and no CUDA OOM.
 - Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
   gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
 - Large-scene throughput blocker: decode is synchronous; asynchronous prefetch and

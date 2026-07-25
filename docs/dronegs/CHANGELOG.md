@@ -10,6 +10,8 @@ This changelog covers the standalone Gaussian trainer project.
 - Added a 2,048-image cardinality stress test for the memory bound.
 - Reduced the GAJAN-25 decoded target peak by 75% to 15.12 MB.
 - Reduced the median 500-iteration training loop by 11.6% at equivalent anchor loss.
+- Passed a real 1,376-image / 1,025,093-Gaussian run in 247.4 seconds with
+  267.3 MB peak decoded residency and 309 cache evictions.
 - Kept `dronegs-v0.5.0` untagged; this is a scaling sub-gate, not quality parity.
 
 ## 0.5.0-dev.1 - Phase 4 experimental
