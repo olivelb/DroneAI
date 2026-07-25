@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.2
+Project version: 0.5.0-dev.3
 
 ## Decision
 
@@ -80,8 +80,10 @@ held-out quality evaluation. It supports only SIMPLE_PINHOLE and PINHOLE inputs.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache
-hit/miss/eviction/peak-byte metrics are recorded. Decode remains synchronous;
-prefetch, pinned staging buffers, and overlap with GPU work are still pending.
+hit/miss/eviction/peak-byte metrics are recorded. A persistent worker decodes
+at most one scheduled image ahead while the main thread owns all LRU mutation.
+The manifest separates cumulative decoder service time from foreground wait.
+Pinned staging buffers and asynchronous host-to-device copies are still pending.
 
 ## Planned layout
 

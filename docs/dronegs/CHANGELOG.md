@@ -2,6 +2,19 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.3 - Phase 4 large-scene decode overlap
+
+- Added a persistent, single-slot JPEG prefetch worker without concurrent LRU mutation.
+- Precomputed the deterministic camera schedule and overlapped decode N+1 with render N.
+- Split total JPEG service time from foreground image-wait time in run-manifest v1.
+- Added prefetch started, consumed, and ready counters plus concurrency tests.
+- Kept the 256 MiB resident LRU bound; one decoded image may additionally be in flight.
+- Reduced median Albagnac image wait to 0.954 s and median 500-iteration wall
+  time to 59.63 s at equivalent anchor loss.
+- Improved warm end-to-end wall time by 15.9% versus a same-session dev.2
+  control on 1,376 images and 1,025,093 Gaussians.
+- Kept `dronegs-v0.5.0` untagged; ordered alpha compositing and quality parity remain open.
+
 ## 0.5.0-dev.2 - Phase 4 large-scene memory
 
 - Changed decoded training targets and GPU transfers from float32 RGB to RGB8.

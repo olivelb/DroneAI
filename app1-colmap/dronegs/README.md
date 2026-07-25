@@ -3,12 +3,13 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.2` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.3` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
 - decodes JPEG training images and scales pinhole intrinsics;
 - stores decoded RGB as bytes in a lazy 256 MiB LRU cache;
+- overlaps one JPEG decode with GPU work through a persistent prefetch worker;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -21,7 +22,8 @@ It is not a LichtFeld replacement yet. Rendering is additive rather than
 front-to-back alpha composited; positions, scales, rotations, topology, and
 non-DC SH coefficients remain fixed. Only `SIMPLE_PINHOLE` and `PINHOLE`
 cameras are accepted and quality parity is not measured. Decoded images use a
-bounded synchronous LRU cache; asynchronous prefetch is not implemented yet.
+bounded LRU plus one in-flight prefetch slot. Pinned transfer buffers and
+asynchronous host-to-device copies are not implemented yet.
 The binary identifies itself as
 `dronegs-fixed-topology-additive-prototype` and remains opt-in.
 

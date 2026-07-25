@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
-        std::cout << "DroneGS 0.5.0-dev.2 fixed-topology additive prototype\n";
+        std::cout << "DroneGS 0.5.0-dev.3 fixed-topology additive prototype\n";
         return 0;
     }
 
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.2 uses experimental additive splatting; "
+        std::cerr << "DroneGS 0.5.0-dev.3 uses experimental additive splatting; "
                      "ordered alpha compositing and parity are not implemented yet.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
@@ -56,6 +56,8 @@ int main(int argc, char** argv) {
         measurements.loading_seconds =
             std::chrono::duration<double>(loading_end - loading_start).count() +
             training.image_loading_seconds;
+        measurements.image_decode_seconds = training.image_decode_seconds;
+        measurements.image_wait_seconds = training.image_loading_seconds;
         measurements.training_seconds = training.training_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;
@@ -65,6 +67,9 @@ int main(int argc, char** argv) {
         measurements.image_cache_evictions = training.image_cache_evictions;
         measurements.image_cache_capacity_bytes = training.image_cache_capacity_bytes;
         measurements.peak_image_cache_bytes = training.peak_image_cache_bytes;
+        measurements.image_prefetch_started = training.image_prefetch_started;
+        measurements.image_prefetch_consumed = training.image_prefetch_consumed;
+        measurements.image_prefetch_ready = training.image_prefetch_ready;
         measurements.export_seconds =
             std::chrono::duration<double>(export_end - export_start).count();
         measurements.wall_seconds =

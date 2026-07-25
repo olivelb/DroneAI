@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <csetjmp>
 #include <cstddef>
 #include <cstdint>
@@ -10,8 +11,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -157,6 +160,18 @@ ImageCache::ImageCache(std::size_t item_count, std::size_t capacity_bytes, Loade
     if (!loader_) {
         throw std::invalid_argument("image cache loader is required");
     }
+    worker_ = std::thread([this]() { worker_loop(); });
+}
+
+ImageCache::~ImageCache() {
+    {
+        const std::lock_guard lock(pending_mutex_);
+        stop_worker_ = true;
+    }
+    pending_condition_.notify_one();
+    if (worker_.joinable()) {
+        worker_.join();
+    }
 }
 
 const ImageData& ImageCache::get(std::size_t index) {
@@ -172,11 +187,111 @@ const ImageData& ImageCache::get(std::size_t index) {
     }
 
     ++stats_.misses;
+    const auto wait_start = std::chrono::steady_clock::now();
+    std::optional<LoadedImage> loaded;
+    {
+        std::unique_lock lock(pending_mutex_);
+        if (pending_index_.has_value() && *pending_index_ != index) {
+            throw std::logic_error(
+                "image cache demand does not match outstanding prefetch");
+        }
+        if (pending_index_.has_value()) {
+            ++stats_.prefetch_consumed;
+            if (pending_result_.has_value() || pending_error_) {
+                ++stats_.prefetch_ready;
+            }
+            ready_condition_.wait(lock, [this]() {
+                return pending_result_.has_value() || pending_error_;
+            });
+            if (pending_error_) {
+                auto error = pending_error_;
+                pending_error_ = nullptr;
+                pending_index_.reset();
+                lock.unlock();
+                std::rethrow_exception(error);
+            }
+            loaded = std::move(*pending_result_);
+            pending_result_.reset();
+            pending_index_.reset();
+        }
+    }
+    if (!loaded.has_value()) {
+        loaded = load(index);
+    }
+    stats_.wait_seconds += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - wait_start).count();
+    return insert(index, std::move(*loaded));
+}
+
+void ImageCache::prefetch(std::size_t index) {
+    if (index >= item_count_) {
+        throw std::out_of_range("image cache prefetch index is out of range");
+    }
+    if (entries_.contains(index)) {
+        return;
+    }
+    {
+        const std::lock_guard lock(pending_mutex_);
+        if (pending_index_.has_value()) {
+            if (*pending_index_ == index) {
+                return;
+            }
+            throw std::logic_error(
+                "image cache supports only one outstanding prefetch");
+        }
+        ++stats_.prefetch_started;
+        pending_index_ = index;
+        pending_result_.reset();
+        pending_error_ = nullptr;
+    }
+    pending_condition_.notify_one();
+}
+
+void ImageCache::worker_loop() {
+    for (;;) {
+        std::size_t index = 0;
+        {
+            std::unique_lock lock(pending_mutex_);
+            pending_condition_.wait(lock, [this]() {
+                return stop_worker_ ||
+                       (pending_index_.has_value() && !worker_busy_ &&
+                        !pending_result_.has_value() && !pending_error_);
+            });
+            if (stop_worker_) {
+                return;
+            }
+            index = *pending_index_;
+            worker_busy_ = true;
+        }
+        try {
+            auto loaded = load(index);
+            {
+                const std::lock_guard lock(pending_mutex_);
+                pending_result_ = std::move(loaded);
+                worker_busy_ = false;
+            }
+        } catch (...) {
+            const std::lock_guard lock(pending_mutex_);
+            pending_error_ = std::current_exception();
+            worker_busy_ = false;
+        }
+        ready_condition_.notify_one();
+    }
+}
+
+ImageCache::LoadedImage ImageCache::load(std::size_t index) const {
     const auto loading_start = std::chrono::steady_clock::now();
     auto image = loader_(index);
-    stats_.loading_seconds += std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - loading_start).count();
-    const std::size_t bytes = image.rgb.size() * sizeof(std::uint8_t);
+    return {
+        .image = std::move(image),
+        .loading_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - loading_start).count(),
+    };
+}
+
+const ImageData& ImageCache::insert(std::size_t index, LoadedImage loaded) {
+    stats_.loading_seconds += loaded.loading_seconds;
+    const std::size_t bytes = loaded.image.rgb.size() * sizeof(std::uint8_t);
     if (bytes == 0U) {
         throw std::runtime_error("image cache loader returned an empty image");
     }
@@ -187,7 +302,7 @@ const ImageData& ImageCache::get(std::size_t index) {
     recency_.push_front(index);
     auto [inserted, was_inserted] = entries_.emplace(
         index, Entry{
-            .image = std::move(image),
+            .image = std::move(loaded.image),
             .recency = recency_.begin(),
             .bytes = bytes,
         });

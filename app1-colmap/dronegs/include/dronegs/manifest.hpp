@@ -14,6 +14,8 @@ struct RunMeasurements {
     std::string started_at;
     std::string finished_at;
     double loading_seconds = 0.0;
+    double image_decode_seconds = 0.0;
+    double image_wait_seconds = 0.0;
     double startup_seconds = 0.0;
     double training_seconds = 0.0;
     double export_seconds = 0.0;
@@ -25,6 +27,9 @@ struct RunMeasurements {
     std::uint64_t image_cache_evictions = 0;
     std::uint64_t image_cache_capacity_bytes = 0;
     std::uint64_t peak_image_cache_bytes = 0;
+    std::uint64_t image_prefetch_started = 0;
+    std::uint64_t image_prefetch_consumed = 0;
+    std::uint64_t image_prefetch_ready = 0;
 };
 
 std::string utc_timestamp();

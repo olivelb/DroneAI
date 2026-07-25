@@ -488,6 +488,29 @@ std::vector<FrameDescriptor> make_frame_descriptors(
     return descriptors;
 }
 
+std::vector<std::size_t> make_training_schedule(
+    std::size_t frame_count, std::uint64_t iterations, std::uint64_t seed) {
+    if (iterations > std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error("iteration count exceeds host address space");
+    }
+    std::vector<std::size_t> schedule;
+    schedule.reserve(static_cast<std::size_t>(iterations));
+    std::vector<std::size_t> camera_order(frame_count);
+    for (std::size_t index = 0; index < camera_order.size(); ++index) {
+        camera_order[index] = index;
+    }
+    std::mt19937_64 random(seed);
+    while (schedule.size() < static_cast<std::size_t>(iterations)) {
+        std::shuffle(camera_order.begin(), camera_order.end(), random);
+        const auto remaining =
+            static_cast<std::size_t>(iterations) - schedule.size();
+        const auto count = std::min(remaining, camera_order.size());
+        schedule.insert(
+            schedule.end(), camera_order.begin(), camera_order.begin() + count);
+    }
+    return schedule;
+}
+
 TrainingFrame frame_from_cache(ImageCache& cache,
                                const std::vector<FrameDescriptor>& descriptors,
                                std::size_t index, const Options& options) {
@@ -619,22 +642,19 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     TrainingMetrics metrics{
         .iterations = options.iterations,
     };
+    const auto schedule = make_training_schedule(
+        descriptors.size(), options.iterations, options.seed);
     const auto initial_frame = frame_from_cache(cache, descriptors, 0U, options);
+    cache.prefetch(schedule.front());
     metrics.initial_loss =
         render_loss(workspace, initial_frame, gaussians.size(), false);
     const auto training_start = std::chrono::steady_clock::now();
     const double setup_wall_seconds =
         std::chrono::duration<double>(training_start - setup_start).count();
     metrics.setup_seconds = std::max(
-        0.0, setup_wall_seconds - cache.stats().loading_seconds);
-    const double loading_seconds_before_training = cache.stats().loading_seconds;
+        0.0, setup_wall_seconds - cache.stats().wait_seconds);
+    const double wait_seconds_before_training = cache.stats().wait_seconds;
 
-    std::vector<std::size_t> camera_order(descriptors.size());
-    for (std::size_t index = 0; index < camera_order.size(); ++index) {
-        camera_order[index] = index;
-    }
-    std::mt19937_64 random(options.seed);
-    std::shuffle(camera_order.begin(), camera_order.end(), random);
     constexpr float beta_first = 0.9F;
     constexpr float beta_second = 0.999F;
     float beta_first_power = 1.0F;
@@ -642,13 +662,12 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const std::uint64_t progress_interval = std::max<std::uint64_t>(
         1U, options.iterations / 20U);
     for (std::uint64_t iteration = 1; iteration <= options.iterations; ++iteration) {
-        const std::size_t order_index =
-            static_cast<std::size_t>((iteration - 1U) % camera_order.size());
-        if (order_index == 0U && iteration > 1U) {
-            std::shuffle(camera_order.begin(), camera_order.end(), random);
-        }
+        const auto schedule_index = static_cast<std::size_t>(iteration - 1U);
         const auto frame = frame_from_cache(
-            cache, descriptors, camera_order[order_index], options);
+            cache, descriptors, schedule[schedule_index], options);
+        if (schedule_index + 1U < schedule.size()) {
+            cache.prefetch(schedule[schedule_index + 1U]);
+        }
         const float loss = render_loss(workspace, frame, gaussians.size(), true);
         beta_first_power *= beta_first;
         beta_second_power *= beta_second;
@@ -677,24 +696,25 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const auto training_end = std::chrono::steady_clock::now();
     const double training_wall_seconds =
         std::chrono::duration<double>(training_end - training_start).count();
-    const double training_loading_seconds =
-        cache.stats().loading_seconds - loading_seconds_before_training;
+    const double training_wait_seconds =
+        cache.stats().wait_seconds - wait_seconds_before_training;
     metrics.training_seconds = std::max(
-        0.0, training_wall_seconds - training_loading_seconds);
+        0.0, training_wall_seconds - training_wait_seconds);
 
     const auto final_evaluation_start = std::chrono::steady_clock::now();
-    const double loading_seconds_before_final = cache.stats().loading_seconds;
+    const double wait_seconds_before_final = cache.stats().wait_seconds;
     const auto final_frame = frame_from_cache(cache, descriptors, 0U, options);
     metrics.final_loss =
         render_loss(workspace, final_frame, gaussians.size(), false);
     const double final_evaluation_wall_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - final_evaluation_start).count();
-    const double final_loading_seconds =
-        cache.stats().loading_seconds - loading_seconds_before_final;
+    const double final_wait_seconds =
+        cache.stats().wait_seconds - wait_seconds_before_final;
     metrics.setup_seconds += std::max(
-        0.0, final_evaluation_wall_seconds - final_loading_seconds);
+        0.0, final_evaluation_wall_seconds - final_wait_seconds);
 
-    metrics.image_loading_seconds = cache.stats().loading_seconds;
+    metrics.image_loading_seconds = cache.stats().wait_seconds;
+    metrics.image_decode_seconds = cache.stats().loading_seconds;
     metrics.image_cache_hits = cache.stats().hits;
     metrics.image_cache_misses = cache.stats().misses;
     metrics.image_cache_evictions = cache.stats().evictions;
@@ -702,6 +722,9 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         static_cast<std::uint64_t>(cache.capacity_bytes());
     metrics.peak_image_cache_bytes =
         static_cast<std::uint64_t>(cache.stats().peak_resident_bytes);
+    metrics.image_prefetch_started = cache.stats().prefetch_started;
+    metrics.image_prefetch_consumed = cache.stats().prefetch_consumed;
+    metrics.image_prefetch_ready = cache.stats().prefetch_ready;
     workspace.gaussians.copy_to_host(gaussians.data(), gaussians.size());
     return metrics;
 }

@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.2.
+- Current development version: 0.5.0-dev.3.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -30,10 +30,12 @@ Each completed phase has one focused commit and an annotated
   cardinality stress test, and cache telemetry.
 - Real large-scene gate completed on Albagnac: 1,376 images, 1,025,093 fixed
   Gaussians, 309 evictions, 267.3 MB peak image cache, and no CUDA OOM.
+- Large-scene decode-overlap sub-gate completed: persistent one-slot prefetch,
+  0.954 s median image wait, and 15.9% lower warm wall time than dev.2.
 - Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
   gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
-- Large-scene throughput blocker: decode is synchronous; asynchronous prefetch and
-  a representative 1,000+ photograph benchmark are still required.
+- Next large-scene throughput work: pinned double-buffered host-to-device staging,
+  CUDA streams, and benchmarks beyond the current 500-iteration gate.
 
 ## Versioning rules
 

@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
@@ -141,6 +143,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .started_at = "2026-07-24T10:00:00Z",
         .finished_at = "2026-07-24T10:00:01Z",
         .loading_seconds = 0.1,
+        .image_decode_seconds = 0.08,
+        .image_wait_seconds = 0.02,
         .startup_seconds = 0.05,
         .training_seconds = 0.15,
         .export_seconds = 0.2,
@@ -152,6 +156,9 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .image_cache_evictions = 1U,
         .image_cache_capacity_bytes = 1024U,
         .peak_image_cache_bytes = 512U,
+        .image_prefetch_started = 4U,
+        .image_prefetch_consumed = 3U,
+        .image_prefetch_ready = 2U,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,
@@ -165,6 +172,10 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest Git revision missing");
     check(manifest_text.find("\"image_cache_hits\": 3") != std::string::npos,
           "manifest image cache metrics missing");
+    check(manifest_text.find("\"image_decode_seconds\": 0.08") != std::string::npos,
+          "manifest image decode timing missing");
+    check(manifest_text.find("\"image_prefetch_consumed\": 3") != std::string::npos,
+          "manifest image prefetch metrics missing");
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
@@ -258,6 +269,51 @@ void test_image_cache() {
     }
     check(large_cache.stats().peak_resident_bytes <= large_capacity,
           "large-cardinality image cache exceeded its byte capacity");
+
+    std::promise<void> loader_started;
+    auto loader_started_future = loader_started.get_future();
+    std::promise<void> release_loader;
+    auto release_loader_future = release_loader.get_future().share();
+    std::atomic<std::uint64_t> async_loads{0U};
+    dronegs::ImageCache async_cache(
+        3U, 12U,
+        [&loader_started, release_loader_future, &async_loads](std::size_t index) {
+            ++async_loads;
+            loader_started.set_value();
+            release_loader_future.wait();
+            return dronegs::ImageData{
+                .width = 2U,
+                .height = 1U,
+                .rgb = std::vector<std::uint8_t>(
+                    6U, static_cast<std::uint8_t>(index)),
+            };
+        });
+    async_cache.prefetch(1U);
+    loader_started_future.wait();
+    check(async_cache.stats().prefetch_started == 1U,
+          "image cache did not start asynchronous prefetch");
+    bool second_prefetch_rejected = false;
+    try {
+        async_cache.prefetch(2U);
+    } catch (const std::logic_error&) {
+        second_prefetch_rejected = true;
+    }
+    check(second_prefetch_rejected,
+          "image cache accepted more than one outstanding prefetch");
+    release_loader.set_value();
+    const auto& prefetched = async_cache.get(1U);
+    check(prefetched.rgb.front() == 1U, "prefetched image contents mismatch");
+    check(async_loads == 1U, "prefetched image was decoded more than once");
+    check(async_cache.stats().prefetch_consumed == 1U,
+          "image cache did not consume prefetched image");
+    check(async_cache.stats().misses == 1U,
+          "prefetched demand should remain a cache miss");
+    static_cast<void>(async_cache.get(1U));
+    check(async_cache.stats().hits == 1U,
+          "prefetched image was not retained by the LRU");
+    async_cache.prefetch(1U);
+    check(async_cache.stats().prefetch_started == 1U,
+          "prefetch unexpectedly decoded an already resident image");
 }
 
 

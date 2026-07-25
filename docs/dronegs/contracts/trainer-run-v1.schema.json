@@ -65,6 +65,8 @@
       "properties": {
         "startup_seconds": {"type": ["number", "null"], "minimum": 0},
         "data_loading_seconds": {"type": ["number", "null"], "minimum": 0},
+        "image_decode_seconds": {"type": ["number", "null"], "minimum": 0},
+        "image_wait_seconds": {"type": ["number", "null"], "minimum": 0},
         "training_seconds": {"type": ["number", "null"], "minimum": 0},
         "checkpoint_seconds": {"type": ["number", "null"], "minimum": 0},
         "wall_seconds": {"type": "number", "minimum": 0}
@@ -80,6 +82,9 @@
         "image_cache_misses": {"type": ["integer", "null"], "minimum": 0},
         "image_cache_evictions": {"type": ["integer", "null"], "minimum": 0},
         "peak_image_cache_bytes": {"type": ["integer", "null"], "minimum": 0},
+        "image_prefetch_started": {"type": ["integer", "null"], "minimum": 0},
+        "image_prefetch_consumed": {"type": ["integer", "null"], "minimum": 0},
+        "image_prefetch_ready": {"type": ["integer", "null"], "minimum": 0},
         "final_gaussians": {"type": ["integer", "null"], "minimum": 0},
         "psnr": {"type": ["number", "null"]},
         "ssim": {"type": ["number", "null"]},
