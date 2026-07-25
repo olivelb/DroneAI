@@ -83,7 +83,9 @@ payload therefore stays bounded independently of image count, and cache
 hit/miss/eviction/peak-byte metrics are recorded. A persistent worker decodes
 at most one scheduled image ahead while the main thread owns all LRU mutation.
 The manifest separates cumulative decoder service time from foreground wait.
-Pinned staging buffers and asynchronous host-to-device copies are still pending.
+Pinned double-buffered target staging was prototyped and rejected for this
+slice: measured upload service was about 0.06 seconds per 500-iteration
+Albagnac run, below timing variance and not worth the added synchronization.
 
 ## Planned layout
 

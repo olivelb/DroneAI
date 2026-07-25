@@ -34,8 +34,11 @@ Each completed phase has one focused commit and an annotated
   0.954 s median image wait, and 15.9% lower warm wall time than dev.2.
 - Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
   gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
-- Next large-scene throughput work: pinned double-buffered host-to-device staging,
-  CUDA streams, and benchmarks beyond the current 500-iteration gate.
+- Pinned double-buffered host-to-device staging was benchmarked and rejected:
+  measured upload service was only about 0.06 s per 500-iteration Albagnac run,
+  while both tested orchestrations regressed median wall time.
+- Next performance work must be selected from a GPU kernel profile. The immediate
+  Phase 4 priority remains ordered alpha compositing and measured quality parity.
 
 ## Versioning rules
 
