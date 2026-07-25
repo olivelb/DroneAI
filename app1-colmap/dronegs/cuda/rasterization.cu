@@ -5,10 +5,11 @@
  * The dev.15 MRNF error-weighted contribution and long-axis split behavior,
  * plus the dev.16 Gumbel selection and edge-guidance behavior and dev.17 MRNF
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
- * Dev.18 dual-profile selection and update telemetry are DroneAI additions.
- * The pre-existing DroneGS rasterizer, loss, gradient, and optimizer code in
- * this file was original MIT code; this combined translation unit is
- * conservatively distributed under GPL-3.0-or-later from dev.15 onward.
+ * Dev.18 dual-profile selection and update telemetry and dev.19 family-isolated
+ * epsilon/rate ablations are DroneAI additions. The pre-existing DroneGS
+ * rasterizer, loss, gradient, and optimizer code in this file was original MIT
+ * code; this combined translation unit is conservatively distributed under
+ * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
@@ -1871,7 +1872,10 @@ __global__ void ordered_adam_update_kernel(
     float inverse_bias_first, float inverse_bias_second,
     float position_learning_rate, float color_learning_rate,
     float opacity_learning_rate, float scale_learning_rate,
-    float rotation_learning_rate, float epsilon,
+    float rotation_learning_rate,
+    float position_epsilon, float dc_epsilon,
+    float opacity_epsilon, float scale_epsilon,
+    float rotation_epsilon,
     float minimum_log_scale, float maximum_log_scale,
     DeviceOptimizerTelemetry* telemetry,
     std::size_t telemetry_stride) {
@@ -1911,7 +1915,7 @@ __global__ void ordered_adam_update_kernel(
             second_dc[offset] * inverse_bias_second;
         gaussians[gaussian_index].dc[channel] -=
             color_learning_rate * corrected_first /
-            (sqrtf(corrected_second) + epsilon);
+            (sqrtf(corrected_second) + dc_epsilon);
         if (collect_telemetry) {
             const float applied =
                 gaussians[gaussian_index].dc[channel] - original;
@@ -1938,7 +1942,7 @@ __global__ void ordered_adam_update_kernel(
         second_opacity[gaussian_index] * inverse_bias_second;
     gaussians[gaussian_index].opacity_logit -=
         opacity_learning_rate * corrected_first /
-        (sqrtf(corrected_second) + epsilon);
+        (sqrtf(corrected_second) + opacity_epsilon);
     if (collect_telemetry) {
         const float applied =
             gaussians[gaussian_index].opacity_logit -
@@ -1968,7 +1972,7 @@ __global__ void ordered_adam_update_kernel(
             position_learning_rate *
             first_xyz[offset] * inverse_bias_first /
             (sqrtf(second_xyz[offset] * inverse_bias_second) +
-             epsilon);
+             position_epsilon);
         const float original_position =
             gaussians[gaussian_index].xyz[axis];
         const float candidate_position =
@@ -2006,7 +2010,7 @@ __global__ void ordered_adam_update_kernel(
             (sqrtf(
                  second_log_scale[offset] *
                  inverse_bias_second) +
-                 epsilon);
+                 scale_epsilon);
         const float original_scale =
             gaussians[gaussian_index].log_scale[axis];
         const float candidate_scale =
@@ -2052,7 +2056,7 @@ __global__ void ordered_adam_update_kernel(
             (sqrtf(
                  second_rotation[offset] *
                  inverse_bias_second) +
-             epsilon);
+             rotation_epsilon);
         const float candidate =
             gaussians[gaussian_index].rotation[component] - update;
         if (isfinite(candidate)) {
@@ -2511,41 +2515,39 @@ static float bounding_box_diagonal(
 static MrnfLearningRates mrnf_learning_rates(
     std::uint64_t optimizer_step, std::uint64_t maximum_steps,
     float position_scale, MrnfOptimizerProfile profile) {
-    if (profile == MrnfOptimizerProfile::dronegs_dev16) {
-        const double progress =
-            maximum_steps <= 1U
-                ? 0.0
-                : std::min(
-                      1.0,
-                      static_cast<double>(optimizer_step - 1U) /
-                          static_cast<double>(maximum_steps - 1U));
-        const float position_factor =
-            static_cast<float>(std::exp(
-                std::log(
-                    static_cast<double>(
-                        dev16_position_learning_rate_initial)) *
-                    (1.0 - progress) +
-                std::log(
-                    static_cast<double>(
-                        dev16_position_learning_rate_final)) *
-                    progress));
-        return {
-            .position = position_scale * position_factor,
-            .dc = dev16_dc_learning_rate,
-            .opacity = dev16_opacity_learning_rate,
-            .scale = dev16_scale_learning_rate,
-            .rotation = dev16_rotation_learning_rate,
-            .epsilon = dev16_adam_epsilon,
-        };
-    }
-    const double progress =
+    const bool lichtfeld_all =
+        profile == MrnfOptimizerProfile::lichtfeld_absolute;
+    const bool lichtfeld_dc =
+        lichtfeld_all ||
+        profile == MrnfOptimizerProfile::lichtfeld_dc_only;
+    const bool lichtfeld_position =
+        lichtfeld_all ||
+        profile == MrnfOptimizerProfile::lichtfeld_position_only;
+    const bool lichtfeld_opacity =
+        lichtfeld_all ||
+        profile == MrnfOptimizerProfile::lichtfeld_opacity_only;
+    const bool lichtfeld_scale =
+        lichtfeld_all ||
+        profile == MrnfOptimizerProfile::lichtfeld_scale_only;
+    const bool lichtfeld_rotation =
+        lichtfeld_all ||
+        profile == MrnfOptimizerProfile::lichtfeld_rotation_only;
+    const double lichtfeld_progress =
         optimizer_step <= 1U || maximum_steps == 0U
             ? 0.0
             : std::min(
                   1.0,
                   static_cast<double>(optimizer_step - 1U) /
                       static_cast<double>(maximum_steps));
-    const auto exponential = [progress](
+    const double dev16_progress =
+        maximum_steps <= 1U
+            ? 0.0
+            : std::min(
+                  1.0,
+                  static_cast<double>(optimizer_step - 1U) /
+                      static_cast<double>(maximum_steps - 1U));
+    const auto exponential = [](
+        double progress,
         float initial, float final) {
         return static_cast<float>(std::exp(
             std::log(static_cast<double>(initial)) *
@@ -2555,15 +2557,45 @@ static MrnfLearningRates mrnf_learning_rates(
     return {
         .position =
             position_scale * exponential(
-                mrnf_position_learning_rate_initial,
-                mrnf_position_learning_rate_final),
-        .dc = mrnf_dc_learning_rate,
-        .opacity = mrnf_opacity_learning_rate,
-        .scale = exponential(
-            mrnf_scale_learning_rate_initial,
-            mrnf_scale_learning_rate_final),
-        .rotation = mrnf_rotation_learning_rate,
-        .epsilon = mrnf_adam_epsilon,
+                lichtfeld_position
+                    ? lichtfeld_progress
+                    : dev16_progress,
+                lichtfeld_position
+                    ? mrnf_position_learning_rate_initial
+                    : dev16_position_learning_rate_initial,
+                lichtfeld_position
+                    ? mrnf_position_learning_rate_final
+                    : dev16_position_learning_rate_final),
+        .dc = lichtfeld_dc
+            ? mrnf_dc_learning_rate
+            : dev16_dc_learning_rate,
+        .opacity = lichtfeld_opacity
+            ? mrnf_opacity_learning_rate
+            : dev16_opacity_learning_rate,
+        .scale = lichtfeld_scale
+            ? exponential(
+                  lichtfeld_progress,
+                  mrnf_scale_learning_rate_initial,
+                  mrnf_scale_learning_rate_final)
+            : dev16_scale_learning_rate,
+        .rotation = lichtfeld_rotation
+            ? mrnf_rotation_learning_rate
+            : dev16_rotation_learning_rate,
+        .position_epsilon = lichtfeld_position
+            ? mrnf_adam_epsilon
+            : dev16_adam_epsilon,
+        .dc_epsilon = lichtfeld_dc
+            ? mrnf_adam_epsilon
+            : dev16_adam_epsilon,
+        .opacity_epsilon = lichtfeld_opacity
+            ? mrnf_adam_epsilon
+            : dev16_adam_epsilon,
+        .scale_epsilon = lichtfeld_scale
+            ? mrnf_adam_epsilon
+            : dev16_adam_epsilon,
+        .rotation_epsilon = lichtfeld_rotation
+            ? mrnf_adam_epsilon
+            : dev16_adam_epsilon,
     };
 }
 
@@ -2663,9 +2695,11 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         position_learning_rate_scale =
             optimizer_profile ==
-                    MrnfOptimizerProfile::dronegs_dev16
-                ? bounding_box_diagonal(initial_gaussians)
-                : percentile80_median_size(initial_gaussians);
+                    MrnfOptimizerProfile::lichtfeld_absolute ||
+                optimizer_profile ==
+                    MrnfOptimizerProfile::lichtfeld_position_only
+                ? percentile80_median_size(initial_gaussians)
+                : bounding_box_diagonal(initial_gaussians);
         learning_rates = mrnf_learning_rates(
             1U, maximum_steps, position_learning_rate_scale,
             optimizer_profile);
@@ -3097,7 +3131,11 @@ struct OrderedAlphaTrainingContext::Impl {
                     learning_rates.opacity,
                     learning_rates.scale,
                     learning_rates.rotation,
-                    learning_rates.epsilon,
+                    learning_rates.position_epsilon,
+                    learning_rates.dc_epsilon,
+                    learning_rates.opacity_epsilon,
+                    learning_rates.scale_epsilon,
+                    learning_rates.rotation_epsilon,
                     minimum_log_scale, maximum_log_scale,
                     collect_telemetry
                         ? optimizer_telemetry.data()

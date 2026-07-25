@@ -2,6 +2,29 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.19 - Phase 4 MRNF one-family optimizer ablations
+
+- Added five explicit profiles that replace exactly one dev16 parameter family
+  with the pinned LichtFeld rate, schedule, normalization, and Adam epsilon.
+- Refactored the optimizer to use an independent epsilon for DC, opacity,
+  position, scale, and rotation; mixed profiles no longer leak epsilon changes
+  into control families.
+- Extended CLI, schedule JSON, manifest v1, CUDA tests, version identifiers,
+  and GPL provenance for the family-isolated experiment.
+- Replayed a same-binary dev16 control and all five 500-step ablations on the
+  1,376-image Albagnac split.
+- Position-only loses 1.12720 dB and 0.029407 SSIM versus the control,
+  regressing 170/172 PSNR views and every SSIM view. Reject it.
+- DC-only gains 0.08181 dB on 110/172 views but loses 0.000269 SSIM on
+  average; retain it as a tradeoff candidate, not the default.
+- Opacity-only gains 0.01622 dB and 0.000283 SSIM, improving 137/172 PSNR
+  views and 142/172 SSIM views. It is the first no-compromise optimizer
+  candidate, pending a longer-budget confirmation.
+- Scale-only and rotation-only are effectively neutral at 500 steps.
+- Keep `dronegs-dev16` as the default. The next optimizer experiment should
+  combine DC and opacity without changing position, then validate at a longer
+  iteration budget.
+
 ## 0.5.0-dev.18 - Phase 4 MRNF effective-update calibration
 
 - Kept both optimizer configurations in one binary as

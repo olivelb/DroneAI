@@ -373,7 +373,21 @@ int main() {
         require_rate(initial_rates.opacity, 1.2e-2F, 1.0e-8F, "opacity");
         require_rate(initial_rates.scale, 7.0e-3F, 1.0e-8F, "scale");
         require_rate(initial_rates.rotation, 2.0e-3F, 1.0e-8F, "rotation");
-        require_rate(initial_rates.epsilon, 1.0e-15F, 1.0e-20F, "epsilon");
+        require_rate(
+            initial_rates.position_epsilon,
+            1.0e-15F, 1.0e-20F, "position epsilon");
+        require_rate(
+            initial_rates.dc_epsilon,
+            1.0e-15F, 1.0e-20F, "dc epsilon");
+        require_rate(
+            initial_rates.opacity_epsilon,
+            1.0e-15F, 1.0e-20F, "opacity epsilon");
+        require_rate(
+            initial_rates.scale_epsilon,
+            1.0e-15F, 1.0e-20F, "scale epsilon");
+        require_rate(
+            initial_rates.rotation_epsilon,
+            1.0e-15F, 1.0e-20F, "rotation epsilon");
         dronegs::OrderedAlphaTrainingContext native_rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16);
@@ -398,8 +412,114 @@ int main() {
             native_rates.rotation, 1.0e-3F,
             1.0e-8F, "dev16 rotation");
         require_rate(
-            native_rates.epsilon, 1.0e-8F,
-            1.0e-12F, "dev16 epsilon");
+            native_rates.position_epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 position epsilon");
+        require_rate(
+            native_rates.dc_epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 dc epsilon");
+        require_rate(
+            native_rates.opacity_epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 opacity epsilon");
+        require_rate(
+            native_rates.scale_epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 scale epsilon");
+        require_rate(
+            native_rates.rotation_epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 rotation epsilon");
+        dronegs::OrderedAlphaTrainingContext dc_only_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_dc_only);
+        const auto dc_only_rates =
+            dc_only_context.current_learning_rates();
+        require_rate(
+            dc_only_rates.position, native_rates.position,
+            1.0e-9F, "DC-only position isolation");
+        require_rate(
+            dc_only_rates.dc, initial_rates.dc,
+            1.0e-8F, "DC-only DC");
+        require_rate(
+            dc_only_rates.opacity, native_rates.opacity,
+            1.0e-8F, "DC-only opacity isolation");
+        require_rate(
+            dc_only_rates.scale, native_rates.scale,
+            1.0e-8F, "DC-only scale isolation");
+        require_rate(
+            dc_only_rates.rotation, native_rates.rotation,
+            1.0e-8F, "DC-only rotation isolation");
+        require_rate(
+            dc_only_rates.dc_epsilon, 1.0e-15F,
+            1.0e-20F, "DC-only DC epsilon");
+        require_rate(
+            dc_only_rates.position_epsilon, 1.0e-8F,
+            1.0e-12F, "DC-only position epsilon isolation");
+        dronegs::OrderedAlphaTrainingContext position_only_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_position_only);
+        const auto position_only_rates =
+            position_only_context.current_learning_rates();
+        require_rate(
+            position_only_rates.position, initial_rates.position,
+            1.0e-10F, "position-only position");
+        require_rate(
+            position_only_rates.dc, native_rates.dc,
+            1.0e-8F, "position-only DC isolation");
+        require_rate(
+            position_only_rates.opacity, native_rates.opacity,
+            1.0e-8F, "position-only opacity isolation");
+        require_rate(
+            position_only_rates.scale, native_rates.scale,
+            1.0e-8F, "position-only scale isolation");
+        require_rate(
+            position_only_rates.rotation, native_rates.rotation,
+            1.0e-8F, "position-only rotation isolation");
+        require_rate(
+            position_only_rates.position_epsilon, 1.0e-15F,
+            1.0e-20F, "position-only position epsilon");
+        require_rate(
+            position_only_rates.dc_epsilon, 1.0e-8F,
+            1.0e-12F, "position-only DC epsilon isolation");
+        dronegs::OrderedAlphaTrainingContext opacity_only_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_opacity_only);
+        const auto opacity_only_rates =
+            opacity_only_context.current_learning_rates();
+        require_rate(
+            opacity_only_rates.opacity, initial_rates.opacity,
+            1.0e-8F, "opacity-only opacity");
+        require_rate(
+            opacity_only_rates.opacity_epsilon, 1.0e-15F,
+            1.0e-20F, "opacity-only epsilon");
+        require_rate(
+            opacity_only_rates.dc, native_rates.dc,
+            1.0e-8F, "opacity-only DC isolation");
+        dronegs::OrderedAlphaTrainingContext scale_only_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);
+        const auto scale_only_rates =
+            scale_only_context.current_learning_rates();
+        require_rate(
+            scale_only_rates.scale, initial_rates.scale,
+            1.0e-8F, "scale-only scale");
+        require_rate(
+            scale_only_rates.scale_epsilon, 1.0e-15F,
+            1.0e-20F, "scale-only epsilon");
+        require_rate(
+            scale_only_rates.position, native_rates.position,
+            1.0e-9F, "scale-only position isolation");
+        dronegs::OrderedAlphaTrainingContext rotation_only_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_rotation_only);
+        const auto rotation_only_rates =
+            rotation_only_context.current_learning_rates();
+        require_rate(
+            rotation_only_rates.rotation, initial_rates.rotation,
+            1.0e-8F, "rotation-only rotation");
+        require_rate(
+            rotation_only_rates.rotation_epsilon, 1.0e-15F,
+            1.0e-20F, "rotation-only epsilon");
+        require_rate(
+            rotation_only_rates.scale, native_rates.scale,
+            1.0e-8F, "rotation-only scale isolation");
         static_cast<void>(rate_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
         const auto first_telemetry =

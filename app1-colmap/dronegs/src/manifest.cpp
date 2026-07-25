@@ -70,6 +70,26 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               const RunMeasurements& measurements,
                               const std::filesystem::path& ply_path,
                               std::size_t gaussian_count) {
+    const bool lichtfeld_all =
+        options.optimizer_profile == "lichtfeld-absolute";
+    const bool lichtfeld_dc =
+        lichtfeld_all ||
+        options.optimizer_profile == "lichtfeld-dc-only";
+    const bool lichtfeld_position =
+        lichtfeld_all ||
+        options.optimizer_profile == "lichtfeld-position-only";
+    const bool lichtfeld_opacity =
+        lichtfeld_all ||
+        options.optimizer_profile == "lichtfeld-opacity-only";
+    const bool lichtfeld_scale =
+        lichtfeld_all ||
+        options.optimizer_profile == "lichtfeld-scale-only";
+    const bool lichtfeld_rotation =
+        lichtfeld_all ||
+        options.optimizer_profile == "lichtfeld-rotation-only";
+    const bool mixed_epsilon =
+        options.optimizer_profile != "dronegs-dev16" &&
+        !lichtfeld_all;
     const auto temporary = options.run_manifest.string() + ".tmp";
     std::ofstream stream(temporary, std::ios::trunc);
     if (!stream) {
@@ -78,8 +98,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-mrnf-optimizer-calibration-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.18\",\n"
+           << "  \"backend\": \"dronegs-mrnf-optimizer-ablation-prototype\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.19\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -140,49 +160,55 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"edge_score_weight\": 0.25,\n"
            << "    \"edge_extra_render_passes\": 0,\n"
            << "    \"adam_epsilon\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "1e-8" : "1e-15") << ",\n"
+           << (mixed_epsilon
+                   ? "null"
+                   : (lichtfeld_all ? "1e-15" : "1e-8")) << ",\n"
+           << "    \"position_adam_epsilon\": "
+           << (lichtfeld_position ? "1e-15" : "1e-8") << ",\n"
+           << "    \"dc_adam_epsilon\": "
+           << (lichtfeld_dc ? "1e-15" : "1e-8") << ",\n"
+           << "    \"opacity_adam_epsilon\": "
+           << (lichtfeld_opacity ? "1e-15" : "1e-8") << ",\n"
+           << "    \"scale_adam_epsilon\": "
+           << (lichtfeld_scale ? "1e-15" : "1e-8") << ",\n"
+           << "    \"rotation_adam_epsilon\": "
+           << (lichtfeld_rotation ? "1e-15" : "1e-8") << ",\n"
            << "    \"dc_lr\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.05" : "0.002") << ",\n"
+           << (lichtfeld_dc ? "0.002" : "0.05") << ",\n"
            << "    \"opacity_lr\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.01" : "0.012") << ",\n"
+           << (lichtfeld_opacity ? "0.012" : "0.01") << ",\n"
            << "    \"position_lr_initial_factor\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.00016" : "0.00002") << ",\n"
+           << (lichtfeld_position ? "0.00002" : "0.00016") << ",\n"
            << "    \"position_lr_final_factor\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.0000016" : "0.0000002") << ",\n"
+           << (lichtfeld_position ? "0.0000002" : "0.0000016")
+           << ",\n"
            << "    \"position_lr_scale\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "\"initial_gaussian_bbox_diagonal\""
-                   : "\"initial_gaussian_axis_10_90_percentile_median_width\"")
+           << (lichtfeld_position
+                   ? "\"initial_gaussian_axis_10_90_percentile_median_width\""
+                   : "\"initial_gaussian_bbox_diagonal\"")
            << ",\n"
            << "    \"position_lr_schedule\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "\"exponential_step_minus_one_over_iterations_minus_one\""
-                   : "\"exponential_step_minus_one_over_iterations\"")
+           << (lichtfeld_position
+                   ? "\"exponential_step_minus_one_over_iterations\""
+                   : "\"exponential_step_minus_one_over_iterations_minus_one\"")
            << ",\n"
            << "    \"scale_lr_initial\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.005" : "0.007") << ",\n"
+           << (lichtfeld_scale ? "0.007" : "0.005") << ",\n"
            << "    \"scale_lr_final\": 0.005,\n"
            << "    \"scale_lr_schedule\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "\"constant\""
-                   : "\"exponential_step_minus_one_over_iterations\"")
+           << (lichtfeld_scale
+                   ? "\"exponential_step_minus_one_over_iterations\""
+                   : "\"constant\"")
            << ",\n"
            << "    \"rotation_lr\": "
-           << (options.optimizer_profile == "dronegs-dev16"
-                   ? "0.001" : "0.002") << ",\n"
+           << (lichtfeld_rotation ? "0.002" : "0.001") << ",\n"
            << "    \"optimizer_telemetry\": "
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"
            << "    \"host_image_storage\": \"rgb8\",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
            << "    \"mode\": "
-              "\"mrnf-optimizer-calibration-anisotropic-dssim-held-out-prototype\"\n"
+              "\"mrnf-optimizer-ablation-anisotropic-dssim-held-out-prototype\"\n"
            << "  },\n"
            << "  \"timings\": {\n"
            << "    \"startup_seconds\": " << measurements.startup_seconds << ",\n"

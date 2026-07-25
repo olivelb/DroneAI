@@ -34,12 +34,21 @@ struct MrnfLearningRates {
     float opacity = 0.0F;
     float scale = 0.0F;
     float rotation = 0.0F;
-    float epsilon = 0.0F;
+    float position_epsilon = 0.0F;
+    float dc_epsilon = 0.0F;
+    float opacity_epsilon = 0.0F;
+    float scale_epsilon = 0.0F;
+    float rotation_epsilon = 0.0F;
 };
 
 enum class MrnfOptimizerProfile {
     dronegs_dev16,
     lichtfeld_absolute,
+    lichtfeld_dc_only,
+    lichtfeld_position_only,
+    lichtfeld_opacity_only,
+    lichtfeld_scale_only,
+    lichtfeld_rotation_only,
 };
 
 struct MrnfParameterTelemetry {

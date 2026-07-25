@@ -46,15 +46,18 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS MRNF optimizer-calibration "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.18\n"
+        "DroneGS MRNF optimizer-ablation "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.19\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--save-eval-images 0|1] "
-        "[--optimizer-profile dronegs-dev16|lichtfeld-absolute]\n";
+        "[--optimizer-profile dronegs-dev16|lichtfeld-absolute|"
+        "lichtfeld-dc-only|lichtfeld-position-only|"
+        "lichtfeld-opacity-only|lichtfeld-scale-only|"
+        "lichtfeld-rotation-only]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -180,10 +183,16 @@ void validate_options(const Options& options) {
             "--save-eval-images requires --test-every");
     }
     if (options.optimizer_profile != "lichtfeld-absolute" &&
-        options.optimizer_profile != "dronegs-dev16") {
+        options.optimizer_profile != "dronegs-dev16" &&
+        options.optimizer_profile != "lichtfeld-dc-only" &&
+        options.optimizer_profile != "lichtfeld-position-only" &&
+        options.optimizer_profile != "lichtfeld-opacity-only" &&
+        options.optimizer_profile != "lichtfeld-scale-only" &&
+        options.optimizer_profile != "lichtfeld-rotation-only") {
         throw std::invalid_argument(
-            "--optimizer-profile must be lichtfeld-absolute or "
-            "dronegs-dev16");
+            "--optimizer-profile must be dronegs-dev16, "
+            "lichtfeld-absolute, lichtfeld-dc-only, or "
+            "a lichtfeld-*-only family ablation");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

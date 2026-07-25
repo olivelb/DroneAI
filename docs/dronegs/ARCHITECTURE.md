@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.18
+Project version: 0.5.0-dev.19
 
 ## Decision
 
@@ -215,7 +215,17 @@ step, gradients match but dev16's actual DC and position deltas are 20.35x and
 dev16 the default quality profile. The next calibration slice changes one
 family at a time.
 
-The dev.15-dev.18 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.19 gives every parameter family an independent Adam epsilon
+and adds exact DC-only, opacity-only, position-only, scale-only, and
+rotation-only profiles. Each profile changes one family's complete optimizer
+behavior while retaining dev16 for the other four. A same-binary 500-step
+Albagnac control reaches 17.07198 dB / 0.245501 SSIM. Position-only falls to
+15.94478 dB / 0.216094 and is the dominant cause of the direct-profile
+regression. Opacity-only improves both aggregates to 17.08820 dB / 0.245784;
+DC-only trades +0.08181 dB for -0.000269 SSIM; scale and rotation are neutral.
+Dev16 remains the default pending a longer-budget opacity confirmation.
+
+The dev.15-dev.19 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their

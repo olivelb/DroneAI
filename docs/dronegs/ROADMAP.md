@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.18.
+- Current development version: 0.5.0-dev.19.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -112,19 +112,25 @@ Each completed phase has one focused commit and an annotated
   and 58.24x larger for position. LichtFeld-absolute instead applies a 1.48x
   larger opacity update and substantially larger late scale/rotation updates.
 - The accepted `dronegs-dev16` profile is restored as the default.
+- Dev.19 isolates all five parameter families, including per-family Adam
+  epsilon, in the same binary. Position-only explains the dominant regression:
+  it loses 1.1272 dB / 0.02941 SSIM and regresses every held-out SSIM view.
+- Opacity-only is the first no-compromise candidate at +0.0162 dB /
+  +0.000283 SSIM. DC-only gains +0.0818 dB but loses 0.000269 SSIM; scale and
+  rotation are neutral at 500 steps.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17/dev.18 retain the negative optimizer experiment. LPIPS,
+  while dev.17-dev.19 retain the negative optimizer experiments and the
+  opacity candidate. LPIPS,
   progressive SH, prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is one-family optimizer ablation, not another
-  direct feature port. Starting from `dronegs-dev16`, swap DC and position
-  independently before opacity, scale, and rotation; accept a family only when
-  held-out quality and effective-update telemetry support it. A future
-  instrumented LichtFeld control would improve equivalence calibration.
-  Progressive SH should follow only after optimizer behavior is resolved. The
-  edge implementation also remains a candidate for fusion or
+- The immediate Phase 4 priority is a DC-plus-opacity profile followed by a
+  longer-budget confirmation of opacity-only and the combination. Position
+  must remain on the dev16 normalization/schedule. A future instrumented
+  LichtFeld control would improve equivalence calibration. Progressive SH
+  should follow only after optimizer behavior is resolved. The edge
+  implementation also remains a candidate for fusion or
   refinement-window-only accumulation.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next

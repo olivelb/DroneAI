@@ -5,7 +5,8 @@
  * The dev.15 refine cadence, threshold, growth fraction, and growth window,
  * plus the dev.16 weighted-Gumbel seed protocol and dev.17 optimizer
  * schedules, are adapted from the pinned LichtFeld MRNF strategy. Dev.18
- * profile selection and telemetry emission are DroneAI additions. The
+ * profile selection and telemetry emission and dev.19 family-isolated
+ * ablations are DroneAI additions. The
  * pre-existing DroneGS orchestration in this file was original MIT code; this
  * combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -989,10 +990,27 @@ TrainingMetrics train_ordered_mrnf(
         options.prefetch_depth, options.decode_workers);
 
     const auto setup_start = std::chrono::steady_clock::now();
-    const auto optimizer_profile =
-        options.optimizer_profile == "dronegs-dev16"
-            ? MrnfOptimizerProfile::dronegs_dev16
-            : MrnfOptimizerProfile::lichtfeld_absolute;
+    const auto optimizer_profile = [&options]() {
+        if (options.optimizer_profile == "dronegs-dev16") {
+            return MrnfOptimizerProfile::dronegs_dev16;
+        }
+        if (options.optimizer_profile == "lichtfeld-dc-only") {
+            return MrnfOptimizerProfile::lichtfeld_dc_only;
+        }
+        if (options.optimizer_profile == "lichtfeld-position-only") {
+            return MrnfOptimizerProfile::lichtfeld_position_only;
+        }
+        if (options.optimizer_profile == "lichtfeld-opacity-only") {
+            return MrnfOptimizerProfile::lichtfeld_opacity_only;
+        }
+        if (options.optimizer_profile == "lichtfeld-scale-only") {
+            return MrnfOptimizerProfile::lichtfeld_scale_only;
+        }
+        if (options.optimizer_profile == "lichtfeld-rotation-only") {
+            return MrnfOptimizerProfile::lichtfeld_rotation_only;
+        }
+        return MrnfOptimizerProfile::lichtfeld_absolute;
+    }();
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap),
@@ -1007,7 +1025,14 @@ TrainingMetrics train_ordered_mrnf(
         << ",\"opacity_lr\":" << initial_learning_rates.opacity
         << ",\"scale_lr\":" << initial_learning_rates.scale
         << ",\"rotation_lr\":" << initial_learning_rates.rotation
-        << ",\"epsilon\":" << initial_learning_rates.epsilon
+        << ",\"position_epsilon\":"
+        << initial_learning_rates.position_epsilon
+        << ",\"dc_epsilon\":" << initial_learning_rates.dc_epsilon
+        << ",\"opacity_epsilon\":"
+        << initial_learning_rates.opacity_epsilon
+        << ",\"scale_epsilon\":" << initial_learning_rates.scale_epsilon
+        << ",\"rotation_epsilon\":"
+        << initial_learning_rates.rotation_epsilon
         << "}\n"
         << std::flush;
     const auto emit_optimizer_telemetry =
@@ -1133,7 +1158,14 @@ TrainingMetrics train_ordered_mrnf(
         << ",\"opacity_lr\":" << final_learning_rates.opacity
         << ",\"scale_lr\":" << final_learning_rates.scale
         << ",\"rotation_lr\":" << final_learning_rates.rotation
-        << ",\"epsilon\":" << final_learning_rates.epsilon
+        << ",\"position_epsilon\":"
+        << final_learning_rates.position_epsilon
+        << ",\"dc_epsilon\":" << final_learning_rates.dc_epsilon
+        << ",\"opacity_epsilon\":"
+        << final_learning_rates.opacity_epsilon
+        << ",\"scale_epsilon\":" << final_learning_rates.scale_epsilon
+        << ",\"rotation_epsilon\":"
+        << final_learning_rates.rotation_epsilon
         << "}\n"
         << std::flush;
     require_cuda(

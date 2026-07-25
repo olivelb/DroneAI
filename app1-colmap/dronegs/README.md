@@ -1,13 +1,13 @@
 # DroneGS native trainer
 
 This directory contains the C++23/CUDA DroneAI Gaussian trainer. The
-pre-dev.15 native implementation is original MIT code. Dev.15-dev.18 adapt
+pre-dev.15 native implementation is original MIT code. Dev.15-dev.19 adapt
 MRNF error weighting, cadence, long-axis split, weighted-Gumbel selection, and
 edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.18` is an experimental MRNF optimizer-calibration slice. It:
+Version `0.5.0-dev.19` is an experimental MRNF optimizer-ablation slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -41,8 +41,11 @@ Version `0.5.0-dev.18` is an experimental MRNF optimizer-calibration slice. It:
   0.25 edge-guidance factor without extra edge-render passes;
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
-- exposes both the accepted `dronegs-dev16` quality-anchor optimizer profile
-  and the experimental `lichtfeld-absolute` profile, with dev16 as the default;
+- exposes the accepted `dronegs-dev16` quality-anchor profile, the experimental
+  `lichtfeld-absolute` profile, and five exact one-family ablations, with dev16
+  retained as the default;
+- isolates Adam epsilon per parameter family so an ablation changes exactly
+  one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
   fifth of training, and the final step, reporting gradient RMS, actual applied
   update RMS, parameter RMS, and component sample count for all five families;
@@ -72,13 +75,13 @@ Topology, weighted Gumbel selection, and edge guidance now run, but
 prune/replacement, noise injection, decay, compaction, and non-DC SH
 coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. Dev.18 reproduces the dev.16 quality anchor in the same instrumented
-binary at 17.0704 dB / 0.245493 SSIM. The direct LichtFeld optimizer profile
-reaches only 16.1158 dB / 0.219508 SSIM. Sampled actual updates show that it
-moves DC about 15-20x less and position about 48-58x less, while moving opacity
-about 1.7-1.8x more and late scale/rotation about 3-8x more. The absolute
-LichtFeld profile is therefore retained as an opt-in negative calibration
-result, not as an accepted quality improvement. LPIPS remains unevaluated.
+measured. Dev.19's same-binary Albagnac control reaches 17.0720 dB / 0.245501
+SSIM. Position-only is decisively rejected at 15.9451 dB / 0.216089. DC-only
+gains 0.0818 dB but loses 0.000269 SSIM. Opacity-only is the first
+no-compromise candidate at +0.0162 dB / +0.000283 SSIM, improving 137/172 PSNR
+views and 142/172 SSIM views. Scale and rotation are neutral at 500 steps.
+The absolute LichtFeld profile remains an opt-in negative calibration result,
+not an accepted quality improvement. LPIPS remains unevaluated.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -142,5 +145,9 @@ the dev.8 decode behavior.
 `--optimizer-profile dronegs-dev16` is the default and current quality anchor.
 `--optimizer-profile lichtfeld-absolute` reproduces the rejected direct
 LichtFeld-rate experiment for controlled calibration and telemetry.
+The `lichtfeld-dc-only`, `lichtfeld-position-only`,
+`lichtfeld-opacity-only`, `lichtfeld-scale-only`, and
+`lichtfeld-rotation-only` values change exactly one family for reproducible
+ablation.
 
 The output directory must be empty and must not contain the source dataset.
