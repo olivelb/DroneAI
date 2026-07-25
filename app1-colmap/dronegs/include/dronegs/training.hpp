@@ -21,6 +21,13 @@ struct ImageQualityMetrics {
     float active_pixel_fraction = 0.0F;
 };
 
+struct ImageObjectiveOutput {
+    float loss = 0.0F;
+    std::vector<float> prediction;
+    std::vector<float> gradient;
+    std::vector<float> transmittance;
+};
+
 struct TrainingMetrics {
     float initial_loss = 0.0F;
     float final_loss = 0.0F;

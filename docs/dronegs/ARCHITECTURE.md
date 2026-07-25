@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.13
+Project version: 0.5.0-dev.14
 
 ## Decision
 
@@ -73,13 +73,14 @@ world-to-camera poses, transforms normalized quaternion rotations and
 non-uniform exponential scales into camera space, projects the covariance
 through the pinhole Jacobian, sorts visible splats deterministically into 16x16
 tiles, composites bounded anisotropic kernels front-to-back, computes
-active-pixel L1, and exposes analytical DC, opacity, position, log-scale, and
-normalized-quaternion gradients. The persistent trainer retains those
+`0.8 * active-pixel L1 + 0.2 * (1 - SSIM)`, and exposes analytical image, DC,
+opacity, position, log-scale, and normalized-quaternion gradients. The
+persistent trainer retains those
 gradients and all Adam moments on device and updates the five parameter
 families after every training frame.
 
 This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no DSSIM, progressive SH, split/prune/grow, or LPIPS. It supports only
+It has no progressive SH, split/prune/grow, or LPIPS. It supports only
 SIMPLE_PINHOLE and PINHOLE inputs.
 
 An opt-in held-out protocol uses the same index rule as LichtFeld:
@@ -155,6 +156,15 @@ metric constants, train/held-out cardinalities, initial/final aggregates, and
 per-view CSV artifact. The matching Albagnac control is executed through the
 pinned GPL LichtFeld runtime image; no LichtFeld metric source is copied into
 the original MIT CUDA implementation.
+Version 0.5.0-dev.14 reuses that separable SSIM forward in every ordered
+training step and stores five derivative terms per valid window center.
+One CUDA thread per input RGB sample gathers the at-most 121 overlapping
+centers, avoiding atomics in the image-space DSSIM backward. The public
+diagnostic returns the rendered image, transmittance, objective, and exact
+trainer image gradient; a CPU oracle plus eight central finite differences
+guard the implementation. The Albagnac result isolates DSSIM from topology:
+SSIM improves by 0.004378 while PSNR is effectively unchanged, leaving MRNF
+growth as the next controlled parity factor.
 
 ## Planned layout
 

@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.13` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.14` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -24,8 +24,9 @@ Version `0.5.0-dev.13` is an experimental fixed-topology training slice. It:
   perspective, camera transform, scale, and rotation;
 - trains through a persistent ordered-alpha CUDA context with reusable
   projection, CUB, tile, gradient, and Adam buffers;
-- computes active-pixel RGB8 L1 gradients, ordered-alpha backward, and Adam
-  updates on device without copying Gaussian gradients through the host;
+- computes a `0.8 * active-pixel L1 + 0.2 * (1 - SSIM)` objective and its
+  analytical image gradient on CUDA, then runs ordered-alpha backward and Adam
+  without copying Gaussian gradients through the host;
 - retains projected-conic and position/scale/rotation gradients plus their
   Adam moments on device across iterations;
 - applies a scene-diagonal-scaled exponential position schedule, independent
@@ -43,7 +44,8 @@ Version `0.5.0-dev.13` is an experimental fixed-topology training slice. It:
   deterministic camera order;
 - exports a DroneAI-compatible binary PLY;
 - writes a run-manifest-v1 document;
-- provides finite-difference and end-to-end convergence tests.
+- provides direct CPU objective/metric oracles, finite-difference DSSIM and
+  renderer gradient tests, and end-to-end convergence tests.
 
 It is not a LichtFeld replacement yet. The experimental training path now uses
 front-to-back anisotropic ordered-alpha composition, while the additive path
@@ -51,8 +53,9 @@ remains only as a convergence control. Persistent training now optimizes
 position, log-scale, and normalized rotation in addition to DC and opacity.
 Topology and non-DC SH coefficients remain fixed. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured, but the Albagnac control shows gaps of 3.9474 dB and 0.3891 SSIM
-against pinned LichtFeld at 500 iterations. LPIPS remains unevaluated. Decoded
+measured. DSSIM raises Albagnac held-out SSIM from 0.2419 to 0.2463 with
+essentially neutral PSNR, but the pinned LichtFeld control still leads by
+3.9532 dB and 0.3848 SSIM at 500 iterations. LPIPS remains unevaluated. Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
 CPU/GPU power contention outweighed the removed foreground wait. Reduced-IDCT
@@ -61,7 +64,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-held-out-anisotropic-geometry-prototype` and remains opt-in.
+`dronegs-dssim-anisotropic-geometry-prototype` and remains opt-in.
 
 ## Container build
 

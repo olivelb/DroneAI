@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.13 fixed-topology anisotropic "
-               "geometry-optimized held-out evaluation prototype\n";
+            << "DroneGS 0.5.0-dev.14 fixed-topology anisotropic "
+               "L1+DSSIM held-out evaluation prototype\n";
         return 0;
     }
 
@@ -32,10 +32,11 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.13 uses experimental fixed-topology "
+        std::cerr << "DroneGS 0.5.0-dev.14 uses experimental fixed-topology "
                      "anisotropic geometry-optimized ordered-alpha training; "
-                     "held-out PSNR/SSIM are available, while topology, SH, "
-                     "DSSIM, LPIPS, and quality parity remain open.\n";
+                     "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
+                     "PSNR/SSIM are available, while topology, SH, LPIPS, "
+                     "and quality parity remain open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;

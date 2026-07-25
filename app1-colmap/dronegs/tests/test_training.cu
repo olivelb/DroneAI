@@ -88,7 +88,7 @@ dronegs::Scene make_scene() {
     return scene;
 }
 
-float reference_ssim(
+double reference_ssim(
     const std::vector<float>& prediction,
     const std::vector<std::uint8_t>& target,
     std::uint32_t width, std::uint32_t height) {
@@ -154,7 +154,38 @@ float reference_ssim(
             }
         }
     }
-    return static_cast<float>(sum / static_cast<double>(count));
+    return sum / static_cast<double>(count);
+}
+
+double reference_objective(
+    const std::vector<float>& prediction,
+    const std::vector<float>& transmittance,
+    const std::vector<std::uint8_t>& target,
+    std::uint32_t width, std::uint32_t height) {
+    double l1_sum = 0.0;
+    std::size_t active_pixels = 0U;
+    for (std::size_t pixel = 0U;
+         pixel < transmittance.size(); ++pixel) {
+        if (transmittance[pixel] >= 1.0F) {
+            continue;
+        }
+        ++active_pixels;
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            const auto sample = pixel * 3U + channel;
+            l1_sum += std::abs(
+                static_cast<double>(prediction[sample]) -
+                static_cast<double>(target[sample]) / 255.0);
+        }
+    }
+    if (active_pixels == 0U) {
+        throw std::runtime_error(
+            "CPU objective fixture has no active pixels");
+    }
+    const double l1 =
+        l1_sum / (3.0 * static_cast<double>(active_pixels));
+    return 0.8 * l1 +
+        0.2 * (1.0 - reference_ssim(
+            prediction, target, width, height));
 }
 
 }  // namespace
@@ -223,14 +254,76 @@ int main() {
             1.0e-10);
         const float expected_psnr =
             static_cast<float>(10.0 * std::log10(1.0 / mse));
-        const float expected_ssim = reference_ssim(
-            quality_prediction, quality_target.rgb, 32U, 32U);
+        const float expected_ssim = static_cast<float>(reference_ssim(
+            quality_prediction, quality_target.rgb, 32U, 32U));
         if (std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
             std::abs(quality.ssim - expected_ssim) > 2.0e-4F ||
             quality.active_pixel_fraction <= 0.0F ||
             quality.active_pixel_fraction > 1.0F) {
             throw std::runtime_error(
                 "GPU held-out PSNR/SSIM mismatch");
+        }
+        const auto objective =
+            quality_context.evaluate_objective_gradient(
+                quality_camera, quality_target.rgb.data(),
+                quality_target.rgb.size());
+        const double expected_objective = reference_objective(
+            objective.prediction, objective.transmittance,
+            quality_target.rgb, 32U, 32U);
+        if (std::abs(objective.loss - expected_objective) > 2.0e-4F ||
+            objective.gradient.size() != objective.prediction.size() ||
+            objective.transmittance.size() != 32U * 32U) {
+            throw std::runtime_error(
+                "GPU L1+DSSIM objective mismatch");
+        }
+        constexpr float finite_difference_epsilon = 1.0e-3F;
+        const std::array<std::size_t, 8> gradient_samples{
+            (6U * 32U + 7U) * 3U,
+            (8U * 32U + 14U) * 3U + 1U,
+            (12U * 32U + 12U) * 3U + 2U,
+            (16U * 32U + 16U) * 3U,
+            (18U * 32U + 20U) * 3U + 1U,
+            (22U * 32U + 10U) * 3U + 2U,
+            (25U * 32U + 24U) * 3U,
+            (29U * 32U + 28U) * 3U + 1U,
+        };
+        std::size_t checked_gradients = 0U;
+        auto perturbed_prediction = objective.prediction;
+        for (const auto sample : gradient_samples) {
+            const float target =
+                static_cast<float>(quality_target.rgb[sample]) / 255.0F;
+            if (std::abs(objective.prediction[sample] - target) <
+                5.0e-3F) {
+                continue;
+            }
+            perturbed_prediction[sample] =
+                objective.prediction[sample] +
+                finite_difference_epsilon;
+            const double plus = reference_objective(
+                perturbed_prediction, objective.transmittance,
+                quality_target.rgb, 32U, 32U);
+            perturbed_prediction[sample] =
+                objective.prediction[sample] -
+                finite_difference_epsilon;
+            const double minus = reference_objective(
+                perturbed_prediction, objective.transmittance,
+                quality_target.rgb, 32U, 32U);
+            perturbed_prediction[sample] =
+                objective.prediction[sample];
+            const double expected_gradient =
+                (plus - minus) /
+                (2.0 * finite_difference_epsilon);
+            if (std::abs(
+                    static_cast<double>(objective.gradient[sample]) -
+                    expected_gradient) > 1.0e-4) {
+                throw std::runtime_error(
+                    "analytic DSSIM image gradient mismatch");
+            }
+            ++checked_gradients;
+        }
+        if (checked_gradients < 6U) {
+            throw std::runtime_error(
+                "insufficient DSSIM finite-difference probes");
         }
         auto additive_gaussians = initialized;
         auto ordered_initial = initialized;

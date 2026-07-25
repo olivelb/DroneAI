@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.13.
+- Current development version: 0.5.0-dev.14.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology anisotropic
   ordered-alpha trainer with held-out PSNR/SSIM; opt-in only.
@@ -80,13 +80,18 @@ Each completed phase has one focused commit and an annotated
 - Albagnac reserves 172 of 1,376 views. DroneGS improves from 14.0631 to
   17.1212 dB and from 0.1811 to 0.2419 SSIM over 500 steps, but the pinned
   LichtFeld control reaches 21.0686 dB and 0.6310 SSIM on the same split.
-- Phase 4 exit gate still open: the held-out quality gaps are 3.9474 dB and
-  0.3891 SSIM; LPIPS, DSSIM, progressive SH, topology, and parity remain open.
+- Analytical DSSIM is complete. The atomics-free CUDA image gradient passes
+  eight direct finite differences against the same CPU objective used by the
+  trainer. On Albagnac it improves SSIM on 171 of 172 held-out views.
+- The dev.14 mean is 17.1154 dB / 0.246278 SSIM. Versus dev.13 this is
+  -0.0058 dB / +0.004378 SSIM at a 4.4% trainer-compute cost.
+- Phase 4 exit gate still open: the pinned-control gaps are 3.9532 dB and
+  0.3848 SSIM; LPIPS, progressive SH, topology, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 correctness priority is DSSIM, followed by
-  progressive SH. MRNF topology is also a demonstrated parity factor:
+- The immediate Phase 4 correctness priority is MRNF topology. Progressive SH
+  follows for nonzero-SH controls. Topology is already a demonstrated factor:
   LichtFeld grows from 1,025,093 to 1,173,540 Gaussians in the 500-step
   held-out control while DroneGS stays fixed.
   For large-scene throughput, JPEG service remains material, but deeper and

@@ -2,6 +2,25 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.14 - Phase 4 analytical DSSIM objective
+
+- Replaced the ordered trainer's pure active-pixel L1 objective with
+  `0.8 * L1 + 0.2 * (1 - SSIM)`, retaining the dev.13 split, topology,
+  rasterizer, schedules, and targets.
+- Reused the separable 11x11 CUDA SSIM forward and added an analytical
+  atomics-free image gradient that gathers at most 121 valid window centers
+  per input sample.
+- Added a public diagnostic output plus a direct CPU objective oracle and
+  eight central finite-difference probes of the exact trainer gradient.
+- Recorded the loss formula and `lambda_dssim=0.2` in manifest v1 and kept
+  the independently implemented MIT provenance explicit.
+- All five native test executables pass on the RTX 4070 Laptop.
+- On the identical 1,376-image Albagnac split and 500-step schedule, mean
+  held-out SSIM rises from 0.241900 to 0.246278 while PSNR changes from
+  17.121187 to 17.115355 dB.
+- DSSIM improves SSIM on 171 of 172 views, costs 4.4% more trainer compute,
+  and does not close the topology/quality gap to pinned LichtFeld.
+
 ## 0.5.0-dev.13 - Phase 4 held-out quality gate
 
 - Added an opt-in LichtFeld-compatible split where
