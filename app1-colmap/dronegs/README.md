@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.10` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.11` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -18,8 +18,10 @@ Version `0.5.0-dev.10` is an experimental fixed-topology training slice. It:
 - provides a forward CUDA renderer with GPU projection, stable radix sorting,
   GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
   alpha oracle;
-- provides tested CPU and CUDA ordered-alpha gradients for DC color and opacity,
-  including equal-depth ordering, alpha clamping, and early-transmittance exit;
+- provides tested CPU and CUDA ordered-alpha gradients for DC color, opacity,
+  position, three log-scales, and normalized quaternion rotation;
+- reverses the projected inverse conic through spectral covariance clamping,
+  perspective, camera transform, scale, and rotation;
 - trains through a persistent ordered-alpha CUDA context with reusable
   projection, CUB, tile, gradient, and Adam buffers;
 - computes active-pixel RGB8 L1 gradients, ordered-alpha backward, and Adam
@@ -34,9 +36,10 @@ Version `0.5.0-dev.10` is an experimental fixed-topology training slice. It:
 
 It is not a LichtFeld replacement yet. The experimental training path now uses
 front-to-back anisotropic ordered-alpha composition, while the additive path
-remains only as a convergence control. Positions, scales, rotations, topology,
-and non-DC SH coefficients remain fixed; dev.10 consumes their anisotropic
-values but does not optimize them yet. Only
+remains only as a convergence control. The public validation API returns
+geometry gradients, but persistent training still applies Adam only to DC and
+opacity. Positions, scales, rotations, topology, and non-DC SH coefficients
+therefore remain fixed until dev.12 integration. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
 measured. Decoded images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -72,7 +75,7 @@ The optional raster benchmark is built with
 ```
 
 The default mode measures the complete ordered-alpha forward call. The
-`backward` mode measures forward plus DC/opacity backward. Both include
+`backward` mode measures forward plus DC/opacity/geometry backward. Both include
 allocation, projection, sorting, tile construction, rendering, and host readback.
 
 ## Experimental fixed-topology training run

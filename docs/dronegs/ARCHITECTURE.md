@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.10
+Project version: 0.5.0-dev.11
 
 ## Decision
 
@@ -73,11 +73,12 @@ world-to-camera poses, transforms normalized quaternion rotations and
 non-uniform exponential scales into camera space, projects the covariance
 through the pinhole Jacobian, sorts visible splats deterministically into 16x16
 tiles, composites bounded anisotropic kernels front-to-back, computes
-active-pixel L1, back-propagates analytical DC/opacity gradients, and applies
-Adam on device.
+active-pixel L1, and exposes analytical DC, opacity, position, log-scale, and
+normalized-quaternion gradients. The persistent trainer currently applies
+only DC/opacity Adam on device.
 
 This is still a fixed-topology convergence scaffold, not the parity rasterizer.
-It has no position/scale/rotation gradients, DSSIM, progressive SH,
+It has no persistent geometry optimizer integration, DSSIM, progressive SH,
 split/prune/grow, or held-out quality evaluation. It supports only
 SIMPLE_PINHOLE and PINHOLE inputs.
 
@@ -122,7 +123,16 @@ covariance. The implementation forms
 its transpose, clamps both eigenvalues to the previous pixel-footprint safety
 range, and stores the inverse conic. CPU and CUDA use the same quaternion
 `w,x,y,z` convention and perspective Jacobian. Scale and rotation affect the
-forward image but remain fixed until their gradients are implemented.
+forward image but remain fixed until their persistent updates are implemented.
+Version 0.5.0-dev.11 extends the public backward result with position,
+log-scale, and quaternion gradients. CUDA accumulates projected-center and
+inverse-conic adjoints per pixel, then reverses inverse covariance, the
+piecewise spectral clamp, perspective Jacobian, camera transform, exponential
+scale, rotation matrix, and quaternion normalization once per Gaussian.
+Discrete visibility, tile/support selection, depth sorting, contribution
+thresholds, and early exit are stop-gradient decisions. A CPU oracle and a
+direct all-component CUDA finite-difference fixture guard the smooth branch.
+Persistent geometry Adam is deferred to dev.12.
 
 ## Planned layout
 

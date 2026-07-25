@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.10 fixed-topology anisotropic "
+            << "DroneGS 0.5.0-dev.11 fixed-topology anisotropic "
                "ordered-alpha prototype\n";
         return 0;
     }
@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.10 uses experimental fixed-topology "
+        std::cerr << "DroneGS 0.5.0-dev.11 uses experimental fixed-topology "
                      "anisotropic ordered-alpha training; full parameter and quality "
                      "parity are not implemented yet.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"

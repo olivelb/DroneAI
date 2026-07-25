@@ -684,7 +684,8 @@ __global__ void backward_alpha_tiles_kernel(
     std::uint32_t width, std::uint32_t height,
     float background_r, float background_g, float background_b,
     const float* image_gradient, float* dc_gradient,
-    float* opacity_logit_gradient) {
+    float* opacity_logit_gradient,
+    float* projected_geometry_gradient) {
     const std::uint32_t x =
         blockIdx.x * alpha_tile_width + threadIdx.x;
     const std::uint32_t y =
@@ -794,6 +795,33 @@ __global__ void backward_alpha_tiles_kernel(
                 &opacity_logit_gradient[source],
                 alpha_gradient * gaussian_weight * splat.opacity *
                     (1.0F - splat.opacity));
+            if (projected_geometry_gradient != nullptr) {
+                const float squared_distance_gradient =
+                    -0.5F * alpha_gradient * splat.opacity *
+                    gaussian_weight;
+                atomicAdd(
+                    &projected_geometry_gradient[source * 5U],
+                    squared_distance_gradient *
+                        -2.0F *
+                        (splat.conic_xx * delta_x +
+                         splat.conic_xy * delta_y));
+                atomicAdd(
+                    &projected_geometry_gradient[source * 5U + 1U],
+                    squared_distance_gradient *
+                        -2.0F *
+                        (splat.conic_xy * delta_x +
+                         splat.conic_yy * delta_y));
+                atomicAdd(
+                    &projected_geometry_gradient[source * 5U + 2U],
+                    squared_distance_gradient * delta_x * delta_x);
+                atomicAdd(
+                    &projected_geometry_gradient[source * 5U + 3U],
+                    squared_distance_gradient *
+                        2.0F * delta_x * delta_y);
+                atomicAdd(
+                    &projected_geometry_gradient[source * 5U + 4U],
+                    squared_distance_gradient * delta_y * delta_y);
+            }
         }
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
             tail[channel] =
@@ -801,6 +829,474 @@ __global__ void backward_alpha_tiles_kernel(
                 (1.0F - alpha) * tail[channel];
         }
         transmittance_after = transmittance_before;
+    }
+}
+
+__global__ void backward_projected_geometry_kernel(
+    const Gaussian* gaussians, std::uint32_t gaussian_count,
+    DeviceRasterCamera camera,
+    const float* projected_geometry_gradient,
+    float* xyz_gradient, float* log_scale_gradient,
+    float* rotation_gradient) {
+    const std::uint32_t index =
+        blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= gaussian_count) {
+        return;
+    }
+    const float* projected_gradient =
+        projected_geometry_gradient + index * 5U;
+    const float screen_x_gradient = projected_gradient[0];
+    const float screen_y_gradient = projected_gradient[1];
+    const float conic_xx_gradient = projected_gradient[2];
+    const float conic_xy_gradient = projected_gradient[3];
+    const float conic_yy_gradient = projected_gradient[4];
+    if (screen_x_gradient == 0.0F &&
+        screen_y_gradient == 0.0F &&
+        conic_xx_gradient == 0.0F &&
+        conic_xy_gradient == 0.0F &&
+        conic_yy_gradient == 0.0F) {
+        return;
+    }
+
+    const auto& gaussian = gaussians[index];
+    const float camera_x =
+        camera.rotation[0] * gaussian.xyz[0] +
+        camera.rotation[1] * gaussian.xyz[1] +
+        camera.rotation[2] * gaussian.xyz[2] +
+        camera.translation[0];
+    const float camera_y =
+        camera.rotation[3] * gaussian.xyz[0] +
+        camera.rotation[4] * gaussian.xyz[1] +
+        camera.rotation[5] * gaussian.xyz[2] +
+        camera.translation[1];
+    const float camera_z =
+        camera.rotation[6] * gaussian.xyz[0] +
+        camera.rotation[7] * gaussian.xyz[1] +
+        camera.rotation[8] * gaussian.xyz[2] +
+        camera.translation[2];
+    if (camera_z <= minimum_depth || !isfinite(camera_z)) {
+        return;
+    }
+
+    const float quaternion_norm = sqrtf(
+        gaussian.rotation[0] * gaussian.rotation[0] +
+        gaussian.rotation[1] * gaussian.rotation[1] +
+        gaussian.rotation[2] * gaussian.rotation[2] +
+        gaussian.rotation[3] * gaussian.rotation[3]);
+    if (!isfinite(quaternion_norm) ||
+        quaternion_norm <= 1.0e-12F) {
+        return;
+    }
+    const float quaternion[4]{
+        gaussian.rotation[0] / quaternion_norm,
+        gaussian.rotation[1] / quaternion_norm,
+        gaussian.rotation[2] / quaternion_norm,
+        gaussian.rotation[3] / quaternion_norm,
+    };
+    const float w = quaternion[0];
+    const float x = quaternion[1];
+    const float y = quaternion[2];
+    const float z = quaternion[3];
+    const float gaussian_rotation[9]{
+        1.0F - 2.0F * (y * y + z * z),
+        2.0F * (x * y - z * w),
+        2.0F * (x * z + y * w),
+        2.0F * (x * y + z * w),
+        1.0F - 2.0F * (x * x + z * z),
+        2.0F * (y * z - x * w),
+        2.0F * (x * z - y * w),
+        2.0F * (y * z + x * w),
+        1.0F - 2.0F * (x * x + y * y),
+    };
+    float camera_gaussian_rotation[9]{};
+    for (std::uint32_t row = 0U; row < 3U; ++row) {
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 3U; ++inner) {
+                camera_gaussian_rotation[row * 3U + column] +=
+                    camera.rotation[row * 3U + inner] *
+                    gaussian_rotation[inner * 3U + column];
+            }
+        }
+    }
+    float scale[3]{};
+    float covariance_factor[9]{};
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        scale[column] = expf(gaussian.log_scale[column]);
+        if (!isfinite(scale[column]) || scale[column] <= 0.0F) {
+            return;
+        }
+        for (std::uint32_t row = 0U; row < 3U; ++row) {
+            covariance_factor[row * 3U + column] =
+                camera_gaussian_rotation[row * 3U + column] *
+                scale[column];
+        }
+    }
+
+    const float inverse_depth = 1.0F / camera_z;
+    const float inverse_depth_squared =
+        inverse_depth * inverse_depth;
+    const float inverse_depth_cubed =
+        inverse_depth_squared * inverse_depth;
+    const float jacobian[6]{
+        camera.fx * inverse_depth,
+        0.0F,
+        -camera.fx * camera_x * inverse_depth_squared,
+        0.0F,
+        camera.fy * inverse_depth,
+        -camera.fy * camera_y * inverse_depth_squared,
+    };
+    float projected_factor[6]{};
+    for (std::uint32_t row = 0U; row < 2U; ++row) {
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 3U; ++inner) {
+                projected_factor[row * 3U + column] +=
+                    jacobian[row * 3U + inner] *
+                    covariance_factor[inner * 3U + column];
+            }
+        }
+    }
+    float covariance_xx = 0.0F;
+    float covariance_xy = 0.0F;
+    float covariance_yy = 0.0F;
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        covariance_xx +=
+            projected_factor[column] * projected_factor[column];
+        covariance_xy +=
+            projected_factor[column] *
+            projected_factor[3U + column];
+        covariance_yy +=
+            projected_factor[3U + column] *
+            projected_factor[3U + column];
+    }
+    const float trace = covariance_xx + covariance_yy;
+    const float difference = covariance_xx - covariance_yy;
+    const float spectral_gap = sqrtf(fmaxf(
+        0.0F,
+        difference * difference +
+            4.0F * covariance_xy * covariance_xy));
+    const float eigenvalue_maximum =
+        0.5F * (trace + spectral_gap);
+    const float eigenvalue_minimum =
+        0.5F * (trace - spectral_gap);
+    const float clamped_maximum = fminf(
+        maximum_projected_variance,
+        fmaxf(minimum_projected_variance, eigenvalue_maximum));
+    const float clamped_minimum = fminf(
+        maximum_projected_variance,
+        fmaxf(minimum_projected_variance, eigenvalue_minimum));
+    float clamped_xx = 0.0F;
+    float clamped_xy = 0.0F;
+    float clamped_yy = 0.0F;
+    if (spectral_gap > 1.0e-8F) {
+        const float projector_xx =
+            (covariance_xx - eigenvalue_minimum) / spectral_gap;
+        const float projector_xy =
+            covariance_xy / spectral_gap;
+        const float projector_yy =
+            (covariance_yy - eigenvalue_minimum) / spectral_gap;
+        const float clamped_gap =
+            clamped_maximum - clamped_minimum;
+        clamped_xx =
+            clamped_minimum + clamped_gap * projector_xx;
+        clamped_xy = clamped_gap * projector_xy;
+        clamped_yy =
+            clamped_minimum + clamped_gap * projector_yy;
+    } else {
+        const float variance = fminf(
+            maximum_projected_variance,
+            fmaxf(minimum_projected_variance, 0.5F * trace));
+        clamped_xx = variance;
+        clamped_xy = 0.0F;
+        clamped_yy = variance;
+    }
+    const float determinant =
+        clamped_xx * clamped_yy -
+        clamped_xy * clamped_xy;
+    if (!isfinite(determinant) || determinant <= 1.0e-12F) {
+        return;
+    }
+    const float conic_xx = clamped_yy / determinant;
+    const float conic_xy = -clamped_xy / determinant;
+    const float conic_yy = clamped_xx / determinant;
+
+    const float conic_gradient[4]{
+        conic_xx_gradient,
+        0.5F * conic_xy_gradient,
+        0.5F * conic_xy_gradient,
+        conic_yy_gradient,
+    };
+    const float conic[4]{
+        conic_xx, conic_xy,
+        conic_xy, conic_yy,
+    };
+    float conic_times_gradient[4]{};
+    for (std::uint32_t row = 0U; row < 2U; ++row) {
+        for (std::uint32_t column = 0U; column < 2U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 2U; ++inner) {
+                conic_times_gradient[row * 2U + column] +=
+                    conic[row * 2U + inner] *
+                    conic_gradient[inner * 2U + column];
+            }
+        }
+    }
+    float clamped_covariance_gradient[4]{};
+    for (std::uint32_t row = 0U; row < 2U; ++row) {
+        for (std::uint32_t column = 0U; column < 2U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 2U; ++inner) {
+                clamped_covariance_gradient[row * 2U + column] -=
+                    conic_times_gradient[row * 2U + inner] *
+                    conic[inner * 2U + column];
+            }
+        }
+    }
+    const float symmetric_clamped_xy_gradient =
+        0.5F *
+        (clamped_covariance_gradient[1] +
+         clamped_covariance_gradient[2]);
+    clamped_covariance_gradient[1] =
+        symmetric_clamped_xy_gradient;
+    clamped_covariance_gradient[2] =
+        symmetric_clamped_xy_gradient;
+
+    float covariance_gradient[4]{};
+    if (spectral_gap > 1.0e-8F) {
+        const float angle =
+            0.5F * atan2f(
+                2.0F * covariance_xy,
+                covariance_xx - covariance_yy);
+        const float cosine = cosf(angle);
+        const float sine = sinf(angle);
+        const float g00 = clamped_covariance_gradient[0];
+        const float g01 = clamped_covariance_gradient[1];
+        const float g11 = clamped_covariance_gradient[3];
+        const float eigen_gradient_00 =
+            cosine * cosine * g00 +
+            2.0F * cosine * sine * g01 +
+            sine * sine * g11;
+        const float eigen_gradient_11 =
+            sine * sine * g00 -
+            2.0F * cosine * sine * g01 +
+            cosine * cosine * g11;
+        const float eigen_gradient_01 =
+            -cosine * sine * g00 +
+            (cosine * cosine - sine * sine) * g01 +
+            sine * cosine * g11;
+        const float maximum_derivative =
+            eigenvalue_maximum > minimum_projected_variance &&
+                    eigenvalue_maximum < maximum_projected_variance
+                ? 1.0F
+                : 0.0F;
+        const float minimum_derivative =
+            eigenvalue_minimum > minimum_projected_variance &&
+                    eigenvalue_minimum < maximum_projected_variance
+                ? 1.0F
+                : 0.0F;
+        const float cross_derivative =
+            (clamped_maximum - clamped_minimum) / spectral_gap;
+        const float transformed_00 =
+            maximum_derivative * eigen_gradient_00;
+        const float transformed_11 =
+            minimum_derivative * eigen_gradient_11;
+        const float transformed_01 =
+            cross_derivative * eigen_gradient_01;
+        covariance_gradient[0] =
+            cosine * cosine * transformed_00 -
+            2.0F * cosine * sine * transformed_01 +
+            sine * sine * transformed_11;
+        covariance_gradient[1] =
+            cosine * sine * transformed_00 +
+            (cosine * cosine - sine * sine) * transformed_01 -
+            sine * cosine * transformed_11;
+        covariance_gradient[2] = covariance_gradient[1];
+        covariance_gradient[3] =
+            sine * sine * transformed_00 +
+            2.0F * sine * cosine * transformed_01 +
+            cosine * cosine * transformed_11;
+    } else {
+        const float variance = 0.5F * trace;
+        const float derivative =
+            variance > minimum_projected_variance &&
+                    variance < maximum_projected_variance
+                ? 1.0F
+                : 0.0F;
+        for (std::uint32_t component = 0U;
+             component < 4U; ++component) {
+            covariance_gradient[component] =
+                derivative * clamped_covariance_gradient[component];
+        }
+    }
+
+    const float covariance_xx_gradient = covariance_gradient[0];
+    const float covariance_xy_gradient =
+        covariance_gradient[1] + covariance_gradient[2];
+    const float covariance_yy_gradient = covariance_gradient[3];
+    float projected_factor_gradient[6]{};
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        projected_factor_gradient[column] =
+            2.0F * covariance_xx_gradient *
+                projected_factor[column] +
+            covariance_xy_gradient *
+                projected_factor[3U + column];
+        projected_factor_gradient[3U + column] =
+            covariance_xy_gradient *
+                projected_factor[column] +
+            2.0F * covariance_yy_gradient *
+                projected_factor[3U + column];
+    }
+    float jacobian_gradient[6]{};
+    float covariance_factor_gradient[9]{};
+    for (std::uint32_t row = 0U; row < 2U; ++row) {
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            for (std::uint32_t inner = 0U; inner < 3U; ++inner) {
+                jacobian_gradient[row * 3U + inner] +=
+                    projected_factor_gradient[row * 3U + column] *
+                    covariance_factor[inner * 3U + column];
+                covariance_factor_gradient[inner * 3U + column] +=
+                    jacobian[row * 3U + inner] *
+                    projected_factor_gradient[row * 3U + column];
+            }
+        }
+    }
+
+    float camera_position_gradient[3]{
+        screen_x_gradient * camera.fx * inverse_depth,
+        screen_y_gradient * camera.fy * inverse_depth,
+        screen_x_gradient *
+                (-camera.fx * camera_x *
+                 inverse_depth_squared) +
+            screen_y_gradient *
+                (-camera.fy * camera_y *
+                 inverse_depth_squared),
+    };
+    camera_position_gradient[0] +=
+        jacobian_gradient[2] *
+        (-camera.fx * inverse_depth_squared);
+    camera_position_gradient[1] +=
+        jacobian_gradient[5] *
+        (-camera.fy * inverse_depth_squared);
+    camera_position_gradient[2] +=
+        jacobian_gradient[0] *
+            (-camera.fx * inverse_depth_squared) +
+        jacobian_gradient[2] *
+            (2.0F * camera.fx * camera_x *
+             inverse_depth_cubed) +
+        jacobian_gradient[4] *
+            (-camera.fy * inverse_depth_squared) +
+        jacobian_gradient[5] *
+            (2.0F * camera.fy * camera_y *
+             inverse_depth_cubed);
+
+    for (std::uint32_t axis = 0U; axis < 3U; ++axis) {
+        xyz_gradient[index * 3U + axis] =
+            camera.rotation[axis] * camera_position_gradient[0] +
+            camera.rotation[3U + axis] *
+                camera_position_gradient[1] +
+            camera.rotation[6U + axis] *
+                camera_position_gradient[2];
+    }
+
+    float camera_gaussian_rotation_gradient[9]{};
+    for (std::uint32_t column = 0U; column < 3U; ++column) {
+        float scale_gradient = 0.0F;
+        for (std::uint32_t row = 0U; row < 3U; ++row) {
+            const auto offset = row * 3U + column;
+            camera_gaussian_rotation_gradient[offset] =
+                covariance_factor_gradient[offset] * scale[column];
+            scale_gradient +=
+                covariance_factor_gradient[offset] *
+                camera_gaussian_rotation[offset];
+        }
+        log_scale_gradient[index * 3U + column] =
+            scale_gradient * scale[column];
+    }
+    float gaussian_rotation_gradient[9]{};
+    for (std::uint32_t row = 0U; row < 3U; ++row) {
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            for (std::uint32_t camera_axis = 0U;
+                 camera_axis < 3U; ++camera_axis) {
+                gaussian_rotation_gradient[row * 3U + column] +=
+                    camera.rotation[camera_axis * 3U + row] *
+                    camera_gaussian_rotation_gradient[
+                        camera_axis * 3U + column];
+            }
+        }
+    }
+
+    float normalized_quaternion_gradient[4]{};
+    const float* rotation_matrix_gradient =
+        gaussian_rotation_gradient;
+    normalized_quaternion_gradient[2] +=
+        -4.0F * y * rotation_matrix_gradient[0];
+    normalized_quaternion_gradient[3] +=
+        -4.0F * z * rotation_matrix_gradient[0];
+    normalized_quaternion_gradient[1] +=
+        2.0F * y * rotation_matrix_gradient[1];
+    normalized_quaternion_gradient[2] +=
+        2.0F * x * rotation_matrix_gradient[1];
+    normalized_quaternion_gradient[3] +=
+        -2.0F * w * rotation_matrix_gradient[1];
+    normalized_quaternion_gradient[0] +=
+        -2.0F * z * rotation_matrix_gradient[1];
+    normalized_quaternion_gradient[1] +=
+        2.0F * z * rotation_matrix_gradient[2];
+    normalized_quaternion_gradient[3] +=
+        2.0F * x * rotation_matrix_gradient[2];
+    normalized_quaternion_gradient[2] +=
+        2.0F * w * rotation_matrix_gradient[2];
+    normalized_quaternion_gradient[0] +=
+        2.0F * y * rotation_matrix_gradient[2];
+    normalized_quaternion_gradient[1] +=
+        2.0F * y * rotation_matrix_gradient[3];
+    normalized_quaternion_gradient[2] +=
+        2.0F * x * rotation_matrix_gradient[3];
+    normalized_quaternion_gradient[3] +=
+        2.0F * w * rotation_matrix_gradient[3];
+    normalized_quaternion_gradient[0] +=
+        2.0F * z * rotation_matrix_gradient[3];
+    normalized_quaternion_gradient[1] +=
+        -4.0F * x * rotation_matrix_gradient[4];
+    normalized_quaternion_gradient[3] +=
+        -4.0F * z * rotation_matrix_gradient[4];
+    normalized_quaternion_gradient[2] +=
+        2.0F * z * rotation_matrix_gradient[5];
+    normalized_quaternion_gradient[3] +=
+        2.0F * y * rotation_matrix_gradient[5];
+    normalized_quaternion_gradient[1] +=
+        -2.0F * w * rotation_matrix_gradient[5];
+    normalized_quaternion_gradient[0] +=
+        -2.0F * x * rotation_matrix_gradient[5];
+    normalized_quaternion_gradient[1] +=
+        2.0F * z * rotation_matrix_gradient[6];
+    normalized_quaternion_gradient[3] +=
+        2.0F * x * rotation_matrix_gradient[6];
+    normalized_quaternion_gradient[2] +=
+        -2.0F * w * rotation_matrix_gradient[6];
+    normalized_quaternion_gradient[0] +=
+        -2.0F * y * rotation_matrix_gradient[6];
+    normalized_quaternion_gradient[2] +=
+        2.0F * z * rotation_matrix_gradient[7];
+    normalized_quaternion_gradient[3] +=
+        2.0F * y * rotation_matrix_gradient[7];
+    normalized_quaternion_gradient[1] +=
+        2.0F * w * rotation_matrix_gradient[7];
+    normalized_quaternion_gradient[0] +=
+        2.0F * x * rotation_matrix_gradient[7];
+    normalized_quaternion_gradient[1] +=
+        -4.0F * x * rotation_matrix_gradient[8];
+    normalized_quaternion_gradient[2] +=
+        -4.0F * y * rotation_matrix_gradient[8];
+
+    float parallel_component = 0.0F;
+    for (std::uint32_t component = 0U; component < 4U; ++component) {
+        parallel_component +=
+            normalized_quaternion_gradient[component] *
+            quaternion[component];
+    }
+    for (std::uint32_t component = 0U; component < 4U; ++component) {
+        rotation_gradient[index * 4U + component] =
+            (normalized_quaternion_gradient[component] -
+             parallel_component * quaternion[component]) /
+            quaternion_norm;
     }
 }
 
@@ -973,6 +1469,12 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
                 std::vector<std::array<float, 3>>(gaussians.size());
             gradients.opacity_logit =
                 std::vector<float>(gaussians.size(), 0.0F);
+            gradients.xyz =
+                std::vector<std::array<float, 3>>(gaussians.size());
+            gradients.log_scale =
+                std::vector<std::array<float, 3>>(gaussians.size());
+            gradients.rotation =
+                std::vector<std::array<float, 4>>(gaussians.size());
         }
         return AlphaRenderBackwardOutput{
             .render =
@@ -1089,13 +1591,27 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     std::optional<DeviceAllocation<float>> device_image_gradient;
     std::optional<DeviceAllocation<float>> device_dc_gradient;
     std::optional<DeviceAllocation<float>> device_opacity_logit_gradient;
+    std::optional<DeviceAllocation<float>>
+        device_projected_geometry_gradient;
+    std::optional<DeviceAllocation<float>> device_xyz_gradient;
+    std::optional<DeviceAllocation<float>> device_log_scale_gradient;
+    std::optional<DeviceAllocation<float>> device_rotation_gradient;
     if (image_gradient != nullptr) {
         device_image_gradient.emplace(image_gradient->size());
         device_dc_gradient.emplace(gaussians.size() * 3U);
         device_opacity_logit_gradient.emplace(gaussians.size());
+        device_projected_geometry_gradient.emplace(
+            gaussians.size() * 5U);
+        device_xyz_gradient.emplace(gaussians.size() * 3U);
+        device_log_scale_gradient.emplace(gaussians.size() * 3U);
+        device_rotation_gradient.emplace(gaussians.size() * 4U);
         device_image_gradient->copy_from_host(image_gradient->data());
         device_dc_gradient->zero();
         device_opacity_logit_gradient->zero();
+        device_projected_geometry_gradient->zero();
+        device_xyz_gradient->zero();
+        device_log_scale_gradient->zero();
+        device_rotation_gradient->zero();
         backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
             device_sorted_records.data(),
             device_sorted_record_indices.data(),
@@ -1103,8 +1619,19 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             camera.width, camera.height,
             background[0], background[1], background[2],
             device_image_gradient->data(), device_dc_gradient->data(),
-            device_opacity_logit_gradient->data());
+            device_opacity_logit_gradient->data(),
+            device_projected_geometry_gradient->data());
         require_cuda(cudaGetLastError(), "launch tiled alpha backward");
+        backward_projected_geometry_kernel<<<
+            projection_blocks, threads_per_block>>>(
+            device_gaussians.data(), gaussian_count, device_camera,
+            device_projected_geometry_gradient->data(),
+            device_xyz_gradient->data(),
+            device_log_scale_gradient->data(),
+            device_rotation_gradient->data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch tiled alpha geometry backward");
     }
     require_cuda(
         cudaDeviceSynchronize(),
@@ -1137,9 +1664,21 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             std::vector<std::array<float, 3>>(gaussians.size());
         gradients.opacity_logit =
             std::vector<float>(gaussians.size(), 0.0F);
+        gradients.xyz =
+            std::vector<std::array<float, 3>>(gaussians.size());
+        gradients.log_scale =
+            std::vector<std::array<float, 3>>(gaussians.size());
+        gradients.rotation =
+            std::vector<std::array<float, 4>>(gaussians.size());
         device_dc_gradient->copy_to_host(gradients.dc.front().data());
         device_opacity_logit_gradient->copy_to_host(
             gradients.opacity_logit.data());
+        device_xyz_gradient->copy_to_host(
+            gradients.xyz.front().data());
+        device_log_scale_gradient->copy_to_host(
+            gradients.log_scale.front().data());
+        device_rotation_gradient->copy_to_host(
+            gradients.rotation.front().data());
     }
     return {
         .render = std::move(output),
@@ -1409,7 +1948,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 camera.width, camera.height,
                 0.0F, 0.0F, 0.0F,
                 image_gradient.data(), dc_gradient.data(),
-                opacity_gradient.data());
+                opacity_gradient.data(), nullptr);
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered backward");

@@ -2,6 +2,20 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.11 - Phase 4 anisotropic geometry backward
+
+- Extended public backward with position, three log-scale, and normalized
+  `w,x,y,z` quaternion gradients.
+- Added a CPU finite-difference oracle and an analytical CUDA reverse chain
+  through inverse covariance, spectral clamp, perspective, scale, and rotation.
+- Added direct finite differences for all ten geometry components on a
+  branch-stable anisotropic fixture.
+- Measured 40.528 ms forward and 91.601 ms forward+geometry-backward medians
+  at 1,025,093 Gaussians / 800x580.
+- Completed an Albagnac 500-iteration regression in 32.233 seconds, reducing
+  anchor L1 from 0.200559 to 0.155307 with no OOM.
+- Kept persistent training on DC/opacity Adam; geometry integration is dev.12.
+
 ## 0.5.0-dev.10 - Phase 4 anisotropic covariance forward
 
 - Replaced the projected scalar sigma with an inverse 2D conic and independent

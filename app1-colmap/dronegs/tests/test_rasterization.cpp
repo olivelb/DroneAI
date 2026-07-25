@@ -175,17 +175,24 @@ void test_anisotropic_projection() {
           "zero quaternion produced a projected covariance");
 }
 
-float objective(
-    const std::vector<dronegs::Gaussian>& gaussians,
+float finite_difference(
+    const std::vector<dronegs::Gaussian>& plus,
+    const std::vector<dronegs::Gaussian>& minus,
     const std::vector<float>& image_gradient,
-    const std::array<float, 3>& background) {
-    const auto output =
-        dronegs::render_alpha_reference(gaussians, camera(), background);
-    float value = 0.0F;
-    for (std::size_t index = 0U; index < output.rgb.size(); ++index) {
-        value += output.rgb[index] * image_gradient[index];
+    const std::array<float, 3>& background, float epsilon) {
+    const auto plus_output =
+        dronegs::render_alpha_reference(plus, camera(), background);
+    const auto minus_output =
+        dronegs::render_alpha_reference(minus, camera(), background);
+    double derivative = 0.0;
+    for (std::size_t index = 0U; index < plus_output.rgb.size(); ++index) {
+        derivative +=
+            static_cast<double>(
+                plus_output.rgb[index] -
+                minus_output.rgb[index]) *
+            static_cast<double>(image_gradient[index]);
     }
-    return value;
+    return static_cast<float>(derivative / (2.0 * epsilon));
 }
 
 void test_backward_finite_difference() {
@@ -202,7 +209,14 @@ void test_backward_finite_difference() {
     constexpr std::array<float, 3> background{0.05F, 0.1F, 0.15F};
     const auto backward = dronegs::render_alpha_reference_backward(
         gaussians, camera(), image_gradient, background);
+    check(backward.gradients.xyz.size() == gaussians.size(),
+          "alpha-reference position gradient shape mismatch");
+    check(backward.gradients.log_scale.size() == gaussians.size(),
+          "alpha-reference scale gradient shape mismatch");
+    check(backward.gradients.rotation.size() == gaussians.size(),
+          "alpha-reference rotation gradient shape mismatch");
     constexpr float epsilon = 1.0e-3F;
+    constexpr float position_epsilon = 1.0e-4F;
     for (std::size_t gaussian = 0U; gaussian < gaussians.size();
          ++gaussian) {
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
@@ -211,9 +225,8 @@ void test_backward_finite_difference() {
             plus[gaussian].dc[channel] += epsilon;
             minus[gaussian].dc[channel] -= epsilon;
             const float finite_difference =
-                (objective(plus, image_gradient, background) -
-                 objective(minus, image_gradient, background)) /
-                (2.0F * epsilon);
+                ::finite_difference(
+                    plus, minus, image_gradient, background, epsilon);
             check_close(
                 backward.gradients.dc[gaussian][channel],
                 finite_difference, 2.0e-4F,
@@ -224,13 +237,51 @@ void test_backward_finite_difference() {
         plus[gaussian].opacity_logit += epsilon;
         minus[gaussian].opacity_logit -= epsilon;
         const float finite_difference =
-            (objective(plus, image_gradient, background) -
-             objective(minus, image_gradient, background)) /
-            (2.0F * epsilon);
+            ::finite_difference(
+                plus, minus, image_gradient, background, epsilon);
         check_close(
             backward.gradients.opacity_logit[gaussian],
             finite_difference, 3.0e-4F,
             "alpha-reference opacity gradient mismatch");
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            plus = gaussians;
+            minus = gaussians;
+            plus[gaussian].xyz[axis] += position_epsilon;
+            minus[gaussian].xyz[axis] -= position_epsilon;
+            const float position_finite_difference =
+                ::finite_difference(
+                    plus, minus, image_gradient, background,
+                    position_epsilon);
+            check_close(
+                backward.gradients.xyz[gaussian][axis],
+                position_finite_difference, 1.0e-6F,
+                "alpha-reference position gradient mismatch");
+
+            plus = gaussians;
+            minus = gaussians;
+            plus[gaussian].log_scale[axis] += epsilon;
+            minus[gaussian].log_scale[axis] -= epsilon;
+            const float scale_finite_difference =
+                ::finite_difference(
+                    plus, minus, image_gradient, background, epsilon);
+            check_close(
+                backward.gradients.log_scale[gaussian][axis],
+                scale_finite_difference, 1.0e-6F,
+                "alpha-reference scale gradient mismatch");
+        }
+        for (std::size_t component = 0U; component < 4U; ++component) {
+            plus = gaussians;
+            minus = gaussians;
+            plus[gaussian].rotation[component] += epsilon;
+            minus[gaussian].rotation[component] -= epsilon;
+            const float rotation_finite_difference =
+                ::finite_difference(
+                    plus, minus, image_gradient, background, epsilon);
+            check_close(
+                backward.gradients.rotation[gaussian][component],
+                rotation_finite_difference, 1.0e-6F,
+                "alpha-reference rotation gradient mismatch");
+        }
     }
 
     bool rejected = false;

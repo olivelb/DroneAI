@@ -367,6 +367,11 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
     AlphaRenderGradients gradients{
         .dc = std::vector<std::array<float, 3>>(gaussians.size()),
         .opacity_logit = std::vector<float>(gaussians.size(), 0.0F),
+        .xyz = std::vector<std::array<float, 3>>(gaussians.size()),
+        .log_scale =
+            std::vector<std::array<float, 3>>(gaussians.size()),
+        .rotation =
+            std::vector<std::array<float, 4>>(gaussians.size()),
     };
     const auto projected = project_visible(gaussians, camera);
     std::vector<AlphaPixelContribution> contributions;
@@ -460,6 +465,57 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                         (1.0F - contribution.alpha) * tail[channel];
                 }
             }
+        }
+    }
+    const auto finite_difference =
+        [&camera, &background, &image_gradient](
+            const std::vector<Gaussian>& plus,
+            const std::vector<Gaussian>& minus, float epsilon) {
+            const auto plus_output =
+                render_alpha_reference(plus, camera, background);
+            const auto minus_output =
+                render_alpha_reference(minus, camera, background);
+            double derivative = 0.0;
+            for (std::size_t index = 0U;
+                 index < plus_output.rgb.size(); ++index) {
+                derivative +=
+                    static_cast<double>(
+                        plus_output.rgb[index] -
+                        minus_output.rgb[index]) *
+                    static_cast<double>(image_gradient[index]);
+            }
+            return static_cast<float>(
+                derivative / (2.0 * epsilon));
+        };
+    constexpr float position_epsilon = 1.0e-4F;
+    constexpr float parameter_epsilon = 1.0e-3F;
+    for (std::size_t gaussian = 0U;
+         gaussian < gaussians.size(); ++gaussian) {
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            auto plus = gaussians;
+            auto minus = gaussians;
+            plus[gaussian].xyz[axis] += position_epsilon;
+            minus[gaussian].xyz[axis] -= position_epsilon;
+            gradients.xyz[gaussian][axis] =
+                finite_difference(
+                    plus, minus, position_epsilon);
+
+            plus = gaussians;
+            minus = gaussians;
+            plus[gaussian].log_scale[axis] += parameter_epsilon;
+            minus[gaussian].log_scale[axis] -= parameter_epsilon;
+            gradients.log_scale[gaussian][axis] =
+                finite_difference(
+                    plus, minus, parameter_epsilon);
+        }
+        for (std::size_t component = 0U; component < 4U; ++component) {
+            auto plus = gaussians;
+            auto minus = gaussians;
+            plus[gaussian].rotation[component] += parameter_epsilon;
+            minus[gaussian].rotation[component] -= parameter_epsilon;
+            gradients.rotation[gaussian][component] =
+                finite_difference(
+                    plus, minus, parameter_epsilon);
         }
     }
     return {

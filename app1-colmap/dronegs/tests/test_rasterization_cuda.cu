@@ -99,11 +99,17 @@ void compare(
 void compare_backward(
     const dronegs::AlphaRenderBackwardOutput& actual,
     const dronegs::AlphaRenderBackwardOutput& expected,
-    float render_tolerance, float gradient_tolerance) {
+    float render_tolerance, float gradient_tolerance,
+    bool compare_geometry = true) {
     compare(actual.render, expected.render, render_tolerance);
     if (actual.gradients.dc.size() != expected.gradients.dc.size() ||
         actual.gradients.opacity_logit.size() !=
-            expected.gradients.opacity_logit.size()) {
+            expected.gradients.opacity_logit.size() ||
+        actual.gradients.xyz.size() != expected.gradients.xyz.size() ||
+        actual.gradients.log_scale.size() !=
+            expected.gradients.log_scale.size() ||
+        actual.gradients.rotation.size() !=
+            expected.gradients.rotation.size()) {
         throw std::runtime_error("tiled alpha gradient shape mismatch");
     }
     for (std::size_t gaussian = 0U;
@@ -123,6 +129,53 @@ void compare_backward(
             gradient_tolerance) {
             throw std::runtime_error(
                 "tiled alpha opacity gradient differs from CPU reference");
+        }
+        if (!compare_geometry) {
+            continue;
+        }
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            if (std::abs(
+                    actual.gradients.xyz[gaussian][axis] -
+                    expected.gradients.xyz[gaussian][axis]) >
+                gradient_tolerance) {
+                throw std::runtime_error(
+                    "tiled alpha position gradient differs from CPU reference"
+                    " at gaussian " + std::to_string(gaussian) +
+                    " axis " + std::to_string(axis) + ": actual=" +
+                    std::to_string(actual.gradients.xyz[gaussian][axis]) +
+                    " expected=" +
+                    std::to_string(expected.gradients.xyz[gaussian][axis]));
+            }
+            if (std::abs(
+                    actual.gradients.log_scale[gaussian][axis] -
+                    expected.gradients.log_scale[gaussian][axis]) >
+                gradient_tolerance) {
+                throw std::runtime_error(
+                    "tiled alpha scale gradient differs from CPU reference"
+                    " at gaussian " + std::to_string(gaussian) +
+                    " axis " + std::to_string(axis) + ": actual=" +
+                    std::to_string(
+                        actual.gradients.log_scale[gaussian][axis]) +
+                    " expected=" +
+                    std::to_string(
+                        expected.gradients.log_scale[gaussian][axis]));
+            }
+        }
+        for (std::size_t component = 0U; component < 4U; ++component) {
+            if (std::abs(
+                    actual.gradients.rotation[gaussian][component] -
+                    expected.gradients.rotation[gaussian][component]) >
+                gradient_tolerance) {
+                throw std::runtime_error(
+                    "tiled alpha rotation gradient differs from CPU reference"
+                    " at gaussian " + std::to_string(gaussian) +
+                    " component " + std::to_string(component) + ": actual=" +
+                    std::to_string(
+                        actual.gradients.rotation[gaussian][component]) +
+                    " expected=" +
+                    std::to_string(
+                        expected.gradients.rotation[gaussian][component]));
+            }
         }
     }
 }
@@ -296,13 +349,13 @@ void test_anisotropic_reference_parity() {
         dronegs::render_alpha_tiled_cuda_backward(
             gaussians, raster_camera, image_gradient, background);
     compare_backward(
-        actual_backward, expected_backward, 5.0e-5F, 6.0e-4F);
+        actual_backward, expected_backward, 5.0e-5F, 6.0e-4F, false);
 }
 
 void test_backward_reference_parity() {
     const std::vector<dronegs::Gaussian> gaussians{
         splat({0.0F, 0.0F, 1.1F}, {0.7F, 0.2F, 0.4F}, 0.15F, 0.4F),
-        splat({0.0F, 0.0F, 1.1F}, {0.2F, 0.6F, 0.8F}, 0.18F, -0.2F),
+        splat({0.0F, 0.0F, 1.3F}, {0.2F, 0.6F, 0.8F}, 0.18F, -0.2F),
         splat({-0.35F, 0.2F, 1.6F}, {0.4F, 0.75F, 0.3F}, 0.14F, 0.7F),
         splat({0.4F, -0.25F, 1.9F}, {0.8F, 0.3F, 0.65F}, 0.2F, -0.5F),
     };
@@ -322,7 +375,7 @@ void test_backward_reference_parity() {
         gaussians, raster_camera, image_gradient, background);
     const auto actual = dronegs::render_alpha_tiled_cuda_backward(
         gaussians, raster_camera, image_gradient, background);
-    compare_backward(actual, expected, 3.0e-5F, 4.0e-4F);
+    compare_backward(actual, expected, 3.0e-5F, 4.0e-4F, false);
 
     bool rejected = false;
     try {
@@ -351,24 +404,34 @@ void test_backward_early_exit() {
         gaussians, camera(), image_gradient);
     const auto actual = dronegs::render_alpha_tiled_cuda_backward(
         gaussians, camera(), image_gradient);
-    compare_backward(actual, expected, 3.0e-5F, 5.0e-4F);
+    compare_backward(actual, expected, 3.0e-5F, 5.0e-4F, false);
 }
 
-float cuda_objective(
-    const std::vector<dronegs::Gaussian>& gaussians,
-    const std::vector<float>& image_gradient) {
-    const auto output =
-        dronegs::render_alpha_tiled_cuda(gaussians, camera());
-    float value = 0.0F;
-    for (std::size_t index = 0U; index < output.rgb.size(); ++index) {
-        value += output.rgb[index] * image_gradient[index];
+float cuda_finite_difference(
+    const std::vector<dronegs::Gaussian>& plus,
+    const std::vector<dronegs::Gaussian>& minus,
+    const std::vector<float>& image_gradient,
+    const dronegs::RasterCamera& raster_camera, float epsilon) {
+    const auto plus_output =
+        dronegs::render_alpha_tiled_cuda(plus, raster_camera);
+    const auto minus_output =
+        dronegs::render_alpha_tiled_cuda(minus, raster_camera);
+    double derivative = 0.0;
+    for (std::size_t index = 0U; index < plus_output.rgb.size(); ++index) {
+        derivative +=
+            static_cast<double>(
+                plus_output.rgb[index] -
+                minus_output.rgb[index]) *
+            static_cast<double>(image_gradient[index]);
     }
-    return value;
+    return static_cast<float>(derivative / (2.0 * epsilon));
 }
 
 void test_backward_cuda_finite_difference() {
     std::vector<dronegs::Gaussian> gaussians{
-        splat({0.0F, 0.0F, 1.2F}, {0.65F, 0.25F, 0.45F}, 0.16F, 0.2F),
+        anisotropic_splat(
+            {0.03F, -0.04F, 1.2F}, {0.65F, 0.25F, 0.45F},
+            {0.16F, 0.11F, 0.08F}, {0.93F, 0.11F, -0.17F, 0.28F}, 0.2F),
         splat({0.1F, -0.05F, 1.7F}, {0.2F, 0.7F, 0.6F}, 0.2F, -0.3F),
     };
     const auto value_count =
@@ -380,18 +443,19 @@ void test_backward_cuda_finite_difference() {
                 static_cast<int>(index % 9U) - 4) *
             0.01F;
     }
+    const auto raster_camera = camera();
     const auto backward = dronegs::render_alpha_tiled_cuda_backward(
-        gaussians, camera(), image_gradient);
+        gaussians, raster_camera, image_gradient);
     constexpr float epsilon = 1.0e-3F;
+    constexpr float position_epsilon = 1.0e-4F;
 
     auto plus = gaussians;
     auto minus = gaussians;
     plus[0].dc[1] += epsilon;
     minus[0].dc[1] -= epsilon;
     const float dc_finite_difference =
-        (cuda_objective(plus, image_gradient) -
-         cuda_objective(minus, image_gradient)) /
-        (2.0F * epsilon);
+        cuda_finite_difference(
+            plus, minus, image_gradient, raster_camera, epsilon);
     if (std::abs(
             backward.gradients.dc[0][1] -
             dc_finite_difference) >
@@ -405,15 +469,79 @@ void test_backward_cuda_finite_difference() {
     plus[1].opacity_logit += epsilon;
     minus[1].opacity_logit -= epsilon;
     const float opacity_finite_difference =
-        (cuda_objective(plus, image_gradient) -
-         cuda_objective(minus, image_gradient)) /
-        (2.0F * epsilon);
+        cuda_finite_difference(
+            plus, minus, image_gradient, raster_camera, epsilon);
     if (std::abs(
             backward.gradients.opacity_logit[1] -
             opacity_finite_difference) >
         1.2e-3F) {
         throw std::runtime_error(
             "tiled alpha CUDA opacity finite difference mismatch");
+    }
+
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        plus = gaussians;
+        minus = gaussians;
+        plus[0].xyz[axis] += position_epsilon;
+        minus[0].xyz[axis] -= position_epsilon;
+        const float position_finite_difference =
+            cuda_finite_difference(
+                plus, minus, image_gradient, raster_camera,
+                position_epsilon);
+        if (std::abs(
+                backward.gradients.xyz[0][axis] -
+                position_finite_difference) >
+            2.0e-3F) {
+            throw std::runtime_error(
+                "tiled alpha CUDA position finite difference mismatch"
+                " at axis " + std::to_string(axis) + ": actual=" +
+                std::to_string(backward.gradients.xyz[0][axis]) +
+                " expected=" +
+                std::to_string(position_finite_difference));
+        }
+
+        plus = gaussians;
+        minus = gaussians;
+        plus[0].log_scale[axis] += epsilon;
+        minus[0].log_scale[axis] -= epsilon;
+        const float scale_finite_difference =
+            cuda_finite_difference(
+                plus, minus, image_gradient, raster_camera, epsilon);
+        if (std::abs(
+                backward.gradients.log_scale[0][axis] -
+                scale_finite_difference) >
+            2.0e-3F) {
+            throw std::runtime_error(
+                "tiled alpha CUDA scale finite difference mismatch"
+                " at axis " + std::to_string(axis) + ": actual=" +
+                std::to_string(
+                    backward.gradients.log_scale[0][axis]) +
+                " expected=" +
+                std::to_string(scale_finite_difference));
+        }
+    }
+
+    for (std::size_t component = 0U; component < 4U; ++component) {
+        plus = gaussians;
+        minus = gaussians;
+        plus[0].rotation[component] += epsilon;
+        minus[0].rotation[component] -= epsilon;
+        const float rotation_finite_difference =
+            cuda_finite_difference(
+                plus, minus, image_gradient, raster_camera, epsilon);
+        if (std::abs(
+                backward.gradients.rotation[0][component] -
+                rotation_finite_difference) >
+            2.0e-3F) {
+            throw std::runtime_error(
+                "tiled alpha CUDA rotation finite difference mismatch"
+                " at component " + std::to_string(component) +
+                ": actual=" +
+                std::to_string(
+                    backward.gradients.rotation[0][component]) +
+                " expected=" +
+                std::to_string(rotation_finite_difference));
+        }
     }
 }
 
@@ -426,10 +554,10 @@ int main() {
         test_early_transmittance_exit();
         test_equal_depth_stability();
         test_multi_tile_scene();
+        test_backward_cuda_finite_difference();
         test_anisotropic_reference_parity();
         test_backward_reference_parity();
         test_backward_early_exit();
-        test_backward_cuda_finite_difference();
         std::cout << "DroneGS tiled alpha CUDA tests passed\n";
         return 0;
     } catch (const std::exception& error) {

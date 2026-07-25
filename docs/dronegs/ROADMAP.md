@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.10.
+- Current development version: 0.5.0-dev.11.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -61,13 +61,19 @@ Each completed phase has one focused commit and an annotated
 - The anisotropic million-Gaussian benchmark measures 44.934 ms forward and
   64.416 ms forward+backward. The Albagnac 500-iteration run completed in
   30.316 seconds and reduced anchor L1 by 22.6% without OOM.
-- Phase 4 exit gate still open: position/scale/rotation gradients, DSSIM,
+- Public anisotropic geometry backward now returns position, log-scale, and
+  normalized-quaternion gradients. All ten geometry components pass direct
+  finite differences on a branch-stable fixture.
+- The million-Gaussian public-call medians are 40.528 ms forward and 91.601 ms
+  forward+geometry-backward. Persistent geometry Adam remains open.
+- Phase 4 exit gate still open: persistent geometry Adam and schedules, DSSIM,
   progressive SH, held-out quality metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 correctness priority is position/scale/rotation
-  gradients, followed by held-out quality metrics.
+- The immediate Phase 4 correctness priority is persistent integration of the
+  validated geometry gradients and Adam state, followed by held-out quality
+  metrics.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,
