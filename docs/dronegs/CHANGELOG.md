@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.6 - Phase 4 GPU tile pipeline
+
+- Moved visible-splat projection and tile-bound calculation from the host to CUDA.
+- Added deterministic depth keys combining positive float depth bits with source
+  index, followed by a stable CUB radix sort.
+- Added a CUB exclusive scan for tile-pair offsets, GPU pair duplication, stable
+  tile/depth sorting, and GPU tile-range construction.
+- Removed host projected-splat vectors, per-tile vectors, and their transfers
+  from the ordered-alpha forward path.
+- Added equal-depth source-order and explicit multi-tile CPU/CUDA parity tests.
+- Added an opt-in, reproducible end-to-end CUDA raster benchmark.
+- Reduced the 1,025,093-splat / 800x580 benchmark median from 146.311 ms to
+  35.395 ms across two order-balanced five-run sets on the RTX 4070 Laptop:
+  4.13x faster and 75.81% less wall time.
+- Kept the production trainer on the additive backward path; ordered-alpha
+  backward, anisotropic covariance, and held-out quality parity remain open.
+
 ## 0.5.0-dev.5 - Phase 4 tiled-alpha CUDA forward
 
 - Added a 16x16 tiled CUDA front-to-back alpha renderer.

@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.5
+Project version: 0.5.0-dev.6
 
 ## Decision
 
@@ -90,10 +90,12 @@ Albagnac run, below timing variance and not worth the added synchronization.
 Version 0.5.0-dev.4 adds a separate CPU correctness oracle for stable,
 depth-sorted front-to-back alpha composition. It records RGB, residual
 transmittance, visible splats, evaluated pairs, and contributing pairs. The
-0.5.0-dev.5 adds a matching forward CUDA implementation: host-built per-tile
-depth lists feed 16x16 CUDA blocks, and each block cooperatively stages splat
-batches in shared memory. The production training kernel remains additive until
-GPU binning and a validated ordered-alpha backward pass are available.
+0.5.0-dev.5 adds a matching forward CUDA implementation: per-tile depth lists
+feed 16x16 CUDA blocks, and each block cooperatively stages splat batches in
+shared memory. Version 0.5.0-dev.6 moves projection, deterministic depth sorting,
+tile-pair duplication and sorting, and tile-range construction to CUDA with CUB.
+The production training kernel remains additive until a validated ordered-alpha
+backward pass is available.
 
 ## Planned layout
 
@@ -104,6 +106,7 @@ app1-colmap/dronegs/
     src/{api,colmap,model,rasterization,training}/
     cuda/{rasterization,losses,optimizer,strategies}/
     tests/
+    benchmarks/
 
 app1-colmap/gaussian_training/
     Python backend boundary and benchmark support

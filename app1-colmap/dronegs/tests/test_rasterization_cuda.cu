@@ -40,6 +40,17 @@ dronegs::RasterCamera camera() {
     };
 }
 
+dronegs::RasterCamera multi_tile_camera() {
+    return {
+        .fx = 42.0F,
+        .fy = 40.0F,
+        .cx = 25.0F,
+        .cy = 18.0F,
+        .width = 51U,
+        .height = 37U,
+    };
+}
+
 void compare(
     const dronegs::AlphaRenderOutput& actual,
     const dronegs::AlphaRenderOutput& expected,
@@ -122,6 +133,54 @@ void test_early_transmittance_exit() {
     }
 }
 
+void test_equal_depth_stability() {
+    const std::vector<dronegs::Gaussian> red_first{
+        splat({0.0F, 0.0F, 1.25F}, {1.0F, 0.0F, 0.0F}, 0.18F, 1.5F),
+        splat({0.0F, 0.0F, 1.25F}, {0.0F, 0.0F, 1.0F}, 0.18F, 1.5F),
+    };
+    auto blue_first = red_first;
+    std::reverse(blue_first.begin(), blue_first.end());
+
+    const auto red_first_expected =
+        dronegs::render_alpha_reference(red_first, camera());
+    const auto red_first_actual =
+        dronegs::render_alpha_tiled_cuda(red_first, camera());
+    compare(red_first_actual, red_first_expected, 3.0e-5F);
+
+    const auto blue_first_expected =
+        dronegs::render_alpha_reference(blue_first, camera());
+    const auto blue_first_actual =
+        dronegs::render_alpha_tiled_cuda(blue_first, camera());
+    compare(blue_first_actual, blue_first_expected, 3.0e-5F);
+
+    const std::size_t center = (8U * camera().width + 9U) * 3U;
+    if (red_first_actual.rgb[center] <= blue_first_actual.rgb[center] ||
+        blue_first_actual.rgb[center + 2U] <=
+            red_first_actual.rgb[center + 2U]) {
+        throw std::runtime_error(
+            "equal-depth source order was not preserved");
+    }
+}
+
+void test_multi_tile_scene() {
+    const std::vector<dronegs::Gaussian> gaussians{
+        splat({0.0F, 0.0F, 1.0F}, {0.9F, 0.2F, 0.1F}, 0.24F, 1.2F),
+        splat({-0.35F, -0.15F, 1.3F}, {0.1F, 0.8F, 0.3F}, 0.18F, 0.4F),
+        splat({0.45F, 0.22F, 1.6F}, {0.2F, 0.3F, 1.0F}, 0.28F, 0.8F),
+        splat({-0.7F, 0.45F, 2.0F}, {0.8F, 0.7F, 0.1F}, 0.2F, -0.2F),
+    };
+    constexpr std::array<float, 3> background{0.02F, 0.04F, 0.06F};
+    const auto expected = dronegs::render_alpha_reference(
+        gaussians, multi_tile_camera(), background);
+    const auto actual = dronegs::render_alpha_tiled_cuda(
+        gaussians, multi_tile_camera(), background);
+    compare(actual, expected, 3.0e-5F);
+    if (actual.stats.visible_splats != gaussians.size()) {
+        throw std::runtime_error(
+            "multi-tile scene unexpectedly culled a splat");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -129,6 +188,8 @@ int main() {
         test_reference_parity();
         test_empty_scene();
         test_early_transmittance_exit();
+        test_equal_depth_stability();
+        test_multi_tile_scene();
         std::cout << "DroneGS tiled alpha CUDA tests passed\n";
         return 0;
     } catch (const std::exception& error) {

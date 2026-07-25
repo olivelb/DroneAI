@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.5` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.6` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -11,8 +11,9 @@ Version `0.5.0-dev.5` is an experimental fixed-topology training slice. It:
 - stores decoded RGB as bytes in a lazy 256 MiB LRU cache;
 - overlaps one JPEG decode with GPU work through a persistent prefetch worker;
 - defines a tested CPU oracle for depth-sorted front-to-back alpha composition;
-- provides a forward CUDA renderer with 16x16 tile lists and shared splat batches
-  that matches the CPU alpha oracle;
+- provides a forward CUDA renderer with GPU projection, stable radix sorting,
+  GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
+  alpha oracle;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -22,13 +23,14 @@ Version `0.5.0-dev.5` is an experimental fixed-topology training slice. It:
 - provides finite-difference and end-to-end convergence tests.
 
 It is not a LichtFeld replacement yet. Rendering is additive rather than
-front-to-back alpha composited; positions, scales, rotations, topology, and
-non-DC SH coefficients remain fixed. Only `SIMPLE_PINHOLE` and `PINHOLE`
-cameras are accepted and quality parity is not measured. Decoded images use a
-bounded LRU plus one in-flight prefetch slot. Pinned transfer buffers and
-asynchronous host-to-device copies are not retained: the current Albagnac
-prototype measured only about 0.06 seconds of upload service over 500 iterations.
-The binary identifies itself as
+front-to-back alpha composited in the training path; the separate ordered-alpha
+forward renderer does not yet have a backward pass. Positions, scales,
+rotations, topology, and non-DC SH coefficients remain fixed. Only
+`SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
+measured. Decoded images use a bounded LRU plus one in-flight prefetch slot.
+Pinned transfer buffers and asynchronous host-to-device copies are not retained:
+the current Albagnac prototype measured only about 0.06 seconds of upload service
+over 500 iterations. The binary identifies itself as
 `dronegs-fixed-topology-additive-prototype` and remains opt-in.
 
 ## Container build
@@ -45,6 +47,16 @@ docker run --rm --gpus all \
   bash -lc 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
             cmake --build build && ctest --test-dir build --output-on-failure'
 ```
+
+The optional raster benchmark is built with
+`-DDRONEGS_BUILD_BENCHMARKS=ON` and run as:
+
+```bash
+./build/dronegs_rasterization_cuda_benchmark 1025093 5
+```
+
+It measures the complete ordered-alpha forward call, including allocation,
+projection, sorting, tile construction, rendering, and host readback.
 
 ## Experimental fixed-topology training run
 

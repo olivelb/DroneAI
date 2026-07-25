@@ -70,7 +70,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-fixed-topology-additive-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.5\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.6\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"

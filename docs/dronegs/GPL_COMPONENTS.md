@@ -16,6 +16,7 @@ level. This is an engineering inventory, not legal advice.
 | gsplat | Official `nerfstudio-project/gsplat`; revision not selected | Apache-2.0 | Candidate future rasterizer source | Import from official source, pin revision, retain notices, list adapted files |
 | INRIA 3DGS code | Reference implementation; revision not selected | Custom research license | Algorithmic reference only | Do not copy source until separately approved |
 | ImprovedGS+ | Revision and license not audited | To be determined | Post-parity experiment candidate | No source import until audited |
+| NVIDIA CUB | 2.7.0 from CUDA Toolkit 12.8.1 | BSD-3-Clause | Header-only radix sort and scan in the native raster pipeline | Retain NVIDIA copyright and BSD notice with binary distributions |
 | NVIDIA CUDA/images | NVIDIA distributions | NVIDIA terms | Build/runtime | Preserve redistribution notices and terms |
 | COLMAP | Pinned by DroneAI | BSD-3-Clause | Reconstruction/input format | Preserve license and attribution |
 

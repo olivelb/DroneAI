@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.5.
+- Current development version: 0.5.0-dev.6.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental fixed-topology additive trainer; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
@@ -34,16 +34,20 @@ Each completed phase has one focused commit and an annotated
   0.954 s median image wait, and 15.9% lower warm wall time than dev.2.
 - Ordered-alpha correctness foundation completed: CPU reference renderer,
   transmittance contract, stable depth ordering, thresholds, and native tests.
-- Tiled-alpha CUDA forward sub-gate completed: 16x16 tiles, stable per-tile
-  depth lists, shared-memory splat batches, and CPU/CUDA output parity.
-- Phase 4 exit gate still open: ordered alpha compositing, geometry/scale/rotation
-  gradients, DSSIM, progressive SH, held-out quality metrics, and LichtFeld parity.
+- Tiled-alpha CUDA forward sub-gate completed: GPU projection, deterministic
+  depth sorting, GPU tile-pair construction, 16x16 shared-memory rendering,
+  and CPU/CUDA output parity.
+- The GPU tile pipeline reduced a 1,025,093-splat / 800x580 end-to-end forward
+  benchmark from 146.311 ms to 35.395 ms median (4.13x) versus dev.5.
+- Phase 4 exit gate still open: ordered-alpha training integration and backward,
+  geometry/scale/rotation gradients, DSSIM, progressive SH, held-out quality
+  metrics, and LichtFeld parity.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- Next performance work must be selected from a GPU kernel profile. The immediate
-  Phase 4 priority is GPU projection/binning/sort, followed by the ordered-alpha
-  backward pass, anisotropic covariance, and measured quality parity.
+- The immediate Phase 4 priority is the ordered-alpha backward pass, followed by
+  anisotropic covariance and measured held-out quality parity. Further
+  performance work must be selected from a GPU kernel profile.
 
 ## Versioning rules
 
