@@ -111,6 +111,74 @@ void test_invalid_camera() {
     check(rejected, "invalid alpha-reference camera was accepted");
 }
 
+float objective(
+    const std::vector<dronegs::Gaussian>& gaussians,
+    const std::vector<float>& image_gradient,
+    const std::array<float, 3>& background) {
+    const auto output =
+        dronegs::render_alpha_reference(gaussians, camera(), background);
+    float value = 0.0F;
+    for (std::size_t index = 0U; index < output.rgb.size(); ++index) {
+        value += output.rgb[index] * image_gradient[index];
+    }
+    return value;
+}
+
+void test_backward_finite_difference() {
+    std::vector<dronegs::Gaussian> gaussians{
+        centered(1.0F, {0.7F, 0.2F, 0.4F}, 0.3F),
+        centered(1.8F, {0.1F, 0.6F, 0.8F}, -0.4F),
+    };
+    const std::vector<float> image_gradient{
+        0.2F, -0.1F, 0.3F,
+        -0.4F, 0.5F, 0.1F,
+        0.3F, 0.2F, -0.2F,
+        -0.1F, 0.4F, 0.25F,
+    };
+    constexpr std::array<float, 3> background{0.05F, 0.1F, 0.15F};
+    const auto backward = dronegs::render_alpha_reference_backward(
+        gaussians, camera(), image_gradient, background);
+    constexpr float epsilon = 1.0e-3F;
+    for (std::size_t gaussian = 0U; gaussian < gaussians.size();
+         ++gaussian) {
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            auto plus = gaussians;
+            auto minus = gaussians;
+            plus[gaussian].dc[channel] += epsilon;
+            minus[gaussian].dc[channel] -= epsilon;
+            const float finite_difference =
+                (objective(plus, image_gradient, background) -
+                 objective(minus, image_gradient, background)) /
+                (2.0F * epsilon);
+            check_close(
+                backward.gradients.dc[gaussian][channel],
+                finite_difference, 2.0e-4F,
+                "alpha-reference DC gradient mismatch");
+        }
+        auto plus = gaussians;
+        auto minus = gaussians;
+        plus[gaussian].opacity_logit += epsilon;
+        minus[gaussian].opacity_logit -= epsilon;
+        const float finite_difference =
+            (objective(plus, image_gradient, background) -
+             objective(minus, image_gradient, background)) /
+            (2.0F * epsilon);
+        check_close(
+            backward.gradients.opacity_logit[gaussian],
+            finite_difference, 3.0e-4F,
+            "alpha-reference opacity gradient mismatch");
+    }
+
+    bool rejected = false;
+    try {
+        static_cast<void>(dronegs::render_alpha_reference_backward(
+            gaussians, camera(), {1.0F}, background));
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    check(rejected, "invalid alpha backward gradient shape was accepted");
+}
+
 }  // namespace
 
 int main() {
@@ -119,6 +187,7 @@ int main() {
         test_depth_order_is_input_independent();
         test_background_and_culling();
         test_invalid_camera();
+        test_backward_finite_difference();
         std::cout << "DroneGS alpha reference tests passed\n";
         return 0;
     } catch (const std::exception& error) {

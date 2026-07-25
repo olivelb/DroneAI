@@ -56,10 +56,20 @@ std::vector<dronegs::Gaussian> make_scene(
 double render_milliseconds(
     const std::vector<dronegs::Gaussian>& gaussians,
     const dronegs::RasterCamera& camera,
+    const std::vector<float>* image_gradient,
     dronegs::AlphaRenderStats& stats) {
     const auto start = std::chrono::steady_clock::now();
-    const auto output =
-        dronegs::render_alpha_tiled_cuda(gaussians, camera);
+    if (image_gradient != nullptr) {
+        const auto output = dronegs::render_alpha_tiled_cuda_backward(
+            gaussians, camera, *image_gradient);
+        const auto end = std::chrono::steady_clock::now();
+        stats = output.render.stats;
+        return std::chrono::duration<double, std::milli>(
+                   end - start)
+            .count();
+    }
+    const auto output = dronegs::render_alpha_tiled_cuda(
+        gaussians, camera);
     const auto end = std::chrono::steady_clock::now();
     stats = output.stats;
     return std::chrono::duration<double, std::milli>(end - start).count();
@@ -73,9 +83,15 @@ int main(int argc, char** argv) {
             argc > 1 ? std::stoull(argv[1]) : 1'025'093U;
         const std::size_t repeat_count =
             argc > 2 ? std::stoull(argv[2]) : 5U;
+        const std::string mode =
+            argc > 3 ? argv[3] : "forward";
         if (gaussian_count == 0U || repeat_count == 0U) {
             throw std::invalid_argument(
                 "Gaussian and repeat counts must be positive");
+        }
+        if (mode != "forward" && mode != "backward") {
+            throw std::invalid_argument(
+                "benchmark mode must be forward or backward");
         }
         const dronegs::RasterCamera camera{
             .fx = 620.0F,
@@ -86,14 +102,26 @@ int main(int argc, char** argv) {
             .height = 580U,
         };
         const auto gaussians = make_scene(gaussian_count, camera);
+        std::vector<float> image_gradient;
+        if (mode == "backward") {
+            image_gradient.resize(
+                static_cast<std::size_t>(camera.width) *
+                    camera.height * 3U,
+                1.0F / static_cast<float>(
+                    static_cast<std::size_t>(camera.width) *
+                    camera.height * 3U));
+        }
+        const auto* gradient =
+            image_gradient.empty() ? nullptr : &image_gradient;
         dronegs::AlphaRenderStats stats{};
         const double warmup_ms =
-            render_milliseconds(gaussians, camera, stats);
+            render_milliseconds(gaussians, camera, gradient, stats);
         std::vector<double> runs;
         runs.reserve(repeat_count);
         for (std::size_t repeat = 0; repeat < repeat_count; ++repeat) {
             runs.push_back(
-                render_milliseconds(gaussians, camera, stats));
+                render_milliseconds(
+                    gaussians, camera, gradient, stats));
         }
         auto sorted = runs;
         std::sort(sorted.begin(), sorted.end());
@@ -101,7 +129,8 @@ int main(int argc, char** argv) {
             sorted[sorted.size() / 2U];
 
         std::cout << std::fixed << std::setprecision(3)
-                  << "{\"gaussians\":" << gaussian_count
+                  << "{\"mode\":\"" << mode << "\""
+                  << ",\"gaussians\":" << gaussian_count
                   << ",\"width\":" << camera.width
                   << ",\"height\":" << camera.height
                   << ",\"warmup_ms\":" << warmup_ms

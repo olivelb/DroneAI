@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.6
+Project version: 0.5.0-dev.7
 
 ## Decision
 
@@ -94,8 +94,13 @@ transmittance, visible splats, evaluated pairs, and contributing pairs. The
 feed 16x16 CUDA blocks, and each block cooperatively stages splat batches in
 shared memory. Version 0.5.0-dev.6 moves projection, deterministic depth sorting,
 tile-pair duplication and sorting, and tile-range construction to CUDA with CUB.
-The production training kernel remains additive until a validated ordered-alpha
-backward pass is available.
+Version 0.5.0-dev.7 adds CPU and CUDA backward paths for DC color and opacity.
+For each pixel, reverse composition carries the color produced by all later
+splats and reconstructs pre-splat transmittance from the final residual. This
+matches finite differences while respecting contribution clamps and early exit.
+The production training kernel remains additive because the public validation
+API still allocates and copies per call; persistent device buffers, device-side
+loss gradients, and optimizer integration are the next sub-gate.
 
 ## Planned layout
 

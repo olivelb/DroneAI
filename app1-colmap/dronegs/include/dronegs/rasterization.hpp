@@ -45,6 +45,16 @@ struct AlphaRenderOutput {
     AlphaRenderStats stats;
 };
 
+struct AlphaRenderGradients {
+    std::vector<std::array<float, 3>> dc;
+    std::vector<float> opacity_logit;
+};
+
+struct AlphaRenderBackwardOutput {
+    AlphaRenderOutput render;
+    AlphaRenderGradients gradients;
+};
+
 struct ProjectedAlphaSplat {
     std::size_t source_index = 0;
     float depth = 0.0F;
@@ -64,6 +74,16 @@ AlphaRenderOutput render_alpha_reference(
 
 AlphaRenderOutput render_alpha_tiled_cuda(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+
+AlphaRenderBackwardOutput render_alpha_reference_backward(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::vector<float>& image_gradient,
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+
+AlphaRenderBackwardOutput render_alpha_tiled_cuda_backward(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::vector<float>& image_gradient,
     const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
 
 }  // namespace dronegs

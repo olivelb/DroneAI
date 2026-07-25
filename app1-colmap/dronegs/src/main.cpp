@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
-        std::cout << "DroneGS 0.5.0-dev.6 fixed-topology additive prototype\n";
+        std::cout << "DroneGS 0.5.0-dev.7 fixed-topology additive prototype\n";
         return 0;
     }
 
@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.6 uses experimental additive splatting; "
+        std::cerr << "DroneGS 0.5.0-dev.7 uses experimental additive splatting; "
                      "ordered alpha compositing and parity are not implemented yet.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations

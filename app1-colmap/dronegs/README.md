@@ -3,7 +3,7 @@
 This directory contains the original C++23/CUDA implementation of the
 DroneAI Gaussian trainer. No LichtFeld implementation source is copied here.
 
-Version `0.5.0-dev.6` is an experimental fixed-topology training slice. It:
+Version `0.5.0-dev.7` is an experimental fixed-topology training slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -14,6 +14,8 @@ Version `0.5.0-dev.6` is an experimental fixed-topology training slice. It:
 - provides a forward CUDA renderer with GPU projection, stable radix sorting,
   GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
   alpha oracle;
+- provides tested CPU and CUDA ordered-alpha gradients for DC color and opacity,
+  including equal-depth ordering, alpha clamping, and early-transmittance exit;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -24,8 +26,8 @@ Version `0.5.0-dev.6` is an experimental fixed-topology training slice. It:
 
 It is not a LichtFeld replacement yet. Rendering is additive rather than
 front-to-back alpha composited in the training path; the separate ordered-alpha
-forward renderer does not yet have a backward pass. Positions, scales,
-rotations, topology, and non-DC SH coefficients remain fixed. Only
+forward/backward API is not yet wired into the persistent trainer buffers.
+Positions, scales, rotations, topology, and non-DC SH coefficients remain fixed. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted and quality parity is not
 measured. Decoded images use a bounded LRU plus one in-flight prefetch slot.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
@@ -53,10 +55,12 @@ The optional raster benchmark is built with
 
 ```bash
 ./build/dronegs_rasterization_cuda_benchmark 1025093 5
+./build/dronegs_rasterization_cuda_benchmark 1025093 5 backward
 ```
 
-It measures the complete ordered-alpha forward call, including allocation,
-projection, sorting, tile construction, rendering, and host readback.
+The default mode measures the complete ordered-alpha forward call. The
+`backward` mode measures forward plus DC/opacity backward. Both include
+allocation, projection, sorting, tile construction, rendering, and host readback.
 
 ## Experimental fixed-topology training run
 

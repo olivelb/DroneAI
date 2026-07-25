@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace dronegs {
@@ -15,6 +16,14 @@ namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
 constexpr float minimum_depth = 1.0e-4F;
+
+struct AlphaPixelContribution {
+    std::size_t projected_index = 0U;
+    float transmittance_before = 1.0F;
+    float gaussian_weight = 0.0F;
+    float alpha = 0.0F;
+    bool alpha_is_unclamped = false;
+};
 
 float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
@@ -175,6 +184,118 @@ AlphaRenderOutput render_alpha_reference(
         }
     }
     return output;
+}
+
+AlphaRenderBackwardOutput render_alpha_reference_backward(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::vector<float>& image_gradient,
+    const std::array<float, 3>& background) {
+    auto render = render_alpha_reference(gaussians, camera, background);
+    if (image_gradient.size() != render.rgb.size()) {
+        throw std::invalid_argument(
+            "alpha backward image gradient shape is invalid");
+    }
+    AlphaRenderGradients gradients{
+        .dc = std::vector<std::array<float, 3>>(gaussians.size()),
+        .opacity_logit = std::vector<float>(gaussians.size(), 0.0F),
+    };
+    const auto projected = project_visible(gaussians, camera);
+    std::vector<AlphaPixelContribution> contributions;
+    contributions.reserve(projected.size());
+    for (std::uint32_t y = 0U; y < camera.height; ++y) {
+        for (std::uint32_t x = 0U; x < camera.width; ++x) {
+            contributions.clear();
+            float remaining = 1.0F;
+            for (std::size_t index = 0U; index < projected.size(); ++index) {
+                if (remaining <= alpha_minimum_transmittance) {
+                    break;
+                }
+                const auto& splat = projected[index];
+                const int support =
+                    static_cast<int>(std::ceil(2.5F * splat.sigma));
+                const int center_x =
+                    static_cast<int>(std::floor(splat.x));
+                const int center_y =
+                    static_cast<int>(std::floor(splat.y));
+                if (static_cast<int>(x) < center_x - support ||
+                    static_cast<int>(x) > center_x + support ||
+                    static_cast<int>(y) < center_y - support ||
+                    static_cast<int>(y) > center_y + support) {
+                    continue;
+                }
+                const float delta_x =
+                    (static_cast<float>(x) + 0.5F) - splat.x;
+                const float delta_y =
+                    (static_cast<float>(y) + 0.5F) - splat.y;
+                const float gaussian_weight = std::exp(
+                    -(delta_x * delta_x + delta_y * delta_y) *
+                    (0.5F / (splat.sigma * splat.sigma)));
+                const float raw_alpha = splat.opacity * gaussian_weight;
+                const float alpha =
+                    std::min(alpha_maximum, raw_alpha);
+                if (alpha < alpha_minimum_contribution) {
+                    continue;
+                }
+                contributions.push_back({
+                    .projected_index = index,
+                    .transmittance_before = remaining,
+                    .gaussian_weight = gaussian_weight,
+                    .alpha = alpha,
+                    .alpha_is_unclamped = raw_alpha < alpha_maximum,
+                });
+                remaining *= 1.0F - alpha;
+            }
+
+            const auto pixel =
+                static_cast<std::size_t>(y) * camera.width + x;
+            const std::array<float, 3> upstream{
+                image_gradient[pixel * 3U],
+                image_gradient[pixel * 3U + 1U],
+                image_gradient[pixel * 3U + 2U],
+            };
+            std::array<float, 3> tail = background;
+            for (auto iterator = contributions.rbegin();
+                 iterator != contributions.rend(); ++iterator) {
+                const auto& contribution = *iterator;
+                const auto& splat =
+                    projected[contribution.projected_index];
+                const auto source = splat.source_index;
+                float alpha_gradient = 0.0F;
+                for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                    const float color_gradient =
+                        upstream[channel] *
+                        contribution.transmittance_before *
+                        contribution.alpha;
+                    const float unclamped_color =
+                        0.5F + sh_c0 * gaussians[source].dc[channel];
+                    if (unclamped_color > 0.0F &&
+                        unclamped_color < 1.0F) {
+                        gradients.dc[source][channel] +=
+                            sh_c0 * color_gradient;
+                    }
+                    alpha_gradient +=
+                        upstream[channel] *
+                        contribution.transmittance_before *
+                        (splat.color[channel] - tail[channel]);
+                }
+                if (contribution.alpha_is_unclamped) {
+                    const float opacity = splat.opacity;
+                    gradients.opacity_logit[source] +=
+                        alpha_gradient * contribution.gaussian_weight *
+                        opacity * (1.0F - opacity);
+                }
+                for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                    tail[channel] =
+                        contribution.alpha * splat.color[channel] +
+                        (1.0F - contribution.alpha) * tail[channel];
+                }
+            }
+        }
+    }
+    return {
+        .render = std::move(render),
+        .gradients = std::move(gradients),
+    };
 }
 
 }  // namespace dronegs

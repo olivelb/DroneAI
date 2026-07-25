@@ -9,9 +9,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace dronegs {
@@ -23,6 +25,8 @@ constexpr std::uint32_t threads_per_block = 256U;
 
 static_assert(std::is_trivially_copyable_v<Gaussian>);
 static_assert(std::is_trivially_copyable_v<ProjectedAlphaSplat>);
+static_assert(
+    sizeof(std::array<float, 3>) == 3U * sizeof(float));
 
 void require_cuda(cudaError_t status, const char* operation) {
     if (status != cudaSuccess) {
@@ -426,6 +430,131 @@ __global__ void render_alpha_tiles_kernel(
     atomicAdd(&stats->contributing_pairs, contributing);
 }
 
+__global__ void backward_alpha_tiles_kernel(
+    const DeviceProjectedRecord* records,
+    const std::uint32_t* record_indices,
+    const std::uint64_t* tile_starts, const std::uint64_t* tile_ends,
+    std::uint32_t width, std::uint32_t height,
+    float background_r, float background_g, float background_b,
+    const float* image_gradient, float* dc_gradient,
+    float* opacity_logit_gradient) {
+    const std::uint32_t x =
+        blockIdx.x * alpha_tile_width + threadIdx.x;
+    const std::uint32_t y =
+        blockIdx.y * alpha_tile_height + threadIdx.y;
+    if (x >= width || y >= height) {
+        return;
+    }
+    const std::uint32_t tiles_x =
+        width / alpha_tile_width +
+        (width % alpha_tile_width != 0U ? 1U : 0U);
+    const std::size_t tile =
+        static_cast<std::size_t>(blockIdx.y) * tiles_x + blockIdx.x;
+    const std::uint64_t start = tile_starts[tile];
+    const std::uint64_t end = tile_ends[tile];
+
+    float remaining = 1.0F;
+    std::uint64_t active_end = end;
+    for (std::uint64_t pair = start; pair < end; ++pair) {
+        if (remaining <= alpha_minimum_transmittance) {
+            active_end = pair;
+            break;
+        }
+        const auto& splat = records[record_indices[pair]].splat;
+        const int support =
+            static_cast<int>(ceilf(2.5F * splat.sigma));
+        const int center_x = static_cast<int>(floorf(splat.x));
+        const int center_y = static_cast<int>(floorf(splat.y));
+        if (static_cast<int>(x) < center_x - support ||
+            static_cast<int>(x) > center_x + support ||
+            static_cast<int>(y) < center_y - support ||
+            static_cast<int>(y) > center_y + support) {
+            continue;
+        }
+        const float delta_x =
+            (static_cast<float>(x) + 0.5F) - splat.x;
+        const float delta_y =
+            (static_cast<float>(y) + 0.5F) - splat.y;
+        const float gaussian_weight = expf(
+            -(delta_x * delta_x + delta_y * delta_y) *
+            (0.5F / (splat.sigma * splat.sigma)));
+        const float alpha = fminf(
+            alpha_maximum, splat.opacity * gaussian_weight);
+        if (alpha < alpha_minimum_contribution) {
+            continue;
+        }
+        remaining *= 1.0F - alpha;
+        if (remaining <= alpha_minimum_transmittance) {
+            active_end = pair + 1U;
+            break;
+        }
+    }
+
+    const auto pixel =
+        static_cast<std::size_t>(y) * width + x;
+    const float upstream[3]{
+        image_gradient[pixel * 3U],
+        image_gradient[pixel * 3U + 1U],
+        image_gradient[pixel * 3U + 2U],
+    };
+    float tail[3]{background_r, background_g, background_b};
+    float transmittance_after = remaining;
+    for (std::uint64_t cursor = active_end; cursor > start; --cursor) {
+        const auto& splat =
+            records[record_indices[cursor - 1U]].splat;
+        const int support =
+            static_cast<int>(ceilf(2.5F * splat.sigma));
+        const int center_x = static_cast<int>(floorf(splat.x));
+        const int center_y = static_cast<int>(floorf(splat.y));
+        if (static_cast<int>(x) < center_x - support ||
+            static_cast<int>(x) > center_x + support ||
+            static_cast<int>(y) < center_y - support ||
+            static_cast<int>(y) > center_y + support) {
+            continue;
+        }
+        const float delta_x =
+            (static_cast<float>(x) + 0.5F) - splat.x;
+        const float delta_y =
+            (static_cast<float>(y) + 0.5F) - splat.y;
+        const float gaussian_weight = expf(
+            -(delta_x * delta_x + delta_y * delta_y) *
+            (0.5F / (splat.sigma * splat.sigma)));
+        const float raw_alpha = splat.opacity * gaussian_weight;
+        const float alpha = fminf(alpha_maximum, raw_alpha);
+        if (alpha < alpha_minimum_contribution) {
+            continue;
+        }
+        const float transmittance_before =
+            transmittance_after / (1.0F - alpha);
+        float alpha_gradient = 0.0F;
+        const auto source = splat.source_index;
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            if (splat.color[channel] > 0.0F &&
+                splat.color[channel] < 1.0F) {
+                atomicAdd(
+                    &dc_gradient[source * 3U + channel],
+                    sh_c0 * upstream[channel] *
+                        transmittance_before * alpha);
+            }
+            alpha_gradient +=
+                upstream[channel] * transmittance_before *
+                (splat.color[channel] - tail[channel]);
+        }
+        if (raw_alpha < alpha_maximum) {
+            atomicAdd(
+                &opacity_logit_gradient[source],
+                alpha_gradient * gaussian_weight * splat.opacity *
+                    (1.0F - splat.opacity));
+        }
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            tail[channel] =
+                alpha * splat.color[channel] +
+                (1.0F - alpha) * tail[channel];
+        }
+        transmittance_after = transmittance_before;
+    }
+}
+
 void sort_projected_records(
     std::uint64_t* keys_in, std::uint64_t* keys_out,
     DeviceProjectedRecord* records_in, DeviceProjectedRecord* records_out,
@@ -478,12 +607,34 @@ void sort_tile_pairs(
 
 }  // namespace
 
-AlphaRenderOutput render_alpha_tiled_cuda(
+static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
-    const std::array<float, 3>& background) {
+    const std::array<float, 3>& background,
+    const std::vector<float>* image_gradient) {
     validate_inputs(gaussians, camera, background);
+    const auto pixel_count =
+        static_cast<std::size_t>(camera.width) * camera.height;
+    if (image_gradient != nullptr &&
+        image_gradient->size() != pixel_count * 3U) {
+        throw std::invalid_argument(
+            "tiled alpha backward image gradient shape is invalid");
+    }
+    const auto empty_result = [&]() {
+        AlphaRenderGradients gradients{};
+        if (image_gradient != nullptr) {
+            gradients.dc =
+                std::vector<std::array<float, 3>>(gaussians.size());
+            gradients.opacity_logit =
+                std::vector<float>(gaussians.size(), 0.0F);
+        }
+        return AlphaRenderBackwardOutput{
+            .render =
+                render_alpha_reference({}, camera, background),
+            .gradients = std::move(gradients),
+        };
+    };
     if (gaussians.empty()) {
-        return render_alpha_reference({}, camera, background);
+        return empty_result();
     }
 
     const auto gaussian_count =
@@ -538,7 +689,7 @@ AlphaRenderOutput render_alpha_tiled_cuda(
             sizeof(pair_count), cudaMemcpyDeviceToHost),
         "copy tile pair count to host");
     if (pair_count == 0U) {
-        return render_alpha_reference({}, camera, background);
+        return empty_result();
     }
     if (pair_count >
         static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
@@ -572,8 +723,6 @@ AlphaRenderOutput render_alpha_tiled_cuda(
         device_tile_starts.data(), device_tile_ends.data());
     require_cuda(cudaGetLastError(), "launch tile range construction");
 
-    const auto pixel_count =
-        static_cast<std::size_t>(camera.width) * camera.height;
     DeviceAllocation<float> device_rgb(pixel_count * 3U);
     DeviceAllocation<float> device_transmittance(pixel_count);
     DeviceAllocation<DeviceRenderStats> device_stats(1U);
@@ -589,7 +738,32 @@ AlphaRenderOutput render_alpha_tiled_cuda(
         background[0], background[1], background[2],
         device_rgb.data(), device_transmittance.data(), device_stats.data());
     require_cuda(cudaGetLastError(), "launch tiled alpha renderer");
-    require_cuda(cudaDeviceSynchronize(), "synchronize tiled alpha renderer");
+
+    std::optional<DeviceAllocation<float>> device_image_gradient;
+    std::optional<DeviceAllocation<float>> device_dc_gradient;
+    std::optional<DeviceAllocation<float>> device_opacity_logit_gradient;
+    if (image_gradient != nullptr) {
+        device_image_gradient.emplace(image_gradient->size());
+        device_dc_gradient.emplace(gaussians.size() * 3U);
+        device_opacity_logit_gradient.emplace(gaussians.size());
+        device_image_gradient->copy_from_host(image_gradient->data());
+        device_dc_gradient->zero();
+        device_opacity_logit_gradient->zero();
+        backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
+            device_sorted_records.data(),
+            device_sorted_record_indices.data(),
+            device_tile_starts.data(), device_tile_ends.data(),
+            camera.width, camera.height,
+            background[0], background[1], background[2],
+            device_image_gradient->data(), device_dc_gradient->data(),
+            device_opacity_logit_gradient->data());
+        require_cuda(cudaGetLastError(), "launch tiled alpha backward");
+    }
+    require_cuda(
+        cudaDeviceSynchronize(),
+        image_gradient == nullptr
+            ? "synchronize tiled alpha renderer"
+            : "synchronize tiled alpha forward/backward");
 
     AlphaRenderOutput output{
         .width = camera.width,
@@ -610,7 +784,36 @@ AlphaRenderOutput render_alpha_tiled_cuda(
         static_cast<std::uint64_t>(stats.evaluated_pairs);
     output.stats.contributing_pairs =
         static_cast<std::uint64_t>(stats.contributing_pairs);
-    return output;
+    AlphaRenderGradients gradients{};
+    if (image_gradient != nullptr) {
+        gradients.dc =
+            std::vector<std::array<float, 3>>(gaussians.size());
+        gradients.opacity_logit =
+            std::vector<float>(gaussians.size(), 0.0F);
+        device_dc_gradient->copy_to_host(gradients.dc.front().data());
+        device_opacity_logit_gradient->copy_to_host(
+            gradients.opacity_logit.data());
+    }
+    return {
+        .render = std::move(output),
+        .gradients = std::move(gradients),
+    };
+}
+
+AlphaRenderOutput render_alpha_tiled_cuda(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::array<float, 3>& background) {
+    return render_alpha_cuda_impl(
+               gaussians, camera, background, nullptr)
+        .render;
+}
+
+AlphaRenderBackwardOutput render_alpha_tiled_cuda_backward(
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    const std::vector<float>& image_gradient,
+    const std::array<float, 3>& background) {
+    return render_alpha_cuda_impl(
+        gaussians, camera, background, &image_gradient);
 }
 
 }  // namespace dronegs

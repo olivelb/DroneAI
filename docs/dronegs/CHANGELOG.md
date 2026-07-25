@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.7 - Phase 4 ordered-alpha backward
+
+- Added public ordered-alpha backward outputs for DC color and opacity-logit
+  gradients alongside the matching forward render.
+- Added an original CPU reference that reverses each pixel's contributing
+  sequence while carrying the composited tail color.
+- Added a tiled CUDA backward kernel that reconstructs pre-splat
+  transmittance, handles alpha/contribution clamps, and atomically accumulates
+  per-Gaussian DC and opacity gradients.
+- Added CPU and direct CUDA finite-difference checks plus CPU/CUDA parity for
+  equal depths, multi-tile coverage, empty scenes, and early exit.
+- Extended the opt-in raster benchmark with a forward+backward mode.
+- Measured 52.889 ms combined median for forward+backward at 1,025,093 splats
+  and 800x580 in Release/sm_89, versus 35.190 ms for forward alone.
+- Kept the production trainer additive: the validated API still performs
+  per-call allocation and host readback and is not yet a persistent training path.
+
 ## 0.5.0-dev.6 - Phase 4 GPU tile pipeline
 
 - Moved visible-splat projection and tile-bound calculation from the host to CUDA.
