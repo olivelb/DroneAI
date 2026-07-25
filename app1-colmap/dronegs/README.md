@@ -1,13 +1,13 @@
 # DroneGS native trainer
 
 This directory contains the C++23/CUDA DroneAI Gaussian trainer. The
-pre-dev.15 native implementation is original MIT code. Dev.15-dev.17 adapt
+pre-dev.15 native implementation is original MIT code. Dev.15-dev.18 adapt
 MRNF error weighting, cadence, long-axis split, weighted-Gumbel selection, and
 edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.17` is an experimental MRNF optimizer-schedule slice. It:
+Version `0.5.0-dev.18` is an experimental MRNF optimizer-calibration slice. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -41,9 +41,13 @@ Version `0.5.0-dev.17` is an experimental MRNF optimizer-schedule slice. It:
   0.25 edge-guidance factor without extra edge-render passes;
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
-- applies MRNF's 10th-90th-percentile median-width position normalization,
-  exponential position/scale schedules, constant DC/opacity/rotation rates,
-  Adam epsilon `1e-15`, bounded log-scales, and quaternion renormalization;
+- exposes both the accepted `dronegs-dev16` quality-anchor optimizer profile
+  and the experimental `lichtfeld-absolute` profile, with dev16 as the default;
+- samples approximately 4,096 Gaussians deterministically at step 1, every
+  fifth of training, and the final step, reporting gradient RMS, actual applied
+  update RMS, parameter RMS, and component sample count for all five families;
+- applies the selected position/scale schedules, constant
+  DC/opacity/rotation rates, bounded log-scales, and quaternion renormalization;
 - supports an explicit LichtFeld-compatible held-out stride that excludes
   validation views from every shuffled training schedule;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
@@ -68,9 +72,12 @@ Topology, weighted Gumbel selection, and edge guidance now run, but
 prune/replacement, noise injection, decay, compaction, and non-DC SH
 coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. Dev.17 reaches 1,173,577 Gaussians but only 16.1151 dB / 0.219473
-SSIM. The direct LichtFeld optimizer profile regresses the dev.16 quality
-anchor by 0.9566 dB / 0.02603 SSIM and is retained as a negative calibration
+measured. Dev.18 reproduces the dev.16 quality anchor in the same instrumented
+binary at 17.0704 dB / 0.245493 SSIM. The direct LichtFeld optimizer profile
+reaches only 16.1158 dB / 0.219508 SSIM. Sampled actual updates show that it
+moves DC about 15-20x less and position about 48-58x less, while moving opacity
+about 1.7-1.8x more and late scale/rotation about 3-8x more. The absolute
+LichtFeld profile is therefore retained as an opt-in negative calibration
 result, not as an accepted quality improvement. LPIPS remains unevaluated.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
@@ -81,7 +88,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-scheduled-gumbel-edge-anisotropic-dssim-prototype` and remains
+`dronegs-mrnf-optimizer-calibration-prototype` and remains
 opt-in.
 
 ## Container build
@@ -131,5 +138,9 @@ requires a non-zero held-out stride.
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
 and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
 the dev.8 decode behavior.
+
+`--optimizer-profile dronegs-dev16` is the default and current quality anchor.
+`--optimizer-profile lichtfeld-absolute` reproduces the rejected direct
+LichtFeld-rate experiment for controlled calibration and telemetry.
 
 The output directory must be empty and must not contain the source dataset.

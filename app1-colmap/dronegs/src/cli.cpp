@@ -46,14 +46,15 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS scheduled anisotropic MRNF Gumbel-edge "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.17\n"
+        "DroneGS MRNF optimizer-calibration "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.18\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
-        "[--save-eval-images 0|1]\n";
+        "[--save-eval-images 0|1] "
+        "[--optimizer-profile dronegs-dev16|lichtfeld-absolute]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -65,6 +66,7 @@ Options parse_options(int argc, char** argv) {
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
+        "--optimizer-profile",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -119,6 +121,10 @@ Options parse_options(int argc, char** argv) {
         options.save_eval_images = parse_u32(
             values.at("--save-eval-images"), "--save-eval-images");
     }
+    if (values.contains("--optimizer-profile")) {
+        options.optimizer_profile =
+            values.at("--optimizer-profile");
+    }
     validate_options(options);
     return options;
 }
@@ -172,6 +178,12 @@ void validate_options(const Options& options) {
         options.test_every == 0U) {
         throw std::invalid_argument(
             "--save-eval-images requires --test-every");
+    }
+    if (options.optimizer_profile != "lichtfeld-absolute" &&
+        options.optimizer_profile != "dronegs-dev16") {
+        throw std::invalid_argument(
+            "--optimizer-profile must be lichtfeld-absolute or "
+            "dronegs-dev16");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

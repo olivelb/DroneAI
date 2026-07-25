@@ -5,10 +5,10 @@
  * The dev.15 MRNF error-weighted contribution and long-axis split behavior,
  * plus the dev.16 Gumbel selection and edge-guidance behavior and dev.17 MRNF
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
- * The pre-existing
- * DroneGS rasterizer, loss, gradient, and optimizer code in this file was
- * original MIT code; this combined translation unit is conservatively
- * distributed under GPL-3.0-or-later from dev.15 onward.
+ * Dev.18 dual-profile selection and update telemetry are DroneAI additions.
+ * The pre-existing DroneGS rasterizer, loss, gradient, and optimizer code in
+ * this file was original MIT code; this combined translation unit is
+ * conservatively distributed under GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/rasterization.hpp"
 #include "dronegs/ordered_training.hpp"
@@ -50,6 +50,13 @@ constexpr float mrnf_scale_learning_rate_initial = 7.0e-3F;
 constexpr float mrnf_scale_learning_rate_final = 5.0e-3F;
 constexpr float mrnf_rotation_learning_rate = 2.0e-3F;
 constexpr float mrnf_adam_epsilon = 1.0e-15F;
+constexpr float dev16_position_learning_rate_initial = 1.6e-4F;
+constexpr float dev16_position_learning_rate_final = 1.6e-6F;
+constexpr float dev16_dc_learning_rate = 5.0e-2F;
+constexpr float dev16_opacity_learning_rate = 1.0e-2F;
+constexpr float dev16_scale_learning_rate = 5.0e-3F;
+constexpr float dev16_rotation_learning_rate = 1.0e-3F;
+constexpr float dev16_adam_epsilon = 1.0e-8F;
 
 __device__ __constant__ float ssim_gaussian_weights[11]{
     0.0010283801F,
@@ -1844,6 +1851,13 @@ __global__ void split_gaussians_long_axis_kernel(
     edge_weight_sum[child_index] = 0.0F;
 }
 
+struct DeviceOptimizerTelemetry {
+    float gradient_squared[5];
+    float update_squared[5];
+    float parameter_squared[5];
+    unsigned int samples[5];
+};
+
 __global__ void ordered_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
     const float* dc_gradient, const float* opacity_gradient,
@@ -1858,7 +1872,9 @@ __global__ void ordered_adam_update_kernel(
     float position_learning_rate, float color_learning_rate,
     float opacity_learning_rate, float scale_learning_rate,
     float rotation_learning_rate, float epsilon,
-    float minimum_log_scale, float maximum_log_scale) {
+    float minimum_log_scale, float maximum_log_scale,
+    DeviceOptimizerTelemetry* telemetry,
+    std::size_t telemetry_stride) {
     const std::size_t gaussian_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (gaussian_index >= gaussian_count) {
@@ -1866,9 +1882,23 @@ __global__ void ordered_adam_update_kernel(
     }
     constexpr float beta_first = 0.9F;
     constexpr float beta_second = 0.999F;
+    const bool collect_telemetry =
+        telemetry != nullptr &&
+        gaussian_index % telemetry_stride == 0U;
+    float gradient_squared[5]{};
+    float update_squared[5]{};
+    float parameter_squared[5]{};
+    float original_rotation[4]{};
+    if (collect_telemetry) {
+        for (std::size_t component = 0U; component < 4U; ++component) {
+            original_rotation[component] =
+                gaussians[gaussian_index].rotation[component];
+        }
+    }
     for (std::size_t channel = 0U; channel < 3U; ++channel) {
         const auto offset = gaussian_index * 3U + channel;
         const float gradient = dc_gradient[offset];
+        const float original = gaussians[gaussian_index].dc[channel];
         first_dc[offset] =
             beta_first * first_dc[offset] +
             (1.0F - beta_first) * gradient;
@@ -1882,8 +1912,20 @@ __global__ void ordered_adam_update_kernel(
         gaussians[gaussian_index].dc[channel] -=
             color_learning_rate * corrected_first /
             (sqrtf(corrected_second) + epsilon);
+        if (collect_telemetry) {
+            const float applied =
+                gaussians[gaussian_index].dc[channel] - original;
+            gradient_squared[0] +=
+                isfinite(gradient) ? gradient * gradient : 0.0F;
+            update_squared[0] += applied * applied;
+            parameter_squared[0] +=
+                gaussians[gaussian_index].dc[channel] *
+                gaussians[gaussian_index].dc[channel];
+        }
     }
     const float opacity = opacity_gradient[gaussian_index];
+    const float original_opacity =
+        gaussians[gaussian_index].opacity_logit;
     first_opacity[gaussian_index] =
         beta_first * first_opacity[gaussian_index] +
         (1.0F - beta_first) * opacity;
@@ -1897,6 +1939,17 @@ __global__ void ordered_adam_update_kernel(
     gaussians[gaussian_index].opacity_logit -=
         opacity_learning_rate * corrected_first /
         (sqrtf(corrected_second) + epsilon);
+    if (collect_telemetry) {
+        const float applied =
+            gaussians[gaussian_index].opacity_logit -
+            original_opacity;
+        gradient_squared[1] =
+            isfinite(opacity) ? opacity * opacity : 0.0F;
+        update_squared[1] = applied * applied;
+        parameter_squared[1] =
+            gaussians[gaussian_index].opacity_logit *
+            gaussians[gaussian_index].opacity_logit;
+    }
 
     for (std::size_t axis = 0U; axis < 3U; ++axis) {
         const auto offset = gaussian_index * 3U + axis;
@@ -1916,11 +1969,24 @@ __global__ void ordered_adam_update_kernel(
             first_xyz[offset] * inverse_bias_first /
             (sqrtf(second_xyz[offset] * inverse_bias_second) +
              epsilon);
+        const float original_position =
+            gaussians[gaussian_index].xyz[axis];
         const float candidate_position =
-            gaussians[gaussian_index].xyz[axis] - position_update;
+            original_position - position_update;
         if (isfinite(candidate_position)) {
             gaussians[gaussian_index].xyz[axis] =
                 candidate_position;
+        }
+        if (collect_telemetry) {
+            const float applied =
+                gaussians[gaussian_index].xyz[axis] -
+                original_position;
+            gradient_squared[2] +=
+                position_gradient * position_gradient;
+            update_squared[2] += applied * applied;
+            parameter_squared[2] +=
+                gaussians[gaussian_index].xyz[axis] *
+                gaussians[gaussian_index].xyz[axis];
         }
 
         const float scale_gradient =
@@ -1940,15 +2006,27 @@ __global__ void ordered_adam_update_kernel(
             (sqrtf(
                  second_log_scale[offset] *
                  inverse_bias_second) +
-             epsilon);
+                 epsilon);
+        const float original_scale =
+            gaussians[gaussian_index].log_scale[axis];
         const float candidate_scale =
-            gaussians[gaussian_index].log_scale[axis] -
-            scale_update;
+            original_scale - scale_update;
         if (isfinite(candidate_scale)) {
             gaussians[gaussian_index].log_scale[axis] =
                 fminf(
                     maximum_log_scale,
                     fmaxf(minimum_log_scale, candidate_scale));
+        }
+        if (collect_telemetry) {
+            const float applied =
+                gaussians[gaussian_index].log_scale[axis] -
+                original_scale;
+            gradient_squared[3] +=
+                scale_gradient * scale_gradient;
+            update_squared[3] += applied * applied;
+            parameter_squared[3] +=
+                gaussians[gaussian_index].log_scale[axis] *
+                gaussians[gaussian_index].log_scale[axis];
         }
     }
 
@@ -1959,6 +2037,9 @@ __global__ void ordered_adam_update_kernel(
             isfinite(rotation_gradient[offset])
                 ? rotation_gradient[offset]
                 : 0.0F;
+        if (collect_telemetry) {
+            gradient_squared[4] += gradient * gradient;
+        }
         first_rotation[offset] =
             beta_first * first_rotation[offset] +
             (1.0F - beta_first) * gradient;
@@ -1993,6 +2074,32 @@ __global__ void ordered_adam_update_kernel(
         gaussians[gaussian_index].rotation[1] = 0.0F;
         gaussians[gaussian_index].rotation[2] = 0.0F;
         gaussians[gaussian_index].rotation[3] = 0.0F;
+    }
+    if (collect_telemetry) {
+        for (std::size_t component = 0U; component < 4U; ++component) {
+            const float value =
+                gaussians[gaussian_index].rotation[component];
+            const float applied =
+                value - original_rotation[component];
+            update_squared[4] += applied * applied;
+            parameter_squared[4] += value * value;
+        }
+        constexpr unsigned int component_counts[5]{
+            3U, 1U, 3U, 3U, 4U};
+        for (std::size_t family = 0U; family < 5U; ++family) {
+            atomicAdd(
+                &telemetry->gradient_squared[family],
+                gradient_squared[family]);
+            atomicAdd(
+                &telemetry->update_squared[family],
+                update_squared[family]);
+            atomicAdd(
+                &telemetry->parameter_squared[family],
+                parameter_squared[family]);
+            atomicAdd(
+                &telemetry->samples[family],
+                component_counts[family]);
+        }
     }
 }
 
@@ -2373,9 +2480,64 @@ static float percentile80_median_size(
     return widths[1U];
 }
 
+static float bounding_box_diagonal(
+    const std::vector<Gaussian>& gaussians) {
+    std::array<float, 3> minimum{
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+        std::numeric_limits<float>::max(),
+    };
+    std::array<float, 3> maximum{
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+        std::numeric_limits<float>::lowest(),
+    };
+    for (const auto& gaussian : gaussians) {
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            minimum[axis] = std::min(minimum[axis], gaussian.xyz[axis]);
+            maximum[axis] = std::max(maximum[axis], gaussian.xyz[axis]);
+        }
+    }
+    double squared = 0.0;
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        const double extent =
+            static_cast<double>(maximum[axis]) - minimum[axis];
+        squared += extent * extent;
+    }
+    return static_cast<float>(
+        std::max(std::sqrt(squared), 1.0e-6));
+}
+
 static MrnfLearningRates mrnf_learning_rates(
     std::uint64_t optimizer_step, std::uint64_t maximum_steps,
-    float position_scale) {
+    float position_scale, MrnfOptimizerProfile profile) {
+    if (profile == MrnfOptimizerProfile::dronegs_dev16) {
+        const double progress =
+            maximum_steps <= 1U
+                ? 0.0
+                : std::min(
+                      1.0,
+                      static_cast<double>(optimizer_step - 1U) /
+                          static_cast<double>(maximum_steps - 1U));
+        const float position_factor =
+            static_cast<float>(std::exp(
+                std::log(
+                    static_cast<double>(
+                        dev16_position_learning_rate_initial)) *
+                    (1.0 - progress) +
+                std::log(
+                    static_cast<double>(
+                        dev16_position_learning_rate_final)) *
+                    progress));
+        return {
+            .position = position_scale * position_factor,
+            .dc = dev16_dc_learning_rate,
+            .opacity = dev16_opacity_learning_rate,
+            .scale = dev16_scale_learning_rate,
+            .rotation = dev16_rotation_learning_rate,
+            .epsilon = dev16_adam_epsilon,
+        };
+    }
     const double progress =
         optimizer_step <= 1U || maximum_steps == 0U
             ? 0.0
@@ -2410,14 +2572,16 @@ struct OrderedAlphaTrainingContext::Impl {
         const std::vector<Gaussian>& initial_gaussians,
         std::size_t maximum_pixel_count,
         std::uint64_t requested_maximum_steps,
-        std::size_t requested_gaussian_capacity)
+        std::size_t requested_gaussian_capacity,
+        MrnfOptimizerProfile requested_optimizer_profile)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
               requested_gaussian_capacity)),
           maximum_pixels(maximum_pixel_count),
           maximum_steps(std::max<std::uint64_t>(
-              1U, requested_maximum_steps)) {
+              1U, requested_maximum_steps)),
+          optimizer_profile(requested_optimizer_profile) {
         if (gaussian_count == 0U ||
             gaussian_capacity >
                 static_cast<std::size_t>(
@@ -2477,6 +2641,7 @@ struct OrderedAlphaTrainingContext::Impl {
         frame_refinement_weight.ensure(gaussian_capacity);
         frame_visibility_weight.ensure(gaussian_capacity);
         frame_edge_weight.ensure(gaussian_capacity);
+        optimizer_telemetry.ensure(1U);
         float initial_minimum_log_scale =
             std::numeric_limits<float>::max();
         float initial_maximum_log_scale =
@@ -2497,9 +2662,13 @@ struct OrderedAlphaTrainingContext::Impl {
             }
         }
         position_learning_rate_scale =
-            percentile80_median_size(initial_gaussians);
+            optimizer_profile ==
+                    MrnfOptimizerProfile::dronegs_dev16
+                ? bounding_box_diagonal(initial_gaussians)
+                : percentile80_median_size(initial_gaussians);
         learning_rates = mrnf_learning_rates(
-            1U, maximum_steps, position_learning_rate_scale);
+            1U, maximum_steps, position_learning_rate_scale,
+            optimizer_profile);
         minimum_log_scale = initial_minimum_log_scale - 4.0F;
         maximum_log_scale = initial_maximum_log_scale + 4.0F;
         gaussians.copy_from_host(
@@ -2520,6 +2689,7 @@ struct OrderedAlphaTrainingContext::Impl {
         frame_refinement_weight.zero(gaussian_capacity);
         frame_visibility_weight.zero(gaussian_capacity);
         frame_edge_weight.zero(gaussian_capacity);
+        optimizer_telemetry.zero(1U);
     }
 
     void sort_records() {
@@ -2893,7 +3063,23 @@ struct OrderedAlphaTrainingContext::Impl {
                     1.0F / (1.0F - beta_second_power);
                 learning_rates = mrnf_learning_rates(
                     optimizer_steps, maximum_steps,
-                    position_learning_rate_scale);
+                    position_learning_rate_scale,
+                    optimizer_profile);
+                const auto telemetry_interval =
+                    std::max<std::uint64_t>(
+                        1U, maximum_steps / 5U);
+                const bool collect_telemetry =
+                    optimizer_steps == 1U ||
+                    optimizer_steps == maximum_steps ||
+                    optimizer_steps % telemetry_interval == 0U;
+                const auto telemetry_stride =
+                    std::max<std::size_t>(
+                        1U, gaussian_count / 4096U);
+                if (collect_telemetry) {
+                    optimizer_telemetry.zero(1U);
+                } else {
+                    latest_telemetry.reset();
+                }
                 ordered_adam_update_kernel<<<
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
@@ -2912,10 +3098,49 @@ struct OrderedAlphaTrainingContext::Impl {
                     learning_rates.scale,
                     learning_rates.rotation,
                     learning_rates.epsilon,
-                    minimum_log_scale, maximum_log_scale);
+                    minimum_log_scale, maximum_log_scale,
+                    collect_telemetry
+                        ? optimizer_telemetry.data()
+                        : nullptr,
+                    telemetry_stride);
                 require_cuda(
                     cudaGetLastError(),
                     "launch persistent ordered Adam");
+                if (collect_telemetry) {
+                    DeviceOptimizerTelemetry host{};
+                    optimizer_telemetry.copy_to_host(&host, 1U);
+                    const auto parameter = [&host](
+                        std::size_t family) {
+                        const auto samples =
+                            static_cast<std::uint64_t>(
+                                host.samples[family]);
+                        const float inverse =
+                            samples == 0U
+                                ? 0.0F
+                                : 1.0F /
+                                      static_cast<float>(samples);
+                        return MrnfParameterTelemetry{
+                            .gradient_rms = std::sqrt(
+                                host.gradient_squared[family] *
+                                inverse),
+                            .update_rms = std::sqrt(
+                                host.update_squared[family] *
+                                inverse),
+                            .parameter_rms = std::sqrt(
+                                host.parameter_squared[family] *
+                                inverse),
+                            .samples = samples,
+                        };
+                    };
+                    latest_telemetry = MrnfOptimizerTelemetry{
+                        .step = optimizer_steps,
+                        .dc = parameter(0U),
+                        .opacity = parameter(1U),
+                        .position = parameter(2U),
+                        .scale = parameter(3U),
+                        .rotation = parameter(4U),
+                    };
+                }
             }
         }
         if (objective != nullptr) {
@@ -3048,8 +3273,11 @@ struct OrderedAlphaTrainingContext::Impl {
     std::size_t maximum_pixels = 0U;
     std::uint64_t maximum_steps = 1U;
     std::uint64_t optimizer_steps = 0U;
+    MrnfOptimizerProfile optimizer_profile =
+        MrnfOptimizerProfile::dronegs_dev16;
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
+    std::optional<MrnfOptimizerTelemetry> latest_telemetry;
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
     float beta_first_power = 1.0F;
@@ -3104,16 +3332,19 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> frame_refinement_weight;
     ReusableDeviceAllocation<float> frame_visibility_weight;
     ReusableDeviceAllocation<float> frame_edge_weight;
+    ReusableDeviceAllocation<DeviceOptimizerTelemetry>
+        optimizer_telemetry;
 };
 
 OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     const std::vector<Gaussian>& gaussians,
     std::size_t maximum_pixels,
     std::uint64_t maximum_steps,
-    std::size_t maximum_gaussians)
+    std::size_t maximum_gaussians,
+    MrnfOptimizerProfile optimizer_profile)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
-          maximum_gaussians)) {}
+          maximum_gaussians, optimizer_profile)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 
@@ -3172,6 +3403,12 @@ OrderedAlphaTrainingContext::refine_topology(
 MrnfLearningRates
 OrderedAlphaTrainingContext::current_learning_rates() const noexcept {
     return impl_->learning_rates;
+}
+
+std::optional<MrnfOptimizerTelemetry>
+OrderedAlphaTrainingContext::latest_optimizer_telemetry()
+    const noexcept {
+    return impl_->latest_telemetry;
 }
 
 std::size_t OrderedAlphaTrainingContext::size() const noexcept {

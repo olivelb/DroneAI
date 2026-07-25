@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.17.
+- Current development version: 0.5.0-dev.18.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -104,18 +104,28 @@ Each completed phase has one focused commit and an annotated
 - Dev.17 reaches only 16.1151 dB / 0.219473 SSIM despite ending at 1,173,577
   Gaussians. It regresses dev.16 on 169/172 PSNR views and every SSIM view.
   Direct absolute-rate copying is rejected without gradient-scale calibration.
+- Dev.18 keeps both profiles in one instrumented binary and reproduces the
+  dev.16 anchor at 17.07045 dB / 0.245493 SSIM. The LichtFeld-absolute replay
+  reaches 16.11581 dB / 0.219508 SSIM.
+- Deterministic sampled telemetry shows nearly equal incoming gradient scales
+  at the shared first step, but actual dev16 updates are 20.35x larger for DC
+  and 58.24x larger for position. LichtFeld-absolute instead applies a 1.48x
+  larger opacity update and substantially larger late scale/rotation updates.
+- The accepted `dronegs-dev16` profile is restored as the default.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17 is a negative optimizer experiment. LPIPS, progressive SH,
-  prune/replacement/noise/decay, and parity remain open.
+  while dev.17/dev.18 retain the negative optimizer experiment. LPIPS,
+  progressive SH, prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is optimizer calibration, not another direct
-  feature port. Measure per-parameter gradient and normalized Adam update
-  magnitudes against the pinned control, then derive DroneGS-equivalent
-  effective rates one parameter family at a time. Progressive SH should follow
-  only after restoring the dev.16 quality anchor. The edge implementation also
-  remains a candidate for fusion or refinement-window-only accumulation.
+- The immediate Phase 4 priority is one-family optimizer ablation, not another
+  direct feature port. Starting from `dronegs-dev16`, swap DC and position
+  independently before opacity, scale, and rotation; accept a family only when
+  held-out quality and effective-update telemetry support it. A future
+  instrumented LichtFeld control would improve equivalence calibration.
+  Progressive SH should follow only after optimizer behavior is resolved. The
+  edge implementation also remains a candidate for fusion or
+  refinement-window-only accumulation.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

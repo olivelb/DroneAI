@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.17
+Project version: 0.5.0-dev.18
 
 ## Decision
 
@@ -82,9 +82,10 @@ up to `max_cap` using normalized SSIM-error-weighted alpha contributions and a
 rotated longest-axis parent/child split.
 
 This is still an incomplete MRNF scaffold, not the parity rasterizer. It has
-growth and split but no prune/replacement, Gumbel sampling, edge guidance,
-noise, decay, compaction, progressive SH, or LPIPS. It supports only
-SIMPLE_PINHOLE and PINHOLE inputs.
+growth, split, reproducible weighted-Gumbel sampling, Sobel edge guidance, and
+optimizer-profile telemetry, but no prune/replacement, noise, decay,
+compaction, progressive SH, or LPIPS. It supports only SIMPLE_PINHOLE and
+PINHOLE inputs.
 
 An opt-in held-out protocol uses the same index rule as LichtFeld:
 `scene_index % test_every == 0`. Those descriptors never enter the shuffled
@@ -202,7 +203,19 @@ On Albagnac this exact profile is a negative result: it reduces position LR
 preserving population. Therefore optimizer values are not portable across the
 two gradient/parameter conventions without effective-update calibration.
 
-The dev.15-dev.17 behavior was adapted after inspection of pinned LichtFeld GPL
+Version 0.5.0-dev.18 retains both optimizer profiles in the same binary and
+samples approximately 4,096 Gaussians deterministically at the first step,
+every fifth of the run, and the final step. For each parameter family it emits
+incoming gradient RMS, actual applied update RMS after bounds/quaternion
+normalization, resulting parameter RMS, and component count. The identical
+Albagnac replay reproduces dev.16 at 17.07045 dB / 0.245493 SSIM and the
+LichtFeld-absolute result at 16.11581 dB / 0.219508 SSIM. At the common first
+step, gradients match but dev16's actual DC and position deltas are 20.35x and
+58.24x larger; opacity is 0.677x. This rejects a global LR multiplier and makes
+dev16 the default quality profile. The next calibration slice changes one
+family at a time.
+
+The dev.15-dev.18 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their

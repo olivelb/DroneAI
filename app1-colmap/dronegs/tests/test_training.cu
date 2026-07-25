@@ -355,7 +355,8 @@ int main() {
             };
         }
         dronegs::OrderedAlphaTrainingContext rate_context(
-            rate_fixture, 32U * 32U, 2U, 8U);
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::lichtfeld_absolute);
         const auto initial_rates =
             rate_context.current_learning_rates();
         const auto require_rate = [](
@@ -373,8 +374,47 @@ int main() {
         require_rate(initial_rates.scale, 7.0e-3F, 1.0e-8F, "scale");
         require_rate(initial_rates.rotation, 2.0e-3F, 1.0e-8F, "rotation");
         require_rate(initial_rates.epsilon, 1.0e-15F, 1.0e-20F, "epsilon");
+        dronegs::OrderedAlphaTrainingContext native_rate_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16);
+        const auto native_rates =
+            native_rate_context.current_learning_rates();
+        const float native_diagonal = std::sqrt(
+            0.07F * 0.07F +
+            0.14F * 0.14F +
+            0.21F * 0.21F);
+        require_rate(
+            native_rates.position,
+            native_diagonal * 1.6e-4F,
+            1.0e-9F, "dev16 position");
+        require_rate(native_rates.dc, 5.0e-2F, 1.0e-8F, "dev16 dc");
+        require_rate(
+            native_rates.opacity, 1.0e-2F,
+            1.0e-8F, "dev16 opacity");
+        require_rate(
+            native_rates.scale, 5.0e-3F,
+            1.0e-8F, "dev16 scale");
+        require_rate(
+            native_rates.rotation, 1.0e-3F,
+            1.0e-8F, "dev16 rotation");
+        require_rate(
+            native_rates.epsilon, 1.0e-8F,
+            1.0e-12F, "dev16 epsilon");
         static_cast<void>(rate_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
+        const auto first_telemetry =
+            rate_context.latest_optimizer_telemetry();
+        if (!first_telemetry.has_value() ||
+            first_telemetry->step != 1U ||
+            first_telemetry->dc.samples == 0U ||
+            first_telemetry->position.samples == 0U ||
+            !std::isfinite(first_telemetry->dc.gradient_rms) ||
+            !std::isfinite(first_telemetry->dc.update_rms) ||
+            !std::isfinite(first_telemetry->dc.parameter_rms) ||
+            first_telemetry->dc.update_rms <= 0.0F) {
+            throw std::runtime_error(
+                "MRNF optimizer telemetry mismatch");
+        }
         const auto first_step_rates =
             rate_context.current_learning_rates();
         require_rate(

@@ -241,6 +241,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
     check(parsed.test_every == 0U, "CLI held-out split default mismatch");
     check(parsed.save_eval_images == 0U, "CLI eval export default mismatch");
+    check(
+        parsed.optimizer_profile == "dronegs-dev16",
+        "CLI optimizer profile default mismatch");
 
     values.insert(values.end(), {
         "--prefetch-depth", "12",
@@ -248,6 +251,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--save-eval-images", "1",
+        "--optimizer-profile", "lichtfeld-absolute",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -257,7 +261,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
-    values.resize(values.size() - 10U);
+    check(
+        tuned.optimizer_profile == "lichtfeld-absolute",
+        "CLI optimizer profile mismatch");
+    values.resize(values.size() - 12U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

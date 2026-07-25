@@ -37,6 +37,27 @@ struct MrnfLearningRates {
     float epsilon = 0.0F;
 };
 
+enum class MrnfOptimizerProfile {
+    dronegs_dev16,
+    lichtfeld_absolute,
+};
+
+struct MrnfParameterTelemetry {
+    float gradient_rms = 0.0F;
+    float update_rms = 0.0F;
+    float parameter_rms = 0.0F;
+    std::uint64_t samples = 0U;
+};
+
+struct MrnfOptimizerTelemetry {
+    std::uint64_t step = 0U;
+    MrnfParameterTelemetry dc;
+    MrnfParameterTelemetry opacity;
+    MrnfParameterTelemetry position;
+    MrnfParameterTelemetry scale;
+    MrnfParameterTelemetry rotation;
+};
+
 struct TopologyRefinementResult {
     std::size_t candidates = 0U;
     std::size_t added = 0U;

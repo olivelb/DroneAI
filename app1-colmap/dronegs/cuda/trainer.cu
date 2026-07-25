@@ -4,11 +4,11 @@
  *
  * The dev.15 refine cadence, threshold, growth fraction, and growth window,
  * plus the dev.16 weighted-Gumbel seed protocol and dev.17 optimizer
- * schedules, are adapted from the pinned LichtFeld MRNF strategy. The
- * pre-existing
- * DroneGS orchestration in this file was original MIT code; this combined
- * translation unit is conservatively distributed under GPL-3.0-or-later
- * from dev.15 onward.
+ * schedules, are adapted from the pinned LichtFeld MRNF strategy. Dev.18
+ * profile selection and telemetry emission are DroneAI additions. The
+ * pre-existing DroneGS orchestration in this file was original MIT code; this
+ * combined translation unit is conservatively distributed under
+ * GPL-3.0-or-later from dev.15 onward.
  */
 #include "dronegs/training.hpp"
 
@@ -989,13 +989,19 @@ TrainingMetrics train_ordered_mrnf(
         options.prefetch_depth, options.decode_workers);
 
     const auto setup_start = std::chrono::steady_clock::now();
+    const auto optimizer_profile =
+        options.optimizer_profile == "dronegs-dev16"
+            ? MrnfOptimizerProfile::dronegs_dev16
+            : MrnfOptimizerProfile::lichtfeld_absolute;
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
-        static_cast<std::size_t>(options.max_cap));
+        static_cast<std::size_t>(options.max_cap),
+        optimizer_profile);
     const auto initial_learning_rates =
         workspace.current_learning_rates();
     std::cout
         << "{\"event\":\"optimizer_schedule\",\"stage\":\"initial\","
+        << "\"profile\":\"" << options.optimizer_profile << "\","
         << "\"position_lr\":" << initial_learning_rates.position
         << ",\"dc_lr\":" << initial_learning_rates.dc
         << ",\"opacity_lr\":" << initial_learning_rates.opacity
@@ -1004,6 +1010,31 @@ TrainingMetrics train_ordered_mrnf(
         << ",\"epsilon\":" << initial_learning_rates.epsilon
         << "}\n"
         << std::flush;
+    const auto emit_optimizer_telemetry =
+        [](const std::optional<MrnfOptimizerTelemetry>& telemetry) {
+        if (!telemetry.has_value()) {
+            return;
+        }
+        const auto emit_family = [&telemetry](
+            const char* family,
+            const MrnfParameterTelemetry& values) {
+            std::cout
+                << "{\"event\":\"optimizer_telemetry\",\"step\":"
+                << telemetry->step
+                << ",\"family\":\"" << family << "\""
+                << ",\"gradient_rms\":" << values.gradient_rms
+                << ",\"update_rms\":" << values.update_rms
+                << ",\"parameter_rms\":" << values.parameter_rms
+                << ",\"samples\":" << values.samples
+                << "}\n";
+        };
+        emit_family("dc", telemetry->dc);
+        emit_family("opacity", telemetry->opacity);
+        emit_family("position", telemetry->position);
+        emit_family("scale", telemetry->scale);
+        emit_family("rotation", telemetry->rotation);
+        std::cout << std::flush;
+    };
     TrainingMetrics metrics{
         .iterations = options.iterations,
         .training_image_count =
@@ -1058,6 +1089,8 @@ TrainingMetrics train_ordered_mrnf(
         const float loss = workspace.train_step(
             raster_camera, frame.image->rgb.data(),
             frame.image->rgb.size());
+        emit_optimizer_telemetry(
+            workspace.latest_optimizer_telemetry());
         if (iteration % 200U == 0U && iteration < 15'000U) {
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
@@ -1094,6 +1127,7 @@ TrainingMetrics train_ordered_mrnf(
         workspace.current_learning_rates();
     std::cout
         << "{\"event\":\"optimizer_schedule\",\"stage\":\"final\","
+        << "\"profile\":\"" << options.optimizer_profile << "\","
         << "\"position_lr\":" << final_learning_rates.position
         << ",\"dc_lr\":" << final_learning_rates.dc
         << ",\"opacity_lr\":" << final_learning_rates.opacity

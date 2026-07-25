@@ -2,6 +2,28 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.18 - Phase 4 MRNF effective-update calibration
+
+- Kept both optimizer configurations in one binary as
+  `dronegs-dev16` and `lichtfeld-absolute`; restored the accepted dev.16
+  quality profile as the CLI and training-context default.
+- Added deterministic sampled optimizer telemetry at step 1, every training
+  fifth, and the final step for DC, opacity, position, scale, and rotation.
+- Telemetry reports incoming gradient RMS, actual post-clamp/post-normalization
+  update RMS, resulting parameter RMS, and component sample count.
+- Added the selected profile and its exact schedule constants to CLI parsing,
+  JSON schedule events, manifest v1, and direct CPU/CUDA tests.
+- Replayed both profiles for 500 steps on the same 1,376-image Albagnac split
+  with the exact same dev.18 binary.
+- `dronegs-dev16` reproduces the quality anchor at 17.07045 dB / 0.245493
+  SSIM; `lichtfeld-absolute` reaches 16.11581 dB / 0.219508 SSIM.
+- At step 1, gradients are identical but dev16 applies 20.35x larger DC and
+  58.24x larger position updates, while its opacity update is 0.677x as large.
+  The discrepancy persists throughout the run.
+- Reject a single global LR correction. Dev.19 should run one-family
+  ablations, beginning with DC and position, before changing opacity, scale,
+  or rotation.
+
 ## 0.5.0-dev.17 - Phase 4 MRNF optimizer schedule isolation
 
 - Replaced the dev.16 optimizer constants with the pinned LichtFeld MRNF
