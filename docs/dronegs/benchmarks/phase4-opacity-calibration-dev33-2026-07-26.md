@@ -101,6 +101,40 @@ Mavic 3E RTK scene, and the independent Albagnac Mavic 3E RTK reconstruction.
 profile. The historical profiles remain available for reproducibility and
 the command-line default remains unchanged while Phase 4 is experimental.
 
+## Albagnac 1,000-step convergence control
+
+The selected profile was extended from 500 to 1,000 steps without changing
+the scene, split, SH0 appearance, seed, or 1.5-million capacity:
+
+| Metric | dev.33 / 500 | dev.33 / 1,000 | Delta |
+|---|---:|---:|---:|
+| PSNR | 18.011423 | 18.786222 | +0.774799 dB |
+| SSIM | 0.356863 | 0.410530 | +0.053667 |
+| LPIPS Alex | 0.688418 | 0.631623 | -8.25% |
+| Training | 8.674 s | 24.754 s | +16.081 s |
+| Wall | 49.016 s | 89.928 s | +40.912 s |
+| Final Gaussians | 1,169,110 | 1,392,419 | +223,309 |
+
+Convergence is still active, but the 1,000-step result remains below the
+pinned LichtFeld 500-step `21.0686 dB / 0.631048 SSIM` control. At 500 steps,
+DroneGS and LichtFeld already have nearly identical Gaussian counts, so
+population alone does not explain the remaining gap.
+
+PLY geometry distributions isolate the next candidate:
+
+| Distribution at 500 steps | DroneGS dev.33 | LichtFeld |
+|---|---:|---:|
+| Median geometric-mean scale | 0.004145 | 0.003811 |
+| Median axis anisotropy | 1.082 | 1.451 |
+| P90 axis anisotropy | 1.681 | 2.049 |
+| Median absolute rotation angle | 0.022 rad | 0.347 rad |
+| P90 absolute rotation angle | 0.104 rad | 0.712 rad |
+
+Overall scale is aligned, but DroneGS remains much more isotropic and much
+closer to its identity rotation. The next isolated gate should therefore
+calibrate scale-anisotropy and quaternion-rotation updates while preserving
+the accepted covariance bounds and dev.33 opacity behavior.
+
 ## Artifacts
 
 - `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev33-opacity024-500`
@@ -109,3 +143,4 @@ the command-line default remains unchanged while Phase 4 is experimental.
 - `/home/olivier/droneAI-workspaces/gajan-dronegs-dev33-opacity048-1200`
 - `/home/olivier/droneAI-workspaces/gajan-dronegs-dev33-opacity096-1200`
 - `/home/olivier/droneAI-workspaces/saveres-dronegs-dev33-opacity096-1000`
+- `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev33-opacity096-1000`

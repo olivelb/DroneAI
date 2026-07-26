@@ -179,6 +179,11 @@ Each completed phase has one focused commit and an annotated
   Albagnac, GAJAN, and Savères. Albagnac gains 0.9791 dB / 0.01602 SSIM /
   10.83% LPIPS; Savères gains 0.1397 dB / 0.00365 / 7.53% and finishes with
   2.4% fewer Gaussians.
+- The Albagnac dev.33 1,000-step control reaches 18.7862 dB / 0.410530 SSIM /
+  0.631623 LPIPS, confirming continued convergence. Its median scale already
+  matches LichtFeld closely, but median anisotropy is only 1.082 versus 1.451
+  and median rotation is 0.022 versus 0.347 rad. Scale-anisotropy and rotation
+  calibration are now the dominant isolated optimizer gate.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.
@@ -187,8 +192,9 @@ Each completed phase has one focused commit and an annotated
   while both tested orchestrations regressed median wall time.
 - The immediate Phase 4 priority is a sufficiently long same-view
   DroneGS/LichtFeld quality control on GAJAN and one large scene, using the
-  accepted local-KNN/color/opacity path. Projected covariance is no longer an
-  isolated candidate.
+  accepted local-KNN/color/opacity path, followed by isolated
+  scale-anisotropy and rotation calibration. Projected covariance is no
+  longer an isolated candidate.
   Checkpoint/resume remains open. The combined approximately 2,000-image
   Albagnac throughput run remains deferred while COLMAP bundle adjustment is
   unbounded on CPU.
