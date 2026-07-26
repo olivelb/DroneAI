@@ -2,6 +2,16 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.44 - Fixed-topology convergence cooldown
+
+- Add an opt-in `--topology-cooldown N` within the existing iteration budget.
+- Stop prune/grow/recycle refinement after `iterations - N` and use the final
+  `N` steps for optimizer-only convergence.
+- Keep the default at zero so existing contracts retain their exact topology
+  lifecycle until an ablation demonstrates a quality benefit.
+- Record the configured cooldown and effective last refinement iteration in
+  the run manifest.
+
 ## 0.5.0-dev.43 - Bounded scene-resident RGB8 cache
 
 - Size the decoded RGB8 image cache from the complete resized COLMAP scene

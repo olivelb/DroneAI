@@ -1242,6 +1242,16 @@ TrainingMetrics train_ordered_mrnf(
     const std::uint64_t progress_interval =
         std::max<std::uint64_t>(
             1U, options.iterations / 20U);
+    const std::uint64_t topology_refine_end =
+        options.iterations - options.topology_cooldown;
+    if (options.topology_cooldown != 0U) {
+        std::cout
+            << "{\"event\":\"topology_cooldown\",\"refine_through_iteration\":"
+            << topology_refine_end
+            << ",\"fixed_topology_iterations\":"
+            << options.topology_cooldown << "}\n"
+            << std::flush;
+    }
     for (std::uint64_t iteration = 1U;
          iteration <= options.iterations; ++iteration) {
         const auto schedule_index =
@@ -1266,7 +1276,8 @@ TrainingMetrics train_ordered_mrnf(
         }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
-        if (iteration % 200U == 0U && iteration < 28'500U) {
+        if (iteration % 200U == 0U && iteration < 28'500U &&
+            iteration <= topology_refine_end) {
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
                 (iteration * 0x9E3779B97F4A7C15ULL);

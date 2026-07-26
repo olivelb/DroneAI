@@ -319,6 +319,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.test_every == 0U, "CLI held-out split default mismatch");
     check(parsed.save_eval_images == 0U, "CLI eval export default mismatch");
     check(
+        parsed.topology_cooldown == 0U,
+        "CLI topology cooldown default mismatch");
+    check(
         parsed.optimizer_profile == "dronegs-dev16",
         "CLI optimizer profile default mismatch");
     check(
@@ -334,6 +337,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--save-eval-images", "1",
+        "--topology-cooldown", "1",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -351,6 +355,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
     check(
+        tuned.topology_cooldown == 1U,
+        "CLI topology cooldown mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -366,7 +373,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 20U);
+    values.resize(values.size() - 22U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

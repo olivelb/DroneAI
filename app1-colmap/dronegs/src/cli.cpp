@@ -47,7 +47,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.43\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.44\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -55,6 +55,7 @@ const char* help_text() {
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--save-eval-images 0|1] "
+        "[--topology-cooldown N] "
         "[--sh-degree-interval N] "
         "[--optimizer-profile dronegs-dev16|lichtfeld-absolute|"
         "lichtfeld-dc-only|lichtfeld-position-only|"
@@ -90,6 +91,7 @@ Options parse_options(int argc, char** argv) {
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
+        "--topology-cooldown",
         "--optimizer-profile", "--sh-degree-interval",
         "--initial-ply", "--pruning-policy", "--raster-profile",
     };
@@ -148,6 +150,10 @@ Options parse_options(int argc, char** argv) {
     if (values.contains("--save-eval-images")) {
         options.save_eval_images = parse_u32(
             values.at("--save-eval-images"), "--save-eval-images");
+    }
+    if (values.contains("--topology-cooldown")) {
+        options.topology_cooldown = parse_unsigned(
+            values.at("--topology-cooldown"), "--topology-cooldown");
     }
     if (values.contains("--optimizer-profile")) {
         options.optimizer_profile =
@@ -219,6 +225,10 @@ void validate_options(const Options& options) {
         options.test_every == 0U) {
         throw std::invalid_argument(
             "--save-eval-images requires --test-every");
+    }
+    if (options.topology_cooldown > options.iterations) {
+        throw std::invalid_argument(
+            "--topology-cooldown must not exceed --iter");
     }
     if (options.optimizer_profile != "lichtfeld-absolute" &&
         options.optimizer_profile != "dronegs-dev16" &&
