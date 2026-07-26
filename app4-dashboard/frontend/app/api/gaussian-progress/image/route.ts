@@ -6,9 +6,9 @@ export const runtime = "nodejs";
 
 const previewPaths = {
   dronegs:
-    "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000/preview.png",
+    "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000-cross-eval/preview.png",
   lichtfeld:
-    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval/preview.png",
+    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval/preview.png",
 };
 
 export async function GET(request: NextRequest) {

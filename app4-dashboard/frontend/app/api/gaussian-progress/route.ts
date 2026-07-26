@@ -11,15 +11,15 @@ const totalIterations = 15_000;
 
 const paths = {
   dronegs: {
-    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000",
-    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000.log",
+    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000",
+    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000.log",
   },
   lichtfeld: {
-    run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38",
-    log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38/stdout.log",
+    run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic",
+    log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic/stdout.log",
   },
   commonEvaluation:
-    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval",
+    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval",
 };
 
 type Point = {
@@ -305,7 +305,8 @@ export async function GET() {
         shSchedule: "0 → 3, +1 tous les 1 000 pas",
         maxGaussians: 1_500_000,
         resize: "facteur 4 · largeur max. 1 600 · tuilage 4",
-        evaluator: "DroneGS dev38 FastGS · mêmes 172 vues · LPIPS AlexNet",
+        evaluator:
+          "DroneGS dev38 FastGS commun · 172 vues · LPIPS AlexNet · replay caméra déterministe",
       },
       dronegs: makeRun(
         "dronegs",
