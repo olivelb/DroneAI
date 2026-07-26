@@ -77,6 +77,31 @@ void test_single_splat() {
                 "single-splat transmittance mismatch");
 }
 
+void test_extended_color_range() {
+    const auto live = centered(1.0F, {1.5F, 0.5F, 0.25F});
+    const auto projected =
+        dronegs::project_alpha_splats({live}, camera());
+    check(projected.size() == 1U, "extended-color splat was not visible");
+    check_close(projected.front().color[0], 1.5F, 1.0e-6F,
+                "SH color was still clipped at one");
+
+    const std::vector<float> upstream(12U, 0.25F);
+    const auto live_backward = dronegs::render_alpha_reference_backward(
+        {live}, camera(), upstream);
+    check(std::abs(live_backward.gradients.dc[0][0]) > 1.0e-6F,
+          "extended SH color lost its DC gradient");
+
+    const auto capped = centered(1.0F, {5.0F, 0.5F, 0.25F});
+    const auto capped_projection =
+        dronegs::project_alpha_splats({capped}, camera());
+    check_close(capped_projection.front().color[0], 4.0F, 1.0e-6F,
+                "SH color ceiling mismatch");
+    const auto capped_backward = dronegs::render_alpha_reference_backward(
+        {capped}, camera(), upstream);
+    check(std::abs(capped_backward.gradients.dc[0][0]) < 1.0e-7F,
+          "color above the ceiling retained a DC gradient");
+}
+
 void test_depth_order_is_input_independent() {
     const auto near_red = centered(1.0F, {1.0F, 0.0F, 0.0F});
     const auto far_blue = centered(2.0F, {0.0F, 0.0F, 1.0F});
@@ -336,6 +361,7 @@ void test_progressive_sh_color_and_gradient() {
 int main() {
     try {
         test_single_splat();
+        test_extended_color_range();
         test_depth_order_is_input_independent();
         test_background_and_culling();
         test_invalid_camera();

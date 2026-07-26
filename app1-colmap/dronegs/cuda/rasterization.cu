@@ -17,7 +17,9 @@
  * forward recomputation and reverse gradient traversal through tile-local
  * shared memory. Dev.30 removes the Ada-only radix and register overrides,
  * leaving architecture selection and stable radix policy to CMake, nvcc, and
- * CUB for portable Turing-through-Blackwell builds. The pre-existing DroneGS
+ * CUB for portable Turing-through-Blackwell builds. Dev.32 matches FastGS's
+ * [0,4] SH color ceiling and corresponding live-gradient interval. The
+ * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -50,6 +52,7 @@ constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
 constexpr float gaussian_support = 2.5F;
+constexpr float maximum_splat_color = 4.0F;
 constexpr std::uint32_t threads_per_block = 256U;
 constexpr std::uint32_t ssim_window_radius = 5U;
 constexpr float l1_objective_weight = 0.8F;
@@ -638,7 +641,8 @@ __global__ void project_alpha_splats_kernel(
                             channel * maximum_sh_rest_coefficients +
                             coefficient];
                 }
-                color[channel] = fminf(1.0F, fmaxf(0.0F, value));
+                color[channel] =
+                    fminf(maximum_splat_color, fmaxf(0.0F, value));
             }
             record.splat = {
                 .depth = camera_z,
@@ -1010,7 +1014,7 @@ __global__ void backward_alpha_tiles_kernel(
         float alpha_gradient = 0.0F;
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
             if (splat.color[channel] > 0.0F &&
-                splat.color[channel] < 1.0F) {
+                splat.color[channel] < maximum_splat_color) {
                 const float color_gradient =
                     upstream[channel] * transmittance_before * alpha;
                 atomicAdd(

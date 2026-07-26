@@ -7,17 +7,20 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.31` adds deterministic exact two-neighbour KNN scale
-initialization to dev.30's architecture-neutral CUDA baseline. A balanced
-local KD tree gives each COLMAP point an isotropic scale adapted to its local
-density and bounded by robust scene extents. A local build detects its visible
-NVIDIA GPU through CMake's `native` mode; the `portable` preset emits a CUDA
-12.8 runtime-selected fat binary for Turing through Blackwell. It:
+Version `0.5.0-dev.32` keeps dev.31's deterministic exact two-neighbour KNN
+scale initialization and extends SH-derived render color from `[0,1]` to
+LichtFeld-compatible `[0,4]`, preserving gradients above display white. A
+balanced local KD tree gives each COLMAP point an isotropic scale adapted to
+its local density and bounded by robust scene extents. A local build detects
+its visible NVIDIA GPU through CMake's `native` mode; the `portable` preset
+emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
 - initializes splat scales from the two nearest COLMAP neighbours instead of
   one scene-wide spacing estimate;
+- keeps SH color and gradients live up to four while display output remains
+  bounded independently;
 - decodes JPEG training images and scales pinhole intrinsics;
 - stores decoded RGB as bytes in a lazy 256 MiB LRU cache;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker

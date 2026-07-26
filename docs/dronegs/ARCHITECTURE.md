@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.31
+Project version: 0.5.0-dev.32
 
 ## Decision
 
@@ -21,6 +21,11 @@ local-neighborhood rule: an exact deterministic KD tree measures the two
 nearest neighbours, while robust central extents provide a scene-relative
 upper bound. This preserves isotropic initialization but follows local COLMAP
 point density instead of forcing every splat to the same size.
+
+Dev.32 permits SH-derived splat color in `[0,4]` during rendering and keeps
+its gradient live over that interval. This matches the pinned FastGS color
+contract and prevents coefficients just above display white from being frozen;
+final RGB image serialization remains clamped to the display range.
 
 ## Stable boundary
 

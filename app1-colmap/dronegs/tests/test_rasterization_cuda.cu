@@ -386,7 +386,7 @@ void test_anisotropic_reference_parity() {
 
 void test_backward_reference_parity() {
     const std::vector<dronegs::Gaussian> gaussians{
-        splat({0.0F, 0.0F, 1.1F}, {0.7F, 0.2F, 0.4F}, 0.15F, 0.4F),
+        splat({0.0F, 0.0F, 1.1F}, {1.5F, 0.2F, 0.4F}, 0.15F, 0.4F),
         splat({0.0F, 0.0F, 1.3F}, {0.2F, 0.6F, 0.8F}, 0.18F, -0.2F),
         splat({-0.35F, 0.2F, 1.6F}, {0.4F, 0.75F, 0.3F}, 0.14F, 0.7F),
         splat({0.4F, -0.25F, 1.9F}, {0.8F, 0.3F, 0.65F}, 0.2F, -0.5F),

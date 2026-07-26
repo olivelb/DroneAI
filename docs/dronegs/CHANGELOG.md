@@ -2,6 +2,17 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.32 - Extended live SH color
+
+- Match pinned LichtFeld FastGS by clamping per-splat SH color to `[0,4]`
+  instead of `[0,1]`.
+- Keep DC and active higher-order SH gradients live over the same extended
+  interval in both the CPU oracle and CUDA backward path.
+- Add explicit CPU ceiling/live-gradient checks and exercise extended color in
+  CUDA forward/backward parity.
+- Mark the adapted CPU rasterization translation unit GPL-3.0-or-later and
+  extend the exact-source provenance record.
+
 ## 0.5.0-dev.31 - Local-density MRNF initialization
 
 - Replace the single scene-wide Gaussian scale with the MRNF two-nearest-

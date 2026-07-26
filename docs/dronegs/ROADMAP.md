@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.31.
+- Current development version: 0.5.0-dev.32.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -158,6 +158,11 @@ Each completed phase has one focused commit and an annotated
   0.09006 and exact-pair LPIPS by 26.2%, cuts trainer compute by 89.1%, but
   loses 0.4198 dB PSNR. This exposes frozen high SH color and opacity/covariance
   mismatches as the next quality gates.
+- Dev.32 adopts FastGS's `[0,4]` live SH color interval and recalibrates the
+  post-KNN balanced DC rate to 0.010. Versus dev.31 it gains 0.2230 dB,
+  0.00353 SSIM, and 1.62% LPIPS. Versus dev.30 it remains 0.1968 dB lower
+  but improves SSIM by 0.09359, LPIPS by 27.4%, trainer compute by 87.3%,
+  and wall time by 49.9%.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.

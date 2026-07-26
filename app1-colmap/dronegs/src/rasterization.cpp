@@ -1,4 +1,8 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (c) 2026 DroneAI contributors
+//
+// The dev.32 SH color ceiling and gradient interval follow LichtFeld-Studio
+// FastGS at commit 1004c0841a3776e3f67866ff34101fbc9677397f.
 #include "dronegs/rasterization.hpp"
 
 #include <algorithm>
@@ -29,6 +33,7 @@ constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
 constexpr float gaussian_support = 2.5F;
+constexpr float maximum_splat_color = 4.0F;
 
 struct AlphaPixelContribution {
     std::size_t projected_index = 0U;
@@ -318,7 +323,8 @@ std::vector<ProjectedAlphaSplat> project_visible(
                         channel * maximum_sh_rest_coefficients +
                         coefficient];
             }
-            color[channel] = std::clamp(value, 0.0F, 1.0F);
+            color[channel] =
+                std::clamp(value, 0.0F, maximum_splat_color);
         }
         projected.push_back({
             .source_index = static_cast<std::uint32_t>(index),
@@ -560,7 +566,7 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                                 coefficient];
                     }
                     if (unclamped_color > 0.0F &&
-                        unclamped_color < 1.0F) {
+                        unclamped_color < maximum_splat_color) {
                         gradients.dc[source][channel] +=
                             sh_c0 * color_gradient;
                         for (std::size_t coefficient = 0U;
