@@ -144,7 +144,7 @@ function RunCard({
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className={`font-mono text-xs uppercase tracking-[0.2em] ${color}`}>
-            {run.engine === "dronegs" ? "DroneGS dev38" : "LichtFeld v0.5.1"}
+            {run.engine === "dronegs" ? "DroneGS dev42" : "LichtFeld v0.5.1"}
           </p>
           <h2 className="mt-2 text-2xl font-semibold">
             {run.status === "completed" ? "15 000 terminées" : run.stage}
