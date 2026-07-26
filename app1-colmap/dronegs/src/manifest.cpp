@@ -82,6 +82,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "dev35-opacity096-lf-scale-staged-rotation004" ||
         options.optimizer_profile ==
             "dev35-opacity096-lf-scale-staged-rotation008";
+    const bool dev36_absgrad =
+        options.optimizer_profile ==
+            "dev36-staged-rotation008-absgrad025" ||
+        options.optimizer_profile ==
+            "dev36-staged-rotation008-absgrad050";
+    const bool staged_rotation =
+        dev35_staged_rotation || dev36_absgrad;
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -93,7 +100,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
         dev34_geometry ||
-        dev35_staged_rotation;
+        staged_rotation;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-dc-only" ||
@@ -113,14 +120,14 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile == "dev34-opacity096-lf-scale" ||
         options.optimizer_profile ==
             "dev34-opacity096-lf-scale-rotation" ||
-        dev35_staged_rotation;
+        staged_rotation;
     const bool lichtfeld_rotation =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-rotation-only" ||
         options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
         options.optimizer_profile ==
             "dev34-opacity096-lf-scale-rotation" ||
-        dev35_staged_rotation;
+        staged_rotation;
     const bool mixed_epsilon =
         options.optimizer_profile != "dronegs-dev16" &&
         !lichtfeld_all;
@@ -136,7 +143,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
         dev34_geometry ||
-        dev35_staged_rotation) {
+        staged_rotation) {
         dc_learning_rate = "0.01";
     } else if (
         options.optimizer_profile == "calibrated-dc-0.020-opacity") {
@@ -155,7 +162,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
         dev34_geometry ||
-        dev35_staged_rotation) {
+        staged_rotation) {
         opacity_learning_rate = "0.096";
     }
     const auto temporary = options.run_manifest.string() + ".tmp";
@@ -167,7 +174,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.35\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.36\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -229,7 +236,10 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"scale_decay\": 0.002,\n"
            << "    \"topology_compaction\": \"hard_dense_preserve_adam\",\n"
            << "    \"growth_score\": "
-              "\"max_normalized_ssim_error_weighted_alpha_contribution\",\n"
+           << (dev36_absgrad
+                   ? "\"mrnf_error_edge_times_robust_abs_projected_gradient\""
+                   : "\"max_normalized_ssim_error_weighted_alpha_contribution\"")
+           << ",\n"
            << "    \"growth_gradient_threshold\": 0.003,\n"
            << "    \"grow_fraction\": 0.07,\n"
            << "    \"refine_every\": 200,\n"
@@ -242,6 +252,25 @@ void write_completed_manifest(const Options& options, const Scene& scene,
               "\"training_view_sobel_luminance_alpha_contribution_positive_median\",\n"
            << "    \"edge_score_weight\": 0.25,\n"
            << "    \"edge_extra_render_passes\": 0,\n"
+           << "    \"absgrad_guidance\": "
+           << (dev36_absgrad
+                   ? "\"homodirectional_per_pixel_projected_center_gradient\""
+                   : "null")
+           << ",\n"
+           << "    \"absgrad_normalization\": "
+           << (dev36_absgrad
+                   ? "\"per_visible_view_positive_median_clamped_4\""
+                   : "null")
+           << ",\n"
+           << "    \"absgrad_score_weight\": "
+           << (options.optimizer_profile ==
+                       "dev36-staged-rotation008-absgrad025"
+                   ? "0.25"
+                   : (options.optimizer_profile ==
+                              "dev36-staged-rotation008-absgrad050"
+                          ? "0.50"
+                          : "0.0"))
+           << ",\n"
            << "    \"adam_epsilon\": "
            << (mixed_epsilon
                    ? "null"
@@ -284,7 +313,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    : "\"constant\"")
            << ",\n"
            << "    \"rotation_lr\": "
-           << (dev35_staged_rotation
+           << (staged_rotation
                    ? "0.001"
                    : (lichtfeld_rotation ? "0.002" : "0.001"))
            << ",\n"
@@ -293,17 +322,18 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                        "dev35-opacity096-lf-scale-staged-rotation004"
                    ? "0.004"
                    : (options.optimizer_profile ==
-                              "dev35-opacity096-lf-scale-staged-rotation008"
+                                  "dev35-opacity096-lf-scale-staged-rotation008" ||
+                              dev36_absgrad
                           ? "0.008"
                           : (lichtfeld_rotation ? "0.002" : "0.001")))
            << ",\n"
            << "    \"rotation_lr_schedule\": "
-           << (dev35_staged_rotation
+           << (staged_rotation
                    ? "\"piecewise_constant_0.4\""
                    : "\"constant\"")
            << ",\n"
            << "    \"rotation_lr_switch_fraction\": "
-           << (dev35_staged_rotation ? "0.4" : "null") << ",\n"
+           << (staged_rotation ? "0.4" : "null") << ",\n"
            << "    \"optimizer_telemetry\": "
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"

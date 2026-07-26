@@ -7,11 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.35` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.36` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
-stronger rotation updates until 40% of training. The experiment tests whether
-late anisotropy can preserve structure gains without Savères' LPIPS regression.
+stronger rotation updates until 40% of training. Dev.36 adds homodirectional
+per-pixel absolute projected-center gradients to MRNF's deterministic split
+ranking to recover detail hidden by signed gradient cancellation.
 A
 balanced local KD tree gives each COLMAP point an isotropic scale adapted to
 its local density and bounded by robust scene extents. A local build detects

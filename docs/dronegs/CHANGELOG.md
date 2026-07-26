@@ -2,6 +2,20 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.36 - AbsGrad-guided MRNF
+
+- Accumulate the absolute X/Y projected-center gradient contribution of every
+  Gaussian/pixel pair before signed gradients can cancel, following the AbsGS
+  mechanism.
+- Average the resulting homodirectional norm per visible training view,
+  normalize by its positive scene median, clamp outliers to four, and combine
+  it with the existing MRNF error/edge score before deterministic Gumbel
+  selection.
+- Add isolated score weights `0.25` and `0.50` on top of the selected dev.35
+  staged-rotation `0.008` profile.
+- Pin the audited Apache-2.0 gsplat reference revision in the provenance
+  register; no new runtime dependency or architecture-specific path is added.
+
 ## 0.5.0-dev.35 - Staged rotation calibration
 
 - Add two architecture-independent profiles that keep the dev.34 scale

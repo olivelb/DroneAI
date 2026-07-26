@@ -18,7 +18,12 @@
  * shared memory. Dev.30 removes the Ada-only radix and register overrides,
  * leaving architecture selection and stable radix policy to CMake, nvcc, and
  * CUB for portable Turing-through-Blackwell builds. Dev.32 matches FastGS's
- * [0,4] SH color ceiling and corresponding live-gradient interval. The
+ * [0,4] SH color ceiling and corresponding live-gradient interval. Dev.36
+ * independently adapts the homodirectional projected-mean gradient statistic
+ * described by AbsGS (arXiv:2404.10484). The Apache-2.0 gsplat implementation
+ * was inspected at 2b902ff1891fc7f73f0f9b8c8bfc932cef2b198c to validate the
+ * per-pixel absolute-value placement; no gsplat source is linked or vendored.
+ * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
@@ -860,7 +865,8 @@ __global__ void backward_alpha_tiles_kernel(
     const float* densification_edge_map,
     float* frame_refinement_weight,
     float* frame_visibility_weight,
-    float* frame_edge_weight) {
+    float* frame_edge_weight,
+    float* frame_abs_projected_gradient) {
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
     // One coalesced load serves every pixel in the tile during both the
@@ -1049,18 +1055,30 @@ __global__ void backward_alpha_tiles_kernel(
                 const float squared_distance_gradient =
                     -0.5F * alpha_gradient * splat.opacity *
                     gaussian_weight;
+                const float screen_x_contribution =
+                    squared_distance_gradient *
+                    -2.0F *
+                    (splat.conic_xx * delta_x +
+                     splat.conic_xy * delta_y);
+                const float screen_y_contribution =
+                    squared_distance_gradient *
+                    -2.0F *
+                    (splat.conic_xy * delta_x +
+                     splat.conic_yy * delta_y);
                 atomicAdd(
                     &projected_geometry_gradient[source * 5U],
-                    squared_distance_gradient *
-                        -2.0F *
-                        (splat.conic_xx * delta_x +
-                         splat.conic_xy * delta_y));
+                    screen_x_contribution);
                 atomicAdd(
                     &projected_geometry_gradient[source * 5U + 1U],
-                    squared_distance_gradient *
-                        -2.0F *
-                        (splat.conic_xy * delta_x +
-                         splat.conic_yy * delta_y));
+                    screen_y_contribution);
+                if (frame_abs_projected_gradient != nullptr) {
+                    atomicAdd(
+                        &frame_abs_projected_gradient[source * 2U],
+                        fabsf(screen_x_contribution));
+                    atomicAdd(
+                        &frame_abs_projected_gradient[source * 2U + 1U],
+                        fabsf(screen_y_contribution));
+                }
                 atomicAdd(
                     &projected_geometry_gradient[source * 5U + 2U],
                     squared_distance_gradient * delta_x * delta_x);
@@ -2019,8 +2037,10 @@ __global__ void collect_refinement_statistics_kernel(
     const float* frame_refinement_weight,
     const float* frame_visibility_weight,
     const float* frame_edge_weight,
+    const float* frame_abs_projected_gradient,
     float* refine_weight_max, float* visibility_count,
-    float* edge_weight_sum,
+    float* edge_weight_sum, float* absgrad_sum,
+    float* absgrad_observation_count,
     std::size_t gaussian_count) {
     const std::size_t index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -2035,6 +2055,15 @@ __global__ void collect_refinement_statistics_kernel(
         visibility_count[index] += visible;
         edge_weight_sum[index] += frame_edge_weight[index];
     }
+    const float abs_x =
+        frame_abs_projected_gradient[index * 2U];
+    const float abs_y =
+        frame_abs_projected_gradient[index * 2U + 1U];
+    const float abs_norm = hypotf(abs_x, abs_y);
+    if (abs_norm > 0.0F && isfinite(abs_norm)) {
+        absgrad_sum[index] += abs_norm;
+        absgrad_observation_count[index] += 1.0F;
+    }
 }
 
 __global__ void split_gaussians_long_axis_kernel(
@@ -2047,7 +2076,8 @@ __global__ void split_gaussians_long_axis_kernel(
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
     float* refine_weight_max, float* visibility_count,
-    float* edge_weight_sum) {
+    float* edge_weight_sum, float* absgrad_sum,
+    float* absgrad_observation_count) {
     const std::size_t split =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (split >= parent_count) {
@@ -2153,6 +2183,10 @@ __global__ void split_gaussians_long_axis_kernel(
     visibility_count[child_index] = 0.0F;
     edge_weight_sum[parent_index] = 0.0F;
     edge_weight_sum[child_index] = 0.0F;
+    absgrad_sum[parent_index] = 0.0F;
+    absgrad_sum[child_index] = 0.0F;
+    absgrad_observation_count[parent_index] = 0.0F;
+    absgrad_observation_count[child_index] = 0.0F;
 }
 
 struct DeviceOptimizerTelemetry {
@@ -2690,7 +2724,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             device_sh_rest_gradient->data(), active_sh_degree,
             device_opacity_logit_gradient->data(),
             device_projected_geometry_gradient->data(),
-            nullptr, nullptr, nullptr, nullptr, nullptr);
+            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
         require_cuda(cudaGetLastError(), "launch tiled alpha backward");
         backward_projected_geometry_kernel<<<
             projection_blocks, threads_per_block>>>(
@@ -2901,7 +2935,11 @@ static MrnfLearningRates mrnf_learning_rates(
                 dev35_opacity096_lf_scale_staged_rotation004 ||
         profile ==
             MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation008;
+                dev35_opacity096_lf_scale_staged_rotation008 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
@@ -2926,7 +2964,11 @@ static MrnfLearningRates mrnf_learning_rates(
                 dev35_opacity096_lf_scale_staged_rotation004 ||
         profile ==
             MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation008;
+                dev35_opacity096_lf_scale_staged_rotation008 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050;
     const bool staged_rotation004 =
         profile ==
         MrnfOptimizerProfile::
@@ -2934,7 +2976,11 @@ static MrnfLearningRates mrnf_learning_rates(
     const bool staged_rotation008 =
         profile ==
         MrnfOptimizerProfile::
-            dev35_opacity096_lf_scale_staged_rotation008;
+            dev35_opacity096_lf_scale_staged_rotation008 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050;
     const bool staged_rotation =
         staged_rotation004 || staged_rotation008;
     const bool lichtfeld_rotation =
@@ -3153,10 +3199,13 @@ struct OrderedAlphaTrainingContext::Impl {
         refine_weight_max.ensure(gaussian_capacity);
         visibility_count.ensure(gaussian_capacity);
         edge_weight_sum.ensure(gaussian_capacity);
+        absgrad_sum.ensure(gaussian_capacity);
+        absgrad_observation_count.ensure(gaussian_capacity);
         refinement_indices.ensure(gaussian_capacity);
         frame_refinement_weight.ensure(gaussian_capacity);
         frame_visibility_weight.ensure(gaussian_capacity);
         frame_edge_weight.ensure(gaussian_capacity);
+        frame_abs_projected_gradient.ensure(gaussian_capacity * 2U);
         optimizer_telemetry.ensure(1U);
         float initial_minimum_log_scale =
             std::numeric_limits<float>::max();
@@ -3208,9 +3257,12 @@ struct OrderedAlphaTrainingContext::Impl {
         refine_weight_max.zero(gaussian_capacity);
         visibility_count.zero(gaussian_capacity);
         edge_weight_sum.zero(gaussian_capacity);
+        absgrad_sum.zero(gaussian_capacity);
+        absgrad_observation_count.zero(gaussian_capacity);
         frame_refinement_weight.zero(gaussian_capacity);
         frame_visibility_weight.zero(gaussian_capacity);
         frame_edge_weight.zero(gaussian_capacity);
+        frame_abs_projected_gradient.zero(gaussian_capacity * 2U);
         optimizer_telemetry.zero(1U);
     }
 
@@ -3540,6 +3592,7 @@ struct OrderedAlphaTrainingContext::Impl {
             frame_refinement_weight.zero(gaussian_count);
             frame_visibility_weight.zero(gaussian_count);
             frame_edge_weight.zero(gaussian_count);
+            frame_abs_projected_gradient.zero(gaussian_count * 2U);
             xyz_gradient.zero(gaussian_count * 3U);
             log_scale_gradient.zero(gaussian_count * 3U);
             rotation_gradient.zero(gaussian_count * 4U);
@@ -3558,7 +3611,8 @@ struct OrderedAlphaTrainingContext::Impl {
                 densification_edge_map.data(),
                 frame_refinement_weight.data(),
                 frame_visibility_weight.data(),
-                frame_edge_weight.data());
+                frame_edge_weight.data(),
+                frame_abs_projected_gradient.data());
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered backward");
@@ -3567,9 +3621,12 @@ struct OrderedAlphaTrainingContext::Impl {
                 frame_refinement_weight.data(),
                 frame_visibility_weight.data(),
                 frame_edge_weight.data(),
+                frame_abs_projected_gradient.data(),
                 refine_weight_max.data(),
                 visibility_count.data(),
                 edge_weight_sum.data(),
+                absgrad_sum.data(),
+                absgrad_observation_count.data(),
                 gaussian_count);
             require_cuda(
                 cudaGetLastError(),
@@ -3721,10 +3778,22 @@ struct OrderedAlphaTrainingContext::Impl {
                 "ordered topology refinement parameters are invalid");
         }
         const auto previous_count = gaussian_count;
+        const float absgrad_score_weight =
+            optimizer_profile ==
+                    MrnfOptimizerProfile::
+                        dev36_staged_rotation008_absgrad025
+                ? 0.25F
+                : (optimizer_profile ==
+                           MrnfOptimizerProfile::
+                               dev36_staged_rotation008_absgrad050
+                       ? 0.50F
+                       : 0.0F);
         std::vector<Gaussian> host_gaussians(previous_count);
         std::vector<float> host_weights(previous_count);
         std::vector<float> host_visibility(previous_count);
         std::vector<float> host_edge_weights(previous_count);
+        std::vector<float> host_absgrad_sum(previous_count);
+        std::vector<float> host_absgrad_count(previous_count);
         gaussians.copy_to_host(
             host_gaussians.data(), previous_count);
         refine_weight_max.copy_to_host(
@@ -3733,6 +3802,10 @@ struct OrderedAlphaTrainingContext::Impl {
             host_visibility.data(), previous_count);
         edge_weight_sum.copy_to_host(
             host_edge_weights.data(), previous_count);
+        absgrad_sum.copy_to_host(
+            host_absgrad_sum.data(), previous_count);
+        absgrad_observation_count.copy_to_host(
+            host_absgrad_count.data(), previous_count);
 
         const auto percentile = [](
             std::vector<float> values, float fraction) {
@@ -3833,14 +3906,22 @@ struct OrderedAlphaTrainingContext::Impl {
             std::vector<float> compact_weights;
             std::vector<float> compact_visibility;
             std::vector<float> compact_edge_weights;
+            std::vector<float> compact_absgrad_sum;
+            std::vector<float> compact_absgrad_count;
             compact_weights.reserve(survivors.size());
             compact_visibility.reserve(survivors.size());
             compact_edge_weights.reserve(survivors.size());
+            compact_absgrad_sum.reserve(survivors.size());
+            compact_absgrad_count.reserve(survivors.size());
             for (const auto source : survivors) {
                 compact_gaussians.push_back(host_gaussians[source]);
                 compact_weights.push_back(host_weights[source]);
                 compact_visibility.push_back(host_visibility[source]);
                 compact_edge_weights.push_back(host_edge_weights[source]);
+                compact_absgrad_sum.push_back(
+                    host_absgrad_sum[source]);
+                compact_absgrad_count.push_back(
+                    host_absgrad_count[source]);
             }
             const auto compact_moments = [&](
                 auto& allocation, std::size_t components) {
@@ -3874,6 +3955,8 @@ struct OrderedAlphaTrainingContext::Impl {
             compact_moments(second_log_scale, 3U);
             compact_moments(first_rotation, 4U);
             compact_moments(second_rotation, 4U);
+            compact_moments(absgrad_sum, 1U);
+            compact_moments(absgrad_observation_count, 1U);
             gaussian_count = compact_gaussians.size();
             gaussians.copy_from_host(
                 compact_gaussians.data(), gaussian_count);
@@ -3881,8 +3964,21 @@ struct OrderedAlphaTrainingContext::Impl {
             host_weights = std::move(compact_weights);
             host_visibility = std::move(compact_visibility);
             host_edge_weights = std::move(compact_edge_weights);
+            host_absgrad_sum = std::move(compact_absgrad_sum);
+            host_absgrad_count = std::move(compact_absgrad_count);
         }
         const float median_edge = positive_median(host_edge_weights);
+        std::vector<float> host_absgrad_average(gaussian_count, 0.0F);
+        for (std::size_t index = 0U; index < gaussian_count; ++index) {
+            if (host_absgrad_count[index] > 0.0F &&
+                std::isfinite(host_absgrad_sum[index])) {
+                host_absgrad_average[index] =
+                    host_absgrad_sum[index] /
+                    host_absgrad_count[index];
+            }
+        }
+        const float median_absgrad =
+            positive_median(host_absgrad_average);
         struct Candidate {
             double key;
             std::uint32_t source_index;
@@ -3899,11 +3995,23 @@ struct OrderedAlphaTrainingContext::Impl {
                               0.0F,
                               host_edge_weights[index] / median_edge)
                         : 0.0F;
+                const float normalized_absgrad =
+                    absgrad_score_weight > 0.0F &&
+                            median_absgrad > 0.0F &&
+                            std::isfinite(host_absgrad_average[index])
+                        ? std::clamp(
+                              host_absgrad_average[index] /
+                                  median_absgrad,
+                              0.0F, 4.0F)
+                        : 0.0F;
                 const double guided_weight =
                     static_cast<double>(host_weights[index]) *
                     static_cast<double>(
                         1.0F +
-                        mrnf_edge_score_weight * normalized_edge);
+                        mrnf_edge_score_weight * normalized_edge) *
+                    static_cast<double>(
+                        1.0F +
+                        absgrad_score_weight * normalized_absgrad);
                 const auto source_index =
                     static_cast<std::uint32_t>(index);
                 candidates.push_back({
@@ -3958,7 +4066,8 @@ struct OrderedAlphaTrainingContext::Impl {
                 first_log_scale.data(), second_log_scale.data(),
                 first_rotation.data(), second_rotation.data(),
                 refine_weight_max.data(), visibility_count.data(),
-                edge_weight_sum.data());
+                edge_weight_sum.data(), absgrad_sum.data(),
+                absgrad_observation_count.data());
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent long-axis Gaussian split");
@@ -3977,6 +4086,8 @@ struct OrderedAlphaTrainingContext::Impl {
         refine_weight_max.zero(gaussian_count);
         visibility_count.zero(gaussian_count);
         edge_weight_sum.zero(gaussian_count);
+        absgrad_sum.zero(gaussian_count);
+        absgrad_observation_count.zero(gaussian_count);
         return {
             .candidates = candidates.size(),
             .pruned = pruned,
@@ -4055,10 +4166,13 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> refine_weight_max;
     ReusableDeviceAllocation<float> visibility_count;
     ReusableDeviceAllocation<float> edge_weight_sum;
+    ReusableDeviceAllocation<float> absgrad_sum;
+    ReusableDeviceAllocation<float> absgrad_observation_count;
     ReusableDeviceAllocation<std::uint32_t> refinement_indices;
     ReusableDeviceAllocation<float> frame_refinement_weight;
     ReusableDeviceAllocation<float> frame_visibility_weight;
     ReusableDeviceAllocation<float> frame_edge_weight;
+    ReusableDeviceAllocation<float> frame_abs_projected_gradient;
     ReusableDeviceAllocation<DeviceOptimizerTelemetry>
         optimizer_telemetry;
 };

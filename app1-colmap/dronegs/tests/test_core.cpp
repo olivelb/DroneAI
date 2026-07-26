@@ -307,7 +307,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--save-eval-images", "1",
         "--sh-degree-interval", "250",
         "--optimizer-profile",
-        "dev35-opacity096-lf-scale-staged-rotation004",
+        "dev36-staged-rotation008-absgrad025",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -322,7 +322,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "CLI SH interval mismatch");
     check(
         tuned.optimizer_profile ==
-            "dev35-opacity096-lf-scale-staged-rotation004",
+            "dev36-staged-rotation008-absgrad025",
         "CLI optimizer profile mismatch");
     values.resize(values.size() - 14U);
 

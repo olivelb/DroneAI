@@ -47,7 +47,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.35\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.36\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -69,7 +69,9 @@ const char* help_text() {
         "dev34-opacity096-lf-rotation|"
         "dev34-opacity096-lf-scale-rotation|"
         "dev35-opacity096-lf-scale-staged-rotation004|"
-        "dev35-opacity096-lf-scale-staged-rotation008]\n";
+        "dev35-opacity096-lf-scale-staged-rotation008|"
+        "dev36-staged-rotation008-absgrad025|"
+        "dev36-staged-rotation008-absgrad050]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -227,7 +229,11 @@ void validate_options(const Options& options) {
         options.optimizer_profile !=
             "dev35-opacity096-lf-scale-staged-rotation004" &&
         options.optimizer_profile !=
-            "dev35-opacity096-lf-scale-staged-rotation008") {
+            "dev35-opacity096-lf-scale-staged-rotation008" &&
+        options.optimizer_profile !=
+            "dev36-staged-rotation008-absgrad025" &&
+        options.optimizer_profile !=
+            "dev36-staged-rotation008-absgrad050") {
         throw std::invalid_argument(
             "--optimizer-profile must be dronegs-dev16, "
             "lichtfeld-absolute, lichtfeld-dc-only, or "

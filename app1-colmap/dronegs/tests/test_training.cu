@@ -760,6 +760,14 @@ int main() {
             dronegs::MrnfOptimizerProfile::
                 dev35_opacity096_lf_scale_staged_rotation008,
             8.0e-3F, "dev35 staged rotation 0.008");
+        require_staged_rotation(
+            dronegs::MrnfOptimizerProfile::
+                dev36_staged_rotation008_absgrad025,
+            8.0e-3F, "dev36 AbsGrad 0.25");
+        require_staged_rotation(
+            dronegs::MrnfOptimizerProfile::
+                dev36_staged_rotation008_absgrad050,
+            8.0e-3F, "dev36 AbsGrad 0.50");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);
@@ -907,11 +915,17 @@ int main() {
                 -0.05F + 0.01F * static_cast<float>(index);
         }
         dronegs::OrderedAlphaTrainingContext seeded_first(
-            gumbel_parents, 32U * 32U, 2U, 10U);
+            gumbel_parents, 32U * 32U, 2U, 10U,
+            dronegs::MrnfOptimizerProfile::
+                dev36_staged_rotation008_absgrad025);
         dronegs::OrderedAlphaTrainingContext seeded_repeat(
-            gumbel_parents, 32U * 32U, 2U, 10U);
+            gumbel_parents, 32U * 32U, 2U, 10U,
+            dronegs::MrnfOptimizerProfile::
+                dev36_staged_rotation008_absgrad025);
         dronegs::OrderedAlphaTrainingContext seeded_other(
-            gumbel_parents, 32U * 32U, 2U, 10U);
+            gumbel_parents, 32U * 32U, 2U, 10U,
+            dronegs::MrnfOptimizerProfile::
+                dev36_staged_rotation008_absgrad025);
         static_cast<void>(seeded_first.train_step(
             quality_camera, split_target.data(), split_target.size()));
         static_cast<void>(seeded_repeat.train_step(
