@@ -7,9 +7,9 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.28` tunes the native sm_89 compact-record radix sort and
-kernel occupancy for the validated MRNF, progressive SH, and exact-pair LPIPS
-paths. It:
+Version `0.5.0-dev.29` adds cooperative shared-memory batching to both passes
+of ordered-alpha backward on top of the tuned native sm_89 radix and occupancy
+path. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -175,7 +175,7 @@ stride.
 Build the isolated CPU evaluator once:
 
 ```bash
-docker build -t dronegs-lpips:0.5.0-dev.28 \
+docker build -t dronegs-lpips:0.5.0-dev.29 \
   -f app1-colmap/dronegs/Dockerfile.lpips .
 ```
 
@@ -186,7 +186,7 @@ COLMAP or the native CUDA trainer:
 docker run --rm \
   --mount type=volume,src=dronegs-torch-cache,dst=/root/.cache/torch \
   --mount type=bind,src=/absolute/run/path,dst=/run \
-  dronegs-lpips:0.5.0-dev.28 \
+  dronegs-lpips:0.5.0-dev.29 \
   --evaluation-dir /run/evaluation \
   --manifest /run/trainer_run.json \
   --device cpu

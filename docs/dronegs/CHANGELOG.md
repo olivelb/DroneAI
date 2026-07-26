@@ -2,6 +2,25 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.29 - Phase 4 shared-memory backward batching
+
+- Cooperatively load projected splats into tile-local shared memory during
+  both front-to-back transmittance recomputation and reverse gradient
+  traversal.
+- Share the recovered source index alongside each 48-byte projected record,
+  removing up to 256 redundant global record/key reads per tile contribution.
+- Preserve the exact per-pixel blend order, reverse gradient order, stable
+  depth/source key, public outputs, and MRNF lifecycle.
+- Pass all six CPU, CUDA, gradient, training, and LPIPS-tool suites.
+- Reduce bounded Savères training/wall time to 39.50/43.97 seconds and
+  Albagnac to 50.44/56.21 seconds. This is about 30% and 33% faster in wall
+  time than the dev.26 PTX reference.
+- Preserve Savères and Albagnac topology exactly; bounded PSNR, SSIM, and
+  exact-pair LPIPS remain within numerical noise of dev.26/dev.28.
+- Keep DroneGS opt-in. Speed parity is reached on these bounded three-scene
+  controls, but convergence-length LichtFeld, visual, orthomosaic, and
+  downstream detection gates remain open.
+
 ## 0.5.0-dev.28 - Phase 4 native Ada radix and occupancy tuning
 
 - Keep dev.27's deterministic 64-bit depth/source key and compact 48-byte

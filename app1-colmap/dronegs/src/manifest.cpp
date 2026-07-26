@@ -116,8 +116,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-sm89-tuned-sort-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.28\",\n"
+           << "  \"backend\": \"dronegs-shared-backward-mrnf-prototype\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.29\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"

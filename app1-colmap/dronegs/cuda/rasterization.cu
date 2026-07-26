@@ -13,7 +13,9 @@
  * sm_89 while keeping SH bases in a separate source-indexed buffer, avoiding
  * CUB's large-value shared-memory limit without a full-record gather. Dev.28
  * selects CUB's Policy610 radix kernels and caps native sm_89 CUDA compilation
- * at 64 registers to improve Ada occupancy. The
+ * at 64 registers to improve Ada occupancy. Dev.29 cooperatively batches
+ * forward recomputation and reverse gradient traversal through tile-local
+ * shared memory. The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
@@ -854,13 +856,20 @@ __global__ void backward_alpha_tiles_kernel(
     float* frame_refinement_weight,
     float* frame_visibility_weight,
     float* frame_edge_weight) {
+    constexpr std::uint32_t threads_per_tile =
+        alpha_tile_width * alpha_tile_height;
+    // One coalesced load serves every pixel in the tile during both the
+    // front-to-back replay and the reverse gradient traversal.
+    __shared__ DeviceProjectedSplat batch[threads_per_tile];
+    __shared__ std::uint32_t batch_sources[threads_per_tile];
+
+    const std::uint32_t thread_index =
+        threadIdx.y * blockDim.x + threadIdx.x;
     const std::uint32_t x =
         blockIdx.x * alpha_tile_width + threadIdx.x;
     const std::uint32_t y =
         blockIdx.y * alpha_tile_height + threadIdx.y;
-    if (x >= width || y >= height) {
-        return;
-    }
+    const bool valid_pixel = x < width && y < height;
     const std::uint32_t tiles_x =
         width / alpha_tile_width +
         (width % alpha_tile_width != 0U ? 1U : 0U);
@@ -871,44 +880,62 @@ __global__ void backward_alpha_tiles_kernel(
 
     float remaining = 1.0F;
     std::uint64_t active_end = end;
-    for (std::uint64_t pair = start; pair < end; ++pair) {
-        if (remaining <= alpha_minimum_transmittance) {
-            active_end = pair;
-            break;
+    for (std::uint64_t base = start; base < end;
+         base += threads_per_tile) {
+        const std::uint64_t load_index = base + thread_index;
+        if (load_index < end) {
+            batch[thread_index] =
+                records[record_indices[load_index]].splat;
         }
-        const auto& splat = records[record_indices[pair]].splat;
-        const int support_x =
-            static_cast<int>(ceilf(splat.radius_x));
-        const int support_y =
-            static_cast<int>(ceilf(splat.radius_y));
-        const int center_x = static_cast<int>(floorf(splat.x));
-        const int center_y = static_cast<int>(floorf(splat.y));
-        if (static_cast<int>(x) < center_x - support_x ||
-            static_cast<int>(x) > center_x + support_x ||
-            static_cast<int>(y) < center_y - support_y ||
-            static_cast<int>(y) > center_y + support_y) {
-            continue;
+        __syncthreads();
+        const auto batch_count = static_cast<std::uint32_t>(
+            min(
+                static_cast<std::uint64_t>(threads_per_tile),
+                end - base));
+        if (valid_pixel &&
+            remaining > alpha_minimum_transmittance) {
+            for (std::uint32_t index = 0U;
+                 index < batch_count; ++index) {
+                const auto pair = base + index;
+                const auto& splat = batch[index];
+                const int support_x =
+                    static_cast<int>(ceilf(splat.radius_x));
+                const int support_y =
+                    static_cast<int>(ceilf(splat.radius_y));
+                const int center_x =
+                    static_cast<int>(floorf(splat.x));
+                const int center_y =
+                    static_cast<int>(floorf(splat.y));
+                if (static_cast<int>(x) < center_x - support_x ||
+                    static_cast<int>(x) > center_x + support_x ||
+                    static_cast<int>(y) < center_y - support_y ||
+                    static_cast<int>(y) > center_y + support_y) {
+                    continue;
+                }
+                const float delta_x =
+                    (static_cast<float>(x) + 0.5F) - splat.x;
+                const float delta_y =
+                    (static_cast<float>(y) + 0.5F) - splat.y;
+                const float gaussian_weight =
+                    gaussian_weight_device(splat, delta_x, delta_y);
+                const float alpha = fminf(
+                    alpha_maximum, splat.opacity * gaussian_weight);
+                if (alpha < alpha_minimum_contribution) {
+                    continue;
+                }
+                remaining *= 1.0F - alpha;
+                if (remaining <= alpha_minimum_transmittance) {
+                    active_end = pair + 1U;
+                    break;
+                }
+            }
         }
-        const float delta_x =
-            (static_cast<float>(x) + 0.5F) - splat.x;
-        const float delta_y =
-            (static_cast<float>(y) + 0.5F) - splat.y;
-        const float gaussian_weight =
-            gaussian_weight_device(splat, delta_x, delta_y);
-        const float alpha = fminf(
-            alpha_maximum, splat.opacity * gaussian_weight);
-        if (alpha < alpha_minimum_contribution) {
-            continue;
-        }
-        remaining *= 1.0F - alpha;
-        if (remaining <= alpha_minimum_transmittance) {
-            active_end = pair + 1U;
-            break;
-        }
+        __syncthreads();
     }
 
-    const auto pixel =
-        static_cast<std::size_t>(y) * width + x;
+    const auto pixel = valid_pixel
+        ? static_cast<std::size_t>(y) * width + x
+        : 0U;
     const float upstream[3]{
         image_gradient[pixel * 3U],
         image_gradient[pixel * 3U + 1U],
@@ -916,11 +943,27 @@ __global__ void backward_alpha_tiles_kernel(
     };
     float tail[3]{background_r, background_g, background_b};
     float transmittance_after = remaining;
-    for (std::uint64_t cursor = active_end; cursor > start; --cursor) {
-        const auto record_index = record_indices[cursor - 1U];
-        const auto& splat = records[record_index].splat;
-        const auto source = static_cast<std::uint32_t>(
-            sorted_depth_keys[record_index]);
+    for (std::uint64_t batch_end = end; batch_end > start;) {
+        const auto batch_start =
+            batch_end - start > threads_per_tile
+            ? batch_end - threads_per_tile
+            : start;
+        const auto load_index = batch_start + thread_index;
+        if (load_index < batch_end) {
+            const auto record_index = record_indices[load_index];
+            batch[thread_index] = records[record_index].splat;
+            batch_sources[thread_index] =
+                static_cast<std::uint32_t>(
+                    sorted_depth_keys[record_index]);
+        }
+        __syncthreads();
+        if (valid_pixel && active_end > batch_start) {
+            const auto local_end = static_cast<std::uint32_t>(
+                min(active_end, batch_end) - batch_start);
+            for (std::uint32_t local_cursor = local_end;
+                 local_cursor > 0U; --local_cursor) {
+        const auto& splat = batch[local_cursor - 1U];
+        const auto source = batch_sources[local_cursor - 1U];
         const int support_x =
             static_cast<int>(ceilf(splat.radius_x));
         const int support_y =
@@ -1031,6 +1074,10 @@ __global__ void backward_alpha_tiles_kernel(
                 (1.0F - alpha) * tail[channel];
         }
         transmittance_after = transmittance_before;
+            }
+        }
+        __syncthreads();
+        batch_end = batch_start;
     }
 }
 

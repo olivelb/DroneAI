@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.28
+Project version: 0.5.0-dev.29
 
 ## Decision
 
@@ -186,6 +186,12 @@ Policy610 instead of the slower CUDA 12.8 Policy800 path, while retaining the
 sm_89 compilation is capped at 64 registers to improve occupancy in the
 projection, rendering, backward, and optimizer kernels. The override is
 limited to builds that contain architecture 89.
+Version 0.5.0-dev.29 batches both passes of ordered-alpha backward through
+tile-local shared memory. Each block cooperatively loads one projected splat
+and source index per thread, then all 256 pixels consume the batch in the
+original front-to-back or back-to-front order. This removes up to 256
+redundant global projected-record reads per tile contribution without changing
+the blend equation, gradient equation, stable ordering, or public contract.
 Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
 capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
 blending weight and the same weight multiplied by a normalized `1-SSIM` map.
