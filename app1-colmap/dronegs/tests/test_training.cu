@@ -923,12 +923,14 @@ int main() {
         static_cast<void>(reuse_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
         const auto reuse_refinement =
-            reuse_context.refine_topology(0.0F, 1.0F, 7U);
+            reuse_context.refine_topology(
+                0.0F, 1.0F, 7U, true);
         if (reuse_refinement.pruned != 1U ||
             reuse_refinement.added != 1U ||
             reuse_refinement.reused != 1U ||
             reuse_refinement.appended != 0U ||
-            reuse_refinement.gaussian_count != 2U) {
+            reuse_refinement.gaussian_count != 2U ||
+            !reuse_refinement.in_place_recycled) {
             throw std::runtime_error(
                 "MRNF prune/compact/reuse count mismatch");
         }

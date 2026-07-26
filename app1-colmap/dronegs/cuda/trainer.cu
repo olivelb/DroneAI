@@ -1118,11 +1118,18 @@ TrainingMetrics train_ordered_mrnf(
         }
         return MrnfOptimizerProfile::lichtfeld_absolute;
     }();
+    const std::optional<bool> raster_override =
+        options.raster_profile == "fastgs"
+            ? std::optional<bool>(true)
+            : (options.raster_profile == "bounded"
+                   ? std::optional<bool>(false)
+                   : std::nullopt);
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
-        options.sh_degree_interval, options.seed);
+        options.sh_degree_interval, options.seed,
+        raster_override);
     const bool imported_model = !options.initial_ply.empty();
     if (imported_model) {
         workspace.set_active_sh_degree(options.sh_degree);
@@ -1270,6 +1277,10 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"added\":" << refinement.added
                 << ",\"reused\":" << refinement.reused
                 << ",\"appended\":" << refinement.appended
+                << ",\"in_place_recycled\":"
+                << (refinement.in_place_recycled
+                        ? "true"
+                        : "false")
                 << ",\"gaussians\":" << refinement.gaussian_count
                 << ",\"selection_seed\":" << refinement_seed
                 << "}\n"

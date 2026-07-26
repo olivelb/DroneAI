@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.40 - Raster decoupling and GPU slot recycling
+
+- Add `--raster-profile auto|bounded|fastgs` so optimizer rates no longer
+  select rendering semantics implicitly.
+- Enable the strict parity combination: LichtFeld absolute optimizer rates,
+  LichtFeld pruning bounds, and the FastGS rasterizer.
+- At a full Gaussian cap, replace pruned splats directly in their GPU slots
+  when the growth budget covers them, avoiding full host compaction of every
+  Gaussian and every Adam moment.
+- Keep the historical compaction path as a fallback when growth cannot fill
+  all holes, including the terminal prune-only refinement.
+
 ## 0.5.0-dev.39 - Controlled pruning and exact-parity audit
 
 - Add `--pruning-policy original|lichtfeld-bounds`.

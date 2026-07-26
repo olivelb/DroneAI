@@ -97,6 +97,7 @@ struct TopologyRefinementResult {
     std::size_t reused = 0U;
     std::size_t appended = 0U;
     std::size_t gaussian_count = 0U;
+    bool in_place_recycled = false;
 };
 
 struct TrainingMetrics {

@@ -221,6 +221,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << json_escape(options.optimizer_profile) << "\",\n"
            << "    \"pruning_policy\": \""
            << json_escape(options.pruning_policy) << "\",\n"
+           << "    \"raster_profile\": \""
+           << json_escape(options.raster_profile) << "\",\n"
            << "    \"initial_ply\": "
            << (options.initial_ply.empty()
                    ? "null"

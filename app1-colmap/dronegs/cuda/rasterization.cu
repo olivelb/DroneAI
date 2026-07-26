@@ -2230,7 +2230,8 @@ __global__ void collect_refinement_statistics_kernel(
 
 __global__ void split_gaussians_long_axis_kernel(
     Gaussian* gaussians, const std::uint32_t* parent_indices,
-    std::size_t parent_count, std::size_t child_start,
+    const std::uint32_t* child_indices,
+    std::size_t parent_count,
     float* first_dc, float* second_dc,
     float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
@@ -2246,7 +2247,7 @@ __global__ void split_gaussians_long_axis_kernel(
         return;
     }
     const std::size_t parent_index = parent_indices[split];
-    const std::size_t child_index = child_start + split;
+    const std::size_t child_index = child_indices[split];
     Gaussian parent = gaussians[parent_index];
     Gaussian child = parent;
 
@@ -3341,7 +3342,8 @@ struct OrderedAlphaTrainingContext::Impl {
         MrnfOptimizerProfile requested_optimizer_profile,
         std::uint32_t requested_maximum_sh_degree,
         std::uint32_t requested_sh_degree_interval,
-        std::uint64_t requested_noise_seed)
+        std::uint64_t requested_noise_seed,
+        std::optional<bool> fastgs_compatibility_override)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -3354,9 +3356,10 @@ struct OrderedAlphaTrainingContext::Impl {
               antialias_filter_variance_for_profile(
                   requested_optimizer_profile)),
           fastgs_compatibility(
-              requested_optimizer_profile ==
-              MrnfOptimizerProfile::
-                  dev38_staged_rotation008_absgrad050_fastgs),
+              fastgs_compatibility_override.value_or(
+                  requested_optimizer_profile ==
+                  MrnfOptimizerProfile::
+                      dev38_staged_rotation008_absgrad050_fastgs)),
           maximum_active_sh_degree(requested_maximum_sh_degree),
           sh_degree_interval(requested_sh_degree_interval),
           noise_seed(requested_noise_seed) {
@@ -3430,6 +3433,7 @@ struct OrderedAlphaTrainingContext::Impl {
         absgrad_sum.ensure(gaussian_capacity);
         absgrad_observation_count.ensure(gaussian_capacity);
         refinement_indices.ensure(gaussian_capacity);
+        refinement_destinations.ensure(gaussian_capacity);
         frame_refinement_weight.ensure(gaussian_capacity);
         frame_visibility_weight.ensure(gaussian_capacity);
         frame_edge_weight.ensure(gaussian_capacity);
@@ -4133,6 +4137,8 @@ struct OrderedAlphaTrainingContext::Impl {
             -23.025850929940457F;
         std::vector<std::size_t> survivors;
         survivors.reserve(previous_count);
+        std::vector<std::uint8_t> survivor_mask(
+            previous_count, 0U);
         std::size_t pruned_non_finite = 0U;
         std::size_t pruned_opacity = 0U;
         std::size_t pruned_scale_small = 0U;
@@ -4171,6 +4177,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 scale_large || spatial_outlier;
             if (!prune) {
                 survivors.push_back(index);
+                survivor_mask[index] = 1U;
             }
         }
         if (survivors.empty()) {
@@ -4179,11 +4186,31 @@ struct OrderedAlphaTrainingContext::Impl {
                 [](const auto& left, const auto& right) {
                     return left.opacity_logit < right.opacity_logit;
                 });
-            survivors.push_back(static_cast<std::size_t>(
-                std::distance(host_gaussians.begin(), best)));
+            const auto best_index = static_cast<std::size_t>(
+                std::distance(host_gaussians.begin(), best));
+            survivors.push_back(best_index);
+            survivor_mask[best_index] = 1U;
         }
         const auto pruned = previous_count - survivors.size();
-        if (pruned != 0U) {
+        std::size_t eligible_surviving_candidates = 0U;
+        for (const auto index : survivors) {
+            eligible_surviving_candidates +=
+                host_visibility[index] > 0.0F &&
+                        host_weights[index] > gradient_threshold
+                    ? 1U
+                    : 0U;
+        }
+        const auto requested_recycle =
+            static_cast<std::size_t>(std::llround(
+                static_cast<double>(
+                    eligible_surviving_candidates) *
+                static_cast<double>(grow_fraction)));
+        const bool in_place_recycle =
+            lichtfeld_pruning_bounds &&
+            previous_count == gaussian_capacity &&
+            pruned != 0U &&
+            requested_recycle >= pruned;
+        if (pruned != 0U && !in_place_recycle) {
             std::vector<Gaussian> compact_gaussians;
             compact_gaussians.reserve(survivors.size());
             std::vector<float> compact_weights;
@@ -4250,9 +4277,24 @@ struct OrderedAlphaTrainingContext::Impl {
             host_absgrad_sum = std::move(compact_absgrad_sum);
             host_absgrad_count = std::move(compact_absgrad_count);
         }
-        const float median_edge = positive_median(host_edge_weights);
+        std::vector<float> surviving_edge_weights;
+        if (in_place_recycle) {
+            surviving_edge_weights.reserve(survivors.size());
+            for (const auto index : survivors) {
+                surviving_edge_weights.push_back(
+                    host_edge_weights[index]);
+            }
+        }
+        const float median_edge = positive_median(
+            in_place_recycle
+                ? surviving_edge_weights
+                : host_edge_weights);
         std::vector<float> host_absgrad_average(gaussian_count, 0.0F);
         for (std::size_t index = 0U; index < gaussian_count; ++index) {
+            if (in_place_recycle &&
+                survivor_mask[index] == 0U) {
+                continue;
+            }
             if (host_absgrad_count[index] > 0.0F &&
                 std::isfinite(host_absgrad_sum[index])) {
                 host_absgrad_average[index] =
@@ -4269,6 +4311,10 @@ struct OrderedAlphaTrainingContext::Impl {
         std::vector<Candidate> candidates;
         candidates.reserve(gaussian_count);
         for (std::size_t index = 0U; index < gaussian_count; ++index) {
+            if (in_place_recycle &&
+                survivor_mask[index] == 0U) {
+                continue;
+            }
             if (host_visibility[index] > 0.0F &&
                 host_weights[index] > gradient_threshold) {
                 const float normalized_edge =
@@ -4318,8 +4364,15 @@ struct OrderedAlphaTrainingContext::Impl {
         const auto requested = static_cast<std::size_t>(std::llround(
             static_cast<double>(candidates.size()) *
             static_cast<double>(grow_fraction)));
-        const auto available = gaussian_capacity - gaussian_count;
+        const auto available =
+            gaussian_capacity - gaussian_count +
+            (in_place_recycle ? pruned : 0U);
         const auto added = std::min(requested, available);
+        const auto physical_reused =
+            in_place_recycle ? std::min(added, pruned) : 0U;
+        const auto physical_appended = added - physical_reused;
+        const auto reported_reused = std::min(added, pruned);
+        const auto reported_appended = added - reported_reused;
         if (added != 0U) {
             if (added < candidates.size()) {
                 std::nth_element(
@@ -4330,18 +4383,38 @@ struct OrderedAlphaTrainingContext::Impl {
                 candidates.begin(), candidates.begin() + added,
                 candidate_order);
             std::vector<std::uint32_t> parent_indices(added);
+            std::vector<std::uint32_t> child_indices(added);
+            std::vector<std::uint32_t> pruned_indices;
+            if (in_place_recycle) {
+                pruned_indices.reserve(pruned);
+                for (std::size_t index = 0U;
+                     index < previous_count; ++index) {
+                    if (survivor_mask[index] == 0U) {
+                        pruned_indices.push_back(
+                            static_cast<std::uint32_t>(index));
+                    }
+                }
+            }
             for (std::size_t split = 0U; split < added; ++split) {
                 parent_indices[split] =
                     candidates[split].source_index;
+                child_indices[split] =
+                    split < physical_reused
+                        ? pruned_indices[split]
+                        : static_cast<std::uint32_t>(
+                              gaussian_count + split -
+                              physical_reused);
             }
             refinement_indices.copy_from_host(
                 parent_indices.data(), added);
+            refinement_destinations.copy_from_host(
+                child_indices.data(), added);
             constexpr std::uint32_t block_size = 256U;
             const auto blocks = static_cast<std::uint32_t>(
                 (added + block_size - 1U) / block_size);
             split_gaussians_long_axis_kernel<<<blocks, block_size>>>(
                 gaussians.data(), refinement_indices.data(),
-                added, gaussian_count,
+                refinement_destinations.data(), added,
                 first_dc.data(), second_dc.data(),
                 first_sh_rest.data(), second_sh_rest.data(),
                 first_opacity.data(), second_opacity.data(),
@@ -4354,7 +4427,7 @@ struct OrderedAlphaTrainingContext::Impl {
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent long-axis Gaussian split");
-            gaussian_count += added;
+            gaussian_count += physical_appended;
         }
         constexpr std::uint32_t block_size = 256U;
         const auto decay_blocks = static_cast<std::uint32_t>(
@@ -4380,9 +4453,10 @@ struct OrderedAlphaTrainingContext::Impl {
             .pruned_scale_large = pruned_scale_large,
             .pruned_spatial = pruned_spatial,
             .added = added,
-            .reused = std::min(added, pruned),
-            .appended = added - std::min(added, pruned),
+            .reused = reported_reused,
+            .appended = reported_appended,
             .gaussian_count = gaussian_count,
+            .in_place_recycled = in_place_recycle,
         };
     }
 
@@ -4459,6 +4533,8 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> absgrad_sum;
     ReusableDeviceAllocation<float> absgrad_observation_count;
     ReusableDeviceAllocation<std::uint32_t> refinement_indices;
+    ReusableDeviceAllocation<std::uint32_t>
+        refinement_destinations;
     ReusableDeviceAllocation<float> frame_refinement_weight;
     ReusableDeviceAllocation<float> frame_visibility_weight;
     ReusableDeviceAllocation<float> frame_edge_weight;
@@ -4475,12 +4551,13 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     MrnfOptimizerProfile optimizer_profile,
     std::uint32_t maximum_sh_degree,
     std::uint32_t sh_degree_interval,
-    std::uint64_t noise_seed)
+    std::uint64_t noise_seed,
+    std::optional<bool> fastgs_compatibility_override)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
           maximum_gaussians, optimizer_profile,
           maximum_sh_degree, sh_degree_interval,
-          noise_seed)) {}
+          noise_seed, fastgs_compatibility_override)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 

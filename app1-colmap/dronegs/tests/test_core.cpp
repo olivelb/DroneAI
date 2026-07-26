@@ -324,6 +324,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         parsed.pruning_policy == "original",
         "CLI pruning policy default mismatch");
+    check(
+        parsed.raster_profile == "auto",
+        "CLI raster profile default mismatch");
 
     values.insert(values.end(), {
         "--prefetch-depth", "12",
@@ -337,6 +340,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--optimizer-profile",
         "dev38-staged-rotation008-absgrad050-fastgs",
         "--pruning-policy", "lichtfeld-bounds",
+        "--raster-profile", "fastgs",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -356,10 +360,13 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         tuned.pruning_policy == "lichtfeld-bounds",
         "CLI pruning policy mismatch");
+    check(
+        tuned.raster_profile == "fastgs",
+        "CLI raster profile mismatch");
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 18U);
+    values.resize(values.size() - 20U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

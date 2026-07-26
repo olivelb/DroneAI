@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "dronegs/rasterization.hpp"
@@ -22,7 +23,9 @@ public:
             MrnfOptimizerProfile::dronegs_dev16,
         std::uint32_t maximum_sh_degree = 0U,
         std::uint32_t sh_degree_interval = 1000U,
-        std::uint64_t noise_seed = 0U);
+        std::uint64_t noise_seed = 0U,
+        std::optional<bool> fastgs_compatibility_override =
+            std::nullopt);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(

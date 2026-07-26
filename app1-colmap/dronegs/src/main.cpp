@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.39 pruning-policy ablation "
+            << "DroneGS 0.5.0-dev.40 raster/topology decoupling "
                "local-KNN portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,8 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.39 uses an opt-in FastGS-compatible "
+        std::cerr << "DroneGS 0.5.0-dev.40 uses an independent "
+                     "bounded/FastGS raster profile plus "
                      "raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color local-KNN "
@@ -45,9 +46,9 @@ int main(int argc, char** argv) {
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
                      "PSNR/SSIM and exact-pair external LPIPS are available, "
                      "with progressive SH and a complete deterministic MRNF "
-                     "prune/reuse/noise/decay/compaction lifecycle; dev39 "
-                     "adds explicit original versus LichtFeld percentile-"
-                     "bounds pruning ablations and reason telemetry.\n";
+                     "prune/reuse/noise/decay lifecycle; dev40 decouples "
+                     "the rasterizer from optimizer rates and recycles "
+                     "pruned slots in place on GPU at capacity.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
