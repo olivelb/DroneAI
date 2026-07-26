@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ARG TORCH_VERSION=2.7.1
+ARG TORCHVISION_VERSION=0.22.1
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+COPY app1-colmap/dronegs/requirements-lpips.txt /tmp/requirements-lpips.txt
+RUN python -m pip install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+    && python -m pip install -r /tmp/requirements-lpips.txt
+
+COPY app1-colmap/dronegs/tools/lpips_eval.py /usr/local/bin/dronegs-lpips
+RUN chmod 0755 /usr/local/bin/dronegs-lpips
+
+WORKDIR /run
+
+ENTRYPOINT ["dronegs-lpips"]

@@ -109,6 +109,12 @@ if(DRONEGS_BUILD_TESTS)
     set_target_properties(
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME dronegs_lpips_tool_tests
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lpips_tool.py)
 endif()
 
 if(DRONEGS_BUILD_BENCHMARKS)

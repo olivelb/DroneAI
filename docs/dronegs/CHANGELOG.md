@@ -2,6 +2,22 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.23 - Phase 4 exact-pair LPIPS evaluation
+
+- Persist exact lossless RGB8 held-out targets beside final PPM predictions;
+  filenames are identical and pairing fails closed on missing or extra views.
+- Add a separate, reproducible LPIPS v0.1 evaluator using the official
+  `lpips` package with AlexNet and the required `[-1, 1]` input range.
+- Write per-view `evaluation/lpips.csv`, aggregate
+  `evaluation/lpips.json`, and atomically enrich run-manifest-v1 with the
+  score, network, evaluator version, view count, hashes, and artifact sizes.
+- Isolate PyTorch, torchvision, LPIPS, Pillow, and model-weight acquisition in
+  `Dockerfile.lpips`; the native CUDA trainer and its hot path are unchanged.
+- Add dependency-free unit coverage for exact pairing, aggregation, percentile
+  calculation, atomic manifest enrichment, and mismatch rejection.
+- No COLMAP reconstruction or full Albagnac throughput run is part of this
+  phase.
+
 ## 0.5.0-dev.22 - Phase 4 two-scene DC validation
 
 - Prepared the independent Savères Mavic 3E RTK scene from 1,066 source

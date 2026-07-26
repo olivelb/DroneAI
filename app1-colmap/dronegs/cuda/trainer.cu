@@ -623,6 +623,31 @@ void write_prediction_ppm(
     }
 }
 
+void write_target_ppm(
+    const std::filesystem::path& path,
+    const std::vector<std::uint8_t>& target,
+    std::uint32_t width, std::uint32_t height) {
+    const std::size_t sample_count =
+        static_cast<std::size_t>(width) * height * 3U;
+    if (target.size() != sample_count) {
+        throw std::invalid_argument(
+            "target size does not match PPM dimensions");
+    }
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    if (!stream) {
+        throw std::runtime_error(
+            "cannot create held-out target: " + path.string());
+    }
+    stream << "P6\n" << width << ' ' << height << "\n255\n";
+    stream.write(
+        reinterpret_cast<const char*>(target.data()),
+        static_cast<std::streamsize>(target.size()));
+    if (!stream) {
+        throw std::runtime_error(
+            "failed to write held-out target: " + path.string());
+    }
+}
+
 struct HeldOutAggregate {
     float psnr = 0.0F;
     float ssim = 0.0F;
@@ -656,10 +681,11 @@ HeldOutAggregate evaluate_held_out(
         csv << "stage,held_out_index,scene_index,image_name,"
                "psnr,ssim,active_pixel_fraction\n";
     }
-    const auto prediction_directory =
-        evaluation_directory / "predictions";
+    const auto prediction_directory = evaluation_directory / "predictions";
+    const auto target_directory = evaluation_directory / "targets";
     if (save_predictions) {
         std::filesystem::create_directories(prediction_directory);
+        std::filesystem::create_directories(target_directory);
     }
 
     const auto start = std::chrono::steady_clock::now();
@@ -698,6 +724,9 @@ HeldOutAggregate evaluate_held_out(
             write_prediction_ppm(
                 prediction_directory / filename.str(),
                 prediction, raster_camera.width, raster_camera.height);
+            write_target_ppm(
+                target_directory / filename.str(), frame.image->rgb,
+                raster_camera.width, raster_camera.height);
         }
         if (held_out_index == 0U ||
             held_out_index + 1U == held_out_indices.size() ||

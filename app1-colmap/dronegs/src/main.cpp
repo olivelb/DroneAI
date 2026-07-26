@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.22 MRNF two-scene DC validation "
-               "L1+DSSIM held-out evaluation prototype\n";
+            << "DroneGS 0.5.0-dev.23 exact-pair LPIPS evaluation "
+               "prototype\n";
         return 0;
     }
 
@@ -32,13 +32,14 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.22 uses experimental anisotropic "
+        std::cerr << "DroneGS 0.5.0-dev.23 uses experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
                      "Gumbel MRNF growth, Sobel edge guidance, and MRNF "
                      "optimizer profiles validated on two drone scenes; "
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
-                     "PSNR/SSIM are available, while prune/noise/decay, SH, "
-                     "LPIPS, and quality parity remain open.\n";
+                     "PSNR/SSIM and exact-pair external LPIPS are available, "
+                     "while prune/noise/decay, SH, and quality parity remain "
+                     "open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;

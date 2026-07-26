@@ -21,11 +21,11 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.22.
+- Current development version: 0.5.0-dev.23.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
-  PSNR/SSIM; opt-in only.
+  PSNR/SSIM and exact-pair external LPIPS; opt-in only.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,

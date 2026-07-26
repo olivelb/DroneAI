@@ -7,8 +7,8 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.22` is an experimental MRNF two-scene DC validation slice.
-It retains the dev.21 training behavior and:
+Version `0.5.0-dev.23` adds an exact-pair LPIPS evaluation slice. It retains
+the dev.22 training behavior and:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -57,8 +57,10 @@ It retains the dev.21 training behavior and:
   validation views from every shuffled training schedule;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
   and after training, with a tested CPU oracle;
-- writes per-view quality CSV data and can export final lossless PPM
-  predictions for an external LPIPS pass;
+- writes per-view quality CSV data and can export exactly paired final
+  lossless PPM predictions and RGB8 targets for an external LPIPS pass;
+- provides a pinned, isolated LPIPS v0.1/AlexNet evaluator that writes
+  per-view and aggregate results and atomically enriches the run manifest;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -86,8 +88,8 @@ SSIM, DC=0.010 reaches 16.83870 dB / 0.131405, and DC=0.020 reaches
 same-binary controls by +0.13101 dB and +0.001065 SSIM over 306 held-out
 views, winning 303/306 PSNR views and 264/306 SSIM views. It is now the
 recommended quality profile. Dev16 remains the default throughput profile
-because both candidates increase training and wall time, and LPIPS is still
-unavailable.
+because both candidates increase training and wall time; dev.23 makes LPIPS
+measurement reproducible but does not retroactively change that recommendation.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -97,7 +99,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-two-scene-dc-validation-prototype` and remains
+`dronegs-mrnf-exact-pair-lpips-prototype` and remains
 opt-in.
 
 ## Container build
@@ -141,8 +143,34 @@ allocation, projection, sorting, tile construction, rendering, and host readback
 
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,
-matching LichtFeld. `--save-eval-images 1` writes only final predictions and
-requires a non-zero held-out stride.
+matching LichtFeld. `--save-eval-images 1` writes final predictions and their
+exact RGB8 targets with matching filenames and requires a non-zero held-out
+stride.
+
+## Exact-pair LPIPS evaluation
+
+Build the isolated CPU evaluator once:
+
+```bash
+docker build -t dronegs-lpips:0.5.0-dev.23 \
+  -f app1-colmap/dronegs/Dockerfile.lpips app1-colmap/dronegs
+```
+
+After a run created with `--save-eval-images 1`, evaluate it without touching
+COLMAP or the native CUDA trainer:
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/absolute/run/path,dst=/run \
+  dronegs-lpips:0.5.0-dev.23 \
+  /run --device cpu
+```
+
+The command refuses incomplete/misaligned pairs, normalizes RGB inputs to
+`[-1, 1]`, writes `evaluation/lpips.csv` and `evaluation/lpips.json`, and
+updates the existing manifest atomically. The initial model-weight download is
+a separately cached third-party artifact and must be tracked for reproducible
+offline deployment.
 
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
 and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving

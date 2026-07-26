@@ -91,7 +91,10 @@
         "final_gaussians": {"type": ["integer", "null"], "minimum": 0},
         "psnr": {"type": ["number", "null"]},
         "ssim": {"type": ["number", "null"]},
-        "lpips": {"type": ["number", "null"]}
+        "lpips": {"type": ["number", "null"]},
+        "lpips_network": {"type": "string"},
+        "lpips_version": {"type": "string"},
+        "lpips_views": {"type": "integer", "minimum": 0}
       }
     },
     "artifacts": {
