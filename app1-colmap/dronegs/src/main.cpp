@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.23 exact-pair LPIPS evaluation "
+            << "DroneGS 0.5.0-dev.24 progressive SH training "
                "prototype\n";
         return 0;
     }
@@ -32,13 +32,14 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.23 uses experimental anisotropic "
+        std::cerr << "DroneGS 0.5.0-dev.24 uses experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
                      "Gumbel MRNF growth, Sobel edge guidance, and MRNF "
                      "optimizer profiles validated on two drone scenes; "
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
                      "PSNR/SSIM and exact-pair external LPIPS are available, "
-                     "while prune/noise/decay, SH, and quality parity remain "
+                     "with progressive SH, while prune/noise/decay and "
+                     "quality parity remain "
                      "open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
@@ -87,6 +88,8 @@ int main(int argc, char** argv) {
             training.topology_refinements;
         measurements.gaussians_added =
             training.gaussians_added;
+        measurements.final_active_sh_degree =
+            training.final_active_sh_degree;
         measurements.initial_held_out_psnr =
             training.initial_held_out_psnr;
         measurements.initial_held_out_ssim =

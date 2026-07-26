@@ -97,6 +97,7 @@ struct TrainingMetrics {
     std::uint64_t held_out_image_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
+    std::uint32_t final_active_sh_degree = 0U;
     double evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;

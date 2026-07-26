@@ -47,6 +47,7 @@ struct AlphaRenderOutput {
 
 struct AlphaRenderGradients {
     std::vector<std::array<float, 3>> dc;
+    std::vector<std::array<float, maximum_sh_rest_values>> sh_rest;
     std::vector<float> opacity_logit;
     std::vector<std::array<float, 3>> xyz;
     std::vector<std::array<float, 3>> log_scale;
@@ -70,27 +71,33 @@ struct ProjectedAlphaSplat {
     float conic_yy = 0.0F;
     float opacity = 0.0F;
     std::array<float, 3> color{};
+    std::array<float, 16> sh_basis{};
 };
 
 std::vector<ProjectedAlphaSplat> project_alpha_splats(
-    const std::vector<Gaussian>& gaussians, const RasterCamera& camera);
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    std::uint32_t active_sh_degree = 0U);
 
 AlphaRenderOutput render_alpha_reference(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
-    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F},
+    std::uint32_t active_sh_degree = 0U);
 
 AlphaRenderOutput render_alpha_tiled_cuda(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
-    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F},
+    std::uint32_t active_sh_degree = 0U);
 
 AlphaRenderBackwardOutput render_alpha_reference_backward(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::vector<float>& image_gradient,
-    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F},
+    std::uint32_t active_sh_degree = 0U);
 
 AlphaRenderBackwardOutput render_alpha_tiled_cuda_backward(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::vector<float>& image_gradient,
-    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F});
+    const std::array<float, 3>& background = {0.0F, 0.0F, 0.0F},
+    std::uint32_t active_sh_degree = 0U);
 
 }  // namespace dronegs

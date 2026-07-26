@@ -294,6 +294,43 @@ void test_backward_finite_difference() {
     check(rejected, "invalid alpha backward gradient shape was accepted");
 }
 
+void test_progressive_sh_color_and_gradient() {
+    auto gaussian = centered(1.0F, {0.5F, 0.5F, 0.5F}, 0.4F);
+    gaussian.xyz[0] = 0.1F;
+    gaussian.sh_rest[2] = 0.12F;
+    const auto dc_only =
+        dronegs::render_alpha_reference({gaussian}, camera());
+    const auto degree_one = dronegs::render_alpha_reference(
+        {gaussian}, camera(), {0.0F, 0.0F, 0.0F}, 1U);
+    check(
+        std::abs(dc_only.rgb[0] - degree_one.rgb[0]) > 1.0e-5F,
+        "degree-one SH did not change view-dependent color");
+
+    const std::vector<float> upstream(degree_one.rgb.size(), 0.25F);
+    const auto backward = dronegs::render_alpha_reference_backward(
+        {gaussian}, camera(), upstream, {0.0F, 0.0F, 0.0F}, 1U);
+    constexpr float epsilon = 1.0e-3F;
+    auto plus = gaussian;
+    auto minus = gaussian;
+    plus.sh_rest[2] += epsilon;
+    minus.sh_rest[2] -= epsilon;
+    const auto plus_render = dronegs::render_alpha_reference(
+        {plus}, camera(), {0.0F, 0.0F, 0.0F}, 1U);
+    const auto minus_render = dronegs::render_alpha_reference(
+        {minus}, camera(), {0.0F, 0.0F, 0.0F}, 1U);
+    double numerical = 0.0;
+    for (std::size_t index = 0U; index < upstream.size(); ++index) {
+        numerical += static_cast<double>(
+            plus_render.rgb[index] - minus_render.rgb[index]) *
+            upstream[index];
+    }
+    numerical /= 2.0 * epsilon;
+    check_close(
+        backward.gradients.sh_rest[0][2],
+        static_cast<float>(numerical), 3.0e-4F,
+        "degree-one SH coefficient gradient mismatch");
+}
+
 }  // namespace
 
 int main() {
@@ -304,6 +341,7 @@ int main() {
         test_invalid_camera();
         test_anisotropic_projection();
         test_backward_finite_difference();
+        test_progressive_sh_color_and_gradient();
         std::cout << "DroneGS alpha reference tests passed\n";
         return 0;
     } catch (const std::exception& error) {

@@ -7,7 +7,8 @@
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
  * Dev.18 dual-profile selection and update telemetry and dev.19 family-isolated
  * epsilon/rate ablations, the dev.20 DC-plus-opacity combination, and the
- * dev.21 intermediate-DC sweep are DroneAI additions. The pre-existing DroneGS
+ * dev.21 intermediate-DC sweep and dev.24 progressive SH integration are
+ * DroneAI additions. The pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -35,6 +36,7 @@ namespace dronegs {
 namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
+constexpr float sh_c1 = 0.4886025119029199F;
 constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
@@ -457,10 +459,72 @@ __device__ float gaussian_weight_device(
     return expf(-0.5F * squared_distance);
 }
 
+__device__ void evaluate_sh_basis_device(
+    const Gaussian& gaussian, DeviceRasterCamera camera,
+    std::uint32_t active_degree, float* basis) {
+    for (std::uint32_t index = 0U; index < 16U; ++index) {
+        basis[index] = 0.0F;
+    }
+    basis[0] = sh_c0;
+    if (active_degree == 0U) {
+        return;
+    }
+    const float center_x = -(
+        camera.rotation[0] * camera.translation[0] +
+        camera.rotation[3] * camera.translation[1] +
+        camera.rotation[6] * camera.translation[2]);
+    const float center_y = -(
+        camera.rotation[1] * camera.translation[0] +
+        camera.rotation[4] * camera.translation[1] +
+        camera.rotation[7] * camera.translation[2]);
+    const float center_z = -(
+        camera.rotation[2] * camera.translation[0] +
+        camera.rotation[5] * camera.translation[1] +
+        camera.rotation[8] * camera.translation[2]);
+    float x = gaussian.xyz[0] - center_x;
+    float y = gaussian.xyz[1] - center_y;
+    float z = gaussian.xyz[2] - center_z;
+    const float inverse_norm =
+        rsqrtf(fmaxf(1.0e-20F, x * x + y * y + z * z));
+    x *= inverse_norm;
+    y *= inverse_norm;
+    z *= inverse_norm;
+    basis[1] = -sh_c1 * y;
+    basis[2] = sh_c1 * z;
+    basis[3] = -sh_c1 * x;
+    if (active_degree == 1U) {
+        return;
+    }
+    const float xx = x * x;
+    const float yy = y * y;
+    const float zz = z * z;
+    basis[4] = 1.0925484305920792F * x * y;
+    basis[5] = -1.0925484305920792F * y * z;
+    basis[6] = 0.31539156525252005F * (2.0F * zz - xx - yy);
+    basis[7] = -1.0925484305920792F * x * z;
+    basis[8] = 0.5462742152960396F * (xx - yy);
+    if (active_degree == 2U) {
+        return;
+    }
+    basis[9] = -0.5900435899266435F * y * (3.0F * xx - yy);
+    basis[10] = 2.890611442640554F * x * y * z;
+    basis[11] =
+        -0.4570457994644658F * y * (4.0F * zz - xx - yy);
+    basis[12] =
+        0.3731763325901154F * z *
+        (2.0F * zz - 3.0F * xx - 3.0F * yy);
+    basis[13] =
+        -0.4570457994644658F * x * (4.0F * zz - xx - yy);
+    basis[14] = 1.445305721320277F * z * (xx - yy);
+    basis[15] =
+        -0.5900435899266435F * x * (xx - 3.0F * yy);
+}
+
 __global__ void project_alpha_splats_kernel(
     const Gaussian* gaussians, std::uint32_t gaussian_count,
     DeviceRasterCamera camera, DeviceProjectedRecord* records,
-    std::uint64_t* depth_keys, unsigned long long* visible_splats) {
+    std::uint64_t* depth_keys, unsigned long long* visible_splats,
+    std::uint32_t active_sh_degree) {
     const std::uint32_t index =
         blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= gaussian_count) {
@@ -501,6 +565,24 @@ __global__ void project_alpha_splats_kernel(
             x - radius_x < static_cast<float>(camera.width) &&
             y - radius_y < static_cast<float>(camera.height);
         if (visible) {
+            float sh_basis[16]{};
+            evaluate_sh_basis_device(
+                gaussian, camera, active_sh_degree, sh_basis);
+            float color[3]{};
+            const std::uint32_t active_coefficients =
+                (active_sh_degree + 1U) * (active_sh_degree + 1U) -
+                1U;
+            for (std::uint32_t channel = 0U; channel < 3U; ++channel) {
+                float value = 0.5F + sh_basis[0] * gaussian.dc[channel];
+                for (std::uint32_t coefficient = 0U;
+                     coefficient < active_coefficients; ++coefficient) {
+                    value += sh_basis[coefficient + 1U] *
+                        gaussian.sh_rest[
+                            channel * maximum_sh_rest_coefficients +
+                            coefficient];
+                }
+                color[channel] = fminf(1.0F, fmaxf(0.0F, value));
+            }
             const int pixel_support_x =
                 static_cast<int>(ceilf(radius_x));
             const int pixel_support_y =
@@ -541,18 +623,13 @@ __global__ void project_alpha_splats_kernel(
                 .conic_yy = conic_yy,
                 .opacity =
                     1.0F / (1.0F + expf(-gaussian.opacity_logit)),
-                .color = {
-                    fminf(
-                        1.0F,
-                        fmaxf(0.0F, 0.5F + sh_c0 * gaussian.dc[0])),
-                    fminf(
-                        1.0F,
-                        fmaxf(0.0F, 0.5F + sh_c0 * gaussian.dc[1])),
-                    fminf(
-                        1.0F,
-                        fmaxf(0.0F, 0.5F + sh_c0 * gaussian.dc[2])),
-                },
+                .color = {color[0], color[1], color[2]},
             };
+            for (std::uint32_t coefficient = 0U;
+                 coefficient < 16U; ++coefficient) {
+                record.splat.sh_basis[coefficient] =
+                    sh_basis[coefficient];
+            }
             depth_key =
                 (static_cast<std::uint64_t>(__float_as_uint(camera_z))
                  << 32U) |
@@ -731,6 +808,7 @@ __global__ void backward_alpha_tiles_kernel(
     std::uint32_t width, std::uint32_t height,
     float background_r, float background_g, float background_b,
     const float* image_gradient, float* dc_gradient,
+    float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
     float* projected_geometry_gradient,
     const float* densification_error_map,
@@ -850,10 +928,25 @@ __global__ void backward_alpha_tiles_kernel(
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
             if (splat.color[channel] > 0.0F &&
                 splat.color[channel] < 1.0F) {
+                const float color_gradient =
+                    upstream[channel] * transmittance_before * alpha;
                 atomicAdd(
                     &dc_gradient[source * 3U + channel],
-                    sh_c0 * upstream[channel] *
-                        transmittance_before * alpha);
+                    sh_c0 * color_gradient);
+                const std::uint32_t active_coefficients =
+                    (active_sh_degree + 1U) *
+                        (active_sh_degree + 1U) -
+                    1U;
+                for (std::uint32_t coefficient = 0U;
+                     coefficient < active_coefficients; ++coefficient) {
+                    atomicAdd(
+                        &sh_rest_gradient[
+                            source * maximum_sh_rest_values +
+                            channel * maximum_sh_rest_coefficients +
+                            coefficient],
+                        splat.sh_basis[coefficient + 1U] *
+                            color_gradient);
+                }
             }
             alpha_gradient +=
                 upstream[channel] * transmittance_before *
@@ -1751,6 +1844,7 @@ __global__ void split_gaussians_long_axis_kernel(
     Gaussian* gaussians, const std::uint32_t* parent_indices,
     std::size_t parent_count, std::size_t child_start,
     float* first_dc, float* second_dc,
+    float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
@@ -1835,6 +1929,17 @@ __global__ void split_gaussians_long_axis_kernel(
         first_log_scale[child_index * 3U + channel] = 0.0F;
         second_log_scale[child_index * 3U + channel] = 0.0F;
     }
+    for (std::size_t coefficient = 0U;
+         coefficient < maximum_sh_rest_values; ++coefficient) {
+        first_sh_rest[
+            parent_index * maximum_sh_rest_values + coefficient] = 0.0F;
+        second_sh_rest[
+            parent_index * maximum_sh_rest_values + coefficient] = 0.0F;
+        first_sh_rest[
+            child_index * maximum_sh_rest_values + coefficient] = 0.0F;
+        second_sh_rest[
+            child_index * maximum_sh_rest_values + coefficient] = 0.0F;
+    }
     first_opacity[parent_index] = 0.0F;
     second_opacity[parent_index] = 0.0F;
     first_opacity[child_index] = 0.0F;
@@ -1862,21 +1967,25 @@ struct DeviceOptimizerTelemetry {
 
 __global__ void ordered_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
-    const float* dc_gradient, const float* opacity_gradient,
+    const float* dc_gradient, const float* sh_rest_gradient,
+    const float* opacity_gradient,
     const float* xyz_gradient, const float* log_scale_gradient,
     const float* rotation_gradient,
     float* first_dc, float* second_dc,
+    float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
     float inverse_bias_first, float inverse_bias_second,
     float position_learning_rate, float color_learning_rate,
+    float sh_rest_learning_rate,
     float opacity_learning_rate, float scale_learning_rate,
     float rotation_learning_rate,
     float position_epsilon, float dc_epsilon,
     float opacity_epsilon, float scale_epsilon,
     float rotation_epsilon,
+    std::uint32_t active_sh_degree,
     float minimum_log_scale, float maximum_log_scale,
     DeviceOptimizerTelemetry* telemetry,
     std::size_t telemetry_stride) {
@@ -1926,6 +2035,29 @@ __global__ void ordered_adam_update_kernel(
             parameter_squared[0] +=
                 gaussians[gaussian_index].dc[channel] *
                 gaussians[gaussian_index].dc[channel];
+        }
+    }
+    const std::uint32_t active_coefficients =
+        (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
+    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+        for (std::uint32_t coefficient = 0U;
+             coefficient < active_coefficients; ++coefficient) {
+            const auto offset =
+                gaussian_index * maximum_sh_rest_values +
+                channel * maximum_sh_rest_coefficients + coefficient;
+            const float gradient = sh_rest_gradient[offset];
+            first_sh_rest[offset] =
+                beta_first * first_sh_rest[offset] +
+                (1.0F - beta_first) * gradient;
+            second_sh_rest[offset] =
+                beta_second * second_sh_rest[offset] +
+                (1.0F - beta_second) * gradient * gradient;
+            gaussians[gaussian_index].sh_rest[
+                channel * maximum_sh_rest_coefficients + coefficient] -=
+                sh_rest_learning_rate *
+                first_sh_rest[offset] * inverse_bias_first /
+                (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
+                 dc_epsilon);
         }
     }
     const float opacity = opacity_gradient[gaussian_index];
@@ -2163,8 +2295,12 @@ void sort_tile_pairs(
 static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::array<float, 3>& background,
-    const std::vector<float>* image_gradient) {
+    const std::vector<float>* image_gradient,
+    std::uint32_t active_sh_degree) {
     validate_inputs(gaussians, camera, background);
+    if (active_sh_degree > maximum_sh_degree) {
+        throw std::invalid_argument("active SH degree must be between 0 and 3");
+    }
     const auto pixel_count =
         static_cast<std::size_t>(camera.width) * camera.height;
     if (image_gradient != nullptr &&
@@ -2177,6 +2313,9 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         if (image_gradient != nullptr) {
             gradients.dc =
                 std::vector<std::array<float, 3>>(gaussians.size());
+            gradients.sh_rest = std::vector<
+                std::array<float, maximum_sh_rest_values>>(
+                    gaussians.size());
             gradients.opacity_logit =
                 std::vector<float>(gaussians.size(), 0.0F);
             gradients.xyz =
@@ -2188,7 +2327,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         }
         return AlphaRenderBackwardOutput{
             .render =
-                render_alpha_reference({}, camera, background),
+                render_alpha_reference(
+                    {}, camera, background, active_sh_degree),
             .gradients = std::move(gradients),
         };
     };
@@ -2218,7 +2358,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     project_alpha_splats_kernel<<<projection_blocks, threads_per_block>>>(
         device_gaussians.data(), gaussian_count, device_camera,
         device_records.data(), device_depth_keys.data(),
-        device_visible_splats.data());
+        device_visible_splats.data(), active_sh_degree);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
     sort_projected_records(
@@ -2300,6 +2440,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
 
     std::optional<DeviceAllocation<float>> device_image_gradient;
     std::optional<DeviceAllocation<float>> device_dc_gradient;
+    std::optional<DeviceAllocation<float>> device_sh_rest_gradient;
     std::optional<DeviceAllocation<float>> device_opacity_logit_gradient;
     std::optional<DeviceAllocation<float>>
         device_projected_geometry_gradient;
@@ -2309,6 +2450,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     if (image_gradient != nullptr) {
         device_image_gradient.emplace(image_gradient->size());
         device_dc_gradient.emplace(gaussians.size() * 3U);
+        device_sh_rest_gradient.emplace(
+            gaussians.size() * maximum_sh_rest_values);
         device_opacity_logit_gradient.emplace(gaussians.size());
         device_projected_geometry_gradient.emplace(
             gaussians.size() * 5U);
@@ -2317,6 +2460,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_rotation_gradient.emplace(gaussians.size() * 4U);
         device_image_gradient->copy_from_host(image_gradient->data());
         device_dc_gradient->zero();
+        device_sh_rest_gradient->zero();
         device_opacity_logit_gradient->zero();
         device_projected_geometry_gradient->zero();
         device_xyz_gradient->zero();
@@ -2329,6 +2473,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             camera.width, camera.height,
             background[0], background[1], background[2],
             device_image_gradient->data(), device_dc_gradient->data(),
+            device_sh_rest_gradient->data(), active_sh_degree,
             device_opacity_logit_gradient->data(),
             device_projected_geometry_gradient->data(),
             nullptr, nullptr, nullptr, nullptr, nullptr);
@@ -2373,6 +2518,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     if (image_gradient != nullptr) {
         gradients.dc =
             std::vector<std::array<float, 3>>(gaussians.size());
+        gradients.sh_rest = std::vector<
+            std::array<float, maximum_sh_rest_values>>(gaussians.size());
         gradients.opacity_logit =
             std::vector<float>(gaussians.size(), 0.0F);
         gradients.xyz =
@@ -2382,6 +2529,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         gradients.rotation =
             std::vector<std::array<float, 4>>(gaussians.size());
         device_dc_gradient->copy_to_host(gradients.dc.front().data());
+        device_sh_rest_gradient->copy_to_host(
+            gradients.sh_rest.front().data());
         device_opacity_logit_gradient->copy_to_host(
             gradients.opacity_logit.data());
         device_xyz_gradient->copy_to_host(
@@ -2399,18 +2548,22 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
 
 AlphaRenderOutput render_alpha_tiled_cuda(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
-    const std::array<float, 3>& background) {
+    const std::array<float, 3>& background,
+    std::uint32_t active_sh_degree) {
     return render_alpha_cuda_impl(
-               gaussians, camera, background, nullptr)
+               gaussians, camera, background, nullptr,
+               active_sh_degree)
         .render;
 }
 
 AlphaRenderBackwardOutput render_alpha_tiled_cuda_backward(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::vector<float>& image_gradient,
-    const std::array<float, 3>& background) {
+    const std::array<float, 3>& background,
+    std::uint32_t active_sh_degree) {
     return render_alpha_cuda_impl(
-        gaussians, camera, background, &image_gradient);
+        gaussians, camera, background, &image_gradient,
+        active_sh_degree);
 }
 
 static std::uint64_t splitmix64(std::uint64_t value) {
@@ -2627,7 +2780,9 @@ struct OrderedAlphaTrainingContext::Impl {
         std::size_t maximum_pixel_count,
         std::uint64_t requested_maximum_steps,
         std::size_t requested_gaussian_capacity,
-        MrnfOptimizerProfile requested_optimizer_profile)
+        MrnfOptimizerProfile requested_optimizer_profile,
+        std::uint32_t requested_maximum_sh_degree,
+        std::uint32_t requested_sh_degree_interval)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -2635,13 +2790,20 @@ struct OrderedAlphaTrainingContext::Impl {
           maximum_pixels(maximum_pixel_count),
           maximum_steps(std::max<std::uint64_t>(
               1U, requested_maximum_steps)),
-          optimizer_profile(requested_optimizer_profile) {
+          optimizer_profile(requested_optimizer_profile),
+          maximum_active_sh_degree(requested_maximum_sh_degree),
+          sh_degree_interval(requested_sh_degree_interval) {
         if (gaussian_count == 0U ||
             gaussian_capacity >
                 static_cast<std::size_t>(
                     std::numeric_limits<int>::max() - 1)) {
             throw std::invalid_argument(
                 "ordered training requires a supported Gaussian count");
+        }
+        if (maximum_active_sh_degree > maximum_sh_degree ||
+            sh_degree_interval == 0U) {
+            throw std::invalid_argument(
+                "ordered training requires a valid progressive SH schedule");
         }
         if (maximum_pixels == 0U ||
             maximum_pixels >
@@ -2673,6 +2835,8 @@ struct OrderedAlphaTrainingContext::Impl {
         densification_edge_map.ensure(maximum_pixels);
         metric_sum.ensure(1U);
         dc_gradient.ensure(gaussian_capacity * 3U);
+        sh_rest_gradient.ensure(
+            gaussian_capacity * maximum_sh_rest_values);
         opacity_gradient.ensure(gaussian_capacity);
         projected_geometry_gradient.ensure(gaussian_capacity * 5U);
         xyz_gradient.ensure(gaussian_capacity * 3U);
@@ -2680,6 +2844,10 @@ struct OrderedAlphaTrainingContext::Impl {
         rotation_gradient.ensure(gaussian_capacity * 4U);
         first_dc.ensure(gaussian_capacity * 3U);
         second_dc.ensure(gaussian_capacity * 3U);
+        first_sh_rest.ensure(
+            gaussian_capacity * maximum_sh_rest_values);
+        second_sh_rest.ensure(
+            gaussian_capacity * maximum_sh_rest_values);
         first_opacity.ensure(gaussian_capacity);
         second_opacity.ensure(gaussian_capacity);
         first_xyz.ensure(gaussian_capacity * 3U);
@@ -2731,6 +2899,10 @@ struct OrderedAlphaTrainingContext::Impl {
             initial_gaussians.data(), gaussian_count);
         first_dc.zero(gaussian_count * 3U);
         second_dc.zero(gaussian_count * 3U);
+        first_sh_rest.zero(
+            gaussian_count * maximum_sh_rest_values);
+        second_sh_rest.zero(
+            gaussian_count * maximum_sh_rest_values);
         first_opacity.zero(gaussian_count);
         second_opacity.zero(gaussian_count);
         first_xyz.zero(gaussian_count * 3U);
@@ -2875,7 +3047,8 @@ struct OrderedAlphaTrainingContext::Impl {
         visible_splats.zero(1U);
         project_alpha_splats_kernel<<<gaussian_blocks, block_size>>>(
             gaussians.data(), gaussian_items, device_camera,
-            records.data(), depth_keys.data(), visible_splats.data());
+            records.data(), depth_keys.data(), visible_splats.data(),
+            active_sh_degree);
         require_cuda(
             cudaGetLastError(),
             "launch persistent alpha projection");
@@ -3064,6 +3237,8 @@ struct OrderedAlphaTrainingContext::Impl {
                 cudaGetLastError(),
                 "launch persistent ordered objective gradient");
             dc_gradient.zero(gaussian_count * 3U);
+            sh_rest_gradient.zero(
+                gaussian_count * maximum_sh_rest_values);
             opacity_gradient.zero(gaussian_count);
             projected_geometry_gradient.zero(gaussian_count * 5U);
             frame_refinement_weight.zero(gaussian_count);
@@ -3078,6 +3253,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 camera.width, camera.height,
                 0.0F, 0.0F, 0.0F,
                 image_gradient.data(), dc_gradient.data(),
+                sh_rest_gradient.data(), active_sh_degree,
                 opacity_gradient.data(),
                 projected_geometry_gradient.data(),
                 densification_error_map.data(),
@@ -3139,10 +3315,12 @@ struct OrderedAlphaTrainingContext::Impl {
                 ordered_adam_update_kernel<<<
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
-                    dc_gradient.data(), opacity_gradient.data(),
+                    dc_gradient.data(), sh_rest_gradient.data(),
+                    opacity_gradient.data(),
                     xyz_gradient.data(), log_scale_gradient.data(),
                     rotation_gradient.data(),
                     first_dc.data(), second_dc.data(),
+                    first_sh_rest.data(), second_sh_rest.data(),
                     first_opacity.data(), second_opacity.data(),
                     first_xyz.data(), second_xyz.data(),
                     first_log_scale.data(), second_log_scale.data(),
@@ -3150,6 +3328,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     inverse_bias_first, inverse_bias_second,
                     learning_rates.position,
                     learning_rates.dc,
+                    learning_rates.dc / 20.0F,
                     learning_rates.opacity,
                     learning_rates.scale,
                     learning_rates.rotation,
@@ -3158,6 +3337,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     learning_rates.opacity_epsilon,
                     learning_rates.scale_epsilon,
                     learning_rates.rotation_epsilon,
+                    active_sh_degree,
                     minimum_log_scale, maximum_log_scale,
                     collect_telemetry
                         ? optimizer_telemetry.data()
@@ -3166,6 +3346,10 @@ struct OrderedAlphaTrainingContext::Impl {
                 require_cuda(
                     cudaGetLastError(),
                     "launch persistent ordered Adam");
+                if (optimizer_steps % sh_degree_interval == 0U &&
+                    active_sh_degree < maximum_active_sh_degree) {
+                    ++active_sh_degree;
+                }
                 if (collect_telemetry) {
                     DeviceOptimizerTelemetry host{};
                     optimizer_telemetry.copy_to_host(&host, 1U);
@@ -3307,6 +3491,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussians.data(), refinement_indices.data(),
                 added, gaussian_count,
                 first_dc.data(), second_dc.data(),
+                first_sh_rest.data(), second_sh_rest.data(),
                 first_opacity.data(), second_opacity.data(),
                 first_xyz.data(), second_xyz.data(),
                 first_log_scale.data(), second_log_scale.data(),
@@ -3333,6 +3518,9 @@ struct OrderedAlphaTrainingContext::Impl {
     std::size_t maximum_pixels = 0U;
     std::uint64_t maximum_steps = 1U;
     std::uint64_t optimizer_steps = 0U;
+    std::uint32_t maximum_active_sh_degree = 0U;
+    std::uint32_t sh_degree_interval = 1000U;
+    std::uint32_t active_sh_degree = 0U;
     MrnfOptimizerProfile optimizer_profile =
         MrnfOptimizerProfile::dronegs_dev16;
     float position_learning_rate_scale = 1.0F;
@@ -3370,6 +3558,7 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> densification_edge_map;
     ReusableDeviceAllocation<float> metric_sum;
     ReusableDeviceAllocation<float> dc_gradient;
+    ReusableDeviceAllocation<float> sh_rest_gradient;
     ReusableDeviceAllocation<float> opacity_gradient;
     ReusableDeviceAllocation<float> projected_geometry_gradient;
     ReusableDeviceAllocation<float> xyz_gradient;
@@ -3377,6 +3566,8 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> rotation_gradient;
     ReusableDeviceAllocation<float> first_dc;
     ReusableDeviceAllocation<float> second_dc;
+    ReusableDeviceAllocation<float> first_sh_rest;
+    ReusableDeviceAllocation<float> second_sh_rest;
     ReusableDeviceAllocation<float> first_opacity;
     ReusableDeviceAllocation<float> second_opacity;
     ReusableDeviceAllocation<float> first_xyz;
@@ -3401,10 +3592,13 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     std::size_t maximum_pixels,
     std::uint64_t maximum_steps,
     std::size_t maximum_gaussians,
-    MrnfOptimizerProfile optimizer_profile)
+    MrnfOptimizerProfile optimizer_profile,
+    std::uint32_t maximum_sh_degree,
+    std::uint32_t sh_degree_interval)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
-          maximum_gaussians, optimizer_profile)) {}
+          maximum_gaussians, optimizer_profile,
+          maximum_sh_degree, sh_degree_interval)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 
@@ -3473,6 +3667,11 @@ OrderedAlphaTrainingContext::latest_optimizer_telemetry()
 
 std::size_t OrderedAlphaTrainingContext::size() const noexcept {
     return impl_->gaussian_count;
+}
+
+std::uint32_t
+OrderedAlphaTrainingContext::active_sh_degree() const noexcept {
+    return impl_->active_sh_degree;
 }
 
 void OrderedAlphaTrainingContext::download(

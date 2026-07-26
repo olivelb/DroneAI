@@ -19,7 +19,9 @@ public:
         std::uint64_t maximum_steps,
         std::size_t maximum_gaussians = 0U,
         MrnfOptimizerProfile optimizer_profile =
-            MrnfOptimizerProfile::dronegs_dev16);
+            MrnfOptimizerProfile::dronegs_dev16,
+        std::uint32_t maximum_sh_degree = 0U,
+        std::uint32_t sh_degree_interval = 1000U);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(
@@ -52,6 +54,7 @@ public:
     std::optional<MrnfOptimizerTelemetry>
     latest_optimizer_telemetry() const noexcept;
     std::size_t size() const noexcept;
+    std::uint32_t active_sh_degree() const noexcept;
     void download(std::vector<Gaussian>& gaussians) const;
 
 private:

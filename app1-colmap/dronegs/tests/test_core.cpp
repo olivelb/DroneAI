@@ -236,6 +236,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         static_cast<int>(arguments.size()), arguments.data());
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
+    check(
+        parsed.sh_degree_interval == 1000U,
+        "CLI SH interval default mismatch");
     check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
     check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
@@ -251,6 +254,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--save-eval-images", "1",
+        "--sh-degree-interval", "250",
         "--optimizer-profile", "calibrated-dc-0.010-opacity",
     });
     arguments = mutable_arguments(values);
@@ -262,9 +266,12 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
     check(
+        tuned.sh_degree_interval == 250U,
+        "CLI SH interval mismatch");
+    check(
         tuned.optimizer_profile == "calibrated-dc-0.010-opacity",
         "CLI optimizer profile mismatch");
-    values.resize(values.size() - 12U);
+    values.resize(values.size() - 14U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

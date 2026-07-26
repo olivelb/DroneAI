@@ -7,8 +7,8 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.23` adds an exact-pair LPIPS evaluation slice. It retains
-the dev.22 training behavior and:
+Version `0.5.0-dev.24` adds progressive view-dependent SH training. It retains
+the dev.23 exact-pair LPIPS path and:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -61,6 +61,10 @@ the dev.22 training behavior and:
   lossless PPM predictions and RGB8 targets for an external LPIPS pass;
 - provides a pinned, isolated LPIPS v0.1/AlexNet evaluator that writes
   per-view and aggregate results and atomically enriches the run manifest;
+- stores and exports all 45 non-DC degree-3 SH values, evaluates degrees 0–3
+  in matching CPU/CUDA order, and optimizes only the currently active band;
+- starts every run at degree 0 and activates one degree every
+  `--sh-degree-interval` steps (1,000 by default) up to `--sh-degree`;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
 - back-propagates active-pixel L1 gradients;
@@ -76,8 +80,7 @@ front-to-back anisotropic ordered-alpha composition, while the additive path
 remains only as a convergence control. Persistent training now optimizes
 position, log-scale, and normalized rotation in addition to DC and opacity.
 Topology, weighted Gumbel selection, and edge guidance now run, but
-prune/replacement, noise injection, decay, compaction, and non-DC SH
-coefficients remain absent. Only
+prune/replacement, noise injection, decay, and compaction remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
 measured. Dev.21 swept DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
 opacity while retaining dev16 geometry. Dev.22 replays dev16, DC=0.010, and
@@ -99,7 +102,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-exact-pair-lpips-prototype` and remains
+`dronegs-mrnf-progressive-sh-prototype` and remains
 opt-in.
 
 ## Container build

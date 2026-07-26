@@ -1056,7 +1056,8 @@ TrainingMetrics train_ordered_mrnf(
     OrderedAlphaTrainingContext workspace(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap),
-        optimizer_profile);
+        optimizer_profile, options.sh_degree,
+        options.sh_degree_interval);
     const auto initial_learning_rates =
         workspace.current_learning_rates();
     std::cout
@@ -1153,9 +1154,17 @@ TrainingMetrics train_ordered_mrnf(
             options.prefetch_depth);
         const auto raster_camera =
             make_raster_camera(frame.camera);
+        const auto degree_before = workspace.active_sh_degree();
         const float loss = workspace.train_step(
             raster_camera, frame.image->rgb.data(),
             frame.image->rgb.size());
+        if (workspace.active_sh_degree() != degree_before) {
+            std::cout
+                << "{\"event\":\"sh_degree_activation\",\"iteration\":"
+                << iteration << ",\"active_sh_degree\":"
+                << workspace.active_sh_degree() << "}\n"
+                << std::flush;
+        }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
         if (iteration % 200U == 0U && iteration < 15'000U) {
@@ -1192,6 +1201,7 @@ TrainingMetrics train_ordered_mrnf(
     }
     const auto final_learning_rates =
         workspace.current_learning_rates();
+    metrics.final_active_sh_degree = workspace.active_sh_degree();
     std::cout
         << "{\"event\":\"optimizer_schedule\",\"stage\":\"final\","
         << "\"profile\":\"" << options.optimizer_profile << "\","

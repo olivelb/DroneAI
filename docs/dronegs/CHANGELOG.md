@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.24 - Phase 4 progressive spherical harmonics
+
+- Extend every Gaussian with the standard 45 channel-major non-DC values used
+  by degree-3 3DGS PLY files; exports now contain learned values, not zeros.
+- Add matching real SH bases for degrees 0–3 to the CPU oracle and CUDA
+  rasterizer, with view direction computed from the camera center.
+- Back-propagate active non-DC color coefficients on CPU/CUDA and update them
+  with persistent Adam moments at one twentieth of the active DC rate.
+- Start at degree zero and activate one band every
+  `--sh-degree-interval` steps (default 1,000), capped by `--sh-degree`;
+  emit schedule events and record the configured/final degree in the manifest.
+- Copy SH values during splits and reset parent/child SH Adam moments.
+- Add finite-difference coefficient tests, CPU/CUDA degree-3 parity, schedule
+  tests, CLI validation, and real non-DC PLY serialization.
+- No COLMAP reconstruction or full Albagnac throughput run is part of this
+  phase.
+
 ## 0.5.0-dev.23 - Phase 4 exact-pair LPIPS evaluation
 
 - Persist exact lossless RGB8 held-out targets beside final PPM predictions;

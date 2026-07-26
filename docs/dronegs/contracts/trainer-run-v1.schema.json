@@ -49,6 +49,8 @@
         "iterations": {"type": "integer", "minimum": 1},
         "strategy": {"type": "string", "minLength": 1},
         "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
+        "sh_degree_interval": {"type": "integer", "minimum": 1},
+        "sh_schedule": {"type": "string"},
         "max_cap": {"type": "integer", "minimum": 1},
         "resize_factor": {"enum": [1, 2, 4, 8]},
         "max_width": {"type": "integer", "minimum": 1, "maximum": 4096},
@@ -89,6 +91,9 @@
         "image_prefetch_consumed": {"type": ["integer", "null"], "minimum": 0},
         "image_prefetch_ready": {"type": ["integer", "null"], "minimum": 0},
         "final_gaussians": {"type": ["integer", "null"], "minimum": 0},
+        "final_active_sh_degree": {
+          "type": ["integer", "null"], "minimum": 0, "maximum": 3
+        },
         "psnr": {"type": ["number", "null"]},
         "ssim": {"type": ["number", "null"]},
         "lpips": {"type": ["number", "null"]},

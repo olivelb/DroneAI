@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.23.
+- Current development version: 0.5.0-dev.24.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -142,7 +142,8 @@ Each completed phase has one focused commit and an annotated
   on Savères.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
   while dev.17-dev.22 retain the optimizer experiments and candidates. LPIPS,
-  progressive SH, prune/replacement/noise/decay, and parity remain open.
+  prune/replacement/noise/decay and parity remain open; progressive SH is
+  implemented.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.

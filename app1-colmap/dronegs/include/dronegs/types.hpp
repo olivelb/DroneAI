@@ -9,6 +9,11 @@
 
 namespace dronegs {
 
+inline constexpr std::uint32_t maximum_sh_degree = 3U;
+inline constexpr std::size_t maximum_sh_rest_coefficients = 15U;
+inline constexpr std::size_t maximum_sh_rest_values =
+    3U * maximum_sh_rest_coefficients;
+
 struct Options {
     std::filesystem::path data_path;
     std::filesystem::path output_path;
@@ -16,6 +21,7 @@ struct Options {
     std::uint64_t iterations = 0;
     std::string strategy;
     std::uint32_t sh_degree = 0;
+    std::uint32_t sh_degree_interval = 1000U;
     std::uint64_t max_cap = 0;
     std::uint32_t resize_factor = 0;
     std::uint32_t max_width = 0;
@@ -60,6 +66,8 @@ struct Scene {
 struct Gaussian {
     std::array<float, 3> xyz{};
     std::array<float, 3> dc{};
+    // Channel-major 3DGS order: R[0..14], G[0..14], B[0..14].
+    std::array<float, maximum_sh_rest_values> sh_rest{};
     std::array<float, 3> log_scale{};
     std::array<float, 4> rotation{1.0F, 0.0F, 0.0F, 0.0F};
     float opacity_logit = 0.0F;

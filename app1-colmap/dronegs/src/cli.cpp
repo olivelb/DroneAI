@@ -46,14 +46,15 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS exact-pair LPIPS evaluation "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.23\n"
+        "DroneGS progressive SH training "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.24\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--save-eval-images 0|1] "
+        "[--sh-degree-interval N] "
         "[--optimizer-profile dronegs-dev16|lichtfeld-absolute|"
         "lichtfeld-dc-only|lichtfeld-position-only|"
         "lichtfeld-opacity-only|lichtfeld-scale-only|"
@@ -72,7 +73,7 @@ Options parse_options(int argc, char** argv) {
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
-        "--optimizer-profile",
+        "--optimizer-profile", "--sh-degree-interval",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -131,6 +132,10 @@ Options parse_options(int argc, char** argv) {
         options.optimizer_profile =
             values.at("--optimizer-profile");
     }
+    if (values.contains("--sh-degree-interval")) {
+        options.sh_degree_interval = parse_u32(
+            values.at("--sh-degree-interval"), "--sh-degree-interval");
+    }
     validate_options(options);
     return options;
 }
@@ -143,8 +148,11 @@ void validate_options(const Options& options) {
         throw std::invalid_argument(
             "the native topology-growth prototype only accepts strategy mrnf");
     }
-    if (options.sh_degree > 3) {
+    if (options.sh_degree > maximum_sh_degree) {
         throw std::invalid_argument("--sh-degree must be between 0 and 3");
+    }
+    if (options.sh_degree_interval == 0U) {
+        throw std::invalid_argument("--sh-degree-interval must be positive");
     }
     if (options.max_cap == 0) {
         throw std::invalid_argument("--max-cap must be positive");

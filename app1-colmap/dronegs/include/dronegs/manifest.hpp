@@ -36,6 +36,7 @@ struct RunMeasurements {
     std::uint64_t held_out_image_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
+    std::uint32_t final_active_sh_degree = 0U;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
     std::optional<float> final_held_out_psnr;

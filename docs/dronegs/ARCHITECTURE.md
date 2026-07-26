@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.23
+Project version: 0.5.0-dev.24
 
 ## Decision
 
@@ -84,7 +84,8 @@ rotated longest-axis parent/child split.
 This is still an incomplete MRNF scaffold, not the parity rasterizer. It has
 growth, split, reproducible weighted-Gumbel sampling, Sobel edge guidance, and
 optimizer-profile telemetry, but no prune/replacement, noise, decay,
-compaction, progressive SH, or LPIPS. It supports only SIMPLE_PINHOLE and
+compaction. Progressive SH and exact-pair LPIPS are implemented. It supports
+only SIMPLE_PINHOLE and
 PINHOLE inputs.
 
 An opt-in held-out protocol uses the same index rule as LichtFeld:

@@ -354,6 +354,26 @@ int main() {
                 2.0F + 0.03F * coordinate,
             };
         }
+        dronegs::OrderedAlphaTrainingContext progressive_sh_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            2U, 1U);
+        if (progressive_sh_context.active_sh_degree() != 0U) {
+            throw std::runtime_error(
+                "progressive SH did not start at degree zero");
+        }
+        static_cast<void>(progressive_sh_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        if (progressive_sh_context.active_sh_degree() != 1U) {
+            throw std::runtime_error(
+                "progressive SH did not activate degree one");
+        }
+        static_cast<void>(progressive_sh_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        if (progressive_sh_context.active_sh_degree() != 2U) {
+            throw std::runtime_error(
+                "progressive SH did not activate requested maximum degree");
+        }
         dronegs::OrderedAlphaTrainingContext rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_absolute);

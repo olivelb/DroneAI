@@ -15,6 +15,16 @@ namespace dronegs {
 namespace {
 
 constexpr float sh_c0 = 0.28209479177387814F;
+constexpr float sh_c1 = 0.4886025119029199F;
+constexpr std::array<float, 5> sh_c2{
+    1.0925484305920792F, -1.0925484305920792F,
+    0.31539156525252005F, -1.0925484305920792F,
+    0.5462742152960396F};
+constexpr std::array<float, 7> sh_c3{
+    -0.5900435899266435F, 2.890611442640554F,
+    -0.4570457994644658F, 0.3731763325901154F,
+    -0.4570457994644658F, 1.445305721320277F,
+    -0.5900435899266435F};
 constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
@@ -30,6 +40,64 @@ struct AlphaPixelContribution {
 
 float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
+}
+
+std::array<float, 3> camera_center(const RasterCamera& camera) {
+    return {
+        -(camera.rotation[0] * camera.translation[0] +
+          camera.rotation[3] * camera.translation[1] +
+          camera.rotation[6] * camera.translation[2]),
+        -(camera.rotation[1] * camera.translation[0] +
+          camera.rotation[4] * camera.translation[1] +
+          camera.rotation[7] * camera.translation[2]),
+        -(camera.rotation[2] * camera.translation[0] +
+          camera.rotation[5] * camera.translation[1] +
+          camera.rotation[8] * camera.translation[2]),
+    };
+}
+
+std::array<float, 16> evaluate_sh_basis(
+    const Gaussian& gaussian, const RasterCamera& camera,
+    std::uint32_t active_degree) {
+    std::array<float, 16> basis{};
+    basis[0] = sh_c0;
+    if (active_degree == 0U) {
+        return basis;
+    }
+    const auto center = camera_center(camera);
+    float x = gaussian.xyz[0] - center[0];
+    float y = gaussian.xyz[1] - center[1];
+    float z = gaussian.xyz[2] - center[2];
+    const float inverse_norm = 1.0F / std::sqrt(std::max(
+        1.0e-20F, x * x + y * y + z * z));
+    x *= inverse_norm;
+    y *= inverse_norm;
+    z *= inverse_norm;
+    basis[1] = -sh_c1 * y;
+    basis[2] = sh_c1 * z;
+    basis[3] = -sh_c1 * x;
+    if (active_degree == 1U) {
+        return basis;
+    }
+    const float xx = x * x;
+    const float yy = y * y;
+    const float zz = z * z;
+    basis[4] = sh_c2[0] * x * y;
+    basis[5] = sh_c2[1] * y * z;
+    basis[6] = sh_c2[2] * (2.0F * zz - xx - yy);
+    basis[7] = sh_c2[3] * x * z;
+    basis[8] = sh_c2[4] * (xx - yy);
+    if (active_degree == 2U) {
+        return basis;
+    }
+    basis[9] = sh_c3[0] * y * (3.0F * xx - yy);
+    basis[10] = sh_c3[1] * x * y * z;
+    basis[11] = sh_c3[2] * y * (4.0F * zz - xx - yy);
+    basis[12] = sh_c3[3] * z * (2.0F * zz - 3.0F * xx - 3.0F * yy);
+    basis[13] = sh_c3[4] * x * (4.0F * zz - xx - yy);
+    basis[14] = sh_c3[5] * z * (xx - yy);
+    basis[15] = sh_c3[6] * x * (xx - 3.0F * yy);
+    return basis;
 }
 
 struct ProjectedCovariance {
@@ -194,7 +262,8 @@ float gaussian_weight(
 }
 
 std::vector<ProjectedAlphaSplat> project_visible(
-    const std::vector<Gaussian>& gaussians, const RasterCamera& camera) {
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    std::uint32_t active_sh_degree) {
     std::vector<ProjectedAlphaSplat> projected;
     projected.reserve(gaussians.size());
     for (std::size_t index = 0; index < gaussians.size(); ++index) {
@@ -229,6 +298,22 @@ std::vector<ProjectedAlphaSplat> project_visible(
                 static_cast<float>(camera.height)) {
             continue;
         }
+        const auto sh_basis =
+            evaluate_sh_basis(gaussian, camera, active_sh_degree);
+        std::array<float, 3> color{};
+        const auto active_coefficients =
+            (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
+        for (std::size_t channel = 0U; channel < 3U; ++channel) {
+            float value = 0.5F + sh_basis[0] * gaussian.dc[channel];
+            for (std::size_t coefficient = 0U;
+                 coefficient < active_coefficients; ++coefficient) {
+                value += sh_basis[coefficient + 1U] *
+                    gaussian.sh_rest[
+                        channel * maximum_sh_rest_coefficients +
+                        coefficient];
+            }
+            color[channel] = std::clamp(value, 0.0F, 1.0F);
+        }
         projected.push_back({
             .source_index = index,
             .depth = camera_z,
@@ -240,11 +325,8 @@ std::vector<ProjectedAlphaSplat> project_visible(
             .conic_xy = covariance.conic_xy,
             .conic_yy = covariance.conic_yy,
             .opacity = sigmoid(gaussian.opacity_logit),
-            .color = {
-                std::clamp(0.5F + sh_c0 * gaussian.dc[0], 0.0F, 1.0F),
-                std::clamp(0.5F + sh_c0 * gaussian.dc[1], 0.0F, 1.0F),
-                std::clamp(0.5F + sh_c0 * gaussian.dc[2], 0.0F, 1.0F),
-            },
+            .color = color,
+            .sh_basis = sh_basis,
         });
     }
     std::stable_sort(
@@ -274,14 +356,19 @@ void validate_camera(const RasterCamera& camera) {
 }  // namespace
 
 std::vector<ProjectedAlphaSplat> project_alpha_splats(
-    const std::vector<Gaussian>& gaussians, const RasterCamera& camera) {
+    const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
+    std::uint32_t active_sh_degree) {
     validate_camera(camera);
-    return project_visible(gaussians, camera);
+    if (active_sh_degree > maximum_sh_degree) {
+        throw std::invalid_argument("active SH degree must be between 0 and 3");
+    }
+    return project_visible(gaussians, camera, active_sh_degree);
 }
 
 AlphaRenderOutput render_alpha_reference(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
-    const std::array<float, 3>& background) {
+    const std::array<float, 3>& background,
+    std::uint32_t active_sh_degree) {
     validate_camera(camera);
     for (const float channel : background) {
         if (!std::isfinite(channel) || channel < 0.0F || channel > 1.0F) {
@@ -297,7 +384,11 @@ AlphaRenderOutput render_alpha_reference(
         .transmittance = std::vector<float>(pixel_count, 1.0F),
         .stats = {},
     };
-    const auto projected = project_visible(gaussians, camera);
+    if (active_sh_degree > maximum_sh_degree) {
+        throw std::invalid_argument("active SH degree must be between 0 and 3");
+    }
+    const auto projected =
+        project_visible(gaussians, camera, active_sh_degree);
     output.stats.visible_splats = projected.size();
     for (const auto& splat : projected) {
         const int support_x =
@@ -358,14 +449,18 @@ AlphaRenderOutput render_alpha_reference(
 AlphaRenderBackwardOutput render_alpha_reference_backward(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     const std::vector<float>& image_gradient,
-    const std::array<float, 3>& background) {
-    auto render = render_alpha_reference(gaussians, camera, background);
+    const std::array<float, 3>& background,
+    std::uint32_t active_sh_degree) {
+    auto render = render_alpha_reference(
+        gaussians, camera, background, active_sh_degree);
     if (image_gradient.size() != render.rgb.size()) {
         throw std::invalid_argument(
             "alpha backward image gradient shape is invalid");
     }
     AlphaRenderGradients gradients{
         .dc = std::vector<std::array<float, 3>>(gaussians.size()),
+        .sh_rest = std::vector<
+            std::array<float, maximum_sh_rest_values>>(gaussians.size()),
         .opacity_logit = std::vector<float>(gaussians.size(), 0.0F),
         .xyz = std::vector<std::array<float, 3>>(gaussians.size()),
         .log_scale =
@@ -373,7 +468,8 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
         .rotation =
             std::vector<std::array<float, 4>>(gaussians.size()),
     };
-    const auto projected = project_visible(gaussians, camera);
+    const auto projected =
+        project_visible(gaussians, camera, active_sh_degree);
     std::vector<AlphaPixelContribution> contributions;
     contributions.reserve(projected.size());
     for (std::uint32_t y = 0U; y < camera.height; ++y) {
@@ -441,12 +537,36 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                         upstream[channel] *
                         contribution.transmittance_before *
                         contribution.alpha;
-                    const float unclamped_color =
+                    float unclamped_color =
                         0.5F + sh_c0 * gaussians[source].dc[channel];
+                    const auto active_coefficients =
+                        (active_sh_degree + 1U) *
+                            (active_sh_degree + 1U) -
+                        1U;
+                    for (std::size_t coefficient = 0U;
+                         coefficient < active_coefficients;
+                         ++coefficient) {
+                        unclamped_color +=
+                            splat.sh_basis[coefficient + 1U] *
+                            gaussians[source].sh_rest[
+                                channel *
+                                    maximum_sh_rest_coefficients +
+                                coefficient];
+                    }
                     if (unclamped_color > 0.0F &&
                         unclamped_color < 1.0F) {
                         gradients.dc[source][channel] +=
                             sh_c0 * color_gradient;
+                        for (std::size_t coefficient = 0U;
+                             coefficient < active_coefficients;
+                             ++coefficient) {
+                            gradients.sh_rest[source][
+                                channel *
+                                    maximum_sh_rest_coefficients +
+                                coefficient] +=
+                                splat.sh_basis[coefficient + 1U] *
+                                color_gradient;
+                        }
                     }
                     alpha_gradient +=
                         upstream[channel] *
@@ -468,13 +588,15 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
         }
     }
     const auto finite_difference =
-        [&camera, &background, &image_gradient](
+        [&camera, &background, &image_gradient, active_sh_degree](
             const std::vector<Gaussian>& plus,
             const std::vector<Gaussian>& minus, float epsilon) {
             const auto plus_output =
-                render_alpha_reference(plus, camera, background);
+                render_alpha_reference(
+                    plus, camera, background, active_sh_degree);
             const auto minus_output =
-                render_alpha_reference(minus, camera, background);
+                render_alpha_reference(
+                    minus, camera, background, active_sh_degree);
             double derivative = 0.0;
             for (std::size_t index = 0U;
                  index < plus_output.rgb.size(); ++index) {

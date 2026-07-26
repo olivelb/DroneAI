@@ -103,6 +103,7 @@ void compare_backward(
     bool compare_geometry = true) {
     compare(actual.render, expected.render, render_tolerance);
     if (actual.gradients.dc.size() != expected.gradients.dc.size() ||
+        actual.gradients.sh_rest.size() != expected.gradients.sh_rest.size() ||
         actual.gradients.opacity_logit.size() !=
             expected.gradients.opacity_logit.size() ||
         actual.gradients.xyz.size() != expected.gradients.xyz.size() ||
@@ -121,6 +122,17 @@ void compare_backward(
                 gradient_tolerance) {
                 throw std::runtime_error(
                     "tiled alpha DC gradient differs from CPU reference");
+            }
+        }
+        for (std::size_t coefficient = 0U;
+             coefficient < dronegs::maximum_sh_rest_values;
+             ++coefficient) {
+            if (std::abs(
+                    actual.gradients.sh_rest[gaussian][coefficient] -
+                    expected.gradients.sh_rest[gaussian][coefficient]) >
+                gradient_tolerance) {
+                throw std::runtime_error(
+                    "tiled alpha SH gradient differs from CPU reference");
             }
         }
         if (std::abs(
@@ -200,6 +212,26 @@ void test_reference_parity() {
     const auto reversed_actual =
         dronegs::render_alpha_tiled_cuda(reversed, camera(), background);
     compare(reversed_actual, expected, 3.0e-5F);
+
+    auto sh_gaussians = gaussians;
+    sh_gaussians[0].sh_rest[0] = 0.08F;
+    sh_gaussians[0].sh_rest[16] = -0.04F;
+    sh_gaussians[1].sh_rest[30] = 0.06F;
+    const auto sh_expected = dronegs::render_alpha_reference(
+        sh_gaussians, camera(), background, 3U);
+    const auto sh_actual = dronegs::render_alpha_tiled_cuda(
+        sh_gaussians, camera(), background, 3U);
+    compare(sh_actual, sh_expected, 4.0e-5F);
+    const std::vector<float> upstream(sh_expected.rgb.size(), 0.1F);
+    const auto sh_backward_expected =
+        dronegs::render_alpha_reference_backward(
+            sh_gaussians, camera(), upstream, background, 3U);
+    const auto sh_backward_actual =
+        dronegs::render_alpha_tiled_cuda_backward(
+            sh_gaussians, camera(), upstream, background, 3U);
+    compare_backward(
+        sh_backward_actual, sh_backward_expected,
+        4.0e-5F, 5.0e-5F, false);
 }
 
 void test_empty_scene() {

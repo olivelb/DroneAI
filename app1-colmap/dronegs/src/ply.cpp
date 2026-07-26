@@ -39,7 +39,7 @@ void write_gaussian_ply(const std::filesystem::path& path,
            << "format binary_little_endian 1.0\n"
            << "comment DroneGS anisotropic "
               "geometry-optimized MRNF-growth L1+DSSIM prototype "
-              "0.5.0-dev.23\n"
+              "0.5.0-dev.24\n"
            << "element vertex " << gaussians.size() << "\n"
            << "property float x\n"
            << "property float y\n"
@@ -71,7 +71,7 @@ void write_gaussian_ply(const std::filesystem::path& path,
             write_float(stream, value);
         }
         for (std::uint32_t index = 0; index < rest_count; ++index) {
-            write_float(stream, 0.0F);
+            write_float(stream, gaussian.sh_rest[index]);
         }
         for (float value : gaussian.log_scale) {
             write_float(stream, value);
