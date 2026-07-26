@@ -69,3 +69,67 @@ index 09b42bb..c0de001 100644
      };
  
      /// Infinite random sampler - automatically resets when exhausted
+@@ -531,6 +548,8 @@ namespace lfs::training {
+               config_(config),
+               mask_config_(mask_config),
+               loader_(std::make_shared<lfs::io::PipelinedImageLoader>(config)),
++              deterministic_replay_(
++                  std::getenv("LFS_SAMPLER_SEED") != nullptr),
+               shutdown_(false) {
+ 
+             // Prefetch initial batch
+@@ -550,7 +569,31 @@ namespace lfs::training {
+             prefetch_next_batch();
+ 
+             try {
+-                auto ready = loader_->get();
++                auto take_ready = [&]() -> lfs::io::ReadyImage {
++                    if (!deterministic_replay_) {
++                        return loader_->get();
++                    }
++                    while (true) {
++                        const auto buffered =
++                            ready_by_sequence_.find(
++                                next_result_sequence_id_);
++                        if (buffered != ready_by_sequence_.end()) {
++                            auto ready = std::move(buffered->second);
++                            ready_by_sequence_.erase(buffered);
++                            ++next_result_sequence_id_;
++                            return ready;
++                        }
++                        auto ready = loader_->get();
++                        if (ready.sequence_id ==
++                            next_result_sequence_id_) {
++                            ++next_result_sequence_id_;
++                            return ready;
++                        }
++                        ready_by_sequence_.emplace(
++                            ready.sequence_id, std::move(ready));
++                    }
++                };
++                auto ready = take_ready();
+                 const auto it = sequence_to_camera_.find(ready.sequence_id);
+                 if (it == sequence_to_camera_.end()) {
+                     LOG_ERROR("[PipelinedDataLoader] Unknown sequence_id: {}", ready.sequence_id);
+@@ -585,7 +626,9 @@ namespace lfs::training {
+             loader_->clear();
+             sampler_.reset();
+             sequence_to_camera_.clear();
++            ready_by_sequence_.clear();
+             next_sequence_id_ = 0;
++            next_result_sequence_id_ = 0;
+             prefetch_next_batch();
+         }
+ 
+@@ -638,7 +681,11 @@ namespace lfs::training {
+         std::shared_ptr<lfs::io::PipelinedImageLoader> loader_;
+ 
+         std::unordered_map<size_t, size_t> sequence_to_camera_;
++        std::unordered_map<size_t, lfs::io::ReadyImage>
++            ready_by_sequence_;
+         size_t next_sequence_id_ = 0;
++        size_t next_result_sequence_id_ = 0;
++        bool deterministic_replay_ = false;
+ 
+         bool shutdown_ = false;
+     };

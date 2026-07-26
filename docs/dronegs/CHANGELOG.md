@@ -10,7 +10,8 @@ This changelog covers the standalone Gaussian trainer project.
 - Emit non-finite, opacity, small-scale, large-scale, and spatial prune
   counters at every topology refinement.
 - Add an opt-in GPL-covered LichtFeld sampler patch controlled by
-  `LFS_SAMPLER_SEED` for deterministic cross-engine camera replay.
+  `LFS_SAMPLER_SEED` for deterministic cross-engine camera replay,
+  including ordered delivery from the asynchronous image pipeline.
 - Correct the Albagnac parity protocol: dev.38 and LichtFeld shared the
   dataset, split, budget and topology cap, but not every optimizer rate.
 
