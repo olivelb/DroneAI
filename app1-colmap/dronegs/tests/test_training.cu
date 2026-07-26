@@ -662,6 +662,56 @@ int main() {
             dronegs::MrnfOptimizerProfile::
                 calibrated_dc_010_opacity_096,
             9.6e-2F, "opacity 0.096");
+        const auto require_geometry_candidate =
+            [&](dronegs::MrnfOptimizerProfile profile,
+                bool use_lf_scale, bool use_lf_rotation,
+                const char* label) {
+                dronegs::OrderedAlphaTrainingContext context(
+                    rate_fixture, 32U * 32U, 2U, 8U, profile);
+                const auto rates = context.current_learning_rates();
+                require_rate(rates.dc, 1.0e-2F, 1.0e-8F, label);
+                require_rate(
+                    rates.opacity, 9.6e-2F, 1.0e-8F, label);
+                require_rate(
+                    rates.position, native_rates.position,
+                    1.0e-9F, "geometry candidate position isolation");
+                require_rate(
+                    rates.scale,
+                    use_lf_scale
+                        ? initial_rates.scale
+                        : native_rates.scale,
+                    1.0e-8F, "geometry candidate scale");
+                require_rate(
+                    rates.rotation,
+                    use_lf_rotation
+                        ? initial_rates.rotation
+                        : native_rates.rotation,
+                    1.0e-8F, "geometry candidate rotation");
+                require_rate(
+                    rates.scale_epsilon,
+                    use_lf_scale ? 1.0e-15F : 1.0e-8F,
+                    1.0e-12F, "geometry candidate scale epsilon");
+                require_rate(
+                    rates.rotation_epsilon,
+                    use_lf_rotation ? 1.0e-15F : 1.0e-8F,
+                    1.0e-12F, "geometry candidate rotation epsilon");
+                require_rate(
+                    rates.dc_epsilon, 1.0e-15F,
+                    1.0e-20F, "geometry candidate DC epsilon");
+                require_rate(
+                    rates.opacity_epsilon, 1.0e-15F,
+                    1.0e-20F, "geometry candidate opacity epsilon");
+            };
+        require_geometry_candidate(
+            dronegs::MrnfOptimizerProfile::dev34_opacity096_lf_scale,
+            true, false, "dev34 scale");
+        require_geometry_candidate(
+            dronegs::MrnfOptimizerProfile::dev34_opacity096_lf_rotation,
+            false, true, "dev34 rotation");
+        require_geometry_candidate(
+            dronegs::MrnfOptimizerProfile::
+                dev34_opacity096_lf_scale_rotation,
+            true, true, "dev34 scale rotation");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);

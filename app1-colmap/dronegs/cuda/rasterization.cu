@@ -2891,7 +2891,11 @@ static MrnfLearningRates mrnf_learning_rates(
         profile == MrnfOptimizerProfile::calibrated_dc_020_opacity ||
         profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_024 ||
         profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
-        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
+        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_096 ||
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
@@ -2907,10 +2911,16 @@ static MrnfLearningRates mrnf_learning_rates(
         calibrated_dc_opacity;
     const bool lichtfeld_scale =
         lichtfeld_all ||
-        profile == MrnfOptimizerProfile::lichtfeld_scale_only;
+        profile == MrnfOptimizerProfile::lichtfeld_scale_only ||
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
     const bool lichtfeld_rotation =
         lichtfeld_all ||
-        profile == MrnfOptimizerProfile::lichtfeld_rotation_only;
+        profile == MrnfOptimizerProfile::lichtfeld_rotation_only ||
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
     const double lichtfeld_progress =
         optimizer_step <= 1U || maximum_steps == 0U
             ? 0.0
@@ -2947,7 +2957,13 @@ static MrnfLearningRates mrnf_learning_rates(
         profile ==
             MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
         profile ==
-            MrnfOptimizerProfile::calibrated_dc_010_opacity_096) {
+            MrnfOptimizerProfile::calibrated_dc_010_opacity_096 ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation) {
         dc_learning_rate = 1.0e-2F;
     } else if (
         profile ==
@@ -2967,6 +2983,12 @@ static MrnfLearningRates mrnf_learning_rates(
     } else if (
         profile ==
         MrnfOptimizerProfile::calibrated_dc_010_opacity_096) {
+        opacity_learning_rate = 9.6e-2F;
+    } else if (
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
+        profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
+        profile ==
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation) {
         opacity_learning_rate = 9.6e-2F;
     }
     return {

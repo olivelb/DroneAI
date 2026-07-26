@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.33.
+- Current development version: 0.5.0-dev.34.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -184,6 +184,10 @@ Each completed phase has one focused commit and an annotated
   matches LichtFeld closely, but median anisotropy is only 1.082 versus 1.451
   and median rotation is 0.022 versus 0.347 rad. Scale-anisotropy and rotation
   calibration are now the dominant isolated optimizer gate.
+- Dev.34 isolates scale and rotation. The combined profile improves PSNR and
+  SSIM on Albagnac, GAJAN, and Savères and improves LPIPS on the first two,
+  but Savères LPIPS regresses by 0.33%. It remains an opt-in structure profile;
+  dev.33 remains the balanced recommendation.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.
@@ -193,8 +197,8 @@ Each completed phase has one focused commit and an annotated
 - The immediate Phase 4 priority is a sufficiently long same-view
   DroneGS/LichtFeld quality control on GAJAN and one large scene, using the
   accepted local-KNN/color/opacity path, followed by isolated
-  scale-anisotropy and rotation calibration. Projected covariance is no
-  longer an isolated candidate.
+  staged scale-anisotropy and stronger post-anisotropy rotation calibration.
+  Projected covariance is no longer an isolated candidate.
   Checkpoint/resume remains open. The combined approximately 2,000-image
   Albagnac throughput run remains deferred while COLMAP bundle adjustment is
   unbounded on CPU.

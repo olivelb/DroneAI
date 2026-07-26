@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.34 - Scale/rotation structure profiles
+
+- Add isolated post-KNN scale, rotation, and combined profiles on top of the
+  accepted dev.33 opacity calibration.
+- Pass all six native/LPIPS suites and preserve automatic portable CUDA
+  architecture selection.
+- Improve Albagnac by 0.2326 dB / 0.01185 SSIM / 0.62% LPIPS and GAJAN by
+  0.1544 dB / 0.00438 SSIM / 1.11% LPIPS with the combined profile.
+- Improve Savères PSNR/SSIM by 0.0843 dB / 0.00367, but regress LPIPS by
+  0.33%; retain the combined profile as opt-in and keep dev.33 as the balanced
+  quality recommendation.
+
 ## 0.5.0-dev.33 - Post-KNN opacity convergence
 
 - Add isolated `0.024`, `0.048`, and `0.096` opacity-rate profiles while

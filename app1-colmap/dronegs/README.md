@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.33` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.34` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds isolated post-KNN opacity-rate profiles. The selected `0.096` quality
 profile improves PSNR, SSIM, and LPIPS on Albagnac, GAJAN, and Savères. A
@@ -56,8 +56,9 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   `lichtfeld-absolute` profile, five exact one-family ablations, a strict
   DC-plus-opacity combination, three intermediate-DC-plus-opacity calibration
   profiles, and three post-KNN opacity-rate points, with dev16 retained as the
-  command-line default and `calibrated-dc-0.010-opacity-0.096` recommended for
-  quality;
+  command-line default, `calibrated-dc-0.010-opacity-0.096` recommended for
+  balanced quality, and dev.34 scale/rotation profiles available for opt-in
+  structure-oriented training;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every

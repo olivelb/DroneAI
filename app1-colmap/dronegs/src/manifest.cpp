@@ -72,6 +72,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               std::size_t gaussian_count) {
     const bool lichtfeld_all =
         options.optimizer_profile == "lichtfeld-absolute";
+    const bool dev34_geometry =
+        options.optimizer_profile == "dev34-opacity096-lf-scale" ||
+        options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
+        options.optimizer_profile ==
+            "dev34-opacity096-lf-scale-rotation";
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -81,7 +86,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.048" ||
         options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096";
+            "calibrated-dc-0.010-opacity-0.096" ||
+        dev34_geometry;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-dc-only" ||
@@ -97,10 +103,16 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         calibrated_dc_opacity;
     const bool lichtfeld_scale =
         lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-scale-only";
+        options.optimizer_profile == "lichtfeld-scale-only" ||
+        options.optimizer_profile == "dev34-opacity096-lf-scale" ||
+        options.optimizer_profile ==
+            "dev34-opacity096-lf-scale-rotation";
     const bool lichtfeld_rotation =
         lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-rotation-only";
+        options.optimizer_profile == "lichtfeld-rotation-only" ||
+        options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
+        options.optimizer_profile ==
+            "dev34-opacity096-lf-scale-rotation";
     const bool mixed_epsilon =
         options.optimizer_profile != "dronegs-dev16" &&
         !lichtfeld_all;
@@ -114,7 +126,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.048" ||
         options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096") {
+            "calibrated-dc-0.010-opacity-0.096" ||
+        dev34_geometry) {
         dc_learning_rate = "0.01";
     } else if (
         options.optimizer_profile == "calibrated-dc-0.020-opacity") {
@@ -131,7 +144,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         opacity_learning_rate = "0.048";
     } else if (
         options.optimizer_profile ==
-        "calibrated-dc-0.010-opacity-0.096") {
+            "calibrated-dc-0.010-opacity-0.096" ||
+        dev34_geometry) {
         opacity_learning_rate = "0.096";
     }
     const auto temporary = options.run_manifest.string() + ".tmp";
@@ -143,7 +157,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.33\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.34\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"

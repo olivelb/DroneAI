@@ -47,7 +47,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.33\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.34\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -64,7 +64,10 @@ const char* help_text() {
         "calibrated-dc-0.020-opacity|"
         "calibrated-dc-0.010-opacity-0.024|"
         "calibrated-dc-0.010-opacity-0.048|"
-        "calibrated-dc-0.010-opacity-0.096]\n";
+        "calibrated-dc-0.010-opacity-0.096|"
+        "dev34-opacity096-lf-scale|"
+        "dev34-opacity096-lf-rotation|"
+        "dev34-opacity096-lf-scale-rotation]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -212,7 +215,13 @@ void validate_options(const Options& options) {
         options.optimizer_profile !=
             "calibrated-dc-0.010-opacity-0.048" &&
         options.optimizer_profile !=
-            "calibrated-dc-0.010-opacity-0.096") {
+            "calibrated-dc-0.010-opacity-0.096" &&
+        options.optimizer_profile !=
+            "dev34-opacity096-lf-scale" &&
+        options.optimizer_profile !=
+            "dev34-opacity096-lf-rotation" &&
+        options.optimizer_profile !=
+            "dev34-opacity096-lf-scale-rotation") {
         throw std::invalid_argument(
             "--optimizer-profile must be dronegs-dev16, "
             "lichtfeld-absolute, lichtfeld-dc-only, or "

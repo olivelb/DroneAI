@@ -1063,6 +1063,19 @@ TrainingMetrics train_ordered_mrnf(
             "calibrated-dc-0.010-opacity-0.096") {
             return MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
         }
+        if (options.optimizer_profile ==
+            "dev34-opacity096-lf-scale") {
+            return MrnfOptimizerProfile::dev34_opacity096_lf_scale;
+        }
+        if (options.optimizer_profile ==
+            "dev34-opacity096-lf-rotation") {
+            return MrnfOptimizerProfile::dev34_opacity096_lf_rotation;
+        }
+        if (options.optimizer_profile ==
+            "dev34-opacity096-lf-scale-rotation") {
+            return MrnfOptimizerProfile::
+                dev34_opacity096_lf_scale_rotation;
+        }
         return MrnfOptimizerProfile::lichtfeld_absolute;
     }();
     OrderedAlphaTrainingContext workspace(
