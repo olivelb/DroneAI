@@ -138,6 +138,26 @@ function parseNativeLichtfeldMetrics(content: string) {
   };
 }
 
+function parseLichtfeldTimings(content: string) {
+  const clean = content.replace(/\u001b\[[0-9;]*m/g, "");
+  const training = clean.match(/Training completed in\s+([0-9.]+)s/i);
+  const stamps = [...clean.matchAll(/\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]/g)];
+  const timings: Record<string, number> = {};
+  if (training) timings.training_seconds = Number(training[1]);
+  if (stamps.length >= 2) {
+    const toSeconds = (match: RegExpMatchArray) =>
+      Number(match[1]) * 3600 +
+      Number(match[2]) * 60 +
+      Number(match[3]) +
+      Number(match[4]) / 1000;
+    const first = toSeconds(stamps[0]);
+    const last = toSeconds(stamps.at(-1)!);
+    timings.wall_seconds =
+      last >= first ? last - first : last + 86_400 - first;
+  }
+  return timings;
+}
+
 async function gpuSnapshot() {
   try {
     const { stdout } = await execFileAsync("nvidia-smi", [
@@ -184,6 +204,7 @@ export async function GET() {
   const droneLatest = dronePoints.at(-1);
   const lichtfeldLatest = lichtfeldPoints.at(-1);
   const nativeMetrics = parseNativeLichtfeldMetrics(nativeMetricsText);
+  const lichtfeldTimings = parseLichtfeldTimings(lichtfeldLog);
   const lichtfeldDone =
     /Training completed successfully/.test(lichtfeldLog) &&
     nativeMetrics?.iteration === totalIterations;
@@ -218,6 +239,10 @@ export async function GET() {
       logStat?.birthtimeMs ?? Date.now(),
       completed,
     );
+    const elapsedSeconds =
+      completed && typeof timings?.wall_seconds === "number"
+        ? timings.wall_seconds
+        : timing.elapsedSeconds;
     return {
       engine,
       status:
@@ -246,6 +271,7 @@ export async function GET() {
           ? metrics.final_gaussians
           : null),
       ...timing,
+      elapsedSeconds,
       lastActivityAt: logStat?.mtime.toISOString() ?? null,
       metrics,
       timings,
@@ -298,7 +324,7 @@ export async function GET() {
         lichtfeldStats,
         lichtfeldDone,
         lichtfeldMetrics,
-        null,
+        lichtfeldTimings,
         fatalLines(lichtfeldLog),
       ),
       commonEvaluation: {

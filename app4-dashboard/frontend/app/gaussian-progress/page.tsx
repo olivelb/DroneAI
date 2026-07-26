@@ -347,7 +347,7 @@ export default function GaussianProgressPage() {
                       <th className="pb-3 font-medium">SSIM ↑</th>
                       <th className="pb-3 font-medium">LPIPS ↓</th>
                       <th className="pb-3 font-medium">Splats finaux</th>
-                      <th className="pb-3 font-medium">Temps</th>
+                      <th className="pb-3 font-medium">Temps entraînement</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/[0.06]">
@@ -360,7 +360,10 @@ export default function GaussianProgressPage() {
                         {data.dronegs.gaussians?.toLocaleString("fr-FR") ?? "—"}
                       </td>
                       <td className="py-4 font-mono">
-                        {duration(data.dronegs.timings?.wall_seconds)}
+                        {duration(
+                          data.dronegs.timings?.training_seconds ??
+                            data.dronegs.timings?.wall_seconds,
+                        )}
                       </td>
                     </tr>
                     <tr>
@@ -381,7 +384,10 @@ export default function GaussianProgressPage() {
                       </td>
                       <td className="py-4 font-mono">
                         {data.lichtfeld.status === "completed"
-                          ? duration(data.lichtfeld.elapsedSeconds)
+                          ? duration(
+                              data.lichtfeld.timings?.training_seconds ??
+                                data.lichtfeld.elapsedSeconds,
+                            )
                           : "En cours"}
                       </td>
                     </tr>
