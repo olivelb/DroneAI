@@ -1123,6 +1123,10 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
         options.sh_degree_interval, options.seed);
+    const bool imported_model = !options.initial_ply.empty();
+    if (imported_model) {
+        workspace.set_active_sh_degree(options.sh_degree);
+    }
     const auto initial_learning_rates =
         workspace.current_learning_rates();
     std::cout
@@ -1194,7 +1198,8 @@ TrainingMetrics train_ordered_mrnf(
     if (!split.held_out.empty()) {
         const auto held_out = evaluate_held_out(
             options, cache, descriptors, split.held_out,
-            workspace, "initial", false);
+            workspace, "initial",
+            imported_model && options.save_eval_images != 0U);
         metrics.initial_held_out_psnr = held_out.psnr;
         metrics.initial_held_out_ssim = held_out.ssim;
         metrics.evaluation_seconds += held_out.seconds;
@@ -1332,7 +1337,8 @@ TrainingMetrics train_ordered_mrnf(
     if (!split.held_out.empty()) {
         const auto held_out = evaluate_held_out(
             options, cache, descriptors, split.held_out,
-            workspace, "final", options.save_eval_images != 0U);
+            workspace, "final",
+            !imported_model && options.save_eval_images != 0U);
         metrics.final_held_out_psnr = held_out.psnr;
         metrics.final_held_out_ssim = held_out.ssim;
         metrics.evaluation_seconds += held_out.seconds;

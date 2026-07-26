@@ -4517,6 +4517,15 @@ OrderedAlphaTrainingContext::active_sh_degree() const noexcept {
     return impl_->active_sh_degree;
 }
 
+void OrderedAlphaTrainingContext::set_active_sh_degree(
+    std::uint32_t degree) {
+    if (degree > impl_->maximum_active_sh_degree) {
+        throw std::invalid_argument(
+            "active SH degree exceeds the configured maximum");
+    }
+    impl_->active_sh_degree = degree;
+}
+
 void OrderedAlphaTrainingContext::download(
     std::vector<Gaussian>& output) const {
     output.resize(impl_->gaussian_count);

@@ -56,6 +56,7 @@ public:
     latest_optimizer_telemetry() const noexcept;
     std::size_t size() const noexcept;
     std::uint32_t active_sh_degree() const noexcept;
+    void set_active_sh_degree(std::uint32_t degree);
     void download(std::vector<Gaussian>& gaussians) const;
 
 private:
