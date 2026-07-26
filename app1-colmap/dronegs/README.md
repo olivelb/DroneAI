@@ -7,8 +7,8 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.25` completes the MRNF topology lifecycle. It retains the
-dev.24 progressive SH and dev.23 exact-pair LPIPS paths and:
+Version `0.5.0-dev.26` validates the complete MRNF topology lifecycle,
+progressive SH, and exact-pair LPIPS paths on GAJAN, Savères, and Albagnac. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -123,9 +123,16 @@ docker run --rm --gpus all \
   --mount type=bind,src="$PWD",dst=/workspace \
   -w /workspace/app1-colmap/dronegs \
   dronegs-dev:0.5.0-dev \
-  bash -lc 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
+  bash -lc 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_CUDA_ARCHITECTURES=52 &&
             cmake --build build && ctest --test-dir build --output-on-failure'
 ```
+
+The dev.25 three-scene evidence and dev.26 regression suites use the explicit
+sm_52/compute_52 build above, with PTX JIT on the RTX 4070. CUDA 12.8/CUB
+currently fails native sm_86/sm_89 device link because its large-value radix
+sort exceeds the 48 KiB static shared-memory limit. Do not treat the recorded
+timings as native-Ada evidence; see the dev.26 three-scene benchmark report.
 
 The optional raster benchmark is built with
 `-DDRONEGS_BUILD_BENCHMARKS=ON` and run as:
@@ -162,8 +169,8 @@ stride.
 Build the isolated CPU evaluator once:
 
 ```bash
-docker build -t dronegs-lpips:0.5.0-dev.23 \
-  -f app1-colmap/dronegs/Dockerfile.lpips app1-colmap/dronegs
+docker build -t dronegs-lpips:0.5.0-dev.26 \
+  -f app1-colmap/dronegs/Dockerfile.lpips .
 ```
 
 After a run created with `--save-eval-images 1`, evaluate it without touching
@@ -171,16 +178,22 @@ COLMAP or the native CUDA trainer:
 
 ```bash
 docker run --rm \
+  --mount type=volume,src=dronegs-torch-cache,dst=/root/.cache/torch \
   --mount type=bind,src=/absolute/run/path,dst=/run \
-  dronegs-lpips:0.5.0-dev.23 \
-  /run --device cpu
+  dronegs-lpips:0.5.0-dev.26 \
+  --evaluation-dir /run/evaluation \
+  --manifest /run/trainer_run.json \
+  --device cpu
 ```
 
 The command refuses incomplete/misaligned pairs, normalizes RGB inputs to
 `[-1, 1]`, writes `evaluation/lpips.csv` and `evaluation/lpips.json`, and
 updates the existing manifest atomically. The initial model-weight download is
-a separately cached third-party artifact and must be tracked for reproducible
-offline deployment.
+cached in the named `dronegs-torch-cache` volume; it remains a separately
+tracked third-party artifact for reproducible offline deployment. Atomic
+updates preserve the existing manifest owner and mode, and new result files
+inherit the evaluation directory owner with mode `0644`, including when the
+container runs as root.
 
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
 and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving

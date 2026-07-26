@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.25.
+- Current development version: 0.5.0-dev.26.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -140,21 +140,25 @@ Each completed phase has one focused commit and an annotated
   recommended quality profile. Dev16 remains the default throughput profile
   because DC=0.020 increases manifest wall time by 8.2% on Albagnac and 19.3%
   on Savères.
-- Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17-dev.22 retain the optimizer experiments and candidates. LPIPS,
-  progressive SH and the prune/reuse/noise/decay/compaction lifecycle;
-  quality/speed parity remains open.
+- Dev.23-dev.25 add exact-pair LPIPS, progressive degree-3 SH, and the complete
+  MRNF prune/reuse/noise/decay/compaction lifecycle. Dev.26 validates those
+  paths on GAJAN smoke, Savères, and Albagnac without rerunning COLMAP.
+- Phase 4 exit gate remains open: bounded execution is established, but
+  converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
+  QA, and downstream non-regression remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is to add LPIPS, then benchmark the recommended
-  DC=0.020 quality profile and dev16 throughput default on the combined
-  approximately 2,000-image Albagnac acquisition. Position must remain on the
-  dev16 normalization/schedule.
-  A future instrumented LichtFeld control would improve equivalence
-  calibration. Progressive SH should follow the optimizer replication. The
-  edge implementation also remains a candidate for fusion or
-  refinement-window-only accumulation.
+- The immediate Phase 4 priority is checkpoint/resume followed by a sufficiently
+  long same-view DroneGS/LichtFeld quality control on GAJAN and one large
+  scene. The combined approximately 2,000-image Albagnac throughput run remains
+  deferred while COLMAP bundle adjustment is unbounded on CPU.
+  An instrumented LichtFeld control is still required for equivalence
+  calibration. Replace the large-value CUB radix-sort payload with a compact
+  index payload so CUDA 12.8 can link a native sm_89 image within the 48 KiB
+  static shared-memory limit. The edge implementation and host-mediated
+  topology compaction remain candidates for fusion or refinement-window-only
+  optimization.
   For large-scene throughput, JPEG service remains material, but deeper and
   parallel CPU queues are now rejected on the current laptop. The next
   throughput candidate should reduce decoder work without changing targets,

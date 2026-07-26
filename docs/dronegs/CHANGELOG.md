@@ -2,6 +2,34 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.26 - Phase 4 three-scene MRNF/SH/LPIPS validation
+
+- Validate the dev.25 trainer without rerunning COLMAP on the existing GAJAN
+  smoke, Savères, and Albagnac reconstructions: 25, 1,065, and 1,376 images
+  with 9,324, 642,161, and 1,025,093 initial Gaussians respectively.
+- Complete 1,200 bounded iterations on GAJAN and 220 bounded iterations on
+  both large scenes. All runs reach progressive SH degree 3 and exercise the
+  complete MRNF prune/reuse/noise/decay/compaction path without CUDA OOM.
+- Measure final held-out PSNR/SSIM of 14.13256/0.205984 on GAJAN,
+  15.72116/0.110614 on Savères, and 16.86978/0.240971 on Albagnac.
+- Compute exact-pair AlexNet LPIPS v0.1 means of 1.046475, 1.201670, and
+  1.085614 on 5, 17, and 22 held-out views respectively.
+- Record wall times of 16.79 s, 62.49 s, and 83.94 s for the bounded runs.
+  These establish execution and scaling evidence, not converged quality,
+  full-dataset throughput, or LichtFeld parity.
+- Audit the actual CUDA image in the validated binary: the pre-existing CMake
+  cache produced sm_52 plus PTX, not the intended native sm_89 image. CUDA
+  12.8/CUB native sm_86 and sm_89 device links currently fail because
+  `DeviceRadixSort` Policy900 emits 50.5--51.5 KiB of static shared data over
+  the 48 KiB linker limit. Record native Ada radix-sort repair as an open gate.
+- Preserve owner and permissions during atomic LPIPS result/manifest writes;
+  new evaluator files use mode `0644` and inherit the evaluation directory
+  owner even when the container runs as root.
+- Correct the documented LPIPS CLI invocation and add a persistent named
+  Docker volume for the separately tracked AlexNet weight cache.
+- Keep the Phase 4 production gate open. No full Albagnac throughput run,
+  COLMAP bundle adjustment, or LichtFeld oracle replay is part of this phase.
+
 ## 0.5.0-dev.25 - Phase 4 complete MRNF lifecycle
 
 - Continue refinement every 200 steps through iteration 28,500 while stopping

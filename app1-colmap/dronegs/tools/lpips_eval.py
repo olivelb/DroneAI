@@ -11,6 +11,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import stat
 import statistics
 import tempfile
 from typing import Iterable
@@ -61,12 +62,25 @@ def discover_pairs(evaluation_dir: Path) -> list[EvaluationPair]:
 
 def _atomic_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        metadata = path.stat()
+        owner_uid = metadata.st_uid
+        owner_gid = metadata.st_gid
+        mode = stat.S_IMODE(metadata.st_mode)
+    else:
+        metadata = path.parent.stat()
+        owner_uid = metadata.st_uid
+        owner_gid = metadata.st_gid
+        mode = 0o644
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            if hasattr(os, "fchown") and getattr(os, "geteuid", lambda: -1)() == 0:
+                os.fchown(stream.fileno(), owner_uid, owner_gid)
+            os.fchmod(stream.fileno(), mode)
             stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())

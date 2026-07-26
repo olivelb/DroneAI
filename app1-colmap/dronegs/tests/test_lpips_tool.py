@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -44,6 +46,7 @@ class LpipsToolTests(unittest.TestCase):
                 json.dumps({"metrics": {"lpips": None}, "artifacts": {}}),
                 encoding="utf-8",
             )
+            manifest.chmod(0o640)
 
             pairs = MODULE.discover_pairs(evaluation)
             self.assertEqual([pair.index for pair in pairs], [0, 2])
@@ -60,6 +63,13 @@ class LpipsToolTests(unittest.TestCase):
             self.assertEqual(document["metrics"]["lpips_network"], "alex")
             self.assertIn("evaluation/lpips.csv", document["artifacts"])
             self.assertIn("evaluation/lpips.json", document["artifacts"])
+            self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), 0o640)
+            self.assertEqual(
+                stat.S_IMODE((evaluation / "lpips.csv").stat().st_mode), 0o644
+            )
+            if hasattr(os, "getuid"):
+                self.assertEqual(manifest.stat().st_uid, os.getuid())
+                self.assertEqual((evaluation / "lpips.csv").stat().st_uid, os.getuid())
 
     def test_mismatched_pairs_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
