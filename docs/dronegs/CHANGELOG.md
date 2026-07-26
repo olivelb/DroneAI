@@ -2,6 +2,19 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.35 - Staged rotation calibration
+
+- Add two architecture-independent profiles that keep the dev.34 scale
+  schedule, use rotation LR `0.001` for the first 40% of optimizer steps, and
+  then switch to `0.004` or `0.008`.
+- Record the initial/final rotation rates and switch fraction in the run
+  manifest so the schedule is fully reproducible.
+- Select `0.008` over `0.004` on Albagnac, where it improves all three
+  held-out metrics over dev.34.
+- Keep dev.35 opt-in: it improves LPIPS over dev.34 on all three scenes but
+  remains 0.12% behind the balanced dev.33 Savères LPIPS result and trades
+  some GAJAN PSNR for perceptual quality.
+
 ## 0.5.0-dev.34 - Scale/rotation structure profiles
 
 - Add isolated post-KNN scale, rotation, and combined profiles on top of the

@@ -7,10 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.34` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.35` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
-adds isolated post-KNN opacity-rate profiles. The selected `0.096` quality
-profile improves PSNR, SSIM, and LPIPS on Albagnac, GAJAN, and Savères. A
+adds dev.35 profiles that retain the dev.34 scale schedule while delaying
+stronger rotation updates until 40% of training. The experiment tests whether
+late anisotropy can preserve structure gains without Savères' LPIPS regression.
+A
 balanced local KD tree gives each COLMAP point an isotropic scale adapted to
 its local density and bounded by robust scene extents. A local build detects
 its visible NVIDIA GPU through CMake's `native` mode; the `portable` preset

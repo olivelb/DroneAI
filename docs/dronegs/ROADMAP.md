@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.34.
+- Current development version: 0.5.0-dev.35.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out

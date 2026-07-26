@@ -712,6 +712,54 @@ int main() {
             dronegs::MrnfOptimizerProfile::
                 dev34_opacity096_lf_scale_rotation,
             true, true, "dev34 scale rotation");
+        const auto require_staged_rotation =
+            [&](dronegs::MrnfOptimizerProfile profile,
+                float expected_final_rotation,
+                const char* label) {
+                dronegs::OrderedAlphaTrainingContext context(
+                    rate_fixture, 32U * 32U, 10U, 8U, profile);
+                auto rates = context.current_learning_rates();
+                require_rate(
+                    rates.dc, 1.0e-2F, 1.0e-8F, label);
+                require_rate(
+                    rates.opacity, 9.6e-2F, 1.0e-8F, label);
+                require_rate(
+                    rates.scale, initial_rates.scale,
+                    1.0e-8F, "staged rotation scale");
+                require_rate(
+                    rates.rotation, 1.0e-3F,
+                    1.0e-8F, "staged rotation initial");
+                for (std::size_t step = 0U; step < 4U; ++step) {
+                    static_cast<void>(context.train_step(
+                        quality_camera, split_target.data(),
+                        split_target.size()));
+                }
+                rates = context.current_learning_rates();
+                require_rate(
+                    rates.rotation, 1.0e-3F,
+                    1.0e-8F, "staged rotation before switch");
+                static_cast<void>(context.train_step(
+                    quality_camera, split_target.data(),
+                    split_target.size()));
+                rates = context.current_learning_rates();
+                require_rate(
+                    rates.rotation, expected_final_rotation,
+                    1.0e-8F, "staged rotation after switch");
+                require_rate(
+                    rates.scale_epsilon, 1.0e-15F,
+                    1.0e-20F, "staged rotation scale epsilon");
+                require_rate(
+                    rates.rotation_epsilon, 1.0e-15F,
+                    1.0e-20F, "staged rotation epsilon");
+            };
+        require_staged_rotation(
+            dronegs::MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation004,
+            4.0e-3F, "dev35 staged rotation 0.004");
+        require_staged_rotation(
+            dronegs::MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation008,
+            8.0e-3F, "dev35 staged rotation 0.008");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);

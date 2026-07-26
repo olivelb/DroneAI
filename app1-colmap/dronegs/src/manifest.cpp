@@ -77,6 +77,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
         options.optimizer_profile ==
             "dev34-opacity096-lf-scale-rotation";
+    const bool dev35_staged_rotation =
+        options.optimizer_profile ==
+            "dev35-opacity096-lf-scale-staged-rotation004" ||
+        options.optimizer_profile ==
+            "dev35-opacity096-lf-scale-staged-rotation008";
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -87,7 +92,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "calibrated-dc-0.010-opacity-0.048" ||
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry;
+        dev34_geometry ||
+        dev35_staged_rotation;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-dc-only" ||
@@ -106,13 +112,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.optimizer_profile == "lichtfeld-scale-only" ||
         options.optimizer_profile == "dev34-opacity096-lf-scale" ||
         options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation";
+            "dev34-opacity096-lf-scale-rotation" ||
+        dev35_staged_rotation;
     const bool lichtfeld_rotation =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-rotation-only" ||
         options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
         options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation";
+            "dev34-opacity096-lf-scale-rotation" ||
+        dev35_staged_rotation;
     const bool mixed_epsilon =
         options.optimizer_profile != "dronegs-dev16" &&
         !lichtfeld_all;
@@ -127,7 +135,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "calibrated-dc-0.010-opacity-0.048" ||
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry) {
+        dev34_geometry ||
+        dev35_staged_rotation) {
         dc_learning_rate = "0.01";
     } else if (
         options.optimizer_profile == "calibrated-dc-0.020-opacity") {
@@ -145,7 +154,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     } else if (
         options.optimizer_profile ==
             "calibrated-dc-0.010-opacity-0.096" ||
-        dev34_geometry) {
+        dev34_geometry ||
+        dev35_staged_rotation) {
         opacity_learning_rate = "0.096";
     }
     const auto temporary = options.run_manifest.string() + ".tmp";
@@ -157,7 +167,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.34\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.35\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -274,7 +284,26 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    : "\"constant\"")
            << ",\n"
            << "    \"rotation_lr\": "
-           << (lichtfeld_rotation ? "0.002" : "0.001") << ",\n"
+           << (dev35_staged_rotation
+                   ? "0.001"
+                   : (lichtfeld_rotation ? "0.002" : "0.001"))
+           << ",\n"
+           << "    \"rotation_lr_final\": "
+           << (options.optimizer_profile ==
+                       "dev35-opacity096-lf-scale-staged-rotation004"
+                   ? "0.004"
+                   : (options.optimizer_profile ==
+                              "dev35-opacity096-lf-scale-staged-rotation008"
+                          ? "0.008"
+                          : (lichtfeld_rotation ? "0.002" : "0.001")))
+           << ",\n"
+           << "    \"rotation_lr_schedule\": "
+           << (dev35_staged_rotation
+                   ? "\"piecewise_constant_0.4\""
+                   : "\"constant\"")
+           << ",\n"
+           << "    \"rotation_lr_switch_fraction\": "
+           << (dev35_staged_rotation ? "0.4" : "null") << ",\n"
            << "    \"optimizer_telemetry\": "
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"

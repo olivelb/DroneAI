@@ -2895,7 +2895,13 @@ static MrnfLearningRates mrnf_learning_rates(
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
         profile ==
-            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation004 ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation008;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
@@ -2914,13 +2920,30 @@ static MrnfLearningRates mrnf_learning_rates(
         profile == MrnfOptimizerProfile::lichtfeld_scale_only ||
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
         profile ==
-            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation004 ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev35_opacity096_lf_scale_staged_rotation008;
+    const bool staged_rotation004 =
+        profile ==
+        MrnfOptimizerProfile::
+            dev35_opacity096_lf_scale_staged_rotation004;
+    const bool staged_rotation008 =
+        profile ==
+        MrnfOptimizerProfile::
+            dev35_opacity096_lf_scale_staged_rotation008;
+    const bool staged_rotation =
+        staged_rotation004 || staged_rotation008;
     const bool lichtfeld_rotation =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_rotation_only ||
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
         profile ==
-            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation;
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation ||
+        staged_rotation;
     const double lichtfeld_progress =
         optimizer_step <= 1U || maximum_steps == 0U
             ? 0.0
@@ -2963,7 +2986,8 @@ static MrnfLearningRates mrnf_learning_rates(
         profile ==
             MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
         profile ==
-            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation) {
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation ||
+        staged_rotation) {
         dc_learning_rate = 1.0e-2F;
     } else if (
         profile ==
@@ -2988,8 +3012,19 @@ static MrnfLearningRates mrnf_learning_rates(
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_scale ||
         profile == MrnfOptimizerProfile::dev34_opacity096_lf_rotation ||
         profile ==
-            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation) {
+            MrnfOptimizerProfile::dev34_opacity096_lf_scale_rotation ||
+        staged_rotation) {
         opacity_learning_rate = 9.6e-2F;
+    }
+    float rotation_learning_rate = lichtfeld_rotation
+        ? mrnf_rotation_learning_rate
+        : dev16_rotation_learning_rate;
+    if (staged_rotation && dev16_progress < 0.4) {
+        rotation_learning_rate = dev16_rotation_learning_rate;
+    } else if (staged_rotation004) {
+        rotation_learning_rate = 4.0e-3F;
+    } else if (staged_rotation008) {
+        rotation_learning_rate = 8.0e-3F;
     }
     return {
         .position =
@@ -3011,9 +3046,7 @@ static MrnfLearningRates mrnf_learning_rates(
                   mrnf_scale_learning_rate_initial,
                   mrnf_scale_learning_rate_final)
             : dev16_scale_learning_rate,
-        .rotation = lichtfeld_rotation
-            ? mrnf_rotation_learning_rate
-            : dev16_rotation_learning_rate,
+        .rotation = rotation_learning_rate,
         .position_epsilon = lichtfeld_position
             ? mrnf_adam_epsilon
             : dev16_adam_epsilon,
