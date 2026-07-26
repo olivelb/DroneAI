@@ -87,8 +87,17 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "dev36-staged-rotation008-absgrad025" ||
         options.optimizer_profile ==
             "dev36-staged-rotation008-absgrad050";
+    const bool dev37_antialias =
+        options.optimizer_profile ==
+            "dev37-staged-rotation008-absgrad050-aa005" ||
+        options.optimizer_profile ==
+            "dev37-staged-rotation008-absgrad050-aa015" ||
+        options.optimizer_profile ==
+            "dev37-staged-rotation008-absgrad050-aa030";
+    const bool absgrad_enabled =
+        dev36_absgrad || dev37_antialias;
     const bool staged_rotation =
-        dev35_staged_rotation || dev36_absgrad;
+        dev35_staged_rotation || absgrad_enabled;
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -174,7 +183,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.36\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.37\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -236,7 +245,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"scale_decay\": 0.002,\n"
            << "    \"topology_compaction\": \"hard_dense_preserve_adam\",\n"
            << "    \"growth_score\": "
-           << (dev36_absgrad
+           << (absgrad_enabled
                    ? "\"mrnf_error_edge_times_robust_abs_projected_gradient\""
                    : "\"max_normalized_ssim_error_weighted_alpha_contribution\"")
            << ",\n"
@@ -253,12 +262,12 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"edge_score_weight\": 0.25,\n"
            << "    \"edge_extra_render_passes\": 0,\n"
            << "    \"absgrad_guidance\": "
-           << (dev36_absgrad
+           << (absgrad_enabled
                    ? "\"homodirectional_per_pixel_projected_center_gradient\""
                    : "null")
            << ",\n"
            << "    \"absgrad_normalization\": "
-           << (dev36_absgrad
+           << (absgrad_enabled
                    ? "\"per_visible_view_positive_median_clamped_4\""
                    : "null")
            << ",\n"
@@ -266,10 +275,26 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << (options.optimizer_profile ==
                        "dev36-staged-rotation008-absgrad025"
                    ? "0.25"
-                   : (options.optimizer_profile ==
-                              "dev36-staged-rotation008-absgrad050"
+                   : (absgrad_enabled
                           ? "0.50"
                           : "0.0"))
+           << ",\n"
+           << "    \"antialias_filter_variance\": "
+           << (options.optimizer_profile ==
+                       "dev37-staged-rotation008-absgrad050-aa005"
+                   ? "0.05"
+                   : (options.optimizer_profile ==
+                              "dev37-staged-rotation008-absgrad050-aa015"
+                          ? "0.15"
+                          : (options.optimizer_profile ==
+                                     "dev37-staged-rotation008-absgrad050-aa030"
+                                 ? "0.30"
+                                 : "0.0")))
+           << ",\n"
+           << "    \"antialias_compensation\": "
+           << (dev37_antialias
+                   ? "\"sqrt_det_original_over_det_filtered_with_exact_vjp\""
+                   : "null")
            << ",\n"
            << "    \"adam_epsilon\": "
            << (mixed_epsilon
@@ -323,7 +348,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    ? "0.004"
                    : (options.optimizer_profile ==
                                   "dev35-opacity096-lf-scale-staged-rotation008" ||
-                              dev36_absgrad
+                              absgrad_enabled
                           ? "0.008"
                           : (lichtfeld_rotation ? "0.002" : "0.001")))
            << ",\n"

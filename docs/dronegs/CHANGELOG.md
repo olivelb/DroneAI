@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.37 - Compensated anti-aliasing ablation
+
+- Add opt-in screen-space covariance filters of `0.05`, `0.15`, and `0.30`
+  pixel squared on top of dev.36 AbsGrad `0.50`.
+- Preserve projected Gaussian energy with
+  `sqrt(det(covariance) / det(filtered_covariance))`.
+- Propagate the compensation derivative analytically through covariance,
+  scale, rotation, and position instead of applying a forward-only filter.
+- Keep the classic path at zero filter variance and architecture-independent.
+- Classify the profiles as metric-specific rather than balanced: they improve
+  Albagnac PSNR/SSIM, but all tested strengths regress exact-pair LPIPS.
+
 ## 0.5.0-dev.36 - AbsGrad-guided MRNF
 
 - Accumulate the absolute X/Y projected-center gradient contribution of every

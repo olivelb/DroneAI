@@ -63,6 +63,9 @@ enum class MrnfOptimizerProfile {
     dev35_opacity096_lf_scale_staged_rotation008,
     dev36_staged_rotation008_absgrad025,
     dev36_staged_rotation008_absgrad050,
+    dev37_staged_rotation008_absgrad050_aa005,
+    dev37_staged_rotation008_absgrad050_aa015,
+    dev37_staged_rotation008_absgrad050_aa030,
 };
 
 struct MrnfParameterTelemetry {
