@@ -18,8 +18,12 @@ const paths = {
     run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic",
     log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic/stdout.log",
   },
-  commonEvaluation:
-    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval",
+  commonEvaluation: {
+    dronegs:
+      "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000-cross-eval",
+    lichtfeld:
+      "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval",
+  },
 };
 
 type Point = {
@@ -182,8 +186,10 @@ export async function GET() {
     lichtfeldStats,
     droneManifest,
     nativeMetricsText,
-    commonManifest,
-    commonLpips,
+    droneCommonManifest,
+    droneCommonLpips,
+    lichtfeldCommonManifest,
+    lichtfeldCommonLpips,
     gpu,
   ] = await Promise.all([
     readText(paths.dronegs.log),
@@ -192,9 +198,17 @@ export async function GET() {
     stats(paths.lichtfeld.log),
     readJson<Manifest>(`${paths.dronegs.run}/trainer_run.json`),
     readText(`${paths.lichtfeld.run}/metrics.csv`),
-    readJson<Manifest>(`${paths.commonEvaluation}/trainer_run.json`),
+    readJson<Manifest>(
+      `${paths.commonEvaluation.dronegs}/trainer_run.json`,
+    ),
     readJson<Record<string, number | string>>(
-      `${paths.commonEvaluation}/evaluation/lpips.json`,
+      `${paths.commonEvaluation.dronegs}/evaluation/lpips.json`,
+    ),
+    readJson<Manifest>(
+      `${paths.commonEvaluation.lichtfeld}/trainer_run.json`,
+    ),
+    readJson<Record<string, number | string>>(
+      `${paths.commonEvaluation.lichtfeld}/evaluation/lpips.json`,
     ),
     gpuSnapshot(),
   ]);
@@ -208,18 +222,41 @@ export async function GET() {
   const lichtfeldDone =
     /Training completed successfully/.test(lichtfeldLog) &&
     nativeMetrics?.iteration === totalIterations;
-  const commonDone = commonManifest?.status === "completed";
-  const commonMetrics = commonManifest?.metrics ?? null;
-  const commonPsnr =
-    typeof commonMetrics?.initial_held_out_psnr === "number"
-      ? commonMetrics.initial_held_out_psnr
+  const droneCommonDone = droneCommonManifest?.status === "completed";
+  const lichtfeldCommonDone =
+    lichtfeldCommonManifest?.status === "completed";
+  const droneCommonMetrics = droneCommonManifest?.metrics ?? null;
+  const lichtfeldCommonMetrics =
+    lichtfeldCommonManifest?.metrics ?? null;
+  const droneCommonPsnr =
+    typeof droneCommonMetrics?.initial_held_out_psnr === "number"
+      ? droneCommonMetrics.initial_held_out_psnr
       : null;
-  const commonSsim =
-    typeof commonMetrics?.initial_held_out_ssim === "number"
-      ? commonMetrics.initial_held_out_ssim
+  const droneCommonSsim =
+    typeof droneCommonMetrics?.initial_held_out_ssim === "number"
+      ? droneCommonMetrics.initial_held_out_ssim
       : null;
-  const commonLpipsMean =
-    typeof commonLpips?.mean === "number" ? commonLpips.mean : null;
+  const droneCommonLpipsMean =
+    typeof droneCommonLpips?.mean === "number"
+      ? droneCommonLpips.mean
+      : null;
+  const lichtfeldCommonPsnr =
+    typeof lichtfeldCommonMetrics?.initial_held_out_psnr === "number"
+      ? lichtfeldCommonMetrics.initial_held_out_psnr
+      : null;
+  const lichtfeldCommonSsim =
+    typeof lichtfeldCommonMetrics?.initial_held_out_ssim === "number"
+      ? lichtfeldCommonMetrics.initial_held_out_ssim
+      : null;
+  const lichtfeldCommonLpipsMean =
+    typeof lichtfeldCommonLpips?.mean === "number"
+      ? lichtfeldCommonLpips.mean
+      : null;
+  const commonDone =
+    droneCommonDone &&
+    lichtfeldCommonDone &&
+    droneCommonLpipsMean !== null &&
+    lichtfeldCommonLpipsMean !== null;
 
   const makeRun = (
     engine: "dronegs" | "lichtfeld",
@@ -254,7 +291,7 @@ export async function GET() {
               ? "running"
               : "waiting",
       stage:
-        engine === "lichtfeld" && completed && !commonDone
+        engine === "lichtfeld" && completed && !lichtfeldCommonDone
           ? "Évaluation commune en attente"
           : completed
             ? "Terminé"
@@ -280,13 +317,20 @@ export async function GET() {
     };
   };
 
-  const droneMetrics = droneManifest?.metrics ?? null;
+  const droneMetrics = droneManifest?.metrics
+    ? {
+        ...droneManifest.metrics,
+        common_psnr: droneCommonPsnr,
+        common_ssim: droneCommonSsim,
+        common_lpips: droneCommonLpipsMean,
+      }
+    : null;
   const lichtfeldMetrics = nativeMetrics
     ? {
         ...nativeMetrics,
-        common_psnr: commonPsnr,
-        common_ssim: commonSsim,
-        common_lpips: commonLpipsMean,
+        common_psnr: lichtfeldCommonPsnr,
+        common_ssim: lichtfeldCommonSsim,
+        common_lpips: lichtfeldCommonLpipsMean,
       }
     : null;
 
@@ -334,14 +378,14 @@ export async function GET() {
           : lichtfeldDone
             ? "pending"
             : "waiting",
-        psnr: commonPsnr,
-        ssim: commonSsim,
-        lpips: commonLpipsMean,
+        psnr: lichtfeldCommonPsnr,
+        ssim: lichtfeldCommonSsim,
+        lpips: lichtfeldCommonLpipsMean,
       },
       preview: {
         dronegs: await stats(`${paths.dronegs.run}/preview.png`).then(Boolean),
         lichtfeld: await stats(
-          `${paths.commonEvaluation}/preview.png`,
+          `${paths.commonEvaluation.lichtfeld}/preview.png`,
         ).then(Boolean),
       },
     },

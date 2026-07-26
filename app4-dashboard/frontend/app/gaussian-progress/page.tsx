@@ -104,7 +104,11 @@ function number(value?: number | null, digits = 3) {
 
 function sharedMetrics(run?: RunData) {
   if (!run?.metrics) return { psnr: null, ssim: null, lpips: null };
-  if (run.engine === "lichtfeld") {
+  if (
+    run.metrics.common_psnr != null ||
+    run.metrics.common_ssim != null ||
+    run.metrics.common_lpips != null
+  ) {
     return {
       psnr: run.metrics.common_psnr ?? null,
       ssim: run.metrics.common_ssim ?? null,
