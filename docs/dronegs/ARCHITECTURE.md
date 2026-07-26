@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.27
+Project version: 0.5.0-dev.28
 
 ## Decision
 
@@ -180,6 +180,12 @@ center/radius. Rendering stays coalesced in depth order, while backward reads
 SH bases through the recovered source index. This avoids the dev.26
 large-value CUB device-link failure and removes 112 bytes of persistent
 projected-depth capacity per reserved Gaussian.
+Version 0.5.0-dev.28 tunes the two stable CUB radix sorts for Ada by selecting
+Policy610 instead of the slower CUDA 12.8 Policy800 path, while retaining the
+48-byte projected record and deterministic 64-bit depth/source key. Native
+sm_89 compilation is capped at 64 registers to improve occupancy in the
+projection, rendering, backward, and optimizer kernels. The override is
+limited to builds that contain architecture 89.
 Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
 capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
 blending weight and the same weight multiplied by a normalized `1-SSIM` map.

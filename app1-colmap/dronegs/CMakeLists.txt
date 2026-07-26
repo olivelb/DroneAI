@@ -79,6 +79,11 @@ set_target_properties(dronegs_cuda PROPERTIES
 target_compile_options(dronegs_cuda PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--use_fast_math>
 )
+if(CMAKE_CUDA_ARCHITECTURES MATCHES "(^|;)89(-real|-virtual)?($|;)")
+    target_compile_options(
+        dronegs_cuda PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:--maxrregcount=64>)
+endif()
 
 add_executable(dronegs src/main.cpp)
 target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)

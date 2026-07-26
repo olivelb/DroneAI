@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.28 - Phase 4 native Ada radix and occupancy tuning
+
+- Keep dev.27's deterministic 64-bit depth/source key and compact 48-byte
+  projected record after rejecting a 32-bit-key/52-byte-record alternative on
+  Savères.
+- Override CUDA 12.8's slower native Ada radix selection with stable CUB
+  Policy610 kernels for both projected-depth and tile/depth pair sorts.
+- Cap CUDA registers at 64 only when architecture 89 is compiled. Reject 96
+  registers as neutral and 48 registers because spilling regresses throughput.
+- Preserve all six CPU, CUDA, training, and LPIPS-tool suites and the existing
+  equal-depth stability contract.
+- Improve bounded Savères training/wall time from 58.25/62.77 seconds in
+  dev.27 to 55.77/61.56 seconds. Improve Albagnac from 82.99/88.96 to
+  79.87/87.52 seconds, with identical final topology and negligible
+  PSNR/SSIM deltas.
+- Beat the dev.26 PTX baseline in Savères wall time, while Albagnac remains
+  4.3% slower in wall time. Keep the broader Phase 4 speed-parity gate open.
+- Use only existing read-only COLMAP dense outputs; do not rerun COLMAP or the
+  combined approximately 2,000-photo Albagnac workload.
+
 ## 0.5.0-dev.27 - Phase 4 native sm_89 compact-record sort
 
 - Establish `89-real;89-virtual` before CMake enables CUDA so a clean default
