@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.21
+Project version: 0.5.0-dev.22
 
 ## Decision
 
@@ -242,11 +242,20 @@ SSIM views. The former is the primary balanced-quality candidate and the latter
 the robust-view candidate. Neither replaces the default before second-scene
 replication and LPIPS.
 
+Version 0.5.0-dev.22 validates the unchanged dev.21 profiles on Savères. The
+1,000-step same-binary control reaches 16.65243 dB / 0.131453 SSIM. DC=0.020
+reaches 16.79856 dB / 0.132098 and wins 132/134 PSNR plus 103/134 SSIM views.
+Across 306 held-out views on both scenes it averages +0.13101 dB /
++0.001065 SSIM and wins 303 PSNR plus 264 SSIM views. DC=0.020 is therefore
+the recommended quality profile, while dev16 remains the default throughput
+profile because the quality candidate is slower and LPIPS remains open.
+
 The dev.15-dev.21 behavior was adapted after inspection of pinned LichtFeld GPL
 sources. `cuda/rasterization.cu` and `cuda/trainer.cu` are consequently marked
 GPL-3.0-or-later and recorded with exact upstream/local paths in
 `GPL_COMPONENTS.md`. The remaining original DroneGS units retain their
-existing MIT identifiers; the linked dev.15+ native binary is GPL-covered.
+existing MIT identifiers; the linked dev.15+ native binary, including dev.22,
+is GPL-covered.
 
 ## Planned layout
 

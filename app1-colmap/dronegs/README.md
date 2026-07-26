@@ -7,8 +7,8 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.21` is an experimental MRNF intermediate-DC calibration
-slice. It:
+Version `0.5.0-dev.22` is an experimental MRNF two-scene DC validation slice.
+It retains the dev.21 training behavior and:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -77,15 +77,17 @@ Topology, weighted Gumbel selection, and edge guidance now run, but
 prune/replacement, noise injection, decay, compaction, and non-DC SH
 coefficients remain absent. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
-measured. Dev.21 sweeps DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
-opacity while retaining dev16 geometry. At 1,000 steps, the same-binary dev16
-control reaches 17.51451 dB / 0.251634 SSIM. DC=0.010 reaches the best mean
-PSNR, 17.66035 dB, and 0.252962 SSIM; it improves 168/172 PSNR views and
-143/172 SSIM views. DC=0.020 reaches 17.63374 dB / 0.253027 SSIM and is the
-most uniform candidate, improving 171/172 PSNR views and 161/172 SSIM views.
-DC=0.010 is retained as the primary balanced-quality candidate and DC=0.020 as
-the robust-view candidate. Dev16 remains the default until the result is
-replicated on another scene and LPIPS is evaluated.
+measured. Dev.21 swept DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
+opacity while retaining dev16 geometry. Dev.22 replays dev16, DC=0.010, and
+DC=0.020 with the exact same dev.21 binary on the independent 1,065-view
+Savères scene. At 1,000 steps, Savères dev16 reaches 16.65243 dB / 0.131453
+SSIM, DC=0.010 reaches 16.83870 dB / 0.131405, and DC=0.020 reaches
+16.79856 dB / 0.132098. Across Albagnac and Savères, DC=0.020 improves the
+same-binary controls by +0.13101 dB and +0.001065 SSIM over 306 held-out
+views, winning 303/306 PSNR views and 264/306 SSIM views. It is now the
+recommended quality profile. Dev16 remains the default throughput profile
+because both candidates increase training and wall time, and LPIPS is still
+unavailable.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -95,7 +97,7 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-intermediate-dc-calibration-prototype` and remains
+`dronegs-mrnf-two-scene-dc-validation-prototype` and remains
 opt-in.
 
 ## Container build
@@ -158,7 +160,9 @@ position, scale, and rotation remain exactly dev16.
 `calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and
 `calibrated-dc-0.020-opacity` keep the LichtFeld opacity behavior and use the
 named intermediate DC rate; all other parameter families remain exactly
-dev16. The `0.010` profile is the current balanced-quality candidate and
-`0.020` is the current per-view robustness candidate.
+dev16. The `0.020` profile is the recommended quality profile after two-scene
+validation; `0.010` remains the best mean-PSNR candidate. `dronegs-dev16`
+remains the default throughput profile until LPIPS and larger-scene throughput
+gates pass.
 
 The output directory must be empty and must not contain the source dataset.

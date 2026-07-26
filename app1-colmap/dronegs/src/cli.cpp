@@ -46,8 +46,8 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 
 const char* help_text() {
     return
-        "DroneGS MRNF intermediate-DC calibration "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.21\n"
+        "DroneGS MRNF two-scene DC validation "
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.22\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "

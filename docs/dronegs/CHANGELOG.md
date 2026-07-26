@@ -2,6 +2,36 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.22 - Phase 4 two-scene DC validation
+
+- Prepared the independent Savères Mavic 3E RTK scene from 1,066 source
+  photographs. COLMAP registered and undistorted 1,065 images (99.91%) with
+  642,161 sparse points, 1.265 px mean reprojection error, and 0.078 m median
+  Euclidean GPS residual.
+- Replayed dev16, DC=0.010, and DC=0.020 for 500 and 1,000 steps with the exact
+  same dev.21 binary (`96b9edc6...f146df4`) and dataset fingerprint.
+- At 1,000 steps, Savères dev16 reaches 16.65243 dB / 0.131453 SSIM.
+  DC=0.010 reaches 16.83870 dB / 0.131405, improving PSNR by +0.18628 dB but
+  remaining effectively neutral in SSIM (-0.000048).
+- DC=0.020 reaches 16.79856 dB / 0.132098, improving the Savères control by
+  +0.14613 dB / +0.000644 SSIM and winning on 132/134 PSNR and 103/134 SSIM
+  views.
+- Across the 306 held-out Albagnac and Savères views, DC=0.020 improves the
+  same-binary controls by +0.13101 dB / +0.001065 SSIM and wins on 303/306
+  PSNR and 264/306 SSIM views. DC=0.010 gives the larger mean PSNR gain
+  (+0.16354 dB) but lower SSIM coverage (204/306 views).
+- The quality gain is not a speed gain. On Savères, DC=0.010 and DC=0.020
+  increase 1,000-step manifest wall time by 14.6% and 19.3% versus dev16;
+  Albagnac increases were 6.8% and 8.2%.
+- Keep `dronegs-dev16` as the default throughput profile. Promote
+  `calibrated-dc-0.020-opacity` to the recommended quality profile, without
+  making it the global default before LPIPS and a larger-scene throughput gate.
+- Dev.22 changes validation evidence, recommendation, version identifiers, and
+  documentation only; the dev.21 optimizer and GPL-covered CUDA behavior are
+  unchanged.
+- Rebuilt the Release/sm_89 binary and passed all five native CPU/CUDA test
+  executables.
+
 ## 0.5.0-dev.21 - Phase 4 intermediate-DC calibration
 
 - Added `calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and

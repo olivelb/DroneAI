@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.21.
+- Current development version: 0.5.0-dev.22.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -131,15 +131,25 @@ Each completed phase has one focused commit and an annotated
   168/172 PSNR and 143/172 SSIM views improving. DC=0.020 is the robust-view
   candidate at +0.11923 dB / +0.001393, with 171/172 PSNR and 161/172 SSIM
   views improving.
+- Dev.22 replicates dev16, DC=0.010, and DC=0.020 on the independent Savères
+  Mavic 3E RTK scene. At 1,000 steps, DC=0.020 improves the Savères control by
+  +0.14613 dB / +0.000644 SSIM, with 132/134 PSNR and 103/134 SSIM views
+  improving.
+- Across 306 held-out views from Albagnac and Savères, DC=0.020 wins 303 PSNR
+  and 264 SSIM comparisons, averaging +0.13101 dB / +0.001065 SSIM. It is the
+  recommended quality profile. Dev16 remains the default throughput profile
+  because DC=0.020 increases manifest wall time by 8.2% on Albagnac and 19.3%
+  on Savères.
 - Phase 4 exit gate remains open: the accepted quality anchor remains dev.16,
-  while dev.17-dev.21 retain the optimizer experiments and candidates. LPIPS,
+  while dev.17-dev.22 retain the optimizer experiments and candidates. LPIPS,
   progressive SH, prune/replacement/noise/decay, and parity remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is to replicate DC=0.010 and DC=0.020 on a
-  second scene, add LPIPS, and then decide whether either can replace dev16 as
-  the default. Position must remain on the dev16 normalization/schedule.
+- The immediate Phase 4 priority is to add LPIPS, then benchmark the recommended
+  DC=0.020 quality profile and dev16 throughput default on the combined
+  approximately 2,000-image Albagnac acquisition. Position must remain on the
+  dev16 normalization/schedule.
   A future instrumented LichtFeld control would improve equivalence
   calibration. Progressive SH should follow the optimizer replication. The
   edge implementation also remains a candidate for fusion or
