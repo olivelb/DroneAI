@@ -1,12 +1,45 @@
 cmake_minimum_required(VERSION 3.28)
 
-if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+set(
+    DRONEGS_CUDA_ARCHITECTURES
+    "native"
+    CACHE STRING
+    "CUDA target preset: native, portable, or a CMake architecture list")
+set_property(
+    CACHE DRONEGS_CUDA_ARCHITECTURES
+    PROPERTY STRINGS native portable)
+
+if(DRONEGS_CUDA_ARCHITECTURES STREQUAL "native")
+    # CMake asks nvcc to detect every GPU visible while configuring.
+    set(_dronegs_cuda_architectures_resolved "native")
+elseif(DRONEGS_CUDA_ARCHITECTURES STREQUAL "portable")
+    # CUDA 12.8 cubins for Turing through Blackwell, including datacenter
+    # and embedded variants.
+    set(
+        _dronegs_cuda_architectures_resolved
+        "75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real")
+else()
+    set(
+        _dronegs_cuda_architectures_resolved
+        "${DRONEGS_CUDA_ARCHITECTURES}")
+endif()
+
+# Keep a preset-managed cache responsive to later preset changes, while
+# preserving the precedence of an explicit CMAKE_CUDA_ARCHITECTURES value.
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES OR
+   (DEFINED DRONEGS_CUDA_ARCHITECTURES_LAST_APPLIED AND
+    CMAKE_CUDA_ARCHITECTURES STREQUAL
+        DRONEGS_CUDA_ARCHITECTURES_LAST_APPLIED))
     set(
         CMAKE_CUDA_ARCHITECTURES
-        "89-real;89-virtual"
-        CACHE STRING
-        "CUDA architectures for DroneGS")
+        "${_dronegs_cuda_architectures_resolved}"
+        CACHE STRING "" FORCE)
+    set(
+        DRONEGS_CUDA_ARCHITECTURES_LAST_APPLIED
+        "${_dronegs_cuda_architectures_resolved}"
+        CACHE INTERNAL "Last DroneGS-managed CUDA architecture list" FORCE)
 endif()
+unset(_dronegs_cuda_architectures_resolved)
 
 project(DroneGS VERSION 0.5.0 LANGUAGES CXX CUDA)
 
@@ -79,11 +112,6 @@ set_target_properties(dronegs_cuda PROPERTIES
 target_compile_options(dronegs_cuda PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr;--use_fast_math>
 )
-if(CMAKE_CUDA_ARCHITECTURES MATCHES "(^|;)89(-real|-virtual)?($|;)")
-    target_compile_options(
-        dronegs_cuda PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:--maxrregcount=64>)
-endif()
 
 add_executable(dronegs src/main.cpp)
 target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)

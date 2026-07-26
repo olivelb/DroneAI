@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.29.
+- Current development version: 0.5.0-dev.30.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -148,6 +148,11 @@ Each completed phase has one focused commit and an annotated
   three-scene bounded PSNR/SSIM/LPIPS remains equivalent. Gajan improves
   training/wall time by 5.8%/15.5%; Savères is wall-neutral (+0.4%), while
   Albagnac remains 6.0% slower wall-clock than the dev.26 PTX-JIT control.
+- Dev.29's generic tile-local shared batching reaches bounded wall-time gains
+  of about 30% on Savères and 33% on Albagnac versus dev.26. Dev.30 removes
+  the later Ada-only radix/register tuning and adds automatic local or
+  portable Turing-through-Blackwell compilation; cross-architecture runtime
+  validation remains required.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.
@@ -159,9 +164,9 @@ Each completed phase has one focused commit and an annotated
   scene. The combined approximately 2,000-image Albagnac throughput run remains
   deferred while COLMAP bundle adjustment is unbounded on CPU.
   An instrumented LichtFeld control is still required for equivalence
-  calibration. Native sm_89 linking is complete; the next CUDA throughput
-  work must profile the remaining large-scene regression instead of assuming
-  architecture targeting alone is faster. The edge implementation and
+  calibration. Portable CUDA compilation is the baseline; future throughput
+  work must improve generic kernels rather than introduce per-architecture
+  policy overrides. The edge implementation and
   host-mediated topology compaction remain candidates for fusion or
   refinement-window-only optimization.
   For large-scene throughput, JPEG service remains material, but deeper and

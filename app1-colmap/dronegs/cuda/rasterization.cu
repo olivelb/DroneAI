@@ -15,8 +15,9 @@
  * selects CUB's Policy610 radix kernels and caps native sm_89 CUDA compilation
  * at 64 registers to improve Ada occupancy. Dev.29 cooperatively batches
  * forward recomputation and reverse gradient traversal through tile-local
- * shared memory. The
- * pre-existing DroneGS
+ * shared memory. Dev.30 removes the Ada-only radix and register overrides,
+ * leaving architecture selection and stable radix policy to CMake, nvcc, and
+ * CUB for portable Turing-through-Blackwell builds. The pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -2432,30 +2433,15 @@ __global__ void ordered_adam_update_kernel(
     }
 }
 
-template <typename Key, typename Value, typename Offset>
-struct AdaRadixPolicy610
-    : cub::DeviceRadixSortPolicy<Key, Value, Offset> {
-    using Base = cub::DeviceRadixSortPolicy<Key, Value, Offset>;
-    using MaxPolicy = typename Base::Policy610;
-};
-
-// CUDA 12.8 selects Policy800 for native sm_89. Policy610 is measurably
-// faster for both of this rasterizer's stable key/value sorts on Ada while
-// preserving DeviceRadixSort's separate input/output buffer contract.
 template <typename Key, typename Value>
-cudaError_t sort_pairs_ada_policy610(
+cudaError_t sort_pairs_portable(
     void* temporary_storage, std::size_t& temporary_bytes,
     Key* keys_in, Key* keys_out, Value* values_in, Value* values_out,
     int item_count, int begin_bit = 0,
     int end_bit = static_cast<int>(sizeof(Key) * 8U)) {
-    using Offset = int;
-    using Policy = AdaRadixPolicy610<Key, Value, Offset>;
-    cub::DoubleBuffer<Key> keys(keys_in, keys_out);
-    cub::DoubleBuffer<Value> values(values_in, values_out);
-    return cub::DispatchRadixSort<
-        false, Key, Value, Offset, Policy>::Dispatch(
-        temporary_storage, temporary_bytes, keys, values, item_count,
-        begin_bit, end_bit, false, nullptr);
+    return cub::DeviceRadixSort::SortPairs(
+        temporary_storage, temporary_bytes, keys_in, keys_out,
+        values_in, values_out, item_count, begin_bit, end_bit);
 }
 
 void sort_projected_records(
@@ -2464,13 +2450,13 @@ void sort_projected_records(
     int item_count) {
     std::size_t temporary_bytes = 0U;
     require_cuda(
-        sort_pairs_ada_policy610(
+        sort_pairs_portable(
             nullptr, temporary_bytes, keys_in, keys_out,
             records_in, records_out, item_count),
         "query compact projected splat sort storage");
     DeviceAllocation<std::uint8_t> temporary(temporary_bytes);
     require_cuda(
-        sort_pairs_ada_policy610(
+        sort_pairs_portable(
             temporary.data(), temporary_bytes, keys_in, keys_out,
             records_in, records_out, item_count),
         "sort compact projected splats by depth");
@@ -2496,13 +2482,13 @@ void sort_tile_pairs(
     int item_count) {
     std::size_t temporary_bytes = 0U;
     require_cuda(
-        sort_pairs_ada_policy610(
+        sort_pairs_portable(
             nullptr, temporary_bytes, keys_in, keys_out,
             indices_in, indices_out, item_count),
         "query tile pair sort storage");
     DeviceAllocation<std::uint8_t> temporary(temporary_bytes);
     require_cuda(
-        sort_pairs_ada_policy610(
+        sort_pairs_portable(
             temporary.data(), temporary_bytes, keys_in, keys_out,
             indices_in, indices_out, item_count),
         "sort tile/splat pairs");
@@ -3150,7 +3136,7 @@ struct OrderedAlphaTrainingContext::Impl {
     void sort_records() {
         std::size_t temporary_bytes = 0U;
         require_cuda(
-            sort_pairs_ada_policy610(
+            sort_pairs_portable(
                 nullptr, temporary_bytes,
                 depth_keys.data(), sorted_depth_keys.data(),
                 records.data(), sorted_records.data(),
@@ -3159,7 +3145,7 @@ struct OrderedAlphaTrainingContext::Impl {
         temporary_storage.ensure(std::max<std::size_t>(
             1U, temporary_bytes));
         require_cuda(
-            sort_pairs_ada_policy610(
+            sort_pairs_portable(
                 temporary_storage.data(), temporary_bytes,
                 depth_keys.data(), sorted_depth_keys.data(),
                 records.data(), sorted_records.data(),
@@ -3188,7 +3174,7 @@ struct OrderedAlphaTrainingContext::Impl {
     void sort_pairs(std::uint32_t pair_items) {
         std::size_t temporary_bytes = 0U;
         require_cuda(
-            sort_pairs_ada_policy610(
+            sort_pairs_portable(
                 nullptr, temporary_bytes,
                 tile_depth_keys.data(),
                 sorted_tile_depth_keys.data(),
@@ -3199,7 +3185,7 @@ struct OrderedAlphaTrainingContext::Impl {
         temporary_storage.ensure(std::max<std::size_t>(
             1U, temporary_bytes));
         require_cuda(
-            sort_pairs_ada_policy610(
+            sort_pairs_portable(
                 temporary_storage.data(), temporary_bytes,
                 tile_depth_keys.data(),
                 sorted_tile_depth_keys.data(),

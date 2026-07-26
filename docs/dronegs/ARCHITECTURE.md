@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.29
+Project version: 0.5.0-dev.30
 
 ## Decision
 
@@ -192,6 +192,13 @@ and source index per thread, then all 256 pixels consume the batch in the
 original front-to-back or back-to-front order. This removes up to 256
 redundant global projected-record reads per tile contribution without changing
 the blend equation, gradient equation, stable ordering, or public contract.
+Version 0.5.0-dev.30 makes that generic batching the portable CUDA baseline.
+It removes the internal Ada-only CUB Policy610 dispatch and 64-register
+ceiling. Local builds use CMake `native` GPU detection; distributable builds
+can emit real CUDA 12.8 cubins for Turing through Blackwell in one fat binary.
+Stable radix ordering and the renderer contract remain unchanged.
+Architectures introduced after CUDA 12.8 require rebuilding with a toolkit
+that supports them.
 Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
 capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
 blending weight and the same weight multiplied by a normalized `1-SSIM` map.

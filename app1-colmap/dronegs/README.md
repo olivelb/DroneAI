@@ -7,9 +7,11 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.29` adds cooperative shared-memory batching to both passes
-of ordered-alpha backward on top of the tuned native sm_89 radix and occupancy
-path. It:
+Version `0.5.0-dev.30` keeps dev.29's cooperative shared-memory batching while
+removing the Ada-only radix-policy and register-count overrides. A local build
+detects its visible NVIDIA GPU through CMake's `native` mode; the `portable`
+preset emits a CUDA 12.8 runtime-selected fat binary for Turing through
+Blackwell. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -128,15 +130,29 @@ docker run --rm --gpus all \
             cmake --build build && ctest --test-dir build --output-on-failure'
 ```
 
-Dev.27 defaults to `89-real;89-virtual`. The projected depth sort carries
+The default `DRONEGS_CUDA_ARCHITECTURES=native` asks CMake/nvcc to detect every
+GPU visible while configuring. It is appropriate for local builds and emits
+only the detected architecture. A headless or distributable build should use:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DDRONEGS_CUDA_ARCHITECTURES=portable
+```
+
+The portable preset contains real cubins for `75`, `80`, `86`, `87`, `89`,
+`90`, `100`, `101`, and `120`. The NVIDIA driver selects the matching cubin
+automatically at runtime. An explicit CMake list
+such as `-DDRONEGS_CUDA_ARCHITECTURES="86-real;89-real"` remains supported.
+Passing `-DCMAKE_CUDA_ARCHITECTURES=...` directly takes precedence.
+
+Dev.27 introduced compact projected sorting. The projected depth sort carries
 48-byte render records through CUB while SH bases stay in a separate
 source-indexed buffer. Tile bounds are reconstructed by lightweight coalesced
 kernels. This keeps native Ada device link below the 48 KiB static
 shared-memory limit without a full-record gather and reduces the persistent
 projected-depth workspace by 112 bytes per reserved Gaussian versus dev.26.
-Dev.28 selects CUB Policy610 for the two stable radix sorts and caps
-architecture-89 compilation at 64 registers. The cap is not applied when a
-different CUDA architecture is explicitly selected.
+Dev.30 uses CUB's public default stable radix dispatch on every target and does
+not impose an architecture-specific register ceiling.
 Set `-DCMAKE_CUDA_ARCHITECTURES=52` only to reproduce the dev.25/dev.26
 PTX-JIT baseline.
 
@@ -175,7 +191,7 @@ stride.
 Build the isolated CPU evaluator once:
 
 ```bash
-docker build -t dronegs-lpips:0.5.0-dev.29 \
+docker build -t dronegs-lpips:0.5.0-dev.30 \
   -f app1-colmap/dronegs/Dockerfile.lpips .
 ```
 
@@ -186,7 +202,7 @@ COLMAP or the native CUDA trainer:
 docker run --rm \
   --mount type=volume,src=dronegs-torch-cache,dst=/root/.cache/torch \
   --mount type=bind,src=/absolute/run/path,dst=/run \
-  dronegs-lpips:0.5.0-dev.29 \
+  dronegs-lpips:0.5.0-dev.30 \
   --evaluation-dir /run/evaluation \
   --manifest /run/trainer_run.json \
   --device cpu

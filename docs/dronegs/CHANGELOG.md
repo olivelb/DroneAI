@@ -2,6 +2,19 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.30 - Portable recent-NVIDIA CUDA builds
+
+- Remove the Ada-only CUB Policy610 override and `--maxrregcount=64` compiler
+  ceiling while retaining dev.29's generic shared-memory backward batching.
+- Default local builds to CMake's `native` CUDA architecture detection.
+- Add a `portable` preset with CUDA 12.8 real cubins for Turing, Ampere,
+  Ada, Hopper, and Blackwell (`75`, `80`, `86`, `87`, `89`, `90`, `100`,
+  `101`, and `120`).
+- Keep explicit user-provided CMake architecture lists supported and give
+  direct `CMAKE_CUDA_ARCHITECTURES` settings precedence.
+- Return both stable key/value sorts to CUB's public default dispatch so nvcc
+  and CUB select a valid policy for each compiled target.
+
 ## 0.5.0-dev.29 - Phase 4 shared-memory backward batching
 
 - Cooperatively load projected splats into tile-local shared memory during
