@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.24 progressive SH training "
+            << "DroneGS 0.5.0-dev.25 complete MRNF lifecycle "
                "prototype\n";
         return 0;
     }
@@ -32,15 +32,15 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.24 uses experimental anisotropic "
+        std::cerr << "DroneGS 0.5.0-dev.25 uses experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
                      "Gumbel MRNF growth, Sobel edge guidance, and MRNF "
                      "optimizer profiles validated on two drone scenes; "
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
                      "PSNR/SSIM and exact-pair external LPIPS are available, "
-                     "with progressive SH, while prune/noise/decay and "
-                     "quality parity remain "
-                     "open.\n";
+                     "with progressive SH and a complete deterministic MRNF "
+                     "prune/reuse/noise/decay/compaction lifecycle; quality "
+                     "parity remains open.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -88,6 +88,12 @@ int main(int argc, char** argv) {
             training.topology_refinements;
         measurements.gaussians_added =
             training.gaussians_added;
+        measurements.gaussians_pruned =
+            training.gaussians_pruned;
+        measurements.gaussian_slots_reused =
+            training.gaussian_slots_reused;
+        measurements.topology_compactions =
+            training.topology_compactions;
         measurements.final_active_sh_degree =
             training.final_active_sh_degree;
         measurements.initial_held_out_psnr =

@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.24
+Project version: 0.5.0-dev.25
 
 ## Decision
 
@@ -84,7 +84,8 @@ rotated longest-axis parent/child split.
 This is still an incomplete MRNF scaffold, not the parity rasterizer. It has
 growth, split, reproducible weighted-Gumbel sampling, Sobel edge guidance, and
 optimizer-profile telemetry, but no prune/replacement, noise, decay,
-compaction. Progressive SH and exact-pair LPIPS are implemented. It supports
+Progressive SH, exact-pair LPIPS, and the MRNF prune/reuse/noise/decay/
+compaction lifecycle are implemented. It supports
 only SIMPLE_PINHOLE and
 PINHOLE inputs.
 

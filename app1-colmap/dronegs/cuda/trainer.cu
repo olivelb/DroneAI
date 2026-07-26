@@ -1057,7 +1057,7 @@ TrainingMetrics train_ordered_mrnf(
         gaussians, maximum_pixels, options.iterations,
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
-        options.sh_degree_interval);
+        options.sh_degree_interval, options.seed);
     const auto initial_learning_rates =
         workspace.current_learning_rates();
     std::cout
@@ -1167,20 +1167,28 @@ TrainingMetrics train_ordered_mrnf(
         }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
-        if (iteration % 200U == 0U && iteration < 15'000U) {
+        if (iteration % 200U == 0U && iteration < 28'500U) {
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
                 (iteration * 0x9E3779B97F4A7C15ULL);
             const auto refinement =
                 workspace.refine_topology(
-                    0.003F, 0.07F, refinement_seed);
+                    0.003F,
+                    iteration < 15'000U ? 0.07F : 0.0F,
+                    refinement_seed);
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
+            metrics.gaussians_pruned += refinement.pruned;
+            metrics.gaussian_slots_reused += refinement.reused;
+            ++metrics.topology_compactions;
             std::cout
                 << "{\"event\":\"topology_refinement\",\"iteration\":"
                 << iteration
                 << ",\"candidates\":" << refinement.candidates
+                << ",\"pruned\":" << refinement.pruned
                 << ",\"added\":" << refinement.added
+                << ",\"reused\":" << refinement.reused
+                << ",\"appended\":" << refinement.appended
                 << ",\"gaussians\":" << refinement.gaussian_count
                 << ",\"selection_seed\":" << refinement_seed
                 << "}\n"

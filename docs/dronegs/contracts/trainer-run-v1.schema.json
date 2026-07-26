@@ -94,6 +94,13 @@
         "final_active_sh_degree": {
           "type": ["integer", "null"], "minimum": 0, "maximum": 3
         },
+        "gaussians_pruned": {"type": ["integer", "null"], "minimum": 0},
+        "gaussian_slots_reused": {
+          "type": ["integer", "null"], "minimum": 0
+        },
+        "topology_compactions": {
+          "type": ["integer", "null"], "minimum": 0
+        },
         "psnr": {"type": ["number", "null"]},
         "ssim": {"type": ["number", "null"]},
         "lpips": {"type": ["number", "null"]},

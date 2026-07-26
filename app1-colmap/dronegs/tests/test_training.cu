@@ -377,6 +377,50 @@ int main() {
         dronegs::OrderedAlphaTrainingContext rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_absolute);
+        auto noise_parent = split_parent;
+        noise_parent.opacity_logit = -4.0F;
+        auto noise_neighbor = noise_parent;
+        noise_neighbor.xyz[0] += 0.1F;
+        dronegs::OrderedAlphaTrainingContext noise_first(
+            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            0U, 1000U, 42U);
+        dronegs::OrderedAlphaTrainingContext noise_repeat(
+            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            0U, 1000U, 42U);
+        dronegs::OrderedAlphaTrainingContext noise_other(
+            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            0U, 1000U, 43U);
+        static_cast<void>(noise_first.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        static_cast<void>(noise_repeat.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        static_cast<void>(noise_other.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        std::vector<dronegs::Gaussian> noise_first_gaussians;
+        std::vector<dronegs::Gaussian> noise_repeat_gaussians;
+        std::vector<dronegs::Gaussian> noise_other_gaussians;
+        noise_first.download(noise_first_gaussians);
+        noise_repeat.download(noise_repeat_gaussians);
+        noise_other.download(noise_other_gaussians);
+        bool different_seed_changed_position = false;
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            if (noise_first_gaussians[0].xyz[axis] !=
+                noise_repeat_gaussians[0].xyz[axis]) {
+                throw std::runtime_error(
+                    "MRNF means noise is not deterministic");
+            }
+            different_seed_changed_position =
+                different_seed_changed_position ||
+                noise_first_gaussians[0].xyz[axis] !=
+                    noise_other_gaussians[0].xyz[axis];
+        }
+        if (!different_seed_changed_position) {
+            throw std::runtime_error(
+                "MRNF means noise seed has no effect");
+        }
         const auto initial_rates =
             rate_context.current_learning_rates();
         const auto require_rate = [](
@@ -682,7 +726,8 @@ int main() {
                 first_split.log_scale.end()) -
             first_split.log_scale.begin());
         const double expected_split_distance =
-            2.0 * std::exp(first_split.log_scale[longest_axis]);
+            2.0 * std::exp(first_split.log_scale[longest_axis]) /
+            0.999F;
         if (std::abs(
                 std::sqrt(split_distance_squared) -
                 expected_split_distance) > 2.0e-5 ||
@@ -699,6 +744,23 @@ int main() {
             empty_refinement.gaussian_count != 2U) {
             throw std::runtime_error(
                 "topology statistics did not reset after refinement");
+        }
+        auto pruned_parent = split_parent;
+        pruned_parent.opacity_logit = -20.0F;
+        dronegs::OrderedAlphaTrainingContext reuse_context(
+            {split_parent, pruned_parent},
+            32U * 32U, 2U, 2U);
+        static_cast<void>(reuse_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto reuse_refinement =
+            reuse_context.refine_topology(0.0F, 1.0F, 7U);
+        if (reuse_refinement.pruned != 1U ||
+            reuse_refinement.added != 1U ||
+            reuse_refinement.reused != 1U ||
+            reuse_refinement.appended != 0U ||
+            reuse_refinement.gaussian_count != 2U) {
+            throw std::runtime_error(
+                "MRNF prune/compact/reuse count mismatch");
         }
         std::vector<dronegs::Gaussian> gumbel_parents(8U, split_parent);
         for (std::size_t index = 0U;

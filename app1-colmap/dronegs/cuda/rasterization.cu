@@ -7,7 +7,8 @@
  * optimizer schedules, are adapted from the pinned LichtFeld implementation.
  * Dev.18 dual-profile selection and update telemetry and dev.19 family-isolated
  * epsilon/rate ablations, the dev.20 DC-plus-opacity combination, and the
- * dev.21 intermediate-DC sweep and dev.24 progressive SH integration are
+ * dev.21 intermediate-DC sweep, dev.24 progressive SH integration, and
+ * dev.25 deterministic prune/reuse/noise/decay/compaction lifecycle are
  * DroneAI additions. The pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
@@ -1818,6 +1819,111 @@ __global__ void target_sobel_edge_map_kernel(
         gradient_y * gradient_y);
 }
 
+__device__ std::uint64_t mrnf_splitmix64_device(std::uint64_t value) {
+    value += 0x9E3779B97F4A7C15ULL;
+    value = (value ^ (value >> 30U)) * 0xBF58476D1CE4E5B9ULL;
+    value = (value ^ (value >> 27U)) * 0x94D049BB133111EBULL;
+    return value ^ (value >> 31U);
+}
+
+__device__ float mrnf_uniform_device(std::uint64_t value) {
+    const auto bits = mrnf_splitmix64_device(value);
+    return fminf(
+        1.0F - 1.0e-7F,
+        fmaxf(
+            1.0e-7F,
+            static_cast<float>(bits >> 40U) *
+                (1.0F / 16777216.0F)));
+}
+
+__global__ void mrnf_inject_means_noise_kernel(
+    Gaussian* gaussians, std::size_t gaussian_count,
+    std::uint64_t step, std::uint64_t seed,
+    float position_learning_rate) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= gaussian_count) {
+        return;
+    }
+    auto& gaussian = gaussians[index];
+    const float opacity =
+        1.0F / (1.0F + expf(-gaussian.opacity_logit));
+    const float weight =
+        powf(fmaxf(0.0F, 1.0F - opacity), 150.0F) *
+        position_learning_rate * 50.0F;
+    if (!(weight > 0.0F) || !isfinite(weight)) {
+        return;
+    }
+    float scale[3]{
+        expf(gaussian.log_scale[0]),
+        expf(gaussian.log_scale[1]),
+        expf(gaussian.log_scale[2]),
+    };
+    if (scale[0] > scale[1]) {
+        const float temporary = scale[0];
+        scale[0] = scale[1];
+        scale[1] = temporary;
+    }
+    if (scale[1] > scale[2]) {
+        const float temporary = scale[1];
+        scale[1] = scale[2];
+        scale[2] = temporary;
+    }
+    if (scale[0] > scale[1]) {
+        const float temporary = scale[0];
+        scale[0] = scale[1];
+        scale[1] = temporary;
+    }
+    const float clamp_scale = fmaxf(scale[1], 1.0e-12F);
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        const auto key =
+            seed ^ (step * 0xD2B74407B1CE6E93ULL) ^
+            (static_cast<std::uint64_t>(index) *
+             0x9E3779B97F4A7C15ULL) ^
+            (static_cast<std::uint64_t>(axis) *
+             0x94D049BB133111EBULL);
+        const float u1 = mrnf_uniform_device(key);
+        const float u2 = mrnf_uniform_device(
+            key ^ 0xBF58476D1CE6E93ULL);
+        const float normal =
+            sqrtf(-2.0F * logf(u1)) *
+            cosf(6.283185307179586F * u2);
+        const float noise = fminf(
+            clamp_scale,
+            fmaxf(-clamp_scale, normal * weight));
+        const float candidate = gaussian.xyz[axis] + noise;
+        if (isfinite(candidate)) {
+            gaussian.xyz[axis] = candidate;
+        }
+    }
+}
+
+__global__ void mrnf_apply_decay_kernel(
+    Gaussian* gaussians, std::size_t gaussian_count,
+    float train_fraction) {
+    const std::size_t index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (index >= gaussian_count) {
+        return;
+    }
+    auto& gaussian = gaussians[index];
+    const float remaining =
+        1.0F - fminf(1.0F, fmaxf(0.0F, train_fraction));
+    const float opacity =
+        1.0F / (1.0F + expf(-gaussian.opacity_logit));
+    const float decayed_opacity = fminf(
+        1.0F - 1.0e-6F,
+        fmaxf(1.0e-6F, opacity - 0.004F * remaining));
+    gaussian.opacity_logit =
+        logf(decayed_opacity / (1.0F - decayed_opacity));
+    const float scale_factor =
+        fmaxf(1.0e-6F, 1.0F - 0.002F * remaining);
+    const float log_scale_decay = logf(scale_factor);
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        gaussian.log_scale[axis] += log_scale_decay;
+    }
+}
+
 __global__ void collect_refinement_statistics_kernel(
     const float* frame_refinement_weight,
     const float* frame_visibility_weight,
@@ -2782,7 +2888,8 @@ struct OrderedAlphaTrainingContext::Impl {
         std::size_t requested_gaussian_capacity,
         MrnfOptimizerProfile requested_optimizer_profile,
         std::uint32_t requested_maximum_sh_degree,
-        std::uint32_t requested_sh_degree_interval)
+        std::uint32_t requested_sh_degree_interval,
+        std::uint64_t requested_noise_seed)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -2792,7 +2899,8 @@ struct OrderedAlphaTrainingContext::Impl {
               1U, requested_maximum_steps)),
           optimizer_profile(requested_optimizer_profile),
           maximum_active_sh_degree(requested_maximum_sh_degree),
-          sh_degree_interval(requested_sh_degree_interval) {
+          sh_degree_interval(requested_sh_degree_interval),
+          noise_seed(requested_noise_seed) {
         if (gaussian_count == 0U ||
             gaussian_capacity >
                 static_cast<std::size_t>(
@@ -3350,6 +3458,16 @@ struct OrderedAlphaTrainingContext::Impl {
                     active_sh_degree < maximum_active_sh_degree) {
                     ++active_sh_degree;
                 }
+                if (optimizer_steps < 28'500U) {
+                    mrnf_inject_means_noise_kernel<<<
+                        gaussian_blocks, block_size>>>(
+                        gaussians.data(), gaussian_count,
+                        optimizer_steps, noise_seed,
+                        learning_rates.position);
+                    require_cuda(
+                        cudaGetLastError(),
+                        "launch deterministic MRNF means noise");
+                }
                 if (collect_telemetry) {
                     DeviceOptimizerTelemetry host{};
                     optimizer_telemetry.copy_to_host(&host, 1U);
@@ -3412,15 +3530,168 @@ struct OrderedAlphaTrainingContext::Impl {
             throw std::invalid_argument(
                 "ordered topology refinement parameters are invalid");
         }
-        std::vector<float> host_weights(gaussian_count);
-        std::vector<float> host_visibility(gaussian_count);
-        std::vector<float> host_edge_weights(gaussian_count);
+        const auto previous_count = gaussian_count;
+        std::vector<Gaussian> host_gaussians(previous_count);
+        std::vector<float> host_weights(previous_count);
+        std::vector<float> host_visibility(previous_count);
+        std::vector<float> host_edge_weights(previous_count);
+        gaussians.copy_to_host(
+            host_gaussians.data(), previous_count);
         refine_weight_max.copy_to_host(
-            host_weights.data(), gaussian_count);
+            host_weights.data(), previous_count);
         visibility_count.copy_to_host(
-            host_visibility.data(), gaussian_count);
+            host_visibility.data(), previous_count);
         edge_weight_sum.copy_to_host(
-            host_edge_weights.data(), gaussian_count);
+            host_edge_weights.data(), previous_count);
+
+        const auto percentile = [](
+            std::vector<float> values, float fraction) {
+            if (values.empty()) {
+                return 0.0F;
+            }
+            std::sort(values.begin(), values.end());
+            const auto index = static_cast<std::size_t>(
+                std::floor(
+                    static_cast<float>(values.size() - 1U) *
+                    fraction));
+            return values[index];
+        };
+        std::array<float, 3> lower_bound{
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity()};
+        std::array<float, 3> upper_bound{
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity()};
+        std::vector<float> maximum_scales;
+        maximum_scales.reserve(previous_count);
+        if (previous_count >= 8U) {
+            for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                std::vector<float> coordinates;
+                coordinates.reserve(previous_count);
+                for (const auto& gaussian : host_gaussians) {
+                    if (std::isfinite(gaussian.xyz[axis])) {
+                        coordinates.push_back(gaussian.xyz[axis]);
+                    }
+                }
+                const float q10 = percentile(coordinates, 0.1F);
+                const float q90 = percentile(coordinates, 0.9F);
+                const float margin =
+                    3.0F * std::max(1.0e-6F, q90 - q10);
+                lower_bound[axis] = q10 - margin;
+                upper_bound[axis] = q90 + margin;
+            }
+        }
+        for (const auto& gaussian : host_gaussians) {
+            maximum_scales.push_back(std::exp(std::max({
+                gaussian.log_scale[0],
+                gaussian.log_scale[1],
+                gaussian.log_scale[2]})));
+        }
+        const float scale_limit = previous_count >= 8U
+            ? std::max(
+                  1.0e-10F,
+                  10.0F * percentile(maximum_scales, 0.8F))
+            : std::numeric_limits<float>::infinity();
+        constexpr float minimum_opacity_logit = -5.541263545158426F;
+        constexpr float minimum_surviving_log_scale =
+            -23.025850929940457F;
+        std::vector<std::size_t> survivors;
+        survivors.reserve(previous_count);
+        for (std::size_t index = 0U; index < previous_count; ++index) {
+            const auto& gaussian = host_gaussians[index];
+            bool finite = std::isfinite(gaussian.opacity_logit);
+            bool spatial_outlier = false;
+            for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                finite =
+                    finite && std::isfinite(gaussian.xyz[axis]) &&
+                    std::isfinite(gaussian.log_scale[axis]);
+                spatial_outlier =
+                    spatial_outlier ||
+                    gaussian.xyz[axis] < lower_bound[axis] ||
+                    gaussian.xyz[axis] > upper_bound[axis];
+            }
+            const float maximum_scale = maximum_scales[index];
+            const float minimum_log_scale = std::min({
+                gaussian.log_scale[0],
+                gaussian.log_scale[1],
+                gaussian.log_scale[2]});
+            const bool prune =
+                !finite ||
+                gaussian.opacity_logit < minimum_opacity_logit ||
+                minimum_log_scale < minimum_surviving_log_scale ||
+                maximum_scale > scale_limit ||
+                spatial_outlier;
+            if (!prune) {
+                survivors.push_back(index);
+            }
+        }
+        if (survivors.empty()) {
+            const auto best = std::max_element(
+                host_gaussians.begin(), host_gaussians.end(),
+                [](const auto& left, const auto& right) {
+                    return left.opacity_logit < right.opacity_logit;
+                });
+            survivors.push_back(static_cast<std::size_t>(
+                std::distance(host_gaussians.begin(), best)));
+        }
+        const auto pruned = previous_count - survivors.size();
+        if (pruned != 0U) {
+            std::vector<Gaussian> compact_gaussians;
+            compact_gaussians.reserve(survivors.size());
+            std::vector<float> compact_weights;
+            std::vector<float> compact_visibility;
+            std::vector<float> compact_edge_weights;
+            compact_weights.reserve(survivors.size());
+            compact_visibility.reserve(survivors.size());
+            compact_edge_weights.reserve(survivors.size());
+            for (const auto source : survivors) {
+                compact_gaussians.push_back(host_gaussians[source]);
+                compact_weights.push_back(host_weights[source]);
+                compact_visibility.push_back(host_visibility[source]);
+                compact_edge_weights.push_back(host_edge_weights[source]);
+            }
+            const auto compact_moments = [&](
+                auto& allocation, std::size_t components) {
+                std::vector<float> source(previous_count * components);
+                allocation.copy_to_host(
+                    source.data(), source.size());
+                std::vector<float> compact(
+                    survivors.size() * components);
+                for (std::size_t destination = 0U;
+                     destination < survivors.size(); ++destination) {
+                    std::copy_n(
+                        source.data() +
+                            survivors[destination] * components,
+                        components,
+                        compact.data() + destination * components);
+                }
+                allocation.copy_from_host(
+                    compact.data(), compact.size());
+            };
+            compact_moments(first_dc, 3U);
+            compact_moments(second_dc, 3U);
+            compact_moments(
+                first_sh_rest, maximum_sh_rest_values);
+            compact_moments(
+                second_sh_rest, maximum_sh_rest_values);
+            compact_moments(first_opacity, 1U);
+            compact_moments(second_opacity, 1U);
+            compact_moments(first_xyz, 3U);
+            compact_moments(second_xyz, 3U);
+            compact_moments(first_log_scale, 3U);
+            compact_moments(second_log_scale, 3U);
+            compact_moments(first_rotation, 4U);
+            compact_moments(second_rotation, 4U);
+            gaussian_count = compact_gaussians.size();
+            gaussians.copy_from_host(
+                compact_gaussians.data(), gaussian_count);
+            host_gaussians = std::move(compact_gaussians);
+            host_weights = std::move(compact_weights);
+            host_visibility = std::move(compact_visibility);
+            host_edge_weights = std::move(compact_edge_weights);
+        }
         const float median_edge = positive_median(host_edge_weights);
         struct Candidate {
             double key;
@@ -3503,12 +3774,25 @@ struct OrderedAlphaTrainingContext::Impl {
                 "launch persistent long-axis Gaussian split");
             gaussian_count += added;
         }
+        constexpr std::uint32_t block_size = 256U;
+        const auto decay_blocks = static_cast<std::uint32_t>(
+            (gaussian_count + block_size - 1U) / block_size);
+        mrnf_apply_decay_kernel<<<decay_blocks, block_size>>>(
+            gaussians.data(), gaussian_count,
+            static_cast<float>(optimizer_steps) /
+                static_cast<float>(maximum_steps));
+        require_cuda(
+            cudaGetLastError(),
+            "launch MRNF opacity and scale decay");
         refine_weight_max.zero(gaussian_count);
         visibility_count.zero(gaussian_count);
         edge_weight_sum.zero(gaussian_count);
         return {
             .candidates = candidates.size(),
+            .pruned = pruned,
             .added = added,
+            .reused = std::min(added, pruned),
+            .appended = added - std::min(added, pruned),
             .gaussian_count = gaussian_count,
         };
     }
@@ -3521,6 +3805,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::uint32_t maximum_active_sh_degree = 0U;
     std::uint32_t sh_degree_interval = 1000U;
     std::uint32_t active_sh_degree = 0U;
+    std::uint64_t noise_seed = 0U;
     MrnfOptimizerProfile optimizer_profile =
         MrnfOptimizerProfile::dronegs_dev16;
     float position_learning_rate_scale = 1.0F;
@@ -3594,11 +3879,13 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     std::size_t maximum_gaussians,
     MrnfOptimizerProfile optimizer_profile,
     std::uint32_t maximum_sh_degree,
-    std::uint32_t sh_degree_interval)
+    std::uint32_t sh_degree_interval,
+    std::uint64_t noise_seed)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
           maximum_gaussians, optimizer_profile,
-          maximum_sh_degree, sh_degree_interval)) {}
+          maximum_sh_degree, sh_degree_interval,
+          noise_seed)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 

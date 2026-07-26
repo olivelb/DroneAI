@@ -73,7 +73,10 @@ struct MrnfOptimizerTelemetry {
 
 struct TopologyRefinementResult {
     std::size_t candidates = 0U;
+    std::size_t pruned = 0U;
     std::size_t added = 0U;
+    std::size_t reused = 0U;
+    std::size_t appended = 0U;
     std::size_t gaussian_count = 0U;
 };
 
@@ -97,6 +100,9 @@ struct TrainingMetrics {
     std::uint64_t held_out_image_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
+    std::uint64_t gaussians_pruned = 0;
+    std::uint64_t gaussian_slots_reused = 0;
+    std::uint64_t topology_compactions = 0;
     std::uint32_t final_active_sh_degree = 0U;
     double evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;

@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.25 - Phase 4 complete MRNF lifecycle
+
+- Continue refinement every 200 steps through iteration 28,500 while stopping
+  growth at 15,000; later windows remain useful for prune/decay/compaction.
+- Prune raw opacity below `logit(1/255)`, scale below `1e-10`, non-finite
+  parameters, excessive-scale outliers, and robust spatial outliers.
+- Hard-compact survivors into a dense device prefix while preserving all DC,
+  SH, opacity, position, scale, and rotation Adam moments.
+- Split selected parents after compaction, report reused versus newly appended
+  slots, and retain the existing deterministic weighted-Gumbel/edge guidance.
+- Inject deterministic opacity-weighted Gaussian means noise with the pinned
+  MRNF exponent 150 and weight 50, bounded by each Gaussian's median scale.
+- Apply refinement-time opacity decay 0.004 and scale decay 0.002, attenuated
+  by remaining training fraction.
+- Extend progress events and run manifests with prune/reuse/compaction counts
+  and all lifecycle constants.
+- Add synthetic tests for prune/compact/reuse and seed-stable noise.
+- No COLMAP reconstruction or full Albagnac throughput run is part of this
+  phase.
+
 ## 0.5.0-dev.24 - Phase 4 progressive spherical harmonics
 
 - Extend every Gaussian with the standard 45 channel-major non-DC values used
