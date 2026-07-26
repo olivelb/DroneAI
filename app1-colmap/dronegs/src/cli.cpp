@@ -47,7 +47,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.38\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.39\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -76,7 +76,8 @@ const char* help_text() {
         "dev37-staged-rotation008-absgrad050-aa005|"
         "dev37-staged-rotation008-absgrad050-aa015|"
         "dev37-staged-rotation008-absgrad050-aa030|"
-        "dev38-staged-rotation008-absgrad050-fastgs]\n";
+        "dev38-staged-rotation008-absgrad050-fastgs] "
+        "[--pruning-policy original|lichtfeld-bounds]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -89,7 +90,7 @@ Options parse_options(int argc, char** argv) {
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
         "--optimizer-profile", "--sh-degree-interval",
-        "--initial-ply",
+        "--initial-ply", "--pruning-policy",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -154,6 +155,9 @@ Options parse_options(int argc, char** argv) {
     if (values.contains("--sh-degree-interval")) {
         options.sh_degree_interval = parse_u32(
             values.at("--sh-degree-interval"), "--sh-degree-interval");
+    }
+    if (values.contains("--pruning-policy")) {
+        options.pruning_policy = values.at("--pruning-policy");
     }
     validate_options(options);
     return options;
@@ -255,6 +259,11 @@ void validate_options(const Options& options) {
             "--optimizer-profile must be dronegs-dev16, "
             "lichtfeld-absolute, lichtfeld-dc-only, or "
             "a supported LichtFeld family ablation/combination");
+    }
+    if (options.pruning_policy != "original" &&
+        options.pruning_policy != "lichtfeld-bounds") {
+        throw std::invalid_argument(
+            "--pruning-policy must be original or lichtfeld-bounds");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

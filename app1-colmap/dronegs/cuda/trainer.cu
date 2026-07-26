@@ -1245,7 +1245,8 @@ TrainingMetrics train_ordered_mrnf(
                 workspace.refine_topology(
                     0.003F,
                     iteration < 15'000U ? 0.07F : 0.0F,
-                    refinement_seed);
+                    refinement_seed,
+                    options.pruning_policy == "lichtfeld-bounds");
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
@@ -1256,6 +1257,16 @@ TrainingMetrics train_ordered_mrnf(
                 << iteration
                 << ",\"candidates\":" << refinement.candidates
                 << ",\"pruned\":" << refinement.pruned
+                << ",\"pruned_non_finite\":"
+                << refinement.pruned_non_finite
+                << ",\"pruned_opacity\":"
+                << refinement.pruned_opacity
+                << ",\"pruned_scale_small\":"
+                << refinement.pruned_scale_small
+                << ",\"pruned_scale_large\":"
+                << refinement.pruned_scale_large
+                << ",\"pruned_spatial\":"
+                << refinement.pruned_spatial
                 << ",\"added\":" << refinement.added
                 << ",\"reused\":" << refinement.reused
                 << ",\"appended\":" << refinement.appended

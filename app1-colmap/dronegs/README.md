@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.38` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.39` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional

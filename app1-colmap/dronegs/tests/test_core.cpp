@@ -321,6 +321,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         parsed.optimizer_profile == "dronegs-dev16",
         "CLI optimizer profile default mismatch");
+    check(
+        parsed.pruning_policy == "original",
+        "CLI pruning policy default mismatch");
 
     values.insert(values.end(), {
         "--prefetch-depth", "12",
@@ -333,6 +336,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
         "--optimizer-profile",
         "dev38-staged-rotation008-absgrad050-fastgs",
+        "--pruning-policy", "lichtfeld-bounds",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -349,10 +353,13 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         tuned.optimizer_profile ==
             "dev38-staged-rotation008-absgrad050-fastgs",
         "CLI optimizer profile mismatch");
+    check(
+        tuned.pruning_policy == "lichtfeld-bounds",
+        "CLI pruning policy mismatch");
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 16U);
+    values.resize(values.size() - 18U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

@@ -2,6 +2,18 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.39 - Controlled pruning and exact-parity audit
+
+- Add `--pruning-policy original|lichtfeld-bounds`.
+- Reproduce LichtFeld's central-80% `100 * max_extent` spatial and scale
+  pruning bounds without changing the default policy.
+- Emit non-finite, opacity, small-scale, large-scale, and spatial prune
+  counters at every topology refinement.
+- Add an opt-in GPL-covered LichtFeld sampler patch controlled by
+  `LFS_SAMPLER_SEED` for deterministic cross-engine camera replay.
+- Correct the Albagnac parity protocol: dev.38 and LichtFeld shared the
+  dataset, split, budget and topology cap, but not every optimizer rate.
+
 ## 0.5.0-dev.38 - Coupled FastGS compatibility and quality parity
 
 - Add a gated FastGS-compatible raster profile that jointly implements

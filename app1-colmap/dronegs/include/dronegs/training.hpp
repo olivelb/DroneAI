@@ -88,6 +88,11 @@ struct MrnfOptimizerTelemetry {
 struct TopologyRefinementResult {
     std::size_t candidates = 0U;
     std::size_t pruned = 0U;
+    std::size_t pruned_non_finite = 0U;
+    std::size_t pruned_opacity = 0U;
+    std::size_t pruned_scale_small = 0U;
+    std::size_t pruned_scale_large = 0U;
+    std::size_t pruned_spatial = 0U;
     std::size_t added = 0U;
     std::size_t reused = 0U;
     std::size_t appended = 0U;

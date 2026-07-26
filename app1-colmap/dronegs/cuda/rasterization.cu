@@ -4006,7 +4006,8 @@ struct OrderedAlphaTrainingContext::Impl {
 
     TopologyRefinementResult refine_topology(
         float gradient_threshold, float grow_fraction,
-        std::uint64_t selection_seed) {
+        std::uint64_t selection_seed,
+        bool lichtfeld_pruning_bounds) {
         if (!std::isfinite(gradient_threshold) ||
             gradient_threshold < 0.0F ||
             !std::isfinite(grow_fraction) ||
@@ -4076,6 +4077,8 @@ struct OrderedAlphaTrainingContext::Impl {
             std::numeric_limits<float>::infinity(),
             std::numeric_limits<float>::infinity(),
             std::numeric_limits<float>::infinity()};
+        std::array<float, 3> percentile_center{};
+        float percentile_max_extent = 0.0F;
         std::vector<float> maximum_scales;
         maximum_scales.reserve(previous_count);
         if (previous_count >= 8U) {
@@ -4089,10 +4092,23 @@ struct OrderedAlphaTrainingContext::Impl {
                 }
                 const float q10 = percentile(coordinates, 0.1F);
                 const float q90 = percentile(coordinates, 0.9F);
+                percentile_center[axis] = 0.5F * (q10 + q90);
+                percentile_max_extent = std::max(
+                    percentile_max_extent, 0.5F * (q90 - q10));
                 const float margin =
                     3.0F * std::max(1.0e-6F, q90 - q10);
                 lower_bound[axis] = q10 - margin;
                 upper_bound[axis] = q90 + margin;
+            }
+            if (lichtfeld_pruning_bounds) {
+                const float max_allowed = std::max(
+                    1.0e-10F, 100.0F * percentile_max_extent);
+                for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                    lower_bound[axis] =
+                        percentile_center[axis] - max_allowed;
+                    upper_bound[axis] =
+                        percentile_center[axis] + max_allowed;
+                }
             }
         }
         for (const auto& gaussian : host_gaussians) {
@@ -4101,16 +4117,27 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussian.log_scale[1],
                 gaussian.log_scale[2]})));
         }
-        const float scale_limit = previous_count >= 8U
-            ? std::max(
-                  1.0e-10F,
-                  10.0F * percentile(maximum_scales, 0.8F))
-            : std::numeric_limits<float>::infinity();
+        const float scale_limit =
+            previous_count < 8U
+                ? std::numeric_limits<float>::infinity()
+                : (lichtfeld_pruning_bounds
+                       ? std::max(
+                             1.0e-10F,
+                             100.0F * percentile_max_extent)
+                       : std::max(
+                             1.0e-10F,
+                             10.0F *
+                                 percentile(maximum_scales, 0.8F)));
         constexpr float minimum_opacity_logit = -5.541263545158426F;
         constexpr float minimum_surviving_log_scale =
             -23.025850929940457F;
         std::vector<std::size_t> survivors;
         survivors.reserve(previous_count);
+        std::size_t pruned_non_finite = 0U;
+        std::size_t pruned_opacity = 0U;
+        std::size_t pruned_scale_small = 0U;
+        std::size_t pruned_scale_large = 0U;
+        std::size_t pruned_spatial = 0U;
         for (std::size_t index = 0U; index < previous_count; ++index) {
             const auto& gaussian = host_gaussians[index];
             bool finite = std::isfinite(gaussian.opacity_logit);
@@ -4129,12 +4156,19 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussian.log_scale[0],
                 gaussian.log_scale[1],
                 gaussian.log_scale[2]});
+            const bool opacity =
+                gaussian.opacity_logit < minimum_opacity_logit;
+            const bool scale_small =
+                minimum_log_scale < minimum_surviving_log_scale;
+            const bool scale_large = maximum_scale > scale_limit;
+            pruned_non_finite += !finite ? 1U : 0U;
+            pruned_opacity += opacity ? 1U : 0U;
+            pruned_scale_small += scale_small ? 1U : 0U;
+            pruned_scale_large += scale_large ? 1U : 0U;
+            pruned_spatial += spatial_outlier ? 1U : 0U;
             const bool prune =
-                !finite ||
-                gaussian.opacity_logit < minimum_opacity_logit ||
-                minimum_log_scale < minimum_surviving_log_scale ||
-                maximum_scale > scale_limit ||
-                spatial_outlier;
+                !finite || opacity || scale_small ||
+                scale_large || spatial_outlier;
             if (!prune) {
                 survivors.push_back(index);
             }
@@ -4340,6 +4374,11 @@ struct OrderedAlphaTrainingContext::Impl {
         return {
             .candidates = candidates.size(),
             .pruned = pruned,
+            .pruned_non_finite = pruned_non_finite,
+            .pruned_opacity = pruned_opacity,
+            .pruned_scale_small = pruned_scale_small,
+            .pruned_scale_large = pruned_scale_large,
+            .pruned_spatial = pruned_spatial,
             .added = added,
             .reused = std::min(added, pruned),
             .appended = added - std::min(added, pruned),
@@ -4492,9 +4531,11 @@ float OrderedAlphaTrainingContext::train_step(
 TopologyRefinementResult
 OrderedAlphaTrainingContext::refine_topology(
     float gradient_threshold, float grow_fraction,
-    std::uint64_t selection_seed) {
+    std::uint64_t selection_seed,
+    bool lichtfeld_pruning_bounds) {
     return impl_->refine_topology(
-        gradient_threshold, grow_fraction, selection_seed);
+        gradient_threshold, grow_fraction, selection_seed,
+        lichtfeld_pruning_bounds);
 }
 
 MrnfLearningRates

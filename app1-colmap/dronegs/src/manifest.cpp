@@ -186,7 +186,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.38\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.39\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -219,6 +219,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"seed\": " << options.seed << ",\n"
            << "    \"optimizer_profile\": \""
            << json_escape(options.optimizer_profile) << "\",\n"
+           << "    \"pruning_policy\": \""
+           << json_escape(options.pruning_policy) << "\",\n"
            << "    \"initial_ply\": "
            << (options.initial_ply.empty()
                    ? "null"

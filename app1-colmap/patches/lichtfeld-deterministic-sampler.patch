@@ -1,0 +1,71 @@
+diff --git a/src/training/dataset.hpp b/src/training/dataset.hpp
+index 09b42bb..c0de001 100644
+--- a/src/training/dataset.hpp
++++ b/src/training/dataset.hpp
+@@ -9,6 +9,7 @@
+ #include "io/pipelined_image_loader.hpp"
+ #include <algorithm>
+ #include <chrono>
++#include <cstdlib>
+ #include <condition_variable>
+ #include <format>
+ #include <memory>
+@@ -81,8 +82,14 @@ namespace lfs::training {
+     /// Random sampler that shuffles indices once and iterates through them
+     class RandomSampler {
+     public:
+-        explicit RandomSampler(size_t size) : size_(size),
+-                                              index_(0) {
++        explicit RandomSampler(size_t size)
++            : size_(size),
++              index_(0),
++              deterministic_(std::getenv("LFS_SAMPLER_SEED") != nullptr),
++              deterministic_generator_(
++                  deterministic_
++                      ? std::stoull(std::getenv("LFS_SAMPLER_SEED"))
++                      : 0ULL) {
+             reset();
+         }
+ 
+@@ -94,16 +102,24 @@ namespace lfs::training {
+                 size_ = *new_size;
+             }
+ 
+-            // Generate indices 0...size-1
+-            indices_.resize(size_);
+-            for (size_t i = 0; i < size_; ++i) {
+-                indices_[i] = i;
++            // In deterministic replay mode, preserve the previous permutation
++            // between epochs. This matches a persistent std::shuffle schedule.
++            if (!deterministic_ || indices_.size() != size_) {
++                indices_.resize(size_);
++                for (size_t i = 0; i < size_; ++i) {
++                    indices_[i] = i;
++                }
+             }
+ 
+-            // Shuffle using random device
+-            std::random_device rd;
+-            std::mt19937 gen(rd());
+-            std::shuffle(indices_.begin(), indices_.end(), gen);
++            if (deterministic_) {
++                std::shuffle(
++                    indices_.begin(), indices_.end(),
++                    deterministic_generator_);
++            } else {
++                std::random_device rd;
++                std::mt19937 gen(rd());
++                std::shuffle(indices_.begin(), indices_.end(), gen);
++            }
+ 
+             index_ = 0;
+         }
+@@ -126,6 +141,8 @@ namespace lfs::training {
+         size_t size_;
+         size_t index_;
+         std::vector<size_t> indices_;
++        bool deterministic_;
++        std::mt19937_64 deterministic_generator_;
+     };
+ 
+     /// Infinite random sampler - automatically resets when exhausted

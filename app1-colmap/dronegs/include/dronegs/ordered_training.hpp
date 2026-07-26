@@ -50,7 +50,8 @@ public:
     TopologyRefinementResult refine_topology(
         float gradient_threshold = 0.003F,
         float grow_fraction = 0.07F,
-        std::uint64_t selection_seed = 0U);
+        std::uint64_t selection_seed = 0U,
+        bool lichtfeld_pruning_bounds = false);
     MrnfLearningRates current_learning_rates() const noexcept;
     std::optional<MrnfOptimizerTelemetry>
     latest_optimizer_telemetry() const noexcept;

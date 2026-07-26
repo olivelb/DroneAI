@@ -54,6 +54,11 @@ WORKDIR /build/LichtFeld-Studio
 # Clean any stale host build artefacts (CMakeCache.txt paths won't match)
 RUN rm -rf build
 
+# Optional deterministic camera replay for controlled cross-engine benchmarks.
+# The patch touches GPL-3.0-or-later LichtFeld code and remains GPL-covered.
+COPY app1-colmap/patches/lichtfeld-deterministic-sampler.patch /tmp/
+RUN git apply /tmp/lichtfeld-deterministic-sampler.patch
+
 # The repository patch removes GUI, USD, mesh, video, and SOG requirements.
 RUN python3 -c "\
 import json; \

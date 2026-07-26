@@ -34,6 +34,7 @@ struct Options {
     std::uint32_t test_every = 0;
     std::uint32_t save_eval_images = 0;
     std::string optimizer_profile = "dronegs-dev16";
+    std::string pruning_policy = "original";
 };
 
 struct Camera {
