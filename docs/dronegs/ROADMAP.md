@@ -163,15 +163,26 @@ Each completed phase has one focused commit and an annotated
   0.00353 SSIM, and 1.62% LPIPS. Versus dev.30 it remains 0.1968 dB lower
   but improves SSIM by 0.09359, LPIPS by 27.4%, trainer compute by 87.3%,
   and wall time by 49.9%.
+- Dev.32 generalizes on the three existing COLMAP scenes. GAJAN gains
+  0.06216 SSIM and 12.4% LPIPS while halving both trainer and wall time.
+  Savères at 1,000 steps reaches 17.5385 dB / 0.330330 SSIM / 0.798290
+  LPIPS, exceeding the historical 1,000-step PSNR by 0.6998 dB and SSIM by
+  0.19893 while reducing trainer compute by 84.5%.
+- An isolated FastGS projected-covariance transplant was rejected. Although
+  it improved the initial Albagnac render, the 500-step control collapsed to
+  11.9919 dB / 0.193172 SSIM and took 2.67x the dev.32 trainer time.
+  Covariance cannot be separated safely from FastGS bounds, overlap, and
+  composition behavior; no candidate code was retained.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is the isolated SH color-range gate followed
-  by projected-covariance compatibility and a sufficiently long same-view
-  DroneGS/LichtFeld quality control on GAJAN and one large scene.
+- The immediate Phase 4 priority is isolated opacity convergence followed by
+  a sufficiently long same-view DroneGS/LichtFeld quality control on GAJAN
+  and one large scene. The accepted local-KNN/color path must remain the
+  baseline; projected covariance is no longer an isolated candidate.
   Checkpoint/resume remains open. The combined approximately 2,000-image
   Albagnac throughput run remains deferred while COLMAP bundle adjustment is
   unbounded on CPU.
