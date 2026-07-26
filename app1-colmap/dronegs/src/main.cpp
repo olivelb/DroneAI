@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.30 portable-CUDA shared-backward MRNF "
-               "prototype\n";
+            << "DroneGS 0.5.0-dev.31 local-KNN portable-CUDA "
+               "shared-backward MRNF prototype\n";
         return 0;
     }
 
@@ -32,7 +32,8 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.30 uses experimental anisotropic "
+        std::cerr << "DroneGS 0.5.0-dev.31 uses local-KNN initialized "
+                     "experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
                      "Gumbel MRNF growth, Sobel edge guidance, and MRNF "
                      "optimizer profiles validated on two drone scenes; "

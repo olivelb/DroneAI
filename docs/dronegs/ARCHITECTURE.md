@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.30
+Project version: 0.5.0-dev.31
 
 ## Decision
 
@@ -15,6 +15,12 @@ remain outside DroneGS.
 
 LichtFeld remains the production backend until the quality, speed, VRAM, and
 compatibility gates in `ROADMAP.md` pass.
+
+Dev.31 replaces the scene-wide uniform initial Gaussian scale with the MRNF
+local-neighborhood rule: an exact deterministic KD tree measures the two
+nearest neighbours, while robust central extents provide a scene-relative
+upper bound. This preserves isotropic initialization but follows local COLMAP
+point density instead of forcing every splat to the same size.
 
 ## Stable boundary
 

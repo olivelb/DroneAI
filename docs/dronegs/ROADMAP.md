@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.30.
+- Current development version: 0.5.0-dev.31.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
@@ -153,16 +153,23 @@ Each completed phase has one focused commit and an annotated
   the later Ada-only radix/register tuning and adds automatic local or
   portable Turing-through-Blackwell compilation; cross-architecture runtime
   validation remains required.
+- Dev.31 replaces the uniform initial scale with deterministic exact local-KNN
+  MRNF scales. On the pinned Albagnac 500-step control it improves SSIM by
+  0.09006 and exact-pair LPIPS by 26.2%, cuts trainer compute by 89.1%, but
+  loses 0.4198 dB PSNR. This exposes frozen high SH color and opacity/covariance
+  mismatches as the next quality gates.
 - Phase 4 exit gate remains open: bounded execution is established, but
   converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
   QA, and downstream non-regression remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is checkpoint/resume followed by a sufficiently
-  long same-view DroneGS/LichtFeld quality control on GAJAN and one large
-  scene. The combined approximately 2,000-image Albagnac throughput run remains
-  deferred while COLMAP bundle adjustment is unbounded on CPU.
+- The immediate Phase 4 priority is the isolated SH color-range gate followed
+  by projected-covariance compatibility and a sufficiently long same-view
+  DroneGS/LichtFeld quality control on GAJAN and one large scene.
+  Checkpoint/resume remains open. The combined approximately 2,000-image
+  Albagnac throughput run remains deferred while COLMAP bundle adjustment is
+  unbounded on CPU.
   An instrumented LichtFeld control is still required for equivalence
   calibration. Portable CUDA compilation is the baseline; future throughput
   work must improve generic kernels rather than introduce per-architecture

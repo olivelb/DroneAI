@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
@@ -105,6 +106,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     const auto gaussians = dronegs::initialize_fixed_topology(scene);
     check(gaussians.size() == 2, "Gaussian count mismatch");
     check(gaussians.front().rotation[0] == 1.0F, "identity quaternion missing");
+    check(gaussians.front().log_scale[0] == 0.0F,
+          "MRNF small-cloud scale fallback mismatch");
     const auto output = root.parent_path() / "native-output";
     std::filesystem::create_directories(output);
     const auto ply = output / "point_cloud.ply";
@@ -214,6 +217,54 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest held-out PSNR missing");
     check(manifest_text.find("\"ssim\": 0.300000") != std::string::npos,
           "manifest held-out SSIM missing");
+}
+
+void test_local_scale_initialization() {
+    dronegs::Scene scene;
+    const std::array<std::array<double, 3>, 8> positions{{
+        {0.0, 0.0, 0.0},
+        {0.002, 0.0, 0.0},
+        {0.0, 0.004, 0.0},
+        {0.0, 0.0, 0.008},
+        {1.0, 1.0, 1.0},
+        {2.0, 2.0, 2.0},
+        {4.0, 4.0, 4.0},
+        {8.0, 8.0, 8.0},
+    }};
+    for (std::size_t index = 0U; index < positions.size(); ++index) {
+        scene.points.push_back(dronegs::SparsePoint{
+            .id = static_cast<std::uint64_t>(index + 1U),
+            .xyz = positions[index],
+            .rgb = {64U, 128U, 192U},
+        });
+    }
+
+    const auto gaussians = dronegs::initialize_fixed_topology(scene);
+    check(gaussians.size() == positions.size(),
+          "local-scale Gaussian count mismatch");
+    for (const auto& gaussian : gaussians) {
+        check(
+            gaussian.log_scale[0] == gaussian.log_scale[1] &&
+                gaussian.log_scale[1] == gaussian.log_scale[2],
+            "MRNF local initialization must remain isotropic");
+        check(std::isfinite(gaussian.log_scale[0]),
+              "MRNF local initialization produced a non-finite scale");
+    }
+    check(std::exp(gaussians.front().log_scale[0]) < 0.01F,
+          "dense neighborhood did not receive a compact scale");
+    check(std::exp(gaussians.back().log_scale[0]) > 0.1F,
+          "sparse neighborhood did not receive a larger scale");
+    check(gaussians.front().log_scale[0] != gaussians.back().log_scale[0],
+          "local initialization collapsed to one scene-wide scale");
+
+    dronegs::Scene duplicate_scene;
+    duplicate_scene.points.resize(3U);
+    const auto duplicate_gaussians =
+        dronegs::initialize_fixed_topology(duplicate_scene);
+    const float duplicate_scale =
+        std::exp(duplicate_gaussians.front().log_scale[0]);
+    check(std::abs(duplicate_scale - 1.0e-3F) < 1.0e-7F,
+          "duplicate-point scale floor mismatch");
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
@@ -467,6 +518,7 @@ int main() {
     const auto output = base / "output";
     try {
         test_scene_and_ply(data);
+        test_local_scale_initialization();
         test_cli(data, output);
         test_image_cache();
         std::filesystem::remove_all(base);

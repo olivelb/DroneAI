@@ -47,6 +47,7 @@ option(DRONEGS_BUILD_TESTS "Build DroneGS native tests" ON)
 option(DRONEGS_BUILD_BENCHMARKS "Build DroneGS native benchmarks" OFF)
 
 find_package(JPEG REQUIRED)
+find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -91,7 +92,7 @@ add_library(dronegs_core
     src/rasterization.cpp
 )
 target_include_directories(dronegs_core PUBLIC include)
-target_link_libraries(dronegs_core PUBLIC JPEG::JPEG)
+target_link_libraries(dronegs_core PUBLIC JPEG::JPEG Threads::Threads)
 target_compile_definitions(
     dronegs_core PRIVATE DRONEGS_GIT_REVISION="${DRONEGS_GIT_REVISION}")
 target_compile_options(dronegs_core PRIVATE

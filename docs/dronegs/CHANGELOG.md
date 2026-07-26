@@ -2,6 +2,19 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.31 - Local-density MRNF initialization
+
+- Replace the single scene-wide Gaussian scale with the MRNF two-nearest-
+  neighbour scale formula adapted from pinned LichtFeld.
+- Add an independent deterministic balanced KD tree and parallel exact queries
+  without adding a runtime library dependency.
+- Bound local scales by central-75% scene extents and preserve LichtFeld's
+  `1e-3` scale floor and fewer-than-three-points fallback.
+- Mark the adapted initialization translation unit GPL-3.0-or-later and extend
+  the provenance register with its exact source revision.
+- Add compact/diffuse-neighbourhood, duplicate-point, isotropy, and fallback
+  tests while retaining all six CPU, CUDA, training, and LPIPS-tool suites.
+
 ## 0.5.0-dev.30 - Portable recent-NVIDIA CUDA builds
 
 - Remove the Ada-only CUB Policy610 override and `--maxrregcount=64` compiler
