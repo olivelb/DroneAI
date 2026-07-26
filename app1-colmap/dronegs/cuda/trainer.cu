@@ -1111,6 +1111,11 @@ TrainingMetrics train_ordered_mrnf(
             return MrnfOptimizerProfile::
                 dev37_staged_rotation008_absgrad050_aa030;
         }
+        if (options.optimizer_profile ==
+            "dev38-staged-rotation008-absgrad050-fastgs") {
+            return MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs;
+        }
         return MrnfOptimizerProfile::lichtfeld_absolute;
     }();
     OrderedAlphaTrainingContext workspace(

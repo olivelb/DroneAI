@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.37
+Project version: 0.5.0-dev.38
 
 ## Decision
 
@@ -35,6 +35,16 @@ behavior. It improves PSNR, SSIM, and LPIPS on Albagnac, GAJAN, and Savères.
 Dev.34 exposes isolated scale/rotation structure profiles. The combined
 profile improves PSNR and SSIM on all three scenes but has a small Savères
 LPIPS tradeoff, so it remains opt-in and does not replace dev.33.
+
+Dev.38 adds an opt-in, architecture-independent FastGS compatibility profile.
+It treats projected covariance dilation, extended-FOV Jacobian clamping,
+opacity-dependent support, alpha ceiling, and analytical backward as one
+coupled renderer contract. It also adds a binary Gaussian PLY import path for
+direct same-camera/same-split renderer cross-evaluation. On Albagnac, a
+1,200-step dev.38 model exceeds the pinned LichtFeld PLY oracle rendered on
+the identical 172 held-out views in both PSNR and SSIM. LichtFeld remains the
+production backend until operational, resume, visual, speed, and downstream
+gates pass.
 
 ## Stable boundary
 

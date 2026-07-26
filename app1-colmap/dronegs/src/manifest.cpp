@@ -94,8 +94,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "dev37-staged-rotation008-absgrad050-aa015" ||
         options.optimizer_profile ==
             "dev37-staged-rotation008-absgrad050-aa030";
+    const bool dev38_fastgs =
+        options.optimizer_profile ==
+            "dev38-staged-rotation008-absgrad050-fastgs";
     const bool absgrad_enabled =
-        dev36_absgrad || dev37_antialias;
+        dev36_absgrad || dev37_antialias || dev38_fastgs;
     const bool staged_rotation =
         dev35_staged_rotation || absgrad_enabled;
     const bool calibrated_dc_opacity =
@@ -183,7 +186,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.37\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.38\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -216,6 +219,12 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"seed\": " << options.seed << ",\n"
            << "    \"optimizer_profile\": \""
            << json_escape(options.optimizer_profile) << "\",\n"
+           << "    \"initial_ply\": "
+           << (options.initial_ply.empty()
+                   ? "null"
+                   : ("\"" +
+                      json_escape(options.initial_ply.string()) + "\""))
+           << ",\n"
            << "    \"prefetch_depth\": " << options.prefetch_depth << ",\n"
            << "    \"decode_workers\": " << options.decode_workers << ",\n"
            << "    \"jpeg_idct_scale\": " << options.jpeg_idct_scale << ",\n"
@@ -295,6 +304,24 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << (dev37_antialias
                    ? "\"sqrt_det_original_over_det_filtered_with_exact_vjp\""
                    : "null")
+           << ",\n"
+           << "    \"raster_profile\": "
+           << (dev38_fastgs
+                   ? "\"fastgs_compatibility\""
+                   : "\"bounded_spectral\"")
+           << ",\n"
+           << "    \"projected_covariance_regularization\": "
+           << (dev38_fastgs
+                   ? "\"additive_0.3_identity_no_spectral_clamp\""
+                   : "\"spectral_clamp_0.5625_to_64\"")
+           << ",\n"
+           << "    \"splat_support\": "
+           << (dev38_fastgs
+                   ? "\"opacity_dependent_alpha_1_over_255\""
+                   : "\"fixed_2.5_sigma\"")
+           << ",\n"
+           << "    \"maximum_fragment_alpha\": "
+           << (dev38_fastgs ? "0.999" : "0.99")
            << ",\n"
            << "    \"adam_epsilon\": "
            << (mixed_epsilon

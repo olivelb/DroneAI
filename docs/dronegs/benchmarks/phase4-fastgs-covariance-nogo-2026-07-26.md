@@ -4,6 +4,12 @@ Date: 2026-07-26
 Base version: `0.5.0-dev.32`
 Disposition: rejected; no implementation retained
 
+> Superseded by dev.38 for the broader hypothesis. The covariance-only patch
+> remains correctly rejected; dev.38 succeeds only after covariance, FOV
+> clamping, opacity-dependent support, alpha ceiling, and backward behavior
+> are changed together. See
+> `phase4-fastgs-compatibility-parity-dev38-2026-07-26.md`.
+
 ## Hypothesis
 
 After local-KNN initialization, DroneGS and the pinned LichtFeld/FastGS

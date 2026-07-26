@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.38 - Coupled FastGS compatibility and quality parity
+
+- Add a gated FastGS-compatible raster profile that jointly implements
+  `0.3 I` projected covariance dilation, extended-FOV Jacobian clamping,
+  opacity-dependent support at the `1/255` alpha threshold, a `0.999`
+  fragment-alpha ceiling, and the corresponding analytical backward path.
+- Add a strict binary little-endian Gaussian PLY reader and `--initial-ply`
+  option so renderer and learned-parameter differences can be measured
+  independently on the exact same camera split.
+- Recover `+3.6785 dB` by rendering the pinned LichtFeld PLY through the
+  coherent dev.38 profile instead of DroneGS's historical bounded renderer.
+- Reach `19.15709 dB / 0.440746 SSIM` after 1,200 Albagnac steps, exceeding
+  the exact LichtFeld PLY oracle on the identical 172-view split
+  (`18.90036 dB / 0.428674`) by `+0.25673 dB / +0.012072`.
+- Improve GAJAN over dev.36 by `+1.73765 dB / +0.022099 SSIM` and Savères by
+  `+0.03032 dB / +0.002640`, using only existing COLMAP outputs.
+- Record the FastGS adaptation in the GPL provenance register. The new profile
+  is architecture-independent and retains automatic recent-NVIDIA CUDA
+  selection.
+
 ## 0.5.0-dev.37 - Compensated anti-aliasing ablation
 
 - Add opt-in screen-space covariance filters of `0.05`, `0.15`, and `0.30`

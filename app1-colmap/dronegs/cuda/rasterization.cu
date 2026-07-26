@@ -23,6 +23,10 @@
  * described by AbsGS (arXiv:2404.10484). The Apache-2.0 gsplat implementation
  * was inspected at 2b902ff1891fc7f73f0f9b8c8bfc932cef2b198c to validate the
  * per-pixel absolute-value placement; no gsplat source is linked or vendored.
+ * Dev.38 adapts the coupled FastGS projected-covariance dilation, extended
+ * field-of-view Jacobian clamp, opacity-dependent support, fragment-alpha
+ * ceiling, and matching smooth backward behavior from pinned LichtFeld
+ * revision 1004c0841a3776e3f67866ff34101fbc9677397f.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -58,6 +62,8 @@ constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
 constexpr float gaussian_support = 2.5F;
 constexpr float maximum_splat_color = 4.0F;
+constexpr float fastgs_dilation = 0.3F;
+constexpr float fastgs_maximum_fragment_alpha = 0.999F;
 constexpr float dev37_antialias_filter_variance_005 = 0.05F;
 constexpr float dev37_antialias_filter_variance_015 = 0.15F;
 constexpr float dev37_antialias_filter_variance_030 = 0.30F;
@@ -379,7 +385,8 @@ void validate_inputs(
 __device__ bool project_covariance_device(
     const Gaussian& gaussian, DeviceRasterCamera camera,
     float camera_x, float camera_y, float camera_z,
-    float antialias_filter_variance,
+    float opacity, float antialias_filter_variance,
+    bool fastgs_compatibility,
     float& radius_x, float& radius_y,
     float& conic_xx, float& conic_xy, float& conic_yy,
     float& compensation) {
@@ -425,14 +432,32 @@ __device__ bool project_covariance_device(
         }
     }
     const float inverse_depth = 1.0F / camera_z;
-    const float inverse_depth_squared =
-        inverse_depth * inverse_depth;
+    const float normalized_x = camera_x * inverse_depth;
+    const float normalized_y = camera_y * inverse_depth;
+    const float projected_x = fastgs_compatibility
+        ? fminf(
+              (1.15F * static_cast<float>(camera.width) - camera.cx) /
+                  camera.fx,
+              fmaxf(
+                  (-0.15F * static_cast<float>(camera.width) - camera.cx) /
+                      camera.fx,
+                  normalized_x))
+        : normalized_x;
+    const float projected_y = fastgs_compatibility
+        ? fminf(
+              (1.15F * static_cast<float>(camera.height) - camera.cy) /
+                  camera.fy,
+              fmaxf(
+                  (-0.15F * static_cast<float>(camera.height) - camera.cy) /
+                      camera.fy,
+                  normalized_y))
+        : normalized_y;
     const float jacobian_xx = camera.fx * inverse_depth;
     const float jacobian_xz =
-        -camera.fx * camera_x * inverse_depth_squared;
+        -camera.fx * projected_x * inverse_depth;
     const float jacobian_yy = camera.fy * inverse_depth;
     const float jacobian_yz =
-        -camera.fy * camera_y * inverse_depth_squared;
+        -camera.fy * projected_y * inverse_depth;
     float projected_row_x[3]{};
     float projected_row_y[3]{};
     for (std::uint32_t column = 0U; column < 3U; ++column) {
@@ -464,43 +489,48 @@ __device__ bool project_covariance_device(
         !isfinite(covariance_yy)) {
         return false;
     }
-    const float trace = covariance_xx + covariance_yy;
-    const float difference = covariance_xx - covariance_yy;
-    const float spectral_gap = sqrtf(fmaxf(
-        0.0F,
-        difference * difference +
-            4.0F * covariance_xy * covariance_xy));
-    const float eigenvalue_maximum =
-        0.5F * (trace + spectral_gap);
-    const float eigenvalue_minimum =
-        0.5F * (trace - spectral_gap);
-    const float clamped_maximum = fminf(
-        maximum_projected_variance,
-        fmaxf(minimum_projected_variance, eigenvalue_maximum));
-    const float clamped_minimum = fminf(
-        maximum_projected_variance,
-        fmaxf(minimum_projected_variance, eigenvalue_minimum));
-    if (spectral_gap > 1.0e-8F) {
-        const float projector_xx =
-            (covariance_xx - eigenvalue_minimum) / spectral_gap;
-        const float projector_xy =
-            covariance_xy / spectral_gap;
-        const float projector_yy =
-            (covariance_yy - eigenvalue_minimum) / spectral_gap;
-        const float clamped_gap =
-            clamped_maximum - clamped_minimum;
-        covariance_xx =
-            clamped_minimum + clamped_gap * projector_xx;
-        covariance_xy = clamped_gap * projector_xy;
-        covariance_yy =
-            clamped_minimum + clamped_gap * projector_yy;
+    if (fastgs_compatibility) {
+        covariance_xx += fastgs_dilation;
+        covariance_yy += fastgs_dilation;
     } else {
-        const float variance = fminf(
+        const float trace = covariance_xx + covariance_yy;
+        const float difference = covariance_xx - covariance_yy;
+        const float spectral_gap = sqrtf(fmaxf(
+            0.0F,
+            difference * difference +
+                4.0F * covariance_xy * covariance_xy));
+        const float eigenvalue_maximum =
+            0.5F * (trace + spectral_gap);
+        const float eigenvalue_minimum =
+            0.5F * (trace - spectral_gap);
+        const float clamped_maximum = fminf(
             maximum_projected_variance,
-            fmaxf(minimum_projected_variance, 0.5F * trace));
-        covariance_xx = variance;
-        covariance_xy = 0.0F;
-        covariance_yy = variance;
+            fmaxf(minimum_projected_variance, eigenvalue_maximum));
+        const float clamped_minimum = fminf(
+            maximum_projected_variance,
+            fmaxf(minimum_projected_variance, eigenvalue_minimum));
+        if (spectral_gap > 1.0e-8F) {
+            const float projector_xx =
+                (covariance_xx - eigenvalue_minimum) / spectral_gap;
+            const float projector_xy =
+                covariance_xy / spectral_gap;
+            const float projector_yy =
+                (covariance_yy - eigenvalue_minimum) / spectral_gap;
+            const float clamped_gap =
+                clamped_maximum - clamped_minimum;
+            covariance_xx =
+                clamped_minimum + clamped_gap * projector_xx;
+            covariance_xy = clamped_gap * projector_xy;
+            covariance_yy =
+                clamped_minimum + clamped_gap * projector_yy;
+        } else {
+            const float variance = fminf(
+                maximum_projected_variance,
+                fmaxf(minimum_projected_variance, 0.5F * trace));
+            covariance_xx = variance;
+            covariance_xy = 0.0F;
+            covariance_yy = variance;
+        }
     }
     const float original_determinant =
         covariance_xx * covariance_yy -
@@ -509,19 +539,33 @@ __device__ bool project_covariance_device(
         original_determinant <= 1.0e-12F) {
         return false;
     }
-    covariance_xx += antialias_filter_variance;
-    covariance_yy += antialias_filter_variance;
+    if (!fastgs_compatibility) {
+        covariance_xx += antialias_filter_variance;
+        covariance_yy += antialias_filter_variance;
+    }
     const float determinant =
         covariance_xx * covariance_yy -
         covariance_xy * covariance_xy;
     if (!isfinite(determinant) || determinant <= 1.0e-12F) {
         return false;
     }
-    compensation = antialias_filter_variance > 0.0F
+    compensation = !fastgs_compatibility &&
+            antialias_filter_variance > 0.0F
         ? sqrtf(fmaxf(1.0e-8F, original_determinant / determinant))
         : 1.0F;
-    radius_x = gaussian_support * sqrtf(covariance_xx);
-    radius_y = gaussian_support * sqrtf(covariance_yy);
+    if (fastgs_compatibility) {
+        const float power_threshold =
+            logf(opacity / alpha_minimum_contribution);
+        const float support =
+            sqrtf(fmaxf(0.0F, 2.0F * power_threshold));
+        radius_x =
+            fmaxf(support * sqrtf(covariance_xx) - 0.5F, 0.0F);
+        radius_y =
+            fmaxf(support * sqrtf(covariance_yy) - 0.5F, 0.0F);
+    } else {
+        radius_x = gaussian_support * sqrtf(covariance_xx);
+        radius_y = gaussian_support * sqrtf(covariance_yy);
+    }
     conic_xx = covariance_yy / determinant;
     conic_xy = -covariance_xy / determinant;
     conic_yy = covariance_xx / determinant;
@@ -607,7 +651,8 @@ __global__ void project_alpha_splats_kernel(
     float* projected_sh_basis, std::uint64_t* depth_keys,
     unsigned long long* visible_splats,
     std::uint32_t active_sh_degree,
-    float antialias_filter_variance) {
+    float antialias_filter_variance,
+    bool fastgs_compatibility) {
     const std::uint32_t index =
         blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= gaussian_count) {
@@ -634,6 +679,8 @@ __global__ void project_alpha_splats_kernel(
     if (camera_z > minimum_depth && isfinite(camera_z)) {
         const float x = camera.fx * camera_x / camera_z + camera.cx;
         const float y = camera.fy * camera_y / camera_z + camera.cy;
+        const float opacity =
+            1.0F / (1.0F + expf(-gaussian.opacity_logit));
         float radius_x = 0.0F;
         float radius_y = 0.0F;
         float conic_xx = 0.0F;
@@ -643,11 +690,14 @@ __global__ void project_alpha_splats_kernel(
         const bool valid_covariance =
             project_covariance_device(
                 gaussian, camera, camera_x, camera_y, camera_z,
-                antialias_filter_variance,
+                opacity, antialias_filter_variance,
+                fastgs_compatibility,
                 radius_x, radius_y, conic_xx, conic_xy, conic_yy,
                 compensation);
         const bool visible =
             isfinite(x) && isfinite(y) && valid_covariance &&
+            (!fastgs_compatibility ||
+             opacity >= alpha_minimum_contribution) &&
             x + radius_x >= 0.0F && y + radius_y >= 0.0F &&
             x - radius_x < static_cast<float>(camera.width) &&
             y - radius_y < static_cast<float>(camera.height);
@@ -680,8 +730,7 @@ __global__ void project_alpha_splats_kernel(
                 .conic_xx = conic_xx,
                 .conic_xy = conic_xy,
                 .conic_yy = conic_yy,
-                .opacity =
-                    1.0F / (1.0F + expf(-gaussian.opacity_logit)),
+                .opacity = opacity,
                 .compensation = compensation,
                 .color = {color[0], color[1], color[2]},
             };
@@ -778,6 +827,7 @@ __global__ void render_alpha_tiles_kernel(
     const std::uint32_t* record_indices,
     const std::uint64_t* tile_starts, const std::uint64_t* tile_ends,
     std::uint32_t width, std::uint32_t height,
+    float maximum_fragment_alpha,
     float background_r, float background_g, float background_b,
     float* rgb, float* transmittance, DeviceRenderStats* stats) {
     constexpr std::uint32_t threads_per_tile =
@@ -840,7 +890,7 @@ __global__ void render_alpha_tiles_kernel(
                 const float gaussian_weight =
                     gaussian_weight_device(splat, delta_x, delta_y);
                 const float alpha = fminf(
-                    alpha_maximum,
+                    maximum_fragment_alpha,
                     splat.opacity * splat.compensation *
                         gaussian_weight);
                 if (alpha < alpha_minimum_contribution) {
@@ -881,6 +931,7 @@ __global__ void backward_alpha_tiles_kernel(
     const std::uint32_t* record_indices,
     const std::uint64_t* tile_starts, const std::uint64_t* tile_ends,
     std::uint32_t width, std::uint32_t height,
+    float maximum_fragment_alpha,
     float background_r, float background_g, float background_b,
     const float* image_gradient, float* dc_gradient,
     float* sh_rest_gradient, std::uint32_t active_sh_degree,
@@ -955,7 +1006,7 @@ __global__ void backward_alpha_tiles_kernel(
                 const float gaussian_weight =
                     gaussian_weight_device(splat, delta_x, delta_y);
                 const float alpha = fminf(
-                    alpha_maximum,
+                    maximum_fragment_alpha,
                     splat.opacity * splat.compensation *
                         gaussian_weight);
                 if (alpha < alpha_minimum_contribution) {
@@ -1022,7 +1073,7 @@ __global__ void backward_alpha_tiles_kernel(
             gaussian_weight_device(splat, delta_x, delta_y);
         const float raw_alpha =
             splat.opacity * splat.compensation * gaussian_weight;
-        const float alpha = fminf(alpha_maximum, raw_alpha);
+        const float alpha = fminf(maximum_fragment_alpha, raw_alpha);
         if (alpha < alpha_minimum_contribution) {
             continue;
         }
@@ -1074,7 +1125,7 @@ __global__ void backward_alpha_tiles_kernel(
                 upstream[channel] * transmittance_before *
                 (splat.color[channel] - tail[channel]);
         }
-        if (raw_alpha < alpha_maximum) {
+        if (raw_alpha < maximum_fragment_alpha) {
             atomicAdd(
                 &opacity_logit_gradient[source],
                 alpha_gradient * gaussian_weight *
@@ -1141,6 +1192,7 @@ __global__ void backward_projected_geometry_kernel(
     const Gaussian* gaussians, std::uint32_t gaussian_count,
     DeviceRasterCamera camera,
     float antialias_filter_variance,
+    bool fastgs_compatibility,
     const float* projected_geometry_gradient,
     float* xyz_gradient, float* log_scale_gradient,
     float* rotation_gradient) {
@@ -1245,13 +1297,33 @@ __global__ void backward_projected_geometry_kernel(
         inverse_depth * inverse_depth;
     const float inverse_depth_cubed =
         inverse_depth_squared * inverse_depth;
+    const float normalized_x = camera_x * inverse_depth;
+    const float normalized_y = camera_y * inverse_depth;
+    const float projected_x = fastgs_compatibility
+        ? fminf(
+              (1.15F * static_cast<float>(camera.width) - camera.cx) /
+                  camera.fx,
+              fmaxf(
+                  (-0.15F * static_cast<float>(camera.width) - camera.cx) /
+                      camera.fx,
+                  normalized_x))
+        : normalized_x;
+    const float projected_y = fastgs_compatibility
+        ? fminf(
+              (1.15F * static_cast<float>(camera.height) - camera.cy) /
+                  camera.fy,
+              fmaxf(
+                  (-0.15F * static_cast<float>(camera.height) - camera.cy) /
+                      camera.fy,
+                  normalized_y))
+        : normalized_y;
     const float jacobian[6]{
         camera.fx * inverse_depth,
         0.0F,
-        -camera.fx * camera_x * inverse_depth_squared,
+        -camera.fx * projected_x * inverse_depth,
         0.0F,
         camera.fy * inverse_depth,
-        -camera.fy * camera_y * inverse_depth_squared,
+        -camera.fy * projected_y * inverse_depth,
     };
     float projected_factor[6]{};
     for (std::uint32_t row = 0U; row < 2U; ++row) {
@@ -1317,6 +1389,11 @@ __global__ void backward_projected_geometry_kernel(
         clamped_xy = 0.0F;
         clamped_yy = variance;
     }
+    if (fastgs_compatibility) {
+        clamped_xx = covariance_xx + fastgs_dilation;
+        clamped_xy = covariance_xy;
+        clamped_yy = covariance_yy + fastgs_dilation;
+    }
     const float original_determinant =
         clamped_xx * clamped_yy -
         clamped_xy * clamped_xy;
@@ -1325,9 +1402,11 @@ __global__ void backward_projected_geometry_kernel(
         return;
     }
     const float blurred_xx =
-        clamped_xx + antialias_filter_variance;
+        clamped_xx +
+        (fastgs_compatibility ? 0.0F : antialias_filter_variance);
     const float blurred_yy =
-        clamped_yy + antialias_filter_variance;
+        clamped_yy +
+        (fastgs_compatibility ? 0.0F : antialias_filter_variance);
     const float determinant =
         blurred_xx * blurred_yy -
         clamped_xy * clamped_xy;
@@ -1338,7 +1417,8 @@ __global__ void backward_projected_geometry_kernel(
     const float conic_xy = -clamped_xy / determinant;
     const float conic_yy = blurred_xx / determinant;
     const float compensation =
-        antialias_filter_variance > 0.0F
+        !fastgs_compatibility &&
+                antialias_filter_variance > 0.0F
         ? sqrtf(fmaxf(
               1.0e-8F, original_determinant / determinant))
         : 1.0F;
@@ -1381,7 +1461,8 @@ __global__ void backward_projected_geometry_kernel(
         symmetric_clamped_xy_gradient;
     clamped_covariance_gradient[2] =
         symmetric_clamped_xy_gradient;
-    if (antialias_filter_variance > 0.0F &&
+    if (!fastgs_compatibility &&
+        antialias_filter_variance > 0.0F &&
         compensation_gradient != 0.0F) {
         const float conic_determinant =
             conic_xx * conic_yy - conic_xy * conic_xy;
@@ -1407,7 +1488,12 @@ __global__ void backward_projected_geometry_kernel(
     }
 
     float covariance_gradient[4]{};
-    if (spectral_gap > 1.0e-8F) {
+    if (fastgs_compatibility) {
+        covariance_gradient[0] = clamped_covariance_gradient[0];
+        covariance_gradient[1] = clamped_covariance_gradient[1];
+        covariance_gradient[2] = clamped_covariance_gradient[2];
+        covariance_gradient[3] = clamped_covariance_gradient[3];
+    } else if (spectral_gap > 1.0e-8F) {
         const float angle =
             0.5F * atan2f(
                 2.0F * covariance_xy,
@@ -2679,7 +2765,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_gaussians.data(), gaussian_count, device_camera,
         device_records.data(), device_projected_sh_basis.data(),
         device_depth_keys.data(),
-        device_visible_splats.data(), active_sh_degree, 0.0F);
+        device_visible_splats.data(), active_sh_degree, 0.0F, false);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
     sort_projected_records(
@@ -2756,6 +2842,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_sorted_record_indices.data(),
         device_tile_starts.data(), device_tile_ends.data(),
         camera.width, camera.height,
+        alpha_maximum,
         background[0], background[1], background[2],
         device_rgb.data(), device_transmittance.data(), device_stats.data());
     require_cuda(cudaGetLastError(), "launch tiled alpha renderer");
@@ -2795,6 +2882,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             device_sorted_record_indices.data(),
             device_tile_starts.data(), device_tile_ends.data(),
             camera.width, camera.height,
+            alpha_maximum,
             background[0], background[1], background[2],
             device_image_gradient->data(), device_dc_gradient->data(),
             device_sh_rest_gradient->data(), active_sh_degree,
@@ -2805,7 +2893,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         backward_projected_geometry_kernel<<<
             projection_blocks, threads_per_block>>>(
             device_gaussians.data(), gaussian_count, device_camera,
-            0.0F,
+            0.0F, false,
             device_projected_geometry_gradient->data(),
             device_xyz_gradient->data(),
             device_log_scale_gradient->data(),
@@ -3025,7 +3113,10 @@ static MrnfLearningRates mrnf_learning_rates(
                 dev37_staged_rotation008_absgrad050_aa015 ||
         profile ==
             MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030;
+                dev37_staged_rotation008_absgrad050_aa030 ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
@@ -3063,7 +3154,10 @@ static MrnfLearningRates mrnf_learning_rates(
                 dev37_staged_rotation008_absgrad050_aa015 ||
         profile ==
             MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030;
+                dev37_staged_rotation008_absgrad050_aa030 ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs;
     const bool staged_rotation004 =
         profile ==
         MrnfOptimizerProfile::
@@ -3084,7 +3178,10 @@ static MrnfLearningRates mrnf_learning_rates(
                 dev37_staged_rotation008_absgrad050_aa015 ||
         profile ==
             MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030;
+                dev37_staged_rotation008_absgrad050_aa030 ||
+        profile ==
+            MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs;
     const bool staged_rotation =
         staged_rotation004 || staged_rotation008;
     const bool lichtfeld_rotation =
@@ -3256,6 +3353,10 @@ struct OrderedAlphaTrainingContext::Impl {
           antialias_filter_variance(
               antialias_filter_variance_for_profile(
                   requested_optimizer_profile)),
+          fastgs_compatibility(
+              requested_optimizer_profile ==
+              MrnfOptimizerProfile::
+                  dev38_staged_rotation008_absgrad050_fastgs),
           maximum_active_sh_degree(requested_maximum_sh_degree),
           sh_degree_interval(requested_sh_degree_interval),
           noise_seed(requested_noise_seed) {
@@ -3522,7 +3623,8 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussians.data(), gaussian_items, device_camera,
             records.data(), projected_sh_basis.data(), depth_keys.data(),
             visible_splats.data(),
-            active_sh_degree, antialias_filter_variance);
+            active_sh_degree, antialias_filter_variance,
+            fastgs_compatibility);
         require_cuda(
             cudaGetLastError(),
             "launch persistent alpha projection");
@@ -3593,6 +3695,9 @@ struct OrderedAlphaTrainingContext::Impl {
             sorted_records.data(), sorted_record_indices.data(),
             tile_starts.data(), tile_ends.data(),
             camera.width, camera.height,
+            fastgs_compatibility
+                ? fastgs_maximum_fragment_alpha
+                : alpha_maximum,
             0.0F, 0.0F, 0.0F,
             rgb.data(), transmittance.data(), nullptr);
         require_cuda(
@@ -3729,6 +3834,9 @@ struct OrderedAlphaTrainingContext::Impl {
                 sorted_record_indices.data(),
                 tile_starts.data(), tile_ends.data(),
                 camera.width, camera.height,
+                fastgs_compatibility
+                    ? fastgs_maximum_fragment_alpha
+                    : alpha_maximum,
                 0.0F, 0.0F, 0.0F,
                 image_gradient.data(), dc_gradient.data(),
                 sh_rest_gradient.data(), active_sh_degree,
@@ -3762,6 +3870,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussian_blocks, block_size>>>(
                 gaussians.data(), gaussian_items, device_camera,
                 antialias_filter_variance,
+                fastgs_compatibility,
                 projected_geometry_gradient.data(),
                 xyz_gradient.data(), log_scale_gradient.data(),
                 rotation_gradient.data());
@@ -3922,7 +4031,10 @@ struct OrderedAlphaTrainingContext::Impl {
                                    dev37_staged_rotation008_absgrad050_aa015 ||
                            optimizer_profile ==
                                MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa030
+                                   dev37_staged_rotation008_absgrad050_aa030 ||
+                           optimizer_profile ==
+                               MrnfOptimizerProfile::
+                                   dev38_staged_rotation008_absgrad050_fastgs
                        ? 0.50F
                        : 0.0F);
         std::vector<Gaussian> host_gaussians(previous_count);
@@ -4247,6 +4359,7 @@ struct OrderedAlphaTrainingContext::Impl {
     MrnfOptimizerProfile optimizer_profile =
         MrnfOptimizerProfile::dronegs_dev16;
     float antialias_filter_variance = 0.0F;
+    bool fastgs_compatibility = false;
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
     std::optional<MrnfOptimizerTelemetry> latest_telemetry;

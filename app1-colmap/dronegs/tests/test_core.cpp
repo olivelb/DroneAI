@@ -103,11 +103,15 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(dronegs::dataset_fingerprint(scene).starts_with("fnv1a64:"),
           "fingerprint kind mismatch");
 
-    const auto gaussians = dronegs::initialize_fixed_topology(scene);
+    auto gaussians = dronegs::initialize_fixed_topology(scene);
     check(gaussians.size() == 2, "Gaussian count mismatch");
     check(gaussians.front().rotation[0] == 1.0F, "identity quaternion missing");
     check(gaussians.front().log_scale[0] == 0.0F,
           "MRNF small-cloud scale fallback mismatch");
+    for (std::size_t index = 0U; index < 9U; ++index) {
+        gaussians.front().sh_rest[index] =
+            0.01F * static_cast<float>(index + 1U);
+    }
     const auto output = root.parent_path() / "native-output";
     std::filesystem::create_directories(output);
     const auto ply = output / "point_cloud.ply";
@@ -130,6 +134,23 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "PLY degree-1 SH layout mismatch");
     check(header.find("property float rot_3\n") != std::string::npos,
           "PLY rotation layout mismatch");
+    const auto loaded = dronegs::read_gaussian_ply(ply);
+    check(loaded.sh_degree == 1U, "PLY reader SH degree mismatch");
+    check(loaded.gaussians.size() == gaussians.size(),
+          "PLY reader Gaussian count mismatch");
+    check(loaded.gaussians.front().xyz == gaussians.front().xyz,
+          "PLY reader position mismatch");
+    check(loaded.gaussians.front().dc == gaussians.front().dc,
+          "PLY reader DC mismatch");
+    check(loaded.gaussians.front().log_scale ==
+              gaussians.front().log_scale,
+          "PLY reader scale mismatch");
+    check(loaded.gaussians.front().rotation ==
+              gaussians.front().rotation,
+          "PLY reader rotation mismatch");
+    check(loaded.gaussians.front().sh_rest[8] ==
+              gaussians.front().sh_rest[8],
+          "PLY reader SH-rest mismatch");
 
     dronegs::Options options{
         .data_path = root,
@@ -181,6 +202,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         (std::istreambuf_iterator<char>(manifest)), std::istreambuf_iterator<char>());
     check(manifest_text.find("\"contract_version\": 1") != std::string::npos,
           "manifest contract version missing");
+    check(manifest_text.find("\"initial_ply\": null") != std::string::npos,
+          "manifest initial PLY provenance missing");
     check(manifest_text.find("\"git_revision\": null") == std::string::npos,
           "manifest Git revision missing");
     check(manifest_text.find("\"image_cache_hits\": 3") != std::string::npos,
@@ -306,8 +329,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--test-every", "8",
         "--save-eval-images", "1",
         "--sh-degree-interval", "250",
+        "--initial-ply",
+        (data.parent_path() / "native-output" / "point_cloud.ply").string(),
         "--optimizer-profile",
-        "dev37-staged-rotation008-absgrad050-aa005",
+        "dev38-staged-rotation008-absgrad050-fastgs",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -322,9 +347,12 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "CLI SH interval mismatch");
     check(
         tuned.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa005",
+            "dev38-staged-rotation008-absgrad050-fastgs",
         "CLI optimizer profile mismatch");
-    values.resize(values.size() - 14U);
+    check(tuned.initial_ply ==
+              data.parent_path() / "native-output" / "point_cloud.ply",
+          "CLI initial PLY mismatch");
+    values.resize(values.size() - 16U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

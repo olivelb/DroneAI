@@ -18,6 +18,7 @@ struct Options {
     std::filesystem::path data_path;
     std::filesystem::path output_path;
     std::filesystem::path run_manifest;
+    std::filesystem::path initial_ply;
     std::uint64_t iterations = 0;
     std::string strategy;
     std::uint32_t sh_degree = 0;

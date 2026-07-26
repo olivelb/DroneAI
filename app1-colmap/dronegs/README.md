@@ -7,14 +7,18 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.37` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.38` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
 per-pixel absolute projected-center gradients to MRNF's deterministic split
 ranking to recover detail hidden by signed gradient cancellation.
 Dev.37 adds opt-in compensated screen-space filter ablations with exact
-covariance/opacity gradients. A
+covariance/opacity gradients. Dev.38 adds a coupled FastGS compatibility
+profile covering `0.3 I` projected covariance dilation, extended-FOV
+Jacobian clamping, opacity-dependent support, the `0.999` fragment-alpha
+ceiling, and matching analytical backward. It also imports binary Gaussian
+PLY models for direct same-split renderer/model cross-evaluation. A
 balanced local KD tree gives each COLMAP point an isotropic scale adapted to
 its local density and bounded by robust scene extents. A local build detects
 its visible NVIDIA GPU through CMake's `native` mode; the `portable` preset
@@ -22,6 +26,8 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
+- optionally initializes from an existing binary 3DGS PLY through
+  `--initial-ply`, preserving DC, SH, opacity, scale, and quaternion fields;
 - initializes splat scales from the two nearest COLMAP neighbours instead of
   one scene-wide spacing estimate;
 - keeps SH color and gradients live up to four while display output remains
@@ -62,7 +68,8 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   profiles, and three post-KNN opacity-rate points, with dev16 retained as the
   command-line default, `calibrated-dc-0.010-opacity-0.096` recommended for
   balanced quality, and dev.34 scale/rotation profiles available for opt-in
-  structure-oriented training;
+  structure-oriented training; dev.38 adds the selected FastGS-compatible
+  quality-parity profile;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -99,12 +106,13 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 - provides direct CPU objective/metric oracles, finite-difference DSSIM and
   renderer gradient tests, and end-to-end convergence tests.
 
-It is not a LichtFeld replacement yet. The experimental training path now uses
+It is not the production default yet. The experimental training path now uses
 front-to-back anisotropic ordered-alpha composition, while the additive path
 remains only as a convergence control. Persistent training now optimizes
 position, log-scale, and normalized rotation in addition to DC and opacity.
 Topology, weighted Gumbel selection, and edge guidance now run, but
-checkpoint/resume and measured quality/speed parity remain absent. Only
+checkpoint/resume, operational acceptance, and full speed/VRAM parity remain
+open. Same-split Albagnac PSNR/SSIM parity is reached in dev.38. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
 measured. Dev.21 swept DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
 opacity while retaining dev16 geometry. Dev.22 replays dev16, DC=0.010, and

@@ -21,11 +21,16 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.37.
+- Current development version: 0.5.0-dev.38.
 - Production backend: LichtFeld.
 - DroneGS native backend: experimental anisotropic ordered-alpha trainer with
   reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
   PSNR/SSIM and exact-pair external LPIPS; opt-in only.
+- Same-split Albagnac quality parity sub-gate completed: dev.38 at 1,200
+  steps reaches 19.15709 dB / 0.440746 SSIM versus 18.90036 dB /
+  0.428674 for the exact pinned LichtFeld PLY rendered by the same dev.38
+  evaluator. The older 21.06855 / 0.631048 LichtFeld number uses a different
+  held-out image ordering and is not a same-split comparison.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
@@ -79,8 +84,10 @@ Each completed phase has one focused commit and an annotated
   `scene_index % test_every == 0` split matches LichtFeld, is excluded from
   every training schedule, and reports GPU PSNR plus 11x11 valid SSIM.
 - Albagnac reserves 172 of 1,376 views. DroneGS improves from 14.0631 to
-  17.1212 dB and from 0.1811 to 0.2419 SSIM over 500 steps, but the pinned
-  LichtFeld control reaches 21.0686 dB and 0.6310 SSIM on the same split.
+  17.1212 dB and from 0.1811 to 0.2419 SSIM over 500 steps. The historical
+  pinned LichtFeld report reaches 21.0686 dB and 0.6310 SSIM on a different
+  172-view ordering; dev.38 supersedes that early cross-run comparison with
+  direct same-model/same-camera/same-split PLY evaluation.
 - Analytical DSSIM is complete. The atomics-free CUDA image gradient passes
   eight direct finite differences against the same CPU objective used by the
   trainer. On Albagnac it improves SSIM on 171 of 172 held-out views.

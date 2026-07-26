@@ -47,10 +47,11 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.37\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.38\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
+        "[--initial-ply PATH] "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--save-eval-images 0|1] "
@@ -74,7 +75,8 @@ const char* help_text() {
         "dev36-staged-rotation008-absgrad050|"
         "dev37-staged-rotation008-absgrad050-aa005|"
         "dev37-staged-rotation008-absgrad050-aa015|"
-        "dev37-staged-rotation008-absgrad050-aa030]\n";
+        "dev37-staged-rotation008-absgrad050-aa030|"
+        "dev38-staged-rotation008-absgrad050-fastgs]\n";
 }
 
 Options parse_options(int argc, char** argv) {
@@ -87,6 +89,7 @@ Options parse_options(int argc, char** argv) {
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
         "--optimizer-profile", "--sh-degree-interval",
+        "--initial-ply",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -113,6 +116,9 @@ Options parse_options(int argc, char** argv) {
     options.data_path = values.at("--data-path");
     options.output_path = values.at("--output-path");
     options.run_manifest = values.at("--run-manifest");
+    if (values.contains("--initial-ply")) {
+        options.initial_ply = values.at("--initial-ply");
+    }
     options.iterations = parse_unsigned(values.at("--iter"), "--iter");
     options.strategy = values.at("--strategy");
     options.sh_degree = parse_u32(values.at("--sh-degree"), "--sh-degree");
@@ -242,7 +248,9 @@ void validate_options(const Options& options) {
         options.optimizer_profile !=
             "dev37-staged-rotation008-absgrad050-aa015" &&
         options.optimizer_profile !=
-            "dev37-staged-rotation008-absgrad050-aa030") {
+            "dev37-staged-rotation008-absgrad050-aa030" &&
+        options.optimizer_profile !=
+            "dev38-staged-rotation008-absgrad050-fastgs") {
         throw std::invalid_argument(
             "--optimizer-profile must be dronegs-dev16, "
             "lichtfeld-absolute, lichtfeld-dc-only, or "
@@ -254,6 +262,11 @@ void validate_options(const Options& options) {
     const auto manifest = std::filesystem::absolute(options.run_manifest).lexically_normal();
     if (!std::filesystem::is_directory(data)) {
         throw std::invalid_argument("--data-path must be an existing directory");
+    }
+    if (!options.initial_ply.empty() &&
+        !std::filesystem::is_regular_file(options.initial_ply)) {
+        throw std::invalid_argument(
+            "--initial-ply must be an existing regular file");
     }
     if (is_descendant_or_equal(output, data) || is_descendant_or_equal(data, output)) {
         throw std::invalid_argument("output and source dataset must be separate trees");

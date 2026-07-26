@@ -776,6 +776,24 @@ int main() {
             dronegs::MrnfOptimizerProfile::
                 dev37_staged_rotation008_absgrad050_aa030,
             8.0e-3F, "dev37 antialias 0.30");
+        require_staged_rotation(
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs,
+            8.0e-3F, "dev38 FastGS compatibility");
+        dronegs::OrderedAlphaTrainingContext fastgs_context(
+            rate_fixture, 32U * 32U, 2U, 8U,
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs);
+        const auto fastgs_quality = fastgs_context.evaluate_quality(
+            quality_camera, split_target.data(), split_target.size());
+        const auto fastgs_loss = fastgs_context.train_step(
+            quality_camera, split_target.data(), split_target.size());
+        if (!std::isfinite(fastgs_quality.psnr) ||
+            !std::isfinite(fastgs_quality.ssim) ||
+            !std::isfinite(fastgs_loss)) {
+            throw std::runtime_error(
+                "dev38 FastGS compatibility produced non-finite output");
+        }
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);

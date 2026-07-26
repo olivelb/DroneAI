@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.37 compensated-antialias AbsGrad-guided "
+            << "DroneGS 0.5.0-dev.38 FastGS-compatible AbsGrad-guided "
                "local-KNN portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,8 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.37 uses compensated-antialias "
+        std::cerr << "DroneGS 0.5.0-dev.38 uses an opt-in FastGS-compatible "
+                     "raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color local-KNN "
                      "initialized "
@@ -44,8 +45,9 @@ int main(int argc, char** argv) {
                      "the objective is 0.8 L1 + 0.2 DSSIM and held-out "
                      "PSNR/SSIM and exact-pair external LPIPS are available, "
                      "with progressive SH and a complete deterministic MRNF "
-                     "prune/reuse/noise/decay/compaction lifecycle; quality "
-                     "parity remains open.\n";
+                     "prune/reuse/noise/decay/compaction lifecycle; dev38 "
+                     "reaches same-split Albagnac PSNR/SSIM parity with the "
+                     "pinned LichtFeld model.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -53,10 +55,26 @@ int main(int argc, char** argv) {
         const auto loading_start = clock::now();
         const auto scene = dronegs::load_colmap_scene(options.data_path);
         const auto loading_end = clock::now();
-        if (scene.points.size() > options.max_cap) {
+        if (scene.points.size() > options.max_cap &&
+            options.initial_ply.empty()) {
             throw std::runtime_error("sparse point count exceeds --max-cap");
         }
-        auto gaussians = dronegs::initialize_fixed_topology(scene);
+        auto gaussians = [&]() {
+            if (options.initial_ply.empty()) {
+                return dronegs::initialize_fixed_topology(scene);
+            }
+            auto loaded =
+                dronegs::read_gaussian_ply(options.initial_ply);
+            if (loaded.sh_degree < options.sh_degree) {
+                throw std::runtime_error(
+                    "initial PLY does not contain the requested SH degree");
+            }
+            return std::move(loaded.gaussians);
+        }();
+        if (gaussians.size() > options.max_cap) {
+            throw std::runtime_error(
+                "initial PLY Gaussian count exceeds --max-cap");
+        }
         const auto training = dronegs::train_ordered_mrnf(
             options, scene, gaussians);
 
