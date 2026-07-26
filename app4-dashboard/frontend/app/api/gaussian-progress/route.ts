@@ -11,8 +11,8 @@ const totalIterations = 15_000;
 
 const paths = {
   dronegs: {
-    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000",
-    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000.log",
+    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev40-lfexact-fastgs-recycle-15000",
+    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev40-lfexact-fastgs-recycle-15000.log",
   },
   lichtfeld: {
     run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic",
@@ -20,7 +20,7 @@ const paths = {
   },
   commonEvaluation: {
     dronegs:
-      "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev39-lfexact-prune-15000-cross-eval",
+      "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev40-lfexact-fastgs-recycle-15000-cross-eval",
     lichtfeld:
       "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval",
   },
