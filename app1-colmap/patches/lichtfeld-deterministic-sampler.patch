@@ -133,3 +133,58 @@ index 09b42bb..c0de001 100644
  
          bool shutdown_ = false;
      };
+diff --git a/src/training/strategies/mrnf.cpp b/src/training/strategies/mrnf.cpp
+index 8fa7261..c0de002 100644
+--- a/src/training/strategies/mrnf.cpp
++++ b/src/training/strategies/mrnf.cpp
+@@ -25,6 +25,22 @@
+ namespace lfs::training {
+ 
+     namespace {
++        [[nodiscard]] uint64_t replay_seed(
++            int iteration, uint64_t stream) {
++            const char* raw = std::getenv("LFS_SAMPLER_SEED");
++            if (!raw) {
++                return static_cast<uint64_t>(
++                    std::chrono::high_resolution_clock::now()
++                        .time_since_epoch()
++                        .count());
++            }
++            const auto base = std::strtoull(raw, nullptr, 10);
++            return base ^
++                   (static_cast<uint64_t>(iteration) *
++                    0x9E3779B97F4A7C15ULL) ^
++                   (stream * 0xD1B54A32D192ED03ULL);
++        }
++
+         [[nodiscard]] bool mem_breakdown_enabled() {
+             static const bool enabled = [] {
+                 const char* raw = std::getenv("LFS_MEM_BREAKDOWN");
+@@ -560,8 +576,7 @@ namespace lfs::training {
+             active_mask = _free_mask.slice(0, 0, n).logical_not();
+         }
+ 
+-        auto seed = static_cast<uint64_t>(
+-            std::chrono::high_resolution_clock::now().time_since_epoch().count());
++        const auto seed = replay_seed(iter, 0ULL);
+ 
+         const auto edge_guidance = edge_guidance_factor();
+ 
+@@ -800,15 +815,14 @@ namespace lfs::training {
+             _precomputed_edge_scores = _precomputed_edge_scores.index_select(0, valid_indices).contiguous();
+     }
+ 
+-    void MRNF::inject_noise(int /*iter*/) {
++    void MRNF::inject_noise(int iter) {
+         const size_t n = static_cast<size_t>(_splat_data->size());
+         if (n == 0)
+             return;
+ 
+         const float lr_mean = static_cast<float>(_optimizer->get_param_lr(ParamType::Means));
+ 
+-        auto seed = static_cast<uint64_t>(
+-            std::chrono::high_resolution_clock::now().time_since_epoch().count());
++        const auto seed = replay_seed(iter, 1ULL);
+ 
+         mrnf_strategy::launch_mrnf_noise_injection(
+             _splat_data->means().ptr<float>(),
