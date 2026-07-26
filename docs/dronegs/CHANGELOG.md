@@ -2,6 +2,15 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.43 - Bounded scene-resident RGB8 cache
+
+- Size the decoded RGB8 image cache from the complete resized COLMAP scene
+  instead of fixing it at 256 MiB.
+- Keep a strict 2 GiB ceiling and a 256 MiB floor, preventing the unbounded
+  host-memory behavior previously observed outside DroneGS.
+- Preserve the deterministic camera schedule, JPEG decoder, image bytes,
+  prefetch semantics, CUDA uploads, and training math.
+
 ## 0.5.0-dev.42 - Structural FastGS backend
 
 - Replace the FastGS-math compatibility emulation with scanned 32-instance

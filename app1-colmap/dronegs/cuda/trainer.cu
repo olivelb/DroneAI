@@ -524,6 +524,27 @@ std::vector<FrameDescriptor> make_frame_descriptors(
     return descriptors;
 }
 
+std::size_t host_image_cache_capacity(
+    const std::vector<FrameDescriptor>& descriptors,
+    const Options& options) {
+    constexpr std::size_t minimum_capacity = 256U * 1024U * 1024U;
+    constexpr std::size_t maximum_capacity = 2ULL * 1024U * 1024U * 1024U;
+    std::size_t decoded_bytes = 0U;
+    for (const auto& descriptor : descriptors) {
+        const auto [width, height] =
+            training_dimensions(*descriptor.camera, options);
+        const std::size_t pixels =
+            static_cast<std::size_t>(width) * height;
+        if (pixels > maximum_capacity / 3U ||
+            decoded_bytes > maximum_capacity - pixels * 3U) {
+            return maximum_capacity;
+        }
+        decoded_bytes += pixels * 3U;
+    }
+    return std::clamp(
+        decoded_bytes, minimum_capacity, maximum_capacity);
+}
+
 std::vector<std::size_t> make_training_schedule(
     const std::vector<std::size_t>& training_indices,
     std::uint64_t iterations, std::uint64_t seed) {
@@ -877,9 +898,10 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     if (gaussians.empty() || scene.images.empty()) {
         throw std::invalid_argument("training requires images and initialized Gaussians");
     }
-    constexpr std::size_t host_cache_capacity = 256U * 1024U * 1024U;
     std::size_t maximum_pixels = 0U;
     const auto descriptors = make_frame_descriptors(options, scene, maximum_pixels);
+    const auto host_cache_capacity =
+        host_image_cache_capacity(descriptors, options);
     const auto split = make_dataset_split(
         descriptors.size(), options.test_every);
     ImageCache cache(
@@ -1001,11 +1023,11 @@ TrainingMetrics train_ordered_mrnf(
         throw std::invalid_argument(
             "ordered training requires images and initialized Gaussians");
     }
-    constexpr std::size_t host_cache_capacity =
-        256U * 1024U * 1024U;
     std::size_t maximum_pixels = 0U;
     const auto descriptors =
         make_frame_descriptors(options, scene, maximum_pixels);
+    const auto host_cache_capacity =
+        host_image_cache_capacity(descriptors, options);
     const auto split = make_dataset_split(
         descriptors.size(), options.test_every);
     ImageCache cache(
