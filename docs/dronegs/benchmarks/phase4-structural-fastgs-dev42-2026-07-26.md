@@ -58,6 +58,71 @@ Artifacts:
 
 ## Decision
 
-The port is accepted for continued dev.42 optimization. A 15,000-step run is
-still gated on a second scene and a longer convergence pilot; the prior dev.40
-15,000-step run must not be reused because it was intentionally aborted.
+The port is accepted. The prior dev.40 15,000-step run remains excluded
+because it was intentionally aborted.
+
+## Strict Savères cross-scene pilot
+
+The same 1,000-step contract was rerun on the independent Savères Mavic 3E
+RTK reconstruction (1,066 input views, 134 held-out views).
+
+| Metric | dev.41 cached backward | dev.42 structural FastGS | Change |
+|---|---:|---:|---:|
+| Training | 17.327 s | 14.823 s | -14.4% |
+| Evaluation | 19.290 s | 16.125 s | -16.4% |
+| Wall | 97.542 s | 87.345 s | -10.5% |
+| Final loss | 0.220743 | 0.221071 | +0.000328 |
+| Held-out PSNR | 17.73599 dB | 17.74749 dB | +0.01150 dB |
+| Held-out SSIM | 0.329527 | 0.329526 | -0.000001 |
+| Final Gaussians | 900,315 | 900,324 | +9 |
+
+The speedup therefore generalizes to a second drone scene without a
+meaningful quality change.
+
+Artifacts:
+
+- control:
+  `/home/olivier/droneAI-workspaces/saveres-dronegs-dev41-control-1000-structbench/`
+- dev.42:
+  `/home/olivier/droneAI-workspaces/saveres-dronegs-dev42-fastgs-struct-1000/`
+
+## Albagnac 15,000-step result
+
+The accepted dev.42 backend was trained for the full 15,000-step strict
+Albagnac contract. Its final PLY and the LichtFeld 15k reference PLY were
+rendered by the same frozen DroneGS dev.38 FastGS evaluator on the same 172
+held-out views. LPIPS v0.1/AlexNet used the exact RGB8 target/prediction pairs.
+
+| Metric | DroneGS dev.42 | LichtFeld 15k | DroneGS − LichtFeld |
+|---|---:|---:|---:|
+| Common PSNR ↑ | 21.346178 dB | 21.513821 dB | -0.167643 dB |
+| Common SSIM ↑ | **0.619733** | 0.586497 | **+0.033236** |
+| Common LPIPS ↓ | **0.363027** | 0.371055 | **-0.008028 (-2.16%)** |
+| Final splats | 1,499,885 | 1,500,000 | -115 |
+| Training compute | **988.383 s** | 994.228 s | **-5.845 s (-0.59%)** |
+| Trainer wall | 1,173.139 s | approximately **1,027.052 s** | +146.087 s |
+
+Dev.42 reaches training-compute throughput parity and exceeds LichtFeld on
+SSIM and LPIPS. Strict all-metric parity is not yet reached because PSNR
+remains 0.168 dB lower. End-to-end wall time also remains 14.2% slower: the
+remaining gap is outside the structural raster/backward kernels and is
+dominated by DroneGS data loading/image waiting (175.36 s before and around
+training).
+
+Artifacts:
+
+- training:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000/`
+- common evaluation:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000-cross-eval/`
+- exact-pair LPIPS:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000-cross-eval/evaluation/lpips.json`
+- representative target/render pair:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000-cross-eval/preview.png`
+- live/final dashboard:
+  `http://localhost:3001/gaussian-progress`
+
+The next optimization target is deliberately narrow: recover at least
+0.168 dB PSNR without regressing SSIM/LPIPS, and remove the approximately
+146-second host-side loading/waiting gap without changing the frozen common
+evaluator.

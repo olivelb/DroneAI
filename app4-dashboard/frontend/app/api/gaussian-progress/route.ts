@@ -15,14 +15,14 @@ const paths = {
     log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000.log",
   },
   lichtfeld: {
-    run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic",
-    log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic/stdout.log",
+    run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38",
+    log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38/stdout.log",
   },
   commonEvaluation: {
     dronegs:
       "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000-cross-eval",
     lichtfeld:
-      "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev39-deterministic-cross-eval",
+      "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval",
   },
 };
 
@@ -383,7 +383,9 @@ export async function GET() {
         lpips: lichtfeldCommonLpipsMean,
       },
       preview: {
-        dronegs: await stats(`${paths.dronegs.run}/preview.png`).then(Boolean),
+        dronegs: await stats(
+          `${paths.commonEvaluation.dronegs}/preview.png`,
+        ).then(Boolean),
         lichtfeld: await stats(
           `${paths.commonEvaluation.lichtfeld}/preview.png`,
         ).then(Boolean),
