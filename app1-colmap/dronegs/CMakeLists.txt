@@ -1,5 +1,13 @@
 cmake_minimum_required(VERSION 3.28)
 
+if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(
+        CMAKE_CUDA_ARCHITECTURES
+        "89-real;89-virtual"
+        CACHE STRING
+        "CUDA architectures for DroneGS")
+endif()
+
 project(DroneGS VERSION 0.5.0 LANGUAGES CXX CUDA)
 
 option(DRONEGS_BUILD_TESTS "Build DroneGS native tests" ON)
@@ -12,10 +20,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CUDA_STANDARD 20)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-if(NOT CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "89-real;89-virtual")
-endif()
 
 get_filename_component(DRONEGS_REPOSITORY_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set_property(

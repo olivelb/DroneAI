@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.26
+Project version: 0.5.0-dev.27
 
 ## Decision
 
@@ -171,6 +171,15 @@ trainer image gradient; a CPU oracle plus eight central finite differences
 guard the implementation. The Albagnac result isolates DSSIM from topology:
 SSIM improves by 0.004378 while PSNR is effectively unchanged, leaving MRNF
 growth as the next controlled parity factor.
+Version 0.5.0-dev.27 fixes native Ada code generation and reduces projected
+workspace pressure. CMake now establishes `89-real;89-virtual` before CUDA
+compiler detection. Projection writes 48-byte render records plus separate
+source-indexed SH bases; CUB sorts only the compact records by the existing
+depth/source key. Lightweight kernels reconstruct tile bounds from projected
+center/radius. Rendering stays coalesced in depth order, while backward reads
+SH bases through the recovered source index. This avoids the dev.26
+large-value CUB device-link failure and removes 112 bytes of persistent
+projected-depth capacity per reserved Gaussian.
 Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
 capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
 blending weight and the same weight multiplied by a normalized `1-SSIM` map.

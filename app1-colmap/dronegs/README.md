@@ -7,8 +7,8 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.26` validates the complete MRNF topology lifecycle,
-progressive SH, and exact-pair LPIPS paths on GAJAN, Savères, and Albagnac. It:
+Version `0.5.0-dev.27` adds a native sm_89 compact-record radix sort to the
+validated MRNF, progressive SH, and exact-pair LPIPS paths. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;
@@ -123,16 +123,18 @@ docker run --rm --gpus all \
   --mount type=bind,src="$PWD",dst=/workspace \
   -w /workspace/app1-colmap/dronegs \
   dronegs-dev:0.5.0-dev \
-  bash -lc 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_CUDA_ARCHITECTURES=52 &&
+  bash -lc 'cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release &&
             cmake --build build && ctest --test-dir build --output-on-failure'
 ```
 
-The dev.25 three-scene evidence and dev.26 regression suites use the explicit
-sm_52/compute_52 build above, with PTX JIT on the RTX 4070. CUDA 12.8/CUB
-currently fails native sm_86/sm_89 device link because its large-value radix
-sort exceeds the 48 KiB static shared-memory limit. Do not treat the recorded
-timings as native-Ada evidence; see the dev.26 three-scene benchmark report.
+Dev.27 defaults to `89-real;89-virtual`. The projected depth sort carries
+48-byte render records through CUB while SH bases stay in a separate
+source-indexed buffer. Tile bounds are reconstructed by lightweight coalesced
+kernels. This keeps native Ada device link below the 48 KiB static
+shared-memory limit without a full-record gather and reduces the persistent
+projected-depth workspace by 112 bytes per reserved Gaussian versus dev.26.
+Set `-DCMAKE_CUDA_ARCHITECTURES=52` only to reproduce the dev.25/dev.26
+PTX-JIT baseline.
 
 The optional raster benchmark is built with
 `-DDRONEGS_BUILD_BENCHMARKS=ON` and run as:
@@ -169,7 +171,7 @@ stride.
 Build the isolated CPU evaluator once:
 
 ```bash
-docker build -t dronegs-lpips:0.5.0-dev.26 \
+docker build -t dronegs-lpips:0.5.0-dev.27 \
   -f app1-colmap/dronegs/Dockerfile.lpips .
 ```
 
@@ -180,7 +182,7 @@ COLMAP or the native CUDA trainer:
 docker run --rm \
   --mount type=volume,src=dronegs-torch-cache,dst=/root/.cache/torch \
   --mount type=bind,src=/absolute/run/path,dst=/run \
-  dronegs-lpips:0.5.0-dev.26 \
+  dronegs-lpips:0.5.0-dev.27 \
   --evaluation-dir /run/evaluation \
   --manifest /run/trainer_run.json \
   --device cpu

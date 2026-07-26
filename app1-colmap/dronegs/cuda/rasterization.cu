@@ -9,7 +9,10 @@
  * epsilon/rate ablations, the dev.20 DC-plus-opacity combination, and the
  * dev.21 intermediate-DC sweep, dev.24 progressive SH integration, and
  * dev.25 deterministic prune/reuse/noise/decay/compaction lifecycle are
- * DroneAI additions. The pre-existing DroneGS
+ * DroneAI additions. Dev.27 sorts compact 48-byte render records on native
+ * sm_89 while keeping SH bases in a separate source-indexed buffer, avoiding
+ * CUB's large-value shared-memory limit without a full-record gather. The
+ * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
  * code; this combined translation unit is conservatively distributed under
  * GPL-3.0-or-later from dev.15 onward.
@@ -233,16 +236,62 @@ struct DeviceRasterCamera {
     std::uint32_t tiles_y = 0U;
 };
 
+struct DeviceProjectedSplat {
+    float depth = 0.0F;
+    float x = 0.0F;
+    float y = 0.0F;
+    float radius_x = 0.0F;
+    float radius_y = 0.0F;
+    float conic_xx = 0.0F;
+    float conic_xy = 0.0F;
+    float conic_yy = 0.0F;
+    float opacity = 0.0F;
+    std::array<float, 3> color{};
+};
+
 struct DeviceProjectedRecord {
-    ProjectedAlphaSplat splat{};
-    std::uint32_t minimum_tile_x = 0U;
-    std::uint32_t maximum_tile_x = 0U;
-    std::uint32_t minimum_tile_y = 0U;
-    std::uint32_t maximum_tile_y = 0U;
-    std::uint64_t pair_count = 0U;
+    DeviceProjectedSplat splat{};
 };
 
 static_assert(std::is_trivially_copyable_v<DeviceProjectedRecord>);
+static_assert(sizeof(DeviceProjectedRecord) == 48U);
+
+struct DeviceTileBounds {
+    std::uint32_t minimum_x = 0U;
+    std::uint32_t maximum_x = 0U;
+    std::uint32_t minimum_y = 0U;
+    std::uint32_t maximum_y = 0U;
+};
+
+__device__ bool projected_tile_bounds(
+    const DeviceProjectedSplat& splat, std::uint32_t width,
+    std::uint32_t height, DeviceTileBounds& bounds) {
+    if (!(splat.depth > minimum_depth) || !isfinite(splat.depth)) {
+        return false;
+    }
+    const int pixel_support_x = static_cast<int>(ceilf(splat.radius_x));
+    const int pixel_support_y = static_cast<int>(ceilf(splat.radius_y));
+    const int center_x = static_cast<int>(floorf(splat.x));
+    const int center_y = static_cast<int>(floorf(splat.y));
+    const int minimum_x = max(0, center_x - pixel_support_x);
+    const int maximum_x =
+        min(static_cast<int>(width) - 1, center_x + pixel_support_x);
+    const int minimum_y = max(0, center_y - pixel_support_y);
+    const int maximum_y =
+        min(static_cast<int>(height) - 1, center_y + pixel_support_y);
+    if (minimum_x > maximum_x || minimum_y > maximum_y) {
+        return false;
+    }
+    bounds.minimum_x =
+        static_cast<std::uint32_t>(minimum_x) / alpha_tile_width;
+    bounds.maximum_x =
+        static_cast<std::uint32_t>(maximum_x) / alpha_tile_width;
+    bounds.minimum_y =
+        static_cast<std::uint32_t>(minimum_y) / alpha_tile_height;
+    bounds.maximum_y =
+        static_cast<std::uint32_t>(maximum_y) / alpha_tile_height;
+    return true;
+}
 
 struct DeviceRenderStats {
     unsigned long long evaluated_pairs = 0U;
@@ -451,7 +500,7 @@ __device__ bool project_covariance_device(
 }
 
 __device__ float gaussian_weight_device(
-    const ProjectedAlphaSplat& splat, float delta_x, float delta_y) {
+    const DeviceProjectedSplat& splat, float delta_x, float delta_y) {
     const float squared_distance = fmaxf(
         0.0F,
         splat.conic_xx * delta_x * delta_x +
@@ -524,7 +573,8 @@ __device__ void evaluate_sh_basis_device(
 __global__ void project_alpha_splats_kernel(
     const Gaussian* gaussians, std::uint32_t gaussian_count,
     DeviceRasterCamera camera, DeviceProjectedRecord* records,
-    std::uint64_t* depth_keys, unsigned long long* visible_splats,
+    float* projected_sh_basis, std::uint64_t* depth_keys,
+    unsigned long long* visible_splats,
     std::uint32_t active_sh_degree) {
     const std::uint32_t index =
         blockIdx.x * blockDim.x + threadIdx.x;
@@ -584,36 +634,7 @@ __global__ void project_alpha_splats_kernel(
                 }
                 color[channel] = fminf(1.0F, fmaxf(0.0F, value));
             }
-            const int pixel_support_x =
-                static_cast<int>(ceilf(radius_x));
-            const int pixel_support_y =
-                static_cast<int>(ceilf(radius_y));
-            const int center_x = static_cast<int>(floorf(x));
-            const int center_y = static_cast<int>(floorf(y));
-            const int minimum_x =
-                max(0, center_x - pixel_support_x);
-            const int maximum_x = min(
-                static_cast<int>(camera.width) - 1,
-                center_x + pixel_support_x);
-            const int minimum_y =
-                max(0, center_y - pixel_support_y);
-            const int maximum_y = min(
-                static_cast<int>(camera.height) - 1,
-                center_y + pixel_support_y);
-            record.minimum_tile_x =
-                static_cast<std::uint32_t>(minimum_x) / alpha_tile_width;
-            record.maximum_tile_x =
-                static_cast<std::uint32_t>(maximum_x) / alpha_tile_width;
-            record.minimum_tile_y =
-                static_cast<std::uint32_t>(minimum_y) / alpha_tile_height;
-            record.maximum_tile_y =
-                static_cast<std::uint32_t>(maximum_y) / alpha_tile_height;
-            record.pair_count =
-                static_cast<std::uint64_t>(
-                    record.maximum_tile_x - record.minimum_tile_x + 1U) *
-                (record.maximum_tile_y - record.minimum_tile_y + 1U);
             record.splat = {
-                .source_index = static_cast<std::size_t>(index),
                 .depth = camera_z,
                 .x = x,
                 .y = y,
@@ -628,7 +649,7 @@ __global__ void project_alpha_splats_kernel(
             };
             for (std::uint32_t coefficient = 0U;
                  coefficient < 16U; ++coefficient) {
-                record.splat.sh_basis[coefficient] =
+                projected_sh_basis[index * 16U + coefficient] =
                     sh_basis[coefficient];
             }
             depth_key =
@@ -644,11 +665,17 @@ __global__ void project_alpha_splats_kernel(
 
 __global__ void extract_pair_counts_kernel(
     const DeviceProjectedRecord* records, std::uint32_t record_count,
-    std::uint64_t* counts) {
+    std::uint32_t width, std::uint32_t height, std::uint64_t* counts) {
     const std::uint32_t index =
         blockIdx.x * blockDim.x + threadIdx.x;
     if (index < record_count) {
-        counts[index] = records[index].pair_count;
+        DeviceTileBounds bounds{};
+        counts[index] = projected_tile_bounds(
+                            records[index].splat, width, height, bounds)
+            ? static_cast<std::uint64_t>(
+                  bounds.maximum_x - bounds.minimum_x + 1U) *
+                  (bounds.maximum_y - bounds.minimum_y + 1U)
+            : 0U;
     } else if (index == record_count) {
         counts[index] = 0U;
     }
@@ -656,7 +683,8 @@ __global__ void extract_pair_counts_kernel(
 
 __global__ void duplicate_tile_pairs_kernel(
     const DeviceProjectedRecord* records, std::uint32_t record_count,
-    const std::uint64_t* pair_offsets, std::uint32_t tiles_x,
+    const std::uint64_t* pair_offsets, std::uint32_t width,
+    std::uint32_t height, std::uint32_t tiles_x,
     std::uint64_t* tile_depth_keys, std::uint32_t* record_indices) {
     const std::uint32_t record_index =
         blockIdx.x * blockDim.x + threadIdx.x;
@@ -664,14 +692,18 @@ __global__ void duplicate_tile_pairs_kernel(
         return;
     }
     const auto& record = records[record_index];
+    DeviceTileBounds bounds{};
+    if (!projected_tile_bounds(
+            record.splat, width, height, bounds)) {
+        return;
+    }
     std::uint64_t pair_index = pair_offsets[record_index];
     const std::uint64_t depth_bits =
         static_cast<std::uint64_t>(__float_as_uint(record.splat.depth));
-    for (std::uint32_t tile_y = record.minimum_tile_y;
-         tile_y <= record.maximum_tile_y && record.pair_count != 0U;
-         ++tile_y) {
-        for (std::uint32_t tile_x = record.minimum_tile_x;
-             tile_x <= record.maximum_tile_x; ++tile_x) {
+    for (std::uint32_t tile_y = bounds.minimum_y;
+         tile_y <= bounds.maximum_y; ++tile_y) {
+        for (std::uint32_t tile_x = bounds.minimum_x;
+             tile_x <= bounds.maximum_x; ++tile_x) {
             const std::uint32_t tile = tile_y * tiles_x + tile_x;
             tile_depth_keys[pair_index] =
                 (static_cast<std::uint64_t>(tile) << 32U) | depth_bits;
@@ -712,7 +744,7 @@ __global__ void render_alpha_tiles_kernel(
     float* rgb, float* transmittance, DeviceRenderStats* stats) {
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
-    __shared__ ProjectedAlphaSplat batch[threads_per_tile];
+    __shared__ DeviceProjectedSplat batch[threads_per_tile];
 
     const std::uint32_t thread_index =
         threadIdx.y * blockDim.x + threadIdx.x;
@@ -804,6 +836,8 @@ __global__ void render_alpha_tiles_kernel(
 
 __global__ void backward_alpha_tiles_kernel(
     const DeviceProjectedRecord* records,
+    const std::uint64_t* sorted_depth_keys,
+    const float* projected_sh_basis,
     const std::uint32_t* record_indices,
     const std::uint64_t* tile_starts, const std::uint64_t* tile_ends,
     std::uint32_t width, std::uint32_t height,
@@ -880,8 +914,10 @@ __global__ void backward_alpha_tiles_kernel(
     float tail[3]{background_r, background_g, background_b};
     float transmittance_after = remaining;
     for (std::uint64_t cursor = active_end; cursor > start; --cursor) {
-        const auto& splat =
-            records[record_indices[cursor - 1U]].splat;
+        const auto record_index = record_indices[cursor - 1U];
+        const auto& splat = records[record_index].splat;
+        const auto source = static_cast<std::uint32_t>(
+            sorted_depth_keys[record_index]);
         const int support_x =
             static_cast<int>(ceilf(splat.radius_x));
         const int support_y =
@@ -913,19 +949,18 @@ __global__ void backward_alpha_tiles_kernel(
             const float blending_weight =
                 transmittance_before * alpha;
             atomicAdd(
-                &frame_visibility_weight[splat.source_index],
+                &frame_visibility_weight[source],
                 blending_weight);
             atomicAdd(
-                &frame_refinement_weight[splat.source_index],
+                &frame_refinement_weight[source],
                 blending_weight *
                     densification_error_map[pixel]);
             atomicAdd(
-                &frame_edge_weight[splat.source_index],
+                &frame_edge_weight[source],
                 blending_weight *
                     densification_edge_map[pixel]);
         }
         float alpha_gradient = 0.0F;
-        const auto source = splat.source_index;
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
             if (splat.color[channel] > 0.0F &&
                 splat.color[channel] < 1.0F) {
@@ -945,7 +980,8 @@ __global__ void backward_alpha_tiles_kernel(
                             source * maximum_sh_rest_values +
                             channel * maximum_sh_rest_coefficients +
                             coefficient],
-                        splat.sh_basis[coefficient + 1U] *
+                        projected_sh_basis[
+                            source * 16U + coefficient + 1U] *
                             color_gradient);
                 }
             }
@@ -2355,13 +2391,13 @@ void sort_projected_records(
         cub::DeviceRadixSort::SortPairs(
             nullptr, temporary_bytes, keys_in, keys_out,
             records_in, records_out, item_count),
-        "query projected splat sort storage");
+        "query compact projected splat sort storage");
     DeviceAllocation<std::uint8_t> temporary(temporary_bytes);
     require_cuda(
         cub::DeviceRadixSort::SortPairs(
             temporary.data(), temporary_bytes, keys_in, keys_out,
             records_in, records_out, item_count),
-        "sort projected splats by depth");
+        "sort compact projected splats by depth");
 }
 
 void scan_pair_counts(
@@ -2452,6 +2488,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     DeviceAllocation<DeviceProjectedRecord> device_records(gaussians.size());
     DeviceAllocation<DeviceProjectedRecord> device_sorted_records(
         gaussians.size());
+    DeviceAllocation<float> device_projected_sh_basis(
+        gaussians.size() * 16U);
     DeviceAllocation<std::uint64_t> device_depth_keys(gaussians.size());
     DeviceAllocation<std::uint64_t> device_sorted_depth_keys(
         gaussians.size());
@@ -2463,7 +2501,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         (gaussian_count + threads_per_block - 1U) / threads_per_block;
     project_alpha_splats_kernel<<<projection_blocks, threads_per_block>>>(
         device_gaussians.data(), gaussian_count, device_camera,
-        device_records.data(), device_depth_keys.data(),
+        device_records.data(), device_projected_sh_basis.data(),
+        device_depth_keys.data(),
         device_visible_splats.data(), active_sh_degree);
     require_cuda(cudaGetLastError(), "launch alpha projection");
 
@@ -2471,7 +2510,6 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_depth_keys.data(), device_sorted_depth_keys.data(),
         device_records.data(), device_sorted_records.data(),
         static_cast<int>(gaussian_count));
-
     DeviceAllocation<std::uint64_t> device_pair_counts(
         gaussians.size() + 1U);
     DeviceAllocation<std::uint64_t> device_pair_offsets(
@@ -2481,6 +2519,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         threads_per_block;
     extract_pair_counts_kernel<<<count_blocks, threads_per_block>>>(
         device_sorted_records.data(), gaussian_count,
+        camera.width, camera.height,
         device_pair_counts.data());
     require_cuda(cudaGetLastError(), "launch tile pair count extraction");
     scan_pair_counts(
@@ -2508,7 +2547,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     DeviceAllocation<std::uint32_t> device_sorted_record_indices(pair_items);
     duplicate_tile_pairs_kernel<<<projection_blocks, threads_per_block>>>(
         device_sorted_records.data(), gaussian_count,
-        device_pair_offsets.data(), device_camera.tiles_x,
+        device_pair_offsets.data(), camera.width, camera.height,
+        device_camera.tiles_x,
         device_tile_depth_keys.data(), device_record_indices.data());
     require_cuda(cudaGetLastError(), "launch tile pair duplication");
     sort_tile_pairs(
@@ -2574,6 +2614,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_rotation_gradient->zero();
         backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
             device_sorted_records.data(),
+            device_sorted_depth_keys.data(),
+            device_projected_sh_basis.data(),
             device_sorted_record_indices.data(),
             device_tile_starts.data(), device_tile_ends.data(),
             camera.width, camera.height,
@@ -2925,6 +2967,7 @@ struct OrderedAlphaTrainingContext::Impl {
         gaussians.ensure(gaussian_capacity);
         records.ensure(gaussian_capacity);
         sorted_records.ensure(gaussian_capacity);
+        projected_sh_basis.ensure(gaussian_capacity * 16U);
         depth_keys.ensure(gaussian_capacity);
         sorted_depth_keys.ensure(gaussian_capacity);
         pair_counts.ensure(gaussian_capacity + 1U);
@@ -3036,7 +3079,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 depth_keys.data(), sorted_depth_keys.data(),
                 records.data(), sorted_records.data(),
                 static_cast<int>(gaussian_count)),
-            "query persistent projected sort storage");
+            "query persistent compact projected sort storage");
         temporary_storage.ensure(std::max<std::size_t>(
             1U, temporary_bytes));
         require_cuda(
@@ -3045,7 +3088,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 depth_keys.data(), sorted_depth_keys.data(),
                 records.data(), sorted_records.data(),
                 static_cast<int>(gaussian_count)),
-            "sort persistent projected splats");
+            "sort persistent compact projected splats");
     }
 
     void scan_counts() {
@@ -3155,17 +3198,18 @@ struct OrderedAlphaTrainingContext::Impl {
         visible_splats.zero(1U);
         project_alpha_splats_kernel<<<gaussian_blocks, block_size>>>(
             gaussians.data(), gaussian_items, device_camera,
-            records.data(), depth_keys.data(), visible_splats.data(),
+            records.data(), projected_sh_basis.data(), depth_keys.data(),
+            visible_splats.data(),
             active_sh_degree);
         require_cuda(
             cudaGetLastError(),
             "launch persistent alpha projection");
         sort_records();
-
         const auto count_blocks =
             (gaussian_items + 1U + block_size - 1U) / block_size;
         extract_pair_counts_kernel<<<count_blocks, block_size>>>(
-            sorted_records.data(), gaussian_items, pair_counts.data());
+            sorted_records.data(), gaussian_items,
+            camera.width, camera.height, pair_counts.data());
         require_cuda(
             cudaGetLastError(),
             "launch persistent pair count extraction");
@@ -3193,7 +3237,8 @@ struct OrderedAlphaTrainingContext::Impl {
         sorted_record_indices.ensure(pair_items);
         duplicate_tile_pairs_kernel<<<gaussian_blocks, block_size>>>(
             sorted_records.data(), gaussian_items,
-            pair_offsets.data(), device_camera.tiles_x,
+            pair_offsets.data(), camera.width, camera.height,
+            device_camera.tiles_x,
             tile_depth_keys.data(), record_indices.data());
         require_cuda(
             cudaGetLastError(),
@@ -3356,7 +3401,9 @@ struct OrderedAlphaTrainingContext::Impl {
             log_scale_gradient.zero(gaussian_count * 3U);
             rotation_gradient.zero(gaussian_count * 4U);
             backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
-                sorted_records.data(), sorted_record_indices.data(),
+                sorted_records.data(), sorted_depth_keys.data(),
+                projected_sh_basis.data(),
+                sorted_record_indices.data(),
                 tile_starts.data(), tile_ends.data(),
                 camera.width, camera.height,
                 0.0F, 0.0F, 0.0F,
@@ -3818,6 +3865,7 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<Gaussian> gaussians;
     ReusableDeviceAllocation<DeviceProjectedRecord> records;
     ReusableDeviceAllocation<DeviceProjectedRecord> sorted_records;
+    ReusableDeviceAllocation<float> projected_sh_basis;
     ReusableDeviceAllocation<std::uint64_t> depth_keys;
     ReusableDeviceAllocation<std::uint64_t> sorted_depth_keys;
     ReusableDeviceAllocation<std::uint64_t> pair_counts;

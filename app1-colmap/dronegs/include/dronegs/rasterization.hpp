@@ -60,7 +60,7 @@ struct AlphaRenderBackwardOutput {
 };
 
 struct ProjectedAlphaSplat {
-    std::size_t source_index = 0;
+    std::uint32_t source_index = 0U;
     float depth = 0.0F;
     float x = 0.0F;
     float y = 0.0F;

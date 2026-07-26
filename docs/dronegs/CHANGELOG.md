@@ -2,6 +2,28 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.27 - Phase 4 native sm_89 compact-record sort
+
+- Establish `89-real;89-virtual` before CMake enables CUDA so a clean default
+  build contains an actual `sm_89` cubin plus compute_89 PTX.
+- Replace the 144-byte projected CUB value with a 48-byte render record;
+  preserve the existing depth/source key and keep the 16 SH bases in a
+  separate source-indexed buffer.
+- Reconstruct tile bounds from the sorted projected center/radius in two
+  coalesced kernels. Avoid a full-record gather and reduce persistent
+  projected-depth capacity by 112 bytes per reserved Gaussian.
+- Pass all six CPU, CUDA, training, and LPIPS-tool suites; `cuobjdump` confirms
+  `dronegs.1.sm_89.cubin`.
+- Re-run bounded MRNF/progressive-SH validation on GAJAN, Savères, and
+  Albagnac using existing read-only COLMAP dense outputs. No reconstruction,
+  bundle adjustment, or combined 2,000-photo throughput run is performed.
+- Preserve large-scene topology and PLY byte size exactly. PSNR/SSIM/LPIPS
+  deltas stay below 0.00005 dB / 0.000004 / 0.00007 on Savères and Albagnac.
+- Improve GAJAN training/wall time by 5.8%/15.5% versus the dev.26 PTX-JIT
+  binary. Savères is wall-neutral (+0.4%); Albagnac remains +6.0% wall and
+  needs kernel-level profiling before any broad speed claim.
+- Keep the native trainer opt-in and the Phase 4 production gate open.
+
 ## 0.5.0-dev.26 - Phase 4 three-scene MRNF/SH/LPIPS validation
 
 - Validate the dev.25 trainer without rerunning COLMAP on the existing GAJAN

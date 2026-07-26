@@ -264,6 +264,12 @@ float gaussian_weight(
 std::vector<ProjectedAlphaSplat> project_visible(
     const std::vector<Gaussian>& gaussians, const RasterCamera& camera,
     std::uint32_t active_sh_degree) {
+    if (gaussians.size() >
+        static_cast<std::size_t>(
+            std::numeric_limits<std::uint32_t>::max())) {
+        throw std::invalid_argument(
+            "projected Gaussian count exceeds compact source indices");
+    }
     std::vector<ProjectedAlphaSplat> projected;
     projected.reserve(gaussians.size());
     for (std::size_t index = 0; index < gaussians.size(); ++index) {
@@ -315,7 +321,7 @@ std::vector<ProjectedAlphaSplat> project_visible(
             color[channel] = std::clamp(value, 0.0F, 1.0F);
         }
         projected.push_back({
-            .source_index = index,
+            .source_index = static_cast<std::uint32_t>(index),
             .depth = camera_z,
             .x = x,
             .y = y,
