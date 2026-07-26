@@ -2888,7 +2888,10 @@ static MrnfLearningRates mrnf_learning_rates(
     const bool calibrated_dc_opacity =
         profile == MrnfOptimizerProfile::calibrated_dc_005_opacity ||
         profile == MrnfOptimizerProfile::calibrated_dc_010_opacity ||
-        profile == MrnfOptimizerProfile::calibrated_dc_020_opacity;
+        profile == MrnfOptimizerProfile::calibrated_dc_020_opacity ||
+        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_024 ||
+        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
+        profile == MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
     const bool lichtfeld_dc =
         lichtfeld_all ||
         profile == MrnfOptimizerProfile::lichtfeld_dc_only ||
@@ -2938,12 +2941,33 @@ static MrnfLearningRates mrnf_learning_rates(
         dc_learning_rate = 5.0e-3F;
     } else if (
         profile ==
-        MrnfOptimizerProfile::calibrated_dc_010_opacity) {
+            MrnfOptimizerProfile::calibrated_dc_010_opacity ||
+        profile ==
+            MrnfOptimizerProfile::calibrated_dc_010_opacity_024 ||
+        profile ==
+            MrnfOptimizerProfile::calibrated_dc_010_opacity_048 ||
+        profile ==
+            MrnfOptimizerProfile::calibrated_dc_010_opacity_096) {
         dc_learning_rate = 1.0e-2F;
     } else if (
         profile ==
         MrnfOptimizerProfile::calibrated_dc_020_opacity) {
         dc_learning_rate = 2.0e-2F;
+    }
+    float opacity_learning_rate = lichtfeld_opacity
+        ? mrnf_opacity_learning_rate
+        : dev16_opacity_learning_rate;
+    if (profile ==
+        MrnfOptimizerProfile::calibrated_dc_010_opacity_024) {
+        opacity_learning_rate = 2.4e-2F;
+    } else if (
+        profile ==
+        MrnfOptimizerProfile::calibrated_dc_010_opacity_048) {
+        opacity_learning_rate = 4.8e-2F;
+    } else if (
+        profile ==
+        MrnfOptimizerProfile::calibrated_dc_010_opacity_096) {
+        opacity_learning_rate = 9.6e-2F;
     }
     return {
         .position =
@@ -2958,9 +2982,7 @@ static MrnfLearningRates mrnf_learning_rates(
                     ? mrnf_position_learning_rate_final
                     : dev16_position_learning_rate_final),
         .dc = dc_learning_rate,
-        .opacity = lichtfeld_opacity
-            ? mrnf_opacity_learning_rate
-            : dev16_opacity_learning_rate,
+        .opacity = opacity_learning_rate,
         .scale = lichtfeld_scale
             ? exponential(
                   lichtfeld_progress,

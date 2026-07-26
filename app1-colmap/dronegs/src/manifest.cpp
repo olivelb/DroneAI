@@ -75,7 +75,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
-        options.optimizer_profile == "calibrated-dc-0.020-opacity";
+        options.optimizer_profile == "calibrated-dc-0.020-opacity" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.024" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.048" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.096";
     const bool lichtfeld_dc =
         lichtfeld_all ||
         options.optimizer_profile == "lichtfeld-dc-only" ||
@@ -102,11 +108,31 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
         dc_learning_rate = "0.005";
     } else if (
-        options.optimizer_profile == "calibrated-dc-0.010-opacity") {
+        options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.024" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.048" ||
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.096") {
         dc_learning_rate = "0.01";
     } else if (
         options.optimizer_profile == "calibrated-dc-0.020-opacity") {
         dc_learning_rate = "0.02";
+    }
+    const char* opacity_learning_rate =
+        lichtfeld_opacity ? "0.012" : "0.01";
+    if (options.optimizer_profile ==
+        "calibrated-dc-0.010-opacity-0.024") {
+        opacity_learning_rate = "0.024";
+    } else if (
+        options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.048") {
+        opacity_learning_rate = "0.048";
+    } else if (
+        options.optimizer_profile ==
+        "calibrated-dc-0.010-opacity-0.096") {
+        opacity_learning_rate = "0.096";
     }
     const auto temporary = options.run_manifest.string() + ".tmp";
     std::ofstream stream(temporary, std::ios::trunc);
@@ -117,7 +143,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.32\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.33\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -209,7 +235,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"dc_lr\": "
            << dc_learning_rate << ",\n"
            << "    \"opacity_lr\": "
-           << (lichtfeld_opacity ? "0.012" : "0.01") << ",\n"
+           << opacity_learning_rate << ",\n"
            << "    \"position_lr_initial_factor\": "
            << (lichtfeld_position ? "0.00002" : "0.00016") << ",\n"
            << "    \"position_lr_final_factor\": "

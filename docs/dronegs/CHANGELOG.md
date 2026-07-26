@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.33 - Post-KNN opacity convergence
+
+- Add isolated `0.024`, `0.048`, and `0.096` opacity-rate profiles while
+  retaining DC `0.010`, opacity epsilon `1e-15`, and unchanged dev.32
+  position/scale/rotation behavior.
+- Select `calibrated-dc-0.010-opacity-0.096` as the recommended quality
+  profile after independent Albagnac, GAJAN, and Savères validation.
+- Improve all three held-out metrics on every scene. Against dev.32, Albagnac
+  gains 0.9791 dB / 0.01602 SSIM / 10.83% LPIPS; GAJAN gains
+  0.4698 dB / 0.01225 / 3.17%; Savères gains
+  0.1397 dB / 0.00365 / 7.53%.
+- Raise median final opacity to 0.400 on Albagnac and 0.428 on Savères,
+  approaching the pinned LichtFeld opacity regime while preserving the same
+  `0.1` initialization and bounded covariance renderer.
+- Keep the CLI default unchanged while Phase 4 remains experimental; retain
+  all sweep points for reproducibility.
+
 ## 0.5.0-dev.32 - Extended live SH color
 
 - Match pinned LichtFeld FastGS by clamping per-splat SH color to `[0,4]`

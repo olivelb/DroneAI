@@ -53,6 +53,9 @@ enum class MrnfOptimizerProfile {
     calibrated_dc_005_opacity,
     calibrated_dc_010_opacity,
     calibrated_dc_020_opacity,
+    calibrated_dc_010_opacity_024,
+    calibrated_dc_010_opacity_048,
+    calibrated_dc_010_opacity_096,
 };
 
 struct MrnfParameterTelemetry {

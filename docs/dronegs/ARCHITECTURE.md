@@ -3,7 +3,7 @@
 Status: Phase 3 released; Phase 4 experimental trainer in progress
 
 Contract version: 1  
-Project version: 0.5.0-dev.32
+Project version: 0.5.0-dev.33
 
 ## Decision
 
@@ -26,6 +26,11 @@ Dev.32 permits SH-derived splat color in `[0,4]` during rendering and keeps
 its gradient live over that interval. This matches the pinned FastGS color
 contract and prevents coefficients just above display white from being frozen;
 final RGB image serialization remains clamped to the display range.
+
+Dev.33 recalibrates only opacity Adam after the much smaller local-KNN
+footprints. The selected `0.096` quality profile retains DC `0.010`, opacity
+epsilon `1e-15`, and all dev.32 geometry, topology, renderer, and portability
+behavior. It improves PSNR, SSIM, and LPIPS on Albagnac, GAJAN, and Savères.
 
 ## Stable boundary
 

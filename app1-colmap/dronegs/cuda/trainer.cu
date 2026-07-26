@@ -1051,6 +1051,18 @@ TrainingMetrics train_ordered_mrnf(
         if (options.optimizer_profile == "calibrated-dc-0.020-opacity") {
             return MrnfOptimizerProfile::calibrated_dc_020_opacity;
         }
+        if (options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.024") {
+            return MrnfOptimizerProfile::calibrated_dc_010_opacity_024;
+        }
+        if (options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.048") {
+            return MrnfOptimizerProfile::calibrated_dc_010_opacity_048;
+        }
+        if (options.optimizer_profile ==
+            "calibrated-dc-0.010-opacity-0.096") {
+            return MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
+        }
         return MrnfOptimizerProfile::lichtfeld_absolute;
     }();
     OrderedAlphaTrainingContext workspace(

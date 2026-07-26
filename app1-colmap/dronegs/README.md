@@ -7,9 +7,10 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.32` keeps dev.31's deterministic exact two-neighbour KNN
-scale initialization and extends SH-derived render color from `[0,1]` to
-LichtFeld-compatible `[0,4]`, preserving gradients above display white. A
+Version `0.5.0-dev.33` keeps dev.31's deterministic exact two-neighbour KNN
+scale initialization and dev.32's live SH-derived `[0,4]` render color, then
+adds isolated post-KNN opacity-rate profiles. The selected `0.096` quality
+profile improves PSNR, SSIM, and LPIPS on Albagnac, GAJAN, and Savères. A
 balanced local KD tree gives each COLMAP point an isotropic scale adapted to
 its local density and bounded by robust scene extents. A local build detects
 its visible NVIDIA GPU through CMake's `native` mode; the `portable` preset
@@ -53,8 +54,10 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   selected parent and appended child's optimizer moments after a split;
 - exposes the accepted `dronegs-dev16` quality-anchor profile, the experimental
   `lichtfeld-absolute` profile, five exact one-family ablations, a strict
-  DC-plus-opacity combination, and three intermediate-DC-plus-opacity
-  calibration profiles, with dev16 retained as the default;
+  DC-plus-opacity combination, three intermediate-DC-plus-opacity calibration
+  profiles, and three post-KNN opacity-rate points, with dev16 retained as the
+  command-line default and `calibrated-dc-0.010-opacity-0.096` recommended for
+  quality;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every

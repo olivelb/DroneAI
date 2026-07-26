@@ -624,6 +624,44 @@ int main() {
         require_calibrated_dc(
             dronegs::MrnfOptimizerProfile::calibrated_dc_020_opacity,
             2.0e-2F, "calibrated DC 0.020");
+        const auto require_opacity_candidate =
+            [&](dronegs::MrnfOptimizerProfile profile,
+                float expected_opacity, const char* label) {
+                dronegs::OrderedAlphaTrainingContext context(
+                    rate_fixture, 32U * 32U, 2U, 8U, profile);
+                const auto rates = context.current_learning_rates();
+                require_rate(rates.dc, 1.0e-2F, 1.0e-8F, label);
+                require_rate(
+                    rates.opacity, expected_opacity,
+                    1.0e-8F, label);
+                require_rate(
+                    rates.position, native_rates.position,
+                    1.0e-9F, "opacity candidate position isolation");
+                require_rate(
+                    rates.scale, native_rates.scale,
+                    1.0e-8F, "opacity candidate scale isolation");
+                require_rate(
+                    rates.rotation, native_rates.rotation,
+                    1.0e-8F, "opacity candidate rotation isolation");
+                require_rate(
+                    rates.dc_epsilon, 1.0e-15F,
+                    1.0e-20F, "opacity candidate DC epsilon");
+                require_rate(
+                    rates.opacity_epsilon, 1.0e-15F,
+                    1.0e-20F, "opacity candidate opacity epsilon");
+            };
+        require_opacity_candidate(
+            dronegs::MrnfOptimizerProfile::
+                calibrated_dc_010_opacity_024,
+            2.4e-2F, "opacity 0.024");
+        require_opacity_candidate(
+            dronegs::MrnfOptimizerProfile::
+                calibrated_dc_010_opacity_048,
+            4.8e-2F, "opacity 0.048");
+        require_opacity_candidate(
+            dronegs::MrnfOptimizerProfile::
+                calibrated_dc_010_opacity_096,
+            9.6e-2F, "opacity 0.096");
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);
