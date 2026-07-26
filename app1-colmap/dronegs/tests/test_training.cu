@@ -786,13 +786,59 @@ int main() {
                 dev38_staged_rotation008_absgrad050_fastgs);
         const auto fastgs_quality = fastgs_context.evaluate_quality(
             quality_camera, split_target.data(), split_target.size());
+        const auto fastgs_objective =
+            fastgs_context.evaluate_objective_gradient(
+                quality_camera, split_target.data(),
+                split_target.size());
+        const double expected_fastgs_objective = reference_objective(
+            fastgs_objective.prediction,
+            fastgs_objective.transmittance,
+            split_target, 32U, 32U);
+        auto fastgs_perturbed = fastgs_objective.prediction;
+        for (std::size_t probe = 0U; probe < 4U; ++probe) {
+            const auto sample = gradient_samples[probe];
+            fastgs_perturbed[sample] =
+                fastgs_objective.prediction[sample] +
+                finite_difference_epsilon;
+            const double plus = reference_objective(
+                fastgs_perturbed,
+                fastgs_objective.transmittance,
+                split_target, 32U, 32U);
+            fastgs_perturbed[sample] =
+                fastgs_objective.prediction[sample] -
+                finite_difference_epsilon;
+            const double minus = reference_objective(
+                fastgs_perturbed,
+                fastgs_objective.transmittance,
+                split_target, 32U, 32U);
+            fastgs_perturbed[sample] =
+                fastgs_objective.prediction[sample];
+            const double expected_gradient =
+                (plus - minus) /
+                (2.0 * finite_difference_epsilon);
+            if (std::abs(
+                    static_cast<double>(
+                        fastgs_objective.gradient[sample]) -
+                    expected_gradient) > 1.5e-4) {
+                throw std::runtime_error(
+                    "structural FastGS fused image gradient mismatch");
+            }
+        }
+        const auto fastgs_reference_loss = fastgs_context.evaluate(
+            quality_camera, split_target.data(), split_target.size());
         const auto fastgs_loss = fastgs_context.train_step(
             quality_camera, split_target.data(), split_target.size());
         if (!std::isfinite(fastgs_quality.psnr) ||
             !std::isfinite(fastgs_quality.ssim) ||
-            !std::isfinite(fastgs_loss)) {
+            !std::isfinite(fastgs_loss) ||
+            std::abs(
+                fastgs_objective.loss -
+                expected_fastgs_objective) > 2.0e-4 ||
+            std::fabs(
+                fastgs_loss - fastgs_reference_loss) > 2.0e-5F) {
             throw std::runtime_error(
-                "dev38 FastGS compatibility produced non-finite output");
+                "structural FastGS fused objective diverged from the "
+                "reference loss");
         }
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,

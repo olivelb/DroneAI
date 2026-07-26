@@ -7,14 +7,20 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.40` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.42` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
 per-pixel absolute projected-center gradients to MRNF's deterministic split
 ranking to recover detail hidden by signed gradient cancellation. Dev.40
 decouples optimizer and raster profiles and recycles pruned slots directly
-on GPU when the Gaussian cap is full.
+on GPU when the Gaussian cap is full. Dev.41 caches forward transmittance and
+active ranges. Dev.42 replaces the FastGS compatibility emulation with a
+structural backend: 32-instance buckets, packed per-pixel checkpoints,
+one-warp-per-bucket backward traversal, tile contribution early-out, and
+shared-memory fused L1/SSIM forward/backward. Dataset loading, camera
+selection, MRNF lifecycle, optimizer, CLI, manifests, and process
+orchestration remain native DroneGS code and do not invoke LichtFeld.
 Dev.37 adds opt-in compensated screen-space filter ablations with exact
 covariance/opacity gradients. Dev.38 adds a coupled FastGS compatibility
 profile covering `0.3 I` projected covariance dilation, extended-FOV
@@ -45,6 +51,9 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 - provides a forward CUDA renderer with GPU projection, stable radix sorting,
   GPU-built 16x16 tile ranges, and shared splat batches that match the CPU
   alpha oracle;
+- provides an opt-in structural FastGS raster path with scanned 32-instance
+  buckets, RGBA8 pixel checkpoints, per-tile contribution bounds, a
+  warp-cooperative backward pass, and fused tiled L1/SSIM kernels;
 - provides tested CPU and CUDA ordered-alpha gradients for DC color, opacity,
   position, three log-scales, and normalized quaternion rotation;
 - reverses the projected inverse conic through spectral covariance clamping,

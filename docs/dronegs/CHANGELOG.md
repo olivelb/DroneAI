@@ -2,6 +2,34 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.42 - Structural FastGS backend
+
+- Replace the FastGS-math compatibility emulation with scanned 32-instance
+  buckets, a persistent bucket-to-tile map, packed RGBA8 checkpoints, last
+  contributor counters, and per-tile contribution bounds.
+- Add a one-warp-per-bucket backward traversal. Each lane owns one projected
+  Gaussian, receives pixel state diagonally through warp shuffles, accumulates
+  gradients in registers, and emits one atomic series per bucket instance.
+- Fuse active-pixel L1 and valid-window SSIM forward into one 16x16
+  shared-memory kernel, then fuse their analytical image gradients into a
+  second tiled kernel.
+- Keep COLMAP/image loading, split/sampler, MRNF topology lifecycle, optimizer,
+  CLI, manifests, and job orchestration independent of LichtFeld.
+- On the strict Albagnac 1,000-step pilot, reduce training time from
+  `30.152 s` to `20.290 s` (`-32.7%`) while changing held-out quality by
+  `+0.00700 dB PSNR` and `+0.000055 SSIM`.
+
+## 0.5.0-dev.41 - Cached forward state for backward
+
+- Persist each pixel's final transmittance and active pair-list endpoint
+  during the forward raster pass.
+- Remove the redundant front-to-back replay previously performed by the
+  backward raster kernel.
+- Start each tile's reverse traversal at the maximum active endpoint across
+  its pixels, skipping trailing pair batches that could not contribute.
+- Preserve the exact blending order, alpha cutoff, gradients, and
+  architecture-independent CUDA path.
+
 ## 0.5.0-dev.40 - Raster decoupling and GPU slot recycling
 
 - Add `--raster-profile auto|bounded|fastgs` so optimizer rates no longer

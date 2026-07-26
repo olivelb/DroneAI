@@ -27,6 +27,10 @@
  * field-of-view Jacobian clamp, opacity-dependent support, fragment-alpha
  * ceiling, and matching smooth backward behavior from pinned LichtFeld
  * revision 1004c0841a3776e3f67866ff34101fbc9677397f.
+ * Dev.42 adapts that revision's FastGS bucket/checkpoint warp traversal and
+ * fused L1/SSIM CUDA structure to DroneGS's interleaved renderer and valid
+ * padding objective; modified 2026-07-26. DroneGS orchestration remains
+ * independent and does not link to or launch LichtFeld at runtime.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -64,6 +68,9 @@ constexpr float gaussian_support = 2.5F;
 constexpr float maximum_splat_color = 4.0F;
 constexpr float fastgs_dilation = 0.3F;
 constexpr float fastgs_maximum_fragment_alpha = 0.999F;
+constexpr std::uint32_t fastgs_checkpoint_interval = 32U;
+constexpr float fastgs_checkpoint_color_scale = 255.0F / 4.0F;
+constexpr float fastgs_checkpoint_color_inverse_scale = 4.0F / 255.0F;
 constexpr float dev37_antialias_filter_variance_005 = 0.05F;
 constexpr float dev37_antialias_filter_variance_015 = 0.15F;
 constexpr float dev37_antialias_filter_variance_030 = 0.30F;
@@ -87,6 +94,16 @@ constexpr float dev16_opacity_learning_rate = 1.0e-2F;
 constexpr float dev16_scale_learning_rate = 5.0e-3F;
 constexpr float dev16_rotation_learning_rate = 1.0e-3F;
 constexpr float dev16_adam_epsilon = 1.0e-8F;
+
+__device__ __forceinline__ std::uint32_t pack_fastgs_checkpoint_color(
+    float value) {
+    return min(
+        255U,
+        static_cast<std::uint32_t>(
+            fmaxf(0.0F, fminf(maximum_splat_color, value)) *
+                fastgs_checkpoint_color_scale +
+            0.5F));
+}
 
 __device__ __constant__ float ssim_gaussian_weights[11]{
     0.0010283801F,
@@ -822,6 +839,36 @@ __global__ void build_tile_ranges_kernel(
     }
 }
 
+__global__ void extract_bucket_counts_kernel(
+    const std::uint64_t* tile_starts, const std::uint64_t* tile_ends,
+    std::uint32_t* bucket_counts, std::size_t tile_count) {
+    const std::size_t tile =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (tile >= tile_count) {
+        return;
+    }
+    const auto pair_count = tile_ends[tile] - tile_starts[tile];
+    bucket_counts[tile] = static_cast<std::uint32_t>(
+        (pair_count + fastgs_checkpoint_interval - 1U) /
+        fastgs_checkpoint_interval);
+}
+
+__global__ void initialize_bucket_tiles_kernel(
+    const std::uint32_t* bucket_offsets, std::uint32_t* bucket_tiles,
+    std::size_t tile_count) {
+    const std::size_t tile =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (tile >= tile_count) {
+        return;
+    }
+    const std::uint32_t begin =
+        tile == 0U ? 0U : bucket_offsets[tile - 1U];
+    const std::uint32_t end = bucket_offsets[tile];
+    for (std::uint32_t bucket = begin; bucket < end; ++bucket) {
+        bucket_tiles[bucket] = static_cast<std::uint32_t>(tile);
+    }
+}
+
 __global__ void render_alpha_tiles_kernel(
     const DeviceProjectedRecord* records,
     const std::uint32_t* record_indices,
@@ -829,10 +876,17 @@ __global__ void render_alpha_tiles_kernel(
     std::uint32_t width, std::uint32_t height,
     float maximum_fragment_alpha,
     float background_r, float background_g, float background_b,
-    float* rgb, float* transmittance, DeviceRenderStats* stats) {
+    float* rgb, float* transmittance,
+    std::uint64_t* active_ends,
+    const std::uint32_t* bucket_offsets,
+    std::uint32_t* pixel_contributions,
+    std::uint32_t* tile_max_contributions,
+    std::uint32_t* bucket_checkpoints,
+    DeviceRenderStats* stats) {
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
     __shared__ DeviceProjectedSplat batch[threads_per_tile];
+    __shared__ std::uint32_t block_max_contributions;
 
     const std::uint32_t thread_index =
         threadIdx.y * blockDim.x + threadIdx.x;
@@ -853,10 +907,24 @@ __global__ void render_alpha_tiles_kernel(
     float green = 0.0F;
     float blue = 0.0F;
     float remaining = 1.0F;
+    std::uint64_t active_end = end;
+    std::uint32_t possible_contributions = 0U;
+    std::uint32_t contributions = 0U;
     unsigned long long evaluated = 0U;
     unsigned long long contributing = 0U;
+    if (thread_index == 0U) {
+        block_max_contributions = 0U;
+    }
+    __syncthreads();
     for (std::uint64_t base = start; base < end;
          base += threads_per_tile) {
+        const bool done =
+            !valid_pixel ||
+            remaining <= alpha_minimum_transmittance;
+        if (__syncthreads_count(done) ==
+            static_cast<int>(threads_per_tile)) {
+            break;
+        }
         const std::uint64_t load_index = base + thread_index;
         if (load_index < end) {
             batch[thread_index] =
@@ -869,6 +937,33 @@ __global__ void render_alpha_tiles_kernel(
                 end - base));
         if (valid_pixel && remaining > alpha_minimum_transmittance) {
             for (std::uint32_t index = 0; index < batch_count; ++index) {
+                const auto relative = static_cast<std::uint32_t>(
+                    base - start + index);
+                if (bucket_checkpoints != nullptr &&
+                    relative % fastgs_checkpoint_interval == 0U) {
+                    const std::uint32_t first_bucket =
+                        tile == 0U ? 0U : bucket_offsets[tile - 1U];
+                    const std::uint32_t bucket =
+                        first_bucket +
+                        relative / fastgs_checkpoint_interval;
+                    const std::uint32_t packed_r =
+                        pack_fastgs_checkpoint_color(red);
+                    const std::uint32_t packed_g =
+                        pack_fastgs_checkpoint_color(green);
+                    const std::uint32_t packed_b =
+                        pack_fastgs_checkpoint_color(blue);
+                    const std::uint32_t packed_t = min(
+                        255U,
+                        static_cast<std::uint32_t>(
+                            fmaxf(0.0F, remaining) * 255.0F + 0.5F));
+                    bucket_checkpoints[
+                        static_cast<std::size_t>(bucket) *
+                            threads_per_tile +
+                        thread_index] =
+                        packed_r | (packed_g << 8U) |
+                        (packed_b << 16U) | (packed_t << 24U);
+                }
+                ++possible_contributions;
                 const auto& splat = batch[index];
                 const int support_x =
                     static_cast<int>(ceilf(splat.radius_x));
@@ -897,28 +992,40 @@ __global__ void render_alpha_tiles_kernel(
                     continue;
                 }
                 ++contributing;
+                contributions = possible_contributions;
                 const float weight = remaining * alpha;
                 red += weight * splat.color[0];
                 green += weight * splat.color[1];
                 blue += weight * splat.color[2];
                 remaining *= 1.0F - alpha;
                 if (remaining <= alpha_minimum_transmittance) {
+                    active_end = base + index + 1U;
                     break;
                 }
             }
         }
         __syncthreads();
     }
-    if (!valid_pixel) {
-        return;
+    std::size_t pixel = 0U;
+    if (valid_pixel) {
+        pixel = static_cast<std::size_t>(y) * width + x;
+        rgb[pixel * 3U] = red + remaining * background_r;
+        rgb[pixel * 3U + 1U] = green + remaining * background_g;
+        rgb[pixel * 3U + 2U] = blue + remaining * background_b;
+        transmittance[pixel] = remaining;
+        if (active_ends != nullptr) {
+            active_ends[pixel] = active_end;
+        }
+        if (pixel_contributions != nullptr) {
+            pixel_contributions[pixel] = contributions;
+            atomicMax(&block_max_contributions, contributions);
+        }
     }
-    const auto pixel =
-        static_cast<std::size_t>(y) * width + x;
-    rgb[pixel * 3U] = red + remaining * background_r;
-    rgb[pixel * 3U + 1U] = green + remaining * background_g;
-    rgb[pixel * 3U + 2U] = blue + remaining * background_b;
-    transmittance[pixel] = remaining;
-    if (stats != nullptr) {
+    __syncthreads();
+    if (thread_index == 0U && tile_max_contributions != nullptr) {
+        tile_max_contributions[tile] = block_max_contributions;
+    }
+    if (valid_pixel && stats != nullptr) {
         atomicAdd(&stats->evaluated_pairs, evaluated);
         atomicAdd(&stats->contributing_pairs, contributing);
     }
@@ -933,6 +1040,8 @@ __global__ void backward_alpha_tiles_kernel(
     std::uint32_t width, std::uint32_t height,
     float maximum_fragment_alpha,
     float background_r, float background_g, float background_b,
+    const float* final_transmittance,
+    const std::uint64_t* active_ends,
     const float* image_gradient, float* dc_gradient,
     float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
@@ -946,9 +1055,10 @@ __global__ void backward_alpha_tiles_kernel(
     constexpr std::uint32_t threads_per_tile =
         alpha_tile_width * alpha_tile_height;
     // One coalesced load serves every pixel in the tile during both the
-    // front-to-back replay and the reverse gradient traversal.
+    // forward render and the reverse gradient traversal.
     __shared__ DeviceProjectedSplat batch[threads_per_tile];
     __shared__ std::uint32_t batch_sources[threads_per_tile];
+    __shared__ unsigned long long block_active_end;
 
     const std::uint32_t thread_index =
         threadIdx.y * blockDim.x + threadIdx.x;
@@ -965,74 +1075,30 @@ __global__ void backward_alpha_tiles_kernel(
     const std::uint64_t start = tile_starts[tile];
     const std::uint64_t end = tile_ends[tile];
 
-    float remaining = 1.0F;
-    std::uint64_t active_end = end;
-    for (std::uint64_t base = start; base < end;
-         base += threads_per_tile) {
-        const std::uint64_t load_index = base + thread_index;
-        if (load_index < end) {
-            batch[thread_index] =
-                records[record_indices[load_index]].splat;
-        }
-        __syncthreads();
-        const auto batch_count = static_cast<std::uint32_t>(
-            min(
-                static_cast<std::uint64_t>(threads_per_tile),
-                end - base));
-        if (valid_pixel &&
-            remaining > alpha_minimum_transmittance) {
-            for (std::uint32_t index = 0U;
-                 index < batch_count; ++index) {
-                const auto pair = base + index;
-                const auto& splat = batch[index];
-                const int support_x =
-                    static_cast<int>(ceilf(splat.radius_x));
-                const int support_y =
-                    static_cast<int>(ceilf(splat.radius_y));
-                const int center_x =
-                    static_cast<int>(floorf(splat.x));
-                const int center_y =
-                    static_cast<int>(floorf(splat.y));
-                if (static_cast<int>(x) < center_x - support_x ||
-                    static_cast<int>(x) > center_x + support_x ||
-                    static_cast<int>(y) < center_y - support_y ||
-                    static_cast<int>(y) > center_y + support_y) {
-                    continue;
-                }
-                const float delta_x =
-                    (static_cast<float>(x) + 0.5F) - splat.x;
-                const float delta_y =
-                    (static_cast<float>(y) + 0.5F) - splat.y;
-                const float gaussian_weight =
-                    gaussian_weight_device(splat, delta_x, delta_y);
-                const float alpha = fminf(
-                    maximum_fragment_alpha,
-                    splat.opacity * splat.compensation *
-                        gaussian_weight);
-                if (alpha < alpha_minimum_contribution) {
-                    continue;
-                }
-                remaining *= 1.0F - alpha;
-                if (remaining <= alpha_minimum_transmittance) {
-                    active_end = pair + 1U;
-                    break;
-                }
-            }
-        }
-        __syncthreads();
-    }
-
     const auto pixel = valid_pixel
         ? static_cast<std::size_t>(y) * width + x
         : 0U;
+    const std::uint64_t active_end =
+        valid_pixel ? active_ends[pixel] : start;
+    if (thread_index == 0U) {
+        block_active_end = start;
+    }
+    __syncthreads();
+    if (valid_pixel) {
+        atomicMax(&block_active_end, active_end);
+    }
+    __syncthreads();
     const float upstream[3]{
         image_gradient[pixel * 3U],
         image_gradient[pixel * 3U + 1U],
         image_gradient[pixel * 3U + 2U],
     };
     float tail[3]{background_r, background_g, background_b};
-    float transmittance_after = remaining;
-    for (std::uint64_t batch_end = end; batch_end > start;) {
+    float transmittance_after =
+        valid_pixel ? final_transmittance[pixel] : 1.0F;
+    for (std::uint64_t batch_end =
+             min(end, static_cast<std::uint64_t>(block_active_end));
+         batch_end > start;) {
         const auto batch_start =
             batch_end - start > threads_per_tile
             ? batch_end - threads_per_tile
@@ -1185,6 +1251,374 @@ __global__ void backward_alpha_tiles_kernel(
         }
         __syncthreads();
         batch_end = batch_start;
+    }
+}
+
+// Adapted from LichtFeld Studio FastGS blend_backward_cu
+// (GPL-3.0-or-later). DroneGS keeps its own projection, sorting, optimizer,
+// orchestration and public API; this kernel only ports the bucket/checkpoint
+// warp traversal used by the raster backward pass.
+__global__ void backward_alpha_buckets_kernel(
+    const DeviceProjectedRecord* records,
+    const std::uint64_t* sorted_depth_keys,
+    const float* projected_sh_basis,
+    const std::uint32_t* record_indices,
+    const std::uint64_t* tile_starts,
+    const std::uint64_t* tile_ends,
+    const std::uint32_t* bucket_offsets,
+    const std::uint32_t* bucket_tiles,
+    const std::uint32_t* bucket_checkpoints,
+    const std::uint32_t* tile_max_contributions,
+    const std::uint32_t* pixel_contributions,
+    std::uint32_t bucket_count,
+    std::uint32_t width, std::uint32_t height,
+    float maximum_fragment_alpha,
+    const float* final_rgb,
+    const float* image_gradient,
+    float* dc_gradient,
+    float* sh_rest_gradient, std::uint32_t active_sh_degree,
+    float* opacity_logit_gradient,
+    float* projected_geometry_gradient,
+    const float* densification_error_map,
+    const float* densification_edge_map,
+    float* frame_refinement_weight,
+    float* frame_visibility_weight,
+    float* frame_edge_weight,
+    float* frame_abs_projected_gradient) {
+    const std::uint32_t bucket = blockIdx.x;
+    const std::uint32_t lane = threadIdx.x;
+    if (bucket >= bucket_count || lane >= fastgs_checkpoint_interval) {
+        return;
+    }
+
+    const std::uint32_t tile = bucket_tiles[bucket];
+    const std::uint32_t first_bucket =
+        tile == 0U ? 0U : bucket_offsets[tile - 1U];
+    const std::uint32_t tile_bucket = bucket - first_bucket;
+    const std::uint32_t relative =
+        tile_bucket * fastgs_checkpoint_interval + lane;
+    if (tile_bucket * fastgs_checkpoint_interval >=
+        tile_max_contributions[tile]) {
+        return;
+    }
+
+    const std::uint64_t tile_start = tile_starts[tile];
+    const std::uint64_t tile_end = tile_ends[tile];
+    const bool valid_primitive =
+        tile_start + relative < tile_end;
+    std::uint32_t source = 0U;
+    DeviceProjectedSplat splat{};
+    if (valid_primitive) {
+        const std::uint32_t record_index =
+            record_indices[tile_start + relative];
+        splat = records[record_index].splat;
+        source = static_cast<std::uint32_t>(
+            sorted_depth_keys[record_index]);
+    }
+
+    float dc_accum[3]{0.0F, 0.0F, 0.0F};
+    float opacity_accum = 0.0F;
+    float geometry_accum[6]{
+        0.0F, 0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+    float abs_screen_accum[2]{0.0F, 0.0F};
+    float visibility_accum = 0.0F;
+    float refinement_accum = 0.0F;
+    float edge_accum = 0.0F;
+
+    const std::uint32_t tiles_x =
+        width / alpha_tile_width +
+        (width % alpha_tile_width != 0U ? 1U : 0U);
+    const std::uint32_t tile_x = tile % tiles_x;
+    const std::uint32_t tile_y = tile / tiles_x;
+    const std::uint32_t start_x = tile_x * alpha_tile_width;
+    const std::uint32_t start_y = tile_y * alpha_tile_height;
+
+    __shared__ std::uint32_t collected_last_contributor[32];
+    __shared__ float collected_color_after[32][3];
+    __shared__ float collected_transmittance[32];
+    __shared__ float collected_gradient[32][3];
+
+    std::uint32_t last_contributor = 0U;
+    float color_after[3]{0.0F, 0.0F, 0.0F};
+    float transmittance = 1.0F;
+    float upstream[3]{0.0F, 0.0F, 0.0F};
+    constexpr unsigned int warp_mask = 0xffffffffU;
+    constexpr int tile_pixels =
+        static_cast<int>(alpha_tile_width * alpha_tile_height);
+
+#pragma unroll
+    for (int diagonal = 0;
+         diagonal < tile_pixels +
+             static_cast<int>(fastgs_checkpoint_interval) - 1;
+         ++diagonal) {
+        if (diagonal %
+                static_cast<int>(fastgs_checkpoint_interval) ==
+            0) {
+            const int local = diagonal + static_cast<int>(lane);
+            std::uint32_t packed = 0U;
+            bool pixel_in_bounds = false;
+            std::size_t pixel = 0U;
+            if (local < tile_pixels) {
+                packed = bucket_checkpoints[
+                    static_cast<std::size_t>(bucket) *
+                        tile_pixels +
+                    static_cast<std::size_t>(local)];
+                const std::uint32_t local_x =
+                    static_cast<std::uint32_t>(local) %
+                    alpha_tile_width;
+                const std::uint32_t local_y =
+                    static_cast<std::uint32_t>(local) /
+                    alpha_tile_width;
+                const std::uint32_t x = start_x + local_x;
+                const std::uint32_t y = start_y + local_y;
+                pixel_in_bounds = x < width && y < height;
+                pixel = static_cast<std::size_t>(y) * width + x;
+            }
+            const float checkpoint_color[3]{
+                static_cast<float>(packed & 0xffU) *
+                    fastgs_checkpoint_color_inverse_scale,
+                static_cast<float>((packed >> 8U) & 0xffU) *
+                    fastgs_checkpoint_color_inverse_scale,
+                static_cast<float>((packed >> 16U) & 0xffU) *
+                    fastgs_checkpoint_color_inverse_scale,
+            };
+            collected_last_contributor[lane] =
+                pixel_in_bounds
+                ? pixel_contributions[pixel]
+                : 0U;
+            collected_transmittance[lane] =
+                static_cast<float>((packed >> 24U) & 0xffU) /
+                255.0F;
+            for (std::uint32_t channel = 0U;
+                 channel < 3U; ++channel) {
+                collected_color_after[lane][channel] =
+                    pixel_in_bounds
+                    ? final_rgb[pixel * 3U + channel] -
+                          checkpoint_color[channel]
+                    : 0.0F;
+                collected_gradient[lane][channel] =
+                    pixel_in_bounds
+                    ? image_gradient[pixel * 3U + channel]
+                    : 0.0F;
+            }
+            __syncwarp(warp_mask);
+        }
+
+        if (diagonal > 0) {
+            last_contributor = __shfl_up_sync(
+                warp_mask, last_contributor, 1);
+            transmittance = __shfl_up_sync(
+                warp_mask, transmittance, 1);
+            for (std::uint32_t channel = 0U;
+                 channel < 3U; ++channel) {
+                color_after[channel] = __shfl_up_sync(
+                    warp_mask, color_after[channel], 1);
+                upstream[channel] = __shfl_up_sync(
+                    warp_mask, upstream[channel], 1);
+            }
+        }
+
+        const int local =
+            diagonal - static_cast<int>(lane);
+        const bool local_in_tile =
+            local >= 0 && local < tile_pixels;
+        const std::uint32_t local_x = local_in_tile
+            ? static_cast<std::uint32_t>(local) %
+                  alpha_tile_width
+            : 0U;
+        const std::uint32_t local_y = local_in_tile
+            ? static_cast<std::uint32_t>(local) /
+                  alpha_tile_width
+            : 0U;
+        const std::uint32_t x = start_x + local_x;
+        const std::uint32_t y = start_y + local_y;
+        const bool valid_pixel =
+            local_in_tile && x < width && y < height;
+
+        if (lane == 0U && valid_primitive && valid_pixel) {
+            const std::uint32_t shared_index =
+                static_cast<std::uint32_t>(diagonal) %
+                fastgs_checkpoint_interval;
+            last_contributor =
+                collected_last_contributor[shared_index];
+            transmittance =
+                collected_transmittance[shared_index];
+            for (std::uint32_t channel = 0U;
+                 channel < 3U; ++channel) {
+                color_after[channel] =
+                    collected_color_after[
+                        shared_index][channel];
+                upstream[channel] =
+                    collected_gradient[
+                        shared_index][channel];
+            }
+        }
+
+        if (!valid_primitive || !valid_pixel ||
+            relative >= last_contributor) {
+            continue;
+        }
+        const int support_x =
+            static_cast<int>(ceilf(splat.radius_x));
+        const int support_y =
+            static_cast<int>(ceilf(splat.radius_y));
+        const int center_x =
+            static_cast<int>(floorf(splat.x));
+        const int center_y =
+            static_cast<int>(floorf(splat.y));
+        if (static_cast<int>(x) < center_x - support_x ||
+            static_cast<int>(x) > center_x + support_x ||
+            static_cast<int>(y) < center_y - support_y ||
+            static_cast<int>(y) > center_y + support_y) {
+            continue;
+        }
+
+        const std::size_t pixel =
+            static_cast<std::size_t>(y) * width + x;
+        const float delta_x =
+            (static_cast<float>(x) + 0.5F) - splat.x;
+        const float delta_y =
+            (static_cast<float>(y) + 0.5F) - splat.y;
+        const float gaussian_weight =
+            gaussian_weight_device(splat, delta_x, delta_y);
+        const float raw_alpha =
+            splat.opacity * splat.compensation *
+            gaussian_weight;
+        const float alpha =
+            fminf(maximum_fragment_alpha, raw_alpha);
+        if (alpha < alpha_minimum_contribution) {
+            continue;
+        }
+
+        const float blending_weight =
+            transmittance * alpha;
+        visibility_accum += blending_weight;
+        if (densification_error_map != nullptr) {
+            refinement_accum +=
+                blending_weight *
+                densification_error_map[pixel];
+        }
+        if (densification_edge_map != nullptr) {
+            edge_accum +=
+                blending_weight *
+                densification_edge_map[pixel];
+        }
+
+        for (std::uint32_t channel = 0U;
+             channel < 3U; ++channel) {
+            if (splat.color[channel] > 0.0F &&
+                splat.color[channel] < maximum_splat_color) {
+                dc_accum[channel] +=
+                    upstream[channel] * blending_weight;
+            }
+            color_after[channel] -=
+                blending_weight * splat.color[channel];
+        }
+
+        const float one_minus_alpha = 1.0F - alpha;
+        const float inverse_one_minus_alpha =
+            1.0F / fmaxf(one_minus_alpha, 1.0e-4F);
+        float alpha_gradient = 0.0F;
+        for (std::uint32_t channel = 0U;
+             channel < 3U; ++channel) {
+            alpha_gradient += upstream[channel] *
+                (transmittance * splat.color[channel] -
+                 color_after[channel] *
+                     inverse_one_minus_alpha);
+        }
+        if (raw_alpha < maximum_fragment_alpha) {
+            opacity_accum +=
+                alpha_gradient * gaussian_weight *
+                splat.compensation * splat.opacity *
+                (1.0F - splat.opacity);
+            const float squared_distance_gradient =
+                -0.5F * alpha_gradient * splat.opacity *
+                splat.compensation * gaussian_weight;
+            const float screen_x_contribution =
+                squared_distance_gradient * -2.0F *
+                (splat.conic_xx * delta_x +
+                 splat.conic_xy * delta_y);
+            const float screen_y_contribution =
+                squared_distance_gradient * -2.0F *
+                (splat.conic_xy * delta_x +
+                 splat.conic_yy * delta_y);
+            geometry_accum[0] += screen_x_contribution;
+            geometry_accum[1] += screen_y_contribution;
+            geometry_accum[2] +=
+                squared_distance_gradient *
+                delta_x * delta_x;
+            geometry_accum[3] +=
+                squared_distance_gradient *
+                2.0F * delta_x * delta_y;
+            geometry_accum[4] +=
+                squared_distance_gradient *
+                delta_y * delta_y;
+            geometry_accum[5] +=
+                alpha_gradient * splat.opacity *
+                gaussian_weight;
+            abs_screen_accum[0] +=
+                fabsf(screen_x_contribution);
+            abs_screen_accum[1] +=
+                fabsf(screen_y_contribution);
+        }
+        transmittance *= one_minus_alpha;
+    }
+
+    if (!valid_primitive) {
+        return;
+    }
+    const std::uint32_t active_coefficients =
+        (active_sh_degree + 1U) *
+            (active_sh_degree + 1U) -
+        1U;
+    for (std::uint32_t channel = 0U;
+         channel < 3U; ++channel) {
+        atomicAdd(
+            &dc_gradient[source * 3U + channel],
+            sh_c0 * dc_accum[channel]);
+        for (std::uint32_t coefficient = 0U;
+             coefficient < active_coefficients;
+             ++coefficient) {
+            atomicAdd(
+                &sh_rest_gradient[
+                    source * maximum_sh_rest_values +
+                    channel *
+                        maximum_sh_rest_coefficients +
+                    coefficient],
+                projected_sh_basis[
+                    source * 16U + coefficient + 1U] *
+                    dc_accum[channel]);
+        }
+    }
+    atomicAdd(
+        &opacity_logit_gradient[source],
+        opacity_accum);
+    for (std::uint32_t component = 0U;
+         component < 6U; ++component) {
+        atomicAdd(
+            &projected_geometry_gradient[
+                source * 6U + component],
+            geometry_accum[component]);
+    }
+    if (frame_visibility_weight != nullptr) {
+        atomicAdd(
+            &frame_visibility_weight[source],
+            visibility_accum);
+        atomicAdd(
+            &frame_refinement_weight[source],
+            refinement_accum);
+        atomicAdd(
+            &frame_edge_weight[source],
+            edge_accum);
+    }
+    if (frame_abs_projected_gradient != nullptr) {
+        atomicAdd(
+            &frame_abs_projected_gradient[source * 2U],
+            abs_screen_accum[0]);
+        atomicAdd(
+            &frame_abs_projected_gradient[
+                source * 2U + 1U],
+            abs_screen_accum[1]);
     }
 }
 
@@ -1994,6 +2428,386 @@ __global__ void ordered_objective_gradient_kernel(
         }
         image_gradient[offset] =
             l1_gradient + dssim_normalizer * ssim_gradient;
+    }
+}
+
+// Adapted from LichtFeld Studio fusedL1SSIMForwardCUDA and
+// fusedL1SSIMBackwardCUDA (GPL-3.0-or-later). This variant keeps DroneGS'
+// interleaved RGB layout, uint8 targets, valid-window SSIM semantics and
+// active-pixel L1 normalization.
+__global__ void fused_ordered_l1_ssim_forward_kernel(
+    const float* prediction, const float* transmittance,
+    const std::uint8_t* target,
+    float* loss_sum, unsigned int* active_pixels,
+    float* ssim_values, float* backward_terms,
+    std::uint32_t width, std::uint32_t height) {
+    constexpr int block_width = 16;
+    constexpr int block_height = 16;
+    constexpr int halo = static_cast<int>(ssim_window_radius);
+    constexpr int shared_width = block_width + 2 * halo;
+    constexpr int shared_height = block_height + 2 * halo;
+    __shared__ float image_tile[shared_height][shared_width][2];
+    __shared__ float horizontal[shared_height][block_width][5];
+
+    const int x =
+        static_cast<int>(blockIdx.x) * block_width + threadIdx.x;
+    const int y =
+        static_cast<int>(blockIdx.y) * block_height + threadIdx.y;
+    const bool in_bounds =
+        x < static_cast<int>(width) &&
+        y < static_cast<int>(height);
+    const std::size_t pixel = in_bounds
+        ? static_cast<std::size_t>(y) * width +
+              static_cast<std::size_t>(x)
+        : 0U;
+    float pixel_l1 = 0.0F;
+
+    for (std::uint32_t channel = 0U;
+         channel < 3U; ++channel) {
+        constexpr int tile_items = shared_width * shared_height;
+        constexpr int block_threads = block_width * block_height;
+        const int flat_thread =
+            threadIdx.y * block_width + threadIdx.x;
+        for (int item = flat_thread;
+             item < tile_items; item += block_threads) {
+            const int local_y = item / shared_width;
+            const int local_x = item % shared_width;
+            const int source_x =
+                static_cast<int>(blockIdx.x) * block_width +
+                local_x - halo;
+            const int source_y =
+                static_cast<int>(blockIdx.y) * block_height +
+                local_y - halo;
+            float prediction_value = 0.0F;
+            float target_value = 0.0F;
+            if (source_x >= 0 &&
+                source_x < static_cast<int>(width) &&
+                source_y >= 0 &&
+                source_y < static_cast<int>(height)) {
+                const auto source =
+                    (static_cast<std::size_t>(source_y) * width +
+                     static_cast<std::size_t>(source_x)) *
+                        3U +
+                    channel;
+                prediction_value = prediction[source];
+                target_value =
+                    static_cast<float>(target[source]) / 255.0F;
+            }
+            image_tile[local_y][local_x][0] =
+                prediction_value;
+            image_tile[local_y][local_x][1] =
+                target_value;
+        }
+        __syncthreads();
+
+        const int convolution_x = threadIdx.x + halo;
+        for (int pass = 0; pass < 2; ++pass) {
+            const int convolution_y =
+                threadIdx.y + pass * block_height;
+            if (convolution_y < shared_height) {
+                float moments[5]{
+                    0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+#pragma unroll
+                for (int offset = -halo;
+                     offset <= halo; ++offset) {
+                    const float weight =
+                        ssim_gaussian_weights[offset + halo];
+                    const float predicted =
+                        image_tile[
+                            convolution_y]
+                            [convolution_x + offset][0];
+                    const float expected =
+                        image_tile[
+                            convolution_y]
+                            [convolution_x + offset][1];
+                    moments[0] += weight * predicted;
+                    moments[1] += weight * expected;
+                    moments[2] +=
+                        weight * predicted * predicted;
+                    moments[3] +=
+                        weight * expected * expected;
+                    moments[4] +=
+                        weight * predicted * expected;
+                }
+                for (int moment = 0; moment < 5; ++moment) {
+                    horizontal[convolution_y]
+                              [threadIdx.x][moment] =
+                        moments[moment];
+                }
+            }
+        }
+        __syncthreads();
+
+        if (in_bounds) {
+            float moments[5]{
+                0.0F, 0.0F, 0.0F, 0.0F, 0.0F};
+            const int center_y = threadIdx.y + halo;
+#pragma unroll
+            for (int offset = -halo;
+                 offset <= halo; ++offset) {
+                const float weight =
+                    ssim_gaussian_weights[offset + halo];
+                for (int moment = 0;
+                     moment < 5; ++moment) {
+                    moments[moment] +=
+                        weight *
+                        horizontal[center_y + offset]
+                                  [threadIdx.x][moment];
+                }
+            }
+            const float prediction_mean = moments[0];
+            const float target_mean = moments[1];
+            const float raw_prediction_variance =
+                moments[2] -
+                prediction_mean * prediction_mean;
+            const float prediction_variance =
+                fmaxf(0.0F, raw_prediction_variance);
+            const float target_variance = fmaxf(
+                0.0F,
+                moments[3] - target_mean * target_mean);
+            const float covariance =
+                moments[4] - prediction_mean * target_mean;
+            constexpr float c1 = 0.01F * 0.01F;
+            constexpr float c2 = 0.03F * 0.03F;
+            const float luminance_denominator =
+                prediction_mean * prediction_mean +
+                target_mean * target_mean + c1;
+            const float contrast_denominator =
+                prediction_variance + target_variance + c2;
+            const float luminance_numerator =
+                2.0F * prediction_mean * target_mean + c1;
+            const float contrast_numerator =
+                2.0F * covariance + c2;
+            const float ssim =
+                luminance_numerator * contrast_numerator /
+                (luminance_denominator *
+                 contrast_denominator);
+            const bool valid_center =
+                x >= halo &&
+                x + halo < static_cast<int>(width) &&
+                y >= halo &&
+                y + halo < static_cast<int>(height);
+            if (valid_center) {
+                const std::uint32_t valid_width =
+                    width - 2U * ssim_window_radius;
+                const std::size_t valid_pixel =
+                    static_cast<std::size_t>(
+                        y - halo) *
+                        valid_width +
+                    static_cast<std::size_t>(x - halo);
+                ssim_values[
+                    valid_pixel * 3U + channel] = ssim;
+                if (backward_terms != nullptr) {
+                    const std::size_t term =
+                        (pixel * 3U + channel) * 5U;
+                    backward_terms[term] =
+                        prediction_mean;
+                    backward_terms[term + 1U] =
+                        target_mean;
+                    backward_terms[term + 2U] =
+                        2.0F * target_mean *
+                            contrast_numerator /
+                            (luminance_denominator *
+                             contrast_denominator) -
+                        ssim * 2.0F *
+                            prediction_mean /
+                            luminance_denominator;
+                    backward_terms[term + 3U] =
+                        2.0F * luminance_numerator /
+                        (luminance_denominator *
+                         contrast_denominator);
+                    backward_terms[term + 4U] =
+                        raw_prediction_variance > 0.0F
+                        ? -ssim * 2.0F /
+                              contrast_denominator
+                        : 0.0F;
+                }
+            }
+            const std::size_t sample =
+                pixel * 3U + channel;
+            const float target_value =
+                static_cast<float>(target[sample]) / 255.0F;
+            pixel_l1 +=
+                fabsf(prediction[sample] - target_value);
+        }
+        __syncthreads();
+    }
+
+    if (in_bounds && transmittance[pixel] < 1.0F) {
+        atomicAdd(loss_sum, pixel_l1);
+        atomicAdd(active_pixels, 1U);
+    }
+}
+
+__global__ void fused_ordered_l1_ssim_backward_kernel(
+    const float* prediction, const float* transmittance,
+    const std::uint8_t* target,
+    const unsigned int* active_pixels,
+    const float* backward_terms,
+    float* image_gradient,
+    std::uint32_t width, std::uint32_t height) {
+    constexpr int block_width = 16;
+    constexpr int block_height = 16;
+    constexpr int halo = static_cast<int>(ssim_window_radius);
+    constexpr int shared_width = block_width + 2 * halo;
+    constexpr int shared_height = block_height + 2 * halo;
+    __shared__ float derivative_tile[shared_height][shared_width][3];
+    __shared__ float horizontal[shared_height][block_width][3];
+
+    const int x =
+        static_cast<int>(blockIdx.x) * block_width + threadIdx.x;
+    const int y =
+        static_cast<int>(blockIdx.y) * block_height + threadIdx.y;
+    const bool in_bounds =
+        x < static_cast<int>(width) &&
+        y < static_cast<int>(height);
+    const std::size_t pixel = in_bounds
+        ? static_cast<std::size_t>(y) * width +
+              static_cast<std::size_t>(x)
+        : 0U;
+    const std::size_t valid_sample_count =
+        static_cast<std::size_t>(
+            width - 2U * ssim_window_radius) *
+        (height - 2U * ssim_window_radius) * 3U;
+    const float dssim_normalizer =
+        -dssim_objective_weight /
+        static_cast<float>(valid_sample_count);
+
+    for (std::uint32_t channel = 0U;
+         channel < 3U; ++channel) {
+        constexpr int tile_items = shared_width * shared_height;
+        constexpr int block_threads = block_width * block_height;
+        const int flat_thread =
+            threadIdx.y * block_width + threadIdx.x;
+        for (int item = flat_thread;
+             item < tile_items; item += block_threads) {
+            const int local_y = item / shared_width;
+            const int local_x = item % shared_width;
+            const int center_x =
+                static_cast<int>(blockIdx.x) * block_width +
+                local_x - halo;
+            const int center_y =
+                static_cast<int>(blockIdx.y) * block_height +
+                local_y - halo;
+            float values[3]{0.0F, 0.0F, 0.0F};
+            if (center_x >= halo &&
+                center_x + halo <
+                    static_cast<int>(width) &&
+                center_y >= halo &&
+                center_y + halo <
+                    static_cast<int>(height)) {
+                const auto center_sample =
+                    (static_cast<std::size_t>(center_y) *
+                         width +
+                     static_cast<std::size_t>(center_x)) *
+                        3U +
+                    channel;
+                const auto term = center_sample * 5U;
+                const float prediction_mean =
+                    backward_terms[term];
+                const float target_mean =
+                    backward_terms[term + 1U];
+                const float mean_term =
+                    backward_terms[term + 2U];
+                const float target_term =
+                    backward_terms[term + 3U];
+                const float prediction_term =
+                    backward_terms[term + 4U];
+                values[0] = dssim_normalizer *
+                    (mean_term -
+                     target_term * target_mean -
+                     prediction_term *
+                         prediction_mean);
+                values[1] =
+                    dssim_normalizer * target_term;
+                values[2] =
+                    dssim_normalizer * prediction_term;
+            }
+            for (int derivative = 0;
+                 derivative < 3; ++derivative) {
+                derivative_tile[local_y][local_x][derivative] =
+                    values[derivative];
+            }
+        }
+        __syncthreads();
+
+        const int convolution_x = threadIdx.x + halo;
+        for (int pass = 0; pass < 2; ++pass) {
+            const int convolution_y =
+                threadIdx.y + pass * block_height;
+            if (convolution_y < shared_height) {
+                float values[3]{0.0F, 0.0F, 0.0F};
+#pragma unroll
+                for (int offset = -halo;
+                     offset <= halo; ++offset) {
+                    const float weight =
+                        ssim_gaussian_weights[offset + halo];
+                    for (int derivative = 0;
+                         derivative < 3; ++derivative) {
+                        values[derivative] +=
+                            weight *
+                            derivative_tile[
+                                convolution_y]
+                                [convolution_x + offset]
+                                [derivative];
+                    }
+                }
+                for (int derivative = 0;
+                     derivative < 3; ++derivative) {
+                    horizontal[convolution_y]
+                              [threadIdx.x][derivative] =
+                        values[derivative];
+                }
+            }
+        }
+        __syncthreads();
+
+        if (in_bounds) {
+            float values[3]{0.0F, 0.0F, 0.0F};
+            const int center_y = threadIdx.y + halo;
+#pragma unroll
+            for (int offset = -halo;
+                 offset <= halo; ++offset) {
+                const float weight =
+                    ssim_gaussian_weights[offset + halo];
+                for (int derivative = 0;
+                     derivative < 3; ++derivative) {
+                    values[derivative] +=
+                        weight *
+                        horizontal[center_y + offset]
+                                  [threadIdx.x][derivative];
+                }
+            }
+            const std::size_t sample =
+                pixel * 3U + channel;
+            const float predicted = prediction[sample];
+            const float expected =
+                static_cast<float>(target[sample]) / 255.0F;
+            const float ssim_gradient =
+                values[0] +
+                expected * values[1] +
+                predicted * values[2];
+            const unsigned int active = *active_pixels;
+            const bool contributes =
+                active != 0U &&
+                transmittance[pixel] < 1.0F;
+            const float l1_normalizer =
+                contributes
+                ? l1_objective_weight /
+                      (3.0F *
+                       static_cast<float>(active))
+                : 0.0F;
+            const float difference = predicted - expected;
+            const float l1_gradient =
+                difference > 0.0F
+                ? l1_normalizer
+                : (difference < 0.0F
+                       ? -l1_normalizer
+                       : 0.0F);
+            image_gradient[sample] =
+                l1_gradient + ssim_gradient;
+        }
+        __syncthreads();
     }
 }
 
@@ -2833,6 +3647,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
 
     DeviceAllocation<float> device_rgb(pixel_count * 3U);
     DeviceAllocation<float> device_transmittance(pixel_count);
+    DeviceAllocation<std::uint64_t> device_active_ends(pixel_count);
     DeviceAllocation<DeviceRenderStats> device_stats(1U);
     device_stats.zero();
     const dim3 render_threads(alpha_tile_width, alpha_tile_height);
@@ -2845,7 +3660,10 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         camera.width, camera.height,
         alpha_maximum,
         background[0], background[1], background[2],
-        device_rgb.data(), device_transmittance.data(), device_stats.data());
+        device_rgb.data(), device_transmittance.data(),
+        device_active_ends.data(),
+        nullptr, nullptr, nullptr, nullptr,
+        device_stats.data());
     require_cuda(cudaGetLastError(), "launch tiled alpha renderer");
 
     std::optional<DeviceAllocation<float>> device_image_gradient;
@@ -2885,6 +3703,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             camera.width, camera.height,
             alpha_maximum,
             background[0], background[1], background[2],
+            device_transmittance.data(), device_active_ends.data(),
             device_image_gradient->data(), device_dc_gradient->data(),
             device_sh_rest_gradient->data(), active_sh_degree,
             device_opacity_logit_gradient->data(),
@@ -3396,6 +4215,8 @@ struct OrderedAlphaTrainingContext::Impl {
         target.ensure(maximum_pixels * 3U);
         rgb.ensure(maximum_pixels * 3U);
         transmittance.ensure(maximum_pixels);
+        active_ends.ensure(maximum_pixels);
+        pixel_contributions.ensure(maximum_pixels);
         image_gradient.ensure(maximum_pixels * 3U);
         loss_sum.ensure(1U);
         active_pixels.ensure(1U);
@@ -3560,6 +4381,66 @@ struct OrderedAlphaTrainingContext::Impl {
             "sort persistent tile pairs");
     }
 
+    std::uint32_t build_fastgs_buckets(std::size_t tile_count) {
+        if (tile_count == 0U ||
+            tile_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<int>::max())) {
+            throw std::invalid_argument(
+                "FastGS bucket construction requires a valid tile count");
+        }
+        bucket_counts.ensure(tile_count);
+        bucket_offsets.ensure(tile_count);
+        tile_max_contributions.ensure(tile_count);
+        const auto blocks = static_cast<std::uint32_t>(
+            (tile_count + threads_per_block - 1U) /
+            threads_per_block);
+        extract_bucket_counts_kernel<<<blocks, threads_per_block>>>(
+            tile_starts.data(), tile_ends.data(),
+            bucket_counts.data(), tile_count);
+        require_cuda(
+            cudaGetLastError(),
+            "launch FastGS bucket count extraction");
+
+        std::size_t temporary_bytes = 0U;
+        require_cuda(
+            cub::DeviceScan::InclusiveSum(
+                nullptr, temporary_bytes,
+                bucket_counts.data(), bucket_offsets.data(),
+                static_cast<int>(tile_count)),
+            "query FastGS bucket scan storage");
+        temporary_storage.ensure(std::max<std::size_t>(
+            1U, temporary_bytes));
+        require_cuda(
+            cub::DeviceScan::InclusiveSum(
+                temporary_storage.data(), temporary_bytes,
+                bucket_counts.data(), bucket_offsets.data(),
+                static_cast<int>(tile_count)),
+            "scan FastGS bucket counts");
+
+        std::uint32_t bucket_count = 0U;
+        require_cuda(
+            cudaMemcpy(
+                &bucket_count,
+                bucket_offsets.data() + tile_count - 1U,
+                sizeof(bucket_count), cudaMemcpyDeviceToHost),
+            "copy FastGS bucket count");
+        if (bucket_count == 0U) {
+            throw std::runtime_error(
+                "FastGS bucket construction produced no buckets");
+        }
+        bucket_tiles.ensure(bucket_count);
+        bucket_checkpoints.ensure(
+            static_cast<std::size_t>(bucket_count) *
+            alpha_tile_width * alpha_tile_height);
+        initialize_bucket_tiles_kernel<<<blocks, threads_per_block>>>(
+            bucket_offsets.data(), bucket_tiles.data(), tile_count);
+        require_cuda(
+            cudaGetLastError(),
+            "launch FastGS bucket tile initialization");
+        return bucket_count;
+    }
+
     float reduce_metric_values(std::size_t value_count) {
         if (value_count == 0U ||
             value_count >
@@ -3689,6 +4570,12 @@ struct OrderedAlphaTrainingContext::Impl {
             cudaGetLastError(),
             "launch persistent tile range construction");
 
+        const bool use_structural_fastgs =
+            fastgs_compatibility && compute_gradient;
+        const std::uint32_t fastgs_bucket_count =
+            use_structural_fastgs
+            ? build_fastgs_buckets(tile_count)
+            : 0U;
         loss_sum.zero(1U);
         active_pixels.zero(1U);
         const dim3 render_threads(
@@ -3703,18 +4590,41 @@ struct OrderedAlphaTrainingContext::Impl {
                 ? fastgs_maximum_fragment_alpha
                 : alpha_maximum,
             0.0F, 0.0F, 0.0F,
-            rgb.data(), transmittance.data(), nullptr);
+            rgb.data(), transmittance.data(),
+            active_ends.data(),
+            use_structural_fastgs ? bucket_offsets.data() : nullptr,
+            use_structural_fastgs ? pixel_contributions.data() : nullptr,
+            use_structural_fastgs
+                ? tile_max_contributions.data()
+                : nullptr,
+            use_structural_fastgs ? bucket_checkpoints.data() : nullptr,
+            nullptr);
         require_cuda(
             cudaGetLastError(),
             "launch persistent ordered renderer");
         const auto pixel_blocks = static_cast<std::uint32_t>(
             (pixel_count + block_size - 1U) / block_size);
-        ordered_l1_loss_kernel<<<pixel_blocks, block_size>>>(
-            rgb.data(), transmittance.data(), target.data(),
-            loss_sum.data(), active_pixels.data(), pixel_count);
-        require_cuda(
-            cudaGetLastError(),
-            "launch persistent ordered L1 loss");
+        if (use_structural_fastgs) {
+            fused_ordered_l1_ssim_forward_kernel<<<
+                render_blocks, render_threads>>>(
+                rgb.data(), transmittance.data(), target.data(),
+                loss_sum.data(), active_pixels.data(),
+                metric_values.data(),
+                compute_gradient
+                    ? ssim_backward_terms.data()
+                    : nullptr,
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch fused ordered L1/SSIM forward");
+        } else {
+            ordered_l1_loss_kernel<<<pixel_blocks, block_size>>>(
+                rgb.data(), transmittance.data(), target.data(),
+                loss_sum.data(), active_pixels.data(), pixel_count);
+            require_cuda(
+                cudaGetLastError(),
+                "launch persistent ordered L1 loss");
+        }
 
         float host_loss_sum = 0.0F;
         unsigned int host_active_pixels = 0U;
@@ -3730,28 +4640,32 @@ struct OrderedAlphaTrainingContext::Impl {
         const std::size_t sample_count = pixel_count * 3U;
         const auto sample_blocks = static_cast<std::uint32_t>(
             (sample_count + block_size - 1U) / block_size);
-        horizontal_ssim_moments_kernel<<<
-            sample_blocks, block_size>>>(
-            rgb.data(), target.data(),
-            metric_horizontal_moments.data(),
-            camera.width, camera.height);
-        require_cuda(
-            cudaGetLastError(),
-            "launch ordered horizontal SSIM moments");
         const std::size_t valid_sample_count =
             static_cast<std::size_t>(
                 camera.width - 2U * ssim_window_radius) *
             (camera.height - 2U * ssim_window_radius) * 3U;
-        const auto valid_blocks = static_cast<std::uint32_t>(
-            (valid_sample_count + block_size - 1U) / block_size);
-        ssim_values_kernel<<<valid_blocks, block_size>>>(
-            metric_horizontal_moments.data(),
-            metric_values.data(),
-            compute_gradient ? ssim_backward_terms.data() : nullptr,
-            camera.width, camera.height);
-        require_cuda(
-            cudaGetLastError(),
-            "launch ordered SSIM objective");
+        if (!use_structural_fastgs) {
+            horizontal_ssim_moments_kernel<<<
+                sample_blocks, block_size>>>(
+                rgb.data(), target.data(),
+                metric_horizontal_moments.data(),
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered horizontal SSIM moments");
+            const auto valid_blocks = static_cast<std::uint32_t>(
+                (valid_sample_count + block_size - 1U) / block_size);
+            ssim_values_kernel<<<valid_blocks, block_size>>>(
+                metric_horizontal_moments.data(),
+                metric_values.data(),
+                compute_gradient
+                    ? ssim_backward_terms.data()
+                    : nullptr,
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered SSIM objective");
+        }
         const float ssim_sum =
             reduce_metric_values(valid_sample_count);
         const float mean_ssim =
@@ -3812,14 +4726,28 @@ struct OrderedAlphaTrainingContext::Impl {
             }
         }
         if (compute_gradient) {
-            ordered_objective_gradient_kernel<<<
-                pixel_blocks, block_size>>>(
-                rgb.data(), transmittance.data(), target.data(),
-                active_pixels.data(), ssim_backward_terms.data(),
-                image_gradient.data(), camera.width, camera.height);
+            if (use_structural_fastgs) {
+                fused_ordered_l1_ssim_backward_kernel<<<
+                    render_blocks, render_threads>>>(
+                    rgb.data(), transmittance.data(),
+                    target.data(), active_pixels.data(),
+                    ssim_backward_terms.data(),
+                    image_gradient.data(),
+                    camera.width, camera.height);
+            } else {
+                ordered_objective_gradient_kernel<<<
+                    pixel_blocks, block_size>>>(
+                    rgb.data(), transmittance.data(),
+                    target.data(), active_pixels.data(),
+                    ssim_backward_terms.data(),
+                    image_gradient.data(),
+                    camera.width, camera.height);
+            }
             require_cuda(
                 cudaGetLastError(),
-                "launch persistent ordered objective gradient");
+                use_structural_fastgs
+                    ? "launch fused ordered L1/SSIM backward"
+                    : "launch persistent ordered objective gradient");
             dc_gradient.zero(gaussian_count * 3U);
             sh_rest_gradient.zero(
                 gaussian_count * maximum_sh_rest_values);
@@ -3832,26 +4760,57 @@ struct OrderedAlphaTrainingContext::Impl {
             xyz_gradient.zero(gaussian_count * 3U);
             log_scale_gradient.zero(gaussian_count * 3U);
             rotation_gradient.zero(gaussian_count * 4U);
-            backward_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
-                sorted_records.data(), sorted_depth_keys.data(),
-                projected_sh_basis.data(),
-                sorted_record_indices.data(),
-                tile_starts.data(), tile_ends.data(),
-                camera.width, camera.height,
-                fastgs_compatibility
-                    ? fastgs_maximum_fragment_alpha
-                    : alpha_maximum,
-                0.0F, 0.0F, 0.0F,
-                image_gradient.data(), dc_gradient.data(),
-                sh_rest_gradient.data(), active_sh_degree,
-                opacity_gradient.data(),
-                projected_geometry_gradient.data(),
-                densification_error_map.data(),
-                densification_edge_map.data(),
-                frame_refinement_weight.data(),
-                frame_visibility_weight.data(),
-                frame_edge_weight.data(),
-                frame_abs_projected_gradient.data());
+            if (use_structural_fastgs) {
+                backward_alpha_buckets_kernel<<<
+                    fastgs_bucket_count,
+                    fastgs_checkpoint_interval>>>(
+                    sorted_records.data(),
+                    sorted_depth_keys.data(),
+                    projected_sh_basis.data(),
+                    sorted_record_indices.data(),
+                    tile_starts.data(), tile_ends.data(),
+                    bucket_offsets.data(),
+                    bucket_tiles.data(),
+                    bucket_checkpoints.data(),
+                    tile_max_contributions.data(),
+                    pixel_contributions.data(),
+                    fastgs_bucket_count,
+                    camera.width, camera.height,
+                    fastgs_maximum_fragment_alpha,
+                    rgb.data(), image_gradient.data(),
+                    dc_gradient.data(),
+                    sh_rest_gradient.data(),
+                    active_sh_degree,
+                    opacity_gradient.data(),
+                    projected_geometry_gradient.data(),
+                    densification_error_map.data(),
+                    densification_edge_map.data(),
+                    frame_refinement_weight.data(),
+                    frame_visibility_weight.data(),
+                    frame_edge_weight.data(),
+                    frame_abs_projected_gradient.data());
+            } else {
+                backward_alpha_tiles_kernel<<<
+                    render_blocks, render_threads>>>(
+                    sorted_records.data(), sorted_depth_keys.data(),
+                    projected_sh_basis.data(),
+                    sorted_record_indices.data(),
+                    tile_starts.data(), tile_ends.data(),
+                    camera.width, camera.height,
+                    alpha_maximum,
+                    0.0F, 0.0F, 0.0F,
+                    transmittance.data(), active_ends.data(),
+                    image_gradient.data(), dc_gradient.data(),
+                    sh_rest_gradient.data(), active_sh_degree,
+                    opacity_gradient.data(),
+                    projected_geometry_gradient.data(),
+                    densification_error_map.data(),
+                    densification_edge_map.data(),
+                    frame_refinement_weight.data(),
+                    frame_visibility_weight.data(),
+                    frame_edge_weight.data(),
+                    frame_abs_projected_gradient.data());
+            }
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered backward");
@@ -4495,10 +5454,17 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<std::uint32_t> sorted_record_indices;
     ReusableDeviceAllocation<std::uint64_t> tile_starts;
     ReusableDeviceAllocation<std::uint64_t> tile_ends;
+    ReusableDeviceAllocation<std::uint32_t> bucket_counts;
+    ReusableDeviceAllocation<std::uint32_t> bucket_offsets;
+    ReusableDeviceAllocation<std::uint32_t> bucket_tiles;
+    ReusableDeviceAllocation<std::uint32_t> bucket_checkpoints;
+    ReusableDeviceAllocation<std::uint32_t> pixel_contributions;
+    ReusableDeviceAllocation<std::uint32_t> tile_max_contributions;
     ReusableDeviceAllocation<std::uint8_t> temporary_storage;
     ReusableDeviceAllocation<std::uint8_t> target;
     ReusableDeviceAllocation<float> rgb;
     ReusableDeviceAllocation<float> transmittance;
+    ReusableDeviceAllocation<std::uint64_t> active_ends;
     ReusableDeviceAllocation<float> image_gradient;
     ReusableDeviceAllocation<float> loss_sum;
     ReusableDeviceAllocation<unsigned int> active_pixels;
