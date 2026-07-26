@@ -1,16 +1,21 @@
 import { promises as fs } from "node:fs";
-import { NextResponse } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const previewPath =
-  process.env.DRONEGS_PROGRESS_PREVIEW ??
-  "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000/preview.png";
+const previewPaths = {
+  dronegs:
+    "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000/preview.png",
+  lichtfeld:
+    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval/preview.png",
+};
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const requested = request.nextUrl.searchParams.get("engine");
+  const engine = requested === "lichtfeld" ? "lichtfeld" : "dronegs";
   try {
-    const image = await fs.readFile(previewPath);
+    const image = await fs.readFile(previewPaths[engine]);
     return new NextResponse(image, {
       headers: {
         "Content-Type": "image/png",

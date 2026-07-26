@@ -7,52 +7,135 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const execFileAsync = promisify(execFile);
-const runDirectory =
-  process.env.DRONEGS_PROGRESS_RUN ??
-  "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000";
-const logPath =
-  process.env.DRONEGS_PROGRESS_LOG ??
-  "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000.log";
-const exitPath =
-  process.env.DRONEGS_PROGRESS_EXIT ??
-  "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000.exit";
-const totalIterations = Number(
-  process.env.DRONEGS_PROGRESS_ITERATIONS ?? "15000",
-);
+const totalIterations = 15_000;
 
-type ProgressEvent = {
-  event: string;
-  iteration?: number;
-  iterations?: number;
-  loss?: number;
-  gaussians?: number;
-  added?: number;
-  pruned?: number;
+const paths = {
+  dronegs: {
+    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000",
+    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev38-fastgs-15000.log",
+  },
+  lichtfeld: {
+    run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38",
+    log: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38/stdout.log",
+  },
+  commonEvaluation:
+    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval",
 };
 
-function parseEvents(content: string): ProgressEvent[] {
-  const events: ProgressEvent[] = [];
-  for (const line of content.split(/\r?\n/)) {
-    if (!line.startsWith("{")) continue;
-    try {
-      const event = JSON.parse(line) as ProgressEvent;
-      if (typeof event.event === "string") events.push(event);
-    } catch {
-      // Human-readable diagnostics may share the same log.
-    }
+type Point = {
+  iteration: number;
+  loss: number | null;
+  gaussians: number | null;
+};
+
+type Manifest = {
+  status?: string;
+  metrics?: Record<string, number | string | null>;
+  timings?: Record<string, number>;
+};
+
+async function readText(path: string) {
+  try {
+    return await fs.readFile(path, "utf8");
+  } catch {
+    return "";
   }
-  return events;
 }
 
-async function readJson(path: string) {
+async function readJson<T>(path: string): Promise<T | null> {
   try {
-    return JSON.parse(await fs.readFile(path, "utf8")) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(await fs.readFile(path, "utf8")) as T;
   } catch {
     return null;
   }
+}
+
+async function stats(path: string) {
+  try {
+    return await fs.stat(path);
+  } catch {
+    return null;
+  }
+}
+
+function compactHistory(points: Point[], maximum = 32) {
+  if (points.length <= maximum) return points;
+  const compact: Point[] = [];
+  for (let index = 0; index < maximum; index += 1) {
+    const source = Math.round((index * (points.length - 1)) / (maximum - 1));
+    compact.push(points[source]);
+  }
+  return compact;
+}
+
+function timeEstimate(iteration: number, startedAt: number, finished = false) {
+  const elapsedSeconds = Math.max(0, (Date.now() - startedAt) / 1000);
+  const etaSeconds =
+    finished || iteration <= 0
+      ? null
+      : Math.max(
+          0,
+          (elapsedSeconds * totalIterations) / iteration - elapsedSeconds,
+        );
+  return { elapsedSeconds, etaSeconds };
+}
+
+function fatalLines(content: string) {
+  return content
+    .replaceAll("\r", "\n")
+    .split("\n")
+    .filter((line) =>
+      /out of memory|CUDA error|terminate called|Traceback|fatal/i.test(line),
+    )
+    .slice(-4);
+}
+
+function droneProgress(content: string) {
+  const points: Point[] = [];
+  for (const line of content.split(/\r?\n/)) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      if (event.event !== "progress") continue;
+      points.push({
+        iteration: Number(event.iteration),
+        loss: Number(event.loss),
+        gaussians: Number(event.gaussians),
+      });
+    } catch {
+      // Diagnostics may share the log with JSON telemetry.
+    }
+  }
+  return points;
+}
+
+function lichtfeldProgress(content: string) {
+  const clean = content.replace(/\u001b\[[0-9;]*m/g, "");
+  const expression =
+    /(\d+)\/15000\s+\|\s+Loss:\s+([0-9.eE+-]+)\s+\|\s+Splats:\s+(\d+)/g;
+  const points: Point[] = [];
+  for (const match of clean.matchAll(expression)) {
+    points.push({
+      iteration: Number(match[1]),
+      loss: Number(match[2]),
+      gaussians: Number(match[3]),
+    });
+  }
+  return points;
+}
+
+function parseNativeLichtfeldMetrics(content: string) {
+  const lines = content.trim().split(/\r?\n/);
+  if (lines.length < 2) return null;
+  const values = lines.at(-1)?.split(",").map(Number);
+  if (!values || values.length < 5) return null;
+  return {
+    iteration: values[0],
+    psnr: values[1],
+    ssim: values[2],
+    time_per_image: values[3],
+    final_gaussians: values[4],
+  };
 }
 
 async function gpuSnapshot() {
@@ -72,113 +155,169 @@ async function gpuSnapshot() {
 }
 
 export async function GET() {
-  try {
-    const [content, logStats, manifest, gpu] = await Promise.all([
-      fs.readFile(logPath, "utf8"),
-      fs.stat(logPath),
-      readJson(`${runDirectory}/trainer_run.json`),
-      gpuSnapshot(),
-    ]);
-    const events = parseEvents(content);
-    const progressEvents = events.filter(
-      (event) => event.event === "progress",
+  const [
+    droneLog,
+    lichtfeldLog,
+    droneStats,
+    lichtfeldStats,
+    droneManifest,
+    nativeMetricsText,
+    commonManifest,
+    commonLpips,
+    gpu,
+  ] = await Promise.all([
+    readText(paths.dronegs.log),
+    readText(paths.lichtfeld.log),
+    stats(paths.dronegs.log),
+    stats(paths.lichtfeld.log),
+    readJson<Manifest>(`${paths.dronegs.run}/trainer_run.json`),
+    readText(`${paths.lichtfeld.run}/metrics.csv`),
+    readJson<Manifest>(`${paths.commonEvaluation}/trainer_run.json`),
+    readJson<Record<string, number | string>>(
+      `${paths.commonEvaluation}/evaluation/lpips.json`,
+    ),
+    gpuSnapshot(),
+  ]);
+
+  const dronePoints = droneProgress(droneLog);
+  const lichtfeldPoints = lichtfeldProgress(lichtfeldLog);
+  const droneLatest = dronePoints.at(-1);
+  const lichtfeldLatest = lichtfeldPoints.at(-1);
+  const nativeMetrics = parseNativeLichtfeldMetrics(nativeMetricsText);
+  const lichtfeldDone =
+    /Training completed successfully/.test(lichtfeldLog) &&
+    nativeMetrics?.iteration === totalIterations;
+  const commonDone = commonManifest?.status === "completed";
+  const commonMetrics = commonManifest?.metrics ?? null;
+  const commonPsnr =
+    typeof commonMetrics?.initial_held_out_psnr === "number"
+      ? commonMetrics.initial_held_out_psnr
+      : null;
+  const commonSsim =
+    typeof commonMetrics?.initial_held_out_ssim === "number"
+      ? commonMetrics.initial_held_out_ssim
+      : null;
+  const commonLpipsMean =
+    typeof commonLpips?.mean === "number" ? commonLpips.mean : null;
+
+  const makeRun = (
+    engine: "dronegs" | "lichtfeld",
+    points: Point[],
+    latest: Point | undefined,
+    logStat: Awaited<ReturnType<typeof stats>>,
+    completed: boolean,
+    metrics: Record<string, unknown> | null,
+    timings: Record<string, number> | null,
+    failures: string[],
+  ) => {
+    const iteration = completed
+      ? totalIterations
+      : Math.min(totalIterations, Math.max(0, latest?.iteration ?? 0));
+    const timing = timeEstimate(
+      iteration,
+      logStat?.birthtimeMs ?? Date.now(),
+      completed,
     );
-    const latest = progressEvents.at(-1);
-    const topology = events
-      .filter((event) => event.event === "topology_refinement")
-      .at(-1);
-    const iteration = Math.min(
-      totalIterations,
-      Math.max(0, Number(latest?.iteration ?? 0)),
-    );
-    const progress = (iteration / totalIterations) * 100;
-    const elapsedSeconds = Math.max(
-      0,
-      (Date.now() - logStats.birthtimeMs) / 1000,
-    );
-    const estimatedTotalSeconds =
-      iteration > 0 ? (elapsedSeconds * totalIterations) / iteration : null;
-    const etaSeconds =
-      estimatedTotalSeconds === null
-        ? null
-        : Math.max(0, estimatedTotalSeconds - elapsedSeconds);
-    const fatalLines = content
-      .split(/\r?\n/)
-      .filter((line) =>
-        /out of memory|CUDA error|terminate called|Traceback|fatal/i.test(line),
-      )
-      .slice(-4);
-    let exitCode: number | null = null;
-    try {
-      exitCode = Number((await fs.readFile(exitPath, "utf8")).trim());
-    } catch {
-      exitCode = null;
-    }
-    const metrics = manifest?.metrics as Record<string, unknown> | undefined;
-    const timings = manifest?.timings as Record<string, unknown> | undefined;
-    const completed = manifest?.status === "completed";
-    const status = completed
-      ? "completed"
-      : exitCode !== null && exitCode !== 0
-        ? "error"
-        : fatalLines.length > 0
+    return {
+      engine,
+      status:
+        failures.length > 0
           ? "error"
-          : iteration >= totalIterations
-            ? "finalizing"
-            : "running";
-    const stage =
-      iteration === 0
-        ? "Évaluation initiale et chargement"
-        : iteration >= totalIterations && !completed
-          ? "Évaluation finale et export"
+          : completed
+            ? "completed"
+            : logStat
+              ? "running"
+              : "waiting",
+      stage:
+        engine === "lichtfeld" && completed && !commonDone
+          ? "Évaluation commune en attente"
           : completed
             ? "Terminé"
-            : "Entraînement MRNF / FastGS";
-    const hasPreview = await fs
-      .access(`${runDirectory}/preview.png`)
-      .then(() => true)
-      .catch(() => false);
+            : iteration > 0
+              ? "Entraînement MRNF"
+              : "Chargement / initialisation",
+      iteration,
+      totalIterations,
+      progress: (iteration / totalIterations) * 100,
+      loss: latest?.loss ?? null,
+      gaussians:
+        latest?.gaussians ??
+        (typeof metrics?.final_gaussians === "number"
+          ? metrics.final_gaussians
+          : null),
+      ...timing,
+      lastActivityAt: logStat?.mtime.toISOString() ?? null,
+      metrics,
+      timings,
+      fatalLines: failures,
+      history: compactHistory(points),
+    };
+  };
 
-    return NextResponse.json(
-      {
-        status,
-        stage,
-        progress,
-        iteration,
-        totalIterations,
-        loss: latest?.loss ?? null,
-        gaussians: latest?.gaussians ?? topology?.gaussians ?? null,
-        elapsedSeconds,
-        etaSeconds,
-        lastActivityAt: logStats.mtime.toISOString(),
-        updatedAt: new Date().toISOString(),
-        gpu,
-        metrics: metrics ?? null,
-        timings: timings ?? null,
-        topology: topology ?? null,
-        fatalLines,
-        hasPreview,
-        recentEvents: events.slice(-8),
-        baseline: {
-          label: "PLY LichtFeld · mêmes 172 vues",
-          psnr: 18.90036392,
-          ssim: 0.4286741614,
-        },
+  const droneMetrics = droneManifest?.metrics ?? null;
+  const lichtfeldMetrics = nativeMetrics
+    ? {
+        ...nativeMetrics,
+        common_psnr: commonPsnr,
+        common_ssim: commonSsim,
+        common_lpips: commonLpipsMean,
+      }
+    : null;
+
+  return NextResponse.json(
+    {
+      updatedAt: new Date().toISOString(),
+      gpu,
+      contract: {
+        dataset: "Albagnac Mavic 3E RTK · dense COLMAP existant",
+        images: 1376,
+        trainingImages: 1204,
+        heldOutImages: 172,
+        iterations: totalIterations,
+        strategy: "MRNF",
+        seed: 42,
+        shSchedule: "0 → 3, +1 tous les 1 000 pas",
+        maxGaussians: 1_500_000,
+        resize: "facteur 4 · largeur max. 1 600 · tuilage 4",
+        evaluator: "DroneGS dev38 FastGS · mêmes 172 vues · LPIPS AlexNet",
       },
-      { headers: { "Cache-Control": "no-store" } },
-    );
-  } catch (error) {
-    return NextResponse.json(
-      {
-        status: "waiting",
-        stage: "En attente du lancement",
-        progress: 0,
-        iteration: 0,
-        totalIterations,
-        updatedAt: new Date().toISOString(),
-        message: error instanceof Error ? error.message : "Suivi indisponible",
+      dronegs: makeRun(
+        "dronegs",
+        dronePoints,
+        droneLatest,
+        droneStats,
+        droneManifest?.status === "completed",
+        droneMetrics,
+        droneManifest?.timings ?? null,
+        fatalLines(droneLog),
+      ),
+      lichtfeld: makeRun(
+        "lichtfeld",
+        lichtfeldPoints,
+        lichtfeldLatest,
+        lichtfeldStats,
+        lichtfeldDone,
+        lichtfeldMetrics,
+        null,
+        fatalLines(lichtfeldLog),
+      ),
+      commonEvaluation: {
+        status: commonDone
+          ? "completed"
+          : lichtfeldDone
+            ? "pending"
+            : "waiting",
+        psnr: commonPsnr,
+        ssim: commonSsim,
+        lpips: commonLpipsMean,
       },
-      { status: 200, headers: { "Cache-Control": "no-store" } },
-    );
-  }
+      preview: {
+        dronegs: await stats(`${paths.dronegs.run}/preview.png`).then(Boolean),
+        lichtfeld: await stats(
+          `${paths.commonEvaluation}/preview.png`,
+        ).then(Boolean),
+      },
+    },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }
