@@ -47,7 +47,7 @@ if [[ "$NO_CACHE" -eq 1 ]]; then
 fi
 
 echo "� Checking external build dependencies..."
-for dep in LichtFeld-Studio/.git .docker-vcpkg/.git app1-colmap/ceres-solver/.git app1-colmap/colmap-local/.git app1-colmap/colmap-deps/poselib.zip; do
+for dep in app1-colmap/ceres-solver/.git app1-colmap/colmap-local/.git app1-colmap/colmap-deps/poselib.zip; do
     if [ ! -e "$dep" ]; then
         echo "❌ Missing dependency: $dep" >&2
         echo "   Run 'bash setup_deps.sh' first to clone external C++ dependencies." >&2

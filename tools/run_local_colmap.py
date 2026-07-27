@@ -10,6 +10,7 @@ import argparse
 import json
 import shutil
 import sqlite3
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -193,16 +194,30 @@ def database_image_count(database_path: Path) -> int:
     return int(row[0]) if row else 0
 
 
+def registered_image_count(model_path: Path) -> int:
+    images_path = model_path / "images.bin"
+    try:
+        with images_path.open("rb") as handle:
+            encoded_count = handle.read(8)
+    except OSError as error:
+        raise RuntimeError(f"cannot read COLMAP image count from {images_path}") from error
+    if len(encoded_count) != 8:
+        raise RuntimeError(f"truncated COLMAP image count in {images_path}")
+    return int(struct.unpack("<Q", encoded_count)[0])
+
+
 def sparse_model_path(workspace: Path) -> Path:
     sparse_root = workspace / "sparse"
     candidates = sorted(
         path
         for path in sparse_root.iterdir()
-        if path.is_dir() and (path / "cameras.bin").exists()
+        if path.is_dir()
+        and (path / "cameras.bin").is_file()
+        and (path / "images.bin").is_file()
     ) if sparse_root.exists() else []
     if not candidates:
         raise RuntimeError("COLMAP did not produce a usable sparse model")
-    return candidates[0]
+    return min(candidates, key=lambda path: (-registered_image_count(path), path.name))
 
 
 def run_sparse(args: argparse.Namespace, selected_count: int) -> Path:

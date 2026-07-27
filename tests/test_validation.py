@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from shared.pipeline_params import merge_pipeline_params
 from shared.validation import (
     configured_work_drive_names,
     safe_child_path,
@@ -63,6 +64,27 @@ def test_pipeline_overrides_validate_non_rtk_alignment_tolerance():
     }
     with pytest.raises(ValueError, match="alignment_max_error must be >="):
         validate_pipeline_overrides({"alignment_max_error": 0})
+
+
+def test_pipeline_defaults_select_validated_dronegs_profile():
+    params = merge_pipeline_params("modern")
+
+    assert params["gs_backend"] == "dronegs"
+    assert params["gs_iterations"] == "15000"
+    assert params["gs_cap_max"] == "1500000"
+    assert params["gs_data_factor"] == "4"
+    assert params["gs_max_width"] == "1600"
+    assert params["gs_tile_mode"] == "4"
+    assert params["gs_seed"] == "42"
+    assert params["gs_raster_profile"] == "bounded"
+    assert params["gs_pruning_policy"] == "spatial-bounds"
+    assert params["gs_topology_cooldown"] == "1000"
+    assert params["gs_photometric_finish"] == "1000"
+    assert params["gs_photometric_mse_percent"] == "100"
+    assert params["gs_checkpoint_every"] == "2000"
+    assert params["gs_test_every"] == "8"
+    assert params["gs_canary_min_psnr"] == "18.0"
+    assert params["gs_canary_min_ssim"] == "0.35"
 
 
 def test_legacy_thread_default_is_allowed():

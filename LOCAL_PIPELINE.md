@@ -191,30 +191,21 @@ dataset residual distribution. Absolute accuracy requires RTK/PPK or surveyed
 ground control points, and altitude tags may use a vertical reference that
 differs from the target GIS product.
 
-## Optional Gaussian orthophoto
+## Gaussian orthophoto with DroneGS
 
-This part needs one additional local image containing the pinned, patched
-LichtFeld binary and the Python rendering dependencies. It does not install or
-start Kubernetes, Kafka, S3, Postgres, or the dashboard.
+This part uses a dedicated local image containing the portable DroneGS binary
+and Python rendering dependencies. It does not install or start Kubernetes,
+Kafka, S3, Postgres, or the dashboard.
 
-Only LichtFeld and its C++ package manager are needed to build it:
+No external Gaussian trainer source is required:
 
 ```bash
-git clone --filter=blob:none \
-  https://github.com/MrNeRF/LichtFeld-Studio.git LichtFeld-Studio
-git -C LichtFeld-Studio checkout 1004c0841a3776e3f67866ff34101fbc9677397f
-git -C LichtFeld-Studio apply \
-  ../app1-colmap/patches/lichtfeld-pipeline-minimal.patch
-
-git clone --branch 2026.03.18 \
-  https://github.com/microsoft/vcpkg.git .docker-vcpkg
-
 ./tools/build_local_gaussian_image.sh
 ```
 
-The build inputs are ignored by Git. The final image contains the
-pipeline-minimal headless trainer, not the full graphical LichtFeld
-application.
+The portable CUDA build contains runtime-selected cubins for recent NVIDIA
+architectures. LichtFeld and vcpkg are not cloned or compiled, and no alternate
+Gaussian backend is packaged in the image.
 
 First undistort the small workspace, then run the complete smoke path:
 
@@ -246,13 +237,21 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | 4 | 0.25 m |
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
-| `balanced` | 15,000 | 1,500,000 | 2 | 2 | 2,400 px | 4 | 0.05 m |
+| `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
 
-These profiles are validation presets, not claims of optimal quality. The
-runner forwards image scaling as LichtFeld's actual `--resize_factor` option
-and enables its memory-saving tile mode. Every profile writes separate
-checkpoints, GeoTIFFs, height maps, and a `gaussian_run.<profile>.json`
-manifest. Existing profile outputs are preserved unless `--force` is passed.
+`smoke` exercises checkpoint/resume and held-out evaluation but uses a
+zero-threshold operational canary. `low-memory` gates at 15 dB / 0.10 SSIM;
+`balanced` uses the production 18 dB / 0.35 SSIM thresholds.
+
+The `balanced` preset reproduces the validated dev.45 training recipe:
+FastGS structural rasterization, bounded spatial pruning,
+progressive SH3, a 1,000-step topology cooldown, and a 1,000-step finish to
+100% MSE gradient. All presets use seed 42 and select DroneGS explicitly.
+Every profile writes separate checkpoints, GeoTIFFs, height maps, and a
+`gaussian_run.<profile>.json` manifest. Interrupted native training resumes
+from `training.ckpt`; completed models must pass the configured held-out
+PSNR/SSIM canary before rendering. Existing profile outputs are preserved
+unless `--force` is passed.
 
 ## Optional local YOLO OBB detection
 

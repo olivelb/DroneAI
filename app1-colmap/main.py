@@ -667,6 +667,40 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             gs_iterations = int(params.get("gs_iterations", 30_000))
             gs_cap_max = int(params.get("gs_cap_max", 5_000_000))
             gs_sh_degree = int(params.get("gs_sh_degree", 3))
+            gs_backend = str(params.get("gs_backend", "dronegs"))
+            gs_seed = int(params.get("gs_seed", 42))
+            gs_optimizer_profile = str(
+                params.get(
+                    "gs_optimizer_profile",
+                    "reference-absolute",
+                )
+            )
+            gs_pruning_policy = str(
+                params.get("gs_pruning_policy", "spatial-bounds")
+            )
+            gs_raster_profile = str(params.get("gs_raster_profile", "bounded"))
+            gs_sh_degree_interval = int(
+                params.get("gs_sh_degree_interval", 1_000)
+            )
+            gs_topology_cooldown = int(
+                params.get("gs_topology_cooldown", 1_000)
+            )
+            gs_photometric_finish = int(
+                params.get("gs_photometric_finish", 1_000)
+            )
+            gs_photometric_mse_percent = int(
+                params.get("gs_photometric_mse_percent", 100)
+            )
+            gs_checkpoint_every = int(
+                params.get("gs_checkpoint_every", 2_000)
+            )
+            gs_test_every = int(params.get("gs_test_every", 8))
+            gs_canary_min_psnr = float(
+                params.get("gs_canary_min_psnr", 18.0)
+            )
+            gs_canary_min_ssim = float(
+                params.get("gs_canary_min_ssim", 0.35)
+            )
             gs_filter_enabled = params.get("gs_filter_enabled", True)
             gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
             gs_filter_dist = float(params.get("gs_filter_dist", 1.0))
@@ -703,6 +737,19 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 filter_cc=gs_filter_cc,
                 filter_z_floater=gs_filter_z_floater,
                 checkpoint_dir=checkpoint_dir,
+                trainer_backend=gs_backend,
+                training_seed=gs_seed,
+                dronegs_optimizer_profile=gs_optimizer_profile,
+                dronegs_pruning_policy=gs_pruning_policy,
+                dronegs_raster_profile=gs_raster_profile,
+                dronegs_sh_degree_interval=gs_sh_degree_interval,
+                dronegs_topology_cooldown=gs_topology_cooldown,
+                dronegs_photometric_finish=gs_photometric_finish,
+                dronegs_photometric_mse_percent=gs_photometric_mse_percent,
+                dronegs_checkpoint_every=gs_checkpoint_every,
+                dronegs_test_every=gs_test_every,
+                dronegs_canary_min_psnr=gs_canary_min_psnr,
+                dronegs_canary_min_ssim=gs_canary_min_ssim,
             )
             report_mission_progress(vol_id, "GAUSS", 100,
                 log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "

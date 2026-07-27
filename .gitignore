@@ -107,6 +107,7 @@ isprs-archives-XLVIII-G-2025-411-2025.pdf
 .vcpkg/
 vcpkg/
 LichtFeld-Studio/
+app1-colmap/dronegs/build/
 colmap-src/build/
 
 # === Local tool / platform binaries ===

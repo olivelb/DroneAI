@@ -1,17 +1,45 @@
-ARG LICHTFELD_IMAGE=lichtfeld-runtime:latest
-FROM ${LICHTFELD_IMAGE}
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS dronegs-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build/dronegs
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential cmake libjpeg-dev ninja-build \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY app1-colmap/dronegs/ /build/dronegs/
+
+RUN cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DDRONEGS_BUILD_TESTS=OFF \
+        -DDRONEGS_CUDA_ARCHITECTURES=portable \
+    && cmake --build build --target dronegs \
+    && test -x build/dronegs
+
+FROM nvidia/cuda:12.8.1-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
-ENV LICHTFELD_BIN=/opt/lichtfeld/LichtFeld-Studio
+ENV DRONEGS_BIN=/usr/local/bin/dronegs
+ENV DRONEAI_GAUSSIAN_BACKEND=dronegs
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip \
+    && apt-get install -y --no-install-recommends \
+        libgomp1 libjpeg8 python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/local-gaussian.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages \
     --requirement /tmp/requirements.txt
+
+COPY --from=dronegs-builder /build/dronegs/build/dronegs /usr/local/bin/dronegs
+COPY app1-colmap/dronegs/ /usr/src/dronegs/
+COPY docs/dronegs/GPL_COMPONENTS.md /usr/share/doc/dronegs/GPL_COMPONENTS.md
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/dronegs/THIRD_PARTY_NOTICES.md
+COPY LICENSE /usr/share/doc/dronegs/LICENSE.DroneAI
+
+RUN test -f /usr/share/common-licenses/GPL-3
 
 CMD ["python3", "--version"]

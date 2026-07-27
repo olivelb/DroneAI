@@ -11,7 +11,8 @@
 DroneAI explores an end-to-end drone-image workflow:
 
 1. COLMAP reconstructs and geo-aligns a scene.
-2. LichtFeld-Studio trains a 3D Gaussian Splatting model.
+2. DroneGS trains a 3D Gaussian Splatting model through the validated dev.45
+   FastGS/MRNF profile.
 3. CuPy renders a georeferenced orthomosaic and height map.
 4. The orthomosaic is split into overlapping tiles.
 5. Ultralytics YOLO OBB or Meta SAM 3 detects objects.
@@ -109,6 +110,18 @@ docker build -f app4-dashboard/api/Dockerfile -t droneai-api:local .
 The heavier image preparation and stage-specific commands are documented in
 [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
 
+DroneGS is the default Gaussian backend. The same frozen 172-view evaluator on
+Albagnac measured 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in
+972.731 seconds of training, versus 21.513821 dB, 0.586497, 0.371055, and
+994.228 seconds for the historical deterministic LichtFeld control. DroneGS is
+now the only executable Gaussian backend: the repository no longer clones,
+builds, packages, launches, or dynamically selects LichtFeld. Versioned native
+checkpoints resume interrupted jobs, and held-out PSNR/SSIM canaries gate the
+model before downstream orthomosaic generation. Successful promotion discards
+the large optimizer checkpoint, so it does not permanently duplicate the
+final PLY state. The independent Savères 15k gate is documented in
+[`phase4-saveres-checkpoint-canary-dev46-2026-07-27.md`](docs/dronegs/benchmarks/phase4-saveres-checkpoint-canary-dev46-2026-07-27.md).
+
 ## Distributed architecture
 
 The distributed path uses the following event flow:
@@ -151,7 +164,7 @@ Use Linux or WSL2 Ubuntu with:
 - Helm;
 - an NVIDIA GPU, driver and NVIDIA Container Toolkit for the GPU workers;
 - outbound access for system packages, images and source dependencies;
-- enough memory and disk for the COLMAP/LichtFeld build and mission data.
+- enough memory and disk for the COLMAP/DroneGS build and mission data.
 
 The current local chart requests 80 GiB for the COLMAP worker and one GPU for
 both COLMAP and IA. Adjust
@@ -168,18 +181,22 @@ ignored by Git. Prepare them once:
 bash setup_deps.sh
 ```
 
-`setup_deps.sh` currently prepares:
+`setup_deps.sh` prepares the default COLMAP dependencies:
 
 | Directory | Source/version |
 |---|---|
-| `LichtFeld-Studio/` | commit `1004c0841a3776e3f67866ff34101fbc9677397f`, pipeline-minimal patch applied |
-| `.docker-vcpkg/` | tag `2026.03.18` |
 | `app1-colmap/ceres-solver/` | current upstream `master`; not commit-pinned |
 | `app1-colmap/colmap-local/` | tag `4.0.1`, minimal-pipeline patch applied |
 | `app1-colmap/colmap-deps/` | SHA-addressed PoseLib and faiss archives |
 
 The Ceres source is the one intentionally unpinned external build input at the
 moment. Pin it before treating builds as reproducible.
+
+LichtFeld and its vcpkg toolchain are not build dependencies. The exact
+historical upstream revision used to derive GPL-covered DroneGS components is
+recorded in
+[`docs/dronegs/GPL_COMPONENTS.md`](docs/dronegs/GPL_COMPONENTS.md); this
+provenance record is intentionally retained.
 
 ### Install and deploy
 
@@ -373,13 +390,17 @@ directory tree. See [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) before using
 
 - Ceres and COLMAP are compiled from source;
 - Python dependencies come from `requirements/colmap.txt`;
-- LichtFeld-Studio is compiled in pipeline-minimal headless mode;
+- DroneGS is compiled locally in portable Turing-through-Blackwell mode;
+- the matching DroneGS source and GPL provenance register ship with the
+  runtime binary;
 - the runtime uses `nvidia/cuda:12.8.1-base-ubuntu24.04` plus selected CUDA
   libraries.
 
 COLMAP/Ceres currently target CUDA architectures `86-real;89-real` (Ampere and
-Ada). LichtFeld uses PTX-only compilation and CuPy JIT-compiles kernels at
-runtime. Edit the Dockerfile before targeting a different GPU family.
+Ada). DroneGS uses the portable CUDA build policy and detects the compatible
+device code at runtime; its training profile has no per-architecture tuning.
+Edit the COLMAP/Ceres architecture list before targeting another family for
+reconstruction.
 
 ## Licensing
 
@@ -391,7 +412,10 @@ Important review points:
 
 - COLMAP: BSD-3-Clause, with academic citations requested by upstream;
 - Ceres Solver: BSD-3-Clause;
-- LichtFeld-Studio: BSD-3-Clause, plus licenses of bundled dependencies;
+- DroneGS: original components use the repository license, while the combined
+  MRNF/FastGS CUDA units and resulting native binary are distributed as
+  GPL-3.0-or-later;
+- LichtFeld-Studio: GPL-3.0-or-later, plus licenses of bundled dependencies;
 - Ultralytics YOLO: AGPL-3.0 or a commercial enterprise license;
 - Meta SAM 3 source and the gated `facebook/sam3` checkpoint: separate
   upstream terms, not covered by this repository’s MIT license;
@@ -404,7 +428,7 @@ projects before redistributing images, binaries, models or datasets.
 
 ## Acknowledgements
 
-DroneAI builds on COLMAP, PyCOLMAP, Ceres Solver, LichtFeld-Studio, CuPy,
+DroneAI builds on COLMAP, PyCOLMAP, Ceres Solver, DroneGS, LichtFeld-Studio, CuPy,
 NVIDIA CUDA, Ultralytics YOLO, Meta SAM 3, Hugging Face, Rasterio/GDAL,
 PostgreSQL/PostGIS, MinIO, Apache Kafka, FastAPI, SQLAlchemy, Next.js, React,
 Leaflet, Docker, K3s and Kubernetes.

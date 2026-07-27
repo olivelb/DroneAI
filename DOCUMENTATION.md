@@ -923,7 +923,7 @@ Pipeline steps:
 1. Load COLMAP sparse reconstruction and alignment transform from `dense/sparse/`
 2. Extract drone EXIF GPS altitudes from undistorted images
 3. Optionally partition the scene into an m×n grid (VastGaussian divide-and-conquer)
-4. Train a 3DGS model per cell via LichtFeld-Studio headless CLI (MRNF strategy, C++/CUDA)
+4. Train a 3DGS model per cell via the native DroneGS CLI (MRNF strategy, C++/CUDA)
 5. Merge cell models (retain only Gaussians in core, non-overlap region)
 6. Geo-alignment:
    - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to model, keep translation as float64 for GeoTIFF origin
@@ -942,8 +942,8 @@ This is the primary and recommended orthomosaic path. It is implemented in `app1
 The implementation draws from several key papers:
 
 - **3D Gaussian Splatting** (Kerbl et al. 2023): core Gaussian scene representation with position, covariance (rotation quaternion + log-scale), opacity, and spherical harmonics colour coefficients
-- **3DGS as MCMC** (Kheradmand et al. 2024): Markov Chain Monte Carlo densification strategy with bounded Gaussian count (`cap_max`), stochastic relocation instead of unbounded clone/split — used by LichtFeld MRNF internally
-- **LichtFeld-Studio** (MRNF strategy): high-performance C++/CUDA training with multi-resolution neural features, progressive resolution scheduling, and built-in VRAM management
+- **3DGS as MCMC** (Kheradmand et al. 2024): bounded-cap stochastic topology refinement rather than unbounded clone/split
+- **DroneGS**: standalone C++/CUDA MRNF training with structural FastGS buckets/checkpoints, warp-cooperative backward, fused L1/SSIM loss, progressive SH, bounded scene-resident image caching, and deterministic manifests
 - **CuPy** with custom CUDA RawKernels: lightweight GPU-accelerated orthographic rasteriser for TDOM rendering
 - **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
 - **Tortho-Gaussian** (Wang et al. 2024): Fully Anisotropic Gaussian Kernel (FAGK) with SH-based view-dependent opacity, and orthographic projection matrix formulation (Equation 9)
@@ -956,7 +956,7 @@ The implementation draws from several key papers:
 
 **No dense stereo required.** The pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`.
 
-**LichtFeld-Studio handles training as a native C++/CUDA process.** The Python pipeline invokes LichtFeld-Studio in headless mode via subprocess, monitors progress by parsing its `indicators`-library progress bar from stdout, and imports the resulting PLY checkpoint. MRNF (Multi-Resolution Neural Features) is the recommended strategy — it handles progressive resolution scheduling, VRAM management, and densification internally.
+**DroneGS handles training as a native C++/CUDA process.** The Python pipeline invokes the contract-v1 executable as a subprocess, consumes JSON Lines progress events, validates `trainer_run.json` and `canary_result.json`, and imports the resulting standard 3DGS PLY. DroneGS is the only executable Gaussian backend; LichtFeld remains solely as a documented historical benchmark and GPL provenance source.
 
 **EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
 
@@ -974,15 +974,18 @@ For very large scenes, the model can be split into an m×n grid of overlapping c
 
 #### Step 3: Training
 
-Each cell is trained using LichtFeld-Studio's headless CLI with the MRNF (Multi-Resolution Neural Features) strategy:
+Each cell is trained using the DroneGS contract-v1 CLI with MRNF:
 
-- **Binary**: LichtFeld-Studio C++/CUDA executable, invoked via subprocess with `--headless --train`
-- **Strategy**: MRNF (recommended) — handles progressive resolution scheduling, densification, and VRAM management internally
-- **Progress monitoring**: the Python pipeline reads LichtFeld’s stdout and parses progress from the `indicators` C++ library output (format: `{iter}/{total} | Loss: {loss} | Splats: {count}`). The `indicators` library uses `\r` carriage returns for in-place updates, so the reader splits on both `\r` and `\n`. LichtFeld’s MCP HTTP server is only available in GUI mode, not in the headless CLI mode used by the pipeline.
-- **Output**: a standard 3DGS PLY checkpoint, loaded into the Python GaussianModel for post-processing and rendering
-- **Cancellation**: the subprocess is killed via SIGTERM if a cancellation is requested through the dashboard
+- **Binary**: portable `/usr/local/bin/dronegs`, selected through `DRONEGS_BIN`
+- **Strategy**: MRNF with a bounded Gaussian cap, deterministic seed, progressive SH, FastGS structural rasterization, and the dev.45 convergence finish
+- **Progress monitoring**: one JSON object per stdout line (`iteration`, baseline loss, Gaussian count)
+- **Recovery**: atomic, versioned native checkpoints contain the full Gaussian, Adam, topology, schedule and deterministic RNG state
+- **Canary**: the default `scene_index % 8 == 0` held-out split must reach PSNR ≥ 18.0 and SSIM ≥ 0.35
+- **Output gate**: process exit zero, completed v1 `trainer_run.json`, and standard `point_cloud.ply`
+- **Source safety**: the COLMAP input tree is mounted/read as input; every run writes to a separate empty output tree
 
-LichtFeld-Studio manages all training internals (loss, optimisers, resolution scheduling, memory). The Python pipeline is responsible only for:
+DroneGS manages loss, optimizer schedules, topology, image caching, and GPU
+memory. The Python pipeline is responsible for:
 1. Preparing per-cell COLMAP data directories
 2. Launching and monitoring the subprocess
 3. Loading the resulting PLY
@@ -992,10 +995,21 @@ Default training parameters (configurable via dashboard UI):
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `gs_iterations` | 30000 | Training iterations |
-| `gs_data_factor` | 1 | Image downscaling factor (LichtFeld schedules resolution internally) |
-| `gs_cap_max` | 5,000,000 | Maximum Gaussian count |
+| `gs_backend` | `dronegs` | Native trainer; only supported value |
+| `gs_iterations` | 15000 | Validated training budget |
+| `gs_data_factor` | 4 | Image downscaling factor |
+| `gs_max_width` | 1600 | Maximum resized image width |
+| `gs_tile_mode` | 4 | Memory-aware tiling mode |
+| `gs_cap_max` | 1,500,000 | Maximum Gaussian count |
 | `gs_sh_degree` | 3 | Maximum spherical harmonics degree |
+| `gs_seed` | 42 | Deterministic base seed |
+| `gs_topology_cooldown` | 1000 | Final fixed-topology steps |
+| `gs_photometric_finish` | 1000 | Final mixed-objective ramp |
+| `gs_photometric_mse_percent` | 100 | Final active-pixel MSE weight |
+| `gs_checkpoint_every` | 2000 | Atomic native checkpoint interval; zero disables periodic saves |
+| `gs_test_every` | 8 | Deterministic held-out split interval |
+| `gs_canary_min_psnr` | 18.0 | Minimum held-out PSNR required before rendering |
+| `gs_canary_min_ssim` | 0.35 | Minimum held-out SSIM required before rendering |
 
 #### Step 4: Merge
 
@@ -1071,7 +1085,7 @@ The `geo_x_min` and `geo_y_max` are computed by adding the float64 `geo_origin` 
 flowchart TD
   A[dense/sparse + undistorted images available] --> C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
-  C --> C1[LichtFeld MRNF training via headless subprocess]
+  C --> C1[DroneGS dev45 MRNF training via contract-v1 subprocess]
   C1 --> C2{Geo-alignment method}
   C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
@@ -1096,10 +1110,25 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
-| GS Training Iterations | `gs_iterations` | int | 30000 | 1000–100000 |
-| GS Training Image Scale | `gs_data_factor` | select | 1 | 1/2/4/8 |
-| GS Max Gaussians | `gs_cap_max` | int | 5000000 | 500000–20000000 |
+| GS Training Backend | `gs_backend` | select | dronegs | dronegs |
+| GS Training Iterations | `gs_iterations` | int | 15000 | 5000–100000 |
+| GS Training Image Scale | `gs_data_factor` | select | 4 | auto/1/2/4/8 |
+| GS Maximum Training Width | `gs_max_width` | int | 1600 | 256–4096 |
+| GS Tile Mode | `gs_tile_mode` | select | 4 | 1/2/4 |
+| GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–10000000 |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
+| DroneGS Deterministic Seed | `gs_seed` | int | 42 | 0–2147483647 |
+| DroneGS Optimizer Profile | `gs_optimizer_profile` | select | reference-absolute | validated profiles |
+| DroneGS Raster Profile | `gs_raster_profile` | select | bounded | bounded/fastgs/auto |
+| DroneGS Pruning Policy | `gs_pruning_policy` | select | spatial-bounds | spatial-bounds/original |
+| DroneGS SH Activation Interval | `gs_sh_degree_interval` | int | 1000 | 1–10000 |
+| DroneGS Topology Cooldown | `gs_topology_cooldown` | int | 1000 | 0–10000 |
+| DroneGS Photometric Finish | `gs_photometric_finish` | int | 1000 | 0–10000 |
+| DroneGS Final MSE Weight | `gs_photometric_mse_percent` | int | 100 | 0–100 |
+| DroneGS Checkpoint Interval | `gs_checkpoint_every` | int | 2000 | 0–50000 |
+| DroneGS Held-out Split Interval | `gs_test_every` | int | 8 | 0 or 2–100 |
+| DroneGS Canary Minimum PSNR | `gs_canary_min_psnr` | float | 18.0 | 0–100 |
+| DroneGS Canary Minimum SSIM | `gs_canary_min_ssim` | float | 0.35 | 0–1 |
 | Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
 | Max Scale Filter | `gs_filter_max_scale` | float | 1.0 | 0–100 |
 | Distance Filter Multiplier | `gs_filter_dist` | float | 1.0 | 0–10 |
@@ -1112,14 +1141,17 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 
 ### Scalability
 
-Memory and timing profiling for the GS pipeline with LichtFeld MRNF training (RTX 3090 24 GB):
+The current production gate uses the existing Albagnac COLMAP reconstruction
+on an RTX 4070 Laptop GPU:
 
-| Images | Gaussians (cap_max) | data_factor | Iterations | Training VRAM | Training time | Output size | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 113 | 3M | 1 | 15000 | ~11 GB | ~650 s | 7187×6613 px | vol_banyuls, validated end-to-end |
-| 1140 | 5M | 1 | 30000 | ~11 GB | ~4060 s | 22487×19491 px | vol_sauzet, validated end-to-end on RTX 3090 |
+| Engine | Images | Cap | Factor | Iterations | Training | PSNR | SSIM | LPIPS |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| DroneGS dev.45 | 1,376 | 1.5M | 4 | 15,000 | 972.731 s | 22.175919 | 0.642557 | 0.325408 |
+| LichtFeld deterministic control | 1,376 | 1.5M | 4 | 15,000 | 994.228 s | 21.513821 | 0.586497 | 0.371055 |
 
-LichtFeld-Studio manages VRAM internally. Training VRAM is roughly proportional to `cap_max` and largely independent of image count (images are loaded one-at-a-time by the C++ backend).
+The metrics come from the same frozen DroneGS dev.38 evaluator on the same 172
+held-out views. DroneGS keeps resized RGB8 images in a bounded 256 MiB-to-2 GiB
+host cache and streams one active view to the GPU.
 
 ### Gaussian Splatting package structure
 
@@ -1128,7 +1160,8 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | Module | Purpose |
 | --- | --- |
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, GeoTIFF output |
-| `lichtfeld_trainer.py` | LichtFeld-Studio headless subprocess wrapper, stdout progress parsing, PLY export |
+| `gaussian_training/backends.py` | DroneGS subprocess contract, checkpoint recovery and canary gate |
+| `dronegs/` | Native C++23/CUDA trainer, tests, portable build, and LPIPS tool |
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |

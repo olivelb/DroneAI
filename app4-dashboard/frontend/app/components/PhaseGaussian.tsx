@@ -6,7 +6,11 @@ import { ParamField } from "./ParamField";
 import type { ParameterMeta } from "../lib/types";
 
 const GAUSSIAN_PARAMS = [
-  "ortho_mesh_resolution", "gs_iterations", "gs_data_factor", "gs_cap_max", "gs_sh_degree",
+  "ortho_mesh_resolution", "gs_backend", "gs_iterations", "gs_data_factor",
+  "gs_max_width", "gs_tile_mode", "gs_cap_max", "gs_sh_degree", "gs_seed",
+  "gs_optimizer_profile", "gs_pruning_policy", "gs_raster_profile",
+  "gs_sh_degree_interval", "gs_topology_cooldown",
+  "gs_photometric_finish", "gs_photometric_mse_percent",
   "gs_filter_enabled", "gs_filter_max_scale", "gs_filter_dist", "gs_filter_opacity",
   "gs_filter_needle", "gs_filter_sor", "gs_filter_cc", "gs_filter_z_floater", "gs_filter_sor_sigma",
 ];

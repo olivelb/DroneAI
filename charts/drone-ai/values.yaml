@@ -70,6 +70,7 @@ storage:
 colmapWorker:
   image: drone-colmap
   tag: latest
+  gaussianBackend: dronegs
   resources:
     limits:
       nvidia.com/gpu: "1"

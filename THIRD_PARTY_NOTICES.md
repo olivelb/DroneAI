@@ -7,7 +7,11 @@ model weights under their own licenses.
 The most important license-sensitive components are:
 
 - COLMAP and PyCOLMAP — BSD 3-Clause.
-- LichtFeld-Studio — see the license in the pinned upstream repository.
+- DroneGS — original orchestration is covered by the repository license; the
+  combined MRNF/FastGS CUDA translation units and linked native binary are
+  GPL-3.0-or-later. Matching source is shipped in the runtime image.
+- LichtFeld-Studio — GPL-3.0-or-later; historical source/provenance reference
+  for the GPL-covered DroneGS adaptations listed in the provenance register.
 - Ultralytics YOLO — AGPL-3.0 or an applicable commercial license.
 - Meta SAM 3 source and gated model weights — Meta's applicable SAM license
   and the terms published with the model.
