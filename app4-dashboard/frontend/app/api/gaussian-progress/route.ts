@@ -11,8 +11,8 @@ const totalIterations = 15_000;
 
 const paths = {
   dronegs: {
-    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000",
-    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000.log",
+    run: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000",
+    log: "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000.log",
   },
   lichtfeld: {
     run: "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38",
@@ -20,7 +20,7 @@ const paths = {
   },
   commonEvaluation: {
     dronegs:
-      "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev42-fastgs-struct-15000-cross-eval",
+      "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000-cross-eval",
     lichtfeld:
       "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval",
   },

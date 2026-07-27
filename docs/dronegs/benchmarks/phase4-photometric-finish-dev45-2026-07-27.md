@@ -1,7 +1,7 @@
 # Dev.45 progressive photometric finish
 
 Date: 2026-07-27
-Status: implementation accepted; full 15k validation approved
+Status: implementation and full 15k validation accepted
 
 ## Question
 
@@ -93,3 +93,63 @@ Artifacts:
   `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-kernel-base500/`
 - same-session mixed kernel:
   `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-kernel-mse100-500/`
+
+## Full 15k validation
+
+The first full run reached iteration 14,000 before the WSL GPU device was
+lost. It produced no final checkpoint and is excluded from all comparisons.
+Its artifacts remain archived under the `gpu-lost-14000` suffix. A clean
+cold restart completed all 15,000 iterations and is the only dev.45 run
+reported below.
+
+The strict contract was unchanged: Albagnac dense COLMAP, 1,376 images,
+1,204 training views, the same 172 modulo-8 held-out views, seed 42,
+progressive SH3, 1.5 million splats, resize factor 4, 1,600-pixel maximum
+width, and 15,000 iterations. All final PLY files were replayed by the same
+frozen dev.38 FastGS evaluator. LPIPS/AlexNet 0.1 was then measured on the
+172 exact RGB8 target/prediction pairs.
+
+| Engine | Training | Wall | Splats | Common PSNR | Common SSIM | Common LPIPS |
+|---|---:|---:|---:|---:|---:|---:|
+| DroneGS dev.42 | 988.383 s | 1,173.139 s | 1,499,885 | 21.346178 dB | 0.619733 | 0.363027 |
+| LichtFeld v0.5.1 deterministic | 994.228 s | about 1,027.052 s | 1,500,000 | 21.513821 dB | 0.586497 | 0.371055 |
+| **DroneGS dev.45** | **972.731 s** | 1,028.703 s | 1,500,000 | **22.175919 dB** | **0.642557** | **0.325408** |
+
+Against the deterministic LichtFeld run, dev.45 gains:
+
+- `+0.662098 dB` PSNR;
+- `+0.056060` SSIM;
+- `-0.045647` LPIPS, where lower is better;
+- `-21.497 s` training time (`-2.16%`).
+
+Against dev.42, dev.45 gains `+0.829741 dB` PSNR, `+0.022823` SSIM,
+`-0.037619` LPIPS, and `15.652 s` training time. The wall-time reduction
+from dev.42 is `144.436 s`, primarily because dev.45 retained the complete
+decoded-image cache instead of repeatedly decoding and evicting source
+images.
+
+The representative held-out view
+`DJI_20230601173020_1009_V.JPG` also improves from dev.42
+`21.756371 dB / 0.657091` to dev.45
+`22.281490 dB / 0.679138`; its dev.45 LPIPS is `0.334669`.
+
+## Final decision
+
+Dev.45 exceeds the frozen LichtFeld baseline simultaneously on the three
+common quality metrics and is slightly faster in measured training time.
+The original parity target is therefore met without depending on a
+GPU-architecture-specific tuning profile. Keep the progressive photometric
+finish opt-in, with the validated Albagnac recipe using a 1,000-step
+topology cooldown and a 1,000-step ramp to 100% MSE gradient.
+
+Final artifacts:
+
+- training:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000/`
+- frozen common evaluation and exact-pair LPIPS:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000-cross-eval/`
+- excluded interrupted run:
+  `/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000-gpu-lost-14000/`
+
+No new GPL-covered source was introduced by dev.45. The existing FastGS
+rasterization provenance remains recorded in the project GPL register.
