@@ -162,8 +162,10 @@ double reference_objective(
     const std::vector<float>& prediction,
     const std::vector<float>& transmittance,
     const std::vector<std::uint8_t>& target,
-    std::uint32_t width, std::uint32_t height) {
+    std::uint32_t width, std::uint32_t height,
+    double mse_blend = 0.0) {
     double l1_sum = 0.0;
+    double squared_sum = 0.0;
     std::size_t active_pixels = 0U;
     for (std::size_t pixel = 0U;
          pixel < transmittance.size(); ++pixel) {
@@ -173,9 +175,11 @@ double reference_objective(
         ++active_pixels;
         for (std::size_t channel = 0U; channel < 3U; ++channel) {
             const auto sample = pixel * 3U + channel;
-            l1_sum += std::abs(
+            const double difference =
                 static_cast<double>(prediction[sample]) -
-                static_cast<double>(target[sample]) / 255.0);
+                static_cast<double>(target[sample]) / 255.0;
+            l1_sum += std::abs(difference);
+            squared_sum += difference * difference;
         }
     }
     if (active_pixels == 0U) {
@@ -184,9 +188,13 @@ double reference_objective(
     }
     const double l1 =
         l1_sum / (3.0 * static_cast<double>(active_pixels));
-    return 0.8 * l1 +
-        0.2 * (1.0 - reference_ssim(
-            prediction, target, width, height));
+    const double mse =
+        squared_sum / (3.0 * static_cast<double>(active_pixels));
+    return (1.0 - mse_blend) *
+               (0.8 * l1 +
+                0.2 * (1.0 - reference_ssim(
+                    prediction, target, width, height))) +
+        mse_blend * mse;
 }
 
 }  // namespace
@@ -823,6 +831,51 @@ int main() {
                 throw std::runtime_error(
                     "structural FastGS fused image gradient mismatch");
             }
+        }
+        constexpr float mixed_mse_blend = 0.5F;
+        const auto mixed_fastgs_objective =
+            fastgs_context.evaluate_objective_gradient(
+                quality_camera, split_target.data(),
+                split_target.size(), mixed_mse_blend);
+        const double expected_mixed_objective = reference_objective(
+            mixed_fastgs_objective.prediction,
+            mixed_fastgs_objective.transmittance,
+            split_target, 32U, 32U, mixed_mse_blend);
+        auto mixed_perturbed = mixed_fastgs_objective.prediction;
+        for (std::size_t probe = 0U; probe < 4U; ++probe) {
+            const auto sample = gradient_samples[probe];
+            mixed_perturbed[sample] =
+                mixed_fastgs_objective.prediction[sample] +
+                finite_difference_epsilon;
+            const double plus = reference_objective(
+                mixed_perturbed,
+                mixed_fastgs_objective.transmittance,
+                split_target, 32U, 32U, mixed_mse_blend);
+            mixed_perturbed[sample] =
+                mixed_fastgs_objective.prediction[sample] -
+                finite_difference_epsilon;
+            const double minus = reference_objective(
+                mixed_perturbed,
+                mixed_fastgs_objective.transmittance,
+                split_target, 32U, 32U, mixed_mse_blend);
+            mixed_perturbed[sample] =
+                mixed_fastgs_objective.prediction[sample];
+            const double expected_gradient =
+                (plus - minus) /
+                (2.0 * finite_difference_epsilon);
+            if (std::abs(
+                    static_cast<double>(
+                        mixed_fastgs_objective.gradient[sample]) -
+                    expected_gradient) > 1.5e-4) {
+                throw std::runtime_error(
+                    "structural FastGS mixed MSE image gradient mismatch");
+            }
+        }
+        if (std::abs(
+                mixed_fastgs_objective.loss -
+                expected_mixed_objective) > 2.0e-4) {
+            throw std::runtime_error(
+                "structural FastGS mixed MSE objective mismatch");
         }
         const auto fastgs_reference_loss = fastgs_context.evaluate(
             quality_camera, split_target.data(), split_target.size());

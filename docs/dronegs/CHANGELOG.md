@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.45 - Progressive photometric finish
+
+- Add opt-in `--photometric-finish N` and
+  `--photometric-mse-percent P`.
+- Linearly blend the final `N` training steps from the established
+  `0.8 active-pixel L1 + 0.2 DSSIM` objective toward active-pixel MSE,
+  reaching `P%` MSE weight on the final step.
+- Fuse the analytical MSE derivative into both structural FastGS and bounded
+  backwards. The training hot path skips the unused scalar MSE reduction;
+  exact mixed values remain available to evaluation and gradient tests.
+- Keep per-step loss telemetry on the baseline L1+DSSIM objective for
+  comparable convergence curves while applying the mixed analytical
+  gradient to optimizer updates.
+- Keep both controls at zero by default so dev.44 loss, gradients, and
+  execution cost remain unchanged.
+- Record the exact schedule in the run manifest and progress event stream.
+
 ## 0.5.0-dev.44 - Fixed-topology convergence cooldown
 
 - Add an opt-in `--topology-cooldown N` within the existing iteration budget.

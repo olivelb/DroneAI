@@ -322,6 +322,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         parsed.topology_cooldown == 0U,
         "CLI topology cooldown default mismatch");
     check(
+        parsed.photometric_finish == 0U &&
+            parsed.photometric_mse_percent == 0U,
+        "CLI photometric finish default mismatch");
+    check(
         parsed.optimizer_profile == "dronegs-dev16",
         "CLI optimizer profile default mismatch");
     check(
@@ -338,6 +342,8 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--test-every", "8",
         "--save-eval-images", "1",
         "--topology-cooldown", "1",
+        "--photometric-finish", "1",
+        "--photometric-mse-percent", "50",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -358,6 +364,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         tuned.topology_cooldown == 1U,
         "CLI topology cooldown mismatch");
     check(
+        tuned.photometric_finish == 1U &&
+            tuned.photometric_mse_percent == 50U,
+        "CLI photometric finish mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -373,7 +383,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 22U);
+    values.resize(values.size() - 26U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

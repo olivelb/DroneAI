@@ -34,6 +34,8 @@ struct Options {
     std::uint32_t test_every = 0;
     std::uint32_t save_eval_images = 0;
     std::uint64_t topology_cooldown = 0;
+    std::uint64_t photometric_finish = 0;
+    std::uint32_t photometric_mse_percent = 0;
     std::string optimizer_profile = "dronegs-dev16";
     std::string pruning_policy = "original";
     std::string raster_profile = "auto";

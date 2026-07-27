@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.44` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.45` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -29,6 +29,16 @@ Dev.44 adds an opt-in `--topology-cooldown N`: topology refinement stops
 after `iterations - N`, leaving the final `N` steps for fixed-topology
 optimizer convergence without increasing the training budget. Its default is
 zero, which preserves the dev.43 lifecycle exactly.
+Dev.45 adds an opt-in `--photometric-finish N` and
+`--photometric-mse-percent P`. During the final `N` iterations the objective
+linearly transitions from the existing `0.8 L1 + 0.2 DSSIM` objective toward
+an active-pixel MSE contribution whose final weight is `P%`. Both defaults
+are zero, preserving dev.44 training math and cost outside explicit
+photometric convergence ablations.
+The optimizer uses the mixed analytical gradient, while per-step loss
+telemetry intentionally remains the baseline L1+DSSIM value for direct
+cross-run comparison. Exact mixed objective values remain available through
+the evaluation API and its CUDA finite-difference tests.
 Dev.37 adds opt-in compensated screen-space filter ablations with exact
 covariance/opacity gradients. Dev.38 adds a coupled FastGS compatibility
 profile covering `0.3 I` projected covariance dilation, extended-FOV

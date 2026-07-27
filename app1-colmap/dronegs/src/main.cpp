@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.44 structural-fastgs "
+            << "DroneGS 0.5.0-dev.45 structural-fastgs "
                "local-KNN portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.44 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.45 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color local-KNN "
@@ -56,7 +56,10 @@ int main(int argc, char** argv) {
                      "ceiling so thousand-view scenes become resident "
                      "without unbounded host RAM growth; dev44 can reserve "
                      "an explicit fixed-topology cooldown at the end of the "
-                     "same iteration budget for convergence ablations.\n";
+                     "same iteration budget for convergence ablations; dev45 "
+                     "can linearly blend the final objective toward active-"
+                     "pixel MSE to trade excess perceptual margin for PSNR "
+                     "without adding iterations.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;

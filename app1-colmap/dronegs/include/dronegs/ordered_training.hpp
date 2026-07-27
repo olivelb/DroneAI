@@ -39,17 +39,17 @@ public:
 
     float evaluate(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes);
+        std::size_t target_bytes, float mse_blend = 0.0F);
     ImageQualityMetrics evaluate_quality(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
         std::size_t target_bytes,
         std::vector<float>* prediction = nullptr);
     ImageObjectiveOutput evaluate_objective_gradient(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes);
+        std::size_t target_bytes, float mse_blend = 0.0F);
     float train_step(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes);
+        std::size_t target_bytes, float mse_blend = 0.0F);
     TopologyRefinementResult refine_topology(
         float gradient_threshold = 0.003F,
         float grow_fraction = 0.07F,

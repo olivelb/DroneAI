@@ -1252,6 +1252,19 @@ TrainingMetrics train_ordered_mrnf(
             << options.topology_cooldown << "}\n"
             << std::flush;
     }
+    const std::uint64_t photometric_finish_start =
+        options.iterations - options.photometric_finish;
+    if (options.photometric_finish != 0U) {
+        std::cout
+            << "{\"event\":\"photometric_finish\","
+            << "\"start_after_iteration\":"
+            << photometric_finish_start
+            << ",\"finish_iterations\":"
+            << options.photometric_finish
+            << ",\"final_mse_percent\":"
+            << options.photometric_mse_percent << "}\n"
+            << std::flush;
+    }
     for (std::uint64_t iteration = 1U;
          iteration <= options.iterations; ++iteration) {
         const auto schedule_index =
@@ -1264,9 +1277,21 @@ TrainingMetrics train_ordered_mrnf(
         const auto raster_camera =
             make_raster_camera(frame.camera);
         const auto degree_before = workspace.active_sh_degree();
+        float mse_blend = 0.0F;
+        if (options.photometric_finish != 0U &&
+            iteration > photometric_finish_start) {
+            const float progress = static_cast<float>(
+                iteration - photometric_finish_start) /
+                static_cast<float>(options.photometric_finish);
+            mse_blend =
+                progress *
+                (static_cast<float>(
+                     options.photometric_mse_percent) /
+                 100.0F);
+        }
         const float loss = workspace.train_step(
             raster_camera, frame.image->rgb.data(),
-            frame.image->rgb.size());
+            frame.image->rgb.size(), mse_blend);
         if (workspace.active_sh_degree() != degree_before) {
             std::cout
                 << "{\"event\":\"sh_degree_activation\",\"iteration\":"
