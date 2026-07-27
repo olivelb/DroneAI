@@ -7,32 +7,19 @@
 #   - Ceres Solver      (optimiser, ~30 MB)
 #   - COLMAP            (SfM pipeline, ~60 MB)
 #
-# Optional rollback dependencies:
-#   - LichtFeld-Studio  (legacy 3DGS trainer, ~200 MB)
-#   - vcpkg             (LichtFeld package manager, ~300 MB)
-#
-# Usage:  bash setup_deps.sh [--with-lichtfeld]
+# Usage:  bash setup_deps.sh
 # ============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-WITH_LICHTFELD=0
-if [ "${1:-}" = "--with-lichtfeld" ]; then
-    WITH_LICHTFELD=1
-    shift
-fi
 if [ "$#" -ne 0 ]; then
-    echo "Usage: bash setup_deps.sh [--with-lichtfeld]" >&2
+    echo "Usage: bash setup_deps.sh" >&2
     exit 2
 fi
 
 # Pinned versions (bump these when upgrading)
-LICHTFELD_REPO="https://github.com/MrNeRF/LichtFeld-Studio.git"
-LICHTFELD_COMMIT="1004c0841a3776e3f67866ff34101fbc9677397f"
-VCPKG_REPO="https://github.com/microsoft/vcpkg.git"
-VCPKG_TAG="2026.03.18"
 CERES_REPO="https://github.com/ceres-solver/ceres-solver.git"
 CERES_TAG="master"  # >= 2.3.0 required for cuDSS GPU sparse solvers
 COLMAP_REPO="https://github.com/colmap/colmap.git"
@@ -40,49 +27,6 @@ COLMAP_TAG="4.0.1"
 
 info() { echo -e "\033[1;34m==>\033[0m $*"; }
 warn() { echo -e "\033[1;33mWARN:\033[0m $*"; }
-
-# ---- Optional LichtFeld-Studio rollback ----
-if [ "$WITH_LICHTFELD" -eq 1 ]; then
-  if [ -d "LichtFeld-Studio/.git" ]; then
-    info "LichtFeld-Studio already cloned - checking commit"
-    cd LichtFeld-Studio
-    CURRENT=$(git rev-parse HEAD)
-    if [ "$CURRENT" != "$LICHTFELD_COMMIT" ]; then
-        warn "Expected commit $LICHTFELD_COMMIT but found $CURRENT"
-        warn "Run: cd LichtFeld-Studio && git fetch && git checkout $LICHTFELD_COMMIT"
-    fi
-    cd "$SCRIPT_DIR"
-  else
-    info "Cloning LichtFeld-Studio..."
-    git clone "$LICHTFELD_REPO" LichtFeld-Studio
-    cd LichtFeld-Studio
-    git checkout "$LICHTFELD_COMMIT"
-    git submodule update --init --recursive
-    cd "$SCRIPT_DIR"
-  fi
-
-  # Apply headless + pipeline-minimal patch if not already applied
-  cd LichtFeld-Studio
-  if ! grep -q 'LFS_BUILD_PIPELINE_MINIMAL' CMakeLists.txt; then
-    if grep -q 'LFS_BUILD_HEADLESS_ONLY' CMakeLists.txt; then
-        warn "Old headless-only patch detected - resetting before applying pipeline-minimal patch"
-        git checkout -- .
-    fi
-    info "Applying pipeline-minimal build patch (includes headless support)..."
-    git apply "$SCRIPT_DIR/app1-colmap/patches/lichtfeld-pipeline-minimal.patch"
-  else
-    info "Pipeline-minimal patch already applied"
-  fi
-  cd "$SCRIPT_DIR"
-
-  # ---- vcpkg (for optional LichtFeld Docker COPY) ----
-  if [ -d ".docker-vcpkg/.git" ]; then
-    info "vcpkg (.docker-vcpkg) already cloned"
-  else
-    info "Cloning vcpkg..."
-    git clone --branch "$VCPKG_TAG" "$VCPKG_REPO" .docker-vcpkg
-  fi
-fi
 
 # ---- Ceres Solver ----
 if [ -d "app1-colmap/ceres-solver/.git" ]; then
@@ -132,6 +76,3 @@ fi
 
 info "All dependencies ready. You can now run:"
 info "  sudo bash deploy_app1_colmap.sh --base"
-if [ "$WITH_LICHTFELD" -eq 0 ]; then
-    info "  (LichtFeld rollback not prepared; rerun with --with-lichtfeld if needed.)"
-fi

@@ -47,7 +47,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.45\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.46\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -55,31 +55,33 @@ const char* help_text() {
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--save-eval-images 0|1] "
+        "[--checkpoint-every N] [--checkpoint-path PATH] "
+        "[--resume-from PATH] [--stop-after N] "
         "[--topology-cooldown N] "
         "[--photometric-finish N] [--photometric-mse-percent 0..100] "
         "[--sh-degree-interval N] "
-        "[--optimizer-profile dronegs-dev16|lichtfeld-absolute|"
-        "lichtfeld-dc-only|lichtfeld-position-only|"
-        "lichtfeld-opacity-only|lichtfeld-scale-only|"
-        "lichtfeld-rotation-only|lichtfeld-dc-opacity|"
+        "[--optimizer-profile dronegs-dev16|reference-absolute|"
+        "reference-dc-only|reference-position-only|"
+        "reference-opacity-only|reference-scale-only|"
+        "reference-rotation-only|reference-dc-opacity|"
         "calibrated-dc-0.005-opacity|"
         "calibrated-dc-0.010-opacity|"
         "calibrated-dc-0.020-opacity|"
         "calibrated-dc-0.010-opacity-0.024|"
         "calibrated-dc-0.010-opacity-0.048|"
         "calibrated-dc-0.010-opacity-0.096|"
-        "dev34-opacity096-lf-scale|"
-        "dev34-opacity096-lf-rotation|"
-        "dev34-opacity096-lf-scale-rotation|"
-        "dev35-opacity096-lf-scale-staged-rotation004|"
-        "dev35-opacity096-lf-scale-staged-rotation008|"
+        "dev34-opacity096-reference-scale|"
+        "dev34-opacity096-reference-rotation|"
+        "dev34-opacity096-reference-scale-rotation|"
+        "dev35-opacity096-reference-scale-staged-rotation004|"
+        "dev35-opacity096-reference-scale-staged-rotation008|"
         "dev36-staged-rotation008-absgrad025|"
         "dev36-staged-rotation008-absgrad050|"
         "dev37-staged-rotation008-absgrad050-aa005|"
         "dev37-staged-rotation008-absgrad050-aa015|"
         "dev37-staged-rotation008-absgrad050-aa030|"
         "dev38-staged-rotation008-absgrad050-fastgs] "
-        "[--pruning-policy original|lichtfeld-bounds] "
+        "[--pruning-policy original|spatial-bounds] "
         "[--raster-profile auto|bounded|fastgs]\n";
 }
 
@@ -92,6 +94,8 @@ Options parse_options(int argc, char** argv) {
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--jpeg-idct-scale", "--test-every", "--save-eval-images",
+        "--checkpoint-every", "--checkpoint-path", "--resume-from",
+        "--stop-after",
         "--topology-cooldown", "--photometric-finish",
         "--photometric-mse-percent",
         "--optimizer-profile", "--sh-degree-interval",
@@ -124,6 +128,12 @@ Options parse_options(int argc, char** argv) {
     options.run_manifest = values.at("--run-manifest");
     if (values.contains("--initial-ply")) {
         options.initial_ply = values.at("--initial-ply");
+    }
+    if (values.contains("--checkpoint-path")) {
+        options.checkpoint_path = values.at("--checkpoint-path");
+    }
+    if (values.contains("--resume-from")) {
+        options.resume_from = values.at("--resume-from");
     }
     options.iterations = parse_unsigned(values.at("--iter"), "--iter");
     options.strategy = values.at("--strategy");
@@ -166,6 +176,14 @@ Options parse_options(int argc, char** argv) {
         options.photometric_mse_percent = parse_u32(
             values.at("--photometric-mse-percent"),
             "--photometric-mse-percent");
+    }
+    if (values.contains("--checkpoint-every")) {
+        options.checkpoint_every = parse_unsigned(
+            values.at("--checkpoint-every"), "--checkpoint-every");
+    }
+    if (values.contains("--stop-after")) {
+        options.stop_after =
+            parse_unsigned(values.at("--stop-after"), "--stop-after");
     }
     if (values.contains("--optimizer-profile")) {
         options.optimizer_profile =
@@ -256,14 +274,33 @@ void validate_options(const Options& options) {
             "--photometric-finish and --photometric-mse-percent "
             "must both be zero or both be positive");
     }
-    if (options.optimizer_profile != "lichtfeld-absolute" &&
+    if (options.checkpoint_every != 0U &&
+        options.checkpoint_path.empty()) {
+        throw std::invalid_argument(
+            "--checkpoint-every requires --checkpoint-path");
+    }
+    if (options.stop_after > options.iterations) {
+        throw std::invalid_argument(
+            "--stop-after must not exceed --iter");
+    }
+    if (options.stop_after != 0U &&
+        options.checkpoint_path.empty()) {
+        throw std::invalid_argument(
+            "--stop-after requires --checkpoint-path");
+    }
+    if (!options.resume_from.empty() &&
+        !std::filesystem::is_regular_file(options.resume_from)) {
+        throw std::invalid_argument(
+            "--resume-from must be an existing checkpoint file");
+    }
+    if (options.optimizer_profile != "reference-absolute" &&
         options.optimizer_profile != "dronegs-dev16" &&
-        options.optimizer_profile != "lichtfeld-dc-only" &&
-        options.optimizer_profile != "lichtfeld-position-only" &&
-        options.optimizer_profile != "lichtfeld-opacity-only" &&
-        options.optimizer_profile != "lichtfeld-scale-only" &&
-        options.optimizer_profile != "lichtfeld-rotation-only" &&
-        options.optimizer_profile != "lichtfeld-dc-opacity" &&
+        options.optimizer_profile != "reference-dc-only" &&
+        options.optimizer_profile != "reference-position-only" &&
+        options.optimizer_profile != "reference-opacity-only" &&
+        options.optimizer_profile != "reference-scale-only" &&
+        options.optimizer_profile != "reference-rotation-only" &&
+        options.optimizer_profile != "reference-dc-opacity" &&
         options.optimizer_profile != "calibrated-dc-0.005-opacity" &&
         options.optimizer_profile != "calibrated-dc-0.010-opacity" &&
         options.optimizer_profile != "calibrated-dc-0.020-opacity" &&
@@ -274,15 +311,15 @@ void validate_options(const Options& options) {
         options.optimizer_profile !=
             "calibrated-dc-0.010-opacity-0.096" &&
         options.optimizer_profile !=
-            "dev34-opacity096-lf-scale" &&
+            "dev34-opacity096-reference-scale" &&
         options.optimizer_profile !=
-            "dev34-opacity096-lf-rotation" &&
+            "dev34-opacity096-reference-rotation" &&
         options.optimizer_profile !=
-            "dev34-opacity096-lf-scale-rotation" &&
+            "dev34-opacity096-reference-scale-rotation" &&
         options.optimizer_profile !=
-            "dev35-opacity096-lf-scale-staged-rotation004" &&
+            "dev35-opacity096-reference-scale-staged-rotation004" &&
         options.optimizer_profile !=
-            "dev35-opacity096-lf-scale-staged-rotation008" &&
+            "dev35-opacity096-reference-scale-staged-rotation008" &&
         options.optimizer_profile !=
             "dev36-staged-rotation008-absgrad025" &&
         options.optimizer_profile !=
@@ -297,13 +334,13 @@ void validate_options(const Options& options) {
             "dev38-staged-rotation008-absgrad050-fastgs") {
         throw std::invalid_argument(
             "--optimizer-profile must be dronegs-dev16, "
-            "lichtfeld-absolute, lichtfeld-dc-only, or "
-            "a supported LichtFeld family ablation/combination");
+            "reference-absolute, reference-dc-only, or "
+            "a supported reference family ablation/combination");
     }
     if (options.pruning_policy != "original" &&
-        options.pruning_policy != "lichtfeld-bounds") {
+        options.pruning_policy != "spatial-bounds") {
         throw std::invalid_argument(
-            "--pruning-policy must be original or lichtfeld-bounds");
+            "--pruning-policy must be original or spatial-bounds");
     }
     if (options.raster_profile != "auto" &&
         options.raster_profile != "bounded" &&
@@ -326,7 +363,9 @@ void validate_options(const Options& options) {
     if (is_descendant_or_equal(output, data) || is_descendant_or_equal(data, output)) {
         throw std::invalid_argument("output and source dataset must be separate trees");
     }
-    if (std::filesystem::exists(output) && !std::filesystem::is_empty(output)) {
+    if (options.resume_from.empty() &&
+        std::filesystem::exists(output) &&
+        !std::filesystem::is_empty(output)) {
         throw std::invalid_argument("--output-path must not contain existing artifacts");
     }
     if (manifest.parent_path() != output) {

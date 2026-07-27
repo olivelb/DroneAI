@@ -1,9 +1,9 @@
 # DroneGS architecture
 
-Status: dev.45 promoted to the production Gaussian pipeline
+Status: dev.46 sole production Gaussian backend with recovery/canary
 
 Contract version: 1  
-Project version: 0.5.0-dev.45
+Project version: 0.5.0-dev.46
 
 ## Decision
 
@@ -14,9 +14,9 @@ geospatial transforms, orthographic rendering, GeoTIFF writing, and detection
 remain outside DroneGS.
 
 DroneGS is the production backend after passing the frozen Albagnac
-quality/speed gate. LichtFeld remains a separately built subprocess rollback.
-Checkpoint/resume, broader cross-architecture qualification and canary
-operations remain tracked in `ROADMAP.md`.
+quality/speed gate. Dev.46 removes the LichtFeld executable path and adds
+full-state checkpoint/resume plus held-out deployment canaries. LichtFeld is
+retained only in historical comparisons and the GPL provenance record.
 
 Dev.31 replaces the scene-wide uniform initial Gaussian scale with the MRNF
 local-neighborhood rule: an exact deterministic KD tree measures the two
@@ -52,25 +52,27 @@ scene-resident image caching, topology cooldown and progressive photometric
 finish. On the frozen Albagnac 15,000-step control dev.45 is both faster and
 better than deterministic LichtFeld on PSNR, SSIM and LPIPS.
 
+Dev.46 serializes all parameters, optimizer moments, topology statistics,
+schedule/RNG state and fingerprints to an atomically replaced checkpoint.
+The Python boundary auto-resumes incomplete mission outputs and writes an
+atomic PSNR/SSIM canary verdict before downstream rendering.
+
 ## Stable boundary
 
 ```text
 COLMAP dense workspace
         |
         v
-Gaussian trainer backend
-   |                 |
-LichtFeld          DroneGS
-   |                 |
-   +--- point_cloud.ply
+DroneGS contract-v1 process
+        |
+        +--- checkpoint + manifest + canary + point_cloud.ply
             |
             v
 existing DroneAI GaussianModel and ortho pipeline
 ```
 
 The integration boundary is a subprocess. DroneAI does not link to trainer
-internals. A backend adapter may translate canonical arguments to legacy
-LichtFeld spellings.
+internals.
 
 ## In scope
 
@@ -88,7 +90,7 @@ LichtFeld spellings.
 - GUI, editing, viewport, video, USD, mesh, SOG/SPZ, plugins, Python, and MCP.
 - General distorted, fisheye, equirectangular, or dynamic-scene training.
 - Replacing DroneAI's CuPy orthographic renderer.
-- Removing the LichtFeld fallback before operational canary acceptance.
+- Multi-GPU distributed training.
 
 ## Technology choices
 
@@ -193,9 +195,10 @@ quality workspace. Squared-error samples and separable SSIM moments are
 reduced with CUB; only per-view scalar metrics return to the host unless
 lossless prediction export is requested. The manifest records the split rule,
 metric constants, train/held-out cardinalities, initial/final aggregates, and
-per-view CSV artifact. The matching Albagnac control is executed through the
-pinned GPL LichtFeld runtime image; no LichtFeld metric source is copied into
-the original MIT CUDA implementation.
+per-view CSV artifact. The matching historical Albagnac control was executed
+through the pinned GPL LichtFeld runtime image; no LichtFeld metric source was
+copied into the original MIT CUDA implementation and that image is no longer
+a build/runtime dependency.
 Version 0.5.0-dev.14 reuses that separable SSIM forward in every ordered
 training step and stores five derivative terms per valid window center.
 One CUDA thread per input RGB sample gathers the at-most 121 overlapping

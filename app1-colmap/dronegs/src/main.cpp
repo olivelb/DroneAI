@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.45 structural-fastgs "
+            << "DroneGS 0.5.0-dev.46 checkpoint-canary "
                "local-KNN portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.45 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.46 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color local-KNN "
@@ -89,6 +89,16 @@ int main(int argc, char** argv) {
         }
         const auto training = dronegs::train_ordered_mrnf(
             options, scene, gaussians);
+        if (!training.completed) {
+            std::cout
+                << "{\"event\":\"training_paused\",\"iteration\":"
+                << training.completed_iterations
+                << ",\"iterations\":" << options.iterations
+                << ",\"checkpoint\":\""
+                << options.checkpoint_path.string() << "\"}\n"
+                << std::flush;
+            return 75;
+        }
 
         const auto ply_path = options.output_path / "point_cloud.ply";
         const auto export_start = clock::now();

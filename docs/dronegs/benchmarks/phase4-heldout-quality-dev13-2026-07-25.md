@@ -73,8 +73,10 @@ sha256:71913f535a208879b9cd2e84f17895849c51de53e457149bd12c85c95e44568f
 
 The control uses the same dataset, resize, black background, 500 iterations,
 MRNF strategy, SH degree 0, 1.5-million cap, tile mode 4, and `test_every=8`.
-The exact optimization config is stored at
-`benchmarks/configs/lichtfeld-albagnac-heldout-500-dev13.json`.
+The exact optimization config was historically stored at
+`benchmarks/configs/lichtfeld-albagnac-heldout-500-dev13.json`; dev.46 removes
+that executable launch configuration with the retired runtime. The immutable
+parameters and hashes in this report remain the audit record.
 
 | Metric | DroneGS | Pinned LichtFeld | DroneGS gap |
 |---|---:|---:|---:|

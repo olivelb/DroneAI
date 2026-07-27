@@ -50,6 +50,10 @@ class GaussianProfile:
     topology_cooldown: int
     photometric_finish: int
     photometric_mse_percent: int
+    checkpoint_every: int
+    test_every: int
+    canary_min_psnr: float
+    canary_min_ssim: float
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -66,13 +70,17 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.25,
         filter_enabled=False,
         seed=42,
-        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
-        pruning_policy="lichtfeld-bounds",
-        raster_profile="fastgs",
+        optimizer_profile="reference-absolute",
+        pruning_policy="spatial-bounds",
+        raster_profile="bounded",
         sh_degree_interval=1_000,
         topology_cooldown=100,
         photometric_finish=100,
         photometric_mse_percent=100,
+        checkpoint_every=100,
+        test_every=8,
+        canary_min_psnr=0.0,
+        canary_min_ssim=0.0,
     ),
     # Conservative default for the RTX 4070 Laptop GPU used for validation.
     "low-memory": GaussianProfile(
@@ -86,13 +94,17 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.10,
         filter_enabled=True,
         seed=42,
-        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
-        pruning_policy="lichtfeld-bounds",
-        raster_profile="fastgs",
+        optimizer_profile="reference-absolute",
+        pruning_policy="spatial-bounds",
+        raster_profile="bounded",
         sh_degree_interval=1_000,
         topology_cooldown=1_000,
         photometric_finish=1_000,
         photometric_mse_percent=100,
+        checkpoint_every=1_000,
+        test_every=8,
+        canary_min_psnr=15.0,
+        canary_min_ssim=0.10,
     ),
     # A follow-up profile for better quality once the low-memory run is stable.
     "balanced": GaussianProfile(
@@ -106,13 +118,17 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.05,
         filter_enabled=True,
         seed=42,
-        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
-        pruning_policy="lichtfeld-bounds",
-        raster_profile="fastgs",
+        optimizer_profile="reference-absolute",
+        pruning_policy="spatial-bounds",
+        raster_profile="bounded",
         sh_degree_interval=1_000,
         topology_cooldown=1_000,
         photometric_finish=1_000,
         photometric_mse_percent=100,
+        checkpoint_every=2_000,
+        test_every=8,
+        canary_min_psnr=18.0,
+        canary_min_ssim=0.35,
     ),
 }
 
@@ -121,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="low-memory")
-    parser.add_argument("--backend", choices=("dronegs", "lichtfeld"))
+    parser.add_argument("--backend", choices=("dronegs",))
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--cap-max", type=int)
     parser.add_argument("--sh-degree", type=int, choices=range(4))
@@ -133,7 +149,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--optimizer-profile")
     parser.add_argument(
         "--pruning-policy",
-        choices=("original", "lichtfeld-bounds"),
+        choices=("original", "spatial-bounds"),
     )
     parser.add_argument(
         "--raster-profile",
@@ -281,12 +297,14 @@ def main() -> int:
         args.profile,
         args.output,
     )
-    if any(path.exists() for path in (ortho_path, height_path, checkpoint_path)):
+    if ortho_path.exists() or height_path.exists():
         if not args.force:
             raise ValueError(
                 "generated outputs already exist; pass --force to replace only "
                 f"the {args.profile!r} profile artifacts"
             )
+        clear_generated_outputs(ortho_path, height_path, checkpoint_path)
+    elif checkpoint_path.exists() and args.force:
         clear_generated_outputs(ortho_path, height_path, checkpoint_path)
 
     from gaussian_ortho.generate_gaussian_orthophoto import (
@@ -338,6 +356,10 @@ def main() -> int:
             dronegs_topology_cooldown=profile.topology_cooldown,
             dronegs_photometric_finish=profile.photometric_finish,
             dronegs_photometric_mse_percent=profile.photometric_mse_percent,
+            dronegs_checkpoint_every=profile.checkpoint_every,
+            dronegs_test_every=profile.test_every,
+            dronegs_canary_min_psnr=profile.canary_min_psnr,
+            dronegs_canary_min_ssim=profile.canary_min_ssim,
         )
     except Exception as error:
         report.update(

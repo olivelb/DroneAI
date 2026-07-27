@@ -218,6 +218,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest decode worker count missing");
     check(manifest_text.find("\"jpeg_idct_scale\": 0") != std::string::npos,
           "manifest JPEG IDCT mode missing");
+    check(manifest_text.find("\"checkpoint_every\": 0") !=
+              std::string::npos,
+          "manifest checkpoint interval missing");
+    check(manifest_text.find("\"resumed_from_checkpoint\": false") !=
+              std::string::npos,
+          "manifest resume provenance missing");
     check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
@@ -291,6 +297,7 @@ void test_local_scale_initialization() {
 }
 
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
+    std::filesystem::create_directories(output);
     std::vector<std::string> values{
         "dronegs",
         "--data-path", data.string(),
@@ -335,6 +342,8 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         parsed.raster_profile == "auto",
         "CLI raster profile default mismatch");
 
+    const auto checkpoint = output / "training.ckpt";
+    std::ofstream(checkpoint, std::ios::binary).put('\0');
     values.insert(values.end(), {
         "--prefetch-depth", "12",
         "--decode-workers", "3",
@@ -349,8 +358,12 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
         "--optimizer-profile",
         "dev38-staged-rotation008-absgrad050-fastgs",
-        "--pruning-policy", "lichtfeld-bounds",
+        "--pruning-policy", "spatial-bounds",
         "--raster-profile", "fastgs",
+        "--checkpoint-every", "1",
+        "--checkpoint-path", checkpoint.string(),
+        "--resume-from", checkpoint.string(),
+        "--stop-after", "1",
     });
     arguments = mutable_arguments(values);
     const auto tuned = dronegs::parse_options(
@@ -375,15 +388,19 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
             "dev38-staged-rotation008-absgrad050-fastgs",
         "CLI optimizer profile mismatch");
     check(
-        tuned.pruning_policy == "lichtfeld-bounds",
+        tuned.pruning_policy == "spatial-bounds",
         "CLI pruning policy mismatch");
     check(
         tuned.raster_profile == "fastgs",
         "CLI raster profile mismatch");
+    check(tuned.checkpoint_every == 1U, "CLI checkpoint interval mismatch");
+    check(tuned.checkpoint_path == checkpoint, "CLI checkpoint path mismatch");
+    check(tuned.resume_from == checkpoint, "CLI resume path mismatch");
+    check(tuned.stop_after == 1U, "CLI stop-after mismatch");
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 26U);
+    values.resize(values.size() - 34U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

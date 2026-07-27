@@ -141,7 +141,7 @@ else
     echo "✅ hf-token secret already exists."
 fi
 
-# 6. Clone external build dependencies (LichtFeld, vcpkg, Ceres, COLMAP)
+# 6. Clone external build dependencies (Ceres and COLMAP)
 echo "📥 Preparing external build dependencies..."
 bash "$SCRIPT_DIR/setup_deps.sh"
 

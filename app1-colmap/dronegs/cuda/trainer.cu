@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "dronegs/image.hpp"
+#include "dronegs/colmap.hpp"
 #include "dronegs/ordered_training.hpp"
 
 namespace dronegs {
@@ -1046,23 +1047,23 @@ TrainingMetrics train_ordered_mrnf(
         if (options.optimizer_profile == "dronegs-dev16") {
             return MrnfOptimizerProfile::dronegs_dev16;
         }
-        if (options.optimizer_profile == "lichtfeld-dc-only") {
-            return MrnfOptimizerProfile::lichtfeld_dc_only;
+        if (options.optimizer_profile == "reference-dc-only") {
+            return MrnfOptimizerProfile::reference_dc_only;
         }
-        if (options.optimizer_profile == "lichtfeld-position-only") {
-            return MrnfOptimizerProfile::lichtfeld_position_only;
+        if (options.optimizer_profile == "reference-position-only") {
+            return MrnfOptimizerProfile::reference_position_only;
         }
-        if (options.optimizer_profile == "lichtfeld-opacity-only") {
-            return MrnfOptimizerProfile::lichtfeld_opacity_only;
+        if (options.optimizer_profile == "reference-opacity-only") {
+            return MrnfOptimizerProfile::reference_opacity_only;
         }
-        if (options.optimizer_profile == "lichtfeld-scale-only") {
-            return MrnfOptimizerProfile::lichtfeld_scale_only;
+        if (options.optimizer_profile == "reference-scale-only") {
+            return MrnfOptimizerProfile::reference_scale_only;
         }
-        if (options.optimizer_profile == "lichtfeld-rotation-only") {
-            return MrnfOptimizerProfile::lichtfeld_rotation_only;
+        if (options.optimizer_profile == "reference-rotation-only") {
+            return MrnfOptimizerProfile::reference_rotation_only;
         }
-        if (options.optimizer_profile == "lichtfeld-dc-opacity") {
-            return MrnfOptimizerProfile::lichtfeld_dc_opacity;
+        if (options.optimizer_profile == "reference-dc-opacity") {
+            return MrnfOptimizerProfile::reference_dc_opacity;
         }
         if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
             return MrnfOptimizerProfile::calibrated_dc_005_opacity;
@@ -1086,27 +1087,27 @@ TrainingMetrics train_ordered_mrnf(
             return MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
         }
         if (options.optimizer_profile ==
-            "dev34-opacity096-lf-scale") {
-            return MrnfOptimizerProfile::dev34_opacity096_lf_scale;
+            "dev34-opacity096-reference-scale") {
+            return MrnfOptimizerProfile::dev34_opacity096_reference_scale;
         }
         if (options.optimizer_profile ==
-            "dev34-opacity096-lf-rotation") {
-            return MrnfOptimizerProfile::dev34_opacity096_lf_rotation;
+            "dev34-opacity096-reference-rotation") {
+            return MrnfOptimizerProfile::dev34_opacity096_reference_rotation;
         }
         if (options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation") {
+            "dev34-opacity096-reference-scale-rotation") {
             return MrnfOptimizerProfile::
-                dev34_opacity096_lf_scale_rotation;
+                dev34_opacity096_reference_scale_rotation;
         }
         if (options.optimizer_profile ==
-            "dev35-opacity096-lf-scale-staged-rotation004") {
+            "dev35-opacity096-reference-scale-staged-rotation004") {
             return MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation004;
+                dev35_opacity096_reference_scale_staged_rotation004;
         }
         if (options.optimizer_profile ==
-            "dev35-opacity096-lf-scale-staged-rotation008") {
+            "dev35-opacity096-reference-scale-staged-rotation008") {
             return MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation008;
+                dev35_opacity096_reference_scale_staged_rotation008;
         }
         if (options.optimizer_profile ==
             "dev36-staged-rotation008-absgrad025") {
@@ -1138,7 +1139,7 @@ TrainingMetrics train_ordered_mrnf(
             return MrnfOptimizerProfile::
                 dev38_staged_rotation008_absgrad050_fastgs;
         }
-        return MrnfOptimizerProfile::lichtfeld_absolute;
+        return MrnfOptimizerProfile::reference_absolute;
     }();
     const std::optional<bool> raster_override =
         options.raster_profile == "fastgs"
@@ -1152,6 +1153,29 @@ TrainingMetrics train_ordered_mrnf(
         optimizer_profile, options.sh_degree,
         options.sh_degree_interval, options.seed,
         raster_override);
+    const auto checkpoint_dataset_fingerprint =
+        dataset_fingerprint(scene);
+    std::ostringstream checkpoint_configuration;
+    checkpoint_configuration
+        << "contract=2"
+        << ";iterations=" << options.iterations
+        << ";strategy=" << options.strategy
+        << ";sh=" << options.sh_degree
+        << ";sh_interval=" << options.sh_degree_interval
+        << ";max_cap=" << options.max_cap
+        << ";resize=" << options.resize_factor
+        << ";max_width=" << options.max_width
+        << ";tile=" << options.tile_mode
+        << ";seed=" << options.seed
+        << ";test_every=" << options.test_every
+        << ";topology_cooldown=" << options.topology_cooldown
+        << ";photometric_finish=" << options.photometric_finish
+        << ";photometric_mse=" << options.photometric_mse_percent
+        << ";optimizer=" << options.optimizer_profile
+        << ";pruning=" << options.pruning_policy
+        << ";raster=" << options.raster_profile;
+    const auto checkpoint_configuration_fingerprint =
+        checkpoint_configuration.str();
     const bool imported_model = !options.initial_ply.empty();
     if (imported_model) {
         workspace.set_active_sh_degree(options.sh_degree);
@@ -1203,28 +1227,67 @@ TrainingMetrics train_ordered_mrnf(
     };
     TrainingMetrics metrics{
         .iterations = options.iterations,
+        .completed_iterations = 0U,
         .training_image_count =
             static_cast<std::uint64_t>(split.training.size()),
         .held_out_image_count =
             static_cast<std::uint64_t>(split.held_out.size()),
     };
+    TrainingCheckpointProgress checkpoint_progress;
+    if (!options.resume_from.empty()) {
+        checkpoint_progress = workspace.load_checkpoint(
+            options.resume_from,
+            checkpoint_dataset_fingerprint,
+            checkpoint_configuration_fingerprint);
+        if (checkpoint_progress.completed_iteration >=
+            options.iterations) {
+            throw std::runtime_error(
+                "checkpoint already reached the requested iteration count");
+        }
+        metrics.completed_iterations =
+            checkpoint_progress.completed_iteration;
+        metrics.topology_refinements =
+            checkpoint_progress.topology_refinements;
+        metrics.gaussians_added =
+            checkpoint_progress.gaussians_added;
+        metrics.gaussians_pruned =
+            checkpoint_progress.gaussians_pruned;
+        metrics.gaussian_slots_reused =
+            checkpoint_progress.gaussian_slots_reused;
+        metrics.topology_compactions =
+            checkpoint_progress.topology_compactions;
+        metrics.initial_loss =
+            checkpoint_progress.initial_loss;
+        metrics.initial_held_out_psnr =
+            checkpoint_progress.initial_held_out_psnr;
+        metrics.initial_held_out_ssim =
+            checkpoint_progress.initial_held_out_ssim;
+        std::cout
+            << "{\"event\":\"checkpoint_resumed\",\"iteration\":"
+            << checkpoint_progress.completed_iteration
+            << ",\"path\":\"" << options.resume_from.string()
+            << "\",\"gaussians\":" << workspace.size() << "}\n"
+            << std::flush;
+    }
     const auto schedule = make_training_schedule(
         split.training, options.iterations, options.seed);
-    const auto initial_frame =
-        frame_from_cache(
-            cache, descriptors, split.training.front(), options);
-    const auto initial_camera =
-        make_raster_camera(initial_frame.camera);
-    metrics.initial_loss = workspace.evaluate(
-        initial_camera, initial_frame.image->rgb.data(),
-        initial_frame.image->rgb.size());
+    if (options.resume_from.empty()) {
+        const auto initial_frame =
+            frame_from_cache(
+                cache, descriptors, split.training.front(), options);
+        const auto initial_camera =
+            make_raster_camera(initial_frame.camera);
+        metrics.initial_loss = workspace.evaluate(
+            initial_camera, initial_frame.image->rgb.data(),
+            initial_frame.image->rgb.size());
+    }
     const auto setup_end = std::chrono::steady_clock::now();
     const double setup_wall_seconds =
         std::chrono::duration<double>(
             setup_end - setup_start).count();
     metrics.setup_seconds = std::max(
         0.0, setup_wall_seconds - cache.stats().wait_seconds);
-    if (!split.held_out.empty()) {
+    if (!split.held_out.empty() && options.resume_from.empty()) {
         const auto held_out = evaluate_held_out(
             options, cache, descriptors, split.held_out,
             workspace, "initial",
@@ -1233,8 +1296,16 @@ TrainingMetrics train_ordered_mrnf(
         metrics.initial_held_out_ssim = held_out.ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
+    checkpoint_progress.initial_loss = metrics.initial_loss;
+    checkpoint_progress.initial_held_out_psnr =
+        metrics.initial_held_out_psnr;
+    checkpoint_progress.initial_held_out_ssim =
+        metrics.initial_held_out_ssim;
     prefetch_schedule_window(
-        cache, schedule, 0U, options.prefetch_depth);
+        cache, schedule,
+        static_cast<std::size_t>(
+            checkpoint_progress.completed_iteration),
+        options.prefetch_depth);
 
     const auto training_start = std::chrono::steady_clock::now();
     const double wait_seconds_before_training =
@@ -1265,7 +1336,8 @@ TrainingMetrics train_ordered_mrnf(
             << options.photometric_mse_percent << "}\n"
             << std::flush;
     }
-    for (std::uint64_t iteration = 1U;
+    for (std::uint64_t iteration =
+             checkpoint_progress.completed_iteration + 1U;
          iteration <= options.iterations; ++iteration) {
         const auto schedule_index =
             static_cast<std::size_t>(iteration - 1U);
@@ -1311,7 +1383,7 @@ TrainingMetrics train_ordered_mrnf(
                     0.003F,
                     iteration < 15'000U ? 0.07F : 0.0F,
                     refinement_seed,
-                    options.pruning_policy == "lichtfeld-bounds");
+                    options.pruning_policy == "spatial-bounds");
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
@@ -1344,6 +1416,36 @@ TrainingMetrics train_ordered_mrnf(
                 << "}\n"
                 << std::flush;
         }
+        metrics.completed_iterations = iteration;
+        checkpoint_progress.completed_iteration = iteration;
+        checkpoint_progress.topology_refinements =
+            metrics.topology_refinements;
+        checkpoint_progress.gaussians_added =
+            metrics.gaussians_added;
+        checkpoint_progress.gaussians_pruned =
+            metrics.gaussians_pruned;
+        checkpoint_progress.gaussian_slots_reused =
+            metrics.gaussian_slots_reused;
+        checkpoint_progress.topology_compactions =
+            metrics.topology_compactions;
+        const bool periodic_checkpoint =
+            options.checkpoint_every != 0U &&
+            iteration % options.checkpoint_every == 0U;
+        const bool requested_stop =
+            options.stop_after != 0U &&
+            iteration == options.stop_after;
+        if (periodic_checkpoint || requested_stop) {
+            workspace.save_checkpoint(
+                options.checkpoint_path, checkpoint_progress,
+                checkpoint_dataset_fingerprint,
+                checkpoint_configuration_fingerprint);
+            std::cout
+                << "{\"event\":\"checkpoint_saved\",\"iteration\":"
+                << iteration << ",\"path\":\""
+                << options.checkpoint_path.string()
+                << "\",\"gaussians\":" << workspace.size() << "}\n"
+                << std::flush;
+        }
         if (iteration == 1U ||
             iteration == options.iterations ||
             iteration % progress_interval == 0U) {
@@ -1355,6 +1457,10 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"gaussians\":" << workspace.size()
                 << "}\n"
                 << std::flush;
+        }
+        if (requested_stop) {
+            metrics.completed = false;
+            break;
         }
     }
     const auto final_learning_rates =
@@ -1391,6 +1497,31 @@ TrainingMetrics train_ordered_mrnf(
         wait_seconds_before_training;
     metrics.training_seconds = std::max(
         0.0, training_wall_seconds - training_wait_seconds);
+
+    if (!metrics.completed) {
+        metrics.final_active_sh_degree =
+            workspace.active_sh_degree();
+        metrics.image_loading_seconds =
+            cache.stats().wait_seconds;
+        metrics.image_decode_seconds =
+            cache.stats().loading_seconds;
+        metrics.image_cache_hits = cache.stats().hits;
+        metrics.image_cache_misses = cache.stats().misses;
+        metrics.image_cache_evictions = cache.stats().evictions;
+        metrics.image_cache_capacity_bytes =
+            static_cast<std::uint64_t>(cache.capacity_bytes());
+        metrics.peak_image_cache_bytes =
+            static_cast<std::uint64_t>(
+                cache.stats().peak_resident_bytes);
+        metrics.image_prefetch_started =
+            cache.stats().prefetch_started;
+        metrics.image_prefetch_consumed =
+            cache.stats().prefetch_consumed;
+        metrics.image_prefetch_ready =
+            cache.stats().prefetch_ready;
+        workspace.download(gaussians);
+        return metrics;
+    }
 
     const auto final_evaluation_start =
         std::chrono::steady_clock::now();

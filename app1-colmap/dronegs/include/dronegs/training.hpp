@@ -43,24 +43,24 @@ struct MrnfLearningRates {
 
 enum class MrnfOptimizerProfile {
     dronegs_dev16,
-    lichtfeld_absolute,
-    lichtfeld_dc_only,
-    lichtfeld_position_only,
-    lichtfeld_opacity_only,
-    lichtfeld_scale_only,
-    lichtfeld_rotation_only,
-    lichtfeld_dc_opacity,
+    reference_absolute,
+    reference_dc_only,
+    reference_position_only,
+    reference_opacity_only,
+    reference_scale_only,
+    reference_rotation_only,
+    reference_dc_opacity,
     calibrated_dc_005_opacity,
     calibrated_dc_010_opacity,
     calibrated_dc_020_opacity,
     calibrated_dc_010_opacity_024,
     calibrated_dc_010_opacity_048,
     calibrated_dc_010_opacity_096,
-    dev34_opacity096_lf_scale,
-    dev34_opacity096_lf_rotation,
-    dev34_opacity096_lf_scale_rotation,
-    dev35_opacity096_lf_scale_staged_rotation004,
-    dev35_opacity096_lf_scale_staged_rotation008,
+    dev34_opacity096_reference_scale,
+    dev34_opacity096_reference_rotation,
+    dev34_opacity096_reference_scale_rotation,
+    dev35_opacity096_reference_scale_staged_rotation004,
+    dev35_opacity096_reference_scale_staged_rotation008,
     dev36_staged_rotation008_absgrad025,
     dev36_staged_rotation008_absgrad050,
     dev37_staged_rotation008_absgrad050_aa005,
@@ -104,6 +104,8 @@ struct TrainingMetrics {
     float initial_loss = 0.0F;
     float final_loss = 0.0F;
     std::uint64_t iterations = 0;
+    std::uint64_t completed_iterations = 0;
+    bool completed = true;
     double image_loading_seconds = 0.0;
     double image_decode_seconds = 0.0;
     double setup_seconds = 0.0;

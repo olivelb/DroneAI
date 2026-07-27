@@ -230,7 +230,7 @@ int main() {
                 split.training.begin(), split.training.end(), 8U) !=
                 split.training.end()) {
             throw std::runtime_error(
-                "LichtFeld-compatible held-out split mismatch");
+                "held-out split compatibility mismatch");
         }
         const auto quality_target = dronegs::load_training_image(
             root / "images" / "frame.jpg", 1U, 32U, false);
@@ -384,7 +384,7 @@ int main() {
         }
         dronegs::OrderedAlphaTrainingContext rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_absolute);
+            dronegs::MrnfOptimizerProfile::reference_absolute);
         auto noise_parent = split_parent;
         noise_parent.opacity_logit = -4.0F;
         auto noise_neighbor = noise_parent;
@@ -500,7 +500,7 @@ int main() {
             1.0e-12F, "dev16 rotation epsilon");
         dronegs::OrderedAlphaTrainingContext dc_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_dc_only);
+            dronegs::MrnfOptimizerProfile::reference_dc_only);
         const auto dc_only_rates =
             dc_only_context.current_learning_rates();
         require_rate(
@@ -526,7 +526,7 @@ int main() {
             1.0e-12F, "DC-only position epsilon isolation");
         dronegs::OrderedAlphaTrainingContext position_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_position_only);
+            dronegs::MrnfOptimizerProfile::reference_position_only);
         const auto position_only_rates =
             position_only_context.current_learning_rates();
         require_rate(
@@ -552,7 +552,7 @@ int main() {
             1.0e-12F, "position-only DC epsilon isolation");
         dronegs::OrderedAlphaTrainingContext opacity_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_opacity_only);
+            dronegs::MrnfOptimizerProfile::reference_opacity_only);
         const auto opacity_only_rates =
             opacity_only_context.current_learning_rates();
         require_rate(
@@ -566,7 +566,7 @@ int main() {
             1.0e-8F, "opacity-only DC isolation");
         dronegs::OrderedAlphaTrainingContext dc_opacity_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_dc_opacity);
+            dronegs::MrnfOptimizerProfile::reference_dc_opacity);
         const auto dc_opacity_rates =
             dc_opacity_context.current_learning_rates();
         require_rate(
@@ -672,7 +672,7 @@ int main() {
             9.6e-2F, "opacity 0.096");
         const auto require_geometry_candidate =
             [&](dronegs::MrnfOptimizerProfile profile,
-                bool use_lf_scale, bool use_lf_rotation,
+                bool use_reference_scale, bool use_reference_rotation,
                 const char* label) {
                 dronegs::OrderedAlphaTrainingContext context(
                     rate_fixture, 32U * 32U, 2U, 8U, profile);
@@ -685,23 +685,23 @@ int main() {
                     1.0e-9F, "geometry candidate position isolation");
                 require_rate(
                     rates.scale,
-                    use_lf_scale
+                    use_reference_scale
                         ? initial_rates.scale
                         : native_rates.scale,
                     1.0e-8F, "geometry candidate scale");
                 require_rate(
                     rates.rotation,
-                    use_lf_rotation
+                    use_reference_rotation
                         ? initial_rates.rotation
                         : native_rates.rotation,
                     1.0e-8F, "geometry candidate rotation");
                 require_rate(
                     rates.scale_epsilon,
-                    use_lf_scale ? 1.0e-15F : 1.0e-8F,
+                    use_reference_scale ? 1.0e-15F : 1.0e-8F,
                     1.0e-12F, "geometry candidate scale epsilon");
                 require_rate(
                     rates.rotation_epsilon,
-                    use_lf_rotation ? 1.0e-15F : 1.0e-8F,
+                    use_reference_rotation ? 1.0e-15F : 1.0e-8F,
                     1.0e-12F, "geometry candidate rotation epsilon");
                 require_rate(
                     rates.dc_epsilon, 1.0e-15F,
@@ -711,14 +711,14 @@ int main() {
                     1.0e-20F, "geometry candidate opacity epsilon");
             };
         require_geometry_candidate(
-            dronegs::MrnfOptimizerProfile::dev34_opacity096_lf_scale,
+            dronegs::MrnfOptimizerProfile::dev34_opacity096_reference_scale,
             true, false, "dev34 scale");
         require_geometry_candidate(
-            dronegs::MrnfOptimizerProfile::dev34_opacity096_lf_rotation,
+            dronegs::MrnfOptimizerProfile::dev34_opacity096_reference_rotation,
             false, true, "dev34 rotation");
         require_geometry_candidate(
             dronegs::MrnfOptimizerProfile::
-                dev34_opacity096_lf_scale_rotation,
+                dev34_opacity096_reference_scale_rotation,
             true, true, "dev34 scale rotation");
         const auto require_staged_rotation =
             [&](dronegs::MrnfOptimizerProfile profile,
@@ -762,11 +762,11 @@ int main() {
             };
         require_staged_rotation(
             dronegs::MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation004,
+                dev35_opacity096_reference_scale_staged_rotation004,
             4.0e-3F, "dev35 staged rotation 0.004");
         require_staged_rotation(
             dronegs::MrnfOptimizerProfile::
-                dev35_opacity096_lf_scale_staged_rotation008,
+                dev35_opacity096_reference_scale_staged_rotation008,
             8.0e-3F, "dev35 staged rotation 0.008");
         require_staged_rotation(
             dronegs::MrnfOptimizerProfile::
@@ -895,7 +895,7 @@ int main() {
         }
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_scale_only);
+            dronegs::MrnfOptimizerProfile::reference_scale_only);
         const auto scale_only_rates =
             scale_only_context.current_learning_rates();
         require_rate(
@@ -909,7 +909,7 @@ int main() {
             1.0e-9F, "scale-only position isolation");
         dronegs::OrderedAlphaTrainingContext rotation_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
-            dronegs::MrnfOptimizerProfile::lichtfeld_rotation_only);
+            dronegs::MrnfOptimizerProfile::reference_rotation_only);
         const auto rotation_only_rates =
             rotation_only_context.current_learning_rates();
         require_rate(
@@ -1107,6 +1107,190 @@ int main() {
                 seeded_other_gaussians)) {
             throw std::runtime_error(
                 "weighted Gumbel selection ignored its seed");
+        }
+        const auto checkpoint_path = root / "training.ckpt";
+        dronegs::OrderedAlphaTrainingContext uninterrupted(
+            rate_fixture, 32U * 32U, 10U, 8U,
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs,
+            2U, 2U, 123U, true);
+        dronegs::OrderedAlphaTrainingContext interrupted(
+            rate_fixture, 32U * 32U, 10U, 8U,
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs,
+            2U, 2U, 123U, true);
+        for (std::uint64_t step = 0U; step < 5U; ++step) {
+            static_cast<void>(uninterrupted.train_step(
+                quality_camera, split_target.data(),
+                split_target.size()));
+            static_cast<void>(interrupted.train_step(
+                quality_camera, split_target.data(),
+                split_target.size()));
+        }
+        const dronegs::TrainingCheckpointProgress saved_progress{
+            .completed_iteration = 5U,
+            .topology_refinements = 1U,
+            .gaussians_added = 2U,
+            .gaussians_pruned = 1U,
+            .gaussian_slots_reused = 1U,
+            .topology_compactions = 1U,
+            .initial_loss = 0.42F,
+            .initial_held_out_psnr = 18.25F,
+            .initial_held_out_ssim = 0.51F,
+        };
+        interrupted.save_checkpoint(
+            checkpoint_path, saved_progress,
+            "test-dataset", "test-configuration");
+        dronegs::OrderedAlphaTrainingContext resumed(
+            rate_fixture, 32U * 32U, 10U, 8U,
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs,
+            2U, 2U, 123U, true);
+        const auto loaded_progress = resumed.load_checkpoint(
+            checkpoint_path, "test-dataset",
+            "test-configuration");
+        if (loaded_progress.completed_iteration != 5U ||
+            loaded_progress.gaussians_added != 2U ||
+            std::abs(
+                loaded_progress.initial_loss -
+                saved_progress.initial_loss) > 1.0e-7F ||
+            loaded_progress.initial_held_out_psnr !=
+                saved_progress.initial_held_out_psnr ||
+            loaded_progress.initial_held_out_ssim !=
+                saved_progress.initial_held_out_ssim ||
+            resumed.active_sh_degree() !=
+                interrupted.active_sh_degree()) {
+            throw std::runtime_error(
+                "checkpoint progress metadata was not restored");
+        }
+        const auto models_match = [](
+            const dronegs::OrderedAlphaTrainingContext& left_context,
+            const dronegs::OrderedAlphaTrainingContext& right_context) {
+            std::vector<dronegs::Gaussian> left_gaussians;
+            std::vector<dronegs::Gaussian> right_gaussians;
+            left_context.download(left_gaussians);
+            right_context.download(right_gaussians);
+            if (left_gaussians.size() != right_gaussians.size()) {
+                return false;
+            }
+            for (std::size_t index = 0U;
+                 index < left_gaussians.size(); ++index) {
+                const auto& left = left_gaussians[index];
+                const auto& right = right_gaussians[index];
+                constexpr float resume_tolerance = 2.0e-6F;
+                for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                    if (std::abs(left.xyz[axis] - right.xyz[axis]) >
+                            resume_tolerance ||
+                        std::abs(left.dc[axis] - right.dc[axis]) >
+                            resume_tolerance ||
+                        std::abs(
+                            left.log_scale[axis] -
+                            right.log_scale[axis]) >
+                            resume_tolerance) {
+                        return false;
+                    }
+                }
+                for (std::size_t coefficient = 0U;
+                     coefficient < dronegs::maximum_sh_rest_values;
+                     ++coefficient) {
+                    if (std::abs(
+                            left.sh_rest[coefficient] -
+                            right.sh_rest[coefficient]) >
+                        resume_tolerance) {
+                        return false;
+                    }
+                }
+                for (std::size_t component = 0U;
+                     component < 4U; ++component) {
+                    if (std::abs(
+                            left.rotation[component] -
+                            right.rotation[component]) >
+                        resume_tolerance) {
+                        return false;
+                    }
+                }
+                if (std::abs(
+                        left.opacity_logit -
+                        right.opacity_logit) >
+                    resume_tolerance) {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!models_match(interrupted, resumed)) {
+            throw std::runtime_error(
+                "checkpoint snapshot changed the restored model");
+        }
+        for (std::uint64_t step = 5U; step < 10U; ++step) {
+            static_cast<void>(uninterrupted.train_step(
+                quality_camera, split_target.data(),
+                split_target.size()));
+            static_cast<void>(resumed.train_step(
+                quality_camera, split_target.data(),
+                split_target.size()));
+            if (!models_match(uninterrupted, resumed)) {
+                std::vector<dronegs::Gaussian> left_debug;
+                std::vector<dronegs::Gaussian> right_debug;
+                uninterrupted.download(left_debug);
+                resumed.download(right_debug);
+                float xyz_delta = 0.0F;
+                float dc_delta = 0.0F;
+                float sh_delta = 0.0F;
+                float scale_delta = 0.0F;
+                float rotation_delta = 0.0F;
+                float opacity_delta = 0.0F;
+                for (std::size_t index = 0U;
+                     index < left_debug.size(); ++index) {
+                    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                        xyz_delta = std::max(
+                            xyz_delta, std::abs(
+                                left_debug[index].xyz[axis] -
+                                right_debug[index].xyz[axis]));
+                        dc_delta = std::max(
+                            dc_delta, std::abs(
+                                left_debug[index].dc[axis] -
+                                right_debug[index].dc[axis]));
+                        scale_delta = std::max(
+                            scale_delta, std::abs(
+                                left_debug[index].log_scale[axis] -
+                                right_debug[index].log_scale[axis]));
+                    }
+                    for (std::size_t coefficient = 0U;
+                         coefficient <
+                             dronegs::maximum_sh_rest_values;
+                         ++coefficient) {
+                        sh_delta = std::max(
+                            sh_delta, std::abs(
+                                left_debug[index].sh_rest[coefficient] -
+                                right_debug[index].sh_rest[coefficient]));
+                    }
+                    for (std::size_t component = 0U;
+                         component < 4U; ++component) {
+                        rotation_delta = std::max(
+                            rotation_delta, std::abs(
+                                left_debug[index].rotation[component] -
+                                right_debug[index].rotation[component]));
+                    }
+                    opacity_delta = std::max(
+                        opacity_delta, std::abs(
+                            left_debug[index].opacity_logit -
+                            right_debug[index].opacity_logit));
+                }
+                throw std::runtime_error(
+                    "checkpoint resume diverged at step " +
+                    std::to_string(step + 1U) +
+                    " xyz=" + std::to_string(xyz_delta) +
+                    " dc=" + std::to_string(dc_delta) +
+                    " sh=" + std::to_string(sh_delta) +
+                    " scale=" + std::to_string(scale_delta) +
+                    " rotation=" + std::to_string(rotation_delta) +
+                    " opacity=" + std::to_string(opacity_delta));
+            }
+        }
+        if (!models_match(uninterrupted, resumed)) {
+            throw std::runtime_error(
+                "checkpoint resume exceeded numerical parity tolerance");
         }
         auto additive_gaussians = initialized;
         auto ordered_initial = initialized;

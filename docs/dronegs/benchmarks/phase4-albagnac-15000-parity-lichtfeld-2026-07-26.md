@@ -26,8 +26,10 @@ renderer and metric implementation.
 - error map and edge map enabled;
 - final metrics on the exact same 172 held-out pairs.
 
-The serialized LichtFeld configuration is
-`configs/lichtfeld-albagnac-parity-15000-dev38.json`.
+The serialized LichtFeld launch configuration existed historically as
+`configs/lichtfeld-albagnac-parity-15000-dev38.json`; dev.46 removes that
+executable configuration with the retired runtime. The immutable parameters
+and results below remain the audit record.
 
 This is an exact input, budget, split and hyperparameter comparison. The
 CUDA rasterizer, optimizer implementation, topology kernels and internal

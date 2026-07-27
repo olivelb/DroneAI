@@ -204,12 +204,8 @@ No external Gaussian trainer source is required:
 ```
 
 The portable CUDA build contains runtime-selected cubins for recent NVIDIA
-architectures. To include the legacy LichtFeld rollback in the same image:
-
-```bash
-bash setup_deps.sh --with-lichtfeld
-./tools/build_local_gaussian_image.sh --with-lichtfeld
-```
+architectures. LichtFeld and vcpkg are not cloned or compiled, and no alternate
+Gaussian backend is packaged in the image.
 
 First undistort the small workspace, then run the complete smoke path:
 
@@ -243,14 +239,19 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
 | `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
 
+`smoke` exercises checkpoint/resume and held-out evaluation but uses a
+zero-threshold operational canary. `low-memory` gates at 15 dB / 0.10 SSIM;
+`balanced` uses the production 18 dB / 0.35 SSIM thresholds.
+
 The `balanced` preset reproduces the validated dev.45 training recipe:
-FastGS structural rasterization, LichtFeld-compatible pruning bounds,
+FastGS structural rasterization, bounded spatial pruning,
 progressive SH3, a 1,000-step topology cooldown, and a 1,000-step finish to
 100% MSE gradient. All presets use seed 42 and select DroneGS explicitly.
-Pass `--backend lichtfeld` only with an image built using
-`--with-lichtfeld`. Every profile writes separate checkpoints, GeoTIFFs,
-height maps, and a `gaussian_run.<profile>.json` manifest. Existing profile
-outputs are preserved unless `--force` is passed.
+Every profile writes separate checkpoints, GeoTIFFs, height maps, and a
+`gaussian_run.<profile>.json` manifest. Interrupted native training resumes
+from `training.ckpt`; completed models must pass the configured held-out
+PSNR/SSIM canary before rendering. Existing profile outputs are preserved
+unless `--force` is passed.
 
 ## Optional local YOLO OBB detection
 

@@ -1,39 +1,51 @@
 {
   "schema_version": 1,
-  "name": "gajan-v1",
+  "name": "gajan-v1-dronegs",
   "repetitions": 5,
   "backends": [
     {
-      "name": "lichtfeld",
+      "name": "dronegs",
       "command": [
-        "${LICHTFELD_BIN}",
-        "--headless", "--train",
+        "${DRONEGS_BIN}",
         "--data-path", "{data_path}",
         "--output-path", "{output_path}",
         "--iter", "{iterations}",
         "--strategy", "{strategy}",
         "--sh-degree", "{sh_degree}",
         "--max-cap", "{max_cap}",
-        "--resize_factor", "{resize_factor}",
+        "--resize-factor", "{resize_factor}",
         "--max-width", "{max_width}",
-        "--tile-mode", "{tile_mode}"
+        "--tile-mode", "{tile_mode}",
+        "--seed", "{seed}",
+        "--run-manifest", "{run_manifest}",
+        "--optimizer-profile", "reference-absolute",
+        "--pruning-policy", "spatial-bounds",
+        "--raster-profile", "bounded",
+        "--sh-degree-interval", "1000",
+        "--topology-cooldown", "1000",
+        "--photometric-finish", "1000",
+        "--photometric-mse-percent", "100",
+        "--checkpoint-every", "2000",
+        "--checkpoint-path", "{output_path}/training.ckpt",
+        "--test-every", "8",
+        "--save-eval-images", "1"
       ],
-      "required_artifact_glob": "**/*.ply"
+      "required_artifact_glob": "point_cloud.ply"
     }
   ],
   "cases": [
     {
-      "name": "low-memory",
+      "name": "balanced",
       "data_path": "${GAJAN_DENSE_PATH}",
       "parameters": {
-        "iterations": 5000,
+        "iterations": 15000,
         "strategy": "mrnf",
-        "sh_degree": 1,
-        "max_cap": 500000,
+        "sh_degree": 3,
+        "max_cap": 1500000,
         "resize_factor": 4,
         "max_width": 1600,
         "tile_mode": 4,
-        "seed": 24072026
+        "seed": 42
       }
     }
   ]

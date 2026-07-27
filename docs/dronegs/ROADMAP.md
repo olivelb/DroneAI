@@ -16,14 +16,14 @@ Each completed phase has one focused commit and an annotated
 | 0.7.0 | Non-regression | Drone and public benchmark suite | Quality, speed, VRAM gates pass |
 | 0.8.0 | Large-scene optimization | Streaming, cache, partition tuning | 1,000+ image workload bounded and faster |
 | 0.9.0 | Canary | Shadow and selected production runs | No severity-1/2 regression |
-| 1.0.0 | Default backend | DroneGS default, LichtFeld rollback | Operational acceptance |
+| 1.0.0 | Sole backend | DroneGS checkpoints, canary and deployment | Operational acceptance |
 
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.45.
-- Production Gaussian backend: DroneGS. LichtFeld remains an explicit,
-  separately built rollback backend.
+- Current development version: 0.5.0-dev.46.
+- Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
+  image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
   DroneGS reaches 22.175919 dB PSNR, 0.642557 SSIM and 0.325408 LPIPS in
   972.731 training seconds. Deterministic LichtFeld reaches 21.513821 dB,
@@ -35,9 +35,16 @@ Each completed phase has one focused commit and an annotated
 - The default image builds DroneGS locally with portable CUDA device code and
   ships matching source/provenance. No LichtFeld checkout is needed for the
   default pipeline.
-- Checkpoint/resume, cross-architecture runtime qualification and staged
-  canary operations remain open before a 1.0.0 tag. Promotion in the mission
-  pipeline does not claim those later roadmap gates as complete.
+- Versioned full-state checkpoint/resume and held-out PSNR/SSIM canary gates
+  are implemented in dev.46.
+- The independent Savères 15,000-step qualification passed on 1,065 images:
+  19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS, 1.5 million splats and
+  40.93 minutes of training. Its PSNR/SSIM production canary passed.
+- The portable Turing-through-Blackwell image was rebuilt from the final
+  source, started on the local NVIDIA GPU, and audited for matching source,
+  notices, GPL text, and absence of LichtFeld/vcpkg runtime artifacts.
+- The remaining release work is operational publication and field
+  observation, not another trainer-parity gate.
 
 ### Development history
 
@@ -262,4 +269,5 @@ source pixels, iterations, and Gaussian count.
 - After 0.4.0: rasterizer maintainability.
 - After 0.6.0: reachable quality parity.
 - After 0.7.0: economic value of further optimization.
-- Before 1.0.0: licensing, source obligations, rollback, and reproducibility.
+- Before 1.0.0: licensing, source obligations, disaster recovery, and
+  reproducibility.

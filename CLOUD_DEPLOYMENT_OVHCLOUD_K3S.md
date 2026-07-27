@@ -239,7 +239,7 @@ From your development machine, build all images and push to a container registry
 REGISTRY="ghcr.io/<your-org>"
 docker login ghcr.io
 
-# Base image (COLMAP + Ceres + LichtFeld — heavy, build once)
+# Base image (COLMAP + Ceres + portable DroneGS — heavy, build once)
 docker build \
   -t drone-colmap-base:latest \
   -t $REGISTRY/drone-colmap-base:latest \

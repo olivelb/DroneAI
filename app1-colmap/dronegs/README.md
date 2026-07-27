@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.45` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.46` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -36,6 +36,9 @@ an active-pixel MSE contribution whose final weight is `P%`. Both native CLI
 defaults are zero, preserving dev.44 training math and cost outside explicit
 photometric convergence ablations. The DroneAI pipeline selects the validated
 1,000-step cooldown and photometric finish explicitly.
+Dev.46 adds atomic versioned full-state checkpoints, strict scene/config
+fingerprints, deterministic resume, deliberate pause exit code 75, and
+held-out deployment canaries at the Python orchestration boundary.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -133,17 +136,22 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   deterministic camera order;
 - exports a DroneAI-compatible binary PLY;
 - writes a run-manifest-v1 document;
+- atomically checkpoints every parameter, Adam moment, topology statistic,
+  schedule and deterministic state, with strict dataset/config fingerprints;
+- resumes compatible interrupted runs and supports deliberate checkpoint
+  canaries via `--stop-after`;
 - provides direct CPU objective/metric oracles, finite-difference DSSIM and
   renderer gradient tests, and end-to-end convergence tests.
 
-DroneGS is now the production pipeline default, with LichtFeld retained as an
-explicit rollback adapter. The validated Albagnac 15,000-step dev.45 run
+DroneGS is now the sole production Gaussian backend. The validated Albagnac
+15,000-step dev.45 run
 reaches 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in 972.731
 training seconds. The deterministic LichtFeld control reaches 21.513821 dB,
 0.586497, and 0.371055 in 994.228 seconds under the same frozen evaluator.
-The additive renderer remains only as a convergence control. Checkpoint/resume
-and broader operational canary coverage remain open; completed manifests and
-PLY outputs are atomic pipeline gates. Only
+The control is historical and is not a runtime/build dependency. The additive
+renderer remains only as a convergence control. Full-state checkpoint/resume,
+completed manifests, held-out PSNR/SSIM canaries and PLY outputs are atomic
+pipeline gates. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
 measured. Dev.21 swept DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
 opacity while retaining dev16 geometry. Dev.22 replays dev16, DC=0.010, and

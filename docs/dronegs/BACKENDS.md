@@ -1,46 +1,32 @@
-# Gaussian training backends
+# DroneGS backend boundary
 
-DroneAI now calls Gaussian trainers through `gaussian_training.backends`.
-DroneGS is the production default after the dev.45 Albagnac parity gate.
-The pinned LichtFeld subprocess adapter remains available as an explicit
-rollback when its optional runtime is installed.
+DroneGS is the sole executable Gaussian-training backend. The mission
+pipeline, local runner and container image all resolve to the contract-v1
+DroneGS process; there is no runtime fallback or alternate trainer selector.
 
-## Selection
+Historical LichtFeld measurements remain in benchmark reports because they
+are the frozen quality/speed control used during development. LichtFeld source
+references also remain in the GPL provenance register for the DroneGS files
+that adapt GPL-covered behavior. Neither use requires a LichtFeld checkout,
+binary, container, Python adapter or vcpkg installation.
 
-Selection order:
+## Selection and discovery
 
-1. the `trainer_backend` argument of `generate_gaussian_orthophoto()`;
-2. the `gs_backend` mission parameter;
-3. `DRONEAI_GAUSSIAN_BACKEND`;
-4. `dronegs`.
+`gs_backend` accepts only `dronegs`. Binary discovery uses `DRONEGS_BIN`, then
+the repository build, then `PATH`. Unknown values fail before a mission starts
+instead of silently choosing a fallback.
 
-Valid values are `lichtfeld` and `dronegs`. Binary discovery uses
-`LICHTFELD_BIN` and `DRONEGS_BIN`, respectively. Selecting DroneGS before its
-native executable is built fails immediately with an actionable error; there
-is no silent fallback that could invalidate a benchmark.
+The production profile uses:
 
-The optional `gs_seed` mission parameter becomes the base seed. It defaults
-to 42. Partition
-`i` receives `gs_seed + i`.
-
-The pipeline default also passes the validated dev.45 recipe:
-
-- optimizer profile `dev38-staged-rotation008-absgrad050-fastgs`;
-- FastGS structural rasterization and LichtFeld-compatible pruning bounds;
+- optimizer profile `reference-absolute`;
+- structural FastGS buckets/checkpoints and warp-cooperative backward;
+- bounded spatial pruning and in-place slot recycling;
 - progressive SH activation every 1,000 steps;
 - a 1,000-step fixed-topology cooldown;
-- a 1,000-step finish ramping to 100% active-pixel MSE gradient;
-- 15,000 steps, 1.5 million splats, resize factor 4, and seed 42.
-
-Every value is exposed as a mission parameter. The native CLI retains its
-neutral historical defaults, so direct low-level invocations remain backward
-compatible.
+- a 1,000-step objective ramp ending at 100% active-pixel MSE;
+- 15,000 steps, 1.5 million splats, resize factor 4 and seed 42.
 
 ## Stable Python boundary
-
-`TrainingRequest` validates the contract-v1 inputs before a backend starts.
-`TrainingResult` always identifies the backend and exported PLY, and optionally
-exposes the native manifest and effective seed.
 
 ```text
 orthophoto pipeline
@@ -48,46 +34,50 @@ orthophoto pipeline
         v
 TrainingRequest
         |
-        +------ LichtFeldBackend ------ legacy CLI / standard PLY
-        |
         +------ DroneGSBackend -------- CLI v1 / manifest v1 / standard PLY
         |
         v
-TrainingResult -> existing GaussianModel
+TrainingResult -> canary gate -> existing GaussianModel
 ```
 
-The partition, merge, filtering, geo-alignment, rendering, and GeoTIFF stages
-are deliberately downstream of this boundary and remain shared.
+The partition, merge, filtering, geo-alignment, rendering and GeoTIFF stages
+remain downstream of this boundary.
 
-## Capability differences during migration
+## Recovery contract
 
-| Capability | LichtFeld adapter | DroneGS adapter |
-|---|---|---|
-| Production default | Rollback only | Yes |
-| CLI spelling | Legacy `--resize_factor` | Canonical `--resize-factor` |
-| Required run manifest | No | Yes |
-| User-controlled seed | Not exposed by pinned CLI | Required |
-| Progress | Legacy stdout/MCP parser | JSON Lines |
-| PLY output | Required | Required |
+By default, DroneGS atomically replaces `training.ckpt` every 2,000 steps.
+The checkpoint contains:
 
-The requested seed is recorded by the benchmark harness for every backend,
-but `effective_seed` is unknown for the pinned LichtFeld adapter. Quality and
-timing comparisons must therefore report this limitation until LichtFeld has
-a verified deterministic seed control.
+- all Gaussian parameters;
+- all Adam first/second moments and beta powers;
+- densification statistics and topology counters;
+- active SH degree and schedule state;
+- optimizer step, deterministic seed and scene/config fingerprints.
 
-## Rollback
+If a mission is restarted with an incomplete output directory and a checkpoint
+but no completed `trainer_run.json`, the pipeline automatically supplies
+`--resume-from`. Dataset and training-configuration fingerprints must match or
+the native trainer refuses the checkpoint. A deliberately paused native
+canary exits with code 75 after writing a checkpoint; ordinary completed jobs
+exit zero. After a completed model passes its quality canary, the Python
+pipeline removes the large optimizer checkpoint; the PLY, manifest, canary and
+evaluation artifacts become the compact durable recovery point.
 
-Build an image with the optional LichtFeld runtime, then explicitly set:
+## Canary contract
 
-```text
-DRONEAI_GAUSSIAN_BACKEND=lichtfeld
-```
+The production split reserves cameras where
+`scene_index % gs_test_every == 0` (`gs_test_every=8`). Training must produce a
+completed manifest and meet both configured thresholds:
 
-For the local image:
+- `gs_canary_min_psnr=18.0`;
+- `gs_canary_min_ssim=0.35`.
 
-```bash
-bash setup_deps.sh --with-lichtfeld
-bash tools/build_local_gaussian_image.sh --with-lichtfeld
-```
+The adapter atomically writes `canary_result.json`. A failed canary stops the
+orthomosaic pipeline while preserving the PLY, manifest, evaluation pairs and
+checkpoint for diagnosis.
 
-No model format or downstream renderer change is needed to roll back.
+## Source safety
+
+The input COLMAP tree and output tree must be disjoint. Container launchers
+mount source datasets read-only, and the native trainer writes only below the
+explicit output directory.

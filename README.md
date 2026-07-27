@@ -113,9 +113,14 @@ The heavier image preparation and stage-specific commands are documented in
 DroneGS is the default Gaussian backend. The same frozen 172-view evaluator on
 Albagnac measured 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in
 972.731 seconds of training, versus 21.513821 dB, 0.586497, 0.371055, and
-994.228 seconds for deterministic LichtFeld. LichtFeld remains an explicitly
-built rollback backend; it is no longer required to build or run the default
-pipeline.
+994.228 seconds for the historical deterministic LichtFeld control. DroneGS is
+now the only executable Gaussian backend: the repository no longer clones,
+builds, packages, launches, or dynamically selects LichtFeld. Versioned native
+checkpoints resume interrupted jobs, and held-out PSNR/SSIM canaries gate the
+model before downstream orthomosaic generation. Successful promotion discards
+the large optimizer checkpoint, so it does not permanently duplicate the
+final PLY state. The independent Savères 15k gate is documented in
+[`phase4-saveres-checkpoint-canary-dev46-2026-07-27.md`](docs/dronegs/benchmarks/phase4-saveres-checkpoint-canary-dev46-2026-07-27.md).
 
 ## Distributed architecture
 
@@ -187,10 +192,11 @@ bash setup_deps.sh
 The Ceres source is the one intentionally unpinned external build input at the
 moment. Pin it before treating builds as reproducible.
 
-For the optional LichtFeld rollback image, run
-`bash setup_deps.sh --with-lichtfeld`; this additionally prepares the pinned
-LichtFeld commit and vcpkg tag recorded in
-[`docs/dronegs/GPL_COMPONENTS.md`](docs/dronegs/GPL_COMPONENTS.md).
+LichtFeld and its vcpkg toolchain are not build dependencies. The exact
+historical upstream revision used to derive GPL-covered DroneGS components is
+recorded in
+[`docs/dronegs/GPL_COMPONENTS.md`](docs/dronegs/GPL_COMPONENTS.md); this
+provenance record is intentionally retained.
 
 ### Install and deploy
 

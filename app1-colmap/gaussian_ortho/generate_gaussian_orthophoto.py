@@ -26,10 +26,15 @@ from .colmap_loader import (
 )
 from .scene_info import build_scene_info
 from .gaussian_model import GaussianModel
-from .lichtfeld_trainer import (
+from .colmap_subset import (
     export_colmap_subset,
 )
-from gaussian_training import DroneGSTuning, TrainingRequest, resolve_training_backend
+from gaussian_training import (
+    DroneGSTuning,
+    TrainingRequest,
+    TrainingResult,
+    resolve_training_backend,
+)
 from .partition import partition_scene
 from .merge import merge_models
 from .ortho_renderer import render_orthophoto, compute_ortho_extent
@@ -42,6 +47,62 @@ def _report(vol_id, step, progress, msg, report_fn):
         report_fn(vol_id, step, progress, log=msg)
     else:
         print(f"[{step} {progress}%] {msg}")
+
+
+def _reusable_dronegs_result(
+    request: TrainingRequest,
+) -> TrainingResult | None:
+    """Return a previously promoted result only when its contract matches."""
+    output = Path(request.output_path)
+    manifest_path = output / "trainer_run.json"
+    canary_path = output / "canary_result.json"
+    ply_path = output / "point_cloud.ply"
+    if not (
+        manifest_path.is_file()
+        and canary_path.is_file()
+        and ply_path.is_file()
+    ):
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        canary = json.loads(canary_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    expected = {
+        "iterations": request.iterations,
+        "strategy": request.strategy,
+        "sh_degree": request.sh_degree,
+        "max_cap": request.max_cap,
+        "resize_factor": request.resize_factor,
+        "max_width": request.max_width,
+        "tile_mode": request.tile_mode,
+        "seed": request.seed,
+        "optimizer_profile": request.dronegs.optimizer_profile,
+        "pruning_policy": request.dronegs.pruning_policy,
+        "raster_profile": request.dronegs.raster_profile,
+        "test_every": request.dronegs.test_every,
+        "topology_cooldown_iterations": request.dronegs.topology_cooldown,
+        "photometric_finish_iterations": request.dronegs.photometric_finish,
+        "photometric_final_mse_percent": (
+            request.dronegs.photometric_mse_percent
+        ),
+    }
+    parameters = manifest.get("parameters", {})
+    if (
+        manifest.get("contract_version") != 1
+        or manifest.get("status") != "completed"
+        or canary.get("status") != "passed"
+        or canary.get("minimum_psnr") != request.dronegs.canary_min_psnr
+        or canary.get("minimum_ssim") != request.dronegs.canary_min_ssim
+        or any(parameters.get(key) != value for key, value in expected.items())
+    ):
+        return None
+    return TrainingResult(
+        backend="dronegs",
+        ply_path=ply_path,
+        manifest_path=manifest_path,
+        effective_seed=request.seed,
+    )
 
 
 def generate_gaussian_orthophoto(
@@ -76,13 +137,17 @@ def generate_gaussian_orthophoto(
     verbose: bool = False,
     trainer_backend: str | None = None,
     training_seed: int = 42,
-    dronegs_optimizer_profile: str = "dev38-staged-rotation008-absgrad050-fastgs",
-    dronegs_pruning_policy: str = "lichtfeld-bounds",
-    dronegs_raster_profile: str = "fastgs",
+    dronegs_optimizer_profile: str = "reference-absolute",
+    dronegs_pruning_policy: str = "spatial-bounds",
+    dronegs_raster_profile: str = "bounded",
     dronegs_sh_degree_interval: int = 1_000,
     dronegs_topology_cooldown: int = 1_000,
     dronegs_photometric_finish: int = 1_000,
     dronegs_photometric_mse_percent: int = 100,
+    dronegs_checkpoint_every: int = 2_000,
+    dronegs_test_every: int = 8,
+    dronegs_canary_min_psnr: float = 18.0,
+    dronegs_canary_min_ssim: float = 0.35,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -124,14 +189,13 @@ def generate_gaussian_orthophoto(
     cap_max : int
         Maximum Gaussian count for MRNF strategy.
     trainer_backend : str, optional
-        ``dronegs`` (default) or ``lichtfeld``. The environment variable
-        DRONEAI_GAUSSIAN_BACKEND is used when omitted.
+        ``dronegs``. The environment variable
+        DRONEAI_GAUSSIAN_BACKEND may override it.
     training_seed : int
         Requested base seed; each partition receives the base plus its index.
-        The pinned LichtFeld CLI cannot enforce this value.
     dronegs_* :
         Native convergence controls. Defaults reproduce the Albagnac dev.45
-        production profile; the LichtFeld adapter ignores them.
+        production profile.
     """
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
@@ -239,6 +303,22 @@ def generate_gaussian_orthophoto(
         else:
             training_data_path = dense_path
 
+        checkpoint_path = os.path.join(cell_output, "training.ckpt")
+        resume_from = (
+            checkpoint_path
+            if os.path.isfile(checkpoint_path)
+            and not os.path.isfile(os.path.join(cell_output, "trainer_run.json"))
+            else None
+        )
+        if resume_from:
+            _report(
+                vol_id,
+                "GAUSS",
+                pct_start,
+                f"[DroneGS] Resuming {cell_label} from its validated checkpoint",
+                report_fn,
+            )
+
         training_request = TrainingRequest(
             data_path=training_data_path,
             output_path=cell_output,
@@ -264,6 +344,12 @@ def generate_gaussian_orthophoto(
                     max(1, iterations // 5),
                 ),
                 photometric_mse_percent=dronegs_photometric_mse_percent,
+                checkpoint_every=dronegs_checkpoint_every,
+                resume_from=resume_from,
+                test_every=dronegs_test_every,
+                save_eval_images=dronegs_test_every > 0,
+                canary_min_psnr=dronegs_canary_min_psnr,
+                canary_min_ssim=dronegs_canary_min_ssim,
             ),
         )
 
@@ -274,13 +360,23 @@ def generate_gaussian_orthophoto(
                         f"[MRNF] iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
             return reporter
 
-        training_result = backend.train(
-            training_request,
-            report_fn=make_training_reporter(
-                pct_start, pct_end, vol_id, report_fn, iterations,
-            ),
-            verbose=verbose,
-        )
+        training_result = _reusable_dronegs_result(training_request)
+        if training_result is None:
+            training_result = backend.train(
+                training_request,
+                report_fn=make_training_reporter(
+                    pct_start, pct_end, vol_id, report_fn, iterations,
+                ),
+                verbose=verbose,
+            )
+        else:
+            _report(
+                vol_id,
+                "GAUSS",
+                pct_end,
+                f"[DroneGS] Reusing completed, canary-approved {cell_label}",
+                report_fn,
+            )
         ply_path = str(training_result.ply_path)
 
         # Load the exported PLY into our GaussianModel

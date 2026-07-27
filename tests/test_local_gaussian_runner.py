@@ -39,11 +39,9 @@ def test_balanced_profile_matches_validated_dev45_recipe():
     assert profile.sh_degree == 3
     assert profile.data_factor == 4
     assert profile.max_width == 1600
-    assert profile.optimizer_profile == (
-        "dev38-staged-rotation008-absgrad050-fastgs"
-    )
-    assert profile.raster_profile == "fastgs"
-    assert profile.pruning_policy == "lichtfeld-bounds"
+    assert profile.optimizer_profile == "reference-absolute"
+    assert profile.raster_profile == "bounded"
+    assert profile.pruning_policy == "spatial-bounds"
     assert profile.topology_cooldown == 1_000
     assert profile.photometric_finish == 1_000
     assert profile.photometric_mse_percent == 100

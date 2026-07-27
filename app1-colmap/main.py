@@ -672,13 +672,13 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             gs_optimizer_profile = str(
                 params.get(
                     "gs_optimizer_profile",
-                    "dev38-staged-rotation008-absgrad050-fastgs",
+                    "reference-absolute",
                 )
             )
             gs_pruning_policy = str(
-                params.get("gs_pruning_policy", "lichtfeld-bounds")
+                params.get("gs_pruning_policy", "spatial-bounds")
             )
-            gs_raster_profile = str(params.get("gs_raster_profile", "fastgs"))
+            gs_raster_profile = str(params.get("gs_raster_profile", "bounded"))
             gs_sh_degree_interval = int(
                 params.get("gs_sh_degree_interval", 1_000)
             )
@@ -690,6 +690,16 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             )
             gs_photometric_mse_percent = int(
                 params.get("gs_photometric_mse_percent", 100)
+            )
+            gs_checkpoint_every = int(
+                params.get("gs_checkpoint_every", 2_000)
+            )
+            gs_test_every = int(params.get("gs_test_every", 8))
+            gs_canary_min_psnr = float(
+                params.get("gs_canary_min_psnr", 18.0)
+            )
+            gs_canary_min_ssim = float(
+                params.get("gs_canary_min_ssim", 0.35)
             )
             gs_filter_enabled = params.get("gs_filter_enabled", True)
             gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
@@ -736,6 +746,10 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 dronegs_topology_cooldown=gs_topology_cooldown,
                 dronegs_photometric_finish=gs_photometric_finish,
                 dronegs_photometric_mse_percent=gs_photometric_mse_percent,
+                dronegs_checkpoint_every=gs_checkpoint_every,
+                dronegs_test_every=gs_test_every,
+                dronegs_canary_min_psnr=gs_canary_min_psnr,
+                dronegs_canary_min_ssim=gs_canary_min_ssim,
             )
             report_mission_progress(vol_id, "GAUSS", 100,
                 log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "

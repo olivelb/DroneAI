@@ -1,8 +1,9 @@
 # DroneGS benchmarking
 
-The backend-neutral harness runs arbitrary trainer commands in isolated
-directories. It benchmarks the production DroneGS binary and the pinned
-LichtFeld rollback without coupling measurement code to either implementation.
+The harness runs trainer commands in isolated directories. Production and new
+qualification runs use the DroneGS binary. Immutable reports from the pinned
+LichtFeld development control remain documented for historical comparison,
+but the repository no longer builds or launches that trainer.
 
 ## GAJAN reference
 
@@ -14,34 +15,11 @@ export DRONEGS_BIN=/usr/local/bin/dronegs
 export GAJAN_DENSE_PATH="$HOME/droneAI-workspaces/gajan-r2s-full/dense"
 ```
 
-The historical LichtFeld reference remains reproducible with the optional
-rollback image:
-
-```bash
-export LICHTFELD_BIN=/opt/lichtfeld/LichtFeld-Studio
-export GAJAN_DENSE_PATH="$HOME/droneAI-workspaces/gajan-r2s-full/dense"
-
-python tools/benchmark_gaussian_trainers.py \
-  docs/dronegs/benchmarks/gajan-v1.example.json --dry-run
-```
-
 Run five repetitions into a new output root:
 
 ```bash
 python tools/benchmark_gaussian_trainers.py \
   docs/dronegs/benchmarks/gajan-v1.example.json \
-  --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)"
-```
-
-When LichtFeld is available as the local runtime image instead of a host
-binary, use the versioned container suite:
-
-```bash
-export LICHTFELD_IMAGE=lichtfeld-runtime:latest
-export GAJAN_DENSE_PATH="$HOME/droneAI-workspaces/gajan-r2s-full/dense"
-
-python tools/benchmark_gaussian_trainers.py \
-  docs/dronegs/benchmarks/gajan-v1.docker.json \
   --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
@@ -54,8 +32,7 @@ and best-effort per-process peak VRAM.
 - Source and output directory trees are separate.
 - Existing run directories are never overwritten.
 - Every repetition records a requested seed derived from the base seed.
-- A seed is only effective when the backend command forwards it; the pinned
-  LichtFeld CLI currently does not expose a user-controlled global seed.
+- DroneGS forwards and records the requested deterministic seed.
 - The dataset fingerprint includes relative paths and sizes plus full contents
   of the COLMAP sparse binary files.
 - Image payloads are not fully hashed so inventory remains practical for

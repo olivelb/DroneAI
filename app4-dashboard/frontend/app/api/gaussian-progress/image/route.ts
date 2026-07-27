@@ -1,21 +1,12 @@
 import { promises as fs } from "node:fs";
-import { type NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-
-const previewPaths = {
-  dronegs:
-    "/home/olivier/droneAI-workspaces/albagnac-dronegs-dev45-photometric-fastgs-15000-cross-eval/preview.png",
-  lichtfeld:
-    "/home/olivier/droneAI-workspaces/albagnac-lichtfeld-parity-15000-dev38-cross-eval/preview.png",
-};
-
-export async function GET(request: NextRequest) {
-  const requested = request.nextUrl.searchParams.get("engine");
-  const engine = requested === "lichtfeld" ? "lichtfeld" : "dronegs";
+export async function GET() {
+  const runPath =
+    process.env.DRONEGS_PROGRESS_RUN ??
+    "/home/olivier/droneAI-workspaces/saveres-dronegs-dev46-checkpoint-canary-15000";
   try {
-    const image = await fs.readFile(previewPaths[engine]);
+    const image = await fs.readFile(`${runPath}/preview.png`);
     return new NextResponse(image, {
       headers: {
         "Content-Type": "image/png",
@@ -24,8 +15,8 @@ export async function GET(request: NextRequest) {
     });
   } catch {
     return NextResponse.json(
-      { error: "Preview unavailable" },
-      { status: 404, headers: { "Cache-Control": "no-store" } },
+      { error: "Preview not available" },
+      { status: 404 },
     );
   }
 }

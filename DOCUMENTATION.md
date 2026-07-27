@@ -956,7 +956,7 @@ The implementation draws from several key papers:
 
 **No dense stereo required.** The pipeline only needs the undistorted images and sparse model from `dense/sparse/` and `dense/images/`.
 
-**DroneGS handles training as a native C++/CUDA process.** The Python pipeline invokes the contract-v1 executable as a subprocess, consumes JSON Lines progress events, validates `trainer_run.json`, and imports the resulting standard 3DGS PLY. LichtFeld is retained only as an explicitly selected rollback adapter.
+**DroneGS handles training as a native C++/CUDA process.** The Python pipeline invokes the contract-v1 executable as a subprocess, consumes JSON Lines progress events, validates `trainer_run.json` and `canary_result.json`, and imports the resulting standard 3DGS PLY. DroneGS is the only executable Gaussian backend; LichtFeld remains solely as a documented historical benchmark and GPL provenance source.
 
 **EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
 
@@ -979,6 +979,8 @@ Each cell is trained using the DroneGS contract-v1 CLI with MRNF:
 - **Binary**: portable `/usr/local/bin/dronegs`, selected through `DRONEGS_BIN`
 - **Strategy**: MRNF with a bounded Gaussian cap, deterministic seed, progressive SH, FastGS structural rasterization, and the dev.45 convergence finish
 - **Progress monitoring**: one JSON object per stdout line (`iteration`, baseline loss, Gaussian count)
+- **Recovery**: atomic, versioned native checkpoints contain the full Gaussian, Adam, topology, schedule and deterministic RNG state
+- **Canary**: the default `scene_index % 8 == 0` held-out split must reach PSNR ≥ 18.0 and SSIM ≥ 0.35
 - **Output gate**: process exit zero, completed v1 `trainer_run.json`, and standard `point_cloud.ply`
 - **Source safety**: the COLMAP input tree is mounted/read as input; every run writes to a separate empty output tree
 
@@ -993,7 +995,7 @@ Default training parameters (configurable via dashboard UI):
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `gs_backend` | `dronegs` | Native trainer; `lichtfeld` is rollback-only |
+| `gs_backend` | `dronegs` | Native trainer; only supported value |
 | `gs_iterations` | 15000 | Validated training budget |
 | `gs_data_factor` | 4 | Image downscaling factor |
 | `gs_max_width` | 1600 | Maximum resized image width |
@@ -1004,6 +1006,10 @@ Default training parameters (configurable via dashboard UI):
 | `gs_topology_cooldown` | 1000 | Final fixed-topology steps |
 | `gs_photometric_finish` | 1000 | Final mixed-objective ramp |
 | `gs_photometric_mse_percent` | 100 | Final active-pixel MSE weight |
+| `gs_checkpoint_every` | 2000 | Atomic native checkpoint interval; zero disables periodic saves |
+| `gs_test_every` | 8 | Deterministic held-out split interval |
+| `gs_canary_min_psnr` | 18.0 | Minimum held-out PSNR required before rendering |
+| `gs_canary_min_ssim` | 0.35 | Minimum held-out SSIM required before rendering |
 
 #### Step 4: Merge
 
@@ -1104,7 +1110,7 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
-| GS Training Backend | `gs_backend` | select | dronegs | dronegs/lichtfeld |
+| GS Training Backend | `gs_backend` | select | dronegs | dronegs |
 | GS Training Iterations | `gs_iterations` | int | 15000 | 5000–100000 |
 | GS Training Image Scale | `gs_data_factor` | select | 4 | auto/1/2/4/8 |
 | GS Maximum Training Width | `gs_max_width` | int | 1600 | 256–4096 |
@@ -1112,12 +1118,17 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–10000000 |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
 | DroneGS Deterministic Seed | `gs_seed` | int | 42 | 0–2147483647 |
-| DroneGS Raster Profile | `gs_raster_profile` | select | fastgs | fastgs/bounded/auto |
-| DroneGS Pruning Policy | `gs_pruning_policy` | select | lichtfeld-bounds | lichtfeld-bounds/original |
+| DroneGS Optimizer Profile | `gs_optimizer_profile` | select | reference-absolute | validated profiles |
+| DroneGS Raster Profile | `gs_raster_profile` | select | bounded | bounded/fastgs/auto |
+| DroneGS Pruning Policy | `gs_pruning_policy` | select | spatial-bounds | spatial-bounds/original |
 | DroneGS SH Activation Interval | `gs_sh_degree_interval` | int | 1000 | 1–10000 |
 | DroneGS Topology Cooldown | `gs_topology_cooldown` | int | 1000 | 0–10000 |
 | DroneGS Photometric Finish | `gs_photometric_finish` | int | 1000 | 0–10000 |
 | DroneGS Final MSE Weight | `gs_photometric_mse_percent` | int | 100 | 0–100 |
+| DroneGS Checkpoint Interval | `gs_checkpoint_every` | int | 2000 | 0–50000 |
+| DroneGS Held-out Split Interval | `gs_test_every` | int | 8 | 0 or 2–100 |
+| DroneGS Canary Minimum PSNR | `gs_canary_min_psnr` | float | 18.0 | 0–100 |
+| DroneGS Canary Minimum SSIM | `gs_canary_min_ssim` | float | 0.35 | 0–1 |
 | Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
 | Max Scale Filter | `gs_filter_max_scale` | float | 1.0 | 0–100 |
 | Distance Filter Multiplier | `gs_filter_dist` | float | 1.0 | 0–10 |
@@ -1149,9 +1160,8 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | Module | Purpose |
 | --- | --- |
 | `generate_gaussian_orthophoto.py` | Main entry point, pipeline orchestration, GeoTIFF output |
-| `gaussian_training/backends.py` | DroneGS default and LichtFeld rollback subprocess adapters |
+| `gaussian_training/backends.py` | DroneGS subprocess contract, checkpoint recovery and canary gate |
 | `dronegs/` | Native C++23/CUDA trainer, tests, portable build, and LPIPS tool |
-| `lichtfeld_trainer.py` | Optional legacy LichtFeld rollback wrapper |
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
 | `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |

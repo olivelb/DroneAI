@@ -19,6 +19,8 @@ struct Options {
     std::filesystem::path output_path;
     std::filesystem::path run_manifest;
     std::filesystem::path initial_ply;
+    std::filesystem::path checkpoint_path;
+    std::filesystem::path resume_from;
     std::uint64_t iterations = 0;
     std::string strategy;
     std::uint32_t sh_degree = 0;
@@ -36,6 +38,8 @@ struct Options {
     std::uint64_t topology_cooldown = 0;
     std::uint64_t photometric_finish = 0;
     std::uint32_t photometric_mse_percent = 0;
+    std::uint64_t checkpoint_every = 0;
+    std::uint64_t stop_after = 0;
     std::string optimizer_profile = "dronegs-dev16";
     std::string pruning_policy = "original";
     std::string raster_profile = "auto";

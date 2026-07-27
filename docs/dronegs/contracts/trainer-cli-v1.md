@@ -10,18 +10,16 @@ TRAINER --data-path DATASET --output-path OUTPUT --iter ITERATIONS \
   [--prefetch-depth DEPTH] [--decode-workers WORKERS] \
   [--jpeg-idct-scale 0|1] \
   [--optimizer-profile PROFILE] \
-  [--pruning-policy original|lichtfeld-bounds] \
+  [--pruning-policy original|spatial-bounds] \
   [--raster-profile auto|bounded|fastgs] \
   [--sh-degree-interval N] [--topology-cooldown N] \
-  [--photometric-finish N] [--photometric-mse-percent 0..100]
+  [--photometric-finish N] [--photometric-mse-percent 0..100] \
+  [--test-every 0|N] [--save-eval-images 0|1] \
+  [--checkpoint-every N] [--checkpoint-path PATH] \
+  [--resume-from PATH] [--stop-after N]
 ```
 
-An adapter may translate canonical options to a backend-specific spelling such
-as LichtFeld's `--resize_factor`.
-
-The pinned LichtFeld CLI does not expose a verified user-controlled global
-seed or emit a v1 manifest. Its migration adapter therefore reports the seed
-as ineffective and supplies no native manifest; these are known legacy gaps.
+DroneGS is the sole implementation of this contract.
 
 ## Arguments
 
@@ -47,13 +45,19 @@ not alter the mandatory canonical contract:
 | `--prefetch-depth` | 1 through 64; default 1 |
 | `--decode-workers` | 1 through 16 and no greater than depth; default 1 |
 | `--jpeg-idct-scale` | 0 or 1; default 0 |
-| `--optimizer-profile` | Named native schedule; default `dronegs-dev16` |
-| `--pruning-policy` | `original` or `lichtfeld-bounds`; default `original` |
+| `--optimizer-profile` | Named native schedule; production uses `reference-absolute` |
+| `--pruning-policy` | `original` or `spatial-bounds`; production uses `spatial-bounds` |
 | `--raster-profile` | `auto`, `bounded`, or `fastgs`; default `auto` |
 | `--sh-degree-interval` | Positive integer; default 1,000 |
 | `--topology-cooldown` | 0 through `--iter`; default 0 |
 | `--photometric-finish` | 0 through `--iter`; default 0 |
 | `--photometric-mse-percent` | 0 through 100; default 0 |
+| `--test-every` | 0 or at least 2; production uses 8 |
+| `--save-eval-images` | 0 or 1; requires a held-out split |
+| `--checkpoint-every` | 0 disables periodic saves; production uses 2,000 |
+| `--checkpoint-path` | Required when checkpointing or deliberately pausing |
+| `--resume-from` | Existing compatible full-state checkpoint |
+| `--stop-after` | Canary-only deliberate pause step, no greater than `--iter` |
 
 Reduced-IDCT decode is experimental because libjpeg's scaled filtering changes
 the RGB training target. A non-zero photometric finish requires a non-zero MSE
@@ -68,7 +72,7 @@ native defaults with the validated dev.45 settings documented in
 Successful execution produces:
 
 - `point_cloud.ply`, readable by DroneAI;
-- optional versioned `checkpoint/` state;
+- optional atomic versioned `training.ckpt` full state;
 - a final v1 run manifest;
 - process exit status zero.
 
@@ -83,8 +87,7 @@ One compact JSON event is written per stdout line:
 {"event":"progress","iteration":1000,"iterations":5000,"loss":0.031,"gaussians":125000}
 ```
 
-Human diagnostics go to stderr. Legacy LichtFeld output is translated by its
-adapter.
+Human diagnostics go to stderr.
 
 ## Exit status
 
@@ -96,6 +99,7 @@ adapter.
 | 4 | GPU out of memory |
 | 5 | Cancelled cleanly |
 | 10 | Training/internal failure |
+| 75 | Deliberately paused after an atomic checkpoint |
 
 SIGTERM stops new work, atomically completes or invalidates the active
 checkpoint, writes a cancelled manifest when possible, and exits 5.

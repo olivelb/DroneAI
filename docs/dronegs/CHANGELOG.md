@@ -4,11 +4,16 @@ This changelog covers the standalone Gaussian trainer project.
 
 ## Unreleased - Pipeline promotion
 
-- Promote DroneGS to the default distributed and local Gaussian training
-  backend while preserving LichtFeld as an explicitly built rollback.
+- Make DroneGS the sole distributed and local Gaussian training backend.
+- Remove the LichtFeld checkout, patches, Dockerfile, Python adapter, runtime
+  selector and vcpkg build dependency while retaining historical benchmark
+  and GPL provenance documentation.
+- Add atomic, versioned full-state checkpoints, strict dataset/config
+  fingerprints, deterministic resume, deliberate checkpoint canaries and
+  held-out PSNR/SSIM deployment gates.
 - Freeze the mission and balanced-local production recipe at 15,000 steps,
   SH3, factor 4, width 1,600, 1.5 million splats, seed 42, structural FastGS,
-  LichtFeld-compatible pruning bounds, 1,000-step topology cooldown and
+  bounded spatial pruning, 1,000-step topology cooldown and
   1,000-step 100%-MSE photometric finish.
 - Pass every native tuning control through the backend-neutral Python
   contract, API mission parameters, dashboard controls and local runners.
@@ -18,6 +23,14 @@ This changelog covers the standalone Gaussian trainer project.
 - Record the final Albagnac parity gate: 22.175919 dB PSNR, 0.642557 SSIM,
   0.325408 LPIPS and 972.731 training seconds versus deterministic
   LichtFeld's 21.513821 dB, 0.586497, 0.371055 and 994.228 seconds.
+- Pass the independent Savères 15,000-step production canary on 1,065
+  images: 19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS and 2,455.774
+  training seconds. Delete the 1.1 GiB optimizer checkpoint only after all
+  final artifacts and gates are published.
+- Validate a real stop-at-100/resume-to-200 integration canary against a
+  continuous 200-step control within 0.000126 dB PSNR and 0.000017 SSIM.
+- Preserve the original initial loss and held-out metrics in checkpoint
+  format v2 while retaining read compatibility with format v1.
 - Keep the native command-line defaults backward compatible; the production
   profile is applied by the DroneAI orchestration boundary.
 

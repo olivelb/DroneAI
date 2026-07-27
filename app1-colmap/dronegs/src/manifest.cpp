@@ -70,18 +70,18 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               const RunMeasurements& measurements,
                               const std::filesystem::path& ply_path,
                               std::size_t gaussian_count) {
-    const bool lichtfeld_all =
-        options.optimizer_profile == "lichtfeld-absolute";
+    const bool reference_all =
+        options.optimizer_profile == "reference-absolute";
     const bool dev34_geometry =
-        options.optimizer_profile == "dev34-opacity096-lf-scale" ||
-        options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
+        options.optimizer_profile == "dev34-opacity096-reference-scale" ||
+        options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
         options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation";
+            "dev34-opacity096-reference-scale-rotation";
     const bool dev35_staged_rotation =
         options.optimizer_profile ==
-            "dev35-opacity096-lf-scale-staged-rotation004" ||
+            "dev35-opacity096-reference-scale-staged-rotation004" ||
         options.optimizer_profile ==
-            "dev35-opacity096-lf-scale-staged-rotation008";
+            "dev35-opacity096-reference-scale-staged-rotation008";
     const bool dev36_absgrad =
         options.optimizer_profile ==
             "dev36-staged-rotation008-absgrad025" ||
@@ -113,37 +113,37 @@ void write_completed_manifest(const Options& options, const Scene& scene,
             "calibrated-dc-0.010-opacity-0.096" ||
         dev34_geometry ||
         staged_rotation;
-    const bool lichtfeld_dc =
-        lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-dc-only" ||
-        options.optimizer_profile == "lichtfeld-dc-opacity" ||
+    const bool reference_dc =
+        reference_all ||
+        options.optimizer_profile == "reference-dc-only" ||
+        options.optimizer_profile == "reference-dc-opacity" ||
         calibrated_dc_opacity;
-    const bool lichtfeld_position =
-        lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-position-only";
-    const bool lichtfeld_opacity =
-        lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-opacity-only" ||
-        options.optimizer_profile == "lichtfeld-dc-opacity" ||
+    const bool reference_position =
+        reference_all ||
+        options.optimizer_profile == "reference-position-only";
+    const bool reference_opacity =
+        reference_all ||
+        options.optimizer_profile == "reference-opacity-only" ||
+        options.optimizer_profile == "reference-dc-opacity" ||
         calibrated_dc_opacity;
-    const bool lichtfeld_scale =
-        lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-scale-only" ||
-        options.optimizer_profile == "dev34-opacity096-lf-scale" ||
+    const bool reference_scale =
+        reference_all ||
+        options.optimizer_profile == "reference-scale-only" ||
+        options.optimizer_profile == "dev34-opacity096-reference-scale" ||
         options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation" ||
+            "dev34-opacity096-reference-scale-rotation" ||
         staged_rotation;
-    const bool lichtfeld_rotation =
-        lichtfeld_all ||
-        options.optimizer_profile == "lichtfeld-rotation-only" ||
-        options.optimizer_profile == "dev34-opacity096-lf-rotation" ||
+    const bool reference_rotation =
+        reference_all ||
+        options.optimizer_profile == "reference-rotation-only" ||
+        options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
         options.optimizer_profile ==
-            "dev34-opacity096-lf-scale-rotation" ||
+            "dev34-opacity096-reference-scale-rotation" ||
         staged_rotation;
     const bool mixed_epsilon =
         options.optimizer_profile != "dronegs-dev16" &&
-        !lichtfeld_all;
-    const char* dc_learning_rate = lichtfeld_dc ? "0.002" : "0.05";
+        !reference_all;
+    const char* dc_learning_rate = reference_dc ? "0.002" : "0.05";
     if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
         dc_learning_rate = "0.005";
     } else if (
@@ -162,7 +162,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         dc_learning_rate = "0.02";
     }
     const char* opacity_learning_rate =
-        lichtfeld_opacity ? "0.012" : "0.01";
+        reference_opacity ? "0.012" : "0.01";
     if (options.optimizer_profile ==
         "calibrated-dc-0.010-opacity-0.024") {
         opacity_learning_rate = "0.024";
@@ -185,8 +185,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     stream << std::setprecision(10)
            << "{\n"
            << "  \"contract_version\": 1,\n"
-           << "  \"backend\": \"dronegs-extended-color-local-knn-portable-cuda-shared-backward-mrnf-prototype\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.39\",\n"
+           << "  \"backend\": \"dronegs-native-mrnf-fastgs\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.46\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -235,6 +235,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"test_every\": " << options.test_every << ",\n"
            << "    \"save_eval_images\": "
            << options.save_eval_images << ",\n"
+           << "    \"checkpoint_every\": "
+           << options.checkpoint_every << ",\n"
+           << "    \"checkpoint_path\": "
+           << (options.checkpoint_path.empty()
+                   ? "null"
+                   : "\"" + json_escape(options.checkpoint_path.string()) + "\"")
+           << ",\n"
+           << "    \"resumed_from_checkpoint\": "
+           << (options.resume_from.empty() ? "false" : "true") << ",\n"
            << "    \"topology_cooldown_iterations\": "
            << options.topology_cooldown << ",\n"
            << "    \"topology_refine_through_iteration\": "
@@ -344,58 +353,58 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"adam_epsilon\": "
            << (mixed_epsilon
                    ? "null"
-                   : (lichtfeld_all ? "1e-15" : "1e-8")) << ",\n"
+                   : (reference_all ? "1e-15" : "1e-8")) << ",\n"
            << "    \"position_adam_epsilon\": "
-           << (lichtfeld_position ? "1e-15" : "1e-8") << ",\n"
+           << (reference_position ? "1e-15" : "1e-8") << ",\n"
            << "    \"dc_adam_epsilon\": "
-           << (lichtfeld_dc ? "1e-15" : "1e-8") << ",\n"
+           << (reference_dc ? "1e-15" : "1e-8") << ",\n"
            << "    \"opacity_adam_epsilon\": "
-           << (lichtfeld_opacity ? "1e-15" : "1e-8") << ",\n"
+           << (reference_opacity ? "1e-15" : "1e-8") << ",\n"
            << "    \"scale_adam_epsilon\": "
-           << (lichtfeld_scale ? "1e-15" : "1e-8") << ",\n"
+           << (reference_scale ? "1e-15" : "1e-8") << ",\n"
            << "    \"rotation_adam_epsilon\": "
-           << (lichtfeld_rotation ? "1e-15" : "1e-8") << ",\n"
+           << (reference_rotation ? "1e-15" : "1e-8") << ",\n"
            << "    \"dc_lr\": "
            << dc_learning_rate << ",\n"
            << "    \"opacity_lr\": "
            << opacity_learning_rate << ",\n"
            << "    \"position_lr_initial_factor\": "
-           << (lichtfeld_position ? "0.00002" : "0.00016") << ",\n"
+           << (reference_position ? "0.00002" : "0.00016") << ",\n"
            << "    \"position_lr_final_factor\": "
-           << (lichtfeld_position ? "0.0000002" : "0.0000016")
+           << (reference_position ? "0.0000002" : "0.0000016")
            << ",\n"
            << "    \"position_lr_scale\": "
-           << (lichtfeld_position
+           << (reference_position
                    ? "\"initial_gaussian_axis_10_90_percentile_median_width\""
                    : "\"initial_gaussian_bbox_diagonal\"")
            << ",\n"
            << "    \"position_lr_schedule\": "
-           << (lichtfeld_position
+           << (reference_position
                    ? "\"exponential_step_minus_one_over_iterations\""
                    : "\"exponential_step_minus_one_over_iterations_minus_one\"")
            << ",\n"
            << "    \"scale_lr_initial\": "
-           << (lichtfeld_scale ? "0.007" : "0.005") << ",\n"
+           << (reference_scale ? "0.007" : "0.005") << ",\n"
            << "    \"scale_lr_final\": 0.005,\n"
            << "    \"scale_lr_schedule\": "
-           << (lichtfeld_scale
+           << (reference_scale
                    ? "\"exponential_step_minus_one_over_iterations\""
                    : "\"constant\"")
            << ",\n"
            << "    \"rotation_lr\": "
            << (staged_rotation
                    ? "0.001"
-                   : (lichtfeld_rotation ? "0.002" : "0.001"))
+                   : (reference_rotation ? "0.002" : "0.001"))
            << ",\n"
            << "    \"rotation_lr_final\": "
            << (options.optimizer_profile ==
-                       "dev35-opacity096-lf-scale-staged-rotation004"
+                       "dev35-opacity096-reference-scale-staged-rotation004"
                    ? "0.004"
                    : (options.optimizer_profile ==
-                                  "dev35-opacity096-lf-scale-staged-rotation008" ||
+                                  "dev35-opacity096-reference-scale-staged-rotation008" ||
                               absgrad_enabled
                           ? "0.008"
-                          : (lichtfeld_rotation ? "0.002" : "0.001")))
+                          : (reference_rotation ? "0.002" : "0.001")))
            << ",\n"
            << "    \"rotation_lr_schedule\": "
            << (staged_rotation

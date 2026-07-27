@@ -13,7 +13,7 @@ from typing import Callable, Mapping, Protocol
 
 ProgressCallback = Callable[[int, float, int], None]
 SUPPORTED_STRATEGIES = {"mrnf", "mcmc", "igs+"}
-SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "lichtfeld-bounds"}
+SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "spatial-bounds"}
 SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
 
 
@@ -21,9 +21,9 @@ SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
 class DroneGSTuning:
     """Optional native controls layered on top of trainer contract v1."""
 
-    optimizer_profile: str = "dronegs-dev16"
-    pruning_policy: str = "original"
-    raster_profile: str = "auto"
+    optimizer_profile: str = "reference-absolute"
+    pruning_policy: str = "spatial-bounds"
+    raster_profile: str = "bounded"
     sh_degree_interval: int = 1_000
     topology_cooldown: int = 0
     photometric_finish: int = 0
@@ -33,6 +33,10 @@ class DroneGSTuning:
     jpeg_idct_scale: int = 0
     test_every: int = 0
     save_eval_images: bool = False
+    checkpoint_every: int = 2_000
+    resume_from: str | None = None
+    canary_min_psnr: float | None = None
+    canary_min_ssim: float | None = None
 
     def __post_init__(self) -> None:
         # The native trainer owns the versioned optimizer-profile registry.
@@ -60,6 +64,7 @@ class DroneGSTuning:
             "decode_workers": (self.decode_workers, 1, 16),
             "jpeg_idct_scale": (self.jpeg_idct_scale, 0, 1),
             "test_every": (self.test_every, 0, None),
+            "checkpoint_every": (self.checkpoint_every, 0, None),
         }
         for name, (value, minimum, maximum) in integer_ranges.items():
             if (
@@ -75,6 +80,22 @@ class DroneGSTuning:
             raise ValueError("test_every must be zero or at least two")
         if self.save_eval_images and self.test_every == 0:
             raise ValueError("save_eval_images requires test_every")
+        if self.resume_from is not None and not self.resume_from.strip():
+            raise ValueError("resume_from must not be empty")
+        for name, value in {
+            "canary_min_psnr": self.canary_min_psnr,
+            "canary_min_ssim": self.canary_min_ssim,
+        }.items():
+            if value is not None and (
+                not isinstance(value, (int, float))
+                or isinstance(value, bool)
+            ):
+                raise ValueError(f"{name} must be numeric")
+        if (
+            self.canary_min_psnr is not None
+            or self.canary_min_ssim is not None
+        ) and self.test_every == 0:
+            raise ValueError("canary thresholds require test_every")
         if (self.photometric_finish == 0) != (
             self.photometric_mse_percent == 0
         ):
@@ -163,73 +184,6 @@ class TrainingBackend(Protocol):
     ) -> TrainingResult: ...
 
 
-class LichtFeldBackend:
-    """Adapter for the pinned GPL LichtFeld subprocess."""
-
-    name = "lichtfeld"
-
-    def __init__(self, binary: str | None = None):
-        self._binary = binary
-
-    def _resolved_binary(self) -> str | None:
-        if self._binary:
-            return self._binary
-        from gaussian_ortho.lichtfeld_trainer import find_lichtfeld_binary
-
-        return find_lichtfeld_binary()
-
-    def is_available(self) -> bool:
-        return self._resolved_binary() is not None
-
-    @staticmethod
-    def _to_legacy_config(request: TrainingRequest):
-        from gaussian_ortho.lichtfeld_trainer import LichtFeldTrainConfig
-
-        return LichtFeldTrainConfig(
-            iterations=request.iterations,
-            strategy=request.strategy,
-            sh_degree=request.sh_degree,
-            cap_max=request.max_cap,
-            data_path=request.data_path,
-            output_path=request.output_path,
-            data_factor=request.resize_factor,
-            max_width=request.max_width,
-            tile_mode=request.tile_mode,
-        )
-
-    def build_command(self, request: TrainingRequest) -> list[str]:
-        from gaussian_ortho.lichtfeld_trainer import build_lichtfeld_command
-
-        binary = self._resolved_binary()
-        if not binary:
-            raise FileNotFoundError(
-                "LichtFeld-Studio binary not found; set LICHTFELD_BIN"
-            )
-        return build_lichtfeld_command(binary, self._to_legacy_config(request))
-
-    def train(
-        self,
-        request: TrainingRequest,
-        report_fn: ProgressCallback | None = None,
-        verbose: bool = False,
-    ) -> TrainingResult:
-        from gaussian_ortho.lichtfeld_trainer import train_with_lichtfeld
-
-        binary = self._resolved_binary()
-        if not binary:
-            raise FileNotFoundError(
-                "LichtFeld-Studio binary not found; set LICHTFELD_BIN"
-            )
-        ply_path = train_with_lichtfeld(
-            self._to_legacy_config(request),
-            report_fn=report_fn,
-            verbose=verbose,
-            binary=binary,
-        )
-        # The pinned LichtFeld CLI exposes no user-controlled global seed.
-        return TrainingResult(self.name, Path(ply_path), effective_seed=None)
-
-
 class DroneGSBackend:
     """Adapter for the native DroneGS contract-v1 executable."""
 
@@ -300,6 +254,16 @@ class DroneGSBackend:
                 "--save-eval-images", "1" if tuning.save_eval_images else "0",
             ]
         )
+        if tuning.checkpoint_every:
+            command.extend(
+                [
+                    "--checkpoint-every", str(tuning.checkpoint_every),
+                    "--checkpoint-path",
+                    str(Path(request.output_path) / "training.ckpt"),
+                ]
+            )
+        if tuning.resume_from:
+            command.extend(["--resume-from", tuning.resume_from])
         return command
 
     def train(
@@ -320,7 +284,11 @@ class DroneGSBackend:
             or output_path in data_path.parents
         ):
             raise ValueError("DroneGS output and source dataset must be separate trees")
-        if output_path.exists() and any(output_path.iterdir()):
+        if (
+            output_path.exists()
+            and any(output_path.iterdir())
+            and request.dronegs.resume_from is None
+        ):
             raise FileExistsError(f"DroneGS output directory is not empty: {output_path}")
         output_path.mkdir(parents=True, exist_ok=True)
         command = self.build_command(request)
@@ -360,6 +328,43 @@ class DroneGSBackend:
         ply_path = output_path / "point_cloud.ply"
         if not ply_path.is_file():
             raise RuntimeError("DroneGS completed without point_cloud.ply")
+        metrics = manifest.get("metrics", {})
+        canary = {
+            "contract_version": 1,
+            "backend": "dronegs",
+            "psnr": metrics.get("psnr"),
+            "ssim": metrics.get("ssim"),
+            "minimum_psnr": request.dronegs.canary_min_psnr,
+            "minimum_ssim": request.dronegs.canary_min_ssim,
+        }
+        failures = []
+        if request.dronegs.canary_min_psnr is not None and (
+            metrics.get("psnr") is None
+            or metrics["psnr"] < request.dronegs.canary_min_psnr
+        ):
+            failures.append("psnr")
+        if request.dronegs.canary_min_ssim is not None and (
+            metrics.get("ssim") is None
+            or metrics["ssim"] < request.dronegs.canary_min_ssim
+        ):
+            failures.append("ssim")
+        canary["status"] = "passed" if not failures else "failed"
+        canary["failed_metrics"] = failures
+        canary_path = output_path / "canary_result.json"
+        temporary_canary = canary_path.with_suffix(".json.tmp")
+        temporary_canary.write_text(
+            json.dumps(canary, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary_canary.replace(canary_path)
+        if failures:
+            raise RuntimeError(
+                "DroneGS quality canary failed: " + ", ".join(failures)
+            )
+        # A completed PLY + manifest + passed canary is the durable recovery
+        # point. The much larger optimizer checkpoint is only useful while
+        # training is incomplete, so reclaim it after successful promotion.
+        (output_path / "training.ckpt").unlink(missing_ok=True)
         return TrainingResult(
             self.name,
             ply_path,
@@ -379,10 +384,8 @@ def resolve_training_backend(
     if not isinstance(selected_value, str):
         raise ValueError("Gaussian training backend name must be a string")
     selected = selected_value.lower()
-    if selected == "lichtfeld":
-        return LichtFeldBackend()
     if selected == "dronegs":
         return DroneGSBackend(environment=environment)
     raise ValueError(
-        f"unknown Gaussian training backend {selected!r}; expected lichtfeld or dronegs"
+        f"unknown Gaussian training backend {selected!r}; expected dronegs"
     )
