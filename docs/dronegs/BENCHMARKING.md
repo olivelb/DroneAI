@@ -1,10 +1,21 @@
 # DroneGS benchmarking
 
-The Phase 1 harness runs arbitrary trainer commands in isolated directories.
-It benchmarks the pinned LichtFeld binary now and DroneGS later without
-coupling measurement code to either implementation.
+The backend-neutral harness runs arbitrary trainer commands in isolated
+directories. It benchmarks the production DroneGS binary and the pinned
+LichtFeld rollback without coupling measurement code to either implementation.
 
 ## GAJAN reference
+
+For the production backend, point the suite command at the portable native
+binary:
+
+```bash
+export DRONEGS_BIN=/usr/local/bin/dronegs
+export GAJAN_DENSE_PATH="$HOME/droneAI-workspaces/gajan-r2s-full/dense"
+```
+
+The historical LichtFeld reference remains reproducible with the optional
+rollback image:
 
 ```bash
 export LICHTFELD_BIN=/opt/lichtfeld/LichtFeld-Studio

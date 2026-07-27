@@ -32,9 +32,10 @@ zero, which preserves the dev.43 lifecycle exactly.
 Dev.45 adds an opt-in `--photometric-finish N` and
 `--photometric-mse-percent P`. During the final `N` iterations the objective
 linearly transitions from the existing `0.8 L1 + 0.2 DSSIM` objective toward
-an active-pixel MSE contribution whose final weight is `P%`. Both defaults
-are zero, preserving dev.44 training math and cost outside explicit
-photometric convergence ablations.
+an active-pixel MSE contribution whose final weight is `P%`. Both native CLI
+defaults are zero, preserving dev.44 training math and cost outside explicit
+photometric convergence ablations. The DroneAI pipeline selects the validated
+1,000-step cooldown and photometric finish explicitly.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -59,7 +60,7 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 - keeps SH color and gradients live up to four while display output remains
   bounded independently;
 - decodes JPEG training images and scales pinhole intrinsics;
-- stores decoded RGB as bytes in a lazy 256 MiB LRU cache;
+- stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;
 - exposes an opt-in libjpeg reduced-IDCT path for reproducible decode A/B tests;
@@ -135,13 +136,14 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 - provides direct CPU objective/metric oracles, finite-difference DSSIM and
   renderer gradient tests, and end-to-end convergence tests.
 
-It is not the production default yet. The experimental training path now uses
-front-to-back anisotropic ordered-alpha composition, while the additive path
-remains only as a convergence control. Persistent training now optimizes
-position, log-scale, and normalized rotation in addition to DC and opacity.
-Topology, weighted Gumbel selection, and edge guidance now run, but
-checkpoint/resume, operational acceptance, and full speed/VRAM parity remain
-open. Same-split Albagnac PSNR/SSIM parity is reached in dev.38. Only
+DroneGS is now the production pipeline default, with LichtFeld retained as an
+explicit rollback adapter. The validated Albagnac 15,000-step dev.45 run
+reaches 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in 972.731
+training seconds. The deterministic LichtFeld control reaches 21.513821 dB,
+0.586497, and 0.371055 in 994.228 seconds under the same frozen evaluator.
+The additive renderer remains only as a convergence control. Checkpoint/resume
+and broader operational canary coverage remain open; completed manifests and
+PLY outputs are atomic pipeline gates. Only
 `SIMPLE_PINHOLE` and `PINHOLE` cameras are accepted. Held-out PSNR/SSIM are now
 measured. Dev.21 swept DC rates `0.005`, `0.010`, and `0.020` with LichtFeld
 opacity while retaining dev16 geometry. Dev.22 replays dev16, DC=0.010, and
@@ -150,10 +152,11 @@ Savères scene. At 1,000 steps, Savères dev16 reaches 16.65243 dB / 0.131453
 SSIM, DC=0.010 reaches 16.83870 dB / 0.131405, and DC=0.020 reaches
 16.79856 dB / 0.132098. Across Albagnac and Savères, DC=0.020 improves the
 same-binary controls by +0.13101 dB and +0.001065 SSIM over 306 held-out
-views, winning 303/306 PSNR views and 264/306 SSIM views. It is now the
-recommended quality profile. Dev16 remains the default throughput profile
-because both candidates increase training and wall time; dev.23 makes LPIPS
-measurement reproducible but does not retroactively change that recommendation.
+views, winning 303/306 PSNR views and 264/306 SSIM views. It became the
+recommended quality profile at that development point. Dev16 remained the
+low-level throughput profile because both candidates increased training and
+wall time; dev.23 made LPIPS measurement reproducible but did not
+retroactively change that historical recommendation.
 Decoded
 images use a bounded LRU plus a bounded in-flight queue.
 Albagnac measurements rejected multiple decode workers as the default because
@@ -162,9 +165,9 @@ targets are also opt-in because their filtered pixels change the loss target
 and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
-over 500 iterations. The binary identifies itself as
-`dronegs-mrnf-complete-lifecycle-prototype` and remains
-opt-in.
+over 500 iterations. The native CLI keeps conservative historical defaults for
+backward compatibility. The Python pipeline applies the production dev.45
+profile explicitly and records it in `trainer_run.json`.
 
 ## Container build
 
@@ -286,7 +289,7 @@ position, scale, and rotation remain exactly dev16.
 named intermediate DC rate; all other parameter families remain exactly
 dev16. The `0.020` profile is the recommended quality profile after two-scene
 validation; `0.010` remains the best mean-PSNR candidate. `dronegs-dev16`
-remains the default throughput profile until LPIPS and larger-scene throughput
-gates pass.
+is the conservative native CLI default; DroneAI's production pipeline
+overrides it with the validated dev.45 profile.
 
 The output directory must be empty and must not contain the source dataset.

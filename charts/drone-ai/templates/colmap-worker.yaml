@@ -42,6 +42,8 @@ spec:
           value: {{ include "colmap.workDrivesJson" . | quote }}
         - name: WORK_DRIVE_DEFAULT
           value: {{ .Values.colmapWorker.workVolume.default | quote }}
+        - name: DRONEAI_GAUSSIAN_BACKEND
+          value: {{ .Values.colmapWorker.gaussianBackend | quote }}
         volumeMounts:
         - name: work-system
           mountPath: /work/system

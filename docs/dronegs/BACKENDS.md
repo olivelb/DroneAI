@@ -1,8 +1,9 @@
 # Gaussian training backends
 
 DroneAI now calls Gaussian trainers through `gaussian_training.backends`.
-The default remains the pinned LichtFeld subprocess, so upgrading to Phase 2
-does not change production training unless a backend is explicitly selected.
+DroneGS is the production default after the dev.45 Albagnac parity gate.
+The pinned LichtFeld subprocess adapter remains available as an explicit
+rollback when its optional runtime is installed.
 
 ## Selection
 
@@ -11,15 +12,29 @@ Selection order:
 1. the `trainer_backend` argument of `generate_gaussian_orthophoto()`;
 2. the `gs_backend` mission parameter;
 3. `DRONEAI_GAUSSIAN_BACKEND`;
-4. `lichtfeld`.
+4. `dronegs`.
 
 Valid values are `lichtfeld` and `dronegs`. Binary discovery uses
 `LICHTFELD_BIN` and `DRONEGS_BIN`, respectively. Selecting DroneGS before its
 native executable is built fails immediately with an actionable error; there
 is no silent fallback that could invalidate a benchmark.
 
-The optional `gs_seed` mission parameter becomes the base seed. Partition
+The optional `gs_seed` mission parameter becomes the base seed. It defaults
+to 42. Partition
 `i` receives `gs_seed + i`.
+
+The pipeline default also passes the validated dev.45 recipe:
+
+- optimizer profile `dev38-staged-rotation008-absgrad050-fastgs`;
+- FastGS structural rasterization and LichtFeld-compatible pruning bounds;
+- progressive SH activation every 1,000 steps;
+- a 1,000-step fixed-topology cooldown;
+- a 1,000-step finish ramping to 100% active-pixel MSE gradient;
+- 15,000 steps, 1.5 million splats, resize factor 4, and seed 42.
+
+Every value is exposed as a mission parameter. The native CLI retains its
+neutral historical defaults, so direct low-level invocations remain backward
+compatible.
 
 ## Stable Python boundary
 
@@ -48,7 +63,7 @@ are deliberately downstream of this boundary and remain shared.
 
 | Capability | LichtFeld adapter | DroneGS adapter |
 |---|---|---|
-| Production default | Yes | No |
+| Production default | Rollback only | Yes |
 | CLI spelling | Legacy `--resize_factor` | Canonical `--resize-factor` |
 | Required run manifest | No | Yes |
 | User-controlled seed | Not exposed by pinned CLI | Required |
@@ -62,10 +77,17 @@ a verified deterministic seed control.
 
 ## Rollback
 
-Unset `DRONEAI_GAUSSIAN_BACKEND` and omit `gs_backend`, or explicitly set:
+Build an image with the optional LichtFeld runtime, then explicitly set:
 
 ```text
 DRONEAI_GAUSSIAN_BACKEND=lichtfeld
 ```
 
-No model format or renderer change is needed to roll back.
+For the local image:
+
+```bash
+bash setup_deps.sh --with-lichtfeld
+bash tools/build_local_gaussian_image.sh --with-lichtfeld
+```
+
+No model format or downstream renderer change is needed to roll back.

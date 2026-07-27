@@ -29,7 +29,7 @@ from .gaussian_model import GaussianModel
 from .lichtfeld_trainer import (
     export_colmap_subset,
 )
-from gaussian_training import TrainingRequest, resolve_training_backend
+from gaussian_training import DroneGSTuning, TrainingRequest, resolve_training_backend
 from .partition import partition_scene
 from .merge import merge_models
 from .ortho_renderer import render_orthophoto, compute_ortho_extent
@@ -75,7 +75,14 @@ def generate_gaussian_orthophoto(
     filter_z_floater: bool = False,
     verbose: bool = False,
     trainer_backend: str | None = None,
-    training_seed: int = 0,
+    training_seed: int = 42,
+    dronegs_optimizer_profile: str = "dev38-staged-rotation008-absgrad050-fastgs",
+    dronegs_pruning_policy: str = "lichtfeld-bounds",
+    dronegs_raster_profile: str = "fastgs",
+    dronegs_sh_degree_interval: int = 1_000,
+    dronegs_topology_cooldown: int = 1_000,
+    dronegs_photometric_finish: int = 1_000,
+    dronegs_photometric_mse_percent: int = 100,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -97,7 +104,7 @@ def generate_gaussian_orthophoto(
     resolution : float
         Ground sample distance in metres.
     iterations : int
-        Training iterations per cell (LichtFeld MRNF).
+        Training iterations per cell.
     partition_m, partition_n : int
         Grid partition dimensions (1×1 = no partition).
     partition_overlap : float
@@ -109,19 +116,22 @@ def generate_gaussian_orthophoto(
     checkpoint_dir : str, optional
         Directory for training checkpoints.
     data_factor : int
-        LichtFeld image downscaling factor (1, 2, 4, or 8).
+        Trainer image downscaling factor (1, 2, 4, or 8).
     max_width : int
         Maximum training image dimension after downscaling.
     tile_mode : int
-        LichtFeld memory-saving tile mode (1, 2, or 4).
+        Backend memory-saving tile mode (1, 2, or 4).
     cap_max : int
         Maximum Gaussian count for MRNF strategy.
     trainer_backend : str, optional
-        ``lichtfeld`` (default) or ``dronegs``. The environment variable
+        ``dronegs`` (default) or ``lichtfeld``. The environment variable
         DRONEAI_GAUSSIAN_BACKEND is used when omitted.
     training_seed : int
         Requested base seed; each partition receives the base plus its index.
         The pinned LichtFeld CLI cannot enforce this value.
+    dronegs_* :
+        Native convergence controls. Defaults reproduce the Albagnac dev.45
+        production profile; the LichtFeld adapter ignores them.
     """
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
@@ -240,6 +250,21 @@ def generate_gaussian_orthophoto(
             max_width=max_width,
             tile_mode=tile_mode,
             seed=training_seed + i,
+            dronegs=DroneGSTuning(
+                optimizer_profile=dronegs_optimizer_profile,
+                pruning_policy=dronegs_pruning_policy,
+                raster_profile=dronegs_raster_profile,
+                sh_degree_interval=dronegs_sh_degree_interval,
+                topology_cooldown=min(
+                    dronegs_topology_cooldown,
+                    max(1, iterations // 5),
+                ),
+                photometric_finish=min(
+                    dronegs_photometric_finish,
+                    max(1, iterations // 5),
+                ),
+                photometric_mse_percent=dronegs_photometric_mse_percent,
+            ),
         )
 
         def make_training_reporter(pct_s, pct_e, vid, rfn, total):

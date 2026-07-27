@@ -13,6 +13,7 @@ if str(APP1_ROOT) not in sys.path:
 
 from gaussian_training.backends import (  # noqa: E402
     DroneGSBackend,
+    DroneGSTuning,
     LichtFeldBackend,
     TrainingRequest,
     resolve_training_backend,
@@ -73,8 +74,34 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[0] == "/opt/dronegs"
     assert command[command.index("--resize-factor") + 1] == "8"
     assert command[command.index("--seed") + 1] == "42"
+    assert command[command.index("--raster-profile") + 1] == "auto"
+    assert command[command.index("--topology-cooldown") + 1] == "0"
     assert command[command.index("--run-manifest") + 1] == "/output/trainer_run.json"
     assert "--resize_factor" not in command
+
+
+def test_dronegs_adapter_passes_validated_production_tuning():
+    training_request = request(
+        dronegs=DroneGSTuning(
+            optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
+            pruning_policy="lichtfeld-bounds",
+            raster_profile="fastgs",
+            topology_cooldown=100,
+            photometric_finish=100,
+            photometric_mse_percent=100,
+        )
+    )
+
+    command = DroneGSBackend("/opt/dronegs").build_command(training_request)
+
+    assert command[command.index("--optimizer-profile") + 1] == (
+        "dev38-staged-rotation008-absgrad050-fastgs"
+    )
+    assert command[command.index("--pruning-policy") + 1] == "lichtfeld-bounds"
+    assert command[command.index("--raster-profile") + 1] == "fastgs"
+    assert command[command.index("--topology-cooldown") + 1] == "100"
+    assert command[command.index("--photometric-finish") + 1] == "100"
+    assert command[command.index("--photometric-mse-percent") + 1] == "100"
 
 
 def test_dronegs_adapter_runs_contract_executable(tmp_path):
@@ -137,10 +164,10 @@ def test_dronegs_adapter_rejects_nonempty_output(tmp_path):
         )
 
 
-def test_resolver_defaults_to_lichtfeld():
+def test_resolver_defaults_to_dronegs():
     backend = resolve_training_backend(environment={})
 
-    assert isinstance(backend, LichtFeldBackend)
+    assert isinstance(backend, DroneGSBackend)
 
 
 def test_resolver_supports_environment_selection():

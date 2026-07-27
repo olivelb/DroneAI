@@ -33,6 +33,7 @@ WORKSPACE_MARKER = ".droneai-local-workspace.json"
 
 @dataclass(frozen=True)
 class GaussianProfile:
+    backend: str
     iterations: int
     cap_max: int
     sh_degree: int
@@ -41,12 +42,21 @@ class GaussianProfile:
     tile_mode: int
     resolution: float
     filter_enabled: bool
+    seed: int
+    optimizer_profile: str
+    pruning_policy: str
+    raster_profile: str
+    sh_degree_interval: int
+    topology_cooldown: int
+    photometric_finish: int
+    photometric_mse_percent: int
 
 
 PROFILES: dict[str, GaussianProfile] = {
     # Fast integration check. The result demonstrates the complete path but is
     # not intended for visual assessment.
     "smoke": GaussianProfile(
+        backend="dronegs",
         iterations=500,
         cap_max=100_000,
         sh_degree=0,
@@ -55,9 +65,18 @@ PROFILES: dict[str, GaussianProfile] = {
         tile_mode=4,
         resolution=0.25,
         filter_enabled=False,
+        seed=42,
+        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
+        pruning_policy="lichtfeld-bounds",
+        raster_profile="fastgs",
+        sh_degree_interval=1_000,
+        topology_cooldown=100,
+        photometric_finish=100,
+        photometric_mse_percent=100,
     ),
     # Conservative default for the RTX 4070 Laptop GPU used for validation.
     "low-memory": GaussianProfile(
+        backend="dronegs",
         iterations=5_000,
         cap_max=500_000,
         sh_degree=1,
@@ -66,17 +85,34 @@ PROFILES: dict[str, GaussianProfile] = {
         tile_mode=4,
         resolution=0.10,
         filter_enabled=True,
+        seed=42,
+        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
+        pruning_policy="lichtfeld-bounds",
+        raster_profile="fastgs",
+        sh_degree_interval=1_000,
+        topology_cooldown=1_000,
+        photometric_finish=1_000,
+        photometric_mse_percent=100,
     ),
     # A follow-up profile for better quality once the low-memory run is stable.
     "balanced": GaussianProfile(
+        backend="dronegs",
         iterations=15_000,
         cap_max=1_500_000,
-        sh_degree=2,
-        data_factor=2,
-        max_width=2400,
+        sh_degree=3,
+        data_factor=4,
+        max_width=1600,
         tile_mode=4,
         resolution=0.05,
         filter_enabled=True,
+        seed=42,
+        optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
+        pruning_policy="lichtfeld-bounds",
+        raster_profile="fastgs",
+        sh_degree_interval=1_000,
+        topology_cooldown=1_000,
+        photometric_finish=1_000,
+        photometric_mse_percent=100,
     ),
 }
 
@@ -85,6 +121,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="low-memory")
+    parser.add_argument("--backend", choices=("dronegs", "lichtfeld"))
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--cap-max", type=int)
     parser.add_argument("--sh-degree", type=int, choices=range(4))
@@ -92,6 +129,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-width", type=int)
     parser.add_argument("--tile-mode", type=int, choices=(1, 2, 4))
     parser.add_argument("--resolution", type=float)
+    parser.add_argument("--seed", type=int)
+    parser.add_argument("--optimizer-profile")
+    parser.add_argument(
+        "--pruning-policy",
+        choices=("original", "lichtfeld-bounds"),
+    )
+    parser.add_argument(
+        "--raster-profile",
+        choices=("auto", "bounded", "fastgs"),
+    )
+    parser.add_argument("--sh-degree-interval", type=int)
+    parser.add_argument("--topology-cooldown", type=int)
+    parser.add_argument("--photometric-finish", type=int)
+    parser.add_argument("--photometric-mse-percent", type=int)
     parser.add_argument(
         "--filter",
         dest="filter_enabled",
@@ -120,6 +171,19 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("max-width must be between 1 and 4096")
     if resolved.resolution <= 0:
         raise ValueError("resolution must be positive")
+    if resolved.seed < 0:
+        raise ValueError("seed must be non-negative")
+    for field_name in (
+        "sh_degree_interval",
+        "topology_cooldown",
+        "photometric_finish",
+    ):
+        if getattr(resolved, field_name) < 0:
+            raise ValueError(f"{field_name.replace('_', '-')} must be non-negative")
+    if resolved.sh_degree_interval == 0:
+        raise ValueError("sh-degree-interval must be positive")
+    if not 0 <= resolved.photometric_mse_percent <= 100:
+        raise ValueError("photometric-mse-percent must be between 0 and 100")
     return resolved
 
 
@@ -228,13 +292,12 @@ def main() -> int:
     from gaussian_ortho.generate_gaussian_orthophoto import (
         generate_gaussian_orthophoto,
     )
-    from gaussian_ortho.lichtfeld_trainer import find_lichtfeld_binary
+    from gaussian_training import resolve_training_backend
 
-    binary = find_lichtfeld_binary()
-    if binary is None:
+    backend = resolve_training_backend(profile.backend)
+    if not backend.is_available():
         raise RuntimeError(
-            "LichtFeld-Studio is missing from this image; build and use "
-            "droneai-gaussian-local:latest"
+            f"{profile.backend} trainer is missing from the local Gaussian image"
         )
 
     report_path = workspace / f"gaussian_run.{args.profile}.json"
@@ -245,7 +308,7 @@ def main() -> int:
         "profile": args.profile,
         "parameters": asdict(profile),
         "workspace": str(workspace),
-        "lichtfeld_binary": binary,
+        "trainer_backend": profile.backend,
         "started_at": started_at,
     }
     write_run_report(report_path, report)
@@ -266,6 +329,15 @@ def main() -> int:
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
             verbose=args.verbose,
+            trainer_backend=profile.backend,
+            training_seed=profile.seed,
+            dronegs_optimizer_profile=profile.optimizer_profile,
+            dronegs_pruning_policy=profile.pruning_policy,
+            dronegs_raster_profile=profile.raster_profile,
+            dronegs_sh_degree_interval=profile.sh_degree_interval,
+            dronegs_topology_cooldown=profile.topology_cooldown,
+            dronegs_photometric_finish=profile.photometric_finish,
+            dronegs_photometric_mse_percent=profile.photometric_mse_percent,
         )
     except Exception as error:
         report.update(

@@ -23,6 +23,7 @@ STAGE_ORDER = ("colmap", "gaussian", "detection")
 class PipelineProfile:
     colmap_args: tuple[str, ...]
     gaussian_profile: str
+    gaussian_backend: str
     detection_profile: str
 
 
@@ -41,6 +42,7 @@ PROFILES = {
             "2400",
         ),
         gaussian_profile="smoke",
+        gaussian_backend="dronegs",
         detection_profile="smoke",
     ),
     "standard": PipelineProfile(
@@ -55,6 +57,7 @@ PROFILES = {
             "3200",
         ),
         gaussian_profile="low-memory",
+        gaussian_backend="dronegs",
         detection_profile="full",
     ),
 }
@@ -138,6 +141,8 @@ def stage_command(
             str(workspace),
             "--profile",
             profile.gaussian_profile,
+            "--backend",
+            profile.gaussian_backend,
         ]
     else:
         command = [

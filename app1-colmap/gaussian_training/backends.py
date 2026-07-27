@@ -6,13 +6,82 @@ import json
 import os
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
 
 ProgressCallback = Callable[[int, float, int], None]
 SUPPORTED_STRATEGIES = {"mrnf", "mcmc", "igs+"}
+SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "lichtfeld-bounds"}
+SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
+
+
+@dataclass(frozen=True)
+class DroneGSTuning:
+    """Optional native controls layered on top of trainer contract v1."""
+
+    optimizer_profile: str = "dronegs-dev16"
+    pruning_policy: str = "original"
+    raster_profile: str = "auto"
+    sh_degree_interval: int = 1_000
+    topology_cooldown: int = 0
+    photometric_finish: int = 0
+    photometric_mse_percent: int = 0
+    prefetch_depth: int = 1
+    decode_workers: int = 1
+    jpeg_idct_scale: int = 0
+    test_every: int = 0
+    save_eval_images: bool = False
+
+    def __post_init__(self) -> None:
+        # The native trainer owns the versioned optimizer-profile registry.
+        # Keeping this boundary open preserves old ablation manifests while
+        # the mission schema exposes only supported production choices.
+        if (
+            not isinstance(self.optimizer_profile, str)
+            or not self.optimizer_profile.strip()
+        ):
+            raise ValueError("optimizer_profile must not be empty")
+        if self.pruning_policy not in SUPPORTED_DRONEGS_PRUNING_POLICIES:
+            raise ValueError("unsupported DroneGS pruning_policy")
+        if self.raster_profile not in SUPPORTED_DRONEGS_RASTER_PROFILES:
+            raise ValueError("unsupported DroneGS raster_profile")
+        integer_ranges = {
+            "sh_degree_interval": (self.sh_degree_interval, 1, None),
+            "topology_cooldown": (self.topology_cooldown, 0, None),
+            "photometric_finish": (self.photometric_finish, 0, None),
+            "photometric_mse_percent": (
+                self.photometric_mse_percent,
+                0,
+                100,
+            ),
+            "prefetch_depth": (self.prefetch_depth, 1, 64),
+            "decode_workers": (self.decode_workers, 1, 16),
+            "jpeg_idct_scale": (self.jpeg_idct_scale, 0, 1),
+            "test_every": (self.test_every, 0, None),
+        }
+        for name, (value, minimum, maximum) in integer_ranges.items():
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            ):
+                raise ValueError(f"{name} is invalid")
+        if self.decode_workers > self.prefetch_depth:
+            raise ValueError("decode_workers must not exceed prefetch_depth")
+        if self.test_every == 1:
+            raise ValueError("test_every must be zero or at least two")
+        if self.save_eval_images and self.test_every == 0:
+            raise ValueError("save_eval_images requires test_every")
+        if (self.photometric_finish == 0) != (
+            self.photometric_mse_percent == 0
+        ):
+            raise ValueError(
+                "photometric_finish and photometric_mse_percent must both "
+                "be zero or both be positive"
+            )
 
 
 @dataclass(frozen=True)
@@ -29,6 +98,7 @@ class TrainingRequest:
     max_width: int = 3840
     tile_mode: int = 1
     seed: int = 0
+    dronegs: DroneGSTuning = field(default_factory=DroneGSTuning)
 
     def __post_init__(self) -> None:
         def require_integer(
@@ -60,6 +130,12 @@ class TrainingRequest:
             raise ValueError("max_width must be between 1 and 4096")
         require_integer("tile_mode", self.tile_mode, 1, {1, 2, 4})
         require_integer("seed", self.seed, 0)
+        if not isinstance(self.dronegs, DroneGSTuning):
+            raise ValueError("dronegs must be a DroneGSTuning instance")
+        if self.dronegs.topology_cooldown > self.iterations:
+            raise ValueError("topology_cooldown must not exceed iterations")
+        if self.dronegs.photometric_finish > self.iterations:
+            raise ValueError("photometric_finish must not exceed iterations")
 
 
 @dataclass(frozen=True)
@@ -155,7 +231,7 @@ class LichtFeldBackend:
 
 
 class DroneGSBackend:
-    """Adapter for the future native DroneGS contract-v1 executable."""
+    """Adapter for the native DroneGS contract-v1 executable."""
 
     name = "dronegs"
 
@@ -192,7 +268,7 @@ class DroneGSBackend:
         if not binary:
             raise FileNotFoundError("DroneGS binary not found; set DRONEGS_BIN")
         manifest = Path(request.output_path) / "trainer_run.json"
-        return [
+        command = [
             binary,
             "--data-path", request.data_path,
             "--output-path", request.output_path,
@@ -206,6 +282,25 @@ class DroneGSBackend:
             "--seed", str(request.seed),
             "--run-manifest", str(manifest),
         ]
+        tuning = request.dronegs
+        command.extend(
+            [
+                "--optimizer-profile", tuning.optimizer_profile,
+                "--pruning-policy", tuning.pruning_policy,
+                "--raster-profile", tuning.raster_profile,
+                "--sh-degree-interval", str(tuning.sh_degree_interval),
+                "--topology-cooldown", str(tuning.topology_cooldown),
+                "--photometric-finish", str(tuning.photometric_finish),
+                "--photometric-mse-percent",
+                str(tuning.photometric_mse_percent),
+                "--prefetch-depth", str(tuning.prefetch_depth),
+                "--decode-workers", str(tuning.decode_workers),
+                "--jpeg-idct-scale", str(tuning.jpeg_idct_scale),
+                "--test-every", str(tuning.test_every),
+                "--save-eval-images", "1" if tuning.save_eval_images else "0",
+            ]
+        )
+        return command
 
     def train(
         self,
@@ -280,7 +375,7 @@ def resolve_training_backend(
     """Resolve an explicit backend or DRONEAI_GAUSSIAN_BACKEND."""
 
     environment = os.environ if environment is None else environment
-    selected_value = name or environment.get("DRONEAI_GAUSSIAN_BACKEND", "lichtfeld")
+    selected_value = name or environment.get("DRONEAI_GAUSSIAN_BACKEND", "dronegs")
     if not isinstance(selected_value, str):
         raise ValueError("Gaussian training backend name must be a string")
     selected = selected_value.lower()

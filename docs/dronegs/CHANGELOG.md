@@ -2,6 +2,25 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## Unreleased - Pipeline promotion
+
+- Promote DroneGS to the default distributed and local Gaussian training
+  backend while preserving LichtFeld as an explicitly built rollback.
+- Freeze the mission and balanced-local production recipe at 15,000 steps,
+  SH3, factor 4, width 1,600, 1.5 million splats, seed 42, structural FastGS,
+  LichtFeld-compatible pruning bounds, 1,000-step topology cooldown and
+  1,000-step 100%-MSE photometric finish.
+- Pass every native tuning control through the backend-neutral Python
+  contract, API mission parameters, dashboard controls and local runners.
+- Build portable Turing-through-Blackwell DroneGS device code in the default
+  COLMAP and local Gaussian images. Ship the matching source tree and GPL
+  provenance register beside the native binary.
+- Record the final Albagnac parity gate: 22.175919 dB PSNR, 0.642557 SSIM,
+  0.325408 LPIPS and 972.731 training seconds versus deterministic
+  LichtFeld's 21.513821 dB, 0.586497, 0.371055 and 994.228 seconds.
+- Keep the native command-line defaults backward compatible; the production
+  profile is applied by the DroneAI orchestration boundary.
+
 ## 0.5.0-dev.45 - Progressive photometric finish
 
 - Add opt-in `--photometric-finish N` and

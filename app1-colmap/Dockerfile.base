@@ -100,84 +100,26 @@ RUN pip3 install --no-cache-dir --break-system-packages \
     --requirement /tmp/requirements.txt
 
 # ============================================================
-# Stage 3: Build LichtFeld-Studio from source
-# Needs gcc-14 + cmake 4.x + vcpkg — separate stage, parallel with 1 & 2
+# Stage 3: Build the portable native DroneGS trainer
 # ============================================================
-FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS lichtfeld-builder
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS dronegs-builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-WORKDIR /build
+WORKDIR /build/dronegs
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git curl ca-certificates wget unzip zip \
-        pkg-config ninja-build nasm yasm \
-        autoconf autoconf-archive automake libtool \
-        python3 python3-dev python3-pip \
-        libffi-dev libgl1-mesa-dev libegl1-mesa-dev \
-    && apt-get install -y gcc-14 g++-14 \
-    && update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 60 \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 60 \
-    && update-alternatives --set gcc /usr/bin/gcc-14 \
-    && update-alternatives --set g++ /usr/bin/g++-14 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential cmake libjpeg-dev ninja-build \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN ARCH=$(uname -m) \
-    && wget -q https://github.com/Kitware/CMake/releases/download/v4.0.3/cmake-4.0.3-linux-${ARCH}.sh \
-    && chmod +x cmake-4.0.3-linux-${ARCH}.sh \
-    && ./cmake-4.0.3-linux-${ARCH}.sh --skip-license --prefix=/usr/local \
-    && rm cmake-4.0.3-linux-${ARCH}.sh
+COPY app1-colmap/dronegs/ /build/dronegs/
 
-# vcpkg — COPY from host (cloned by setup_deps.sh)
-COPY .docker-vcpkg/ /opt/vcpkg/
-RUN /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-ENV VCPKG_ROOT=/opt/vcpkg
-
-# LichtFeld-Studio — COPY from host (cloned + patched by setup_deps.sh)
-COPY LichtFeld-Studio/ /build/LichtFeld-Studio/
-WORKDIR /build/LichtFeld-Studio
-
-RUN git submodule update --init --recursive 2>/dev/null || true
-RUN if [ ! -f external/libvterm/src/encoding.c ]; then \
-        rm -rf external/libvterm && \
-        git clone --depth 1 https://github.com/neovim/libvterm.git external/libvterm; \
-    fi
-
-# Strip GUI-only and optional vcpkg deps for pipeline-minimal build
-# Use only core dependencies — no GUI, video, USD, mesh, SOG features
-RUN python3 -c "\
-import json, sys; \
-m = json.load(open('vcpkg.json')); \
-m['default-features'] = []; \
-json.dump(m, open('vcpkg.json','w'), indent=2)"
-
-RUN /opt/vcpkg/vcpkg install --triplet x64-linux
-
-RUN cmake -S . -B build \
-    -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DLFS_BUILD_PIPELINE_MINIMAL=ON \
-    -DENABLE_CUDA_GL_INTEROP=OFF \
-    -DBUILD_CUDA_PTX_ONLY=ON \
-    -DBUILD_PYTHON_STUBS=OFF \
-    -DBUILD_TESTS=OFF \
-    -DENABLE_COMPILER_CACHE=OFF \
-    -DCMAKE_C_COMPILER=gcc-14 \
-    -DCMAKE_CXX_COMPILER=g++-14 \
-    -DCMAKE_CUDA_HOST_COMPILER=g++-14 \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-RUN cmake --build build --config ReleaseS 2>&1
-RUN test -x build/LichtFeld-Studio
-
-# Collect LichtFeld runtime files in a clean directory
-RUN mkdir -p /opt/lichtfeld/lib \
-    && cp build/LichtFeld-Studio /opt/lichtfeld/ \
-    && cp build/liblfs_core.so build/liblfs_logger.so build/liblfs_event_bridge.so \
-       build/liblfs_python_runtime.so /opt/lichtfeld/lib/ \
-    && cp -a build/libnvimgcodec.so* /opt/lichtfeld/lib/ \
-    && cp -r build/extensions/ /opt/lichtfeld/extensions/ \
-    && cp LICENSE /opt/lichtfeld/LICENSE \
-    && cp THIRD_PARTY_LICENSES.md /opt/lichtfeld/THIRD_PARTY_LICENSES.md
+RUN cmake -S . -B build -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DDRONEGS_BUILD_TESTS=OFF \
+        -DDRONEGS_CUDA_ARCHITECTURES=portable \
+    && cmake --build build --target dronegs \
+    && test -x build/dronegs
 
 # ============================================================
 # Stage 4: Slim runtime image (24.04 — matches all builder stages)
@@ -206,9 +148,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 libopengl0 libglew2.2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Selective CUDA runtime libs (cuBLAS, cuSPARSE, cuSOLVER, cuDSS for COLMAP/Ceres + cuRAND for LichtFeld)
+# Selective CUDA runtime libs (cuBLAS, cuSPARSE, cuSOLVER, cuDSS for COLMAP/Ceres)
 # cudart is already in cuda:base; cuDNN/cufft/npp not needed
-# nvrtc is needed by nvdiffrast (LichtFeld) for runtime CUDA kernel compilation
 COPY --from=builder /cuda-slim/ /usr/local/cuda/lib64/
 
 # Copy COLMAP + Ceres installed binaries and libraries from builder
@@ -220,9 +161,13 @@ COPY --from=builder /usr/local/share/colmap/ /usr/local/share/colmap/
 COPY --from=pip-builder /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/
 COPY --from=pip-builder /usr/local/bin/ /usr/local/bin/
 
-# LichtFeld-Studio headless binary + runtime libs (GPL-3.0-or-later, subprocess only)
-COPY --from=lichtfeld-builder /opt/lichtfeld/ /opt/lichtfeld/
-ENV LD_LIBRARY_PATH="/opt/lichtfeld/lib:${LD_LIBRARY_PATH}"
-ENV LICHTFELD_BIN="/opt/lichtfeld/LichtFeld-Studio"
+# DroneGS executable and corresponding source/provenance.
+COPY --from=dronegs-builder /build/dronegs/build/dronegs /usr/local/bin/dronegs
+COPY app1-colmap/dronegs/ /usr/src/dronegs/
+COPY docs/dronegs/GPL_COMPONENTS.md /usr/share/doc/dronegs/GPL_COMPONENTS.md
+COPY THIRD_PARTY_NOTICES.md /usr/share/doc/dronegs/THIRD_PARTY_NOTICES.md
+COPY LICENSE /usr/share/doc/dronegs/LICENSE.DroneAI
+ENV DRONEGS_BIN="/usr/local/bin/dronegs"
+ENV DRONEAI_GAUSSIAN_BACKEND="dronegs"
 
-RUN ldconfig
+RUN test -f /usr/share/common-licenses/GPL-3 && ldconfig

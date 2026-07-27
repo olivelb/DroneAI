@@ -1,9 +1,9 @@
 # DroneGS architecture
 
-Status: Phase 3 released; Phase 4 experimental trainer in progress
+Status: dev.45 promoted to the production Gaussian pipeline
 
 Contract version: 1  
-Project version: 0.5.0-dev.38
+Project version: 0.5.0-dev.45
 
 ## Decision
 
@@ -13,8 +13,10 @@ for DroneAI. It consumes an undistorted COLMAP dataset and emits a standard
 geospatial transforms, orthographic rendering, GeoTIFF writing, and detection
 remain outside DroneGS.
 
-LichtFeld remains the production backend until the quality, speed, VRAM, and
-compatibility gates in `ROADMAP.md` pass.
+DroneGS is the production backend after passing the frozen Albagnac
+quality/speed gate. LichtFeld remains a separately built subprocess rollback.
+Checkpoint/resume, broader cross-architecture qualification and canary
+operations remain tracked in `ROADMAP.md`.
 
 Dev.31 replaces the scene-wide uniform initial Gaussian scale with the MRNF
 local-neighborhood rule: an exact deterministic KD tree measures the two
@@ -36,15 +38,19 @@ Dev.34 exposes isolated scale/rotation structure profiles. The combined
 profile improves PSNR and SSIM on all three scenes but has a small Savères
 LPIPS tradeoff, so it remains opt-in and does not replace dev.33.
 
-Dev.38 adds an opt-in, architecture-independent FastGS compatibility profile.
+Dev.38 adds an architecture-independent FastGS compatibility profile.
 It treats projected covariance dilation, extended-FOV Jacobian clamping,
 opacity-dependent support, alpha ceiling, and analytical backward as one
 coupled renderer contract. It also adds a binary Gaussian PLY import path for
 direct same-camera/same-split renderer cross-evaluation. On Albagnac, a
 1,200-step dev.38 model exceeds the pinned LichtFeld PLY oracle rendered on
-the identical 172 held-out views in both PSNR and SSIM. LichtFeld remains the
-production backend until operational, resume, visual, speed, and downstream
-gates pass.
+the identical 172 held-out views in both PSNR and SSIM.
+
+Dev.39-dev.45 complete pruning parity, slot recycling, cached backward state,
+structural FastGS buckets/checkpoints and warp-cooperative backward, bounded
+scene-resident image caching, topology cooldown and progressive photometric
+finish. On the frozen Albagnac 15,000-step control dev.45 is both faster and
+better than deterministic LichtFeld on PSNR, SSIM and LPIPS.
 
 ## Stable boundary
 
@@ -82,7 +88,7 @@ LichtFeld spellings.
 - GUI, editing, viewport, video, USD, mesh, SOG/SPZ, plugins, Python, and MCP.
 - General distorted, fisheye, equirectangular, or dynamic-scene training.
 - Replacing DroneAI's CuPy orthographic renderer.
-- Removing the LichtFeld fallback before the gates pass.
+- Removing the LichtFeld fallback before operational canary acceptance.
 
 ## Technology choices
 
@@ -96,7 +102,7 @@ LichtFeld spellings.
 Any adapted source is recorded in `GPL_COMPONENTS.md` with its exact upstream
 revision, license, copyright, and local paths.
 
-## Phase 4 development slice
+## Production training slice
 
 The current development slice initializes sparse Gaussians from COLMAP
 world-to-camera poses, transforms normalized quaternion rotations and
@@ -111,13 +117,11 @@ families after every training frame. At 200-step windows it can grow topology
 up to `max_cap` using normalized SSIM-error-weighted alpha contributions and a
 rotated longest-axis parent/child split.
 
-This is still an incomplete MRNF scaffold, not the parity rasterizer. It has
-growth, split, reproducible weighted-Gumbel sampling, Sobel edge guidance, and
-optimizer-profile telemetry, but no prune/replacement, noise, decay,
-Progressive SH, exact-pair LPIPS, and the MRNF prune/reuse/noise/decay/
-compaction lifecycle are implemented. It supports
-only SIMPLE_PINHOLE and
-PINHOLE inputs.
+The trainer includes growth, split, reproducible weighted-Gumbel sampling,
+Sobel edge guidance, optimizer-profile telemetry, prune/replacement, noise,
+decay, progressive SH and the MRNF prune/reuse/compaction lifecycle. External
+exact-pair LPIPS complements the native PSNR/SSIM evaluator. Inputs remain
+limited to SIMPLE_PINHOLE and PINHOLE cameras.
 
 An opt-in held-out protocol uses the same index rule as LichtFeld:
 `scene_index % test_every == 0`. Those descriptors never enter the shuffled
@@ -154,7 +158,7 @@ iterations and grow only when a camera exceeds a previous pair/tile high-water
 mark. RGB8 targets are uploaded per frame; L1 image gradients, reverse
 composition, and Adam remain on device. The experimental DroneGS binary now uses
 this ordered-alpha path. The additive implementation remains a test control,
-while LichtFeld remains the production backend until quality gates pass.
+and is now the production Gaussian training path.
 Version 0.5.0-dev.9 generalizes the single prefetch slot into a bounded ordered
 queue and adds an opt-in libjpeg reduced-IDCT path. Multi-worker decode and
 reduced IDCT remain measured experiments rather than defaults: the former

@@ -25,6 +25,20 @@ def test_stage_selection_and_force_propagation():
     assert MODULE.propagated_forces(["gaussian"]) == {"gaussian", "detection"}
 
 
+def test_standard_pipeline_selects_dronegs_explicitly():
+    profile = MODULE.PROFILES["standard"]
+    command = MODULE.stage_command(
+        "gaussian",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+
+    assert command[command.index("--backend") + 1] == "dronegs"
+
+
 def test_colmap_completion_requires_model_alignment_and_images(tmp_path):
     workspace = tmp_path / "workspace"
     for name in ("cameras.bin", "images.bin", "points3D.bin"):

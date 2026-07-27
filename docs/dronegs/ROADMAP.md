@@ -21,16 +21,27 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.38.
-- Production backend: LichtFeld.
-- DroneGS native backend: experimental anisotropic ordered-alpha trainer with
-  reproducible weighted-Gumbel MRNF growth, edge guidance, and held-out
-  PSNR/SSIM and exact-pair external LPIPS; opt-in only.
-- Same-split Albagnac quality parity sub-gate completed: dev.38 at 1,200
-  steps reaches 19.15709 dB / 0.440746 SSIM versus 18.90036 dB /
-  0.428674 for the exact pinned LichtFeld PLY rendered by the same dev.38
-  evaluator. The older 21.06855 / 0.631048 LichtFeld number uses a different
-  held-out image ordering and is not a same-split comparison.
+- Current development version: 0.5.0-dev.45.
+- Production Gaussian backend: DroneGS. LichtFeld remains an explicit,
+  separately built rollback backend.
+- The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
+  DroneGS reaches 22.175919 dB PSNR, 0.642557 SSIM and 0.325408 LPIPS in
+  972.731 training seconds. Deterministic LichtFeld reaches 21.513821 dB,
+  0.586497 SSIM and 0.371055 LPIPS in 994.228 seconds.
+- The production recipe combines the dev.38 optimizer profile, structural
+  FastGS rasterizer, LichtFeld-compatible pruning bounds, progressive SH3,
+  a 1,000-step topology cooldown and a 1,000-step photometric finish ending
+  at 100% MSE.
+- The default image builds DroneGS locally with portable CUDA device code and
+  ships matching source/provenance. No LichtFeld checkout is needed for the
+  default pipeline.
+- Checkpoint/resume, cross-architecture runtime qualification and staged
+  canary operations remain open before a 1.0.0 tag. Promotion in the mission
+  pipeline does not claim those later roadmap gates as complete.
+
+### Development history
+
+The following entries retain the measured progression that led to dev.45.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,
@@ -118,7 +129,8 @@ Each completed phase has one focused commit and an annotated
   at the shared first step, but actual dev16 updates are 20.35x larger for DC
   and 58.24x larger for position. LichtFeld-absolute instead applies a 1.48x
   larger opacity update and substantially larger late scale/rotation updates.
-- The accepted `dronegs-dev16` profile is restored as the default.
+- The accepted `dronegs-dev16` profile was restored as the then-current
+  low-level CLI default.
 - Dev.19 isolates all five parameter families, including per-family Adam
   epsilon, in the same binary. Position-only explains the dominant regression:
   it loses 1.1272 dB / 0.02941 SSIM and regresses every held-out SSIM view.
@@ -195,30 +207,18 @@ Each completed phase has one focused commit and an annotated
   SSIM on Albagnac, GAJAN, and Savères and improves LPIPS on the first two,
   but Savères LPIPS regresses by 0.33%. It remains an opt-in structure profile;
   dev.33 remains the balanced recommendation.
-- Phase 4 exit gate remains open: bounded execution is established, but
-  converged same-view LichtFeld quality/speed parity, checkpoint/resume, visual
-  QA, and downstream non-regression remain open.
+- The quality/speed portion of the Phase 4 gate was closed by dev.45.
+  Checkpoint/resume and broader downstream/cross-architecture qualification
+  remain open.
 - Pinned double-buffered host-to-device staging was benchmarked and rejected:
   measured upload service was only about 0.06 s per 500-iteration Albagnac run,
   while both tested orchestrations regressed median wall time.
-- The immediate Phase 4 priority is a sufficiently long same-view
-  DroneGS/LichtFeld quality control on GAJAN and one large scene, using the
-  accepted local-KNN/color/opacity path, followed by isolated
-  staged scale-anisotropy and stronger post-anisotropy rotation calibration.
-  Projected covariance is no longer an isolated candidate.
-  Checkpoint/resume remains open. The combined approximately 2,000-image
-  Albagnac throughput run remains deferred while COLMAP bundle adjustment is
-  unbounded on CPU.
-  An instrumented LichtFeld control is still required for equivalence
-  calibration. Portable CUDA compilation is the baseline; future throughput
-  work must improve generic kernels rather than introduce per-architecture
-  policy overrides. The edge implementation and
-  host-mediated topology compaction remain candidates for fusion or
-  refinement-window-only optimization.
-  For large-scene throughput, JPEG service remains material, but deeper and
-  parallel CPU queues are now rejected on the current laptop. The next
-  throughput candidate should reduce decoder work without changing targets,
-  or move decode to a separately quality-gated GPU path.
+- The next priority is checkpoint/resume plus a staged DroneGS canary on a
+  second production-scale scene. Portable CUDA compilation remains the
+  baseline; future throughput work must improve generic kernels rather than
+  introduce per-architecture policy overrides. The combined approximately
+  2,000-image Albagnac throughput run remains deferred while COLMAP bundle
+  adjustment is unbounded on CPU.
 
 ## Versioning rules
 
