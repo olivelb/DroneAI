@@ -17,7 +17,6 @@ import json
 import os
 from pathlib import Path
 
-import cupy as cp
 import numpy as np
 
 from .colmap_loader import (
@@ -25,7 +24,6 @@ from .colmap_loader import (
     apply_sim3_to_points,
 )
 from .scene_info import build_scene_info
-from .gaussian_model import GaussianModel
 from .colmap_subset import (
     export_colmap_subset,
 )
@@ -36,8 +34,6 @@ from gaussian_training import (
     resolve_training_backend,
 )
 from .partition import partition_scene
-from .merge import merge_models
-from .ortho_renderer import render_orthophoto, compute_ortho_extent
 from .geo_writer import write_geotiff
 from .exif_altitude import extract_exif_altitudes, compute_colmap_scale
 
@@ -197,6 +193,12 @@ def generate_gaussian_orthophoto(
         Native convergence controls. Defaults reproduce the Albagnac dev.45
         production profile.
     """
+    import cupy as cp
+
+    from .gaussian_model import GaussianModel
+    from .merge import merge_models
+    from .ortho_renderer import render_orthophoto
+
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
     gc.collect()
