@@ -97,13 +97,14 @@ export default function ProgressPage() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    const initialRefresh = window.setTimeout(() => void refresh(), 0);
     const refreshTimer = window.setInterval(() => void refresh(), 60_000);
     const countdownTimer = window.setInterval(
       () => setSecondsUntilRefresh((value) => (value <= 1 ? 60 : value - 1)),
       1_000,
     );
     return () => {
+      window.clearTimeout(initialRefresh);
       window.clearInterval(refreshTimer);
       window.clearInterval(countdownTimer);
     };

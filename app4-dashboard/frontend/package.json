@@ -12,10 +12,11 @@
     "@types/leaflet": "^1.9.21",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.577.0",
-    "next": "16.2.11",
+    "next": "16.2.12",
     "react": "19.2.3",
     "react-dom": "19.2.3",
-    "react-leaflet": "^5.0.0"
+    "react-leaflet": "^5.0.0",
+    "sharp": "0.35.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -23,8 +24,12 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.11",
+    "eslint-config-next": "16.2.12",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "overrides": {
+    "postcss": "8.5.24",
+    "sharp": "0.35.3"
   }
 }

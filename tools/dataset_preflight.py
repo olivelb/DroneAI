@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
+import sys
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,17 @@ from statistics import mean, median
 from typing import Any, Iterable
 
 from PIL import ExifTags, Image
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.dji_metadata import load_dji_mrk_overrides
+from shared.projected_crs import (
+    PROJECTED_CRS_POLICIES,
+    select_projected_crs,
+    utm_epsg,
+)
 
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -36,11 +49,6 @@ def dms_to_decimal(value: Iterable[Any], reference: str) -> float:
     return decimal
 
 
-def utm_epsg(latitude: float, longitude: float) -> str:
-    zone = max(1, min(60, int((longitude + 180.0) / 6.0) + 1))
-    return f"EPSG:{32700 + zone if latitude < 0 else 32600 + zone}"
-
-
 def haversine_distance_m(first: tuple[float, float], second: tuple[float, float]) -> float:
     lat1, lon1 = map(math.radians, first)
     lat2, lon2 = map(math.radians, second)
@@ -53,11 +61,31 @@ def haversine_distance_m(first: tuple[float, float], second: tuple[float, float]
     return 6_371_008.8 * 2.0 * math.atan2(math.sqrt(value), math.sqrt(1.0 - value))
 
 
-def discover_images(dataset: Path) -> list[Path]:
+def discover_images(
+    dataset: Path,
+    include_prefixes: Iterable[str] | None = None,
+) -> list[Path]:
+    roots = [dataset]
+    if include_prefixes:
+        roots = []
+        for raw_prefix in include_prefixes:
+            prefix = raw_prefix.strip().replace("\\", "/").strip("/")
+            if not prefix:
+                continue
+            root = (dataset / prefix).resolve()
+            if root != dataset and dataset not in root.parents:
+                raise ValueError(f"Include prefix escapes the dataset: {raw_prefix}")
+            if not root.is_dir():
+                raise ValueError(f"Include prefix is not a dataset directory: {raw_prefix}")
+            roots.append(root)
+        if not roots:
+            raise ValueError("At least one non-empty include prefix is required")
     return sorted(
-        path
-        for path in dataset.rglob("*")
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        Path(directory) / filename
+        for root in roots
+        for directory, _, filenames in os.walk(root)
+        for filename in filenames
+        if Path(filename).suffix.lower() in SUPPORTED_EXTENSIONS
     )
 
 
@@ -90,13 +118,17 @@ def _altitude_reference_is_below_sea_level(value: Any) -> bool:
 def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
     record: dict[str, Any] = {
         "file": path.relative_to(dataset).as_posix(),
-        "size_bytes": path.stat().st_size,
+        "size_bytes": 0,
         "readable": False,
         "gps": None,
         "error": None,
     }
     try:
         with Image.open(path) as image:
+            try:
+                record["size_bytes"] = os.fstat(image.fp.fileno()).st_size
+            except (AttributeError, OSError):
+                record["size_bytes"] = path.stat().st_size
             exif = image.getexif()
             detailed_exif = _detailed_exif_data(exif)
             captured_at = detailed_exif.get(
@@ -141,6 +173,10 @@ def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
                     "horizontal_error_m": (
                         _as_float(horizontal_error) if horizontal_error is not None else None
                     ),
+                    "position_std_m": None,
+                    "vertical_reference": "unknown",
+                    "vertical_reference_source": "exif_gps_altitude",
+                    "source": "exif",
                 }
     except Exception as error:  # Pillow exposes several format-specific exceptions.
         record["error"] = f"{type(error).__name__}: {error}"
@@ -156,6 +192,8 @@ def build_report(
     *,
     dataset: Path,
     gps_quality: str = "unknown",
+    projected_crs_mode: str = "auto-local",
+    projected_crs: str | None = None,
 ) -> dict[str, Any]:
     readable = [record for record in records if record["readable"]]
     positioned = [record for record in readable if record["gps"] is not None]
@@ -168,6 +206,21 @@ def build_report(
         for record in positioned
         if record["gps"]["altitude_m"] is not None
     ]
+    horizontal_errors = [
+        record["gps"]["horizontal_error_m"]
+        for record in positioned
+        if record["gps"].get("horizontal_error_m") is not None
+    ]
+    vertical_errors = [
+        record["gps"]["position_std_m"]["vertical_m"]
+        for record in positioned
+        if record["gps"].get("position_std_m")
+        and record["gps"]["position_std_m"].get("vertical_m") is not None
+    ]
+    vertical_references = _counter_dict(
+        record["gps"].get("vertical_reference", "unknown")
+        for record in positioned
+    )
     timestamps = sorted(
         record["captured_at"]
         for record in readable
@@ -185,12 +238,25 @@ def build_report(
         warnings.append(
             "GPS positions are not treated as centimetric ground truth; use robust alignment tolerances."
         )
+    elif horizontal_errors and median(horizontal_errors) > 0.2:
+        warnings.append(
+            "RTK was requested, but the median sidecar/EXIF horizontal "
+            f"uncertainty is {median(horizontal_errors):.3f} m."
+        )
     if altitudes and max(altitudes) - min(altitudes) > 50:
         warnings.append("The EXIF altitude range exceeds 50 m; verify the vertical reference.")
+    if positioned and vertical_references != {
+        "ellipsoidal": len(positioned)
+    }:
+        warnings.append(
+            "The altitude reference is unknown or mixed; do not publish an "
+            "orthometric height product without an explicit vertical datum "
+            "transformation."
+        )
 
     centroid = None
     bounds = None
-    projected_crs = None
+    projected_crs_choice = None
     if coordinates:
         centroid = {
             "latitude": mean(item[0] for item in coordinates),
@@ -202,10 +268,14 @@ def build_report(
             "north": max(item[0] for item in coordinates),
             "east": max(item[1] for item in coordinates),
         }
-        projected_crs = utm_epsg(centroid["latitude"], centroid["longitude"])
+        projected_crs_choice = select_projected_crs(
+            coordinates,
+            policy=projected_crs_mode,
+            custom_crs=projected_crs,
+        )
 
     return {
-        "schema_version": 1,
+        "schema_version": 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "dataset": str(dataset.resolve()),
         "gps_quality_assumption": gps_quality,
@@ -214,6 +284,36 @@ def build_report(
             "readable_count": len(readable),
             "gps_count": len(positioned),
             "gps_coverage_percent": round(100.0 * len(positioned) / len(records), 2) if records else 0.0,
+            "gps_sources": _counter_dict(
+                record["gps"].get("source", "exif")
+                for record in positioned
+            ),
+            "horizontal_error_m": (
+                {
+                    "minimum": min(horizontal_errors),
+                    "maximum": max(horizontal_errors),
+                    "mean": mean(horizontal_errors),
+                    "median": median(horizontal_errors),
+                }
+                if horizontal_errors
+                else None
+            ),
+            "vertical_error_m": (
+                {
+                    "minimum": min(vertical_errors),
+                    "maximum": max(vertical_errors),
+                    "mean": mean(vertical_errors),
+                    "median": median(vertical_errors),
+                }
+                if vertical_errors
+                else None
+            ),
+            "vertical_references": vertical_references,
+            "height_product_reference": (
+                "ellipsoidal"
+                if vertical_references == {"ellipsoidal": len(positioned)}
+                else "unknown-or-mixed"
+            ),
             "total_size_bytes": sum(record["size_bytes"] for record in records),
             "camera_makes": _counter_dict(record.get("camera_make") for record in readable),
             "camera_models": _counter_dict(record.get("camera_model") for record in readable),
@@ -235,7 +335,12 @@ def build_report(
             ),
             "centroid": centroid,
             "bounds": bounds,
-            "recommended_projected_crs": projected_crs,
+            "recommended_projected_crs": (
+                projected_crs_choice.crs if projected_crs_choice else None
+            ),
+            "projected_crs_selection": (
+                projected_crs_choice.to_dict() if projected_crs_choice else None
+            ),
         },
         "warnings": warnings,
         "images": records,
@@ -270,15 +375,31 @@ def build_geojson(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
 
 
-def inspect_dataset(dataset: Path, gps_quality: str = "unknown") -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def inspect_dataset(
+    dataset: Path,
+    gps_quality: str = "unknown",
+    include_prefixes: Iterable[str] | None = None,
+    projected_crs_mode: str = "auto-local",
+    projected_crs: str | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     dataset = dataset.resolve()
     if not dataset.is_dir():
         raise ValueError(f"Dataset directory does not exist: {dataset}")
-    image_paths = discover_images(dataset)
+    image_paths = discover_images(dataset, include_prefixes)
     if not image_paths:
         raise ValueError(f"No supported images found in: {dataset}")
     records = [inspect_image(path, dataset) for path in image_paths]
-    return records, build_report(records, dataset=dataset, gps_quality=gps_quality)
+    mrk_overrides = load_dji_mrk_overrides(dataset, image_paths)
+    for record in records:
+        if record["file"] in mrk_overrides:
+            record["gps"] = mrk_overrides[record["file"]]
+    return records, build_report(
+        records,
+        dataset=dataset,
+        gps_quality=gps_quality,
+        projected_crs_mode=projected_crs_mode,
+        projected_crs=projected_crs,
+    )
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -297,12 +418,35 @@ def parse_args() -> argparse.Namespace:
         default="unknown",
         help="Positioning quality assumption used in the report",
     )
+    parser.add_argument(
+        "--projected-crs-mode",
+        choices=PROJECTED_CRS_POLICIES,
+        default="auto-local",
+        help="Projected CRS policy used for metric alignment and output.",
+    )
+    parser.add_argument(
+        "--projected-crs",
+        default="",
+        help="Explicit EPSG:<code>, required when projected-crs-mode=custom.",
+    )
+    parser.add_argument(
+        "--include-prefix",
+        action="append",
+        default=[],
+        help="Only inspect this dataset-relative directory; repeatable.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    records, report = inspect_dataset(args.dataset, gps_quality=args.gps_quality)
+    records, report = inspect_dataset(
+        args.dataset,
+        gps_quality=args.gps_quality,
+        include_prefixes=args.include_prefix,
+        projected_crs_mode=args.projected_crs_mode,
+        projected_crs=args.projected_crs,
+    )
     write_json(args.output, report)
     if args.geojson:
         write_json(args.geojson, build_geojson(records))

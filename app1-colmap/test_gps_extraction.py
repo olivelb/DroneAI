@@ -18,6 +18,29 @@ import pipeline_support
 
 
 class TestPipelineSupport(unittest.TestCase):
+    def test_projected_crs_policy_round_trip_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            geo_data_file = os.path.join(tmp_dir, "geo_data.txt")
+            pipeline_support.save_projected_crs(
+                geo_data_file,
+                "EPSG:3944",
+                policy="auto-local",
+            )
+
+            self.assertEqual(
+                pipeline_support.read_saved_projected_crs(geo_data_file),
+                "EPSG:3944",
+            )
+            self.assertEqual(
+                pipeline_support.read_saved_projected_crs_policy(geo_data_file),
+                {
+                    "schema_version": 2,
+                    "projected_crs": "EPSG:3944",
+                    "policy": "auto-local",
+                    "requested_crs": "",
+                },
+            )
+
     def test_extract_gps_data_uses_pillow_exif_metadata(self):
         fake_pyproj = types.ModuleType("pyproj")
         fake_transformer = MagicMock()
@@ -43,7 +66,7 @@ class TestPipelineSupport(unittest.TestCase):
             with patch.dict(sys.modules, {"pyproj": fake_pyproj}):
                 with patch("os.listdir", return_value=["img1.jpg"]):
                     with patch.object(pipeline_support.PILImage, "open", return_value=fake_image):
-                        utm_crs = pipeline_support.extract_gps_data(
+                        projected_crs = pipeline_support.extract_gps_data(
                             "images",
                             output_file,
                             "vol-1",
@@ -52,14 +75,24 @@ class TestPipelineSupport(unittest.TestCase):
 
             with open(output_file, encoding="utf-8") as handle:
                 output = handle.read()
+            metadata = pipeline_support.read_saved_projected_crs_policy(
+                output_file
+            )
 
-        self.assertEqual(utm_crs, "EPSG:32631")
+        self.assertEqual(projected_crs, "EPSG:3946")
         self.assertEqual(output, "img1.jpg 123.4 567.8 42.0\n")
+        self.assertEqual(metadata["vertical"]["reference"], "unknown")
+        self.assertFalse(
+            metadata["vertical"]["orthometric_conversion_applied"]
+        )
         report_fn.assert_any_call(
             "vol-1",
             "GPS_EXTRACTION",
             12,
-            log="Extracted GPS from 1/1 images using EXIF. Using CRS EPSG:32631",
+            log=(
+                "Extracted positions from 1/1 images "
+                "(0 DJI MRK, 1 EXIF). Using CRS EPSG:3946 (france-cc9)"
+            ),
         )
 
     def test_extract_gps_data_skips_images_without_gps(self):
@@ -74,14 +107,14 @@ class TestPipelineSupport(unittest.TestCase):
             with patch.dict(sys.modules, {"pyproj": fake_pyproj}):
                 with patch("os.listdir", return_value=["img1.jpg"]):
                     with patch.object(pipeline_support.PILImage, "open", return_value=fake_image):
-                        utm_crs = pipeline_support.extract_gps_data(
+                        projected_crs = pipeline_support.extract_gps_data(
                             "images",
                             output_file,
                             "vol-1",
                             MagicMock(),
                         )
 
-            self.assertIsNone(utm_crs)
+            self.assertIsNone(projected_crs)
             self.assertEqual(os.path.getsize(output_file), 0)
 
     def test_detect_existing_pipeline_distinguishes_descriptor_types(self):

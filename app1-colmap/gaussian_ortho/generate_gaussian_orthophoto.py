@@ -15,9 +15,15 @@ Pipeline:
 """
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
+
+from shared.dronegs_profile import (
+    DRONEGS_PRODUCTION_PROFILE_V1,
+    effective_raster_profile,
+)
 
 from .colmap_loader import (
     load_colmap_reconstruction,
@@ -33,6 +39,12 @@ from gaussian_training import (
     TrainingResult,
     resolve_training_backend,
 )
+from gaussian_training.dataset_identity import compute_dataset_identity
+from gaussian_training.manifest_contract import (
+    load_run_manifest,
+    manifest_matches_ply,
+    validate_run_manifest,
+)
 from .partition import partition_scene
 from .geo_writer import write_geotiff
 from .exif_altitude import extract_exif_altitudes, compute_colmap_scale
@@ -47,6 +59,8 @@ def _report(vol_id, step, progress, msg, report_fn):
 
 def _reusable_dronegs_result(
     request: TrainingRequest,
+    *,
+    trainer_binary_sha256: str,
 ) -> TrainingResult | None:
     """Return a previously promoted result only when its contract matches."""
     output = Path(request.output_path)
@@ -60,9 +74,10 @@ def _reusable_dronegs_result(
     ):
         return None
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = load_run_manifest(manifest_path)
         canary = json.loads(canary_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        validate_run_manifest(manifest)
+    except (OSError, ValueError, json.JSONDecodeError):
         return None
     expected = {
         "iterations": request.iterations,
@@ -73,10 +88,19 @@ def _reusable_dronegs_result(
         "max_width": request.max_width,
         "tile_mode": request.tile_mode,
         "seed": request.seed,
+        "profile_id": request.dronegs.profile_id,
         "optimizer_profile": request.dronegs.optimizer_profile,
         "pruning_policy": request.dronegs.pruning_policy,
         "raster_profile": request.dronegs.raster_profile,
+        "effective_raster_profile": effective_raster_profile(
+            request.dronegs.raster_profile,
+            request.dronegs.optimizer_profile,
+        ),
+        "sh_degree_interval": request.dronegs.sh_degree_interval,
+        "checkpoint_every": request.dronegs.checkpoint_every,
         "test_every": request.dronegs.test_every,
+        "test_split": request.dronegs.test_split,
+        "test_guard_percent": request.dronegs.test_guard_percent,
         "topology_cooldown_iterations": request.dronegs.topology_cooldown,
         "photometric_finish_iterations": request.dronegs.photometric_finish,
         "photometric_final_mse_percent": (
@@ -87,10 +111,14 @@ def _reusable_dronegs_result(
     if (
         manifest.get("contract_version") != 1
         or manifest.get("status") != "completed"
+        or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
+        or manifest.get("dataset", {}).get("fingerprint")
+        != request.dataset_fingerprint
         or canary.get("status") != "passed"
         or canary.get("minimum_psnr") != request.dronegs.canary_min_psnr
         or canary.get("minimum_ssim") != request.dronegs.canary_min_ssim
         or any(parameters.get(key) != value for key, value in expected.items())
+        or not manifest_matches_ply(manifest, ply_path)
     ):
         return None
     return TrainingResult(
@@ -99,6 +127,30 @@ def _reusable_dronegs_result(
         manifest_path=manifest_path,
         effective_seed=request.seed,
     )
+
+
+def _quarantine_incompatible_dronegs_output(
+    output_path: str | Path,
+) -> Path | None:
+    """Move an incompatible result aside so retraining remains recoverable."""
+
+    output = Path(output_path)
+    if not output.is_dir() or not any(output.iterdir()):
+        return None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    quarantine_root = (
+        output.parent.parent
+        / ".incompatible"
+        / output.parent.name
+    )
+    quarantine_root.mkdir(parents=True, exist_ok=True)
+    candidate = quarantine_root / f"{output.name}-{stamp}"
+    suffix = 1
+    while candidate.exists():
+        candidate = quarantine_root / f"{output.name}-{stamp}-{suffix}"
+        suffix += 1
+    output.rename(candidate)
+    return candidate
 
 
 def generate_gaussian_orthophoto(
@@ -110,17 +162,17 @@ def generate_gaussian_orthophoto(
     report_fn=None,
     resolution: float = 0.02,
     # Gaussian-specific params
-    iterations: int = 30_000,
+    iterations: int = DRONEGS_PRODUCTION_PROFILE_V1.iterations,
     partition_m: int = 1,
     partition_n: int = 1,
     partition_overlap: float = 0.20,
     sh_degree: int = 3,
     fagk: bool = True,
     checkpoint_dir: str = None,
-    data_factor: int = 1,
-    max_width: int = 3840,
-    tile_mode: int = 1,
-    cap_max: int = 5_000_000,
+    data_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+    max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width,
+    tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
+    cap_max: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
     filter_enabled: bool = True,
     filter_max_scale: float = 1.0,
     filter_dist_multiplier: float = 1.0,
@@ -132,18 +184,45 @@ def generate_gaussian_orthophoto(
     filter_z_floater: bool = False,
     verbose: bool = False,
     trainer_backend: str | None = None,
-    training_seed: int = 42,
-    dronegs_optimizer_profile: str = "reference-absolute",
-    dronegs_pruning_policy: str = "spatial-bounds",
-    dronegs_raster_profile: str = "bounded",
-    dronegs_sh_degree_interval: int = 1_000,
-    dronegs_topology_cooldown: int = 1_000,
-    dronegs_photometric_finish: int = 1_000,
-    dronegs_photometric_mse_percent: int = 100,
-    dronegs_checkpoint_every: int = 2_000,
-    dronegs_test_every: int = 8,
-    dronegs_canary_min_psnr: float = 18.0,
-    dronegs_canary_min_ssim: float = 0.35,
+    training_seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed,
+    dronegs_profile_id: str = DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
+    dronegs_optimizer_profile: str = (
+        DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
+    ),
+    dronegs_pruning_policy: str = (
+        DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy
+    ),
+    dronegs_raster_profile: str = (
+        DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
+    ),
+    dronegs_sh_degree_interval: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
+    ),
+    dronegs_topology_cooldown: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
+    ),
+    dronegs_photometric_finish: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
+    ),
+    dronegs_photometric_mse_percent: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
+    ),
+    dronegs_checkpoint_every: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every
+    ),
+    dronegs_test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every,
+    dronegs_test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split,
+    dronegs_test_guard_percent: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent
+    ),
+    dronegs_canary_min_psnr: float = (
+        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
+    ),
+    dronegs_canary_min_ssim: float = (
+        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
+    ),
+    cancellation_check=None,
+    checkpoint_callback=None,
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -217,6 +296,7 @@ def generate_gaussian_orthophoto(
     if checkpoint_dir is None:
         checkpoint_dir = str(Path(ortho_file).parent / "gaussian_checkpoints")
     backend = resolve_training_backend(trainer_backend)
+    trainer_binary_sha256 = backend.binary_sha256()
 
     # --- 1. Load COLMAP reconstruction ---
     _report(vol_id, "GAUSS", 5, "Loading COLMAP reconstruction…", report_fn)
@@ -321,6 +401,7 @@ def generate_gaussian_orthophoto(
                 report_fn,
             )
 
+        dataset_identity = compute_dataset_identity(training_data_path)
         training_request = TrainingRequest(
             data_path=training_data_path,
             output_path=cell_output,
@@ -332,7 +413,9 @@ def generate_gaussian_orthophoto(
             max_width=max_width,
             tile_mode=tile_mode,
             seed=training_seed + i,
+            dataset_fingerprint=dataset_identity.fingerprint,
             dronegs=DroneGSTuning(
+                profile_id=dronegs_profile_id,
                 optimizer_profile=dronegs_optimizer_profile,
                 pruning_policy=dronegs_pruning_policy,
                 raster_profile=dronegs_raster_profile,
@@ -349,6 +432,8 @@ def generate_gaussian_orthophoto(
                 checkpoint_every=dronegs_checkpoint_every,
                 resume_from=resume_from,
                 test_every=dronegs_test_every,
+                test_split=dronegs_test_split,
+                test_guard_percent=dronegs_test_guard_percent,
                 save_eval_images=dronegs_test_every > 0,
                 canary_min_psnr=dronegs_canary_min_psnr,
                 canary_min_ssim=dronegs_canary_min_ssim,
@@ -362,14 +447,34 @@ def generate_gaussian_orthophoto(
                         f"[MRNF] iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
             return reporter
 
-        training_result = _reusable_dronegs_result(training_request)
+        training_result = _reusable_dronegs_result(
+            training_request,
+            trainer_binary_sha256=trainer_binary_sha256,
+        )
         if training_result is None:
+            if training_request.dronegs.resume_from is None:
+                quarantined = _quarantine_incompatible_dronegs_output(
+                    training_request.output_path
+                )
+                if quarantined is not None:
+                    _report(
+                        vol_id,
+                        "GAUSS",
+                        pct_start,
+                        (
+                            "[DroneGS] Incompatible prior output preserved at "
+                            f"{quarantined}; starting a clean training run."
+                        ),
+                        report_fn,
+                    )
             training_result = backend.train(
                 training_request,
                 report_fn=make_training_reporter(
                     pct_start, pct_end, vol_id, report_fn, iterations,
                 ),
                 verbose=verbose,
+                cancellation_check=cancellation_check,
+                checkpoint_fn=checkpoint_callback,
             )
         else:
             _report(

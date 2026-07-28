@@ -1,7 +1,17 @@
 "use client";
 
 import React, { useState } from "react";
-import { ChevronRight, File, Folder, Home, Trash2, Upload } from "lucide-react";
+import {
+  ChevronRight,
+  Cpu,
+  File,
+  Folder,
+  Home,
+  ScanSearch,
+  Sparkles,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useStore } from "../lib/store";
 import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi } from "../lib/api";
 
@@ -48,14 +58,73 @@ export default function PhaseSetup() {
   };
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div className="space-y-6">
+      <section className="surface overflow-hidden">
+        <div className="p-5 sm:p-6">
+          <div className="eyebrow">Stage 01 · Mission intake</div>
+          <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
+            Prepare the aerial mission
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6f7c78]">
+            Choose the source imagery, name the mission and review the complete
+            processing chain before committing GPU time.
+          </p>
+        </div>
+      </section>
+
+      <section className="surface p-4 sm:p-5">
+        <div className="grid gap-2 sm:grid-cols-3">
+          {[
+            {
+              icon: <Cpu size={17} />,
+              title: "Align",
+              text: "GPS graph + GLOMAP",
+              tone: "bg-[#e1f3ef] text-[#0f766e]",
+            },
+            {
+              icon: <Sparkles size={17} />,
+              title: "Render",
+              text: "DroneGS + orthomosaic",
+              tone: "bg-[#fff1cf] text-[#b66b05]",
+            },
+            {
+              icon: <ScanSearch size={17} />,
+              title: "Understand",
+              text: "Tiling + AI detection",
+              tone: "bg-[#e8eefb] text-[#3458a5]",
+            },
+          ].map((stage, index) => (
+            <div
+              key={stage.title}
+              className="flex items-center gap-3 rounded-2xl border border-[#e1e8e5] bg-[#fafcfb] p-3"
+            >
+              <span
+                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${stage.tone}`}
+              >
+                {stage.icon}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-bold text-[#2e3b37]">
+                  {index + 1}. {stage.title}
+                </span>
+                <span className="block truncate text-[11px] text-[#7a8783]">
+                  {stage.text}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* Left: Dataset browser */}
-      <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-        <div className="border-b border-gray-50 p-5">
-          <h2 className="text-lg font-bold text-gray-800">Dataset Browser</h2>
-          <p className="mt-1 text-xs text-gray-400">Navigate S3 datasets and select input images</p>
-          <div className="mt-3 flex items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-3 py-2 font-mono text-xs text-gray-500">
-            <button onClick={() => void browse("/")} className="hover:text-blue-500"><Home size={14} /></button>
+      <div className="surface overflow-hidden">
+        <div className="border-b border-[#e7ecea] p-5">
+          <div className="eyebrow">Source imagery</div>
+          <h2 className="mt-1 text-lg font-bold text-[#293632]">Dataset browser</h2>
+          <p className="mt-1 text-xs text-[#7a8783]">Navigate object storage and select one image collection.</p>
+          <div className="mt-4 flex items-center gap-2 rounded-xl border border-[#dce4e1] bg-[#f7faf9] px-3 py-2 font-mono text-xs text-[#64716d]">
+            <button type="button" aria-label="Dataset root" onClick={() => void browse("/")} className="text-[#0f766e]"><Home size={14} /></button>
             <ChevronRight size={12} className="text-gray-300" />
             <span className="truncate">{currentPath || "/"}</span>
             <button onClick={goUp} className="ml-auto rounded-lg bg-gray-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 hover:bg-gray-200">
@@ -64,7 +133,7 @@ export default function PhaseSetup() {
           </div>
         </div>
 
-        <div className="max-h-[400px] overflow-y-auto p-3">
+        <div className="max-h-[430px] overflow-y-auto p-3">
           <div className="space-y-1">
             {items.map((item) => {
               const isSelected = item.is_dir
@@ -74,22 +143,22 @@ export default function PhaseSetup() {
               <div
                 key={item.path}
                 className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition hover:bg-gray-50 ${
-                  isSelected ? "bg-blue-50 ring-1 ring-blue-300" : ""
+                  isSelected ? "bg-[#edf9f6] ring-1 ring-[#83cfc1]" : ""
                 }`}
               >
                 {item.is_dir ? (
                   <button
                     onClick={() => void browse(item.path + "/")}
-                    className="flex items-center gap-2 truncate text-gray-700 hover:text-blue-600"
+                    className="flex min-h-10 items-center gap-2 truncate text-[#46534f] hover:text-[#0f766e]"
                     title="Open folder"
                   >
-                    <Folder size={16} className="text-blue-400 shrink-0" />
+                    <Folder size={16} className="shrink-0 text-[#0f766e]" />
                     <span className="truncate font-medium">{item.name}</span>
                   </button>
                 ) : (
                   <button
                     onClick={() => setSelectedPath(item.path)}
-                    className="flex items-center gap-2 truncate text-gray-700 hover:text-blue-600"
+                    className="flex min-h-10 items-center gap-2 truncate text-[#46534f] hover:text-[#0f766e]"
                   >
                     <File size={16} className="text-gray-400 shrink-0" />
                     <span className="truncate font-medium">{item.name}</span>
@@ -107,8 +176,8 @@ export default function PhaseSetup() {
                       title="Select as input dataset"
                       className={`rounded-lg px-2 py-1 text-[10px] font-bold uppercase tracking-wider transition ${
                         isSelected
-                          ? "bg-blue-500 text-white"
-                          : "bg-gray-100 text-gray-500 hover:bg-blue-100 hover:text-blue-600"
+                          ? "bg-[#0f766e] text-white"
+                          : "bg-[#edf3f1] text-[#5d6a66] hover:bg-[#dff5f0] hover:text-[#0f766e]"
                       }`}
                     >
                       {isSelected ? "Selected" : "Select"}
@@ -159,17 +228,17 @@ export default function PhaseSetup() {
         </div>
 
         {/* Upload */}
-        <div className="border-t border-gray-50 p-4">
-          <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-400">Upload Dataset</h3>
+        <div className="border-t border-[#e7ecea] p-4">
+          <h3 className="eyebrow mb-3">Upload dataset</h3>
           <div className="space-y-2">
             <input
               type="text"
               placeholder="Dataset name"
               value={uploadDatasetName}
               onChange={(e) => setUploadDatasetName(e.target.value)}
-              className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm outline-none focus:border-blue-400"
+              className="input-control min-h-11"
             />
-            <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-dashed border-gray-300 bg-gray-50 px-3 py-3 text-xs text-gray-500 hover:border-blue-400 hover:text-blue-500">
+            <label className="flex min-h-12 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-[#c8d3cf] bg-[#f7faf9] px-3 py-3 text-xs text-[#687571] hover:border-[#68bfae] hover:text-[#0f766e]">
               <Upload size={14} />
               {uploadFiles ? `${uploadFiles.length} file(s) selected` : "Select images…"}
               <input type="file" multiple className="hidden" onChange={(e) => setUploadFiles(e.target.files)} />
@@ -177,7 +246,7 @@ export default function PhaseSetup() {
             <button
               onClick={handleUpload}
               disabled={isUploading || !uploadFiles || uploadFiles.length === 0 || !uploadDatasetName.trim()}
-              className="w-full rounded-xl bg-blue-500 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-600 disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-gray-400"
+              className="min-h-11 w-full rounded-xl bg-[#0f766e] px-3 py-2 text-sm font-semibold text-white hover:bg-[#115e59] disabled:cursor-not-allowed disabled:bg-[#d4ddda] disabled:text-white"
             >
               {isUploading ? "Uploading…" : "Upload"}
             </button>
@@ -203,9 +272,10 @@ export default function PhaseSetup() {
 
       {/* Right: Mission config */}
       <div className="space-y-6">
-        <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-gray-800">Mission Configuration</h2>
-          <p className="mt-1 text-xs text-gray-400">Set mission ID and review your selection before proceeding</p>
+        <div className="surface p-5 sm:p-6">
+          <div className="eyebrow">Mission identity</div>
+          <h2 className="mt-1 text-lg font-bold text-[#293632]">Name this run</h2>
+          <p className="mt-1 text-xs text-[#7a8783]">Use a durable ID for tracking, files and resume checkpoints.</p>
 
           <div className="mt-5 space-y-4">
             <label className="block">
@@ -213,17 +283,17 @@ export default function PhaseSetup() {
               <input
                 value={volId}
                 onChange={(e) => setVolId(e.target.value)}
-                className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 font-mono text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30"
+                className="input-control min-h-11 font-mono"
               />
             </label>
           </div>
         </div>
 
         {/* Selection summary */}
-        <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <h3 className="text-sm font-bold text-gray-700">Selected Dataset</h3>
+        <div className="surface p-5 sm:p-6">
+          <h3 className="text-sm font-bold text-[#34413d]">Selected dataset</h3>
           <div className={`mt-3 rounded-xl border px-4 py-3 font-mono text-sm ${
-            selectedPath ? "border-blue-200 bg-blue-50 text-blue-700" : "border-gray-100 bg-gray-50 text-gray-400"
+            selectedPath ? "border-[#83cfc1] bg-[#edf9f6] text-[#0f766e]" : "border-[#e1e8e5] bg-[#f7faf9] text-[#8a9692]"
           }`}>
             {selectedPath || "No dataset selected — click \"Select\" on a folder"}
           </div>
@@ -238,16 +308,16 @@ export default function PhaseSetup() {
         </div>
 
         {/* Existing missions */}
-        <div className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <h3 className="text-sm font-bold text-gray-700">Previous Missions</h3>
-          <p className="mt-1 text-xs text-gray-400">Select an existing mission to inspect its phases and results</p>
+        <div className="surface p-5 sm:p-6">
+          <h3 className="text-sm font-bold text-[#34413d]">Previous missions</h3>
+          <p className="mt-1 text-xs text-[#7a8783]">Resume or inspect an existing production run.</p>
           <div className="mt-3 max-h-[250px] space-y-1.5 overflow-y-auto">
             {Object.values(missions).sort((a, b) => b.updated_at - a.updated_at).map((m) => (
               <button
                 key={m.vol_id}
                 onClick={() => { setActiveMissionId(m.vol_id); setVolId(m.vol_id); }}
                 className={`flex w-full items-center justify-between rounded-xl border px-4 py-2.5 text-left text-sm transition ${
-                  activeMissionId === m.vol_id ? "border-blue-300 bg-blue-50" : "border-gray-100 hover:border-gray-200"
+                  activeMissionId === m.vol_id ? "border-[#83cfc1] bg-[#edf9f6]" : "border-[#e1e8e5] hover:border-[#b8c9c3]"
                 }`}
               >
                 <span className="font-mono font-medium text-gray-700">{m.vol_id}</span>
@@ -262,6 +332,7 @@ export default function PhaseSetup() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }

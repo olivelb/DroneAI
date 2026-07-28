@@ -7,7 +7,7 @@ numpy
 pillow
 plyfile
 psycopg2-binary
-pycolmap==4.0.1
+pycolmap==4.1.1
 pyproj
 rasterio
 scipy

@@ -112,6 +112,7 @@ export type PodState = {
 
 export type ParameterMeta = {
   label: string;
+  description?: string;
   type: "select" | "int" | "float" | "bool" | "text";
   group: string;
   min?: number;

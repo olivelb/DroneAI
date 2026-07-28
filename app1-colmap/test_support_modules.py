@@ -27,16 +27,29 @@ try:
     import rasterio  # noqa: F401
     import rasterio.transform  # noqa: F401
 except ImportError:
+    previous_rasterio_modules = {
+        name: sys.modules.get(name)
+        for name in ("rasterio", "rasterio.transform")
+    }
     rasterio_module = types.ModuleType("rasterio")
     rasterio_module.open = MagicMock()
     sys.modules["rasterio"] = rasterio_module
     rasterio_transform_module = types.ModuleType("rasterio.transform")
     rasterio_transform_module.from_origin = MagicMock()
     sys.modules["rasterio.transform"] = rasterio_transform_module
+else:
+    previous_rasterio_modules = None
 
 import main as app1_main
 import pipeline_support
 import worker_support
+
+if previous_rasterio_modules is not None:
+    for module_name, previous_module in previous_rasterio_modules.items():
+        if previous_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous_module
 
 
 def session_context(session):
@@ -177,7 +190,10 @@ class TestPipelineSupport(unittest.TestCase):
         modern = pipeline_support.merge_pipeline_params("modern", {})
 
         self.assertEqual(legacy["mvs_max_image_size"], "4000")
-        self.assertEqual(modern["mvs_max_image_size"], "4000")
+        self.assertEqual(modern["mvs_max_image_size"], "1600")
+        self.assertFalse(legacy["rtk_refinement_enabled"])
+        self.assertTrue(modern["rtk_refinement_enabled"])
+        self.assertEqual(modern["rtk_refinement_iterations"], "25")
 
     def test_plan_clean_image_copy_skips_when_manifest_matches_hash(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

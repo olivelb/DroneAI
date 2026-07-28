@@ -7,6 +7,7 @@ TRAINER --data-path DATASET --output-path OUTPUT --iter ITERATIONS \
   --strategy STRATEGY --sh-degree DEGREE --max-cap COUNT \
   --resize-factor FACTOR --max-width PIXELS --tile-mode MODE \
   --seed SEED --run-manifest MANIFEST \
+  [--profile-id NAME] [--dataset-fingerprint VALUE] \
   [--prefetch-depth DEPTH] [--decode-workers WORKERS] \
   [--jpeg-idct-scale 0|1] \
   [--optimizer-profile PROFILE] \
@@ -14,7 +15,9 @@ TRAINER --data-path DATASET --output-path OUTPUT --iter ITERATIONS \
   [--raster-profile auto|bounded|fastgs] \
   [--sh-degree-interval N] [--topology-cooldown N] \
   [--photometric-finish N] [--photometric-mse-percent 0..100] \
-  [--test-every 0|N] [--save-eval-images 0|1] \
+  [--test-every 0|N] \
+  [--test-split modulo|spatial-block] \
+  [--test-guard-percent 0..100] [--save-eval-images 0|1] \
   [--checkpoint-every N] [--checkpoint-path PATH] \
   [--resume-from PATH] [--stop-after N]
 ```
@@ -36,6 +39,8 @@ DroneGS is the sole implementation of this contract.
 | `--tile-mode` | 1, 2, or 4 |
 | `--seed` | Unsigned integer; mandatory for benchmarks |
 | `--run-manifest` | Final manifest conforming to the v1 schema |
+| `--profile-id` | Versioned recipe identifier; production uses `DRONEGS_PRODUCTION_PROFILE_V1` |
+| `--dataset-fingerprint` | Optional external content identity used by distributed resume |
 
 DroneGS accepts optional backend-specific controls. They do
 not alter the mandatory canonical contract:
@@ -53,6 +58,8 @@ not alter the mandatory canonical contract:
 | `--photometric-finish` | 0 through `--iter`; default 0 |
 | `--photometric-mse-percent` | 0 through 100; default 0 |
 | `--test-every` | 0 or at least 2; production uses 8 |
+| `--test-split` | `modulo` or `spatial-block`; immutable production V1 uses `modulo` |
+| `--test-guard-percent` | 0 through 100; non-zero only with `spatial-block` and an enabled split |
 | `--save-eval-images` | 0 or 1; requires a held-out split |
 | `--checkpoint-every` | 0 disables periodic saves; production uses 2,000 |
 | `--checkpoint-path` | Required when checkpointing or deliberately pausing |
@@ -61,10 +68,20 @@ not alter the mandatory canonical contract:
 
 Reduced-IDCT decode is experimental because libjpeg's scaled filtering changes
 the RGB training target. A non-zero photometric finish requires a non-zero MSE
-percentage and vice versa. Run manifests record every effective value.
+percentage and vice versa. Run manifests record requested and effective raster
+profiles as separate, uniquely named fields. The adapter rejects duplicate
+JSON keys, validates the contract, records the trainer binary SHA-256, and
+promotes the PLY only after recording its SHA-256.
+
+`spatial-block` computes camera centers from COLMAP world-to-camera poses,
+selects the two dominant spatial axes, reserves a deterministic central block
+with the same target count as `--test-every`, then excludes the requested guard
+ring from training. This evaluates geographic generalization without changing
+the immutable modulo-based V1 comparison baseline.
 
 The DroneAI pipeline's production profile intentionally overrides the neutral
-native defaults with the validated dev.45 settings documented in
+native defaults with immutable `DRONEGS_PRODUCTION_PROFILE_V1`, derived from
+the dev.45 acceptance settings and hardened through dev.47 as documented in
 `docs/dronegs/BACKENDS.md`.
 
 ## Artifacts
@@ -101,5 +118,6 @@ Human diagnostics go to stderr.
 | 10 | Training/internal failure |
 | 75 | Deliberately paused after an atomic checkpoint |
 
-SIGTERM stops new work, atomically completes or invalidates the active
-checkpoint, writes a cancelled manifest when possible, and exits 5.
+The DroneAI adapter handles cancellation: it sends SIGTERM to the DroneGS
+process group, waits ten seconds, then sends SIGKILL if required. The latest
+already-published atomic checkpoint remains the recovery boundary.

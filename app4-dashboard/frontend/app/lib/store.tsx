@@ -7,7 +7,17 @@ import type {
   PhaseId,
 } from "./types";
 import { SERVICE_ORDER } from "./types";
-import { fetchBrowse, fetchParameters, fetchPods, fetchSummary, getWsBaseUrl } from "./api";
+import {
+  createSession,
+  deleteSession,
+  fetchBrowse,
+  fetchParameters,
+  fetchPods,
+  fetchSession,
+  fetchSummary,
+  getWsBaseUrl,
+} from "./api";
+import type { SessionPrincipal } from "./api";
 
 const DEFAULT_BROWSER_PATH = "datasets/";
 
@@ -29,6 +39,11 @@ type StoreState = {
   logs: string[];
   setLogs: React.Dispatch<React.SetStateAction<string[]>>;
   wsConnected: boolean;
+  authStatus: "checking" | "required" | "authenticated";
+  authPrincipal: SessionPrincipal | null;
+  authError: string | null;
+  login: (apiKey: string) => Promise<void>;
+  logout: () => Promise<void>;
 
   // Pipeline params
   pipeline: PipelineName;
@@ -51,6 +66,8 @@ type StoreState = {
   setSamPrompt: (p: string) => void;
   selectedClasses: string[];
   setSelectedClasses: (c: string[]) => void;
+  tileSize: number;
+  setTileSize: (size: number) => void;
 
   // Upload
   uploadDatasetName: string;
@@ -106,6 +123,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [pods, setPods] = useState<PodState[]>([]);
   const [podsError, setPodsError] = useState<string | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const [authStatus, setAuthStatus] = useState<
+    "checking" | "required" | "authenticated"
+  >("checking");
+  const [authPrincipal, setAuthPrincipal] =
+    useState<SessionPrincipal | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [activePhase, setActivePhase] = useState<PhaseId>("setup");
 
   const [aiConfidence, setAiConfidence] = useState(0.5);
@@ -113,6 +136,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [aiModelVariant, setAiModelVariant] = useState<YOLOModelVariant>("yolo26l");
   const [samPrompt, setSamPrompt] = useState("car");
   const [selectedClasses, setSelectedClasses] = useState<string[]>(["car"]);
+  const [tileSize, setTileSize] = useState(1024);
 
   const [pipeline, setPipelineRaw] = useState<PipelineName>("modern");
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
@@ -190,8 +214,63 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setParameterValues((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  // Init
+  const login = useCallback(async (apiKey: string) => {
+    setAuthError(null);
+    setAuthStatus("checking");
+    try {
+      const principal = await createSession(apiKey);
+      setAuthPrincipal(principal);
+      setAuthStatus("authenticated");
+    } catch (error) {
+      setAuthPrincipal(null);
+      setAuthError(error instanceof Error ? error.message : String(error));
+      setAuthStatus("required");
+      throw error;
+    }
+  }, []);
+
+  const logout = useCallback(async () => {
+    try {
+      await deleteSession();
+    } finally {
+      setAuthPrincipal(null);
+      setAuthStatus("required");
+      setWsConnected(false);
+    }
+  }, []);
+
   useEffect(() => {
+    let active = true;
+    void fetchSession()
+      .then((principal) => {
+        if (!active) return;
+        setAuthPrincipal(principal);
+        setAuthStatus("authenticated");
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthPrincipal(null);
+        setAuthStatus("required");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const unauthorized = () => {
+      setAuthPrincipal(null);
+      setAuthStatus("required");
+      setWsConnected(false);
+    };
+    window.addEventListener("droneai:unauthorized", unauthorized);
+    return () =>
+      window.removeEventListener("droneai:unauthorized", unauthorized);
+  }, []);
+
+  // Load protected data only after an authenticated cookie session exists.
+  useEffect(() => {
+    if (authStatus !== "authenticated") return;
     const initialLoad = window.setTimeout(() => {
       void browse(DEFAULT_BROWSER_PATH);
       void loadParameters();
@@ -205,12 +284,19 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       clearInterval(si);
       clearInterval(pi);
     };
-  }, [browse, loadParameters, refreshSummary, refreshPodsData]);
+  }, [
+    authStatus,
+    browse,
+    loadParameters,
+    refreshSummary,
+    refreshPodsData,
+  ]);
 
   useEffect(() => { activeVolIdRef.current = activeMissionId; }, [activeMissionId]);
 
   // WebSocket
   useEffect(() => {
+    if (authStatus !== "authenticated") return;
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
@@ -253,15 +339,16 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     };
     connect();
     return () => { closed = true; if (timer) clearTimeout(timer); ws?.close(); };
-  }, []);
+  }, [authStatus]);
 
   const value: StoreState = {
     currentPath, items, selectedPath, browse, setSelectedPath,
     volId, setVolId, missions, activeMissionId, setActiveMissionId: setActiveMissionIdUser, activeMission, logs, setLogs, wsConnected,
+    authStatus, authPrincipal, authError, login, logout,
     pipeline, setPipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
     workDrive, setWorkDrive,
     aiConfidence, setAiConfidence, aiBackend, setAiBackend, aiModelVariant, setAiModelVariant,
-    samPrompt, setSamPrompt, selectedClasses, setSelectedClasses,
+    samPrompt, setSamPrompt, selectedClasses, setSelectedClasses, tileSize, setTileSize,
     uploadDatasetName, setUploadDatasetName, uploadFiles, setUploadFiles,
     uploadProgress, setUploadProgress, isUploading, setIsUploading,
     pods, podsError, activePhase, setActivePhase, refreshSummary,

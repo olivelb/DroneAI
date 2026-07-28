@@ -9,7 +9,6 @@ Uses SQLAlchemy 2.0 + GeoAlchemy2 for PostGIS geometry support.
 """
 
 import logging
-import os
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -39,16 +38,13 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+from shared.config import DATABASE_URL
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://droneai:droneai-local@postgres.drone-ai.svc:5432/droneai",
-)
 
 # ---------------------------------------------------------------------------
 # Engine & session factory (lazy init)

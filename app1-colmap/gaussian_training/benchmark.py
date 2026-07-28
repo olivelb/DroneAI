@@ -82,8 +82,10 @@ def _validate_parameters(parameters: Mapping[str, Any], case_name: str) -> None:
         raise ValueError(f"case {case_name!r} parameter max_width is invalid")
     integer("tile_mode", 1, {1, 2, 4})
     integer("seed", 0)
-    if not isinstance(parameters.get("strategy"), str) or not parameters["strategy"]:
-        raise ValueError(f"case {case_name!r} parameter strategy is invalid")
+    if parameters.get("strategy") != "mrnf":
+        raise ValueError(
+            f"case {case_name!r} parameter strategy must be mrnf"
+        )
 
 
 def load_benchmark_suite(path: Path) -> BenchmarkSuite:
@@ -336,6 +338,63 @@ def _artifact_metadata(path: Path) -> dict[str, Any]:
             digest.update(chunk)
     return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
 
+def hardware_inventory() -> dict[str, Any]:
+    """Capture reproducibility-relevant GPU, driver and thermal metadata."""
+
+    inventory: dict[str, Any] = {
+        "gpu": None,
+        "driver_version": None,
+        "cuda_version": None,
+        "temperature_c": None,
+        "power_limit_w": None,
+    }
+    if shutil.which("nvidia-smi") is None:
+        return inventory
+    try:
+        query = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version,temperature.gpu,power.limit",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        first = next(
+            (line for line in query.stdout.splitlines() if line.strip()),
+            "",
+        )
+        fields = [field.strip() for field in first.split(",")]
+        if len(fields) == 4:
+            inventory["gpu"] = fields[0] or None
+            inventory["driver_version"] = fields[1] or None
+            for field, key in (
+                (fields[2], "temperature_c"),
+                (fields[3], "power_limit_w"),
+            ):
+                try:
+                    inventory[key] = float(field)
+                except ValueError:
+                    inventory[key] = None
+        version = subprocess.run(
+            ["nvidia-smi"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        match = re.search(
+            r"CUDA(?: UMD)? Version:\s*([0-9.]+)",
+            version.stdout,
+        )
+        if match:
+            inventory["cuda_version"] = match.group(1)
+    except (OSError, StopIteration, subprocess.SubprocessError, ValueError):
+        pass
+    return inventory
+
 
 def run_one(
     suite: BenchmarkSuite,
@@ -353,20 +412,27 @@ def run_one(
     if run_dir == data_path or data_path in run_dir.parents or run_dir in data_path.parents:
         raise ValueError("benchmark outputs and source dataset must be separate trees")
 
+    # Harness logs must remain outside the trainer output directory because the
+    # native contract intentionally rejects pre-existing output artifacts.
+    trainer_output_dir = run_dir / "artifacts"
     inventory_payload = dict(inventory) if inventory is not None else dataset_inventory(data_path)
     run_dir.mkdir(parents=True)
-    command = expand_command(backend, case, run_dir, repetition, environment)
+    command = expand_command(
+        backend, case, trainer_output_dir, repetition, environment
+    )
     started_at = _utc_now()
     monotonic_start = time.perf_counter()
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
     baseline_total_mib = VramSampler.total_used_mib()
+    hardware_before = hardware_inventory()
     with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
         process = subprocess.Popen(command, stdout=stdout, stderr=stderr)
         sampler = VramSampler(process.pid, baseline_total_mib=baseline_total_mib)
         sampler.start()
         return_code = process.wait()
         peak_vram_mib = sampler.stop()
+    hardware_after = hardware_inventory()
     wall_seconds = time.perf_counter() - monotonic_start
 
     artifacts = sorted(run_dir.glob(backend.required_artifact_glob))
@@ -400,7 +466,11 @@ def run_one(
             "seed": int(case.parameters["seed"]) + repetition - 1,
         },
         "timings": {"wall_seconds": wall_seconds},
-        "hardware": {"peak_vram_mib": peak_vram_mib},
+        "hardware": {
+            "peak_vram_mib": peak_vram_mib,
+            "before": hardware_before,
+            "after": hardware_after,
+        },
         "artifacts": artifact_payload,
         "logs": {"stdout": str(stdout_path), "stderr": str(stderr_path)},
     }
@@ -430,6 +500,13 @@ def summarize_observations(observations: Iterable[Mapping[str, Any]]) -> list[di
             for item in successes
             if item["hardware"].get("peak_vram_mib") is not None
         ]
+        wall_mean = statistics.mean(wall) if wall else None
+        wall_stdev = statistics.stdev(wall) if len(wall) >= 2 else None
+        ci95 = (
+            None
+            if wall_stdev is None
+            else 1.96 * wall_stdev / math.sqrt(len(wall))
+        )
         summaries.append({
             "case": case,
             "backend": backend,
@@ -437,9 +514,16 @@ def summarize_observations(observations: Iterable[Mapping[str, Any]]) -> list[di
             "successful_runs": len(successes),
             "wall_seconds": None if not wall else {
                 "min": min(wall),
+                "mean": wall_mean,
                 "median": statistics.median(wall),
                 "p95": percentile_nearest_rank(wall, 0.95),
                 "max": max(wall),
+                "stdev": wall_stdev,
+                "mean_ci95": (
+                    None
+                    if ci95 is None
+                    else [wall_mean - ci95, wall_mean + ci95]
+                ),
             },
             "peak_vram_mib": None if not peaks else {
                 "median": statistics.median(peaks), "max": max(peaks)

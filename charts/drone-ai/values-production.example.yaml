@@ -1,0 +1,61 @@
+# Safe production overlay. Create both referenced Secrets before deployment;
+# never commit their values.
+global:
+  imageRegistry: "registry.example.com/"
+  imagePullPolicy: IfNotPresent
+
+storage:
+  existingSecret: drone-ai-storage-production
+  accessKeySecretKey: s3-access-key
+  secretKeySecretKey: s3-secret-key
+  databaseUrlSecretKey: database-url
+  s3Endpoint: "https://s3.example.com"
+  s3PublicEndpoint: "https://s3.example.com"
+  s3Bucket: "drone-ai-production"
+  s3AccessKey: ""
+  s3SecretKey: ""
+  databaseUrl: ""
+
+minio:
+  enabled: false
+
+postgres:
+  enabled: false
+
+dashboardApi:
+  environment: production
+  service:
+    type: ClusterIP
+  cors:
+    origins: "https://droneai.example.com"
+  auth:
+    disabled: false
+    existingSecret: drone-ai-api-auth
+    secretKey: api-keys.json
+    sessionSecretKey: session-secret
+    sessionMaxAgeSeconds: 28800
+
+dashboardFrontend:
+  apiUrl: "https://api.droneai.example.com"
+  service:
+    type: ClusterIP
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: droneai.example.com
+      paths:
+        - path: /
+          service: dashboard-frontend
+    - host: api.droneai.example.com
+      paths:
+        - path: /
+          service: dashboard-api
+  tls:
+    - secretName: droneai-production-tls
+      hosts:
+        - droneai.example.com
+        - api.droneai.example.com

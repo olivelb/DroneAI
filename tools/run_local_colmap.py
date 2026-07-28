@@ -7,12 +7,17 @@ Use ``tools/run_local_colmap.sh`` from WSL instead of invoking it directly.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
+import os
 import shutil
 import sqlite3
 import struct
 import subprocess
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
@@ -24,21 +29,45 @@ from pyproj import Transformer
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+APP1_DIR = REPO_ROOT / "app1-colmap"
+if str(APP1_DIR) not in sys.path:
+    sys.path.insert(0, str(APP1_DIR))
+
+from alignment_support import (
+    atomic_write_json,
+    build_gps_pair_graph,
+    build_mapping_command,
+    caspar_compatibility,
+    choose_auto_fallback,
+    positioned_records_from_preflight,
+    write_pair_list,
+)
+from shared.rtk_refinement import inject_database_pose_priors
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 GENERATED_PATHS = (
     "database.db",
     "geo_data.txt",
     "geo_data.txt.crs",
+    "geo_data.txt.crs.json",
     "sparse",
+    "sparse_rtk",
     "sparse_geo",
     "dense",
     "sparse.ply",
     "sparse_geo.ply",
     "alignment_transform.json",
+    "alignment_input.json",
+    "undistortion_input.json",
     "metrics.json",
+    "command_timings.json",
+    "pairs.txt",
+    "pair_graph.json",
+    "rtk_prior_report.json",
     "model_analyzer.txt",
 )
+
+COMMAND_TIMINGS: list[dict[str, Any]] = []
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -64,12 +93,106 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--matcher",
-        choices=["spatial", "sequential", "exhaustive"],
-        default="spatial",
+        choices=["gps", "spatial", "sequential", "exhaustive"],
+        default="gps",
     )
-    parser.add_argument("--camera-model", default="OPENCV")
-    parser.add_argument("--feature-max-image-size", type=int, default=3200)
-    parser.add_argument("--feature-max-num-features", type=int, default=8192)
+    parser.add_argument(
+        "--engine",
+        choices=["auto", "glomap", "caspar", "ceres"],
+        default="auto",
+    )
+    parser.add_argument(
+        "--feature-type",
+        choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"],
+        default="SIFT",
+    )
+    parser.add_argument(
+        "--matcher-type",
+        choices=[
+            "SIFT_BRUTEFORCE",
+            "SIFT_LIGHTGLUE",
+            "ALIKED_BRUTEFORCE",
+            "ALIKED_LIGHTGLUE",
+        ],
+        default="SIFT_BRUTEFORCE",
+    )
+    parser.add_argument("--camera-model", default="SIMPLE_RADIAL")
+    parser.add_argument(
+        "--image-staging-mode",
+        choices=["symlink", "copy"],
+        default="copy",
+        help=(
+            "copy reads mounted Windows/network datasets in parallel and then "
+            "runs COLMAP on the fast Linux filesystem"
+        ),
+    )
+    parser.add_argument(
+        "--image-copy-workers",
+        type=int,
+        default=8,
+        help="Parallel copy workers used when image-staging-mode=copy.",
+    )
+    parser.add_argument("--feature-max-image-size", type=int, default=1600)
+    parser.add_argument("--feature-max-num-features", type=int, default=2048)
+    parser.add_argument("--gps-max-neighbors", type=int, default=32)
+    parser.add_argument("--gps-min-neighbors", type=int, default=8)
+    parser.add_argument("--gps-temporal-neighbors", type=int, default=6)
+    parser.add_argument("--gps-max-distance-m", type=float, default=0.0)
+    parser.add_argument("--minimum-registration-ratio", type=float, default=0.97)
+    parser.add_argument("--mapping-timeout-seconds", type=float, default=3600.0)
+    parser.add_argument("--global-max-tracks", type=int, default=2_000_000)
+    parser.add_argument("--global-ba-iterations", type=int, default=1)
+    parser.add_argument("--global-ceres-iterations", type=int, default=50)
+    parser.add_argument(
+        "--global-retriangulation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable GLOMAP's expensive final retriangulation/refinement pass.",
+    )
+    parser.add_argument(
+        "--include-prefix",
+        action="append",
+        default=[],
+        help="Only use records under this dataset-relative prefix; repeatable.",
+    )
+    parser.add_argument(
+        "--gps-quality",
+        choices=["unknown", "standard", "rtk"],
+        default="standard",
+        help="RTK automatically enables a bounded covariance-aware pose refinement.",
+    )
+    parser.add_argument(
+        "--rtk-refinement",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Use DJI MRK positions and per-image covariance in pose_prior_mapper. "
+            "The default is automatic: enabled for --gps-quality=rtk only."
+        ),
+    )
+    parser.add_argument(
+        "--rtk-refinement-timeout-seconds",
+        type=float,
+        default=900.0,
+        help="Maximum runtime for the optional pose-prior Ceres refinement.",
+    )
+    parser.add_argument(
+        "--rtk-refinement-iterations",
+        type=int,
+        default=25,
+        help="Maximum Ceres iterations for the optional pose-prior global BA.",
+    )
+    parser.add_argument(
+        "--projected-crs-mode",
+        choices=["auto-local", "france-cc", "utm", "custom"],
+        default="auto-local",
+        help="Consumed by the preflight wrapper and recorded for reproducibility.",
+    )
+    parser.add_argument(
+        "--projected-crs",
+        default="",
+        help="Explicit EPSG:<code> when projected-crs-mode=custom.",
+    )
     parser.add_argument("--alignment-max-error", type=float, default=10.0)
     parser.add_argument("--gpu-index", type=int, default=0)
     parser.add_argument("--use-gpu", action=argparse.BooleanOptionalAction, default=True)
@@ -145,17 +268,31 @@ def select_records(
     return [candidates[index] for index in sorted(indices)]
 
 
-def _selection_descriptor(record: dict[str, Any]) -> dict[str, Any]:
-    return {"file": record["file"], "size_bytes": record["size_bytes"]}
+def _selection_descriptor(record: dict[str, Any], staging_mode: str) -> dict[str, Any]:
+    return {
+        "file": record["file"],
+        "size_bytes": record["size_bytes"],
+        "staging_mode": staging_mode,
+    }
 
 
 def stage_images(
     dataset: Path,
     workspace: Path,
     selected_records: list[dict[str, Any]],
+    *,
+    staging_mode: str = "copy",
+    copy_workers: int = 8,
 ) -> bool:
+    if staging_mode not in {"copy", "symlink"}:
+        raise ValueError(f"Unsupported image staging mode: {staging_mode}")
+    if copy_workers < 1:
+        raise ValueError("copy_workers must be positive")
     image_dir = workspace / "images"
-    selection = [_selection_descriptor(record) for record in selected_records]
+    selection = [
+        _selection_descriptor(record, staging_mode)
+        for record in selected_records
+    ]
     selection_path = workspace / "selection.json"
     previous = None
     if selection_path.exists():
@@ -166,24 +303,60 @@ def stage_images(
         if image_dir.exists():
             shutil.rmtree(image_dir)
         image_dir.mkdir(parents=True)
-        for record in selected_records:
+        def stage_record(record: dict[str, Any]) -> None:
             source = dataset / record["file"]
             destination = image_dir / record["file"]
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, destination)
+            if staging_mode == "symlink":
+                destination.symlink_to(source)
+            else:
+                shutil.copyfile(source, destination)
+
+        if staging_mode == "copy":
+            with ThreadPoolExecutor(max_workers=copy_workers) as executor:
+                list(executor.map(stage_record, selected_records))
+        else:
+            for record in selected_records:
+                stage_record(record)
         selection_path.write_text(json.dumps(selection, indent=2) + "\n", encoding="utf-8")
     return changed
 
 
-def run_command(command: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str],
+    *,
+    capture: bool = False,
+    timeout_seconds: float | None = None,
+) -> subprocess.CompletedProcess[str]:
     print("+", " ".join(command), flush=True)
-    return subprocess.run(
-        command,
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.STDOUT if capture else None,
+    started = time.perf_counter()
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.STDOUT if capture else None,
+            timeout=timeout_seconds,
+        )
+    except BaseException as error:
+        COMMAND_TIMINGS.append(
+            {
+                "command": command,
+                "elapsed_seconds": round(time.perf_counter() - started, 3),
+                "status": "failed",
+                "error": f"{type(error).__name__}: {error}",
+            }
+        )
+        raise
+    COMMAND_TIMINGS.append(
+        {
+            "command": command,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "status": "ok",
+        }
     )
+    return result
 
 
 def database_image_count(database_path: Path) -> int:
@@ -206,6 +379,19 @@ def registered_image_count(model_path: Path) -> int:
     return int(struct.unpack("<Q", encoded_count)[0])
 
 
+def sparse_model_identity(model_path: Path) -> str:
+    digest = hashlib.sha256()
+    for filename in ("cameras.bin", "images.bin", "points3D.bin"):
+        path = model_path / filename
+        if not path.is_file():
+            raise RuntimeError(f"incomplete sparse model: {path} is missing")
+        digest.update(filename.encode("ascii"))
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
 def sparse_model_path(workspace: Path) -> Path:
     sparse_root = workspace / "sparse"
     candidates = sorted(
@@ -220,15 +406,163 @@ def sparse_model_path(workspace: Path) -> Path:
     return min(candidates, key=lambda path: (-registered_image_count(path), path.name))
 
 
-def run_sparse(args: argparse.Namespace, selected_count: int) -> Path:
+def rtk_refinement_enabled(args: argparse.Namespace) -> bool:
+    if args.rtk_refinement is not None:
+        return bool(args.rtk_refinement)
+    return args.gps_quality == "rtk"
+
+
+def run_rtk_refinement(
+    args: argparse.Namespace,
+    sparse_model: Path,
+) -> tuple[Path, dict[str, Any]]:
+    output_path = args.workspace / "sparse_rtk"
+    report_path = args.workspace / "rtk_prior_report.json"
+    report = (
+        json.loads(report_path.read_text(encoding="utf-8"))
+        if report_path.is_file()
+        else {}
+    )
+    if (output_path / "cameras.bin").is_file():
+        report["status"] = "completed"
+        report["last_action"] = "reused"
+        write_json(report_path, report)
+        return output_path, report
+
+    output_path.mkdir(exist_ok=True)
+    command = [
+        "colmap",
+        "pose_prior_mapper",
+        "--database_path",
+        str(args.workspace / "database.db"),
+        "--image_path",
+        str(args.workspace / "images"),
+        "--input_path",
+        str(sparse_model),
+        "--output_path",
+        str(output_path),
+        "--Mapper.ba_use_gpu",
+        "1" if args.use_gpu else "0",
+        "--Mapper.ba_gpu_index",
+        str(args.gpu_index),
+        "--Mapper.ba_local_backend",
+        "CERES",
+        "--Mapper.ba_global_backend",
+        "CERES",
+        "--Mapper.ba_local_max_num_iterations",
+        str(args.rtk_refinement_iterations),
+        "--Mapper.ba_global_max_num_iterations",
+        str(args.rtk_refinement_iterations),
+        "--Mapper.ba_local_max_refinements",
+        "1",
+        "--Mapper.ba_global_max_refinements",
+        "1",
+        "--Mapper.ba_global_ignore_redundant_points3D",
+        "1",
+        "--use_robust_loss_on_prior_position",
+        "1",
+        "--prior_position_loss_scale",
+        "7.82",
+    ]
+    started_at = time.monotonic()
+    try:
+        run_command(command, timeout_seconds=args.rtk_refinement_timeout_seconds)
+        if not (output_path / "cameras.bin").is_file():
+            raise RuntimeError("pose_prior_mapper did not write a usable model")
+        report.update(
+            {
+                "status": "completed",
+                "last_action": "executed",
+                "elapsed_seconds": time.monotonic() - started_at,
+                "iterations": args.rtk_refinement_iterations,
+                "timeout_seconds": args.rtk_refinement_timeout_seconds,
+                "robust_loss": "cauchy",
+                "robust_loss_scale": 7.82,
+                "ba_backend": "CERES_GPU" if args.use_gpu else "CERES_CPU",
+            }
+        )
+        write_json(report_path, report)
+        for stale_path in (
+            args.workspace / "sparse_geo",
+            args.workspace / "dense",
+        ):
+            if stale_path.is_dir():
+                shutil.rmtree(stale_path)
+        for stale_path in (
+            args.workspace / "alignment_transform.json",
+            args.workspace / "alignment_input.json",
+            args.workspace / "undistortion_input.json",
+            args.workspace / "sparse.ply",
+            args.workspace / "sparse_geo.ply",
+        ):
+            stale_path.unlink(missing_ok=True)
+        return output_path, report
+    except (RuntimeError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        shutil.rmtree(output_path, ignore_errors=True)
+        report.update(
+            {
+                "status": "fallback",
+                "elapsed_seconds": time.monotonic() - started_at,
+                "reason": str(error),
+                "fallback_model": str(sparse_model),
+            }
+        )
+        write_json(report_path, report)
+        print(
+            f"RTK refinement was not usable ({error}); keeping the verified "
+            "GLOMAP/CASPAR model.",
+            flush=True,
+        )
+        return sparse_model, report
+
+
+def run_sparse(
+    args: argparse.Namespace,
+    selected_records: list[dict[str, Any]],
+    projected_crs: str | None,
+) -> Path:
     workspace = args.workspace
     database_path = workspace / "database.db"
     image_dir = workspace / "images"
     sparse_root = workspace / "sparse"
     sparse_root.mkdir(exist_ok=True)
     use_gpu = "1" if args.use_gpu else "0"
+    selected_count = len(selected_records)
+    model_dir = Path(
+        os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models")
+    )
 
     if database_image_count(database_path) != selected_count:
+        feature_options = [
+            "--FeatureExtraction.type",
+            args.feature_type,
+            "--FeatureExtraction.use_gpu",
+            use_gpu,
+            "--FeatureExtraction.gpu_index",
+            str(args.gpu_index),
+            "--FeatureExtraction.max_image_size",
+            str(args.feature_max_image_size),
+        ]
+        if args.feature_type.startswith("ALIKED"):
+            feature_options += [
+                "--AlikedExtraction.max_num_features",
+                str(args.feature_max_num_features),
+            ]
+            if args.feature_type == "ALIKED_N32":
+                feature_options += [
+                    "--AlikedExtraction.n32_model_path",
+                    str(model_dir / "aliked-n32.onnx"),
+                ]
+            else:
+                feature_options += [
+                    "--AlikedExtraction.n16rot_model_path",
+                    str(model_dir / "aliked-n16rot.onnx"),
+                ]
+        else:
+            feature_options += [
+                "--SiftExtraction.max_num_features",
+                str(args.feature_max_num_features),
+            ]
         run_command(
             [
                 "colmap",
@@ -241,69 +575,218 @@ def run_sparse(args: argparse.Namespace, selected_count: int) -> Path:
                 "1",
                 "--ImageReader.camera_model",
                 args.camera_model,
-                "--FeatureExtraction.type",
-                "SIFT",
-                "--FeatureExtraction.use_gpu",
-                use_gpu,
-                "--FeatureExtraction.gpu_index",
-                str(args.gpu_index),
-                "--FeatureExtraction.max_image_size",
-                str(args.feature_max_image_size),
-                "--SiftExtraction.max_num_features",
-                str(args.feature_max_num_features),
             ]
+            + feature_options
         )
+
+    if (
+        rtk_refinement_enabled(args)
+        and not (workspace / "sparse_rtk" / "cameras.bin").is_file()
+    ):
+        prior_report = inject_database_pose_priors(database_path, selected_records)
+        prior_report["status"] = "priors-injected"
+        write_json(workspace / "rtk_prior_report.json", prior_report)
 
     existing_models = list(sparse_root.glob("*/cameras.bin"))
     if not existing_models:
-        matcher_command = [
-            "colmap",
-            f"{args.matcher}_matcher",
-            "--database_path",
-            str(database_path),
-            "--FeatureMatching.type",
-            "SIFT_BRUTEFORCE",
-            "--FeatureMatching.use_gpu",
-            use_gpu,
-            "--FeatureMatching.gpu_index",
-            str(args.gpu_index),
-        ]
-        if args.matcher == "spatial":
-            matcher_command += ["--SpatialMatching.ignore_z", "1"]
+        if args.matcher == "gps":
+            if not projected_crs:
+                raise RuntimeError("GPS matching requires a projected CRS")
+            positioned = positioned_records_from_preflight(
+                selected_records,
+                projected_crs,
+            )
+            pairs, pair_stats = build_gps_pair_graph(
+                positioned,
+                max_neighbors=args.gps_max_neighbors,
+                min_neighbors=args.gps_min_neighbors,
+                temporal_neighbors=args.gps_temporal_neighbors,
+                max_distance_m=args.gps_max_distance_m,
+            )
+            if not pairs:
+                raise RuntimeError("GPS pair graph is empty")
+            pair_path = workspace / "pairs.txt"
+            write_pair_list(pair_path, pairs)
+            atomic_write_json(workspace / "pair_graph.json", pair_stats)
+            print(
+                f"GPS graph: {pair_stats['pair_count']} pairs, "
+                f"mean degree {pair_stats['mean_degree']:.1f}.",
+                flush=True,
+            )
+            matcher_command = [
+                "colmap",
+                "matches_importer",
+                "--database_path",
+                str(database_path),
+                "--match_list_path",
+                str(pair_path),
+                "--match_type",
+                "pairs",
+                "--FeatureMatching.type",
+                args.matcher_type,
+                "--FeatureMatching.use_gpu",
+                use_gpu,
+                "--FeatureMatching.gpu_index",
+                str(args.gpu_index),
+            ]
+        else:
+            matcher_command = [
+                "colmap",
+                f"{args.matcher}_matcher",
+                "--database_path",
+                str(database_path),
+                "--FeatureMatching.type",
+                args.matcher_type,
+                "--FeatureMatching.use_gpu",
+                use_gpu,
+                "--FeatureMatching.gpu_index",
+                str(args.gpu_index),
+            ]
+            if args.matcher == "spatial":
+                matcher_command += [
+                    "--SpatialMatching.ignore_z",
+                    "1",
+                    "--SpatialMatching.max_num_neighbors",
+                    str(args.gps_max_neighbors),
+                    "--SpatialMatching.min_num_neighbors",
+                    str(args.gps_min_neighbors),
+                ]
+        if args.matcher_type == "ALIKED_LIGHTGLUE":
+            matcher_command += [
+                "--AlikedMatching.lightglue_model_path",
+                str(model_dir / "aliked-lightglue.onnx"),
+            ]
+        elif args.matcher_type == "SIFT_LIGHTGLUE":
+            matcher_command += [
+                "--SiftMatching.lightglue_model_path",
+                str(model_dir / "sift-lightglue.onnx"),
+            ]
         run_command(matcher_command)
 
-        mapper_command = [
-            "colmap",
-            "mapper",
-            "--database_path",
-            str(database_path),
-            "--image_path",
-            str(image_dir),
-            "--output_path",
-            str(sparse_root),
-            "--Mapper.ba_use_gpu",
-            use_gpu,
-            "--Mapper.ba_gpu_index",
-            str(args.gpu_index),
-        ]
+        primary_engine = "glomap" if args.engine == "auto" else args.engine
+        if primary_engine == "glomap":
+            run_command(
+                [
+                    "colmap",
+                    "view_graph_calibrator",
+                    "--database_path",
+                    str(database_path),
+                ]
+            )
+        if not args.use_gpu and primary_engine in {"glomap", "caspar", "ceres"}:
+            raise ValueError("the selected alignment engine requires --use-gpu")
+        if primary_engine == "caspar":
+            supported, models = caspar_compatibility(database_path)
+            if not supported:
+                raise RuntimeError(
+                    "Caspar requires PINHOLE or SIMPLE_RADIAL cameras; "
+                    f"database contains {sorted(models)}"
+                )
+        mapper_command = build_mapping_command(
+            primary_engine,
+            database_path=database_path,
+            image_path=image_dir,
+            output_path=sparse_root,
+            gpu_index=args.gpu_index,
+            global_max_tracks=args.global_max_tracks,
+            global_ba_iterations=args.global_ba_iterations,
+            global_ceres_iterations=args.global_ceres_iterations,
+            global_skip_retriangulation=not args.global_retriangulation,
+        )
+        mapping_started_at = time.monotonic()
+
+        def remaining_mapping_budget() -> float:
+            remaining = args.mapping_timeout_seconds - (
+                time.monotonic() - mapping_started_at
+            )
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(
+                    mapper_command,
+                    args.mapping_timeout_seconds,
+                )
+            return remaining
+
+        primary_error: BaseException | None = None
         try:
-            run_command(mapper_command)
-        except subprocess.CalledProcessError:
-            if not args.use_gpu:
+            run_command(
+                mapper_command,
+                timeout_seconds=remaining_mapping_budget(),
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            primary_error = error
+            if args.engine != "auto":
                 raise
-            print("GPU bundle adjustment failed; retrying the mapper with CPU BA.", flush=True)
+            print(
+                f"GLOMAP failed within its bounded budget ({error}); "
+                "selecting an incremental GPU fallback.",
+                flush=True,
+            )
+
+        primary_model = None
+        if primary_error is None:
+            try:
+                primary_model = sparse_model_path(workspace)
+            except RuntimeError:
+                primary_model = None
+        primary_registered = (
+            registered_image_count(primary_model) if primary_model is not None else 0
+        )
+        minimum_registered = max(
+            3,
+            math.ceil(selected_count * args.minimum_registration_ratio),
+        )
+        if (
+            args.engine == "auto"
+            and (primary_error is not None or primary_registered < minimum_registered)
+        ):
+            _, models = caspar_compatibility(database_path)
+            fallback_engine = choose_auto_fallback(models)
+            print(
+                f"GLOMAP registered {primary_registered}/{selected_count}; "
+                f"retrying the same verified matches with {fallback_engine.upper()}.",
+                flush=True,
+            )
             if sparse_root.exists():
                 shutil.rmtree(sparse_root)
             sparse_root.mkdir()
-            mapper_command[mapper_command.index("--Mapper.ba_use_gpu") + 1] = "0"
-            run_command(mapper_command)
-    return sparse_model_path(workspace)
+            fallback_command = build_mapping_command(
+                fallback_engine,
+                database_path=database_path,
+                image_path=image_dir,
+                output_path=sparse_root,
+                gpu_index=args.gpu_index,
+                global_max_tracks=args.global_max_tracks,
+                global_ba_iterations=args.global_ba_iterations,
+                global_ceres_iterations=args.global_ceres_iterations,
+                global_skip_retriangulation=not args.global_retriangulation,
+            )
+            run_command(
+                fallback_command,
+                timeout_seconds=remaining_mapping_budget(),
+            )
+
+    model = sparse_model_path(workspace)
+    registered = registered_image_count(model)
+    minimum_registered = max(
+        3,
+        math.ceil(selected_count * args.minimum_registration_ratio),
+    )
+    if registered < minimum_registered:
+        raise RuntimeError(
+            f"alignment quality gate failed: {registered}/{selected_count} images "
+            f"registered, required {minimum_registered}; exhaustive matching and "
+            "unbounded CPU BA are disabled"
+        )
+    if rtk_refinement_enabled(args):
+        model, _ = run_rtk_refinement(args, model)
+    return model
 
 
 def write_colmap_references(
     records: list[dict[str, Any]],
     workspace: Path,
     projected_crs: str,
+    projected_crs_selection: dict[str, Any] | None = None,
 ) -> dict[str, tuple[float, float, float]]:
     transformer = Transformer.from_crs("EPSG:4326", projected_crs, always_xy=True)
     references: dict[str, tuple[float, float, float]] = {}
@@ -320,6 +803,51 @@ def write_colmap_references(
         raise RuntimeError("at least three selected images with GPS are required for alignment")
     (workspace / "geo_data.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (workspace / "geo_data.txt.crs").write_text(projected_crs + "\n", encoding="utf-8")
+    positioned = [record for record in records if record.get("gps")]
+    vertical_references = {
+        str(record["gps"].get("vertical_reference", "unknown"))
+        for record in positioned
+    }
+    vertical_errors = [
+        float(record["gps"]["position_std_m"]["vertical_m"])
+        for record in positioned
+        if record["gps"].get("position_std_m")
+        and record["gps"]["position_std_m"].get("vertical_m") is not None
+    ]
+    selection = projected_crs_selection or {}
+    write_json(
+        workspace / "geo_data.txt.crs.json",
+        {
+            "schema_version": 2,
+            "projected_crs": projected_crs,
+            "policy": selection.get("policy", "preflight"),
+            "source": selection.get("source", "preflight"),
+            "name": selection.get("name"),
+            "vertical": {
+                "reference": (
+                    next(iter(vertical_references))
+                    if len(vertical_references) == 1
+                    else "mixed-or-unknown"
+                ),
+                "source": (
+                    "dji_mrk_ellh"
+                    if vertical_references == {"ellipsoidal"}
+                    else "exif_gps_altitude_or_mixed"
+                ),
+                "uncertainty_m": (
+                    {
+                        "minimum": min(vertical_errors),
+                        "maximum": max(vertical_errors),
+                        "mean": mean(vertical_errors),
+                        "median": median(vertical_errors),
+                    }
+                    if vertical_errors
+                    else None
+                ),
+                "orthometric_conversion_applied": False,
+            },
+        },
+    )
     return references
 
 
@@ -330,7 +858,23 @@ def run_alignment(
     maximum_error: float,
 ) -> Path:
     aligned_path = workspace / "sparse_geo"
-    if not (aligned_path / "cameras.bin").exists():
+    input_identity = sparse_model_identity(sparse_model)
+    marker_path = workspace / "alignment_input.json"
+    marker = (
+        json.loads(marker_path.read_text(encoding="utf-8"))
+        if marker_path.is_file()
+        else {}
+    )
+    reusable = (
+        (aligned_path / "cameras.bin").is_file()
+        and marker.get("input_model_sha256") == input_identity
+        and marker.get("maximum_error_m") == maximum_error
+    )
+    if not reusable:
+        if aligned_path.is_dir():
+            shutil.rmtree(aligned_path)
+        (workspace / "alignment_transform.json").unlink(missing_ok=True)
+        (workspace / "sparse_geo.ply").unlink(missing_ok=True)
         aligned_path.mkdir(exist_ok=True)
         run_command(
             [
@@ -347,6 +891,15 @@ def run_alignment(
                 "--alignment_max_error",
                 str(maximum_error),
             ]
+        )
+        write_json(
+            marker_path,
+            {
+                "schema_version": 1,
+                "input_model": str(sparse_model),
+                "input_model_sha256": input_identity,
+                "maximum_error_m": maximum_error,
+            },
         )
     return aligned_path
 
@@ -435,8 +988,22 @@ def run_undistortion(
     maximum_image_size: int,
 ) -> None:
     dense_path = workspace / "dense"
-    if (dense_path / "sparse" / "cameras.bin").exists():
+    marker_path = workspace / "undistortion_input.json"
+    input_identity = sparse_model_identity(sparse_model)
+    marker = (
+        json.loads(marker_path.read_text(encoding="utf-8"))
+        if marker_path.is_file()
+        else {}
+    )
+    reusable = (
+        (dense_path / "sparse" / "cameras.bin").is_file()
+        and marker.get("input_model_sha256") == input_identity
+        and marker.get("maximum_image_size") == maximum_image_size
+    )
+    if reusable:
         return
+    if dense_path.is_dir():
+        shutil.rmtree(dense_path)
     run_command(
         [
             "colmap",
@@ -450,6 +1017,15 @@ def run_undistortion(
             "--max_image_size",
             str(maximum_image_size),
         ]
+    )
+    write_json(
+        marker_path,
+        {
+            "schema_version": 1,
+            "input_model": str(sparse_model),
+            "input_model_sha256": input_identity,
+            "maximum_image_size": maximum_image_size,
+        },
     )
 
 
@@ -478,8 +1054,22 @@ def main() -> int:
         raise ValueError("max-images cannot be negative")
     if args.feature_max_image_size < 256:
         raise ValueError("feature-max-image-size must be at least 256")
+    if args.image_copy_workers < 1:
+        raise ValueError("image-copy-workers must be positive")
     if args.alignment_max_error <= 0:
         raise ValueError("alignment-max-error must be positive")
+    if not 0 < args.minimum_registration_ratio <= 1:
+        raise ValueError("minimum-registration-ratio must be in (0, 1]")
+    if args.mapping_timeout_seconds <= 0:
+        raise ValueError("mapping-timeout-seconds must be positive")
+    if args.rtk_refinement_timeout_seconds <= 0:
+        raise ValueError("rtk-refinement-timeout-seconds must be positive")
+    if args.rtk_refinement_iterations < 1:
+        raise ValueError("rtk-refinement-iterations must be positive")
+    if not 1 <= args.gps_min_neighbors <= args.gps_max_neighbors:
+        raise ValueError("gps neighbor bounds are inconsistent")
+    if args.feature_type.startswith("ALIKED") != args.matcher_type.startswith("ALIKED"):
+        raise ValueError("feature-type and matcher-type descriptor families must match")
 
     ensure_workspace(args.dataset, args.workspace)
     preflight_path = args.workspace / "dataset_preflight.json"
@@ -490,6 +1080,25 @@ def main() -> int:
         )
     report = json.loads(preflight_path.read_text(encoding="utf-8"))
     records = report["images"]
+    if args.include_prefix:
+        prefixes = [
+            prefix.strip().replace("\\", "/").strip("/")
+            for prefix in args.include_prefix
+            if prefix.strip()
+        ]
+        records = [
+            record
+            for record in records
+            if any(
+                record["file"] == prefix
+                or record["file"].startswith(f"{prefix}/")
+                for prefix in prefixes
+            )
+        ]
+        if not records:
+            raise ValueError(
+                f"include-prefix filters selected no images: {args.include_prefix}"
+            )
 
     selected = select_records(
         records,
@@ -505,19 +1114,47 @@ def main() -> int:
     if args.stage == "preflight":
         return 0
 
-    selection_changed = stage_images(args.dataset, args.workspace, selected)
+    selection_changed = stage_images(
+        args.dataset,
+        args.workspace,
+        selected,
+        staging_mode=args.image_staging_mode,
+        copy_workers=args.image_copy_workers,
+    )
     if args.force and not selection_changed:
         reset_generated_artifacts(args.workspace)
-    sparse_model = run_sparse(args, len(selected))
+    projected_crs = report["summary"]["recommended_projected_crs"]
+    sparse_model = run_sparse(args, selected, projected_crs)
     metrics = analyze_model(sparse_model, selected_count=len(selected))
+    alignment_configuration = {
+        "engine": args.engine,
+        "matcher": args.matcher,
+        "feature_type": args.feature_type,
+        "matcher_type": args.matcher_type,
+        "camera_model": args.camera_model,
+        "minimum_registration_ratio": args.minimum_registration_ratio,
+        "mapping_timeout_seconds": args.mapping_timeout_seconds,
+        "rtk_refinement": rtk_refinement_enabled(args),
+        "rtk_refinement_timeout_seconds": args.rtk_refinement_timeout_seconds,
+        "rtk_refinement_iterations": args.rtk_refinement_iterations,
+    }
+    rtk_report_path = args.workspace / "rtk_prior_report.json"
+    if rtk_report_path.is_file():
+        alignment_configuration["rtk"] = json.loads(
+            rtk_report_path.read_text(encoding="utf-8")
+        )
     references = None
     result_model = sparse_model
 
     if args.stage in {"align", "undistort", "all"}:
-        projected_crs = report["summary"]["recommended_projected_crs"]
         if not projected_crs:
             raise RuntimeError("cannot align a dataset without a projected CRS")
-        references = write_colmap_references(selected, args.workspace, projected_crs)
+        references = write_colmap_references(
+            selected,
+            args.workspace,
+            projected_crs,
+            report["summary"].get("projected_crs_selection"),
+        )
         aligned_model = run_alignment(
             sparse_model,
             args.workspace,
@@ -544,7 +1181,12 @@ def main() -> int:
         capture=True,
     )
     (args.workspace / "model_analyzer.txt").write_text(analyzer.stdout or "", encoding="utf-8")
+    metrics["alignment_configuration"] = alignment_configuration
     write_json(args.workspace / "metrics.json", metrics)
+    write_json(
+        args.workspace / "command_timings.json",
+        {"commands": COMMAND_TIMINGS},
+    )
     print(json.dumps(metrics, indent=2), flush=True)
     return 0
 

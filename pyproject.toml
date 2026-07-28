@@ -6,7 +6,7 @@ requires-python = ">=3.11,<3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["app1-colmap", "tests"]
-addopts = "-ra --strict-markers"
+addopts = "-ra --strict-markers --ignore=app1-colmap/colmap-local"
 markers = [
     "gpu: requires CUDA and a compatible CuPy installation",
     "integration: requires external services such as Kafka, S3, or Postgres",

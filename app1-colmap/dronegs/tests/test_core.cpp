@@ -21,6 +21,7 @@
 #include "dronegs/model.hpp"
 #include "dronegs/image.hpp"
 #include "dronegs/ply.hpp"
+#include "dronegs/profile_registry.hpp"
 
 namespace {
 
@@ -28,6 +29,18 @@ void check(bool condition, const std::string& message) {
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+std::size_t occurrence_count(
+    const std::string& text,
+    const std::string& needle) {
+    std::size_t count = 0U;
+    for (std::size_t position = 0U;
+         (position = text.find(needle, position)) != std::string::npos;
+         position += needle.size()) {
+        ++count;
+    }
+    return count;
 }
 
 template <typename T>
@@ -100,8 +113,22 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(scene.images.front().qvec[0] == 1.0, "image quaternion mismatch");
     check(scene.images.front().tvec[2] == 0.0, "image translation mismatch");
     check(scene.cameras.front().parameters.size() == 4, "camera parameter count mismatch");
-    check(dronegs::dataset_fingerprint(scene).starts_with("fnv1a64:"),
+    const auto original_fingerprint =
+        dronegs::dataset_fingerprint(scene, root);
+    check(original_fingerprint.starts_with("fnv1a64:v2:"),
           "fingerprint kind mismatch");
+    auto calibration_changed = scene;
+    calibration_changed.cameras.front().parameters.front() += 1.0;
+    check(
+        dronegs::dataset_fingerprint(calibration_changed, root) !=
+            original_fingerprint,
+        "camera intrinsics must invalidate the dataset fingerprint");
+    auto pose_changed = scene;
+    pose_changed.images.front().tvec.front() += 1.0;
+    check(
+        dronegs::dataset_fingerprint(pose_changed, root) !=
+            original_fingerprint,
+        "camera poses must invalidate the dataset fingerprint");
 
     auto gaussians = dronegs::initialize_fixed_topology(scene);
     check(gaussians.size() == 2, "Gaussian count mismatch");
@@ -246,6 +273,36 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest held-out PSNR missing");
     check(manifest_text.find("\"ssim\": 0.300000") != std::string::npos,
           "manifest held-out SSIM missing");
+    check(
+        occurrence_count(manifest_text, "\"raster_profile\"") == 1U,
+        "manifest must contain exactly one requested raster profile");
+    check(
+        occurrence_count(manifest_text, "\"effective_raster_profile\"") ==
+            1U,
+        "manifest must contain exactly one effective raster profile");
+    check(
+        occurrence_count(manifest_text, "\"refine_every\"") == 1U,
+        "manifest must not duplicate refine_every");
+    check(
+        occurrence_count(manifest_text, "\"grow_until_iteration\"") == 1U,
+        "manifest must not duplicate grow_until_iteration");
+}
+
+void test_optimizer_profile_registry() {
+    const auto* production =
+        dronegs::find_optimizer_profile("reference-absolute");
+    check(production != nullptr, "production optimizer profile missing");
+    check(
+        production->status ==
+            dronegs::OptimizerProfileStatus::validated,
+        "production optimizer must be marked validated");
+    const auto* dev38 = dronegs::find_optimizer_profile(
+        "dev38-staged-rotation008-absgrad050-fastgs");
+    check(dev38 != nullptr, "dev38 profile missing");
+    check(
+        dev38->status ==
+            dronegs::OptimizerProfileStatus::experimental,
+        "dev38 must remain explicitly experimental");
 }
 
 void test_local_scale_initialization() {
@@ -324,6 +381,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
     check(parsed.test_every == 0U, "CLI held-out split default mismatch");
+    check(parsed.test_split == "modulo", "CLI split policy default mismatch");
+    check(
+        parsed.test_guard_percent == 0U,
+        "CLI spatial guard default mismatch");
     check(parsed.save_eval_images == 0U, "CLI eval export default mismatch");
     check(
         parsed.topology_cooldown == 0U,
@@ -349,6 +410,8 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--decode-workers", "3",
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
+        "--test-split", "spatial-block",
+        "--test-guard-percent", "25",
         "--save-eval-images", "1",
         "--topology-cooldown", "1",
         "--photometric-finish", "1",
@@ -372,6 +435,12 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.decode_workers == 3U, "CLI decode worker count mismatch");
     check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
+    check(
+        tuned.test_split == "spatial-block",
+        "CLI spatial split mismatch");
+    check(
+        tuned.test_guard_percent == 25U,
+        "CLI spatial guard mismatch");
     check(tuned.save_eval_images == 1U, "CLI eval export mismatch");
     check(
         tuned.topology_cooldown == 1U,
@@ -596,6 +665,7 @@ int main() {
     const auto output = base / "output";
     try {
         test_scene_and_ply(data);
+        test_optimizer_profile_registry();
         test_local_scale_initialization();
         test_cli(data, output);
         test_image_cache();

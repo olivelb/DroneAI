@@ -46,7 +46,13 @@ fi
 # This includes COLMAP, Ceres, CuPy, and the native DroneGS trainer.
 # Dependencies must be cloned first by setup_deps.sh.
 if [[ "$BUILD_BASE" -eq 1 ]] || ! sudo docker image inspect drone-colmap-base:latest &>/dev/null; then
-    for dep in app1-colmap/ceres-solver/.git app1-colmap/colmap-local/.git app1-colmap/colmap-deps/poselib.zip; do
+    for dep in \
+        app1-colmap/ceres-solver/.git \
+        app1-colmap/colmap-local/.git \
+        app1-colmap/colmap-deps/poselib.zip \
+        app1-colmap/colmap-deps/onnxruntime.tgz \
+        app1-colmap/colmap-deps/aliked-n16rot.onnx \
+        app1-colmap/colmap-deps/aliked-lightglue.onnx; do
         if [ ! -e "$dep" ]; then
             echo "❌ Missing dependency: $dep" >&2
             echo "   Run 'bash setup_deps.sh' first to clone external C++ dependencies." >&2

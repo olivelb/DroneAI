@@ -53,6 +53,10 @@ class WorkerCancellationState:
             self._cancel_requested = True
         print(f"⚠️ Cancel requested for {vol_id}")
 
+    def is_cancel_requested(self):
+        with self._lock:
+            return self._cancel_requested
+
     def ensure_not_cancelled(self, process=None):
         with self._lock:
             if not self._cancel_requested:

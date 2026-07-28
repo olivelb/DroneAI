@@ -15,18 +15,21 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
+from shared.config import (
+    S3_ACCESS_KEY,
+    S3_BUCKET,
+    S3_ENDPOINT,
+    S3_REGION,
+    S3_SECRET_KEY,
+)
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
 
-S3_ENDPOINT = os.getenv("S3_ENDPOINT", "http://minio.drone-ai.svc:9000")
 S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable MinIO URL
-S3_BUCKET = os.getenv("S3_BUCKET", "drone-ai")
-S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "minioadmin")
-S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "minioadmin")
-S3_REGION = os.getenv("S3_REGION", "us-east-1")
 
 # ---------------------------------------------------------------------------
 # Client singleton

@@ -5,6 +5,7 @@ import pytest
 from tools.dataset_preflight import (
     build_geojson,
     build_report,
+    discover_images,
     dms_to_decimal,
     haversine_distance_m,
     utm_epsg,
@@ -24,6 +25,9 @@ def _record(
             "longitude": longitude,
             "altitude_m": altitude,
             "horizontal_error_m": None,
+            "position_std_m": None,
+            "vertical_reference": "unknown",
+            "vertical_reference_source": "test",
         }
     return {
         "file": name,
@@ -70,9 +74,43 @@ def test_report_summarizes_gps_coverage_and_warns_for_standard_gnss():
     assert report["summary"]["image_count"] == 3
     assert report["summary"]["gps_count"] == 2
     assert report["summary"]["gps_coverage_percent"] == pytest.approx(66.67)
-    assert report["summary"]["recommended_projected_crs"] == "EPSG:32631"
+    assert report["summary"]["recommended_projected_crs"] == "EPSG:3943"
+    assert report["summary"]["projected_crs_selection"]["source"] == "france-cc9"
     assert report["summary"]["camera_models"] == {"FC3411": 3}
-    assert len(report["warnings"]) == 2
+    assert len(report["warnings"]) == 3
+    assert report["summary"]["height_product_reference"] == "unknown-or-mixed"
+
+
+def test_report_preserves_ellipsoidal_rtk_vertical_reference():
+    records = [
+        _record("DJI_0001.JPG", 43.0, 1.0, 376.0),
+        _record("DJI_0002.JPG", 43.0001, 1.0001, 376.2),
+    ]
+    for record in records:
+        record["gps"].update(
+            {
+                "source": "dji_mrk",
+                "vertical_reference": "ellipsoidal",
+                "vertical_reference_source": "dji_mrk_ellh",
+                "position_std_m": {
+                    "north_m": 0.015,
+                    "east_m": 0.018,
+                    "vertical_m": 0.032,
+                },
+                "horizontal_error_m": 0.018,
+            }
+        )
+
+    report = build_report(records, dataset=Path("/data"), gps_quality="rtk")
+
+    assert report["summary"]["vertical_references"] == {"ellipsoidal": 2}
+    assert report["summary"]["height_product_reference"] == "ellipsoidal"
+    assert report["summary"]["vertical_error_m"]["median"] == pytest.approx(
+        0.032
+    )
+    assert not any(
+        "orthometric" in warning for warning in report["warnings"]
+    )
 
 
 def test_geojson_contains_flight_path_and_camera_points():
@@ -90,3 +128,40 @@ def test_geojson_contains_flight_path_and_camera_points():
 
 def test_haversine_distance_is_zero_for_same_position():
     assert haversine_distance_m((43.0, 1.0), (43.0, 1.0)) == pytest.approx(0.0)
+
+
+def test_report_can_force_historical_utm_policy():
+    records = [
+        _record("DJI_0001.JPG", 43.0, 1.0),
+        _record("DJI_0002.JPG", 43.0001, 1.0001),
+    ]
+
+    report = build_report(
+        records,
+        dataset=Path("/data"),
+        projected_crs_mode="utm",
+    )
+
+    assert report["summary"]["recommended_projected_crs"] == "EPSG:32631"
+    assert report["summary"]["projected_crs_selection"]["source"] == "utm"
+
+
+def test_discover_images_limits_preflight_to_requested_flights(tmp_path):
+    first = tmp_path / "flight-one"
+    second = tmp_path / "flight-two"
+    ignored = tmp_path / "unrelated-flight"
+    for directory in (first, second, ignored):
+        directory.mkdir()
+        (directory / "DJI_0001.JPG").touch()
+
+    images = discover_images(tmp_path, ["flight-one", "flight-two"])
+
+    assert [path.relative_to(tmp_path).as_posix() for path in images] == [
+        "flight-one/DJI_0001.JPG",
+        "flight-two/DJI_0001.JPG",
+    ]
+
+
+def test_discover_images_rejects_prefix_outside_dataset(tmp_path):
+    with pytest.raises(ValueError, match="escapes the dataset"):
+        discover_images(tmp_path, ["../outside"])

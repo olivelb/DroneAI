@@ -34,6 +34,7 @@ struct RunMeasurements {
     std::uint64_t image_prefetch_ready = 0;
     std::uint64_t training_image_count = 0;
     std::uint64_t held_out_image_count = 0;
+    std::uint64_t ignored_image_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
     std::uint64_t gaussians_pruned = 0;

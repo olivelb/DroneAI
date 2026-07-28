@@ -4,6 +4,8 @@ Next.js 16 and React 19 operator UI for the DroneAI pipeline.
 
 The frontend:
 
+- establishes a role-bearing HttpOnly session from an operator-provided API
+  key without storing that key in JavaScript or browser storage;
 - uploads and browses S3-backed datasets through the dashboard API;
 - submits, resumes, cancels and deletes missions;
 - renders pipeline parameters and configured COLMAP work drives;
@@ -12,8 +14,9 @@ The frontend:
 
 ## Local development
 
-The dashboard API must be reachable on port `30080` of the same host used to
-open the frontend.
+By default the dashboard API must be reachable on port `30080` of the same
+host used to open the frontend. Authentication is disabled by the local Helm
+values.
 
 ```bash
 npm ci
@@ -48,16 +51,21 @@ docker build \
 The image runs `npm run start` on container port `3000`. The local Helm values
 publish it on NodePort `30000`.
 
-## Current endpoint limitation
+## Runtime API origin and authentication
 
-`app/lib/api.ts` currently derives the API and WebSocket endpoints from the
-browser hostname and fixed port `30080`. It does not consume a
-`NEXT_PUBLIC_API_URL` setting yet.
+The Next.js server reads `DRONEAI_PUBLIC_API_URL` at runtime and emits the
+value in the page metadata. Browser HTTP and WebSocket clients use that origin;
+an empty value preserves the local `http://<browser-host>:30080` fallback. The
+Helm production example sets
+`https://api.droneai.example.com`, so changing the ingress hostname does not
+require rebuilding the image.
 
-This works for the local NodePort deployment. A TLS ingress, separate API
-hostname, reverse-proxy path, or non-default port requires updating the
-endpoint resolution and rebuilding the frontend. Do not assume the generic
-two-host ingress example is usable until that configuration surface is added.
+When API authentication is enabled, Mission Studio presents a sign-in screen.
+The operator enters a provisioned viewer/operator/admin key once. The API
+validates it and returns a bounded HttpOnly, Secure, SameSite=Lax cookie used
+for both credentialed CORS requests and WebSocket authentication. The key is
+never compiled into the frontend, written to local/session storage, stored in
+the signed cookie or added to the WebSocket URL. Sign-out clears the cookie.
 
 See the repository-level [`README.md`](../../README.md) for the full stack and
 [`DEVELOPMENT.md`](../../DEVELOPMENT.md) for the supported Node/npm workflow.

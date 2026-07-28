@@ -4,41 +4,79 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
+import signal
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Protocol
 
+from shared.dronegs_profile import (
+    DRONEGS_PRODUCTION_PROFILE_V1,
+    effective_raster_profile,
+)
+
+from .dataset_identity import compute_dataset_identity
+from .manifest_contract import (
+    promote_run_manifest,
+    sha256_file,
+    validate_run_manifest,
+)
 
 ProgressCallback = Callable[[int, float, int], None]
-SUPPORTED_STRATEGIES = {"mrnf", "mcmc", "igs+"}
+CancellationCheck = Callable[[], None]
+CheckpointCallback = Callable[[Path, int], None]
+SUPPORTED_STRATEGIES = {"mrnf"}
 SUPPORTED_DRONEGS_PRUNING_POLICIES = {"original", "spatial-bounds"}
 SUPPORTED_DRONEGS_RASTER_PROFILES = {"auto", "bounded", "fastgs"}
+SUPPORTED_DRONEGS_TEST_SPLITS = {"modulo", "spatial-block"}
 
 
 @dataclass(frozen=True)
 class DroneGSTuning:
     """Optional native controls layered on top of trainer contract v1."""
 
-    optimizer_profile: str = "reference-absolute"
-    pruning_policy: str = "spatial-bounds"
-    raster_profile: str = "bounded"
-    sh_degree_interval: int = 1_000
-    topology_cooldown: int = 0
-    photometric_finish: int = 0
-    photometric_mse_percent: int = 0
+    profile_id: str = DRONEGS_PRODUCTION_PROFILE_V1.profile_id
+    optimizer_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
+    pruning_policy: str = DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy
+    raster_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
+    sh_degree_interval: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
+    )
+    topology_cooldown: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
+    )
+    photometric_finish: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
+    )
+    photometric_mse_percent: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
+    )
     prefetch_depth: int = 1
     decode_workers: int = 1
     jpeg_idct_scale: int = 0
-    test_every: int = 0
-    save_eval_images: bool = False
-    checkpoint_every: int = 2_000
+    test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every
+    test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split
+    test_guard_percent: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent
+    )
+    save_eval_images: bool = True
+    checkpoint_every: int = (
+        DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every
+    )
     resume_from: str | None = None
-    canary_min_psnr: float | None = None
-    canary_min_ssim: float | None = None
+    canary_min_psnr: float | None = (
+        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
+    )
+    canary_min_ssim: float | None = (
+        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
+    )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.profile_id, str) or not self.profile_id.strip():
+            raise ValueError("profile_id must not be empty")
         # The native trainer owns the versioned optimizer-profile registry.
         # Keeping this boundary open preserves old ablation manifests while
         # the mission schema exposes only supported production choices.
@@ -51,6 +89,8 @@ class DroneGSTuning:
             raise ValueError("unsupported DroneGS pruning_policy")
         if self.raster_profile not in SUPPORTED_DRONEGS_RASTER_PROFILES:
             raise ValueError("unsupported DroneGS raster_profile")
+        if self.test_split not in SUPPORTED_DRONEGS_TEST_SPLITS:
+            raise ValueError("unsupported DroneGS test_split")
         integer_ranges = {
             "sh_degree_interval": (self.sh_degree_interval, 1, None),
             "topology_cooldown": (self.topology_cooldown, 0, None),
@@ -64,6 +104,7 @@ class DroneGSTuning:
             "decode_workers": (self.decode_workers, 1, 16),
             "jpeg_idct_scale": (self.jpeg_idct_scale, 0, 1),
             "test_every": (self.test_every, 0, None),
+            "test_guard_percent": (self.test_guard_percent, 0, 100),
             "checkpoint_every": (self.checkpoint_every, 0, None),
         }
         for name, (value, minimum, maximum) in integer_ranges.items():
@@ -78,6 +119,12 @@ class DroneGSTuning:
             raise ValueError("decode_workers must not exceed prefetch_depth")
         if self.test_every == 1:
             raise ValueError("test_every must be zero or at least two")
+        if self.test_split == "modulo" and self.test_guard_percent:
+            raise ValueError(
+                "test_guard_percent requires test_split='spatial-block'"
+            )
+        if self.test_guard_percent and self.test_every == 0:
+            raise ValueError("test_guard_percent requires test_every")
         if self.save_eval_images and self.test_every == 0:
             raise ValueError("save_eval_images requires test_every")
         if self.resume_from is not None and not self.resume_from.strip():
@@ -111,14 +158,15 @@ class TrainingRequest:
 
     data_path: str
     output_path: str
-    iterations: int = 30_000
+    iterations: int = DRONEGS_PRODUCTION_PROFILE_V1.iterations
     strategy: str = "mrnf"
-    sh_degree: int = 3
-    max_cap: int = 5_000_000
-    resize_factor: int = 1
-    max_width: int = 3840
-    tile_mode: int = 1
-    seed: int = 0
+    sh_degree: int = DRONEGS_PRODUCTION_PROFILE_V1.sh_degree
+    max_cap: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max
+    resize_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor
+    max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width
+    tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode
+    seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed
+    dataset_fingerprint: str | None = None
     dronegs: DroneGSTuning = field(default_factory=DroneGSTuning)
 
     def __post_init__(self) -> None:
@@ -142,7 +190,7 @@ class TrainingRequest:
             raise ValueError("output_path must not be empty")
         require_integer("iterations", self.iterations, 1)
         if not isinstance(self.strategy, str) or self.strategy not in SUPPORTED_STRATEGIES:
-            raise ValueError("strategy must be mrnf, mcmc, or igs+")
+            raise ValueError("strategy must be mrnf")
         require_integer("sh_degree", self.sh_degree, 0, {0, 1, 2, 3})
         require_integer("max_cap", self.max_cap, 1)
         require_integer("resize_factor", self.resize_factor, 1, {1, 2, 4, 8})
@@ -153,10 +201,79 @@ class TrainingRequest:
         require_integer("seed", self.seed, 0)
         if not isinstance(self.dronegs, DroneGSTuning):
             raise ValueError("dronegs must be a DroneGSTuning instance")
+        if self.dataset_fingerprint is not None and not (
+            isinstance(self.dataset_fingerprint, str)
+            and self.dataset_fingerprint.strip()
+        ):
+            raise ValueError("dataset_fingerprint must not be empty")
         if self.dronegs.topology_cooldown > self.iterations:
             raise ValueError("topology_cooldown must not exceed iterations")
         if self.dronegs.photometric_finish > self.iterations:
             raise ValueError("photometric_finish must not exceed iterations")
+        if (
+            self.dronegs.profile_id
+            == DRONEGS_PRODUCTION_PROFILE_V1.profile_id
+        ):
+            production = DRONEGS_PRODUCTION_PROFILE_V1
+            effective = {
+                "iterations": self.iterations,
+                "sh_degree": self.sh_degree,
+                "max_cap": self.max_cap,
+                "resize_factor": self.resize_factor,
+                "max_width": self.max_width,
+                "tile_mode": self.tile_mode,
+                "seed": self.seed,
+                "optimizer_profile": self.dronegs.optimizer_profile,
+                "pruning_policy": self.dronegs.pruning_policy,
+                "raster_profile": self.dronegs.raster_profile,
+                "sh_degree_interval": self.dronegs.sh_degree_interval,
+                "topology_cooldown": self.dronegs.topology_cooldown,
+                "photometric_finish": self.dronegs.photometric_finish,
+                "photometric_mse_percent": (
+                    self.dronegs.photometric_mse_percent
+                ),
+                "checkpoint_every": self.dronegs.checkpoint_every,
+                "test_every": self.dronegs.test_every,
+                "test_split": self.dronegs.test_split,
+                "test_guard_percent": self.dronegs.test_guard_percent,
+                "canary_min_psnr": self.dronegs.canary_min_psnr,
+                "canary_min_ssim": self.dronegs.canary_min_ssim,
+            }
+            expected = {
+                "iterations": production.iterations,
+                "sh_degree": production.sh_degree,
+                "max_cap": production.cap_max,
+                "resize_factor": production.data_factor,
+                "max_width": production.max_width,
+                "tile_mode": production.tile_mode,
+                "seed": production.seed,
+                "optimizer_profile": production.optimizer_profile,
+                "pruning_policy": production.pruning_policy,
+                "raster_profile": production.raster_profile,
+                "sh_degree_interval": production.sh_degree_interval,
+                "topology_cooldown": production.topology_cooldown,
+                "photometric_finish": production.photometric_finish,
+                "photometric_mse_percent": (
+                    production.photometric_mse_percent
+                ),
+                "checkpoint_every": production.checkpoint_every,
+                "test_every": production.test_every,
+                "test_split": production.test_split,
+                "test_guard_percent": production.test_guard_percent,
+                "canary_min_psnr": production.canary_min_psnr,
+                "canary_min_ssim": production.canary_min_ssim,
+            }
+            mismatches = [
+                name
+                for name, value in effective.items()
+                if value != expected[name]
+            ]
+            if mismatches:
+                raise ValueError(
+                    f"{production.profile_id} cannot be combined with "
+                    "overrides; set profile_id='custom' for: "
+                    + ", ".join(mismatches)
+                )
 
 
 @dataclass(frozen=True)
@@ -181,6 +298,8 @@ class TrainingBackend(Protocol):
         request: TrainingRequest,
         report_fn: ProgressCallback | None = None,
         verbose: bool = False,
+        cancellation_check: CancellationCheck | None = None,
+        checkpoint_fn: CheckpointCallback | None = None,
     ) -> TrainingResult: ...
 
 
@@ -217,7 +336,19 @@ class DroneGSBackend:
             return os.path.isfile(binary) and os.access(binary, os.X_OK)
         return shutil.which(binary) is not None
 
-    def build_command(self, request: TrainingRequest) -> list[str]:
+    def binary_sha256(self) -> str:
+        binary = self._resolved_binary()
+        if not binary:
+            raise FileNotFoundError("DroneGS binary not found; set DRONEGS_BIN")
+        resolved = Path(binary if os.path.sep in binary else shutil.which(binary) or "")
+        return sha256_file(resolved)
+
+    def build_command(
+        self,
+        request: TrainingRequest,
+        *,
+        dataset_fingerprint: str | None = None,
+    ) -> list[str]:
         binary = self._resolved_binary()
         if not binary:
             raise FileNotFoundError("DroneGS binary not found; set DRONEGS_BIN")
@@ -239,6 +370,7 @@ class DroneGSBackend:
         tuning = request.dronegs
         command.extend(
             [
+                "--profile-id", tuning.profile_id,
                 "--optimizer-profile", tuning.optimizer_profile,
                 "--pruning-policy", tuning.pruning_policy,
                 "--raster-profile", tuning.raster_profile,
@@ -251,9 +383,14 @@ class DroneGSBackend:
                 "--decode-workers", str(tuning.decode_workers),
                 "--jpeg-idct-scale", str(tuning.jpeg_idct_scale),
                 "--test-every", str(tuning.test_every),
+                "--test-split", tuning.test_split,
+                "--test-guard-percent", str(tuning.test_guard_percent),
                 "--save-eval-images", "1" if tuning.save_eval_images else "0",
             ]
         )
+        fingerprint = dataset_fingerprint or request.dataset_fingerprint
+        if fingerprint:
+            command.extend(["--dataset-fingerprint", fingerprint])
         if tuning.checkpoint_every:
             command.extend(
                 [
@@ -271,6 +408,8 @@ class DroneGSBackend:
         request: TrainingRequest,
         report_fn: ProgressCallback | None = None,
         verbose: bool = False,
+        cancellation_check: CancellationCheck | None = None,
+        checkpoint_fn: CheckpointCallback | None = None,
     ) -> TrainingResult:
         if not self.is_available():
             raise FileNotFoundError("DroneGS binary not executable; set DRONEGS_BIN")
@@ -291,30 +430,85 @@ class DroneGSBackend:
         ):
             raise FileExistsError(f"DroneGS output directory is not empty: {output_path}")
         output_path.mkdir(parents=True, exist_ok=True)
-        command = self.build_command(request)
+        fingerprint = (
+            request.dataset_fingerprint
+            or compute_dataset_identity(data_path).fingerprint
+        )
+        binary_sha256 = self.binary_sha256()
+        command = self.build_command(
+            request,
+            dataset_fingerprint=fingerprint,
+        )
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=dict(self._environment),
+            start_new_session=os.name != "nt",
         )
         assert process.stdout is not None
-        for raw_line in process.stdout:
-            line = raw_line.rstrip()
-            if verbose:
-                print(f"[DroneGS] {line}")
+        output_queue: queue.Queue[str | None] = queue.Queue()
+
+        def read_output() -> None:
             try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("event") == "progress" and report_fn:
-                report_fn(
-                    int(event.get("iteration", 0)),
-                    float(event.get("loss", 0.0)),
-                    int(event.get("gaussians", 0)),
-                )
+                for raw_line in process.stdout:
+                    output_queue.put(raw_line)
+            finally:
+                output_queue.put(None)
+
+        reader = threading.Thread(
+            target=read_output,
+            name="dronegs-output",
+            daemon=True,
+        )
+        reader.start()
+        output_finished = False
+        try:
+            while (
+                process.poll() is None
+                or not output_finished
+                or not output_queue.empty()
+            ):
+                if cancellation_check is not None:
+                    cancellation_check()
+                try:
+                    raw_line = output_queue.get(timeout=0.25)
+                except queue.Empty:
+                    if process.poll() is not None and not reader.is_alive():
+                        break
+                    continue
+                if raw_line is None:
+                    output_finished = True
+                    continue
+                line = raw_line.rstrip()
+                if verbose:
+                    print(f"[DroneGS] {line}")
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                event_name = event.get("event")
+                if event_name == "progress" and report_fn:
+                    report_fn(
+                        int(event.get("iteration", 0)),
+                        float(event.get("loss", 0.0)),
+                        int(event.get("gaussians", 0)),
+                    )
+                elif event_name == "checkpoint_saved" and checkpoint_fn:
+                    checkpoint = Path(
+                        str(event.get("checkpoint") or "")
+                    )
+                    if checkpoint.is_file():
+                        checkpoint_fn(
+                            checkpoint,
+                            int(event.get("iteration", 0)),
+                        )
+        except BaseException:
+            self._terminate_process(process)
+            raise
         return_code = process.wait()
         if return_code != 0:
             raise RuntimeError(f"DroneGS training failed with exit code {return_code}")
@@ -322,12 +516,43 @@ class DroneGSBackend:
         manifest_path = output_path / "trainer_run.json"
         if not manifest_path.is_file():
             raise RuntimeError("DroneGS completed without trainer_run.json")
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if manifest.get("contract_version") != 1 or manifest.get("status") != "completed":
-            raise RuntimeError("DroneGS returned an invalid or incomplete run manifest")
         ply_path = output_path / "point_cloud.ply"
         if not ply_path.is_file():
             raise RuntimeError("DroneGS completed without point_cloud.ply")
+        try:
+            manifest = promote_run_manifest(
+                manifest_path,
+                ply_path=ply_path,
+                trainer_binary_sha256=binary_sha256,
+            )
+            validate_run_manifest(manifest)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"DroneGS returned an invalid run manifest: {error}"
+            ) from error
+        parameters = manifest["parameters"]
+        if (
+            manifest["dataset"]["fingerprint"] != fingerprint
+            or parameters["profile_id"] != request.dronegs.profile_id
+            or parameters["optimizer_profile"]
+            != request.dronegs.optimizer_profile
+            or parameters["pruning_policy"]
+            != request.dronegs.pruning_policy
+            or parameters["raster_profile"]
+            != request.dronegs.raster_profile
+            or parameters.get("test_split")
+            != request.dronegs.test_split
+            or parameters.get("test_guard_percent")
+            != request.dronegs.test_guard_percent
+            or parameters["effective_raster_profile"]
+            != effective_raster_profile(
+                request.dronegs.raster_profile,
+                request.dronegs.optimizer_profile,
+            )
+        ):
+            raise RuntimeError(
+                "DroneGS manifest does not describe the requested dataset/profile"
+            )
         metrics = manifest.get("metrics", {})
         canary = {
             "contract_version": 1,
@@ -336,6 +561,17 @@ class DroneGSBackend:
             "ssim": metrics.get("ssim"),
             "minimum_psnr": request.dronegs.canary_min_psnr,
             "minimum_ssim": request.dronegs.canary_min_ssim,
+            "test_split": request.dronegs.test_split,
+            "test_guard_percent": request.dronegs.test_guard_percent,
+            "training_image_count": manifest.get("dataset", {}).get(
+                "training_image_count"
+            ),
+            "held_out_image_count": manifest.get("dataset", {}).get(
+                "held_out_image_count"
+            ),
+            "ignored_image_count": manifest.get("dataset", {}).get(
+                "ignored_image_count", 0
+            ),
         }
         failures = []
         if request.dronegs.canary_min_psnr is not None and (
@@ -371,6 +607,27 @@ class DroneGSBackend:
             manifest_path=manifest_path,
             effective_seed=request.seed,
         )
+
+    @staticmethod
+    def _terminate_process(
+        process: subprocess.Popen[str],
+        grace_seconds: float = 10.0,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        try:
+            if os.name != "nt":
+                os.killpg(process.pid, signal.SIGTERM)
+            else:
+                process.terminate()
+            process.wait(timeout=grace_seconds)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                if os.name != "nt":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+                process.wait(timeout=5)
 
 
 def resolve_training_backend(

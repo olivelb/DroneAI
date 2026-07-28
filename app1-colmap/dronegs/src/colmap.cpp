@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 #include "dronegs/colmap.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -12,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <vector>
 
 namespace dronegs {
 namespace {
@@ -156,6 +159,72 @@ void hash_bytes(std::uint64_t& hash, const void* data, std::size_t size) {
     }
 }
 
+void hash_image_inventory(
+    std::uint64_t& hash,
+    const std::filesystem::path& images_path) {
+    if (!std::filesystem::is_directory(images_path)) {
+        return;
+    }
+    std::vector<std::filesystem::path> files;
+    for (const auto& entry :
+         std::filesystem::recursive_directory_iterator(images_path)) {
+        if (!entry.is_regular_file()) {
+            continue;
+        }
+        auto extension = entry.path().extension().string();
+        std::transform(
+            extension.begin(), extension.end(), extension.begin(),
+            [](unsigned char value) {
+                return static_cast<char>(std::tolower(value));
+            });
+        if (extension == ".jpg" || extension == ".jpeg" ||
+            extension == ".png" || extension == ".tif" ||
+            extension == ".tiff") {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(
+        files.begin(), files.end(),
+        [&images_path](const auto& left, const auto& right) {
+            return std::filesystem::relative(left, images_path).generic_string() <
+                   std::filesystem::relative(right, images_path).generic_string();
+        });
+    constexpr std::uint64_t sample_bytes = 64U * 1024U;
+    std::vector<char> buffer(static_cast<std::size_t>(sample_bytes));
+    for (const auto& path : files) {
+        const auto relative =
+            std::filesystem::relative(path, images_path).generic_string();
+        const auto size = std::filesystem::file_size(path);
+        hash_bytes(hash, relative.data(), relative.size());
+        hash_bytes(hash, &size, sizeof(size));
+        std::vector<std::uint64_t> offsets{0U};
+        if (size > sample_bytes) {
+            offsets.push_back(size / 2U - sample_bytes / 2U);
+            offsets.push_back(size - sample_bytes);
+        }
+        std::sort(offsets.begin(), offsets.end());
+        offsets.erase(
+            std::unique(offsets.begin(), offsets.end()), offsets.end());
+        auto stream = open_binary(path);
+        for (const auto offset : offsets) {
+            stream.seekg(static_cast<std::streamoff>(offset));
+            stream.read(
+                buffer.data(),
+                static_cast<std::streamsize>(
+                    std::min(sample_bytes, size - offset)));
+            const auto read = stream.gcount();
+            if (read <= 0) {
+                throw std::runtime_error(
+                    "cannot sample image for dataset fingerprint: " +
+                    path.string());
+            }
+            hash_bytes(hash, &offset, sizeof(offset));
+            hash_bytes(
+                hash, buffer.data(), static_cast<std::size_t>(read));
+        }
+    }
+}
+
 }  // namespace
 
 std::filesystem::path find_sparse_model(const std::filesystem::path& data_path) {
@@ -191,19 +260,39 @@ Scene load_colmap_scene(const std::filesystem::path& data_path) {
     return scene;
 }
 
-std::string dataset_fingerprint(const Scene& scene) {
+std::string dataset_fingerprint(
+    const Scene& scene,
+    const std::filesystem::path& data_path) {
     std::uint64_t hash = 14695981039346656037ULL;
+    for (const auto& camera : scene.cameras) {
+        hash_bytes(hash, &camera.id, sizeof(camera.id));
+        hash_bytes(hash, &camera.model_id, sizeof(camera.model_id));
+        hash_bytes(hash, &camera.width, sizeof(camera.width));
+        hash_bytes(hash, &camera.height, sizeof(camera.height));
+        for (const auto parameter : camera.parameters) {
+            hash_bytes(hash, &parameter, sizeof(parameter));
+        }
+    }
     for (const auto& image : scene.images) {
+        hash_bytes(hash, &image.id, sizeof(image.id));
         hash_bytes(hash, image.name.data(), image.name.size());
         hash_bytes(hash, &image.camera_id, sizeof(image.camera_id));
+        hash_bytes(
+            hash, image.qvec.data(), sizeof(double) * image.qvec.size());
+        hash_bytes(
+            hash, image.tvec.data(), sizeof(double) * image.tvec.size());
     }
     for (const auto& point : scene.points) {
         hash_bytes(hash, &point.id, sizeof(point.id));
         hash_bytes(hash, point.xyz.data(), sizeof(double) * point.xyz.size());
         hash_bytes(hash, point.rgb.data(), sizeof(std::uint8_t) * point.rgb.size());
     }
+    if (!data_path.empty()) {
+        hash_image_inventory(hash, data_path / "images");
+    }
     std::ostringstream result;
-    result << "fnv1a64:" << std::hex << std::setw(16) << std::setfill('0') << hash;
+    result << "fnv1a64:v2:" << std::hex << std::setw(16)
+           << std::setfill('0') << hash;
     return result.str();
 }
 

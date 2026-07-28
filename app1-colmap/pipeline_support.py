@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import subprocess
+from pathlib import Path
 
 from PIL import Image as PILImage
 from PIL.ExifTags import GPSTAGS
@@ -15,6 +16,8 @@ from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
 )
+from shared.dji_metadata import load_dji_mrk_overrides
+from shared.projected_crs import select_projected_crs
 
 
 logger = logging.getLogger("app1-colmap.support")
@@ -114,18 +117,48 @@ def plan_clean_image_copy(src_path, dst_path, manifest_entry):
     return True, source_descriptor
 
 
-def extract_gps_data(image_dir, output_file, vol_id, report_fn):
+def extract_gps_data(
+    image_dir,
+    output_file,
+    vol_id,
+    report_fn,
+    *,
+    projected_crs_mode="auto-local",
+    projected_crs=None,
+):
     import pyproj
 
-    report_fn(vol_id, "GPS_EXTRACTION", 10, log="Extracting EXIF GPS data and converting to UTM...")
-    images = [f for f in os.listdir(image_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-    count = 0
-    utm_crs = None
-    transformer = None
-    with open(output_file, "w", encoding="utf-8") as handle:
-        for img_name in images:
-            img_path = os.path.join(image_dir, img_name)
-            try:
+    report_fn(
+        vol_id,
+        "GPS_EXTRACTION",
+        10,
+        log="Extracting DJI MRK/EXIF positions and selecting a metric projected CRS...",
+    )
+    images = sorted(
+        f
+        for f in os.listdir(image_dir)
+        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+    )
+    image_paths = [Path(image_dir) / image_name for image_name in images]
+    mrk_overrides = load_dji_mrk_overrides(image_dir, image_paths)
+    positions = []
+    mrk_count = 0
+    mrk_vertical_errors = []
+    for img_name in images:
+        img_path = os.path.join(image_dir, img_name)
+        try:
+            mrk_gps = mrk_overrides.get(img_name)
+            if mrk_gps:
+                lat = float(mrk_gps["latitude"])
+                lon = float(mrk_gps["longitude"])
+                alt = float(mrk_gps.get("altitude_m") or 0.0)
+                mrk_count += 1
+                position_std = mrk_gps.get("position_std_m") or {}
+                if position_std.get("vertical_m") is not None:
+                    mrk_vertical_errors.append(
+                        float(position_std["vertical_m"])
+                    )
+            else:
                 with PILImage.open(img_path) as pil_img:
                     exif_data = pil_img._getexif()
                     if not exif_data:
@@ -146,24 +179,74 @@ def extract_gps_data(image_dir, output_file, vol_id, report_fn):
                         lon = -lon
                     gps_alt = gps_info.get("GPSAltitude", 0)
                     alt = float(gps_alt) if gps_alt else 0
+            positions.append((img_name, lat, lon, alt))
+        except Exception as error:
+            logger.debug("Skipping GPS extraction for %s: %s", img_name, error)
 
-                    if transformer is None:
-                        zone_number = int((lon + 180) / 6) + 1
-                        is_south = lat < 0
-                        utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
-                        transformer = pyproj.Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
+    choice = None
+    if positions:
+        choice = select_projected_crs(
+            ((latitude, longitude) for _, latitude, longitude, _ in positions),
+            policy=projected_crs_mode,
+            custom_crs=projected_crs,
+        )
+        transformer = pyproj.Transformer.from_crs(
+            "EPSG:4326",
+            choice.crs,
+            always_xy=True,
+        )
 
-                    x, y = transformer.transform(lon, lat)
-                    handle.write(f"{img_name} {x} {y} {alt}\n")
-                    count += 1
+    count = 0
+    with open(output_file, "w", encoding="utf-8") as handle:
+        for img_name, lat, lon, alt in positions:
+            try:
+                x, y = transformer.transform(lon, lat)
+                handle.write(f"{img_name} {x} {y} {alt}\n")
+                count += 1
             except Exception as error:
                 logger.debug("Skipping GPS extraction for %s: %s", img_name, error)
-                continue
-    report_fn(vol_id, "GPS_EXTRACTION", 12, log=f"Extracted GPS from {count}/{len(images)} images using EXIF. Using CRS {utm_crs}")
-    return utm_crs
+    report_fn(
+        vol_id,
+        "GPS_EXTRACTION",
+        12,
+        log=(
+            f"Extracted positions from {count}/{len(images)} images "
+            f"({mrk_count} DJI MRK, {count - mrk_count} EXIF). "
+            f"Using CRS {choice.crs if choice else None} "
+            f"({choice.source if choice else 'unavailable'})"
+        ),
+    )
+    vertical_reference = (
+        "ellipsoidal"
+        if count > 0 and mrk_count == count
+        else ("mixed-or-unknown" if mrk_count else "unknown")
+    )
+    save_projected_crs(
+        output_file,
+        choice.crs if choice else None,
+        policy=projected_crs_mode,
+        requested_crs=projected_crs,
+        vertical_reference=vertical_reference,
+        vertical_source=(
+            "dji_mrk_ellh"
+            if vertical_reference == "ellipsoidal"
+            else "exif_gps_altitude_or_mixed"
+        ),
+        vertical_uncertainty_m=(
+            {
+                "minimum": min(mrk_vertical_errors),
+                "maximum": max(mrk_vertical_errors),
+                "mean": sum(mrk_vertical_errors)
+                / len(mrk_vertical_errors),
+            }
+            if mrk_vertical_errors
+            else None
+        ),
+    )
+    return choice.crs if choice else None
 
 
-def read_saved_utm_crs(geo_data_file):
+def read_saved_projected_crs(geo_data_file):
     crs_file = f"{geo_data_file}.crs"
     if not os.path.exists(crs_file):
         return None
@@ -175,15 +258,76 @@ def read_saved_utm_crs(geo_data_file):
         return None
 
 
-def save_utm_crs(geo_data_file, utm_crs):
-    if not utm_crs:
+def read_saved_projected_crs_policy(geo_data_file):
+    metadata_file = f"{geo_data_file}.crs.json"
+    try:
+        with open(metadata_file, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def save_projected_crs(
+    geo_data_file,
+    projected_crs,
+    *,
+    policy=None,
+    requested_crs=None,
+    vertical_reference=None,
+    vertical_source=None,
+    vertical_uncertainty_m=None,
+):
+    if not projected_crs:
         return
     crs_file = f"{geo_data_file}.crs"
     try:
         with open(crs_file, "w", encoding="utf-8") as handle:
-            handle.write(f"{utm_crs}\n")
+            handle.write(f"{projected_crs}\n")
+        if policy:
+            metadata_file = f"{geo_data_file}.crs.json"
+            temporary_file = f"{metadata_file}.tmp"
+            metadata = {}
+            try:
+                with open(metadata_file, encoding="utf-8") as handle:
+                    existing = json.load(handle)
+                if isinstance(existing, dict):
+                    metadata.update(existing)
+            except (OSError, json.JSONDecodeError):
+                pass
+            metadata.update(
+                {
+                    "schema_version": 2,
+                    "projected_crs": projected_crs,
+                    "policy": str(policy),
+                    "requested_crs": str(requested_crs or ""),
+                }
+            )
+            if vertical_reference is not None:
+                metadata["vertical"] = {
+                    "reference": str(vertical_reference),
+                    "source": str(vertical_source or "unspecified"),
+                    "uncertainty_m": vertical_uncertainty_m,
+                    "orthometric_conversion_applied": False,
+                }
+            with open(temporary_file, "w", encoding="utf-8") as handle:
+                json.dump(metadata, handle, indent=2, sort_keys=True)
+                handle.write("\n")
+            os.replace(temporary_file, metadata_file)
     except OSError as error:
-        logger.warning("Failed to save UTM CRS for %s: %s", geo_data_file, error)
+        logger.warning("Failed to save projected CRS for %s: %s", geo_data_file, error)
+
+
+def read_saved_utm_crs(geo_data_file):
+    """Backward-compatible alias for older worker imports."""
+
+    return read_saved_projected_crs(geo_data_file)
+
+
+def save_utm_crs(geo_data_file, utm_crs):
+    """Backward-compatible alias for older worker imports."""
+
+    save_projected_crs(geo_data_file, utm_crs)
 
 
 def sanitize_exif_for_colmap(image_dir, vol_id, report_fn):

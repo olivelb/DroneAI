@@ -135,6 +135,11 @@ As implemented today:
 - `app4-dashboard/api` imports configuration, pipeline defaults, validation,
   database, storage, reliability, event, and inbox/outbox helpers
 
+DJI metadata, projected-CRS selection, RTK pose-prior injection and the
+immutable DroneGS production profile are centralized respectively in
+`shared/dji_metadata.py`, `shared/projected_crs.py`,
+`shared/rtk_refinement.py`, and `shared/dronegs_profile.py`.
+
 The worker-specific `app2-ia/detection_core.py` and
 `app3-processing/processing_core.py` modules contain reusable detection,
 tiling, deduplication, rendering, and GIS-export logic. The Kafka loops and the
@@ -150,6 +155,7 @@ start only from `worker_main()` under a `__main__` guard.
 The frontend is the operator interface. Its responsibilities are:
 
 - browse datasets
+- establish an HttpOnly API session from an operator-provided credential
 - submit missions
 - display streaming mission status
 - allow cancellation
@@ -163,6 +169,7 @@ The API is the control plane for the pipeline.
 
 Primary endpoints:
 
+- `POST|GET|DELETE /auth/session`
 - `POST /mission`
 - `POST /mission/cancel`
 - `GET /browse`
@@ -179,6 +186,7 @@ Primary endpoints:
 
 Primary responsibilities:
 
+- authenticate browser sessions and enforce viewer/operator/admin roles
 - validate and serialize mission requests
 - publish mission events to `vols-bruts`
 - publish cancellation commands to `pipeline-control`
@@ -197,6 +205,13 @@ service progress, logs, original parameters, and resume metadata are persisted
 in PostgreSQL. Alembic defines versioned migrations for manually managed
 databases; the current Helm hook only creates missing tables from SQLAlchemy
 metadata.
+
+Every non-health HTTP route and the status WebSocket require authentication
+when enabled. A raw API client may use `Authorization: Bearer` or `X-API-Key`.
+The dashboard exchanges the key once through `POST /auth/session`; the API
+returns an eight-hour, HttpOnly, SameSite=Lax cookie that also authenticates
+the WebSocket. Production CORS uses explicit origins with credentials and
+rejects wildcard configuration.
 
 The API package is split by responsibility:
 
@@ -222,11 +237,14 @@ Its responsibilities are:
 
 - receive raw mission metadata from `vols-bruts`
 - download the selected S3 dataset into the chosen `/work` scratch drive
-- extract GPS from EXIF and determine a projected UTM CRS
+- extract EXIF/MRK positions and uncertainties, distinguish ellipsoidal
+  height, and select one audited projected CRS for the complete footprint
 - select the photogrammetry profile: `modern` or `legacy`
-- run COLMAP feature extraction, matching, mapping, and undistortion
+- run bounded COLMAP feature extraction, matching, global mapping, optional
+  RTK pose-prior refinement, and undistortion
 - generate an orthomosaic using 3D Gaussian Splatting
-- extract drone EXIF GPS altitude data and use it to shift the height map to real-world elevations
+- record drone altitude metadata and, when configured, anchor the relative
+  height map without changing or inventing its vertical datum
 - upload durable mission artifacts below `missions/<vol_id>/` and clean local
   scratch data
 - publish the orthomosaic event to `images-ortho`
@@ -790,16 +808,24 @@ The worker supports two profile families.
 
 Characteristics:
 
-- feature type: `ALIKED_N16ROT`
-- matcher type: `ALIKED_LIGHTGLUE`
+- feature type: SIFT CUDA, 1,600 px and 2,048 features by default
+- matcher type: bounded brute-force CUDA over a GPS/temporal pair graph
 - mapper command: `global_mapper`
 - view graph calibration enabled
 - orientation reading enabled
+- one global BA pass and no final iterative retriangulation
+- automatic GLOMAP primary with compatible Caspar/Ceres fallback inside one
+  shared 20-minute budget
+- covariance-aware RTK refinement enabled only when corrected MRK coverage is
+  sufficient
 - Gaussian Splatting orthomosaic enabled (default)
 
 This is the default and the main intended runtime path.
 
-> **Note:** ALIKED and LightGlue require ONNX Runtime support compiled into COLMAP. The current `Dockerfile.base` does not include ONNX Runtime, so the modern profile will fail at feature extraction with `"ALIKED feature extraction requires ONNX support."` Until ONNX Runtime is added to the COLMAP build, use the legacy profile (`"pipeline": "legacy"`) which uses SIFT and works without ONNX.
+ALIKED N16Rot/N32 and LightGlue remain available as explicit expert choices.
+The image includes ONNX Runtime GPU and checksum-verified embedded models, but
+they are not the large-scene default: on the 8 GiB RTX 4070 Laptop they were
+slower and close to the VRAM limit on ALBAGNAC.
 
 #### Legacy profile
 
@@ -809,9 +835,12 @@ Characteristics:
 - matcher type: SIFT-compatible spatial matching
 - mapper command: `mapper`
 - no view graph calibration
+- OPENCV camera model and Ceres incremental BA
+- 4,000 px feature/undistortion ceiling, two BA passes and retriangulation
 - Gaussian Splatting orthomosaic enabled (same as modern)
 
-This exists for compatibility and fallback scenarios. The legacy profile changes SfM defaults, not the orthomosaic mode. It is currently the only working profile because the COLMAP build does not include ONNX Runtime (required by ALIKED/LightGlue in the modern profile).
+This exists for compatibility and slower reference comparisons. It changes
+SfM defaults, not the orthomosaic mode.
 
 ### Smart resume and compatibility checks
 
@@ -854,12 +883,16 @@ GPS extraction does more than read latitude and longitude.
 
 The worker:
 
-1. scans source images for EXIF GPS tags
-2. converts DMS coordinates to decimal degrees
-3. determines the UTM zone dynamically from longitude and hemisphere from latitude
-4. creates a transformer from `EPSG:4326` to the chosen UTM CRS
-5. writes projected coordinates into `geo_data.txt`
-6. stores the selected CRS in `geo_data.txt.crs`
+1. scans source images and DJI sidecars for EXIF/MRK GPS;
+2. prefers corrected MRK coordinates and ENU uncertainty when available;
+3. classifies MRK `Ellh` as ellipsoidal rather than silently labelling it
+   orthometric;
+4. evaluates the complete footprint before selecting a projected CRS;
+5. uses the applicable RGF93 CC9 zone for a compact metropolitan-France
+   mission, Lambert-93 for a wide French footprint, or centroid UTM elsewhere;
+6. accepts an explicit official `EPSG:<code>` when the deliverable requires it;
+7. writes projected coordinates into `geo_data.txt`;
+8. stores the effective CRS and policy sidecars.
 
 Why the CRS sidecar exists:
 
@@ -867,7 +900,10 @@ Why the CRS sidecar exists:
 - re-inferring the CRS incorrectly would break the mapping from orthomosaic pixels back to real-world coordinates
 - app3 and app2 depend on correct orthomosaic CRS metadata for GPS label reconstruction
 
-If GPS extraction has already been done, the worker attempts to reuse the persisted CRS from `geo_data.txt.crs`.
+If GPS extraction has already been done, the worker reuses the persisted CRS
+only when the requested policy and source identity still match. Changing the
+CRS invalidates stale georeferencing products without discarding reusable
+features or sparse geometry.
 
 ## COLMAP worker state diagram
 
@@ -916,7 +952,11 @@ This section describes the repository-specific orthomosaic logic in detail.
 
 The orthomosaic builder uses a **3D Gaussian Splatting (3DGS) pipeline**.
 
-It trains a Gaussian radiance field directly from COLMAP undistorted images and the sparse reconstruction, renders an orthographic True Digital Orthophoto Map (TDOM), and writes a georeferenced GeoTIFF with a companion height map shifted to real-world drone EXIF altitudes.
+It trains a Gaussian radiance field directly from COLMAP undistorted images
+and the sparse reconstruction, renders an orthographic True Digital
+Orthophoto Map (TDOM), and writes a georeferenced GeoTIFF with a companion
+height map. Any camera-altitude anchoring preserves the recorded vertical
+reference and is not an orthometric conversion.
 
 Pipeline steps:
 
@@ -958,7 +998,11 @@ The implementation draws from several key papers:
 
 **DroneGS handles training as a native C++/CUDA process.** The Python pipeline invokes the contract-v1 executable as a subprocess, consumes JSON Lines progress events, validates `trainer_run.json` and `canary_result.json`, and imports the resulting standard 3DGS PLY. DroneGS is the only executable Gaussian backend; LichtFeld remains solely as a documented historical benchmark and GPL provenance source.
 
-**EXIF altitude integration.** Drone GPS altitude is extracted from image EXIF metadata and averaged. The rendered height map is shifted so its mean matches the mean EXIF altitude, giving real-world elevation values in the output CRS.
+**Altitude integration.** DJI MRK ellipsoidal height is preferred over EXIF
+when available; EXIF-only vertical reference remains unknown. The optional
+mean shift anchors model-relative Z to the recorded camera-altitude reference.
+It does not convert ellipsoidal heights to NGF-IGN69, nor does it establish
+surveyed surface accuracy.
 
 #### Step 1: Load COLMAP reconstruction
 
@@ -966,7 +1010,10 @@ The pipeline reads cameras, images, and 3D points from `dense/sparse/` via pycol
 
 #### Step 1b: Extract EXIF altitudes
 
-GPS altitude is extracted from each undistorted image in `dense/images/` using EXIF `GPSAltitude` and `GPSAltitudeRef` tags. The mean of all valid altitudes is computed and stored for later height-map correction. If no EXIF altitude data is found, the pipeline falls back to model-relative Z values.
+Altitude is extracted from the mission metadata, preserving source and
+vertical-reference classification. The mean of compatible observations may be
+stored for later height-map anchoring. If none is available, the pipeline
+keeps model-relative Z.
 
 #### Step 2: Scene partitioning (optional)
 
@@ -977,10 +1024,16 @@ For very large scenes, the model can be split into an m×n grid of overlapping c
 Each cell is trained using the DroneGS contract-v1 CLI with MRNF:
 
 - **Binary**: portable `/usr/local/bin/dronegs`, selected through `DRONEGS_BIN`
-- **Strategy**: MRNF with a bounded Gaussian cap, deterministic seed, progressive SH, FastGS structural rasterization, and the dev.45 convergence finish
+- **Strategy**: immutable `DRONEGS_PRODUCTION_PROFILE_V1`: MRNF with a
+  bounded Gaussian cap, deterministic seed, progressive SH, structural FastGS,
+  spatial-bounds pruning and the validated convergence finish
 - **Progress monitoring**: one JSON object per stdout line (`iteration`, baseline loss, Gaussian count)
-- **Recovery**: atomic, versioned native checkpoints contain the full Gaussian, Adam, topology, schedule and deterministic RNG state
-- **Canary**: the default `scene_index % 8 == 0` held-out split must reach PSNR ≥ 18.0 and SSIM ≥ 0.35
+- **Recovery**: checksum-protected checkpoint V3 contains the full Gaussian,
+  Adam, topology, schedule and deterministic RNG state and is synchronized to
+  durable S3 recovery storage
+- **Canary**: production V1 keeps `scene_index % 8 == 0` for immutable
+  benchmark parity; custom profiles may select a central spatial block and
+  guard ring
 - **Output gate**: process exit zero, completed v1 `trainer_run.json`, and standard `point_cloud.ply`
 - **Source safety**: the COLMAP input tree is mounted/read as input; every run writes to a separate empty output tree
 
@@ -1008,6 +1061,8 @@ Default training parameters (configurable via dashboard UI):
 | `gs_photometric_mse_percent` | 100 | Final active-pixel MSE weight |
 | `gs_checkpoint_every` | 2000 | Atomic native checkpoint interval; zero disables periodic saves |
 | `gs_test_every` | 8 | Deterministic held-out split interval |
+| `gs_test_split` | modulo | V1 parity split; custom supports spatial-block |
+| `gs_test_guard_percent` | 0 | Guard ring excluded from training for spatial-block |
 | `gs_canary_min_psnr` | 18.0 | Minimum held-out PSNR required before rendering |
 | `gs_canary_min_ssim` | 0.35 | Minimum held-out SSIM required before rendering |
 
@@ -1068,7 +1123,10 @@ z_offset = mean_exif_altitude - mean(height_map)
 height_map = height_map + z_offset
 ```
 
-This gives real-world elevation values in the output CRS. If no EXIF altitude data was found, the raw model Z values are kept.
+This anchors the relative height values to the same, explicitly recorded
+vertical reference as the camera observations. It is not a geoid-grid
+transformation or an independent elevation-accuracy validation. If no
+compatible altitude data was found, the raw model Z values are kept.
 
 #### Step 8: GeoTIFF writing
 
@@ -1085,7 +1143,7 @@ The `geo_x_min` and `geo_y_max` are computed by adding the float64 `geo_origin` 
 flowchart TD
   A[dense/sparse + undistorted images available] --> C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
-  C --> C1[DroneGS dev45 MRNF training via contract-v1 subprocess]
+  C --> C1[DroneGS production V1 training via contract-v1 subprocess]
   C1 --> C2{Geo-alignment method}
   C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
@@ -1103,6 +1161,25 @@ App1 does not treat the dense workspace as reusable unless:
 - `dense/sparse/cameras.bin`, `images.bin`, and `points3D.bin` all exist
 - `dense/images/` directory exists with undistorted images
 
+### Reconstruction tunables exposed in the dashboard UI
+
+The **Reconstruction** phase exposes the complete fast-alignment contract
+instead of hiding it behind fixed worker constants:
+
+| Group | Principal controls |
+| --- | --- |
+| Features | extractor, maximum resolution, feature cap and CPU threads |
+| Matching | brute-force/LightGlue choice, GPS/spatial/sequential graph, neighbor and distance bounds |
+| Mapping | camera model, GLOMAP/Caspar/Ceres engine, BA passes and iterations, retriangulation, registration gate and timeout |
+| Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance and bounded RTK pass |
+| Undistortion | maximum image size, 1,600 px in production V1 |
+
+The `modern` defaults reproduce the measured sub-hour ALBAGNAC/SAVERES path:
+SIFT CUDA at 1,600 px, 2,048 features, bounded GPS pairs, one GLOMAP BA pass,
+no final retriangulation, a 20-minute mapping budget and a 1,600 px
+undistortion ceiling. Selecting a preset resets every field; editing an expert
+value keeps it visible and marks the recipe custom.
+
 ### GS pipeline tunables exposed in the dashboard UI
 
 All GS parameters are exposed in the **Orthomosaic** parameter group in the dashboard. The frontend renders these dynamically from `PARAMETER_METADATA` in `shared/pipeline_params.py`:
@@ -1111,6 +1188,7 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | --- | --- | --- | --- | --- |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
 | GS Training Backend | `gs_backend` | select | dronegs | dronegs |
+| DroneGS Production Recipe | `gs_production_profile` | select | DRONEGS_PRODUCTION_PROFILE_V1 | production V1/custom |
 | GS Training Iterations | `gs_iterations` | int | 15000 | 5000–100000 |
 | GS Training Image Scale | `gs_data_factor` | select | 4 | auto/1/2/4/8 |
 | GS Maximum Training Width | `gs_max_width` | int | 1600 | 256–4096 |
@@ -1119,7 +1197,7 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
 | DroneGS Deterministic Seed | `gs_seed` | int | 42 | 0–2147483647 |
 | DroneGS Optimizer Profile | `gs_optimizer_profile` | select | reference-absolute | validated profiles |
-| DroneGS Raster Profile | `gs_raster_profile` | select | bounded | bounded/fastgs/auto |
+| DroneGS Raster Profile | `gs_raster_profile` | select | fastgs | bounded/fastgs/auto |
 | DroneGS Pruning Policy | `gs_pruning_policy` | select | spatial-bounds | spatial-bounds/original |
 | DroneGS SH Activation Interval | `gs_sh_degree_interval` | int | 1000 | 1–10000 |
 | DroneGS Topology Cooldown | `gs_topology_cooldown` | int | 1000 | 0–10000 |
@@ -1127,6 +1205,8 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | DroneGS Final MSE Weight | `gs_photometric_mse_percent` | int | 100 | 0–100 |
 | DroneGS Checkpoint Interval | `gs_checkpoint_every` | int | 2000 | 0–50000 |
 | DroneGS Held-out Split Interval | `gs_test_every` | int | 8 | 0 or 2–100 |
+| DroneGS Held-out Split Policy | `gs_test_split` | select | modulo | modulo/spatial-block |
+| DroneGS Spatial Guard Ring | `gs_test_guard_percent` | float | 0 | 0–100 |
 | DroneGS Canary Minimum PSNR | `gs_canary_min_psnr` | float | 18.0 | 0–100 |
 | DroneGS Canary Minimum SSIM | `gs_canary_min_ssim` | float | 0.35 | 0–1 |
 | Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
@@ -1146,12 +1226,19 @@ on an RTX 4070 Laptop GPU:
 
 | Engine | Images | Cap | Factor | Iterations | Training | PSNR | SSIM | LPIPS |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| DroneGS dev.45 | 1,376 | 1.5M | 4 | 15,000 | 972.731 s | 22.175919 | 0.642557 | 0.325408 |
+| DroneGS production V1 (dev.45 acceptance run) | 1,376 | 1.5M | 4 | 15,000 | 972.731 s | 22.175919 | 0.642557 | 0.325408 |
 | LichtFeld deterministic control | 1,376 | 1.5M | 4 | 15,000 | 994.228 s | 21.513821 | 0.586497 | 0.371055 |
 
 The metrics come from the same frozen DroneGS dev.38 evaluator on the same 172
 held-out views. DroneGS keeps resized RGB8 images in a bounded 256 MiB-to-2 GiB
 host cache and streams one active view to the GPU.
+
+The final dev.47 binary and immutable V1 profile were also repeated five times
+on the 1,066-image SAVERES RTK workspace. All runs completed with 932 training
+and 134 held-out views; median wall time was 607.1 seconds, median peak VRAM
+2,124 MiB, mean PSNR 19.4122 dB and mean SSIM 0.49155. The five seeds,
+dataset/binary/PLY hashes and dispersion are recorded in
+`docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json`.
 
 ### Gaussian Splatting package structure
 
@@ -1650,6 +1737,7 @@ The remaining distributed limitations are deliberate and explicit:
 - no multi-replica or broker-failover integration test in CI
 
 The local orchestrator is the deterministic, infrastructure-free execution
-path. The Kafka path provides stronger failure handling than before, but must
-still be validated against real broker rebalances and service restarts before
-any production claim.
+path. The authenticated distributed stack is supported as a single-tenant
+production baseline behind TLS. Public multi-tenant exposure still requires
+OIDC, ownership filters and object-prefix isolation; high-availability claims
+still require broker-rebalance, replica and service-restart fault campaigns.

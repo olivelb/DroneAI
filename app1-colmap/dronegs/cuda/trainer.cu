@@ -38,6 +38,7 @@
 #include "dronegs/image.hpp"
 #include "dronegs/colmap.hpp"
 #include "dronegs/ordered_training.hpp"
+#include "dronegs/profile_registry.hpp"
 
 namespace dronegs {
 namespace {
@@ -894,6 +895,154 @@ DatasetSplit make_dataset_split(
     return split;
 }
 
+DatasetSplit make_dataset_split(
+    const Scene& scene, std::uint32_t test_every,
+    std::string_view test_split, std::uint32_t test_guard_percent) {
+    if (test_split == "modulo" || test_every == 0U) {
+        return make_dataset_split(scene.images.size(), test_every);
+    }
+    if (test_split != "spatial-block") {
+        throw std::invalid_argument(
+            "dataset split must be modulo or spatial-block");
+    }
+    if (scene.images.empty()) {
+        throw std::invalid_argument(
+            "dataset split requires at least one image");
+    }
+
+    std::vector<std::array<double, 3>> centers;
+    centers.reserve(scene.images.size());
+    for (const auto& image : scene.images) {
+        const double qw = image.qvec[0];
+        const double qx = image.qvec[1];
+        const double qy = image.qvec[2];
+        const double qz = image.qvec[3];
+        const double norm_squared =
+            qw * qw + qx * qx + qy * qy + qz * qz;
+        if (!(norm_squared > 0.0) || !std::isfinite(norm_squared)) {
+            throw std::invalid_argument(
+                "spatial split requires finite camera rotations");
+        }
+        const double scale = 2.0 / norm_squared;
+        const std::array<double, 9> rotation{
+            1.0 - scale * (qy * qy + qz * qz),
+            scale * (qx * qy - qz * qw),
+            scale * (qx * qz + qy * qw),
+            scale * (qx * qy + qz * qw),
+            1.0 - scale * (qx * qx + qz * qz),
+            scale * (qy * qz - qx * qw),
+            scale * (qx * qz - qy * qw),
+            scale * (qy * qz + qx * qw),
+            1.0 - scale * (qx * qx + qy * qy),
+        };
+        centers.push_back({
+            -(rotation[0] * image.tvec[0] +
+              rotation[3] * image.tvec[1] +
+              rotation[6] * image.tvec[2]),
+            -(rotation[1] * image.tvec[0] +
+              rotation[4] * image.tvec[1] +
+              rotation[7] * image.tvec[2]),
+            -(rotation[2] * image.tvec[0] +
+              rotation[5] * image.tvec[1] +
+              rotation[8] * image.tvec[2]),
+        });
+    }
+
+    std::array<double, 3> minimum{
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+    };
+    std::array<double, 3> maximum{
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+    std::array<double, 3> centroid{};
+    for (const auto& center : centers) {
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            minimum[axis] = std::min(minimum[axis], center[axis]);
+            maximum[axis] = std::max(maximum[axis], center[axis]);
+            centroid[axis] += center[axis];
+        }
+    }
+    for (double& coordinate : centroid) {
+        coordinate /= static_cast<double>(centers.size());
+    }
+    std::array<std::pair<double, std::size_t>, 3> axes{{
+        {maximum[0] - minimum[0], 0U},
+        {maximum[1] - minimum[1], 1U},
+        {maximum[2] - minimum[2], 2U},
+    }};
+    std::sort(
+        axes.begin(), axes.end(),
+        [](const auto& first, const auto& second) {
+            if (first.first != second.first) {
+                return first.first > second.first;
+            }
+            return first.second < second.second;
+        });
+
+    std::vector<std::pair<double, std::size_t>> radial_order;
+    radial_order.reserve(centers.size());
+    for (std::size_t index = 0U; index < centers.size(); ++index) {
+        double radius_squared = 0.0;
+        for (std::size_t planar_axis = 0U; planar_axis < 2U;
+             ++planar_axis) {
+            const auto [range, axis] = axes[planar_axis];
+            const double normalized =
+                range > 1.0e-12
+                    ? (centers[index][axis] - centroid[axis]) / range
+                    : 0.0;
+            radius_squared += normalized * normalized;
+        }
+        radial_order.emplace_back(radius_squared, index);
+    }
+    std::sort(
+        radial_order.begin(), radial_order.end(),
+        [](const auto& first, const auto& second) {
+            if (first.first != second.first) {
+                return first.first < second.first;
+            }
+            return first.second < second.second;
+        });
+
+    const std::size_t held_out_count =
+        (centers.size() + test_every - 1U) / test_every;
+    const std::size_t requested_guard =
+        (held_out_count * test_guard_percent + 99U) / 100U;
+    const std::size_t maximum_guard =
+        centers.size() > held_out_count
+            ? centers.size() - held_out_count - 1U
+            : 0U;
+    const std::size_t guard_count =
+        std::min(requested_guard, maximum_guard);
+
+    DatasetSplit split;
+    split.held_out.reserve(held_out_count);
+    split.ignored.reserve(guard_count);
+    split.training.reserve(
+        centers.size() - held_out_count - guard_count);
+    for (std::size_t rank = 0U; rank < radial_order.size(); ++rank) {
+        const auto index = radial_order[rank].second;
+        if (rank < held_out_count) {
+            split.held_out.push_back(index);
+        } else if (rank < held_out_count + guard_count) {
+            split.ignored.push_back(index);
+        } else {
+            split.training.push_back(index);
+        }
+    }
+    std::sort(split.held_out.begin(), split.held_out.end());
+    std::sort(split.ignored.begin(), split.ignored.end());
+    std::sort(split.training.begin(), split.training.end());
+    if (split.training.empty()) {
+        throw std::invalid_argument(
+            "spatial dataset split leaves no training images");
+    }
+    return split;
+}
+
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians) {
     if (gaussians.empty() || scene.images.empty()) {
@@ -904,7 +1053,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
     const auto split = make_dataset_split(
-        descriptors.size(), options.test_every);
+        scene, options.test_every, options.test_split,
+        options.test_guard_percent);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -926,6 +1076,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
             static_cast<std::uint64_t>(split.training.size()),
         .held_out_image_count =
             static_cast<std::uint64_t>(split.held_out.size()),
+        .ignored_image_count =
+            static_cast<std::uint64_t>(split.ignored.size()),
     };
     const auto schedule = make_training_schedule(
         split.training, options.iterations, options.seed);
@@ -1030,7 +1182,8 @@ TrainingMetrics train_ordered_mrnf(
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
     const auto split = make_dataset_split(
-        descriptors.size(), options.test_every);
+        scene, options.test_every, options.test_split,
+        options.test_guard_percent);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -1044,102 +1197,13 @@ TrainingMetrics train_ordered_mrnf(
 
     const auto setup_start = std::chrono::steady_clock::now();
     const auto optimizer_profile = [&options]() {
-        if (options.optimizer_profile == "dronegs-dev16") {
-            return MrnfOptimizerProfile::dronegs_dev16;
+        const auto profile =
+            optimizer_profile_from_name(options.optimizer_profile);
+        if (!profile.has_value()) {
+            throw std::invalid_argument(
+                "optimizer profile is not present in the registry");
         }
-        if (options.optimizer_profile == "reference-dc-only") {
-            return MrnfOptimizerProfile::reference_dc_only;
-        }
-        if (options.optimizer_profile == "reference-position-only") {
-            return MrnfOptimizerProfile::reference_position_only;
-        }
-        if (options.optimizer_profile == "reference-opacity-only") {
-            return MrnfOptimizerProfile::reference_opacity_only;
-        }
-        if (options.optimizer_profile == "reference-scale-only") {
-            return MrnfOptimizerProfile::reference_scale_only;
-        }
-        if (options.optimizer_profile == "reference-rotation-only") {
-            return MrnfOptimizerProfile::reference_rotation_only;
-        }
-        if (options.optimizer_profile == "reference-dc-opacity") {
-            return MrnfOptimizerProfile::reference_dc_opacity;
-        }
-        if (options.optimizer_profile == "calibrated-dc-0.005-opacity") {
-            return MrnfOptimizerProfile::calibrated_dc_005_opacity;
-        }
-        if (options.optimizer_profile == "calibrated-dc-0.010-opacity") {
-            return MrnfOptimizerProfile::calibrated_dc_010_opacity;
-        }
-        if (options.optimizer_profile == "calibrated-dc-0.020-opacity") {
-            return MrnfOptimizerProfile::calibrated_dc_020_opacity;
-        }
-        if (options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.024") {
-            return MrnfOptimizerProfile::calibrated_dc_010_opacity_024;
-        }
-        if (options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.048") {
-            return MrnfOptimizerProfile::calibrated_dc_010_opacity_048;
-        }
-        if (options.optimizer_profile ==
-            "calibrated-dc-0.010-opacity-0.096") {
-            return MrnfOptimizerProfile::calibrated_dc_010_opacity_096;
-        }
-        if (options.optimizer_profile ==
-            "dev34-opacity096-reference-scale") {
-            return MrnfOptimizerProfile::dev34_opacity096_reference_scale;
-        }
-        if (options.optimizer_profile ==
-            "dev34-opacity096-reference-rotation") {
-            return MrnfOptimizerProfile::dev34_opacity096_reference_rotation;
-        }
-        if (options.optimizer_profile ==
-            "dev34-opacity096-reference-scale-rotation") {
-            return MrnfOptimizerProfile::
-                dev34_opacity096_reference_scale_rotation;
-        }
-        if (options.optimizer_profile ==
-            "dev35-opacity096-reference-scale-staged-rotation004") {
-            return MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation004;
-        }
-        if (options.optimizer_profile ==
-            "dev35-opacity096-reference-scale-staged-rotation008") {
-            return MrnfOptimizerProfile::
-                dev35_opacity096_reference_scale_staged_rotation008;
-        }
-        if (options.optimizer_profile ==
-            "dev36-staged-rotation008-absgrad025") {
-            return MrnfOptimizerProfile::
-                dev36_staged_rotation008_absgrad025;
-        }
-        if (options.optimizer_profile ==
-            "dev36-staged-rotation008-absgrad050") {
-            return MrnfOptimizerProfile::
-                dev36_staged_rotation008_absgrad050;
-        }
-        if (options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa005") {
-            return MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa005;
-        }
-        if (options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa015") {
-            return MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa015;
-        }
-        if (options.optimizer_profile ==
-            "dev37-staged-rotation008-absgrad050-aa030") {
-            return MrnfOptimizerProfile::
-                dev37_staged_rotation008_absgrad050_aa030;
-        }
-        if (options.optimizer_profile ==
-            "dev38-staged-rotation008-absgrad050-fastgs") {
-            return MrnfOptimizerProfile::
-                dev38_staged_rotation008_absgrad050_fastgs;
-        }
-        return MrnfOptimizerProfile::reference_absolute;
+        return *profile;
     }();
     const std::optional<bool> raster_override =
         options.raster_profile == "fastgs"
@@ -1154,7 +1218,9 @@ TrainingMetrics train_ordered_mrnf(
         options.sh_degree_interval, options.seed,
         raster_override);
     const auto checkpoint_dataset_fingerprint =
-        dataset_fingerprint(scene);
+        options.dataset_fingerprint.empty()
+            ? dataset_fingerprint(scene, options.data_path)
+            : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
         << "contract=2"
@@ -1168,9 +1234,12 @@ TrainingMetrics train_ordered_mrnf(
         << ";tile=" << options.tile_mode
         << ";seed=" << options.seed
         << ";test_every=" << options.test_every
+        << ";test_split=" << options.test_split
+        << ";test_guard_percent=" << options.test_guard_percent
         << ";topology_cooldown=" << options.topology_cooldown
         << ";photometric_finish=" << options.photometric_finish
         << ";photometric_mse=" << options.photometric_mse_percent
+        << ";profile_id=" << options.profile_id
         << ";optimizer=" << options.optimizer_profile
         << ";pruning=" << options.pruning_policy
         << ";raster=" << options.raster_profile;
@@ -1232,6 +1301,8 @@ TrainingMetrics train_ordered_mrnf(
             static_cast<std::uint64_t>(split.training.size()),
         .held_out_image_count =
             static_cast<std::uint64_t>(split.held_out.size()),
+        .ignored_image_count =
+            static_cast<std::uint64_t>(split.ignored.size()),
     };
     TrainingCheckpointProgress checkpoint_progress;
     if (!options.resume_from.empty()) {

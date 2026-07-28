@@ -51,17 +51,23 @@ function ImageViewer({ src, alt, depthMode }: { src: string; alt: string; depthM
     setZoom((z) => Math.max(0.1, Math.min(20, z * (e.deltaY < 0 ? 1.15 : 0.87))));
   };
 
-  const handleMouseDown = (e: React.MouseEvent) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
     setDragging(true);
     setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragging) return;
     setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
   };
 
-  const handleMouseUp = () => setDragging(false);
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+    setDragging(false);
+  };
 
   const fitToView = () => {
     setZoom(1);
@@ -86,12 +92,12 @@ function ImageViewer({ src, alt, depthMode }: { src: string; alt: string; depthM
   return (
     <div
       ref={containerRef}
-      className="relative h-full w-full cursor-grab overflow-hidden bg-gray-900 active:cursor-grabbing"
+      className="relative h-full w-full touch-none cursor-grab overflow-hidden bg-gray-900 active:cursor-grabbing"
       onWheel={handleWheel}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={() => setDragging(false)}
     >
       {!loaded && (
         <div className="absolute inset-0 flex items-center justify-center">
@@ -114,13 +120,13 @@ function ImageViewer({ src, alt, depthMode }: { src: string; alt: string; depthM
         }}
       />
       <div className="absolute bottom-3 right-3 flex gap-1.5 rounded-lg bg-black/60 px-3 py-1.5 text-xs text-white backdrop-blur">
-        <button onClick={() => setZoom((z) => Math.min(20, z * 1.5))} className="hover:text-blue-300">+</button>
+        <button type="button" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(20, z * 1.5))} className="min-h-8 min-w-8 hover:text-blue-300">+</button>
         <span className="mx-1 text-gray-400">|</span>
-        <button onClick={() => setZoom((z) => Math.max(0.1, z / 1.5))} className="hover:text-blue-300">−</button>
+        <button type="button" aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.1, z / 1.5))} className="min-h-8 min-w-8 hover:text-blue-300">−</button>
         <span className="mx-1 text-gray-400">|</span>
-        <button onClick={fitToView} className="hover:text-blue-300">Fit</button>
+        <button type="button" onClick={fitToView} className="min-h-8 px-1 hover:text-blue-300">Fit</button>
         <span className="mx-1 text-gray-400">|</span>
-        <button onClick={() => { setZoom(1 / baseScale); setPan({ x: 0, y: 0 }); }} className="hover:text-blue-300">1:1</button>
+        <button type="button" onClick={() => { setZoom(1 / baseScale); setPan({ x: 0, y: 0 }); }} className="min-h-8 px-1 hover:text-blue-300">1:1</button>
         <span className="mx-1 text-gray-400">|</span>
         <span>{Math.round(effectiveScale * 100)}%</span>
       </div>
@@ -200,27 +206,41 @@ export default function ResultsViewer() {
 
   if (!missionId || sortedMissions.length === 0) {
     return (
-      <div className="flex h-[calc(100vh-200px)] items-center justify-center text-gray-400">
+      <div className="surface flex min-h-[520px] items-center justify-center text-[#87938f]">
         <div className="text-center">
-          <MapIcon size={36} className="mx-auto mb-2 text-gray-300" />
-          <p className="text-sm">No missions found</p>
-          <p className="mt-1 text-xs text-gray-300">Run a pipeline first to see results here</p>
+          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#edf3f1] text-[#78908a]">
+            <MapIcon size={26} />
+          </span>
+          <p className="mt-4 text-sm font-bold text-[#485651]">No mission results yet</p>
+          <p className="mt-1 text-xs text-[#8a9692]">Launch the pipeline to generate maps and point clouds.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="flex h-[calc(100vh-200px)] gap-6">
+    <div className="space-y-5">
+      <section className="surface p-5 sm:p-6">
+        <div className="eyebrow">Stage 05 · Delivery</div>
+        <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
+          Mission products
+        </h2>
+        <p className="mt-1 max-w-2xl text-sm leading-6 text-[#6f7c78]">
+          Inspect georeferenced rasters, compare derived layers and download the
+          sparse or Gaussian scene for downstream GIS and 3D workflows.
+        </p>
+      </section>
+
+      <div className="flex min-h-[620px] flex-col gap-4 lg:h-[calc(100vh-250px)] lg:flex-row">
       {/* Sidebar */}
-      <div className="w-72 shrink-0 space-y-4 overflow-y-auto">
+      <div className="grid shrink-0 gap-3 sm:grid-cols-3 lg:block lg:w-72 lg:space-y-4 lg:overflow-y-auto">
         {/* Mission selector */}
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-400">Mission</h3>
+        <div className="surface p-4">
+          <h3 className="eyebrow mb-3">Mission</h3>
           <select
             value={selectedVol ?? missionId}
             onChange={(e) => setSelectedVol(e.target.value)}
-            className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-mono text-gray-700 outline-none"
+            className="input-control min-h-11 font-mono"
           >
             {sortedMissions.map((m) => (
               <option key={m.vol_id} value={m.vol_id}>{m.vol_id}</option>
@@ -229,8 +249,8 @@ export default function ResultsViewer() {
         </div>
 
         {/* Layer selector */}
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-400">
+        <div className="surface p-4">
+          <h3 className="eyebrow mb-3">
             <Layers size={13} className="mr-1.5 inline" /> Layer
           </h3>
           <div className="space-y-1.5">
@@ -245,8 +265,8 @@ export default function ResultsViewer() {
                     !available
                       ? "border-gray-50 text-gray-300 cursor-not-allowed"
                       : effectiveLayer === key
-                        ? "border-blue-400 bg-blue-50 text-blue-700"
-                        : "border-gray-100 text-gray-600 hover:border-gray-200"
+                        ? "border-[#68bfae] bg-[#edf9f6] text-[#0f766e]"
+                        : "border-[#dce4e1] text-[#5d6965] hover:border-[#b8c9c3]"
                   }`}
                 >
                   <Eye size={14} />
@@ -259,8 +279,8 @@ export default function ResultsViewer() {
         </div>
 
         {/* Downloads */}
-        <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm">
-          <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-gray-400">
+        <div className="surface p-4">
+          <h3 className="eyebrow mb-3">
             <Download size={13} className="mr-1.5 inline" /> Downloads
           </h3>
           <div className="space-y-1.5">
@@ -271,7 +291,7 @@ export default function ResultsViewer() {
                   href={getFileUrl(`missions/${missionId}/${meta.s3Suffix}`)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-600"
+                  className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
                 >
                   <Download size={12} /> {meta.label} (.tif)
                 </a>
@@ -282,7 +302,7 @@ export default function ResultsViewer() {
                 href={getFileUrl(gaussianPlyKey)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-600"
+                className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
               >
                 <Box size={12} /> Gaussian Point Cloud (.ply)
               </a>
@@ -292,7 +312,7 @@ export default function ResultsViewer() {
                 href={getFileUrl(`missions/${missionId}/colmap/sparse/0/${hasFile("points3D.ply") ? "points3D.ply" : "points3D.bin"}`)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-600"
+                className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
               >
                 <Box size={12} /> Sparse Point Cloud (COLMAP)
               </a>
@@ -301,7 +321,7 @@ export default function ResultsViewer() {
               href={`${getApiBaseUrl()}/browse?prefix=${encodeURIComponent(`missions/${missionId}/tiles/`)}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex items-center gap-2 rounded-xl border border-gray-100 px-3 py-2 text-xs text-gray-600 hover:border-blue-200 hover:text-blue-600"
+              className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
             >
               <Download size={12} /> Tiles folder
             </a>
@@ -310,7 +330,7 @@ export default function ResultsViewer() {
       </div>
 
       {/* Main viewer */}
-      <div className="flex-1 rounded-2xl border border-gray-100 bg-gray-900 shadow-sm overflow-hidden">
+      <div className="min-h-[520px] flex-1 overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#16201d] shadow-[0_20px_50px_rgba(20,32,28,0.12)]">
         <ImageViewer
           key={imageUrl}
           src={imageUrl!}
@@ -318,6 +338,7 @@ export default function ResultsViewer() {
           depthMode={effectiveLayer === "depth"}
         />
       </div>
+    </div>
     </div>
   );
 }

@@ -56,6 +56,12 @@ postgres:
 # Storage / Database connection strings (consumed by all services)
 # --------------------------------------------------------------------------
 storage:
+  # Production must reference a pre-created Secret rather than storing
+  # credentials in Helm values.
+  existingSecret: ""
+  accessKeySecretKey: s3-access-key
+  secretKeySecretKey: s3-secret-key
+  databaseUrlSecretKey: database-url
   s3Endpoint: "http://minio.drone-ai.svc:9000"
   s3PublicEndpoint: ""   # Set to browser-reachable MinIO URL; empty = auto-detect via apiNodePort
   s3Bucket: "drone-ai"
@@ -138,6 +144,17 @@ dashboardApi:
     nodePort: 30080
   cors:
     origins: "*"
+  environment: development
+  auth:
+    disabled: true
+    existingSecret: ""
+    secretKey: api-keys.json
+    sessionSecretKey: session-secret
+    sessionMaxAgeSeconds: 28800
+  uploads:
+    maxFiles: 2500
+    maxFileBytes: 2147483648
+    maxBatchBytes: 53687091200
 
 # --------------------------------------------------------------------------
 # Dashboard Frontend
@@ -145,6 +162,9 @@ dashboardApi:
 dashboardFrontend:
   image: drone-dashboard-frontend
   tag: latest
+  # Empty keeps the local browser-hostname:30080 fallback. Set the public
+  # HTTPS API origin when the frontend is served through an ingress.
+  apiUrl: ""
   resources:
     limits:
       memory: "512Mi"

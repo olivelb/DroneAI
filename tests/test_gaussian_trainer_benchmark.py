@@ -19,6 +19,7 @@ from gaussian_training.benchmark import (  # noqa: E402
     VramSampler,
     dataset_inventory,
     expand_command,
+    hardware_inventory,
     load_benchmark_suite,
     percentile_nearest_rank,
     read_ply_vertex_count,
@@ -123,6 +124,11 @@ def test_percentile_and_summary():
     assert percentile_nearest_rank([1, 2, 3, 4, 5], 0.95) == 5
     assert summary["successful_runs"] == 5
     assert summary["wall_seconds"]["median"] == 3.0
+    assert summary["wall_seconds"]["mean"] == 3.0
+    assert summary["wall_seconds"]["stdev"] == pytest.approx(
+        1.5811388300841898
+    )
+    assert len(summary["wall_seconds"]["mean_ci95"]) == 2
 
 
 def test_vram_sampler_uses_total_delta_only_as_fallback():
@@ -134,6 +140,31 @@ def test_vram_sampler_uses_total_delta_only_as_fallback():
     sampler_with_pid.peak_mib = 321.0
     sampler_with_pid.peak_total_delta_mib = 456.0
     assert sampler_with_pid.stop() == 321.0
+
+
+def test_hardware_inventory_keeps_wsl_fields_when_power_limit_is_na(
+    monkeypatch,
+):
+    class Result:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/lib/wsl/lib/nvidia-smi")
+    responses = iter(
+        (
+            Result("RTX 4070 Laptop, 610.62, 86, [N/A]\n"),
+            Result("CUDA UMD Version: 13.3\n"),
+        )
+    )
+    monkeypatch.setattr("subprocess.run", lambda *args, **kwargs: next(responses))
+
+    inventory = hardware_inventory()
+
+    assert inventory["gpu"] == "RTX 4070 Laptop"
+    assert inventory["driver_version"] == "610.62"
+    assert inventory["temperature_c"] == 86.0
+    assert inventory["power_limit_w"] is None
+    assert inventory["cuda_version"] == "13.3"
 
 
 def test_end_to_end_fake_trainer(tmp_path, monkeypatch):
@@ -158,5 +189,37 @@ def test_end_to_end_fake_trainer(tmp_path, monkeypatch):
     report = run_benchmark_suite(suite, tmp_path / "output")
     summary = report["summaries"][0]
     assert summary["successful_runs"] == 2
-    assert report["runs"][0]["artifacts"]["point_cloud.ply"]["vertices"] == 3
+    assert (
+        report["runs"][0]["artifacts"]["artifacts/point_cloud.ply"]["vertices"]
+        == 3
+    )
+    assert "run-001/artifacts" in report["runs"][0]["command"][-1]
     assert (tmp_path / "output" / "fake-suite" / "benchmark_summary.json").is_file()
+
+
+def test_versioned_albagnac_suite_matches_production_profile(monkeypatch):
+    monkeypatch.setenv("DRONEGS_BIN", "/opt/dronegs")
+    monkeypatch.setenv("ALBAGNAC_DENSE_DATASET", "/data/albagnac")
+    suite = load_benchmark_suite(
+        REPO_ROOT
+        / "docs"
+        / "dronegs"
+        / "benchmarks"
+        / "albagnac-production-v1.example.json"
+    )
+
+    case = suite.cases[0]
+    command = expand_command(
+        suite.backends[0],
+        case,
+        Path("/output/run"),
+        repetition=1,
+    )
+    arguments = dict(zip(command[1::2], command[2::2]))
+
+    assert suite.repetitions == 5
+    assert arguments["--profile-id"] == "DRONEGS_PRODUCTION_PROFILE_V1"
+    assert arguments["--optimizer-profile"] == "reference-absolute"
+    assert arguments["--raster-profile"] == "fastgs"
+    assert arguments["--topology-cooldown"] == "1000"
+    assert arguments["--photometric-finish"] == "1000"
