@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,9 @@ from gaussian_training.backends import (  # noqa: E402
     TrainingRequest,
     resolve_training_backend,
 )
+from shared.dronegs_profile import (  # noqa: E402
+    DRONEGS_PRODUCTION_PROFILE_V1,
+)
 
 
 def request(**overrides) -> TrainingRequest:
@@ -32,6 +36,17 @@ def request(**overrides) -> TrainingRequest:
         "max_width": 1024,
         "tile_mode": 4,
         "seed": 42,
+        "dataset_fingerprint": "test-dataset:sha256:fixture",
+        "dronegs": DroneGSTuning(
+            profile_id="test-profile",
+            topology_cooldown=100,
+            photometric_finish=100,
+            photometric_mse_percent=100,
+            test_every=8,
+            save_eval_images=True,
+            canary_min_psnr=None,
+            canary_min_ssim=None,
+        ),
     }
     values.update(overrides)
     return TrainingRequest(**values)
@@ -62,25 +77,35 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[0] == "/opt/dronegs"
     assert command[command.index("--resize-factor") + 1] == "8"
     assert command[command.index("--seed") + 1] == "42"
-    assert command[command.index("--raster-profile") + 1] == "bounded"
-    assert command[command.index("--topology-cooldown") + 1] == "0"
+    assert command[command.index("--raster-profile") + 1] == "fastgs"
+    assert command[command.index("--topology-cooldown") + 1] == "100"
+    assert command[command.index("--profile-id") + 1] == "test-profile"
+    assert command[command.index("--dataset-fingerprint") + 1] == (
+        "test-dataset:sha256:fixture"
+    )
     assert command[command.index("--run-manifest") + 1] == "/output/trainer_run.json"
     assert command[command.index("--checkpoint-every") + 1] == "2000"
     assert command[command.index("--checkpoint-path") + 1] == (
         "/output/training.ckpt"
     )
+    assert command[command.index("--test-split") + 1] == "modulo"
+    assert command[command.index("--test-guard-percent") + 1] == "0"
     assert "--resize_factor" not in command
 
 
 def test_dronegs_adapter_passes_validated_production_tuning():
     training_request = request(
         dronegs=DroneGSTuning(
+            profile_id="custom",
             optimizer_profile="dev38-staged-rotation008-absgrad050-fastgs",
             pruning_policy="spatial-bounds",
             raster_profile="fastgs",
             topology_cooldown=100,
             photometric_finish=100,
             photometric_mse_percent=100,
+            test_every=8,
+            canary_min_psnr=None,
+            canary_min_ssim=None,
         )
     )
 
@@ -118,8 +143,29 @@ manifest = Path(arguments["--run-manifest"])
 manifest.write_text(
     json.dumps({
         "contract_version": 1,
+        "backend": "dronegs-native-mrnf-fastgs",
+        "trainer_version": "test",
+        "git_revision": "test",
         "status": "completed",
+        "dataset": {"fingerprint": arguments["--dataset-fingerprint"]},
+        "parameters": {
+            "profile_id": arguments["--profile-id"],
+            "optimizer_profile": arguments["--optimizer-profile"],
+            "pruning_policy": arguments["--pruning-policy"],
+            "raster_profile": arguments["--raster-profile"],
+            "effective_raster_profile": arguments["--raster-profile"],
+            "test_split": arguments["--test-split"],
+            "test_guard_percent": int(arguments["--test-guard-percent"]),
+        },
+        "timings": {},
         "metrics": {"psnr": 21.5, "ssim": 0.58},
+        "artifacts": {
+            "point_cloud.ply": {
+                "path": str(output / "point_cloud.ply"),
+                "sha256": None,
+                "bytes": 0,
+            },
+        },
     }),
     encoding="utf-8",
 )
@@ -164,7 +210,14 @@ def test_dronegs_adapter_allows_nonempty_output_only_for_resume(tmp_path):
     training_request = request(
         data_path=str(dataset),
         output_path=str(output),
-        dronegs=DroneGSTuning(resume_from=str(checkpoint)),
+        dronegs=DroneGSTuning(
+            profile_id="test-profile",
+            topology_cooldown=100,
+            photometric_finish=100,
+            resume_from=str(checkpoint),
+            canary_min_psnr=None,
+            canary_min_ssim=None,
+        ),
     )
 
     command = DroneGSBackend(str(executable)).build_command(training_request)
@@ -192,8 +245,29 @@ output.mkdir(parents=True, exist_ok=True)
 Path(arguments["--run-manifest"]).write_text(
     json.dumps({
         "contract_version": 1,
+        "backend": "dronegs-native-mrnf-fastgs",
+        "trainer_version": "test",
+        "git_revision": "test",
         "status": "completed",
+        "dataset": {"fingerprint": arguments["--dataset-fingerprint"]},
+        "parameters": {
+            "profile_id": arguments["--profile-id"],
+            "optimizer_profile": arguments["--optimizer-profile"],
+            "pruning_policy": arguments["--pruning-policy"],
+            "raster_profile": arguments["--raster-profile"],
+            "effective_raster_profile": arguments["--raster-profile"],
+            "test_split": arguments["--test-split"],
+            "test_guard_percent": int(arguments["--test-guard-percent"]),
+        },
+        "timings": {},
         "metrics": {"psnr": 17.0, "ssim": 0.30},
+        "artifacts": {
+            "point_cloud.ply": {
+                "path": str(output / "point_cloud.ply"),
+                "sha256": None,
+                "bytes": 0,
+            },
+        },
     }),
     encoding="utf-8",
 )
@@ -205,6 +279,9 @@ Path(arguments["--run-manifest"]).write_text(
         data_path=str(dataset),
         output_path=str(tmp_path / "output"),
         dronegs=DroneGSTuning(
+            profile_id="test-profile",
+            topology_cooldown=100,
+            photometric_finish=100,
             test_every=8,
             canary_min_psnr=18.0,
             canary_min_ssim=0.35,
@@ -239,6 +316,32 @@ def test_dronegs_adapter_rejects_nonempty_output(tmp_path):
         )
 
 
+def test_spatial_split_requires_valid_guard_configuration():
+    tuning = {
+        "profile_id": "custom",
+        "topology_cooldown": 100,
+        "photometric_finish": 100,
+        "test_every": 8,
+        "canary_min_psnr": None,
+        "canary_min_ssim": None,
+    }
+    with pytest.raises(ValueError, match="test_guard_percent"):
+        DroneGSTuning(**tuning, test_guard_percent=25)
+    with pytest.raises(ValueError, match="unsupported DroneGS test_split"):
+        DroneGSTuning(**tuning, test_split="random")
+
+    spatial = DroneGSTuning(
+        **tuning,
+        test_split="spatial-block",
+        test_guard_percent=25,
+    )
+    command = DroneGSBackend("/opt/dronegs").build_command(
+        request(dronegs=spatial)
+    )
+    assert command[command.index("--test-split") + 1] == "spatial-block"
+    assert command[command.index("--test-guard-percent") + 1] == "25"
+
+
 def test_resolver_defaults_to_dronegs():
     backend = resolve_training_backend(environment={})
 
@@ -257,3 +360,92 @@ def test_resolver_supports_environment_selection():
 def test_resolver_rejects_unknown_backend():
     with pytest.raises(ValueError, match="unknown Gaussian training backend"):
         resolve_training_backend("other", environment={})
+
+
+def test_production_profile_command_matches_accepted_dev45_recipe():
+    profile = DRONEGS_PRODUCTION_PROFILE_V1
+    training_request = TrainingRequest(
+        data_path="/data",
+        output_path="/output",
+        iterations=profile.iterations,
+        strategy="mrnf",
+        sh_degree=profile.sh_degree,
+        max_cap=profile.cap_max,
+        resize_factor=profile.data_factor,
+        max_width=profile.max_width,
+        tile_mode=profile.tile_mode,
+        seed=profile.seed,
+        dataset_fingerprint="benchmark-fixture",
+        dronegs=DroneGSTuning(),
+    )
+
+    command = DroneGSBackend("/opt/dronegs").build_command(training_request)
+    arguments = dict(zip(command[1::2], command[2::2]))
+
+    assert arguments["--profile-id"] == "DRONEGS_PRODUCTION_PROFILE_V1"
+    assert arguments["--optimizer-profile"] == "reference-absolute"
+    assert arguments["--pruning-policy"] == "spatial-bounds"
+    assert arguments["--raster-profile"] == "fastgs"
+    assert arguments["--iter"] == "15000"
+    assert arguments["--resize-factor"] == "4"
+    assert arguments["--max-width"] == "1600"
+    assert arguments["--max-cap"] == "1500000"
+    assert arguments["--topology-cooldown"] == "1000"
+    assert arguments["--photometric-finish"] == "1000"
+    assert arguments["--photometric-mse-percent"] == "100"
+    assert arguments["--test-split"] == "modulo"
+    assert arguments["--test-guard-percent"] == "0"
+
+
+def test_dronegs_cancellation_terminates_process_and_keeps_checkpoint(
+    tmp_path,
+):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    executable = tmp_path / "slow_dronegs"
+    executable.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+import time
+from pathlib import Path
+
+arguments = dict(zip(sys.argv[1::2], sys.argv[2::2]))
+checkpoint = Path(arguments["--checkpoint-path"])
+checkpoint.parent.mkdir(parents=True, exist_ok=True)
+checkpoint.write_bytes(b"recoverable")
+print(json.dumps({
+    "event": "checkpoint_saved",
+    "iteration": 10,
+    "checkpoint": str(checkpoint),
+}), flush=True)
+time.sleep(60)
+""",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    checks = 0
+    checkpoints = []
+
+    def cancel() -> None:
+        nonlocal checks
+        checks += 1
+        if checks >= 3:
+            raise RuntimeError("cancel requested")
+
+    started = time.monotonic()
+    with pytest.raises(RuntimeError, match="cancel requested"):
+        DroneGSBackend(str(executable)).train(
+            request(
+                data_path=str(dataset),
+                output_path=str(tmp_path / "output"),
+            ),
+            cancellation_check=cancel,
+            checkpoint_fn=lambda path, iteration: checkpoints.append(
+                (path, iteration)
+            ),
+        )
+
+    assert time.monotonic() - started < 5
+    assert checkpoints[0][1] == 10
+    assert checkpoints[0][0].read_bytes() == b"recoverable"

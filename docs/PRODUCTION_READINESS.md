@@ -1,0 +1,145 @@
+# DroneAI production readiness
+
+Date: 2026-07-28
+
+## Supported deployment boundary
+
+The repository now provides an authenticated, role-separated **single-tenant**
+production baseline. It is suitable behind a TLS ingress for one organization.
+It is not yet a public multi-tenant SaaS: that boundary additionally requires
+OIDC, tenant ownership columns and object-prefix isolation.
+
+## Required production configuration
+
+Deploy with `charts/drone-ai/values-production.example.yaml` as a reviewed
+overlay. Before installation, create:
+
+- the storage Secret with `s3-access-key`, `s3-secret-key` and `database-url`;
+- the API auth Secret with `api-keys.json` and a distinct random
+  `session-secret` of at least 32 characters;
+- the ingress TLS Secret.
+
+`api-keys.json` is a JSON array:
+
+```json
+[
+  {
+    "key": "a-random-secret-of-at-least-32-bytes",
+    "subject": "droneai-operations",
+    "role": "admin"
+  }
+]
+```
+
+Create the Kubernetes Secret from local files that are kept outside the
+repository:
+
+```bash
+openssl rand -base64 48 > session-secret
+kubectl -n drone-ai create secret generic drone-ai-api-auth \
+  --from-file=api-keys.json=./api-keys.json \
+  --from-file=session-secret=./session-secret
+```
+
+Do not pass either value as a command-line literal or commit these files.
+
+Roles are cumulative:
+
+- `viewer`: status, parameters, datasets and artifacts;
+- `operator`: viewer plus mission start/cancel/resume and upload;
+- `admin`: operator plus mission/dataset deletion.
+
+Clients use `Authorization: Bearer <key>` or `X-API-Key`. WebSocket clients use
+an `access_token` query parameter or the `droneai_api_key` secure cookie.
+Mission Studio prompts for the provisioned key and exchanges it through
+`POST /auth/session` for an eight-hour HttpOnly, Secure, SameSite=Lax cookie.
+The cookie contains a signed expiry-bearing session token, not the raw key.
+The raw key is not retained in JavaScript storage, embedded in the frontend
+bundle or placed in the WebSocket URL. `DELETE /auth/session` signs out.
+
+Set `dashboardFrontend.apiUrl` to the public HTTPS API origin. The value is
+read by the Next.js server at runtime, so host changes do not require an image
+rebuild. `CORS_ORIGINS` must contain the corresponding frontend origin.
+
+Production startup fails when:
+
+- `CORS_ORIGINS` contains `*`;
+- authentication is disabled or no API key registry is present;
+- S3/database variables are missing or use known local defaults.
+
+## Upload policy
+
+The API accepts aerial images plus DJI/GNSS sidecars and enforces:
+
+- `DRONEAI_UPLOAD_MAX_FILES` (default 2,500);
+- `DRONEAI_UPLOAD_MAX_FILE_BYTES` (default 2 GiB);
+- `DRONEAI_UPLOAD_MAX_BATCH_BYTES` (default 50 GiB);
+- a fixed extension allow-list.
+
+Retention and lifecycle rules remain the responsibility of the selected S3
+service and must be configured before public ingestion.
+
+## Geodetic product contract
+
+Horizontal output uses one recorded metric CRS for the entire mission. Small
+metropolitan French missions use the appropriate RGF93 CC9 zone; wide missions
+fall back to Lambert-93 and other countries to UTM unless an EPSG code is
+selected explicitly.
+
+DJI MRK `Ellh` remains **ellipsoidal**. The CRS sidecar records the source and
+vertical uncertainty and states that no orthometric conversion was applied.
+NGF-IGN69 publication requires an explicit, versioned RAF20/Circé grid
+transformation and must not be inferred from EXIF.
+
+## Release gates
+
+Required on every candidate:
+
+1. Full Python suite in API/CUDA-capable test images.
+2. Native DroneGS CPU and CUDA tests on a real GPU.
+3. Frontend lint, TypeScript and production build.
+4. Helm lint with the production overlay.
+5. One complete RTK preparation run and one non-RTK regression scene.
+6. Immutable benchmark bundle with binary/dataset/artifact hashes.
+
+The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
+thresholds remain a measured gate: use at least five complete ALBAGNAC and
+SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
+
+## SAVERES RTK release evidence
+
+The complete 1,066-image SAVERES preparation run registered every camera and
+completed the cold path, including a 15.20 GB Windows-to-WSL copy and
+undistortion, in about 41 minutes. The optional covariance-aware RTK pass added
+25.4 seconds and reduced the 3D camera-prior residual median from 0.343 m to
+0.106 m and P95 from 0.750 m to 0.210 m. Exact timings and diagnostics are
+recorded in
+`docs/benchmarks/saleres-alignment-rtk-2026-07-28.json`.
+
+This validates the operational speed gate and the RTK integration path. It does
+not replace an independent GCP/checkpoint accuracy report.
+
+## SAVERES DroneGS release evidence
+
+Five complete `DRONEGS_PRODUCTION_PROFILE_V1` runs, with seeds 42 through 46,
+finished successfully on the 1,066-image RTK scene. Each run trained on 932
+views, evaluated 134 held-out views, reached the configured 1.5-million
+Gaussian cap and produced a distinct, hashed PLY.
+
+The median end-to-end training time was 607.1 seconds (10 min 07 s), with a
+616.5-second mean and a 603.8–655.5-second observed range. Median peak VRAM was
+2,124 MiB on the RTX 4070 Laptop GPU. Held-out quality was highly repeatable:
+mean PSNR 19.4122 dB (sample standard deviation 0.0075) and mean SSIM 0.49155
+(sample standard deviation 0.00029).
+
+The lightweight, reviewable record is
+`docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json`. The complete
+6,917,872,584-byte evidence archive remains outside Git at
+`/home/olivier/droneai-workspaces/benchmarks/saleres-dronegs-production-v1.tar.gz`;
+its SHA-256 is
+`5ed455a9f4a1f3cc628bec0d18f8fa15231490e2e86e13d5d7f186780cf9b7e2`.
+
+This closes the repeated-run gate for SAVERES and production V1. It does not
+promote the optional spatial-block V2 candidate: that requires equivalent
+ALBAGNAC and SAVERES comparison runs and independently chosen acceptance
+thresholds.

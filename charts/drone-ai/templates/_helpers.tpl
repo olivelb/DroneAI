@@ -27,6 +27,14 @@ Namespace helper — always use global.namespace
 {{- end }}
 
 {{/*
+Storage Secret name: generated for local development, externally managed in
+production.
+*/}}
+{{- define "drone-ai.storageSecretName" -}}
+{{- default "drone-ai-storage" .Values.storage.existingSecret -}}
+{{- end }}
+
+{{/*
 Common environment variables injected into all worker pods
 */}}
 {{- define "drone-ai.commonEnv" -}}
@@ -39,13 +47,13 @@ Common environment variables injected into all worker pods
 - name: S3_ACCESS_KEY
   valueFrom:
     secretKeyRef:
-      name: drone-ai-storage
-      key: s3-access-key
+      name: {{ include "drone-ai.storageSecretName" . }}
+      key: {{ .Values.storage.accessKeySecretKey }}
 - name: S3_SECRET_KEY
   valueFrom:
     secretKeyRef:
-      name: drone-ai-storage
-      key: s3-secret-key
+      name: {{ include "drone-ai.storageSecretName" . }}
+      key: {{ .Values.storage.secretKeySecretKey }}
 - name: S3_REGION
   value: {{ .Values.storage.s3Region | quote }}
 - name: S3_PUBLIC_ENDPOINT
@@ -53,8 +61,8 @@ Common environment variables injected into all worker pods
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: drone-ai-storage
-      key: database-url
+      name: {{ include "drone-ai.storageSecretName" . }}
+      key: {{ .Values.storage.databaseUrlSecretKey }}
 {{- end }}
 
 {{/*

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import struct
 
 import pytest
@@ -9,8 +10,10 @@ from tools.run_local_colmap import (
     select_records,
     stage_images,
     sparse_model_path,
+    sparse_model_identity,
     write_colmap_references,
 )
+from shared.rtk_refinement import inject_database_pose_priors
 from shared.geo_alignment import estimate_sim3
 
 
@@ -95,6 +98,22 @@ def test_stage_images_only_writes_to_marked_workspace(tmp_path):
     ] == "DJI_0000.JPG"
 
 
+def test_stage_images_can_symlink_read_only_source_dataset(tmp_path):
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    records = _records(1)
+    source = dataset / records[0]["file"]
+    source.write_bytes(b"source")
+    workspace = tmp_path / "workspace"
+    ensure_workspace(dataset, workspace)
+
+    stage_images(dataset, workspace, records, staging_mode="symlink")
+
+    staged = workspace / "images" / records[0]["file"]
+    assert staged.is_symlink()
+    assert staged.read_bytes() == b"source"
+
+
 def test_sparse_model_path_selects_most_registered_images(tmp_path):
     sparse_root = tmp_path / "sparse"
     for name, image_count in (("0", 3), ("1", 25), ("2", 8)):
@@ -108,6 +127,18 @@ def test_sparse_model_path_selects_most_registered_images(tmp_path):
     assert selected == sparse_root / "1"
 
 
+def test_sparse_model_identity_changes_with_model_content(tmp_path):
+    model = tmp_path / "model"
+    model.mkdir()
+    for filename in ("cameras.bin", "images.bin", "points3D.bin"):
+        (model / filename).write_bytes(filename.encode("ascii"))
+
+    first = sparse_model_identity(model)
+    (model / "points3D.bin").write_bytes(b"updated")
+
+    assert sparse_model_identity(model) != first
+
+
 def test_reference_file_uses_recommended_projected_crs(tmp_path):
     records = _records(3)
 
@@ -115,7 +146,159 @@ def test_reference_file_uses_recommended_projected_crs(tmp_path):
 
     assert len(references) == 3
     assert (tmp_path / "geo_data.txt.crs").read_text(encoding="utf-8") == "EPSG:32631\n"
+    metadata = json.loads(
+        (tmp_path / "geo_data.txt.crs.json").read_text(encoding="utf-8")
+    )
+    assert metadata["projected_crs"] == "EPSG:32631"
+    assert metadata["vertical"]["reference"] == "unknown"
+    assert metadata["vertical"]["orthometric_conversion_applied"] is False
     assert len((tmp_path / "geo_data.txt").read_text(encoding="utf-8").splitlines()) == 3
+
+
+def test_inject_database_pose_priors_uses_mrk_position_and_enu_covariance(tmp_path):
+    database_path = tmp_path / "database.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE images (
+            image_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            camera_id INTEGER NOT NULL
+        );
+        CREATE TABLE frame_data (
+            frame_id INTEGER NOT NULL,
+            data_id INTEGER NOT NULL,
+            sensor_id INTEGER NOT NULL,
+            sensor_type INTEGER NOT NULL
+        );
+        CREATE TABLE pose_priors (
+            pose_prior_id INTEGER PRIMARY KEY,
+            corr_data_id INTEGER NOT NULL,
+            corr_sensor_id INTEGER NOT NULL,
+            corr_sensor_type INTEGER NOT NULL,
+            position BLOB,
+            position_covariance BLOB,
+            gravity BLOB,
+            coordinate_system INTEGER NOT NULL
+        );
+        """
+    )
+    for index in range(3):
+        image_id = index + 1
+        connection.execute(
+            "INSERT INTO images VALUES (?, ?, 1)",
+            (image_id, f"DJI_{index:04d}.JPG"),
+        )
+        connection.execute(
+            "INSERT INTO frame_data VALUES (?, ?, 1, 0)",
+            (image_id, image_id),
+        )
+        connection.execute(
+            "INSERT INTO pose_priors VALUES (?, ?, 1, 0, ?, ?, NULL, 0)",
+            (
+                image_id,
+                image_id,
+                struct.pack("<3d", 0.0, 0.0, 0.0),
+                struct.pack("<9d", *([float("nan")] * 9)),
+            ),
+        )
+    connection.commit()
+    connection.close()
+    records = _records(3)
+    for record in records:
+        record["gps"].update(
+            {
+                "source": "dji_mrk",
+                "position_std_m": {
+                    "east_m": 0.02,
+                    "north_m": 0.03,
+                    "vertical_m": 0.04,
+                },
+            }
+        )
+
+    report = inject_database_pose_priors(database_path, records)
+
+    connection = sqlite3.connect(database_path)
+    position, covariance, coordinate_system = connection.execute(
+        """
+        SELECT position, position_covariance, coordinate_system
+        FROM pose_priors WHERE pose_prior_id = 1
+        """
+    ).fetchone()
+    connection.close()
+    assert struct.unpack("<3d", position) == (43.0, 1.0, 100.0)
+    assert struct.unpack("<9d", covariance) == pytest.approx(
+        (0.0004, 0, 0, 0, 0.0009, 0, 0, 0, 0.0016)
+    )
+    assert coordinate_system == 0
+    assert report["updated_pose_priors"] == 3
+    assert report["covariance_coordinate_system"] == "local_cartesian_enu"
+
+
+def test_inject_database_pose_priors_rejects_partial_mrk_coverage(tmp_path):
+    database_path = tmp_path / "database.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE images (
+            image_id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            camera_id INTEGER NOT NULL
+        );
+        CREATE TABLE frame_data (
+            frame_id INTEGER NOT NULL,
+            data_id INTEGER NOT NULL,
+            sensor_id INTEGER NOT NULL,
+            sensor_type INTEGER NOT NULL
+        );
+        CREATE TABLE pose_priors (
+            pose_prior_id INTEGER PRIMARY KEY,
+            corr_data_id INTEGER NOT NULL,
+            corr_sensor_id INTEGER NOT NULL,
+            corr_sensor_type INTEGER NOT NULL,
+            position BLOB,
+            position_covariance BLOB,
+            gravity BLOB,
+            coordinate_system INTEGER NOT NULL
+        );
+        """
+    )
+    for image_id in range(1, 11):
+        connection.execute(
+            "INSERT INTO images VALUES (?, ?, 1)",
+            (image_id, f"DJI_{image_id - 1:04d}.JPG"),
+        )
+        connection.execute(
+            "INSERT INTO frame_data VALUES (?, ?, 1, 0)",
+            (image_id, image_id),
+        )
+        connection.execute(
+            "INSERT INTO pose_priors VALUES (?, ?, 1, 0, ?, ?, NULL, 0)",
+            (
+                image_id,
+                image_id,
+                struct.pack("<3d", 0.0, 0.0, 0.0),
+                struct.pack("<9d", *([float("nan")] * 9)),
+            ),
+        )
+    connection.commit()
+    connection.close()
+    records = _records(3)
+    for record in records:
+        record["gps"].update(
+            {
+                "source": "dji_mrk",
+                "position_std_m": {
+                    "east_m": 0.02,
+                    "north_m": 0.03,
+                    "vertical_m": 0.04,
+                },
+            }
+        )
+
+    with pytest.raises(RuntimeError, match="3/10"):
+        inject_database_pose_priors(database_path, records)
 
 
 def test_alignment_transform_schema_is_accepted_by_gaussian_loader():

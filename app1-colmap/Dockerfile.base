@@ -27,7 +27,7 @@ RUN cd /tmp/ceres-solver && mkdir build && cd build && \
     cmake .. -GNinja \
         -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
         -DUSE_CUDA=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
+        -DCMAKE_CUDA_ARCHITECTURES="86;89" \
         -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
         -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
         -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12
@@ -47,24 +47,30 @@ RUN set -e; \
     echo "Ceres cuDSS + CUDA support verified OK"; \
     rm -rf /tmp/ceres-solver
 
-# COLMAP 4.0.1 (cloned by setup_deps.sh)
+# COLMAP 4.1.1 with GLOMAP, ONNX features/LightGlue and Caspar
+# (cloned and checksum-pinned by setup_deps.sh)
 # Pre-downloaded FetchContent deps avoid network calls during cmake
 COPY app1-colmap/colmap-deps /tmp/colmap-deps
 COPY app1-colmap/colmap-local /tmp/colmap
 RUN cd /tmp/colmap \
     && sed -i 's|URL https://github.com/PoseLib/PoseLib/archive/[^ ]*|URL file:///tmp/colmap-deps/poselib.zip|' src/thirdparty/CMakeLists.txt \
-    && sed -i 's|URL https://github.com/ahojnnes/faiss/archive/[^ ]*|URL file:///tmp/colmap-deps/faiss.zip|' src/thirdparty/CMakeLists.txt \
+    && sed -i 's|URL https://github.com/facebookresearch/faiss/archive/[^ ]*|URL file:///tmp/colmap-deps/faiss.zip|' src/thirdparty/CMakeLists.txt \
+    && sed -i 's|URL https://github.com/microsoft/onnxruntime/releases/download/[^ ]*|URL file:///tmp/colmap-deps/onnxruntime.tgz|' cmake/FindDependencies.cmake \
     && rm -rf build && mkdir build && cd build \
     && cmake .. -GNinja \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCOLMAP_MINIMAL_PIPELINE_BUILD=ON \
         -DCUDA_ENABLED=ON \
-        -DONNX_ENABLED=OFF \
+        -DONNX_ENABLED=ON \
+        -DFETCH_ONNX=ON \
+        -DDOWNLOAD_ENABLED=OFF \
+        -DCASPAR_ENABLED=ON \
+        -DCASPAR_USE_DOUBLE=OFF \
+        -DGUI_ENABLED=OFF \
         -DLSD_ENABLED=OFF \
         -DCGAL_ENABLED=OFF \
         -DIPO_ENABLED=OFF \
         -DOPENGL_ENABLED=OFF \
-        -DCMAKE_CUDA_ARCHITECTURES="86-real;89-real" \
+        -DCMAKE_CUDA_ARCHITECTURES="86;89" \
         -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
         -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
     && ninja install \
@@ -114,7 +120,8 @@ RUN apt-get update \
 
 COPY app1-colmap/dronegs/ /build/dronegs/
 
-RUN cmake -S . -B build -G Ninja \
+RUN rm -rf build \
+    && cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DDRONEGS_BUILD_TESTS=OFF \
         -DDRONEGS_CUDA_ARCHITECTURES=portable \
@@ -124,7 +131,7 @@ RUN cmake -S . -B build -G Ninja \
 # ============================================================
 # Stage 4: Slim runtime image (24.04 — matches all builder stages)
 # ============================================================
-FROM nvidia/cuda:12.8.1-base-ubuntu24.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -148,14 +155,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 libopengl0 libglew2.2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Selective CUDA runtime libs (cuBLAS, cuSPARSE, cuSOLVER, cuDSS for COLMAP/Ceres)
-# cudart is already in cuda:base; cuDNN/cufft/npp not needed
+# cuDSS is not part of the CUDA/cuDNN runtime image. The other copied files
+# are harmless duplicates and keep Ceres/ONNX resolution deterministic.
 COPY --from=builder /cuda-slim/ /usr/local/cuda/lib64/
 
 # Copy COLMAP + Ceres installed binaries and libraries from builder
 COPY --from=builder /usr/local/bin/ /usr/local/bin/
 COPY --from=builder /usr/local/lib/ /usr/local/lib/
 COPY --from=builder /usr/local/share/colmap/ /usr/local/share/colmap/
+COPY app1-colmap/colmap-deps/aliked-n16rot.onnx \
+     app1-colmap/colmap-deps/aliked-n32.onnx \
+     app1-colmap/colmap-deps/aliked-lightglue.onnx \
+     app1-colmap/colmap-deps/sift-lightglue.onnx \
+     /usr/local/share/colmap/models/
+ENV COLMAP_MODEL_DIR="/usr/local/share/colmap/models"
 
 # Copy all installed Python packages from pip-builder
 COPY --from=pip-builder /usr/local/lib/python3.12/dist-packages/ /usr/local/lib/python3.12/dist-packages/

@@ -8,6 +8,7 @@ RUN npm ci
 
 COPY app4-dashboard/frontend/ ./
 RUN npm run build
+RUN npm prune --omit=dev && npm cache clean --force
 
 # Stage 2: Run
 FROM node:20-alpine AS runner

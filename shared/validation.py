@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.pipeline_params import PARAMETER_METADATA, PARAM_OVERRIDE_KEYS
+from shared.projected_crs import normalize_epsg
 
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -135,4 +136,27 @@ def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
         elif parameter_type == "bool":
             if not isinstance(value, bool) and str(value).strip().lower() not in BOOLEAN_STRINGS:
                 raise ValueError(f"{key} must be a boolean")
+        elif key == "projected_crs" and str(value).strip():
+            normalize_epsg(str(value))
+
+    if {
+        "gps_pair_min_neighbors",
+        "gps_pair_max_neighbors",
+    }.issubset(overrides):
+        minimum_neighbors = int(overrides["gps_pair_min_neighbors"])
+        maximum_neighbors = int(overrides["gps_pair_max_neighbors"])
+        if minimum_neighbors > maximum_neighbors:
+            raise ValueError(
+                "gps_pair_min_neighbors must be <= gps_pair_max_neighbors"
+            )
+
+    if (
+        str(overrides.get("alignment_engine", "")).lower() == "caspar"
+        and str(overrides.get("camera_model", "")).upper() == "OPENCV"
+    ):
+        raise ValueError(
+            "alignment_engine=caspar requires camera_model PINHOLE or SIMPLE_RADIAL"
+        )
+    if str(overrides.get("projected_crs_mode", "")).lower() == "custom":
+        normalize_epsg(str(overrides.get("projected_crs", "")))
     return overrides

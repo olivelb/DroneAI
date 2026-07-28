@@ -16,7 +16,7 @@ binary, container, Python adapter or vcpkg installation.
 the repository build, then `PATH`. Unknown values fail before a mission starts
 instead of silently choosing a fallback.
 
-The production profile uses:
+`DRONEGS_PRODUCTION_PROFILE_V1` is the immutable production recipe. It uses:
 
 - optimizer profile `reference-absolute`;
 - structural FastGS buckets/checkpoints and warp-cooperative backward;
@@ -46,6 +46,9 @@ remain downstream of this boundary.
 ## Recovery contract
 
 By default, DroneGS atomically replaces `training.ckpt` every 2,000 steps.
+Checkpoint format V3 appends a payload checksum, uses fixed-width fields for
+new boolean/count values, fsyncs the temporary file, and publishes it with an
+atomic replacement that preserves the previous checkpoint on fallback paths.
 The checkpoint contains:
 
 - all Gaussian parameters;
@@ -54,18 +57,26 @@ The checkpoint contains:
 - active SH degree and schedule state;
 - optimizer step, deterministic seed and scene/config fingerprints.
 
-If a mission is restarted with an incomplete output directory and a checkpoint
-but no completed `trainer_run.json`, the pipeline automatically supplies
-`--resume-from`. Dataset and training-configuration fingerprints must match or
-the native trainer refuses the checkpoint. A deliberately paused native
-canary exits with code 75 after writing a checkpoint; ordinary completed jobs
-exit zero. After a completed model passes its quality canary, the Python
-pipeline removes the large optimizer checkpoint; the PLY, manifest, canary and
-evaluation artifacts become the compact durable recovery point.
+The worker stores recovery state outside the disposable mission workspace and
+uploads every native `checkpoint_saved` event under the mission's
+`gaussian-checkpoints/` S3 prefix. A replacement pod restores that prefix
+before training and automatically supplies `--resume-from` when it finds an
+incomplete run. Dataset and training-configuration fingerprints must match or
+the native trainer refuses the checkpoint.
+
+The adapter polls cancellation every 250 ms even when DroneGS is silent. It
+sends SIGTERM to the complete process group, waits up to ten seconds, then
+sends SIGKILL. The latest atomic local/S3 checkpoint is preserved. Recovery
+state is deleted only after the PLY, strict manifest, passed canary and final
+Gaussian artifacts have all been promoted.
+
+Completed-result reuse additionally requires the current dataset fingerprint,
+trainer binary SHA-256, exact requested and effective profiles, canary
+thresholds, PLY size and PLY SHA-256.
 
 ## Canary contract
 
-The production split reserves cameras where
+Production V1 reserves cameras where
 `scene_index % gs_test_every == 0` (`gs_test_every=8`). Training must produce a
 completed manifest and meet both configured thresholds:
 
@@ -75,6 +86,14 @@ completed manifest and meet both configured thresholds:
 The adapter atomically writes `canary_result.json`. A failed canary stops the
 orthomosaic pipeline while preserving the PLY, manifest, evaluation pairs and
 checkpoint for diagnosis.
+
+The modulo split remains useful for frozen benchmark parity but is correlated
+for sequential flights. Custom profiles can select deterministic
+`spatial-block` evaluation and a guard ring excluded from training; manifests
+record training, held-out and ignored counts. This is not silently substituted
+into production V1 because doing so would invalidate the accepted dev.45
+metric baseline. ALBAGNAC and SAVERES comparison runs remain the gate for a
+future immutable V2 threshold.
 
 ## Source safety
 

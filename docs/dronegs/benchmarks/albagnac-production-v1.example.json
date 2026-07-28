@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "name": "albagnac-dronegs-production-v1",
+  "repetitions": 5,
+  "backends": [
+    {
+      "name": "dronegs-production-v1",
+      "required_artifact_glob": "**/*.ply",
+      "command": [
+        "${DRONEGS_BIN}",
+        "--data-path", "{data_path}",
+        "--output-path", "{output_path}",
+        "--iter", "{iterations}",
+        "--strategy", "{strategy}",
+        "--sh-degree", "{sh_degree}",
+        "--max-cap", "{max_cap}",
+        "--resize-factor", "{resize_factor}",
+        "--max-width", "{max_width}",
+        "--tile-mode", "{tile_mode}",
+        "--seed", "{seed}",
+        "--run-manifest", "{run_manifest}",
+        "--profile-id", "{profile_id}",
+        "--optimizer-profile", "{optimizer_profile}",
+        "--pruning-policy", "{pruning_policy}",
+        "--raster-profile", "{raster_profile}",
+        "--sh-degree-interval", "{sh_degree_interval}",
+        "--topology-cooldown", "{topology_cooldown}",
+        "--photometric-finish", "{photometric_finish}",
+        "--photometric-mse-percent", "{photometric_mse_percent}",
+        "--test-every", "{test_every}",
+        "--test-split", "{test_split}",
+        "--test-guard-percent", "{test_guard_percent}",
+        "--save-eval-images", "1",
+        "--checkpoint-every", "{checkpoint_every}",
+        "--checkpoint-path", "{output_path}/training.ckpt"
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "name": "albagnac-15k",
+      "data_path": "${ALBAGNAC_DENSE_DATASET}",
+      "parameters": {
+        "iterations": 15000,
+        "strategy": "mrnf",
+        "sh_degree": 3,
+        "max_cap": 1500000,
+        "resize_factor": 4,
+        "max_width": 1600,
+        "tile_mode": 4,
+        "seed": 42,
+        "profile_id": "DRONEGS_PRODUCTION_PROFILE_V1",
+        "optimizer_profile": "reference-absolute",
+        "pruning_policy": "spatial-bounds",
+        "raster_profile": "fastgs",
+        "sh_degree_interval": 1000,
+        "topology_cooldown": 1000,
+        "photometric_finish": 1000,
+        "photometric_mse_percent": 100,
+        "test_every": 8,
+        "test_split": "modulo",
+        "test_guard_percent": 0,
+        "checkpoint_every": 2000
+      }
+    }
+  ]
+}

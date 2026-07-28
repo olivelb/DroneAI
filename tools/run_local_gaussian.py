@@ -27,6 +27,9 @@ from shared.geo_alignment import (  # noqa: E402
     compute_reconstruction_alignment,
     write_alignment_transform,
 )
+from shared.dronegs_profile import (  # noqa: E402
+    DRONEGS_PRODUCTION_PROFILE_V1,
+)
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 
@@ -43,6 +46,7 @@ class GaussianProfile:
     resolution: float
     filter_enabled: bool
     seed: int
+    profile_id: str
     optimizer_profile: str
     pruning_policy: str
     raster_profile: str
@@ -52,6 +56,8 @@ class GaussianProfile:
     photometric_mse_percent: int
     checkpoint_every: int
     test_every: int
+    test_split: str
+    test_guard_percent: int
     canary_min_psnr: float
     canary_min_ssim: float
 
@@ -70,6 +76,7 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.25,
         filter_enabled=False,
         seed=42,
+        profile_id="dronegs-smoke-v1",
         optimizer_profile="reference-absolute",
         pruning_policy="spatial-bounds",
         raster_profile="bounded",
@@ -79,6 +86,8 @@ PROFILES: dict[str, GaussianProfile] = {
         photometric_mse_percent=100,
         checkpoint_every=100,
         test_every=8,
+        test_split="modulo",
+        test_guard_percent=0,
         canary_min_psnr=0.0,
         canary_min_ssim=0.0,
     ),
@@ -94,6 +103,7 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.10,
         filter_enabled=True,
         seed=42,
+        profile_id="dronegs-low-memory-v1",
         optimizer_profile="reference-absolute",
         pruning_policy="spatial-bounds",
         raster_profile="bounded",
@@ -103,6 +113,8 @@ PROFILES: dict[str, GaussianProfile] = {
         photometric_mse_percent=100,
         checkpoint_every=1_000,
         test_every=8,
+        test_split="spatial-block",
+        test_guard_percent=25,
         canary_min_psnr=15.0,
         canary_min_ssim=0.10,
     ),
@@ -118,17 +130,38 @@ PROFILES: dict[str, GaussianProfile] = {
         resolution=0.05,
         filter_enabled=True,
         seed=42,
-        optimizer_profile="reference-absolute",
-        pruning_policy="spatial-bounds",
-        raster_profile="bounded",
-        sh_degree_interval=1_000,
-        topology_cooldown=1_000,
-        photometric_finish=1_000,
-        photometric_mse_percent=100,
-        checkpoint_every=2_000,
-        test_every=8,
-        canary_min_psnr=18.0,
-        canary_min_ssim=0.35,
+        profile_id=DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
+        optimizer_profile=(
+            DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
+        ),
+        pruning_policy=DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
+        raster_profile=DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
+        sh_degree_interval=(
+            DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
+        ),
+        topology_cooldown=(
+            DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
+        ),
+        photometric_finish=(
+            DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
+        ),
+        photometric_mse_percent=(
+            DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
+        ),
+        checkpoint_every=(
+            DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every
+        ),
+        test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
+        test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
+        test_guard_percent=(
+            DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent
+        ),
+        canary_min_psnr=(
+            DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
+        ),
+        canary_min_ssim=(
+            DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
+        ),
     ),
 }
 
@@ -349,6 +382,7 @@ def main() -> int:
             verbose=args.verbose,
             trainer_backend=profile.backend,
             training_seed=profile.seed,
+            dronegs_profile_id=profile.profile_id,
             dronegs_optimizer_profile=profile.optimizer_profile,
             dronegs_pruning_policy=profile.pruning_policy,
             dronegs_raster_profile=profile.raster_profile,
@@ -358,6 +392,8 @@ def main() -> int:
             dronegs_photometric_mse_percent=profile.photometric_mse_percent,
             dronegs_checkpoint_every=profile.checkpoint_every,
             dronegs_test_every=profile.test_every,
+            dronegs_test_split=profile.test_split,
+            dronegs_test_guard_percent=profile.test_guard_percent,
             dronegs_canary_min_psnr=profile.canary_min_psnr,
             dronegs_canary_min_ssim=profile.canary_min_ssim,
         )

@@ -71,6 +71,30 @@ spec:
         {{- include "drone-ai.commonEnv" . | nindent 8 }}
         - name: CORS_ORIGINS
           value: {{ .Values.dashboardApi.cors.origins | quote }}
+        - name: DRONEAI_ENV
+          value: {{ .Values.dashboardApi.environment | quote }}
+        - name: DRONEAI_AUTH_DISABLED
+          value: {{ .Values.dashboardApi.auth.disabled | quote }}
+        - name: DRONEAI_SESSION_MAX_AGE_SECONDS
+          value: {{ .Values.dashboardApi.auth.sessionMaxAgeSeconds | quote }}
+        {{- if .Values.dashboardApi.auth.existingSecret }}
+        - name: DRONEAI_API_KEYS_JSON
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.dashboardApi.auth.existingSecret }}
+              key: {{ .Values.dashboardApi.auth.secretKey }}
+        - name: DRONEAI_SESSION_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.dashboardApi.auth.existingSecret }}
+              key: {{ .Values.dashboardApi.auth.sessionSecretKey }}
+        {{- end }}
+        - name: DRONEAI_UPLOAD_MAX_FILES
+          value: {{ .Values.dashboardApi.uploads.maxFiles | quote }}
+        - name: DRONEAI_UPLOAD_MAX_FILE_BYTES
+          value: {{ .Values.dashboardApi.uploads.maxFileBytes | quote }}
+        - name: DRONEAI_UPLOAD_MAX_BATCH_BYTES
+          value: {{ .Values.dashboardApi.uploads.maxBatchBytes | quote }}
         - name: WORK_DRIVES
           value: {{ include "colmap.workDrivesJson" . | quote }}
         - name: WORK_DRIVE_DEFAULT

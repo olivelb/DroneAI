@@ -34,12 +34,16 @@ struct Options {
     std::uint32_t decode_workers = 1;
     std::uint32_t jpeg_idct_scale = 0;
     std::uint32_t test_every = 0;
+    std::string test_split = "modulo";
+    std::uint32_t test_guard_percent = 0;
     std::uint32_t save_eval_images = 0;
     std::uint64_t topology_cooldown = 0;
     std::uint64_t photometric_finish = 0;
     std::uint32_t photometric_mse_percent = 0;
     std::uint64_t checkpoint_every = 0;
     std::uint64_t stop_after = 0;
+    std::string profile_id = "custom";
+    std::string dataset_fingerprint;
     std::string optimizer_profile = "dronegs-dev16";
     std::string pruning_policy = "original";
     std::string raster_profile = "auto";

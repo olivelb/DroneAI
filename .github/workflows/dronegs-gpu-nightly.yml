@@ -1,0 +1,31 @@
+name: DroneGS GPU nightly
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dronegs-gpu-nightly
+  cancel-in-progress: true
+
+jobs:
+  cuda-tests:
+    if: vars.DRONEGS_GPU_CI == 'true'
+    runs-on: [self-hosted, linux, x64, gpu, cuda]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure native GPU suites
+        run: >-
+          cmake -S app1-colmap/dronegs -B build/dronegs-gpu -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DDRONEGS_CUDA_ARCHITECTURES=native
+          -DDRONEGS_BUILD_TESTS=ON
+      - name: Build native GPU suites
+        run: cmake --build build/dronegs-gpu
+      - name: Run all C++ CUDA and Python suites
+        run: ctest --test-dir build/dronegs-gpu --output-on-failure

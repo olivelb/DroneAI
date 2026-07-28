@@ -63,7 +63,7 @@ plyfile==1.1.4
     # via -r requirements/colmap.in
 psycopg2-binary==2.9.12
     # via -r requirements/colmap.in
-pycolmap==4.0.1
+pycolmap==4.1.1
     # via -r requirements/colmap.in
 pyparsing==3.3.2
     # via rasterio

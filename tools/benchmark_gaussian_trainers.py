@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,8 +13,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
-if str(APP1_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP1_ROOT))
+for import_path in (REPO_ROOT, APP1_ROOT):
+    if str(import_path) not in sys.path:
+        sys.path.insert(0, str(import_path))
 
 from gaussian_training.benchmark import (  # noqa: E402
     expand_command,
@@ -29,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", action="append", dest="backends")
     parser.add_argument("--case", action="append", dest="cases")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--bundle",
+        action="store_true",
+        help="Create a portable .tar.gz containing reports, logs and artifacts.",
+    )
     return parser.parse_args()
 
 
@@ -47,12 +54,15 @@ def dry_run_payload(suite, output_root: Path, backends, cases) -> dict:
                 continue
             for repetition in range(1, suite.repetitions + 1):
                 run_dir = output_root / suite.name / case.name / backend.name / f"run-{repetition:03d}"
+                trainer_output_dir = run_dir / "artifacts"
                 runs.append({
                     "case": case.name,
                     "backend": backend.name,
                     "repetition": repetition,
-                    "command": expand_command(backend, case, run_dir, repetition),
-                    "output": str(run_dir),
+                    "command": expand_command(
+                        backend, case, trainer_output_dir, repetition
+                    ),
+                    "output": str(trainer_output_dir),
                 })
     if not runs:
         raise ValueError("benchmark selection produced no runs")
@@ -72,6 +82,15 @@ def main() -> int:
             suite, output_root, selected_backends or None, selected_cases or None
         )
     print(json.dumps(report, indent=2, sort_keys=True))
+    if args.bundle and not args.dry_run:
+        suite_root = output_root / suite.name
+        archive = shutil.make_archive(
+            str(suite_root),
+            "gztar",
+            root_dir=suite_root.parent,
+            base_dir=suite_root.name,
+        )
+        print(f"Benchmark evidence bundle: {archive}", file=sys.stderr)
     summaries = report.get("summaries", [])
     return 0 if all(
         item.get("successful_runs", 0) == item.get("runs", -1)

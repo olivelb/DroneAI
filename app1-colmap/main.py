@@ -1,9 +1,11 @@
 import os
 import json
+import math
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import logging
 import numpy as np
 from PIL import Image as PILImage
@@ -20,6 +22,11 @@ from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
 )
+from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
+from shared.rtk_refinement import (
+    inject_database_pose_priors,
+    load_rtk_records,
+)
 from pipeline_support import (
     load_copy_manifest,
     detect_existing_pipeline,
@@ -28,15 +35,26 @@ from pipeline_support import (
     is_aliked_feature_type,
     merge_pipeline_params,
     normalize_ai_backend,
-    read_saved_utm_crs,
+    read_saved_projected_crs,
+    read_saved_projected_crs_policy,
     resolve_feature_family,
     resolve_feature_matching_type,
     sanitize_exif_for_colmap,
-    save_utm_crs,
+    save_projected_crs,
     save_copy_manifest,
     plan_clean_image_copy,
 )
 from runtime_support import run_command
+from alignment_support import (
+    atomic_write_json,
+    build_gps_pair_graph,
+    build_mapping_command,
+    caspar_compatibility,
+    choose_auto_fallback,
+    database_counts,
+    parse_colmap_reference_file,
+    write_pair_list,
+)
 from worker_support import (
     MissionStateTracker,
     WorkerCancellationState,
@@ -101,12 +119,17 @@ def invalidate_pipeline_artifacts(clean_images_dir, workspace_dir, db_path, spar
         f"{db_path}-shm",
         f"{db_path}-wal",
         sparse_path,
+        os.path.join(workspace_dir, "sparse_rtk"),
         dense_path,
         os.path.join(workspace_dir, "sparse_geo"),
         os.path.join(workspace_dir, "alignment_transform.json"),
         os.path.join(workspace_dir, "orthomosaic.tif"),
+        os.path.join(workspace_dir, "gps_pairs.txt"),
+        os.path.join(workspace_dir, "alignment_pair_graph.json"),
+        os.path.join(workspace_dir, "rtk_prior_report.json"),
         geo_data_file,
         f"{geo_data_file}.crs",
+        f"{geo_data_file}.crs.json",
         os.path.join(clean_images_dir, ".colmap_exif_sanitized"),
     ]
 
@@ -127,6 +150,34 @@ def invalidate_pipeline_artifacts(clean_images_dir, workspace_dir, db_path, spar
             log=f"{reason} Removed {len(removed_paths)} stale pipeline artifacts.",
         )
 
+    return removed_paths
+
+
+def invalidate_georeferencing_artifacts(workspace_dir, geo_data_file, vol_id, reason):
+    artifact_paths = [
+        os.path.join(workspace_dir, "sparse_geo"),
+        os.path.join(workspace_dir, "alignment_transform.json"),
+        os.path.join(workspace_dir, "orthomosaic.tif"),
+        os.path.join(workspace_dir, "orthomosaic.height.tif"),
+        geo_data_file,
+        f"{geo_data_file}.crs",
+        f"{geo_data_file}.crs.json",
+    ]
+    removed_paths = []
+    for path in artifact_paths:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+            removed_paths.append(path)
+        elif os.path.exists(path):
+            os.remove(path)
+            removed_paths.append(path)
+    if removed_paths:
+        report_mission_progress(
+            vol_id,
+            "PREPARING",
+            3,
+            log=f"{reason} Removed {len(removed_paths)} stale georeferencing artifacts.",
+        )
     return removed_paths
 
 
@@ -157,6 +208,8 @@ def dense_sparse_model_ready(dense_path):
 
 
 def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
+    durable_checkpoint_dir = None
+    gaussian_upload_complete = False
     try:
         # --- Pipeline selection ---
         pipeline_mode = mission_params.get("pipeline", "modern")
@@ -175,6 +228,10 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         ba_gpu_index = normalize_gpu_index(os.getenv("COLMAP_BA_GPU_INDEX", "0"))
         params["feature_type"] = feature_type
         params["matcher_type"] = matcher_type
+        projected_crs_mode = str(
+            params.get("projected_crs_mode", "auto-local")
+        ).strip().lower()
+        requested_projected_crs = str(params.get("projected_crs", "")).strip()
         report_mission_progress(
             vol_id,
             "PIPELINE",
@@ -215,12 +272,24 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         dense_path = os.path.join(workspace_dir, "dense")
         
         images = [f for f in os.listdir(raw_image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-        report_mission_progress(vol_id, "COPYING_IMAGES", 5, log=f"Copying {len(images)} images to clean workspace...")
+        position_sidecars = [
+            f for f in os.listdir(raw_image_dir) if f.lower().endswith(".mrk")
+        ]
+        copy_candidates = images + position_sidecars
+        report_mission_progress(
+            vol_id,
+            "COPYING_IMAGES",
+            5,
+            log=(
+                f"Copying {len(images)} images and {len(position_sidecars)} "
+                "DJI position sidecars to the clean workspace..."
+            ),
+        )
         
         copied_count = 0
         skipped_count = 0
         copy_manifest = load_copy_manifest(clean_images_dir)
-        for i, img in enumerate(images):
+        for i, img in enumerate(copy_candidates):
             try:
                 cancellation_state.ensure_not_cancelled()
             except RuntimeError as error:
@@ -241,18 +310,21 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             if source_descriptor is not None:
                 copy_manifest[img] = source_descriptor
 
-            if (i + 1) % 50 == 0 or i == len(images) - 1:
+            if (i + 1) % 50 == 0 or i == len(copy_candidates) - 1:
                 save_copy_manifest(clean_images_dir, copy_manifest)
                 
                 report_mission_progress(
                     vol_id,
                     "COPYING_IMAGES",
                     5,
-                    log=f"Processed {i + 1}/{len(images)} images (Copied: {copied_count}, Skipped: {skipped_count})",
+                    log=(
+                        f"Processed {i + 1}/{len(copy_candidates)} input files "
+                        f"(Copied: {copied_count}, Skipped: {skipped_count})"
+                    ),
                     details={
                         "event": "copy_progress",
                         "processed": i + 1,
-                        "total": len(images),
+                        "total": len(copy_candidates),
                         "copied": copied_count,
                         "skipped": skipped_count,
                     },
@@ -276,7 +348,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 "Input images changed since the last cached run.",
             )
 
-        image_reader_camera_model = "OPENCV"
+        image_reader_camera_model = str(params.get("camera_model", "SIMPLE_RADIAL")).upper()
         image_reader_camera_params = None
         
         # --- Smart resume: check database descriptor type compatibility ---
@@ -310,40 +382,58 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 report_mission_progress(vol_id, "PREPARING", 3, log=f"Existing database compatible ({existing_type}). Resuming...")
         
         # --- 2. GPS ---
-        gps_done = os.path.exists(geo_data_file) and os.path.getsize(geo_data_file) > 0
-        if gps_done:
-            report_mission_progress(vol_id, "GPS_EXTRACTION", 12, log="Existing GPS data found, skipping extraction and inferring UTM CRS...")
-            # We still need the UTM CRS for the ortho step
-            utm_crs = read_saved_utm_crs(geo_data_file)
-            images = [f for f in os.listdir(clean_images_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-            if utm_crs is None and images:
-                try:
-                    img_path = os.path.join(clean_images_dir, images[0])
-                    with PILImage.open(img_path) as pil_img:
-                        exif_data = pil_img._getexif()
-                        if exif_data:
-                            gps_ifd = exif_data.get(0x8825)
-                            if gps_ifd:
-                                gps_info = {GPSTAGS.get(k, k): v for k, v in gps_ifd.items()}
-                                lat_dms = gps_info.get("GPSLatitude")
-                                lon_dms = gps_info.get("GPSLongitude")
-                                if lat_dms and lon_dms:
-                                    lat = float(lat_dms[0]) + float(lat_dms[1]) / 60 + float(lat_dms[2]) / 3600
-                                    if gps_info.get("GPSLatitudeRef", "N") == "S":
-                                        lat = -lat
-                                    lon = float(lon_dms[0]) + float(lon_dms[1]) / 60 + float(lon_dms[2]) / 3600
-                                    if gps_info.get("GPSLongitudeRef", "E") == "W":
-                                        lon = -lon
-                                    zone_number = int((lon + 180) / 6) + 1
-                                    is_south = lat < 0
-                                    utm_crs = f"EPSG:32{'7' if is_south else '6'}{zone_number:02d}"
-                except Exception:
-                    pass
-            save_utm_crs(geo_data_file, utm_crs)
-        else:
-            utm_crs = extract_gps_data(clean_images_dir, geo_data_file, vol_id, report_mission_progress)
-            save_utm_crs(geo_data_file, utm_crs)
+        saved_projected_crs = read_saved_projected_crs(geo_data_file)
+        saved_projection_policy = read_saved_projected_crs_policy(geo_data_file)
+        gps_done = (
+            os.path.exists(geo_data_file)
+            and os.path.getsize(geo_data_file) > 0
+            and bool(saved_projected_crs)
+        )
+        projection_changed = False
+        if gps_done and not saved_projection_policy:
+            projection_changed = True
+        elif gps_done and saved_projection_policy.get("policy") != projected_crs_mode:
+            projection_changed = True
+        elif gps_done and projected_crs_mode == "custom":
+            projection_changed = (
+                saved_projected_crs.upper() != requested_projected_crs.upper()
+            )
+        if projection_changed or (
+            os.path.exists(geo_data_file) and not saved_projected_crs
+        ):
+            invalidate_georeferencing_artifacts(
+                workspace_dir,
+                geo_data_file,
+                vol_id,
+                "The requested projected CRS policy changed.",
+            )
+            gps_done = False
 
+        if gps_done:
+            utm_crs = saved_projected_crs
+            report_mission_progress(
+                vol_id,
+                "GPS_EXTRACTION",
+                12,
+                log=f"Existing projected GPS references found. Reusing CRS {utm_crs}.",
+            )
+        else:
+            utm_crs = extract_gps_data(
+                clean_images_dir,
+                geo_data_file,
+                vol_id,
+                report_mission_progress,
+                projected_crs_mode=projected_crs_mode,
+                projected_crs=requested_projected_crs,
+            )
+            save_projected_crs(
+                geo_data_file,
+                utm_crs,
+                policy=projected_crs_mode,
+                requested_crs=requested_projected_crs,
+            )
+
+        gps_done = os.path.exists(geo_data_file) and os.path.getsize(geo_data_file) > 0
         sanitize_exif_for_colmap(clean_images_dir, vol_id, report_mission_progress)
 
         align_tf = os.path.join(workspace_dir, "alignment_transform.json")
@@ -399,6 +489,21 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "--FeatureExtraction.max_image_size", str(effective_feature_max_image_size),
                     "--AlikedExtraction.max_num_features", params["feature_max_num_features"],
                 ]
+                model_dir = os.getenv(
+                    "COLMAP_MODEL_DIR",
+                    "/usr/local/share/colmap/models",
+                )
+                model_filename = (
+                    "aliked-n32.onnx"
+                    if params["feature_type"] == "ALIKED_N32"
+                    else "aliked-n16rot.onnx"
+                )
+                model_option = (
+                    "--AlikedExtraction.n32_model_path"
+                    if params["feature_type"] == "ALIKED_N32"
+                    else "--AlikedExtraction.n16rot_model_path"
+                )
+                feat_cmd += [model_option, os.path.join(model_dir, model_filename)]
             else:
                 feat_cmd += [
                     "--FeatureExtraction.type", feature_type,
@@ -410,17 +515,131 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             
             run_command(feat_cmd, vol_id, "FEATURES", 15, report_mission_progress, ensure_not_cancelled)
             
-            # --- 4. SfM: Feature Matching ---
-            match_cmd = [
-                "colmap", "spatial_matcher",
-                "--database_path", db_path,
-                "--SpatialMatching.ignore_z", "1",
-                "--FeatureMatching.type", resolved_matcher_type,
-                "--FeatureMatching.use_gpu", "1",
-                "--FeatureMatching.gpu_index", feature_gpu_index,
-            ]
-            
-            run_command(match_cmd, vol_id, "MATCHING", 30, report_mission_progress, ensure_not_cancelled)
+            # --- 4. SfM: bounded Feature Matching ---
+            matching_strategy = str(params.get("matching_strategy", "gps_pairs")).lower()
+            model_dir = os.getenv(
+                "COLMAP_MODEL_DIR",
+                "/usr/local/share/colmap/models",
+            )
+            matching_model_options = []
+            if resolved_matcher_type == "ALIKED_LIGHTGLUE":
+                matching_model_options = [
+                    "--AlikedMatching.lightglue_model_path",
+                    os.path.join(model_dir, "aliked-lightglue.onnx"),
+                ]
+            elif resolved_matcher_type == "SIFT_LIGHTGLUE":
+                matching_model_options = [
+                    "--SiftMatching.lightglue_model_path",
+                    os.path.join(model_dir, "sift-lightglue.onnx"),
+                ]
+            pair_graph_stats = None
+            if matching_strategy == "gps_pairs" and gps_done:
+                positioned = parse_colmap_reference_file(geo_data_file)
+                pairs, pair_graph_stats = build_gps_pair_graph(
+                    positioned,
+                    max_neighbors=int(float(params["gps_pair_max_neighbors"])),
+                    min_neighbors=int(float(params["gps_pair_min_neighbors"])),
+                    temporal_neighbors=int(float(params["gps_pair_temporal_neighbors"])),
+                    max_distance_m=float(params["gps_pair_max_distance_m"]),
+                )
+                pair_list_path = os.path.join(workspace_dir, "gps_pairs.txt")
+                pair_count = write_pair_list(pair_list_path, pairs)
+                atomic_write_json(
+                    os.path.join(workspace_dir, "alignment_pair_graph.json"),
+                    pair_graph_stats,
+                )
+                if pair_count == 0:
+                    raise RuntimeError(
+                        "GPS pair selection produced no pairs. Check EXIF positions "
+                        "or choose the spatial/sequential matching strategy."
+                    )
+                report_mission_progress(
+                    vol_id,
+                    "MATCHING",
+                    25,
+                    log=(
+                        f"Matching {pair_count} bounded GPS/temporal pairs for "
+                        f"{pair_graph_stats['positioned_images']} positioned images "
+                        f"(mean degree {pair_graph_stats['mean_degree']:.1f})."
+                    ),
+                    details={"event": "pair_graph", **pair_graph_stats},
+                )
+                match_cmd = [
+                    "colmap",
+                    "matches_importer",
+                    "--database_path",
+                    db_path,
+                    "--match_list_path",
+                    pair_list_path,
+                    "--match_type",
+                    "pairs",
+                    "--FeatureMatching.type",
+                    resolved_matcher_type,
+                    "--FeatureMatching.use_gpu",
+                    "1",
+                    "--FeatureMatching.gpu_index",
+                    feature_gpu_index,
+                ]
+            elif matching_strategy == "sequential":
+                match_cmd = [
+                    "colmap",
+                    "sequential_matcher",
+                    "--database_path",
+                    db_path,
+                    "--FeatureMatching.type",
+                    resolved_matcher_type,
+                    "--FeatureMatching.use_gpu",
+                    "1",
+                    "--FeatureMatching.gpu_index",
+                    feature_gpu_index,
+                ]
+            else:
+                if matching_strategy == "gps_pairs":
+                    report_mission_progress(
+                        vol_id,
+                        "MATCHING",
+                        25,
+                        log="GPS pair selection unavailable; using bounded COLMAP spatial matching.",
+                    )
+                match_cmd = [
+                    "colmap",
+                    "spatial_matcher",
+                    "--database_path",
+                    db_path,
+                    "--SpatialMatching.ignore_z",
+                    "1",
+                    "--SpatialMatching.max_num_neighbors",
+                    str(params["gps_pair_max_neighbors"]),
+                    "--SpatialMatching.min_num_neighbors",
+                    str(params["gps_pair_min_neighbors"]),
+                    "--FeatureMatching.type",
+                    resolved_matcher_type,
+                    "--FeatureMatching.use_gpu",
+                    "1",
+                    "--FeatureMatching.gpu_index",
+                    feature_gpu_index,
+                ]
+
+            match_cmd += matching_model_options
+            run_command(
+                match_cmd,
+                vol_id,
+                "MATCHING",
+                30,
+                report_mission_progress,
+                ensure_not_cancelled,
+            )
+            match_counts = database_counts(db_path)
+            report_mission_progress(
+                vol_id,
+                "MATCHING",
+                34,
+                log=(
+                    f"Verified {match_counts['two_view_geometries']} image pairs "
+                    f"for {match_counts['images']} images."
+                ),
+                details={"event": "matching_complete", **match_counts},
+            )
             
             # --- 5. SfM: View Graph Calibration (modern only) ---
             if params["use_view_graph_calibrator"]:
@@ -432,101 +651,318 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             
             # --- 6. SfM: Mapping ---
             os.makedirs(sparse_path, exist_ok=True)
-            mapper_cmd = params["mapper_cmd"]
-            # hierarchical_mapper was removed in COLMAP 4.x, fall back to mapper
-            if mapper_cmd == "hierarchical_mapper":
-                logger.warning("hierarchical_mapper not available in COLMAP 4.x, falling back to mapper")
-                mapper_cmd = "mapper"
-            map_cmd = [
-                "colmap", mapper_cmd,
-                "--database_path", db_path,
-                "--image_path", clean_images_dir,
-                "--output_path", sparse_path,
-            ]
-            if mapper_cmd == "global_mapper":
-                map_cmd += [
-                    "--GlobalMapper.ba_ceres_use_gpu", "1",
-                    "--GlobalMapper.ba_ceres_gpu_index", ba_gpu_index,
-                ]
-            else:
-                map_cmd += [
-                    "--Mapper.ba_use_gpu", "1",
-                    "--Mapper.ba_gpu_index", ba_gpu_index,
-                ]
-            
-            try:
-                run_command(map_cmd, vol_id, "MAPPING", 45, report_mission_progress, ensure_not_cancelled)
-            except (RuntimeError, subprocess.CalledProcessError) as e:
-                if "SIGABRT" in str(e) and "--Mapper.ba_use_gpu" in " ".join(map_cmd):
-                    report_mission_progress(
-                        vol_id, "MAPPING", 45,
-                        log="GPU bundle adjustment crashed (likely OOM on large dataset). Retrying with CPU BA...",
-                    )
-                    shutil.rmtree(sparse_path, ignore_errors=True)
-                    os.makedirs(sparse_path, exist_ok=True)
-                    # Rebuild command without GPU BA
-                    cpu_map_cmd = [
-                        "colmap", mapper_cmd,
-                        "--database_path", db_path,
-                        "--image_path", clean_images_dir,
-                        "--output_path", sparse_path,
-                        "--Mapper.ba_use_gpu", "0",
-                    ]
-                    run_command(cpu_map_cmd, vol_id, "MAPPING", 45, report_mission_progress, ensure_not_cancelled)
-                else:
-                    raise
+            requested_engine = str(params.get("alignment_engine", "auto")).lower()
+            if requested_engine not in {"auto", "glomap", "caspar", "ceres"}:
+                raise ValueError(f"Unsupported alignment engine: {requested_engine}")
+            mapping_timeout = float(params["mapping_timeout_seconds"])
+            mapping_started_at = time.monotonic()
+            minimum_registration_ratio = float(params["minimum_registration_ratio"])
+            minimum_registered_images = max(
+                3,
+                int(math.ceil(len(images) * minimum_registration_ratio)),
+            )
 
-            sparse_model_path = os.path.join(sparse_path, "0")
-            registered_images, sparse_points = inspect_sparse_reconstruction(sparse_model_path)
-            if registered_images < 3 or sparse_points <= 0:
+            def remaining_mapping_budget():
+                remaining = mapping_timeout - (time.monotonic() - mapping_started_at)
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"The shared {mapping_timeout:.0f}s mapping budget is exhausted."
+                    )
+                return remaining
+
+            def run_mapping_engine(engine, progress):
+                engine_timeout = remaining_mapping_budget()
+                command = build_mapping_command(
+                    engine,
+                    database_path=db_path,
+                    image_path=clean_images_dir,
+                    output_path=sparse_path,
+                    gpu_index=ba_gpu_index,
+                    global_max_tracks=int(float(params["global_mapper_max_tracks"])),
+                    global_ba_iterations=int(float(params["global_mapper_ba_iterations"])),
+                    global_ceres_iterations=int(
+                        float(params["global_mapper_ceres_iterations"])
+                    ),
+                    global_skip_retriangulation=bool(
+                        params.get("global_mapper_skip_retriangulation", True)
+                    ),
+                )
+                report_mission_progress(
+                    vol_id,
+                    "MAPPING",
+                    progress,
+                    log=(
+                        f"Starting alignment engine={engine} with a "
+                        f"{engine_timeout:.0f}s remaining shared time budget."
+                    ),
+                    details={
+                        "event": "alignment_engine_started",
+                        "engine": engine,
+                        "timeout_seconds": engine_timeout,
+                    },
+                )
+                run_command(
+                    command,
+                    vol_id,
+                    "MAPPING",
+                    progress,
+                    report_mission_progress,
+                    ensure_not_cancelled,
+                    timeout_seconds=engine_timeout,
+                )
+
+            primary_engine = "glomap" if requested_engine == "auto" else requested_engine
+            if primary_engine == "caspar":
+                caspar_supported, camera_models = caspar_compatibility(db_path)
+                if not caspar_supported:
+                    raise RuntimeError(
+                        "Caspar only supports PINHOLE and SIMPLE_RADIAL cameras; "
+                        f"database contains {sorted(camera_models)}."
+                    )
+            primary_error = None
+            try:
+                run_mapping_engine(primary_engine, 45)
+            except (RuntimeError, subprocess.CalledProcessError, TimeoutError) as error:
+                primary_error = error
+                if requested_engine != "auto":
+                    raise
                 report_mission_progress(
                     vol_id,
                     "MAPPING",
                     46,
                     log=(
-                        f"Sparse reconstruction is too weak for MVS after {params['mapper_cmd']}: "
-                        f"registered_images={registered_images}, points3D={sparse_points}."
+                        f"Primary GLOMAP attempt failed within its bounded budget: "
+                        f"{type(error).__name__}: {error}"
                     ),
+                    details={
+                        "event": "alignment_engine_failed",
+                        "engine": primary_engine,
+                        "error": str(error),
+                    },
                 )
 
-                if params["mapper_cmd"] == "global_mapper":
-                    report_mission_progress(
-                        vol_id,
-                        "MAPPING",
-                        46,
-                        log="Falling back to exhaustive_matcher + mapper because spatial/global mapping produced an unusable sparse model.",
-                    )
-                    shutil.rmtree(sparse_path, ignore_errors=True)
-                    os.makedirs(sparse_path, exist_ok=True)
+            sparse_model_path = os.path.join(sparse_path, "0")
+            registered_images, sparse_points = inspect_sparse_reconstruction(
+                sparse_model_path
+            )
+            primary_usable = (
+                primary_error is None
+                and registered_images >= minimum_registered_images
+                and sparse_points > 0
+            )
+            report_mission_progress(
+                vol_id,
+                "MAPPING",
+                46,
+                log=(
+                    f"{primary_engine} registered {registered_images}/{len(images)} "
+                    f"images with {sparse_points} points; "
+                    f"required={minimum_registered_images}."
+                ),
+                details={
+                    "event": "alignment_quality_gate",
+                    "engine": primary_engine,
+                    "registered_images": registered_images,
+                    "total_images": len(images),
+                    "points3D": sparse_points,
+                    "minimum_registered_images": minimum_registered_images,
+                    "accepted": primary_usable,
+                },
+            )
 
-                    exhaustive_match_cmd = [
-                        "colmap", "exhaustive_matcher",
-                        "--database_path", db_path,
-                        "--FeatureMatching.type", resolved_matcher_type,
-                        "--FeatureMatching.use_gpu", "1",
-                        "--FeatureMatching.gpu_index", feature_gpu_index,
-                    ]
-                    run_command(exhaustive_match_cmd, vol_id, "MATCHING", 33, report_mission_progress, ensure_not_cancelled)
+            if not primary_usable and requested_engine == "auto":
+                caspar_supported, camera_models = caspar_compatibility(db_path)
+                fallback_engine = choose_auto_fallback(camera_models)
+                report_mission_progress(
+                    vol_id,
+                    "MAPPING",
+                    47,
+                    log=(
+                        f"GLOMAP quality gate failed. Reusing the existing features "
+                        f"and {match_counts['two_view_geometries']} verified pairs with "
+                        f"incremental {fallback_engine.upper()} BA. "
+                        f"Camera models: {sorted(camera_models)}."
+                    ),
+                    details={
+                        "event": "alignment_fallback",
+                        "from_engine": primary_engine,
+                        "to_engine": fallback_engine,
+                        "caspar_supported": caspar_supported,
+                        "camera_models": sorted(camera_models),
+                    },
+                )
+                shutil.rmtree(sparse_path, ignore_errors=True)
+                os.makedirs(sparse_path, exist_ok=True)
+                run_mapping_engine(fallback_engine, 48)
+                registered_images, sparse_points = inspect_sparse_reconstruction(
+                    sparse_model_path
+                )
+                primary_engine = fallback_engine
 
-                    fallback_map_cmd = [
-                        "colmap", "mapper",
-                        "--database_path", db_path,
-                        "--image_path", clean_images_dir,
-                        "--output_path", sparse_path,
-                        "--Mapper.ba_use_gpu", "1",
-                        "--Mapper.ba_gpu_index", ba_gpu_index,
-                    ]
-                    run_command(fallback_map_cmd, vol_id, "MAPPING", 47, report_mission_progress, ensure_not_cancelled)
-                    registered_images, sparse_points = inspect_sparse_reconstruction(sparse_model_path)
-
-                if registered_images < 3 or sparse_points <= 0:
-                    raise RuntimeError(
-                        "Sparse reconstruction is unusable for MVS "
-                        f"(registered_images={registered_images}, points3D={sparse_points}). "
-                        "The matcher/mapping stage did not recover enough overlap to build dense depth maps."
-                    )
+            if (
+                registered_images < minimum_registered_images
+                or sparse_points <= 0
+            ):
+                raise RuntimeError(
+                    "Sparse reconstruction failed the alignment quality gate "
+                    f"after {primary_engine}: registered_images={registered_images}/"
+                    f"{len(images)}, required={minimum_registered_images}, "
+                    f"points3D={sparse_points}. Exhaustive matching and unbounded "
+                    "CPU bundle adjustment are intentionally disabled."
+                )
         else:
             report_mission_progress(vol_id, "MAPPING", 45, log="Sparse model found. Skipping SfM extraction and matching.")
+
+        # --- 6b. Optional covariance-aware RTK/PPK refinement ---
+        base_sparse_model_path = os.path.join(sparse_path, "0")
+        rtk_sparse_model_path = os.path.join(workspace_dir, "sparse_rtk")
+        rtk_report_path = os.path.join(workspace_dir, "rtk_prior_report.json")
+        active_sparse_model_path = (
+            rtk_sparse_model_path
+            if os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin"))
+            else base_sparse_model_path
+        )
+        rtk_refinement_enabled = bool(params.get("rtk_refinement_enabled", True))
+        if (
+            rtk_refinement_enabled
+            and not ortho_only_ready
+            and os.path.exists(os.path.join(base_sparse_model_path, "cameras.bin"))
+        ):
+            if os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin")):
+                active_sparse_model_path = rtk_sparse_model_path
+                report_mission_progress(
+                    vol_id,
+                    "RTK_REFINEMENT",
+                    57,
+                    log="Reusing the completed covariance-aware RTK sparse model.",
+                )
+            else:
+                try:
+                    rtk_records = load_rtk_records(clean_images_dir)
+                    rtk_report = inject_database_pose_priors(db_path, rtk_records)
+                    rtk_report["status"] = "priors-injected"
+                    atomic_write_json(rtk_report_path, rtk_report)
+                    os.makedirs(rtk_sparse_model_path, exist_ok=True)
+                    rtk_timeout = float(params["rtk_refinement_timeout_seconds"])
+                    rtk_iterations = int(float(params["rtk_refinement_iterations"]))
+                    report_mission_progress(
+                        vol_id,
+                        "RTK_REFINEMENT",
+                        55,
+                        log=(
+                            f"Refining {rtk_report['updated_pose_priors']} camera poses "
+                            f"with DJI MRK covariance, robust Ceres GPU BA, "
+                            f"{rtk_iterations} iterations and a {rtk_timeout:.0f}s budget."
+                        ),
+                        details={"event": "rtk_refinement_started", **rtk_report},
+                    )
+                    rtk_started_at = time.monotonic()
+                    run_command(
+                        [
+                            "colmap",
+                            "pose_prior_mapper",
+                            "--database_path",
+                            db_path,
+                            "--image_path",
+                            clean_images_dir,
+                            "--input_path",
+                            base_sparse_model_path,
+                            "--output_path",
+                            rtk_sparse_model_path,
+                            "--Mapper.ba_use_gpu",
+                            "1",
+                            "--Mapper.ba_gpu_index",
+                            ba_gpu_index,
+                            "--Mapper.ba_local_backend",
+                            "CERES",
+                            "--Mapper.ba_global_backend",
+                            "CERES",
+                            "--Mapper.ba_local_max_num_iterations",
+                            str(rtk_iterations),
+                            "--Mapper.ba_global_max_num_iterations",
+                            str(rtk_iterations),
+                            "--Mapper.ba_local_max_refinements",
+                            "1",
+                            "--Mapper.ba_global_max_refinements",
+                            "1",
+                            "--Mapper.ba_global_ignore_redundant_points3D",
+                            "1",
+                            "--use_robust_loss_on_prior_position",
+                            "1",
+                            "--prior_position_loss_scale",
+                            "7.82",
+                        ],
+                        vol_id,
+                        "RTK_REFINEMENT",
+                        56,
+                        report_mission_progress,
+                        ensure_not_cancelled,
+                        timeout_seconds=rtk_timeout,
+                    )
+                    if not os.path.exists(
+                        os.path.join(rtk_sparse_model_path, "cameras.bin")
+                    ):
+                        raise RuntimeError(
+                            "pose_prior_mapper did not write a usable RTK model"
+                        )
+                    active_sparse_model_path = rtk_sparse_model_path
+                    rtk_report.update(
+                        {
+                            "status": "completed",
+                            "elapsed_seconds": time.monotonic() - rtk_started_at,
+                            "iterations": rtk_iterations,
+                            "timeout_seconds": rtk_timeout,
+                            "ba_backend": "CERES_GPU",
+                            "robust_loss": "cauchy",
+                            "robust_loss_scale": 7.82,
+                        }
+                    )
+                    atomic_write_json(rtk_report_path, rtk_report)
+                    for stale_path in (
+                        dense_path,
+                        os.path.join(workspace_dir, "sparse_geo"),
+                    ):
+                        shutil.rmtree(stale_path, ignore_errors=True)
+                    for stale_path in (
+                        os.path.join(workspace_dir, "alignment_transform.json"),
+                        os.path.join(workspace_dir, "orthomosaic.tif"),
+                        os.path.join(workspace_dir, "orthomosaic.height.tif"),
+                    ):
+                        if os.path.exists(stale_path):
+                            os.remove(stale_path)
+                    report_mission_progress(
+                        vol_id,
+                        "RTK_REFINEMENT",
+                        58,
+                        log=(
+                            "RTK pose refinement completed; downstream undistortion "
+                            "and georeferencing will use the constrained model."
+                        ),
+                        details={"event": "rtk_refinement_completed", **rtk_report},
+                    )
+                except (
+                    RuntimeError,
+                    subprocess.CalledProcessError,
+                    TimeoutError,
+                ) as error:
+                    shutil.rmtree(rtk_sparse_model_path, ignore_errors=True)
+                    fallback_report = {
+                        "schema_version": 1,
+                        "status": "skipped-or-fallback",
+                        "reason": str(error),
+                        "fallback_model": base_sparse_model_path,
+                    }
+                    atomic_write_json(rtk_report_path, fallback_report)
+                    report_mission_progress(
+                        vol_id,
+                        "RTK_REFINEMENT",
+                        58,
+                        log=(
+                            f"RTK refinement unavailable or bounded attempt failed "
+                            f"({error}); retaining the verified fast sparse model."
+                        ),
+                        details={"event": "rtk_refinement_fallback", **fallback_report},
+                    )
 
         # --- 7. Undistort images for Gaussian Splatting ---
         # GS only needs the undistorted images + dense/sparse model.
@@ -537,7 +973,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 run_command([
                     "colmap", "image_undistorter",
                     "--image_path", clean_images_dir,
-                    "--input_path", os.path.join(sparse_path, "0"),
+                    "--input_path", active_sparse_model_path,
                     "--output_path", dense_path,
                     "--max_image_size", params["mvs_max_image_size"],
                 ], vol_id, "UNDISTORT", 70, report_mission_progress, ensure_not_cancelled)
@@ -564,7 +1000,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             if not align_done:
                 run_command([
                     "colmap", "model_aligner",
-                    "--input_path", os.path.join(sparse_path, "0"),
+                    "--input_path", active_sparse_model_path,
                     "--output_path", sparse_geo_path,
                     "--ref_images_path", geo_data_file,
                     "--ref_is_gps", "0",
@@ -582,7 +1018,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 )
 
                 transform = compute_reconstruction_alignment(
-                    os.path.join(sparse_path, "0"),
+                    active_sparse_model_path,
                     sparse_geo_path,
                 )
                 transform_file = os.path.join(workspace_dir, "alignment_transform.json")
@@ -664,21 +1100,50 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             else:
                 gs_data_factor = int(gs_data_factor_raw)
 
-            gs_iterations = int(params.get("gs_iterations", 30_000))
-            gs_cap_max = int(params.get("gs_cap_max", 5_000_000))
-            gs_sh_degree = int(params.get("gs_sh_degree", 3))
+            gs_iterations = int(
+                params.get(
+                    "gs_iterations",
+                    DRONEGS_PRODUCTION_PROFILE_V1.iterations,
+                )
+            )
+            gs_cap_max = int(
+                params.get(
+                    "gs_cap_max",
+                    DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
+                )
+            )
+            gs_sh_degree = int(
+                params.get(
+                    "gs_sh_degree",
+                    DRONEGS_PRODUCTION_PROFILE_V1.sh_degree,
+                )
+            )
             gs_backend = str(params.get("gs_backend", "dronegs"))
             gs_seed = int(params.get("gs_seed", 42))
+            gs_profile_id = str(
+                params.get(
+                    "gs_production_profile",
+                    DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
+                )
+            )
             gs_optimizer_profile = str(
                 params.get(
                     "gs_optimizer_profile",
-                    "reference-absolute",
+                    DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile,
                 )
             )
             gs_pruning_policy = str(
-                params.get("gs_pruning_policy", "spatial-bounds")
+                params.get(
+                    "gs_pruning_policy",
+                    DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
+                )
             )
-            gs_raster_profile = str(params.get("gs_raster_profile", "bounded"))
+            gs_raster_profile = str(
+                params.get(
+                    "gs_raster_profile",
+                    DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
+                )
+            )
             gs_sh_degree_interval = int(
                 params.get("gs_sh_degree_interval", 1_000)
             )
@@ -695,6 +1160,10 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 params.get("gs_checkpoint_every", 2_000)
             )
             gs_test_every = int(params.get("gs_test_every", 8))
+            gs_test_split = str(params.get("gs_test_split", "modulo"))
+            gs_test_guard_percent = int(
+                params.get("gs_test_guard_percent", 0)
+            )
             gs_canary_min_psnr = float(
                 params.get("gs_canary_min_psnr", 18.0)
             )
@@ -710,8 +1179,128 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             gs_filter_sor_sigma = float(params.get("gs_filter_sor_sigma", 4.0))
             gs_filter_cc = params.get("gs_filter_cc", False)
             gs_filter_z_floater = params.get("gs_filter_z_floater", False)
+            if gs_profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
+                production = DRONEGS_PRODUCTION_PROFILE_V1
+                profile_values = {
+                    "iterations": gs_iterations,
+                    "data_factor": gs_data_factor,
+                    "max_width": int(
+                        params.get(
+                            "gs_max_width",
+                            DRONEGS_PRODUCTION_PROFILE_V1.max_width,
+                        )
+                    ),
+                    "tile_mode": int(
+                        params.get(
+                            "gs_tile_mode",
+                            DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
+                        )
+                    ),
+                    "cap_max": gs_cap_max,
+                    "sh_degree": gs_sh_degree,
+                    "seed": gs_seed,
+                    "optimizer_profile": gs_optimizer_profile,
+                    "pruning_policy": gs_pruning_policy,
+                    "raster_profile": gs_raster_profile,
+                    "sh_degree_interval": gs_sh_degree_interval,
+                    "topology_cooldown": gs_topology_cooldown,
+                    "photometric_finish": gs_photometric_finish,
+                    "photometric_mse_percent": (
+                        gs_photometric_mse_percent
+                    ),
+                    "checkpoint_every": gs_checkpoint_every,
+                    "test_every": gs_test_every,
+                    "test_split": gs_test_split,
+                    "test_guard_percent": gs_test_guard_percent,
+                    "canary_min_psnr": gs_canary_min_psnr,
+                    "canary_min_ssim": gs_canary_min_ssim,
+                }
+                expected_profile_values = {
+                    name: getattr(production, name)
+                    for name in profile_values
+                }
+                if profile_values != expected_profile_values:
+                    gs_profile_id = "custom"
+                    report_mission_progress(
+                        vol_id,
+                        "GAUSS",
+                        94,
+                        log=(
+                            "DroneGS expert overrides detected; the run is "
+                            "recorded as custom instead of production V1."
+                        ),
+                    )
 
-            checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
+            checkpoint_root = os.getenv("DRONEGS_CHECKPOINT_ROOT")
+            if not checkpoint_root:
+                checkpoint_root = os.path.join(
+                    os.path.dirname(workspace_dir),
+                    ".dronegs-checkpoints",
+                )
+            durable_checkpoint_dir = os.path.join(checkpoint_root, vol_id)
+            os.makedirs(durable_checkpoint_dir, exist_ok=True)
+            checkpoint_s3_prefix = (
+                f"{mission_s3_prefix}/gaussian-checkpoints"
+            )
+            if not any(
+                path.is_file()
+                for path in Path(durable_checkpoint_dir).rglob("*")
+            ):
+                try:
+                    restored_count = storage.download_directory(
+                        checkpoint_s3_prefix + "/",
+                        durable_checkpoint_dir,
+                    )
+                    if restored_count:
+                        report_mission_progress(
+                            vol_id,
+                            "GAUSS",
+                            94,
+                            log=(
+                                "Restored "
+                                f"{restored_count} durable DroneGS artifacts "
+                                "from S3."
+                            ),
+                        )
+                except Exception as restore_error:
+                    report_mission_progress(
+                        vol_id,
+                        "GAUSS",
+                        94,
+                        log=(
+                            "No remote DroneGS recovery state restored: "
+                            f"{restore_error}"
+                        ),
+                    )
+
+            def persist_dronegs_checkpoint(checkpoint_path, iteration):
+                relative = checkpoint_path.resolve().relative_to(
+                    Path(durable_checkpoint_dir).resolve()
+                )
+                s3_key = (
+                    f"{checkpoint_s3_prefix}/{relative.as_posix()}"
+                )
+                try:
+                    storage.upload_file(checkpoint_path, s3_key)
+                    report_mission_progress(
+                        vol_id,
+                        "GAUSS",
+                        95,
+                        log=(
+                            f"Durable DroneGS checkpoint synced at "
+                            f"iteration {iteration}."
+                        ),
+                    )
+                except Exception as sync_error:
+                    report_mission_progress(
+                        vol_id,
+                        "GAUSS",
+                        95,
+                        log=(
+                            "DroneGS checkpoint remains locally durable; "
+                            f"S3 sync failed: {sync_error}"
+                        ),
+                    )
 
             result = generate_gaussian_orthophoto(
                 dense_path=dense_path,
@@ -724,8 +1313,18 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 iterations=gs_iterations,
                 sh_degree=gs_sh_degree,
                 data_factor=gs_data_factor,
-                max_width=int(params.get("gs_max_width", 3840)),
-                tile_mode=int(params.get("gs_tile_mode", 1)),
+                max_width=int(
+                    params.get(
+                        "gs_max_width",
+                        DRONEGS_PRODUCTION_PROFILE_V1.max_width,
+                    )
+                ),
+                tile_mode=int(
+                    params.get(
+                        "gs_tile_mode",
+                        DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
+                    )
+                ),
                 cap_max=gs_cap_max,
                 filter_enabled=gs_filter_enabled,
                 filter_max_scale=gs_filter_max_scale,
@@ -736,9 +1335,10 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 filter_sor_sigma=gs_filter_sor_sigma,
                 filter_cc=gs_filter_cc,
                 filter_z_floater=gs_filter_z_floater,
-                checkpoint_dir=checkpoint_dir,
+                checkpoint_dir=durable_checkpoint_dir,
                 trainer_backend=gs_backend,
                 training_seed=gs_seed,
+                dronegs_profile_id=gs_profile_id,
                 dronegs_optimizer_profile=gs_optimizer_profile,
                 dronegs_pruning_policy=gs_pruning_policy,
                 dronegs_raster_profile=gs_raster_profile,
@@ -748,8 +1348,12 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 dronegs_photometric_mse_percent=gs_photometric_mse_percent,
                 dronegs_checkpoint_every=gs_checkpoint_every,
                 dronegs_test_every=gs_test_every,
+                dronegs_test_split=gs_test_split,
+                dronegs_test_guard_percent=gs_test_guard_percent,
                 dronegs_canary_min_psnr=gs_canary_min_psnr,
                 dronegs_canary_min_ssim=gs_canary_min_ssim,
+                cancellation_check=ensure_not_cancelled,
+                checkpoint_callback=persist_dronegs_checkpoint,
             )
             report_mission_progress(vol_id, "GAUSS", 100,
                 log=f"Gaussian Splatting orthomosaic complete: {result['width']}x{result['height']}px, "
@@ -766,7 +1370,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         #     orthomosaic.height.tif   — height map (if generated)
         #     alignment_transform.json — Sim3 geo-alignment
         #     geo_data.txt             — GPS from EXIF
-        #     geo_data.txt.crs         — UTM CRS code
+        #     geo_data.txt.crs         — projected metric CRS code
+        #     geo_data.txt.crs.json    — CRS selection policy and provenance
         #     colmap/
         #       database.db            — COLMAP feature database
         #       sparse/0/              — SfM sparse model (cameras.bin, images.bin, points3D.bin)
@@ -806,6 +1411,13 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 if os.path.exists(crs_file):
                     storage.upload_file(crs_file, f"{mission_s3_prefix}/geo_data.txt.crs")
                     upload_count += 1
+                crs_metadata_file = f"{geo_data_file}.crs.json"
+                if os.path.exists(crs_metadata_file):
+                    storage.upload_file(
+                        crs_metadata_file,
+                        f"{mission_s3_prefix}/geo_data.txt.crs.json",
+                    )
+                    upload_count += 1
 
             report_mission_progress(vol_id, "UPLOADING", 92, log="Geo data uploaded")
 
@@ -833,10 +1445,16 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 report_mission_progress(vol_id, "UPLOADING", 96, log=f"Dense reconstruction uploaded ({n} files)")
 
             # 5. Gaussian splatting outputs (PLY models + checkpoints)
-            checkpoint_dir = os.path.join(workspace_dir, "gaussian_checkpoints")
-            if os.path.isdir(checkpoint_dir):
-                n = storage.upload_directory(checkpoint_dir, f"{mission_s3_prefix}/gaussian/")
+            if (
+                durable_checkpoint_dir
+                and os.path.isdir(durable_checkpoint_dir)
+            ):
+                n = storage.upload_directory(
+                    durable_checkpoint_dir,
+                    f"{mission_s3_prefix}/gaussian/",
+                )
                 upload_count += n
+                gaussian_upload_complete = True
                 report_mission_progress(vol_id, "UPLOADING", 98, log=f"Gaussian models & checkpoints uploaded ({n} files)")
 
             report_mission_progress(vol_id, "UPLOADING", 99, log=f"All artifacts uploaded to S3 ({upload_count} files total)")
@@ -853,6 +1471,33 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
 
         report_mission_progress(vol_id, "DONE", 100, status="success", log="Pipeline complete!")
         publish_next_stage_message(producer, TOPIC_OUT, vol_id, ortho_s3_key, mission_params, normalize_ai_backend)
+        if (
+            gaussian_upload_complete
+            and durable_checkpoint_dir
+            and os.path.isdir(durable_checkpoint_dir)
+        ):
+            try:
+                storage.delete_prefix(checkpoint_s3_prefix + "/")
+                shutil.rmtree(durable_checkpoint_dir, ignore_errors=True)
+                report_mission_progress(
+                    vol_id,
+                    "CLEANUP",
+                    100,
+                    log=(
+                        "Durable DroneGS recovery state retired after "
+                        "PLY/manifest/canary promotion."
+                    ),
+                )
+            except Exception as retirement_error:
+                report_mission_progress(
+                    vol_id,
+                    "CLEANUP",
+                    100,
+                    log=(
+                        "Completed artifacts are promoted; recovery state "
+                        f"was retained: {retirement_error}"
+                    ),
+                )
 
     except PipelineCancelledError as e:
         report_mission_progress(vol_id, "CANCELLED", 0, status="error", log=f"🚫 {str(e)}")

@@ -58,6 +58,11 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace dronegs {
 namespace {
 
@@ -3557,6 +3562,68 @@ void sort_tile_pairs(
         "sort tile/splat pairs");
 }
 
+std::uint64_t checkpoint_checksum(
+    const std::filesystem::path& path,
+    std::uint64_t byte_count) {
+    constexpr std::uint64_t offset_basis = 14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        throw std::runtime_error(
+            "cannot read checkpoint for checksum: " + path.string());
+    }
+    std::uint64_t hash = offset_basis;
+    std::array<char, 64U * 1024U> buffer{};
+    while (byte_count != 0U) {
+        const auto requested = static_cast<std::streamsize>(
+            std::min<std::uint64_t>(buffer.size(), byte_count));
+        stream.read(buffer.data(), requested);
+        const auto read = stream.gcount();
+        if (read <= 0) {
+            throw std::runtime_error(
+                "checkpoint checksum source is truncated");
+        }
+        for (std::streamsize index = 0; index < read; ++index) {
+            hash ^= static_cast<unsigned char>(
+                buffer[static_cast<std::size_t>(index)]);
+            hash *= prime;
+        }
+        byte_count -= static_cast<std::uint64_t>(read);
+    }
+    return hash;
+}
+
+void sync_checkpoint_file(const std::filesystem::path& path) {
+#ifndef _WIN32
+    const int descriptor = ::open(path.c_str(), O_RDONLY);
+    if (descriptor < 0) {
+        throw std::runtime_error(
+            "cannot open checkpoint for fsync: " + path.string());
+    }
+    const int result = ::fsync(descriptor);
+    ::close(descriptor);
+    if (result != 0) {
+        throw std::runtime_error(
+            "cannot fsync checkpoint: " + path.string());
+    }
+#else
+    static_cast<void>(path);
+#endif
+}
+
+void sync_checkpoint_directory(const std::filesystem::path& path) {
+#ifndef _WIN32
+    const int descriptor =
+        ::open(path.parent_path().c_str(), O_RDONLY | O_DIRECTORY);
+    if (descriptor >= 0) {
+        static_cast<void>(::fsync(descriptor));
+        ::close(descriptor);
+    }
+#else
+    static_cast<void>(path);
+#endif
+}
+
 }  // namespace
 
 static AlphaRenderBackwardOutput render_alpha_cuda_impl(
@@ -5761,7 +5828,7 @@ void OrderedAlphaTrainingContext::save_checkpoint(
         'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
         '-', 'V', '1', '\0'};
     stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 2U;
+    constexpr std::uint32_t format_version = 3U;
     write_value(format_version);
     write_string(dataset_fingerprint);
     write_string(configuration_fingerprint);
@@ -5772,10 +5839,10 @@ void OrderedAlphaTrainingContext::save_checkpoint(
     write_value(progress.gaussian_slots_reused);
     write_value(progress.topology_compactions);
     write_value(progress.initial_loss);
-    const bool has_initial_held_out_psnr =
-        progress.initial_held_out_psnr.has_value();
-    const bool has_initial_held_out_ssim =
-        progress.initial_held_out_ssim.has_value();
+    const std::uint8_t has_initial_held_out_psnr =
+        progress.initial_held_out_psnr.has_value() ? 1U : 0U;
+    const std::uint8_t has_initial_held_out_ssim =
+        progress.initial_held_out_ssim.has_value() ? 1U : 0U;
     write_value(has_initial_held_out_psnr);
     if (has_initial_held_out_psnr) {
         write_value(*progress.initial_held_out_psnr);
@@ -5787,20 +5854,23 @@ void OrderedAlphaTrainingContext::save_checkpoint(
     write_value(impl_->optimizer_steps);
     write_value(impl_->maximum_steps);
     write_value(impl_->noise_seed);
-    write_value(impl_->gaussian_count);
+    const auto count = impl_->gaussian_count;
+    const auto portable_count = static_cast<std::uint64_t>(count);
+    write_value(portable_count);
     write_value(impl_->maximum_active_sh_degree);
     write_value(impl_->sh_degree_interval);
     write_value(impl_->active_sh_degree);
     const auto profile =
         static_cast<std::uint32_t>(impl_->optimizer_profile);
     write_value(profile);
-    write_value(impl_->fastgs_compatibility);
+    const std::uint8_t portable_fastgs =
+        impl_->fastgs_compatibility ? 1U : 0U;
+    write_value(portable_fastgs);
     write_value(impl_->position_learning_rate_scale);
     write_value(impl_->minimum_log_scale);
     write_value(impl_->maximum_log_scale);
     write_value(impl_->beta_first_power);
     write_value(impl_->beta_second_power);
-    const auto count = impl_->gaussian_count;
     write_device(impl_->gaussians, count);
     write_device(impl_->first_dc, count * 3U);
     write_device(impl_->second_dc, count * 3U);
@@ -5829,17 +5899,52 @@ void OrderedAlphaTrainingContext::save_checkpoint(
             "failed to write checkpoint: " + temporary);
     }
     stream.close();
+    const auto payload_bytes =
+        static_cast<std::uint64_t>(
+            std::filesystem::file_size(temporary));
+    const auto checksum =
+        checkpoint_checksum(temporary, payload_bytes);
+    {
+        std::ofstream trailer(temporary, std::ios::binary | std::ios::app);
+        trailer.write(
+            reinterpret_cast<const char*>(&checksum),
+            static_cast<std::streamsize>(sizeof(checksum)));
+        trailer.flush();
+        if (!trailer) {
+            throw std::runtime_error(
+                "failed to append checkpoint checksum");
+        }
+    }
+    sync_checkpoint_file(temporary);
     std::error_code error;
     std::filesystem::rename(temporary, path, error);
     if (error) {
-        std::filesystem::remove(path, error);
+        const auto backup = path.string() + ".previous";
+        std::error_code backup_error;
+        std::filesystem::remove(backup, backup_error);
+        backup_error.clear();
+        if (std::filesystem::exists(path)) {
+            std::filesystem::rename(path, backup, backup_error);
+        }
+        if (backup_error) {
+            throw std::runtime_error(
+                "cannot preserve previous checkpoint: " +
+                backup_error.message());
+        }
         error.clear();
         std::filesystem::rename(temporary, path, error);
+        if (error && std::filesystem::exists(backup)) {
+            std::error_code restore_error;
+            std::filesystem::rename(backup, path, restore_error);
+        } else {
+            std::filesystem::remove(backup, backup_error);
+        }
     }
     if (error) {
         throw std::runtime_error(
             "cannot publish checkpoint: " + error.message());
     }
+    sync_checkpoint_directory(path);
 }
 
 TrainingCheckpointProgress
@@ -5847,6 +5952,9 @@ OrderedAlphaTrainingContext::load_checkpoint(
     const std::filesystem::path& path,
     const std::string& expected_dataset_fingerprint,
     const std::string& expected_configuration_fingerprint) {
+    const auto total_bytes =
+        static_cast<std::uint64_t>(std::filesystem::file_size(path));
+    std::uint64_t payload_bytes = total_bytes;
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
         throw std::runtime_error(
@@ -5895,9 +6003,29 @@ OrderedAlphaTrainingContext::load_checkpoint(
     std::uint32_t format_version = 0U;
     read_value(format_version);
     if (magic != expected_magic ||
-        (format_version != 1U && format_version != 2U)) {
+        (format_version != 1U && format_version != 2U &&
+         format_version != 3U)) {
         throw std::runtime_error(
             "unsupported DroneGS checkpoint format");
+    }
+    if (format_version >= 3U) {
+        if (total_bytes <= sizeof(std::uint64_t)) {
+            throw std::runtime_error(
+                "checkpoint is too short for its checksum");
+        }
+        payload_bytes -= sizeof(std::uint64_t);
+        std::ifstream trailer(path, std::ios::binary);
+        trailer.seekg(static_cast<std::streamoff>(payload_bytes));
+        std::uint64_t expected_checksum = 0U;
+        trailer.read(
+            reinterpret_cast<char*>(&expected_checksum),
+            static_cast<std::streamsize>(sizeof(expected_checksum)));
+        if (!trailer ||
+            checkpoint_checksum(path, payload_bytes) !=
+                expected_checksum) {
+            throw std::runtime_error(
+                "checkpoint checksum mismatch");
+        }
     }
     if (read_string() != expected_dataset_fingerprint) {
         throw std::runtime_error(
@@ -5918,13 +6046,25 @@ OrderedAlphaTrainingContext::load_checkpoint(
         read_value(progress.initial_loss);
         bool has_initial_held_out_psnr = false;
         bool has_initial_held_out_ssim = false;
-        read_value(has_initial_held_out_psnr);
+        if (format_version >= 3U) {
+            std::uint8_t value = 0U;
+            read_value(value);
+            has_initial_held_out_psnr = value != 0U;
+        } else {
+            read_value(has_initial_held_out_psnr);
+        }
         if (has_initial_held_out_psnr) {
             float value = 0.0F;
             read_value(value);
             progress.initial_held_out_psnr = value;
         }
-        read_value(has_initial_held_out_ssim);
+        if (format_version >= 3U) {
+            std::uint8_t value = 0U;
+            read_value(value);
+            has_initial_held_out_ssim = value != 0U;
+        } else {
+            read_value(has_initial_held_out_ssim);
+        }
         if (has_initial_held_out_ssim) {
             float value = 0.0F;
             read_value(value);
@@ -5943,12 +6083,31 @@ OrderedAlphaTrainingContext::load_checkpoint(
     read_value(optimizer_steps);
     read_value(checkpoint_maximum_steps);
     read_value(checkpoint_noise_seed);
-    read_value(checkpoint_count);
+    if (format_version >= 3U) {
+        std::uint64_t portable_count = 0U;
+        read_value(portable_count);
+        if (portable_count >
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::size_t>::max())) {
+            throw std::runtime_error(
+                "checkpoint Gaussian count is not portable");
+        }
+        checkpoint_count =
+            static_cast<std::size_t>(portable_count);
+    } else {
+        read_value(checkpoint_count);
+    }
     read_value(checkpoint_maximum_sh);
     read_value(checkpoint_sh_interval);
     read_value(checkpoint_active_sh);
     read_value(checkpoint_profile);
-    read_value(checkpoint_fastgs);
+    if (format_version >= 3U) {
+        std::uint8_t portable_fastgs = 0U;
+        read_value(portable_fastgs);
+        checkpoint_fastgs = portable_fastgs != 0U;
+    } else {
+        read_value(checkpoint_fastgs);
+    }
     if (checkpoint_count == 0U ||
         checkpoint_count > impl_->gaussian_capacity ||
         checkpoint_maximum_steps != impl_->maximum_steps ||
@@ -5996,6 +6155,14 @@ OrderedAlphaTrainingContext::load_checkpoint(
     if (!stream) {
         throw std::runtime_error(
             "checkpoint payload is truncated");
+    }
+    if (format_version >= 3U) {
+        const auto consumed = stream.tellg();
+        if (consumed < 0 ||
+            static_cast<std::uint64_t>(consumed) != payload_bytes) {
+            throw std::runtime_error(
+                "checkpoint payload size/checksum trailer mismatch");
+        }
     }
     impl_->learning_rates = mrnf_learning_rates(
         std::max<std::uint64_t>(1U, optimizer_steps),

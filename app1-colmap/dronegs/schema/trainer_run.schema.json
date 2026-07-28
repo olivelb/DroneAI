@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://droneai.local/schemas/dronegs/trainer_run-v1.schema.json",
+  "title": "DroneGS completed run manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "backend",
+    "trainer_version",
+    "trainer_binary_sha256",
+    "git_revision",
+    "status",
+    "started_at",
+    "finished_at",
+    "dataset",
+    "hardware",
+    "parameters",
+    "timings",
+    "metrics",
+    "artifacts",
+    "error"
+  ],
+  "properties": {
+    "contract_version": {"const": 1},
+    "backend": {"type": "string"},
+    "trainer_version": {"type": "string"},
+    "trainer_binary_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "git_revision": {"type": "string"},
+    "status": {"const": "completed"},
+    "started_at": {"type": "string"},
+    "finished_at": {"type": "string"},
+    "dataset": {
+      "type": "object",
+      "required": ["path", "fingerprint", "image_count"],
+      "properties": {
+        "path": {"type": "string"},
+        "fingerprint": {"type": "string", "minLength": 16},
+        "image_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "hardware": {"type": "object"},
+    "parameters": {
+      "type": "object",
+      "required": [
+        "profile_id",
+        "optimizer_profile",
+        "pruning_policy",
+        "raster_profile",
+        "effective_raster_profile",
+        "test_split",
+        "test_guard_percent"
+      ],
+      "properties": {
+        "profile_id": {"type": "string"},
+        "optimizer_profile": {"type": "string"},
+        "pruning_policy": {"enum": ["original", "spatial-bounds"]},
+        "raster_profile": {"enum": ["auto", "bounded", "fastgs"]},
+        "effective_raster_profile": {"enum": ["bounded", "fastgs"]},
+        "test_split": {"enum": ["modulo", "spatial-block"]},
+        "test_guard_percent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    },
+    "timings": {"type": "object"},
+    "metrics": {"type": "object"},
+    "artifacts": {
+      "type": "object",
+      "required": ["point_cloud.ply"],
+      "properties": {
+        "point_cloud.ply": {
+          "type": "object",
+          "required": ["path", "sha256", "bytes"],
+          "properties": {
+            "path": {"type": "string"},
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {"type": "integer", "minimum": 1}
+          }
+        }
+      }
+    },
+    "error": {"type": "null"}
+  }
+}

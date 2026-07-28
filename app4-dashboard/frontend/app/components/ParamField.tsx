@@ -12,19 +12,39 @@ export function ParamField({
   onChange: (key: string, val: ParamValue) => void;
 }) {
   if (meta.type === "bool") {
-    const checked = Boolean(value);
+    const checked =
+      value === true || String(value).trim().toLowerCase() === "true";
     return (
       <button
+        type="button"
+        aria-pressed={checked}
         onClick={() => onChange(paramKey, !checked)}
-        className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition ${
-          checked ? "border-blue-400/40 bg-blue-500/5" : "border-gray-200 bg-white"
+        className={`flex min-h-[74px] items-center justify-between gap-4 rounded-2xl border px-4 py-3 text-left transition ${
+          checked
+            ? "border-[#83cfc1] bg-[#edf9f6]"
+            : "border-[#dce4e1] bg-white hover:border-[#bdcbc6]"
         }`}
       >
-        <span className="text-sm font-medium text-gray-700">{meta.label}</span>
-        <span className={`rounded-full px-3 py-0.5 text-xs font-semibold ${
-          checked ? "bg-blue-500 text-white" : "bg-gray-100 text-gray-400"
-        }`}>
-          {checked ? "On" : "Off"}
+        <span>
+          <span className="block text-sm font-semibold text-[#34413d]">
+            {meta.label}
+          </span>
+          {meta.description && (
+            <span className="mt-1 block text-[11px] leading-4 text-[#7a8783]">
+              {meta.description}
+            </span>
+          )}
+        </span>
+        <span
+          className={`relative h-6 w-11 shrink-0 rounded-full transition ${
+            checked ? "bg-[#0f766e]" : "bg-[#ced8d4]"
+          }`}
+        >
+          <span
+            className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow-sm transition ${
+              checked ? "left-6" : "left-1"
+            }`}
+          />
         </span>
       </button>
     );
@@ -33,21 +53,30 @@ export function ParamField({
   if (meta.type === "select") {
     return (
       <label className="block">
-        <span className="mb-1 block text-sm font-medium text-gray-600">{meta.label}</span>
+        <span className="mb-1.5 block text-xs font-semibold text-[#4d5a56]">
+          {meta.label}
+        </span>
         <select
           value={String(value)}
           onChange={(e) => onChange(paramKey, e.target.value)}
-          className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30"
+          className="input-control min-h-11"
         >
           {meta.options?.map((o) => <option key={o} value={o}>{o}</option>)}
         </select>
+        {meta.description && (
+          <span className="mt-1.5 block text-[11px] leading-4 text-[#7a8783]">
+            {meta.description}
+          </span>
+        )}
       </label>
     );
   }
 
   return (
     <label className="block">
-      <span className="mb-1 block text-sm font-medium text-gray-600">{meta.label}</span>
+      <span className="mb-1.5 block text-xs font-semibold text-[#4d5a56]">
+        {meta.label}
+      </span>
       <input
         type={meta.type === "text" ? "text" : "number"}
         min={meta.min}
@@ -55,8 +84,13 @@ export function ParamField({
         step={meta.step}
         value={String(value)}
         onChange={(e) => onChange(paramKey, e.target.value)}
-        className="w-full rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400/30"
+        className="input-control min-h-11"
       />
+      {meta.description && (
+        <span className="mt-1.5 block text-[11px] leading-4 text-[#7a8783]">
+          {meta.description}
+        </span>
+      )}
     </label>
   );
 }

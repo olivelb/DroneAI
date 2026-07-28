@@ -2,8 +2,31 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
-## Unreleased - Pipeline promotion
+## 0.5.0-dev.47 - Production identity and spatial canary
 
+- Add a versioned native profile registry and reject unknown or
+  non-production profile/configuration combinations.
+- Extend the dataset identity to cameras, intrinsics, image IDs, poses, sparse
+  points and stable image samples; completed reuse also verifies trainer and
+  PLY SHA-256.
+- Add deterministic `spatial-block` held-out selection and an optional guard
+  ring while preserving modulo-8 parity in immutable production V1.
+- Record training, held-out and ignored camera counts in the manifest and
+  canary result.
+- Upgrade checkpoints to format V3 with a payload checksum, fixed-width new
+  fields, file and parent-directory fsync, and rollback-safe publication while
+  retaining V1/V2 read compatibility.
+- Keep recovery checkpoints outside disposable mission workspaces, synchronize
+  every save to S3, restore on pod replacement and retire only after final
+  artifact promotion.
+- Make cancellation poll independently of trainer stdout and terminate the
+  complete process group.
+- Harden the benchmark harness with isolated empty trainer outputs,
+  driver/CUDA/thermal/VRAM inventory, five-run dispersion and portable
+  archives.
+- Validate five complete SAVERES production V1 seeds with 607.1-second median
+  wall time, 2,124 MiB median peak VRAM, 19.4122 dB mean PSNR and 0.49155 mean
+  SSIM over 134 held-out views.
 - Make DroneGS the sole distributed and local Gaussian training backend.
 - Remove the LichtFeld checkout, patches, Dockerfile, Python adapter, runtime
   selector and vcpkg build dependency while retaining historical benchmark

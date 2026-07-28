@@ -8,6 +8,10 @@ and copied into a marked local workspace before COLMAP processes them.
 See [`docs/GAJAN_R2S_VALIDATION.md`](docs/GAJAN_R2S_VALIDATION.md) for a real
 111-image, non-RTK validation run and its measured results.
 
+See [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) for the COLMAP 4.1.1
+GLOMAP/Caspar path, two-flight ALBAGNAC command and complete SAVERES RTK
+measurement.
+
 ## Scope
 
 The COLMAP runner deliberately stops before Gaussian Splatting. This keeps the
@@ -118,6 +122,12 @@ Outputs:
 - `dataset_preflight.json`: per-image EXIF and aggregate quality metrics
 - `flight_path.geojson`: camera locations and approximate acquisition path
 
+DJI Enterprise `*_Timestamp.MRK` records override lower-precision EXIF
+coordinates when present. `Ellh` is recorded explicitly as an ellipsoidal
+height together with its vertical standard deviation. EXIF-only altitude is
+marked unknown. DroneAI never labels a height as NGF-IGN69 unless a future
+explicit RAF20/Circé transformation is applied.
+
 ## Sparse smoke test
 
 Start with a contiguous sequence to validate camera configuration and visual
@@ -135,8 +145,8 @@ overlap quickly:
   --alignment-max-error 10
 ```
 
-The legacy SIFT path is used intentionally. The current COLMAP image does not
-include the ONNX Runtime support required by ALIKED and LightGlue.
+SIFT CUDA is the measured fast default. The image also contains ONNX Runtime
+GPU and embedded ALIKED/LightGlue models for explicit comparison runs.
 
 ## Full sparse reconstruction
 
@@ -158,6 +168,23 @@ are required for a later Gaussian Splatting experiment.
 CPU execution is available with `--no-use-gpu`, although it is substantially
 slower.
 
+For a corrected DJI RTK/PPK mission with complete MRK uncertainties:
+
+```bash
+./tools/run_local_colmap.sh DATASET WORKSPACE \
+  --stage undistort \
+  --engine auto \
+  --matcher gps \
+  --gps-quality rtk \
+  --projected-crs-mode auto-local \
+  --rtk-refinement-iterations 25 \
+  --rtk-refinement-timeout-seconds 900
+```
+
+The runner requires at least 95% pose-prior coverage before modifying the
+database, runs one robust bounded Ceres GPU pass, and retains the verified
+GLOMAP/Caspar model if refinement fails or times out.
+
 ## Workspace safety and resumability
 
 The runner refuses to modify a non-empty directory unless it contains its
@@ -169,7 +196,9 @@ Key outputs are:
 
 - `database.db`
 - `sparse/`
+- `sparse_rtk/` when covariance-aware RTK refinement succeeds
 - `sparse_geo/`
+- `rtk_prior_report.json`
 - `alignment_transform.json`
 - `sparse.ply` or `sparse_geo.ply`
 - `geo_data.txt` and `geo_data.txt.crs`
@@ -239,11 +268,13 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
 | `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
 
-`smoke` exercises checkpoint/resume and held-out evaluation but uses a
-zero-threshold operational canary. `low-memory` gates at 15 dB / 0.10 SSIM;
-`balanced` uses the production 18 dB / 0.35 SSIM thresholds.
+`smoke` exercises checkpoint/resume and modulo held-out evaluation but uses a
+zero-threshold operational canary. `low-memory` uses the spatial-block canary
+with a 25% guard ring and gates at 15 dB / 0.10 SSIM; `balanced` preserves the
+immutable modulo production baseline at 18 dB / 0.35 SSIM.
 
-The `balanced` preset reproduces the validated dev.45 training recipe:
+The `balanced` preset applies immutable `DRONEGS_PRODUCTION_PROFILE_V1` with
+the dev.47 trainer:
 FastGS structural rasterization, bounded spatial pruning,
 progressive SH3, a 1,000-step topology cooldown, and a 1,000-step finish to
 100% MSE gradient. All presets use seed 42 and select DroneGS explicitly.

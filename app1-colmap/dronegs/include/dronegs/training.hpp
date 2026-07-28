@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 #include <vector>
 
 #include "dronegs/types.hpp"
@@ -13,6 +14,7 @@ namespace dronegs {
 struct DatasetSplit {
     std::vector<std::size_t> training;
     std::vector<std::size_t> held_out;
+    std::vector<std::size_t> ignored;
 };
 
 struct ImageQualityMetrics {
@@ -120,6 +122,7 @@ struct TrainingMetrics {
     std::uint64_t image_prefetch_ready = 0;
     std::uint64_t training_image_count = 0;
     std::uint64_t held_out_image_count = 0;
+    std::uint64_t ignored_image_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
     std::uint64_t gaussians_pruned = 0;
@@ -135,6 +138,9 @@ struct TrainingMetrics {
 
 DatasetSplit make_dataset_split(
     std::size_t image_count, std::uint32_t test_every);
+DatasetSplit make_dataset_split(
+    const Scene& scene, std::uint32_t test_every,
+    std::string_view test_split, std::uint32_t test_guard_percent);
 
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians);

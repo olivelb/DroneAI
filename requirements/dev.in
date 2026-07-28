@@ -2,6 +2,7 @@
 -r processing.in
 
 numpy
+httpx2
 pip-tools
 pyproj
 pytest

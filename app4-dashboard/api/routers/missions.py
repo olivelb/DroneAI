@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from shared import storage
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
@@ -25,9 +25,17 @@ from ..mission_state import (
     prepare_resume_in_session,
 )
 from ..schemas import MissionParams
+from ..security import (
+    require_admin,
+    require_authenticated,
+    require_operator,
+)
 
 
-router = APIRouter(tags=["missions"])
+router = APIRouter(
+    tags=["missions"],
+    dependencies=[Depends(require_authenticated)],
+)
 
 
 @router.get("/status/summary")
@@ -50,7 +58,10 @@ def mission_state(vol_id: str):
         }
 
 
-@router.post("/mission/cancel")
+@router.post(
+    "/mission/cancel",
+    dependencies=[Depends(require_operator)],
+)
 async def cancel_mission(vol_id: str):
     with get_session() as session:
         enqueue_outbox(
@@ -65,7 +76,10 @@ async def cancel_mission(vol_id: str):
     }
 
 
-@router.delete("/mission/{vol_id}")
+@router.delete(
+    "/mission/{vol_id}",
+    dependencies=[Depends(require_admin)],
+)
 def delete_mission(vol_id: str):
     deleted_count = 0
     try:
@@ -105,7 +119,10 @@ def delete_mission(vol_id: str):
     }
 
 
-@router.post("/mission/resume")
+@router.post(
+    "/mission/resume",
+    dependencies=[Depends(require_operator)],
+)
 async def resume_mission(vol_id: str):
     try:
         with get_session() as session:
@@ -143,7 +160,10 @@ def mission_parameters():
     }
 
 
-@router.post("/mission")
+@router.post(
+    "/mission",
+    dependencies=[Depends(require_operator)],
+)
 async def start_mission(params: MissionParams):
     payload = params.model_dump()
     try:

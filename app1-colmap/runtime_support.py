@@ -28,7 +28,15 @@ def scale_dimensions(width, height, max_image_size):
     return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
 
 
-def run_command(command, vol_id, step, base_progress, report_fn, cancel_check_fn=None):
+def run_command(
+    command,
+    vol_id,
+    step,
+    base_progress,
+    report_fn,
+    cancel_check_fn=None,
+    timeout_seconds=None,
+):
     heartbeat_interval = float(os.getenv("COLMAP_COMMAND_HEARTBEAT_SECONDS", "15"))
     report_fn(
         vol_id,
@@ -47,6 +55,34 @@ def run_command(command, vol_id, step, base_progress, report_fn, cancel_check_fn
     while True:
         if cancel_check_fn:
             cancel_check_fn(process)
+
+        now = time.monotonic()
+        elapsed_seconds = now - start_time
+        if timeout_seconds and elapsed_seconds >= float(timeout_seconds):
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            report_fn(
+                vol_id,
+                step,
+                base_progress,
+                log=(
+                    f"Command exceeded its {float(timeout_seconds):.0f}s time budget "
+                    f"and was terminated: {' '.join(command)}"
+                ),
+                details={
+                    "event": "command_timeout",
+                    "command": command,
+                    "elapsed_seconds": round(elapsed_seconds, 3),
+                    "timeout_seconds": float(timeout_seconds),
+                },
+            )
+            raise TimeoutError(
+                f"Command exceeded {float(timeout_seconds):.0f}s: {' '.join(command)}"
+            )
 
         try:
             line = process.stdout.readline()
@@ -93,6 +129,7 @@ def run_command(command, vol_id, step, base_progress, report_fn, cancel_check_fn
             report_fn(vol_id, step, base_progress, log=clean_line)
 
     return_code = process.wait()
+    elapsed_seconds = time.monotonic() - start_time
     if return_code != 0:
         if cancel_check_fn:
             try:
@@ -100,7 +137,17 @@ def run_command(command, vol_id, step, base_progress, report_fn, cancel_check_fn
             except Exception:
                 report_fn(vol_id, step, base_progress, details={"event": "command_cancelled", "command": command, "return_code": return_code})
                 raise
-        report_fn(vol_id, step, base_progress, details={"event": "command_failed", "command": command, "return_code": return_code})
+        report_fn(
+            vol_id,
+            step,
+            base_progress,
+            details={
+                "event": "command_failed",
+                "command": command,
+                "return_code": return_code,
+                "elapsed_seconds": round(elapsed_seconds, 3),
+            },
+        )
         if return_code < 0:
             signal_number = -return_code
             try:
@@ -110,4 +157,14 @@ def run_command(command, vol_id, step, base_progress, report_fn, cancel_check_fn
             hint = " Likely causes: OOM kill, pod eviction, or manual termination." if signal_name == "SIGKILL" else ""
             raise RuntimeError(f"Command '{' '.join(command)}' died with {signal_name}.{hint}")
         raise subprocess.CalledProcessError(return_code, command)
-    report_fn(vol_id, step, base_progress, details={"event": "command_finished", "command": command, "return_code": 0})
+    report_fn(
+        vol_id,
+        step,
+        base_progress,
+        details={
+            "event": "command_finished",
+            "command": command,
+            "return_code": 0,
+            "elapsed_seconds": round(elapsed_seconds, 3),
+        },
+    )

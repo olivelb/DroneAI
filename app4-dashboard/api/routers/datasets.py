@@ -6,16 +6,44 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from shared import storage
 
 from ..image_preview import render_preview
+from ..security import (
+    require_admin,
+    require_authenticated,
+    require_operator,
+    upload_limits,
+)
 
 
-router = APIRouter(tags=["datasets"])
+router = APIRouter(
+    tags=["datasets"],
+    dependencies=[Depends(require_authenticated)],
+)
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+DATASET_SUFFIXES = {
+    *IMAGE_SUFFIXES,
+    ".tif",
+    ".tiff",
+    ".mrk",
+    ".nav",
+    ".obs",
+    ".bin",
+    ".rtk",
+    ".txt",
+}
 
 
 def sanitize_dataset_name(value: str, *, replacement: str = "") -> str:
@@ -25,6 +53,48 @@ def sanitize_dataset_name(value: str, *, replacement: str = "") -> str:
 
 def image_count(keys: list[str]) -> int:
     return sum(1 for key in keys if key.lower().endswith(IMAGE_SUFFIXES))
+
+
+def upload_size(upload: UploadFile) -> int:
+    if isinstance(upload.size, int):
+        return upload.size
+    position = upload.file.tell()
+    upload.file.seek(0, 2)
+    size = upload.file.tell()
+    upload.file.seek(position)
+    return size
+
+
+def validate_uploads(files: list[UploadFile]) -> None:
+    limits = upload_limits()
+    if len(files) > limits["max_files"]:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Upload contains too many files",
+        )
+    total_size = 0
+    for upload in files:
+        filename = Path(upload.filename or "").name
+        if (
+            not filename
+            or Path(filename).suffix.lower() not in DATASET_SUFFIXES
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail=f"Unsupported dataset file: {filename or '<empty>'}",
+            )
+        size = upload_size(upload)
+        if size > limits["max_file_bytes"]:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Dataset file exceeds quota: {filename}",
+            )
+        total_size += size
+        if total_size > limits["max_batch_bytes"]:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Upload batch exceeds quota",
+            )
 
 
 @router.get("/browse")
@@ -107,7 +177,10 @@ def list_datasets():
         return []
 
 
-@router.delete("/datasets/{name}")
+@router.delete(
+    "/datasets/{name}",
+    dependencies=[Depends(require_admin)],
+)
 def delete_dataset(name: str):
     safe_name = sanitize_dataset_name(name)
     if not safe_name or safe_name != name.strip():
@@ -133,11 +206,15 @@ def get_file(s3_key: str):
     )
 
 
-@router.post("/datasets/upload-file")
+@router.post(
+    "/datasets/upload-file",
+    dependencies=[Depends(require_operator)],
+)
 async def upload_single_file(
     dataset_name: str = Query(...),
     file: UploadFile = File(...),
 ):
+    validate_uploads([file])
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:
         return {"error": "Invalid dataset name"}
@@ -154,11 +231,15 @@ async def upload_single_file(
         }
 
 
-@router.post("/datasets/upload")
+@router.post(
+    "/datasets/upload",
+    dependencies=[Depends(require_operator)],
+)
 async def upload_dataset_batch(
     dataset_name: str = Query(...),
     files: list[UploadFile] = File(...),
 ):
+    validate_uploads(files)
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:
         return {"error": "Invalid dataset name"}

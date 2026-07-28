@@ -5,13 +5,13 @@ Deploy the DroneAI pipeline on a cloud K3s cluster with GPU support.
 The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that works both locally and in the cloud. Local mode uses `hostPath` PVs and Docker-imported images. Cloud mode uses a `storageClass` for dynamic provisioning and a container registry for images. The same chart serves both — you override values with a `values-cloud.yaml` file.
 
 > [!WARNING]
-> This is an experimental deployment guide, not a validated production
-> runbook. In particular, the current frontend hard-codes the browser hostname
-> and API port `30080`. The separate TLS frontend/API hostnames shown below
-> require an endpoint-configuration change in
-> `app4-dashboard/frontend/app/lib/api.ts` and a rebuilt frontend image.
-> The current chart also initializes missing tables with SQLAlchemy
-> `create_all()` rather than running Alembic migrations.
+> This remains a provider-oriented installation guide, not a public
+> multi-tenant SaaS runbook. Use
+> `charts/drone-ai/values-production.example.yaml` as the security baseline:
+> external Secrets, explicit CORS, API-key sessions, managed S3/PostgreSQL and
+> TLS ingress. Public multi-tenancy additionally requires OIDC and ownership
+> isolation. The chart still initializes missing tables with SQLAlchemy
+> `create_all()` rather than running Alembic migrations in the Helm hook.
 
 ## Target setup
 
@@ -342,13 +342,21 @@ colmapWorker:
 
 # --- Services: ClusterIP + Ingress instead of NodePort ---
 dashboardApi:
+  environment: production
   service:
     type: ClusterIP
     nodePort: null
   cors:
     origins: "https://droneai.example.fr"
+  auth:
+    disabled: false
+    existingSecret: drone-ai-api-auth
+    secretKey: api-keys.json
+    sessionSecretKey: session-secret
+    sessionMaxAgeSeconds: 28800
 
 dashboardFrontend:
+  apiUrl: "https://api.droneai.example.fr"
   service:
     type: ClusterIP
     nodePort: null
@@ -436,10 +444,19 @@ kubectl create namespace drone-ai
 kubectl -n drone-ai create secret generic hf-token \
   --from-literal=HF_TOKEN="hf_..."
 
+# Dashboard/API authentication. Generate both files outside the repository:
+# - api-keys.json follows docs/PRODUCTION_READINESS.md;
+# - session-secret contains at least 32 random bytes.
+kubectl -n drone-ai create secret generic drone-ai-api-auth \
+  --from-file=api-keys.json=./api-keys.json \
+  --from-file=session-secret=./session-secret
+
 # Image pull secret (if private registry — already done in step 5)
 ```
 
 The `drone-ai-storage` secret (S3 keys + database URL) is created automatically by the Helm chart from values.
+Do not commit `api-keys.json` or `session-secret`; Mission Studio exchanges the
+operator key for a signed HttpOnly browser session.
 
 ## Step 8: Deploy
 

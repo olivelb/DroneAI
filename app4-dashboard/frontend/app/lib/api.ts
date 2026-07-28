@@ -1,25 +1,85 @@
+export type SessionPrincipal = {
+  subject: string;
+  role: "viewer" | "operator" | "admin";
+  expires_in_seconds?: number;
+};
+
+export class ApiError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+const configuredApiBaseUrl = () => {
+  if (typeof document === "undefined") return "";
+  return (
+    document
+      .querySelector<HTMLMetaElement>('meta[name="droneai-api-url"]')
+      ?.content.trim()
+      .replace(/\/+$/, "") ?? ""
+  );
+};
+
+const apiCredentials = (): RequestCredentials =>
+  configuredApiBaseUrl() ? "include" : "same-origin";
+
 export const getApiBaseUrl = () => {
   if (typeof window === "undefined") return "http://localhost:30080";
-  return `http://${window.location.hostname}:30080`;
+  return configuredApiBaseUrl() || `http://${window.location.hostname}:30080`;
 };
 
 export const getWsBaseUrl = () => {
   if (typeof window === "undefined") return "ws://localhost:30080";
-  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${window.location.hostname}:30080`;
+  return getApiBaseUrl()
+    .replace(/^http:/, "ws:")
+    .replace(/^https:/, "wss:");
 };
 
 const api = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
-  const res = await fetch(`${getApiBaseUrl()}${path}`, { cache: "no-store", ...init });
+  const res = await fetch(`${getApiBaseUrl()}${path}`, {
+    cache: "no-store",
+    credentials: apiCredentials(),
+    ...init,
+  });
   const payload = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = payload && typeof payload === "object" && "detail" in payload
       ? String(payload.detail)
       : `HTTP ${res.status}`;
-    throw new Error(detail);
+    if (res.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("droneai:unauthorized"));
+    }
+    throw new ApiError(res.status, detail);
   }
   return payload as T;
 };
+
+export const createSession = async (apiKey: string) => {
+  const res = await fetch(`${getApiBaseUrl()}/auth/session`, {
+    method: "POST",
+    cache: "no-store",
+    credentials: apiCredentials(),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+  const payload = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = payload && typeof payload === "object" && "detail" in payload
+      ? String(payload.detail)
+      : `HTTP ${res.status}`;
+    throw new ApiError(res.status, detail);
+  }
+  return payload as SessionPrincipal;
+};
+
+export const fetchSession = () => api<SessionPrincipal>("/auth/session");
+
+export const deleteSession = () =>
+  api<{ status: string }>("/auth/session", { method: "DELETE" });
 
 export const fetchSummary = () => api<{ missions?: Array<Record<string, unknown>>; active_vol_id?: string }>("/status/summary");
 export const fetchPods = () => api<{ pods?: Array<Record<string, unknown>>; error?: string }>("/pods");
@@ -57,7 +117,7 @@ export const uploadDataset = async (
     try {
       const res = await fetch(
         `${getApiBaseUrl()}/datasets/upload-file?dataset_name=${encodeURIComponent(datasetName)}`,
-        { method: "POST", body: formData },
+        { method: "POST", body: formData, credentials: apiCredentials() },
       );
       const r = await res.json();
       if (r.status === "ok") {

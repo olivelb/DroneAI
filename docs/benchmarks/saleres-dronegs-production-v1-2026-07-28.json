@@ -1,0 +1,167 @@
+{
+  "schema_version": 1,
+  "recorded_at": "2026-07-28",
+  "release_decision": "DRONEGS_PRODUCTION_PROFILE_V1",
+  "source": {
+    "revision": "9b8a49c351a51e4872de9375ff2c634af8c79104",
+    "worktree_state": "dirty",
+    "trainer_version": "0.5.0-dev.47",
+    "trainer_binary_sha256": "a21899370dda24e95bb84872555904fa027ea3ca7ad8415a8d23a53a97d17cae"
+  },
+  "dataset": {
+    "name": "SAVERES",
+    "source": "E:\\DJI_202409301129_001_saleres",
+    "prepared_path": "/home/olivier/droneai-workspaces/saleres-production/dense",
+    "image_count": 1066,
+    "training_image_count": 932,
+    "held_out_image_count": 134,
+    "ignored_image_count": 0,
+    "benchmark_fingerprint": "aa09e0e33e2e3071d4bd7bc24693f6f0652a320fd1c8e827e85f89ac5fc6180f",
+    "trainer_fingerprint": "fnv1a64:v2:e64c311695c91c05"
+  },
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "gpu_memory_mib": 8188,
+    "driver": "610.62",
+    "cuda_umd": "13.3",
+    "trainer_cuda_runtime": "12.8",
+    "observed_temperature_c": {
+      "minimum": 77.0,
+      "maximum": 80.0
+    },
+    "power_limit_w": null
+  },
+  "profile": {
+    "iterations": 15000,
+    "strategy": "mrnf",
+    "sh_degree": 3,
+    "max_gaussians": 1500000,
+    "resize_factor": 4,
+    "max_width": 1600,
+    "tile_mode": 4,
+    "optimizer_profile": "reference-absolute",
+    "pruning_policy": "spatial-bounds",
+    "raster_profile": "fastgs",
+    "test_every": 8,
+    "test_split": "modulo",
+    "test_guard_percent": 0,
+    "checkpoint_every": 2000
+  },
+  "runs": [
+    {
+      "repetition": 1,
+      "seed": 42,
+      "status": "completed",
+      "wall_seconds": 655.4526764939983,
+      "peak_vram_mib": 2122.0,
+      "psnr": 19.41517448,
+      "ssim": 0.4910722077,
+      "final_loss": 0.161312893,
+      "final_gaussians": 1500000,
+      "ply_bytes": 354001569,
+      "ply_sha256": "de7e149b0dd81ee559a99991fdbb0c50bfb15b7fcfcdd5d3eb4c23610dbd24c3"
+    },
+    {
+      "repetition": 2,
+      "seed": 43,
+      "status": "completed",
+      "wall_seconds": 607.0707829219973,
+      "peak_vram_mib": 2170.0,
+      "psnr": 19.40747833,
+      "ssim": 0.4917083383,
+      "final_loss": 0.159990862,
+      "final_gaussians": 1500000,
+      "ply_bytes": 354001569,
+      "ply_sha256": "71c6a1210a79d9d4086ab530d0a1fe3841cd7231004ebaa4ec77037f80747bc8"
+    },
+    {
+      "repetition": 3,
+      "seed": 44,
+      "status": "completed",
+      "wall_seconds": 605.2681045850004,
+      "peak_vram_mib": 2124.0,
+      "psnr": 19.4070549,
+      "ssim": 0.4914907515,
+      "final_loss": 0.1605162323,
+      "final_gaussians": 1500000,
+      "ply_bytes": 354001569,
+      "ply_sha256": "33e7df03b7eb2b6f7e1f2a1ce531cd7da73e66817e0714e3f5b2b7e489ef689e"
+    },
+    {
+      "repetition": 4,
+      "seed": 45,
+      "status": "completed",
+      "wall_seconds": 603.798812705998,
+      "peak_vram_mib": 2113.0,
+      "psnr": 19.42403221,
+      "ssim": 0.4916853607,
+      "final_loss": 0.1595544368,
+      "final_gaussians": 1500000,
+      "ply_bytes": 354001569,
+      "ply_sha256": "6aacf5682ceaee9939041360c4697646baed147e8d46769c52d33b829b37f7c9"
+    },
+    {
+      "repetition": 5,
+      "seed": 46,
+      "status": "completed",
+      "wall_seconds": 610.9943793429993,
+      "peak_vram_mib": 2178.0,
+      "psnr": 19.40707016,
+      "ssim": 0.4917885959,
+      "final_loss": 0.1591758728,
+      "final_gaussians": 1500000,
+      "ply_bytes": 354001569,
+      "ply_sha256": "3563da99ab345d1428f1a0f5800caba10b34ff736132859584ec34919bdb8f5d"
+    }
+  ],
+  "aggregate": {
+    "successful_runs": 5,
+    "runs": 5,
+    "wall_seconds": {
+      "minimum": 603.798812705998,
+      "mean": 616.5169512099986,
+      "median": 607.0707829219973,
+      "p95": 655.4526764939983,
+      "maximum": 655.4526764939983,
+      "sample_standard_deviation": 21.931753213903026,
+      "mean_ci95": [
+        597.2929219176003,
+        635.740980502397
+      ]
+    },
+    "peak_vram_mib": {
+      "minimum": 2113.0,
+      "mean": 2141.4,
+      "median": 2124.0,
+      "maximum": 2178.0
+    },
+    "psnr": {
+      "minimum": 19.4070549,
+      "mean": 19.412162016,
+      "median": 19.40747833,
+      "maximum": 19.42403221,
+      "sample_standard_deviation": 0.007482028315532857
+    },
+    "ssim": {
+      "minimum": 0.4910722077,
+      "mean": 0.49154905082,
+      "median": 0.4916853607,
+      "maximum": 0.4917885959,
+      "sample_standard_deviation": 0.00028814618764890523
+    },
+    "final_loss": {
+      "minimum": 0.1591758728,
+      "mean": 0.16011005938,
+      "median": 0.159990862,
+      "maximum": 0.161312893,
+      "sample_standard_deviation": 0.0008377670009317124
+    }
+  },
+  "evidence": {
+    "summary_path": "/home/olivier/droneai-workspaces/benchmarks/saleres-dronegs-production-v1/benchmark_summary.json",
+    "bundle_path": "/home/olivier/droneai-workspaces/benchmarks/saleres-dronegs-production-v1.tar.gz",
+    "bundle_bytes": 6917872584,
+    "bundle_sha256": "5ed455a9f4a1f3cc628bec0d18f8fa15231490e2e86e13d5d7f186780cf9b7e2"
+  },
+  "acceptance_note": "The five-run modulo split validates reproducibility and the immutable V1 profile on SAVERES. It is not an independent surveyed-checkpoint accuracy report and does not establish spatial-block V2 thresholds."
+}

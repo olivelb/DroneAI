@@ -21,15 +21,15 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.46.
+- Current development version: 0.5.0-dev.47.
 - Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
   image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
   DroneGS reaches 22.175919 dB PSNR, 0.642557 SSIM and 0.325408 LPIPS in
   972.731 training seconds. Deterministic LichtFeld reaches 21.513821 dB,
   0.586497 SSIM and 0.371055 LPIPS in 994.228 seconds.
-- The production recipe combines the dev.38 optimizer profile, structural
-  FastGS rasterizer, LichtFeld-compatible pruning bounds, progressive SH3,
+- The immutable production recipe uses the `reference-absolute` optimizer,
+  structural FastGS rasterizer, spatial-bounds pruning, progressive SH3,
   a 1,000-step topology cooldown and a 1,000-step photometric finish ending
   at 100% MSE.
 - The default image builds DroneGS locally with portable CUDA device code and
@@ -37,18 +37,27 @@ Each completed phase has one focused commit and an annotated
   default pipeline.
 - Versioned full-state checkpoint/resume and held-out PSNR/SSIM canary gates
   are implemented in dev.46.
+- Dev.47 adds checksum-protected checkpoint V3, strict dataset/binary/PLY
+  reuse identity, a native production-profile registry and optional
+  spatial-block/guard-ring evaluation.
 - The independent Savères 15,000-step qualification passed on 1,065 images:
   19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS, 1.5 million splats and
   40.93 minutes of training. Its PSNR/SSIM production canary passed.
+- The final dev.47/V1 path was repeated over five complete seeds on the new
+  1,066-image SAVERES RTK reconstruction: every run completed, median wall
+  time was 607.1 seconds, median peak VRAM 2,124 MiB, mean PSNR 19.4122 dB and
+  mean SSIM 0.49155 over 134 held-out views.
 - The portable Turing-through-Blackwell image was rebuilt from the final
   source, started on the local NVIDIA GPU, and audited for matching source,
   notices, GPL text, and absence of LichtFeld/vcpkg runtime artifacts.
-- The remaining release work is operational publication and field
-  observation, not another trainer-parity gate.
+- Production V1 no longer has a trainer-parity gate. Publishing the immutable
+  evidence archive is a release action; ALBAGNAC plus SAVERES spatial-block
+  repetitions remain the separate gate for any V2 profile.
 
 ### Development history
 
-The following entries retain the measured progression that led to dev.45.
+The following entries retain the measured progression that led to production
+V1 and dev.47.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,

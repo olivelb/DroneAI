@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.46 checkpoint-canary "
+            << "DroneGS 0.5.0-dev.47 checkpoint-canary-spatial-split "
                "local-KNN portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.46 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.47 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color local-KNN "
@@ -66,6 +66,10 @@ int main(int argc, char** argv) {
 
         const auto loading_start = clock::now();
         const auto scene = dronegs::load_colmap_scene(options.data_path);
+        const auto fingerprint =
+            options.dataset_fingerprint.empty()
+                ? dronegs::dataset_fingerprint(scene, options.data_path)
+                : options.dataset_fingerprint;
         const auto loading_end = clock::now();
         if (scene.points.size() > options.max_cap &&
             options.initial_ply.empty()) {
@@ -129,6 +133,8 @@ int main(int argc, char** argv) {
             training.training_image_count;
         measurements.held_out_image_count =
             training.held_out_image_count;
+        measurements.ignored_image_count =
+            training.ignored_image_count;
         measurements.topology_refinements =
             training.topology_refinements;
         measurements.gaussians_added =
@@ -154,7 +160,7 @@ int main(int argc, char** argv) {
         measurements.wall_seconds =
             std::chrono::duration<double>(export_end - wall_start).count();
         dronegs::write_completed_manifest(
-            options, scene, dronegs::dataset_fingerprint(scene), measurements,
+            options, scene, fingerprint, measurements,
             ply_path, gaussians.size());
 
         std::cout << "{\"event\":\"progress\",\"iteration\":" << options.iterations

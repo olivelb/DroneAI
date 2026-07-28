@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "dronegs/cli.hpp"
+#include "dronegs/profile_registry.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -47,19 +48,22 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.46\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.47\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--initial-ply PATH] "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
+        "[--test-split modulo|spatial-block] "
+        "[--test-guard-percent 0..100] "
         "[--save-eval-images 0|1] "
         "[--checkpoint-every N] [--checkpoint-path PATH] "
         "[--resume-from PATH] [--stop-after N] "
         "[--topology-cooldown N] "
         "[--photometric-finish N] [--photometric-mse-percent 0..100] "
         "[--sh-degree-interval N] "
+        "[--profile-id NAME] [--dataset-fingerprint VALUE] "
         "[--optimizer-profile dronegs-dev16|reference-absolute|"
         "reference-dc-only|reference-position-only|"
         "reference-opacity-only|reference-scale-only|"
@@ -93,13 +97,15 @@ Options parse_options(int argc, char** argv) {
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
-        "--jpeg-idct-scale", "--test-every", "--save-eval-images",
+        "--jpeg-idct-scale", "--test-every", "--test-split",
+        "--test-guard-percent", "--save-eval-images",
         "--checkpoint-every", "--checkpoint-path", "--resume-from",
         "--stop-after",
         "--topology-cooldown", "--photometric-finish",
         "--photometric-mse-percent",
         "--optimizer-profile", "--sh-degree-interval",
         "--initial-ply", "--pruning-policy", "--raster-profile",
+        "--profile-id", "--dataset-fingerprint",
     };
     const std::unordered_set<std::string> required{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
@@ -159,6 +165,14 @@ Options parse_options(int argc, char** argv) {
         options.test_every =
             parse_u32(values.at("--test-every"), "--test-every");
     }
+    if (values.contains("--test-split")) {
+        options.test_split = values.at("--test-split");
+    }
+    if (values.contains("--test-guard-percent")) {
+        options.test_guard_percent = parse_u32(
+            values.at("--test-guard-percent"),
+            "--test-guard-percent");
+    }
     if (values.contains("--save-eval-images")) {
         options.save_eval_images = parse_u32(
             values.at("--save-eval-images"), "--save-eval-images");
@@ -188,6 +202,13 @@ Options parse_options(int argc, char** argv) {
     if (values.contains("--optimizer-profile")) {
         options.optimizer_profile =
             values.at("--optimizer-profile");
+    }
+    if (values.contains("--profile-id")) {
+        options.profile_id = values.at("--profile-id");
+    }
+    if (values.contains("--dataset-fingerprint")) {
+        options.dataset_fingerprint =
+            values.at("--dataset-fingerprint");
     }
     if (values.contains("--sh-degree-interval")) {
         options.sh_degree_interval = parse_u32(
@@ -247,6 +268,25 @@ void validate_options(const Options& options) {
         throw std::invalid_argument(
             "--test-every must be 0 (disabled) or at least 2");
     }
+    if (options.test_split != "modulo" &&
+        options.test_split != "spatial-block") {
+        throw std::invalid_argument(
+            "--test-split must be modulo or spatial-block");
+    }
+    if (options.test_guard_percent > 100U) {
+        throw std::invalid_argument(
+            "--test-guard-percent must be between 0 and 100");
+    }
+    if (options.test_split == "modulo" &&
+        options.test_guard_percent != 0U) {
+        throw std::invalid_argument(
+            "--test-guard-percent requires --test-split spatial-block");
+    }
+    if (options.test_guard_percent != 0U &&
+        options.test_every == 0U) {
+        throw std::invalid_argument(
+            "--test-guard-percent requires --test-every");
+    }
     if (options.save_eval_images > 1U) {
         throw std::invalid_argument(
             "--save-eval-images must be 0 or 1");
@@ -293,49 +333,9 @@ void validate_options(const Options& options) {
         throw std::invalid_argument(
             "--resume-from must be an existing checkpoint file");
     }
-    if (options.optimizer_profile != "reference-absolute" &&
-        options.optimizer_profile != "dronegs-dev16" &&
-        options.optimizer_profile != "reference-dc-only" &&
-        options.optimizer_profile != "reference-position-only" &&
-        options.optimizer_profile != "reference-opacity-only" &&
-        options.optimizer_profile != "reference-scale-only" &&
-        options.optimizer_profile != "reference-rotation-only" &&
-        options.optimizer_profile != "reference-dc-opacity" &&
-        options.optimizer_profile != "calibrated-dc-0.005-opacity" &&
-        options.optimizer_profile != "calibrated-dc-0.010-opacity" &&
-        options.optimizer_profile != "calibrated-dc-0.020-opacity" &&
-        options.optimizer_profile !=
-            "calibrated-dc-0.010-opacity-0.024" &&
-        options.optimizer_profile !=
-            "calibrated-dc-0.010-opacity-0.048" &&
-        options.optimizer_profile !=
-            "calibrated-dc-0.010-opacity-0.096" &&
-        options.optimizer_profile !=
-            "dev34-opacity096-reference-scale" &&
-        options.optimizer_profile !=
-            "dev34-opacity096-reference-rotation" &&
-        options.optimizer_profile !=
-            "dev34-opacity096-reference-scale-rotation" &&
-        options.optimizer_profile !=
-            "dev35-opacity096-reference-scale-staged-rotation004" &&
-        options.optimizer_profile !=
-            "dev35-opacity096-reference-scale-staged-rotation008" &&
-        options.optimizer_profile !=
-            "dev36-staged-rotation008-absgrad025" &&
-        options.optimizer_profile !=
-            "dev36-staged-rotation008-absgrad050" &&
-        options.optimizer_profile !=
-            "dev37-staged-rotation008-absgrad050-aa005" &&
-        options.optimizer_profile !=
-            "dev37-staged-rotation008-absgrad050-aa015" &&
-        options.optimizer_profile !=
-            "dev37-staged-rotation008-absgrad050-aa030" &&
-        options.optimizer_profile !=
-            "dev38-staged-rotation008-absgrad050-fastgs") {
+    if (find_optimizer_profile(options.optimizer_profile) == nullptr) {
         throw std::invalid_argument(
-            "--optimizer-profile must be dronegs-dev16, "
-            "reference-absolute, reference-dc-only, or "
-            "a supported reference family ablation/combination");
+            "--optimizer-profile is not present in the versioned registry");
     }
     if (options.pruning_policy != "original" &&
         options.pruning_policy != "spatial-bounds") {
@@ -347,6 +347,13 @@ void validate_options(const Options& options) {
         options.raster_profile != "fastgs") {
         throw std::invalid_argument(
             "--raster-profile must be auto, bounded, or fastgs");
+    }
+    if (options.profile_id.empty()) {
+        throw std::invalid_argument("--profile-id must not be empty");
+    }
+    if (options.dataset_fingerprint.size() > 512U) {
+        throw std::invalid_argument(
+            "--dataset-fingerprint exceeds the safety limit");
     }
 
     const auto data = std::filesystem::absolute(options.data_path).lexically_normal();

@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.46` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.47` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -39,6 +39,11 @@ photometric convergence ablations. The DroneAI pipeline selects the validated
 Dev.46 adds atomic versioned full-state checkpoints, strict scene/config
 fingerprints, deterministic resume, deliberate pause exit code 75, and
 held-out deployment canaries at the Python orchestration boundary.
+Dev.47 adds checksum-protected checkpoint V3 publication, a versioned native
+profile registry, strict dataset/binary/PLY identity on reuse, and a
+deterministic `spatial-block` held-out policy with an optional guard ring.
+Production V1 deliberately retains modulo parity while custom/V2 experiments
+measure spatial generalization.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -112,6 +117,8 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   DC/opacity/rotation rates, bounded log-scales, and quaternion renormalization;
 - supports an explicit LichtFeld-compatible held-out stride that excludes
   validation views from every shuffled training schedule;
+- supports a deterministic central spatial block and training guard ring,
+  recording training, held-out and ignored camera counts;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
   and after training, with a tested CPU oracle;
 - writes per-view quality CSV data and can export exactly paired final
@@ -143,8 +150,8 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
 - provides direct CPU objective/metric oracles, finite-difference DSSIM and
   renderer gradient tests, and end-to-end convergence tests.
 
-DroneGS is now the sole production Gaussian backend. The validated Albagnac
-15,000-step dev.45 run
+DroneGS is now the sole production Gaussian backend. The immutable V1 recipe
+is derived from the validated Albagnac 15,000-step dev.45 acceptance run, which
 reaches 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in 972.731
 training seconds. The deterministic LichtFeld control reaches 21.513821 dB,
 0.586497, and 0.371055 in 994.228 seconds under the same frozen evaluator.
@@ -174,8 +181,9 @@ and still need held-out quality validation.
 Pinned transfer buffers and asynchronous host-to-device copies are not retained:
 the current Albagnac prototype measured only about 0.06 seconds of upload service
 over 500 iterations. The native CLI keeps conservative historical defaults for
-backward compatibility. The Python pipeline applies the production dev.45
-profile explicitly and records it in `trainer_run.json`.
+backward compatibility. The Python pipeline applies
+`DRONEGS_PRODUCTION_PROFILE_V1` explicitly and records its requested and
+effective configuration in `trainer_run.json`.
 
 ## Container build
 

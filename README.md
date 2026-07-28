@@ -1,22 +1,24 @@
 # DroneAI Pipeline
 
 > [!IMPORTANT]
-> DroneAI is an exploratory learning project, not a production system. The
-> distributed path uses versioned events, manual Kafka commits, bounded
-> retries, a dead-letter topic, and a transactional inbox/outbox for API
-> mission commands and status persistence. It is still an at-least-once,
-> single-replica-oriented design rather than an exactly-once or
-> high-availability system.
+> DroneAI now provides an authenticated, role-separated production baseline
+> for one organization behind TLS. It is not a public multi-tenant SaaS:
+> identity federation, tenant ownership and object-prefix isolation remain
+> separate requirements. The distributed workers retain at-least-once event
+> delivery and are not an exactly-once or high-availability design.
 
 DroneAI explores an end-to-end drone-image workflow:
 
-1. COLMAP reconstructs and geo-aligns a scene.
-2. DroneGS trains a 3D Gaussian Splatting model through the validated dev.45
-   FastGS/MRNF profile.
-3. CuPy renders a georeferenced orthomosaic and height map.
-4. The orthomosaic is split into overlapping tiles.
-5. Ultralytics YOLO OBB or Meta SAM 3 detects objects.
-6. Tile detections are deduplicated and rendered on an annotated GeoTIFF.
+1. COLMAP 4.1.1 reconstructs and geo-aligns a scene through a bounded
+   GPS/temporal graph, GLOMAP and a compatible Caspar/Ceres fallback.
+2. Corrected RTK/PPK missions receive one covariance-aware pose-prior
+   refinement; standard GNSS missions skip it.
+3. DroneGS trains a 3D Gaussian Splatting model through the immutable
+   `DRONEGS_PRODUCTION_PROFILE_V1`.
+4. CuPy renders a georeferenced orthomosaic and height map.
+5. The orthomosaic is split into overlapping tiles.
+6. Ultralytics YOLO OBB or Meta SAM 3 detects objects.
+7. Tile detections are deduplicated and rendered on an annotated GeoTIFF.
 
 The repository supports two execution modes:
 
@@ -48,6 +50,10 @@ For implementation details, read:
 - [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) for the infrastructure-free
   workflow;
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) for tests, linting and dependency locks;
+- [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) for the sub-hour
+  COLMAP/GLOMAP and RTK alignment path;
+- [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the
+  supported deployment boundary, required secrets and measured release gates;
 - [`CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md`](CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md) for
   the experimental Helm/K3s cloud path.
 
@@ -121,6 +127,11 @@ model before downstream orthomosaic generation. Successful promotion discards
 the large optimizer checkpoint, so it does not permanently duplicate the
 final PLY state. The independent Savères 15k gate is documented in
 [`phase4-saveres-checkpoint-canary-dev46-2026-07-27.md`](docs/dronegs/benchmarks/phase4-saveres-checkpoint-canary-dev46-2026-07-27.md).
+The production V1 recipe was subsequently repeated five times on the complete
+1,066-image SAVERES RTK scene: median training time was 607.1 seconds with
+mean held-out PSNR 19.4122 dB and SSIM 0.49155. The complete machine-readable
+record is
+[`saleres-dronegs-production-v1-2026-07-28.json`](docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json).
 
 ## Distributed architecture
 
@@ -185,12 +196,13 @@ bash setup_deps.sh
 
 | Directory | Source/version |
 |---|---|
-| `app1-colmap/ceres-solver/` | current upstream `master`; not commit-pinned |
-| `app1-colmap/colmap-local/` | tag `4.0.1`, minimal-pipeline patch applied |
+| `app1-colmap/ceres-solver/` | commit `849f854ff98f…`, Ceres 2.3-dev with cuDSS |
+| `app1-colmap/colmap-local/` | tag `4.1.1`, minimal-pipeline patch applied |
 | `app1-colmap/colmap-deps/` | SHA-addressed PoseLib and faiss archives |
 
-The Ceres source is the one intentionally unpinned external build input at the
-moment. Pin it before treating builds as reproducible.
+ONNX Runtime GPU and the ALIKED/LightGlue model files are also checksum
+verified by `setup_deps.sh`; production workers do not download them at
+runtime.
 
 LichtFeld and its vcpkg toolchain are not build dependencies. The exact
 historical upstream revision used to derive GPL-covered DroneGS components is
@@ -238,6 +250,15 @@ Use `bash build_and_deploy.sh --base` for a no-cache rebuild.
 The chart deploys Kafka, MinIO, PostgreSQL/PostGIS, the five services, RBAC,
 storage secrets and schema initialization.
 
+For a reviewed single-tenant production deployment, start from
+[`charts/drone-ai/values-production.example.yaml`](charts/drone-ai/values-production.example.yaml),
+replace its example hosts and pre-create the referenced storage, API-key and
+TLS secrets. The frontend receives the public API origin at runtime, prompts
+the operator for a provisioned key and exchanges it for an eight-hour signed
+HttpOnly cookie. The key is never compiled into the browser bundle or stored
+in that cookie. The auth Secret must provide both `api-keys.json` and an
+independent `session-secret`.
+
 ### Verify and access
 
 ```bash
@@ -267,6 +288,9 @@ Current routes:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | API identity/health response |
+| `POST` | `/auth/session` | exchange an API key for an HttpOnly browser session |
+| `GET` | `/auth/session` | inspect the current browser principal |
+| `DELETE` | `/auth/session` | clear the browser session |
 | `POST` | `/mission` | persist and enqueue a mission |
 | `POST` | `/mission/resume` | resume and enqueue a mission |
 | `POST` | `/mission/cancel` | durably enqueue cancellation |

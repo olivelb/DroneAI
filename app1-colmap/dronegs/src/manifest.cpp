@@ -97,6 +97,9 @@ void write_completed_manifest(const Options& options, const Scene& scene,
     const bool dev38_fastgs =
         options.optimizer_profile ==
             "dev38-staged-rotation008-absgrad050-fastgs";
+    const bool effective_fastgs =
+        options.raster_profile == "fastgs" ||
+        (options.raster_profile == "auto" && dev38_fastgs);
     const bool absgrad_enabled =
         dev36_absgrad || dev37_antialias || dev38_fastgs;
     const bool staged_rotation =
@@ -186,7 +189,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-native-mrnf-fastgs\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.46\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.47\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -199,6 +202,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << measurements.training_image_count << ",\n"
            << "    \"held_out_image_count\": "
            << measurements.held_out_image_count << ",\n"
+           << "    \"ignored_image_count\": "
+           << measurements.ignored_image_count << ",\n"
            << "    \"source_pixels\": null\n"
            << "  },\n"
            << "  \"hardware\": {\n"
@@ -217,6 +222,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"max_width\": " << options.max_width << ",\n"
            << "    \"tile_mode\": " << options.tile_mode << ",\n"
            << "    \"seed\": " << options.seed << ",\n"
+           << "    \"profile_id\": \""
+           << json_escape(options.profile_id) << "\",\n"
            << "    \"optimizer_profile\": \""
            << json_escape(options.optimizer_profile) << "\",\n"
            << "    \"pruning_policy\": \""
@@ -233,6 +240,10 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"decode_workers\": " << options.decode_workers << ",\n"
            << "    \"jpeg_idct_scale\": " << options.jpeg_idct_scale << ",\n"
            << "    \"test_every\": " << options.test_every << ",\n"
+           << "    \"test_split\": \""
+           << json_escape(options.test_split) << "\",\n"
+           << "    \"test_guard_percent\": "
+           << options.test_guard_percent << ",\n"
            << "    \"save_eval_images\": "
            << options.save_eval_images << ",\n"
            << "    \"checkpoint_every\": "
@@ -257,7 +268,10 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"training_loss_telemetry\": "
               "\"baseline_l1_dssim_for_cross_run_comparability\",\n"
            << "    \"held_out_rule\": "
-              "\"scene_index_modulo_test_every_equals_zero\",\n"
+           << (options.test_split == "spatial-block"
+                   ? "\"central_planar_camera_block_with_guard_ring\""
+                   : "\"scene_index_modulo_test_every_equals_zero\"")
+           << ",\n"
            << "    \"quality_data_range\": 1.0,\n"
            << "    \"ssim_window\": 11,\n"
            << "    \"ssim_sigma\": 1.5,\n"
@@ -286,9 +300,6 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    : "\"max_normalized_ssim_error_weighted_alpha_contribution\"")
            << ",\n"
            << "    \"growth_gradient_threshold\": 0.003,\n"
-           << "    \"grow_fraction\": 0.07,\n"
-           << "    \"refine_every\": 200,\n"
-           << "    \"grow_until_iteration\": 15000,\n"
            << "    \"growth_selection\": "
               "\"log_guided_weight_plus_splitmix64_gumbel_top_k\",\n"
            << "    \"growth_seed_protocol\": "
@@ -332,23 +343,21 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    ? "\"sqrt_det_original_over_det_filtered_with_exact_vjp\""
                    : "null")
            << ",\n"
-           << "    \"raster_profile\": "
-           << (dev38_fastgs
-                   ? "\"fastgs_compatibility\""
-                   : "\"bounded_spectral\"")
+           << "    \"effective_raster_profile\": "
+           << (effective_fastgs ? "\"fastgs\"" : "\"bounded\"")
            << ",\n"
            << "    \"projected_covariance_regularization\": "
-           << (dev38_fastgs
+           << (effective_fastgs
                    ? "\"additive_0.3_identity_no_spectral_clamp\""
                    : "\"spectral_clamp_0.5625_to_64\"")
            << ",\n"
            << "    \"splat_support\": "
-           << (dev38_fastgs
+           << (effective_fastgs
                    ? "\"opacity_dependent_alpha_1_over_255\""
                    : "\"fixed_2.5_sigma\"")
            << ",\n"
            << "    \"maximum_fragment_alpha\": "
-           << (dev38_fastgs ? "0.999" : "0.99")
+           << (effective_fastgs ? "0.999" : "0.99")
            << ",\n"
            << "    \"adam_epsilon\": "
            << (mixed_epsilon

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import threading
 from contextlib import asynccontextmanager
 
@@ -14,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from shared.database import get_session
 from shared.inbox_outbox import run_outbox_dispatcher
 
+from . import security
 from .kubernetes_status import fallback_pod_states, get_pod_states
 from .messaging import get_producer, publish_outbox_event
 from .mission_state import (
@@ -25,12 +25,12 @@ from .mission_state import (
     update_mission_state,
 )
 from .realtime import consume_status_events, status_hub
+from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
 from .routers.missions import router as missions_router
 
 
 logger = logging.getLogger("droneai.api")
-
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
@@ -63,13 +63,16 @@ async def lifespan(_app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    security.validate_production_configuration()
     application = FastAPI(lifespan=lifespan)
     application.add_middleware(
         CORSMiddleware,
-        allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=security.configured_cors_origins(),
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
+    application.include_router(auth_router)
     application.include_router(missions_router)
     application.include_router(datasets_router)
 
@@ -79,6 +82,8 @@ def create_app() -> FastAPI:
 
     @application.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):
+        if not await security.authorize_websocket(websocket):
+            return
         await status_hub.connect(websocket)
         try:
             while True:
@@ -91,7 +96,6 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-# Compatibility exports for callers that imported helpers from api.main.
 manager = status_hub
 kafka_consumer_thread_func = consume_status_events
 status_history = status_hub.history

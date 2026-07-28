@@ -20,17 +20,24 @@ Run five repetitions into a new output root:
 ```bash
 python tools/benchmark_gaussian_trainers.py \
   docs/dronegs/benchmarks/gajan-v1.example.json \
-  --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)"
+  --output-root "$HOME/droneAI-workspaces/benchmarks/$(date -u +%Y%m%dT%H%M%SZ)" \
+  --bundle
 ```
 
 Each run contains logs, trainer artifacts, and `benchmark_run.json`. The suite
-directory contains `benchmark_summary.json` with min/median/P95/max wall time
-and best-effort per-process peak VRAM.
+directory contains `benchmark_summary.json` with min/mean/median/P95/max wall
+time, standard deviation, 95% mean interval and best-effort per-process peak
+VRAM. Hardware observations retain GPU, driver, CUDA, temperature and
+available power-limit fields independently; unsupported `[N/A]` values do not
+discard the remaining inventory. `--bundle` writes a portable `.tar.gz`
+containing reports, logs and artifacts.
 
 ## Safety and identity
 
 - Source and output directory trees are separate.
 - Existing run directories are never overwritten.
+- Harness logs live beside the trainer output, which must be a new,
+  artifact-free directory.
 - Every repetition records a requested seed derived from the base seed.
 - DroneGS forwards and records the requested deterministic seed.
 - The dataset fingerprint includes relative paths and sizes plus full contents
@@ -47,3 +54,11 @@ Commands can use `data_path`, `output_path`, `run_manifest`, `repetition`,
 
 Environment variables use `${NAME}` and are required. Missing values fail
 before the subprocess starts.
+
+## SAVERES production V1
+
+The committed `docs/dronegs/benchmarks/saleres-production-v1.json` suite runs
+five 15,000-step seeds against `${SALERES_DENSE_DATASET}`. The 2026-07-28
+qualification completed 5/5 runs; its lightweight aggregate, binary/dataset
+identity and five PLY hashes are recorded in
+`docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json`.

@@ -1,9 +1,9 @@
 # DroneGS architecture
 
-Status: dev.46 sole production Gaussian backend with recovery/canary
+Status: dev.47 sole production Gaussian backend with recovery/canary
 
 Contract version: 1  
-Project version: 0.5.0-dev.46
+Project version: 0.5.0-dev.47
 
 ## Decision
 
@@ -15,8 +15,10 @@ remain outside DroneGS.
 
 DroneGS is the production backend after passing the frozen Albagnac
 quality/speed gate. Dev.46 removes the LichtFeld executable path and adds
-full-state checkpoint/resume plus held-out deployment canaries. LichtFeld is
-retained only in historical comparisons and the GPL provenance record.
+full-state checkpoint/resume plus held-out deployment canaries. Dev.47 adds
+strict production-profile/dataset/artifact identity, checkpoint V3 integrity
+and spatial-block evaluation. LichtFeld is retained only in historical
+comparisons and the GPL provenance record.
 
 Dev.31 replaces the scene-wide uniform initial Gaussian scale with the MRNF
 local-neighborhood rule: an exact deterministic KD tree measures the two
@@ -56,6 +58,13 @@ Dev.46 serializes all parameters, optimizer moments, topology statistics,
 schedule/RNG state and fingerprints to an atomically replaced checkpoint.
 The Python boundary auto-resumes incomplete mission outputs and writes an
 atomic PSNR/SSIM canary verdict before downstream rendering.
+
+Dev.47 appends a checksum to checkpoint V3, fsyncs file and directory
+publication, and preserves the last valid checkpoint on failure. Completed
+reuse verifies the full sparse/image dataset identity, trainer binary hash,
+profile, canary and PLY hash. The optional spatial split projects camera
+centers onto their two dominant axes, holds a deterministic central block and
+can exclude a guard ring from training; production V1 keeps modulo parity.
 
 ## Stable boundary
 
@@ -125,12 +134,17 @@ decay, progressive SH and the MRNF prune/reuse/compaction lifecycle. External
 exact-pair LPIPS complements the native PSNR/SSIM evaluator. Inputs remain
 limited to SIMPLE_PINHOLE and PINHOLE cameras.
 
-An opt-in held-out protocol uses the same index rule as LichtFeld:
+Production V1 uses the same held-out index rule as the frozen benchmark:
 `scene_index % test_every == 0`. Those descriptors never enter the shuffled
 training schedule. Initial and final passes report full-frame RGB PSNR and
 Gaussian 11x11 SSIM with sigma 1.5 and valid padding. PSNR/SSIM reductions
 remain on CUDA; optional final predictions are downloaded only for lossless
 PPM export and external perceptual evaluation.
+
+Custom/V2 qualification may instead use `spatial-block`. Camera centers are
+derived from COLMAP `qvec/tvec`, projected to their two dominant spatial axes,
+and a deterministic central block is held out. A configurable guard ring is
+ignored rather than trained; manifests record all three populations.
 
 Decoded RGB targets are stored as bytes in a lazy 256 MiB LRU cache. Resident
 payload therefore stays bounded independently of image count, and cache

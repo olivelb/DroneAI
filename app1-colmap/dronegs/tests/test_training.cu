@@ -226,11 +226,41 @@ int main() {
         if (split.training.size() != 14U ||
             split.held_out !=
                 std::vector<std::size_t>{0U, 8U, 16U} ||
+            !split.ignored.empty() ||
             std::find(
                 split.training.begin(), split.training.end(), 8U) !=
                 split.training.end()) {
             throw std::runtime_error(
                 "held-out split compatibility mismatch");
+        }
+        dronegs::Scene spatial_scene;
+        std::uint32_t image_id = 1U;
+        for (int y = -2; y <= 2; ++y) {
+            for (int x = -2; x <= 2; ++x) {
+                spatial_scene.images.push_back({
+                    .id = image_id++,
+                    .camera_id = 1U,
+                    .name = "spatial.jpg",
+                    .qvec = {1.0, 0.0, 0.0, 0.0},
+                    .tvec = {
+                        -static_cast<double>(x),
+                        -static_cast<double>(y),
+                        0.0,
+                    },
+                });
+            }
+        }
+        const auto spatial_split = dronegs::make_dataset_split(
+            spatial_scene, 5U, "spatial-block", 40U);
+        if (spatial_split.held_out.size() != 5U ||
+            spatial_split.ignored.size() != 2U ||
+            spatial_split.training.size() != 18U ||
+            std::find(
+                spatial_split.held_out.begin(),
+                spatial_split.held_out.end(), 12U) ==
+                spatial_split.held_out.end()) {
+            throw std::runtime_error(
+                "spatial held-out block contract mismatch");
         }
         const auto quality_target = dronegs::load_training_image(
             root / "images" / "frame.jpg", 1U, 32U, false);
