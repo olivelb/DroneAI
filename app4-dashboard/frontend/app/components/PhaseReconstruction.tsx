@@ -3,9 +3,10 @@
 import React from "react";
 import { Cpu, Gauge, HardDrive, ShieldCheck, Zap } from "lucide-react";
 import { useStore } from "../lib/store";
+import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
 import { PresetButton } from "./PresetButton";
-import type { ParameterMeta } from "../lib/types";
+import StageHeader from "./StageHeader";
 
 const RECONSTRUCTION_PARAMS = [
   "feature_type",
@@ -52,6 +53,15 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
   Georeferencing: "Projected metric CRS and robust tolerance used to align the reconstruction with GPS, RTK, or PPK camera positions.",
   Undistortion: "Maximum image size prepared for the dense and orthomosaic stages.",
 };
+
+const ESSENTIAL_KEYS = new Set([
+  "feature_max_image_size",
+  "global_mapper_ba_iterations",
+  "global_mapper_skip_retriangulation",
+  "mvs_max_image_size",
+  "projected_crs_mode",
+  "projected_crs",
+]);
 
 const isTrue = (value: unknown) =>
   value === true || String(value).trim().toLowerCase() === "true";
@@ -109,166 +119,48 @@ export default function PhaseReconstruction() {
     parameterValues.global_mapper_skip_retriangulation,
   );
 
-  const groupedParams = RECONSTRUCTION_GROUPS.map((group) => ({
-    group,
-    keys: RECONSTRUCTION_PARAMS.filter((k) => metadata[k]?.group === group),
-  })).filter((g) => g.keys.length > 0);
+  const advancedGroups = RECONSTRUCTION_GROUPS.map((group) => ({
+    id: group.toLocaleLowerCase(),
+    label: group,
+    description: GROUP_DESCRIPTIONS[group],
+    keys: RECONSTRUCTION_PARAMS.filter(
+      (key) => metadata[key]?.group === group && !ESSENTIAL_KEYS.has(key),
+    ),
+  }));
+  const essentialKeys = [
+    "feature_max_image_size",
+    "global_mapper_ba_iterations",
+    "global_mapper_skip_retriangulation",
+    "mvs_max_image_size",
+    "projected_crs_mode",
+    ...(parameterValues.projected_crs_mode === "custom"
+      ? ["projected_crs"]
+      : []),
+  ].filter((key) => metadata[key]);
 
   return (
-    <div className="space-y-6">
-      <section className="surface overflow-hidden">
-        <div className="flex flex-col gap-5 p-5 sm:p-6 md:flex-row md:items-end md:justify-between">
-          <div className="max-w-2xl">
-            <div className="eyebrow">Stage 02 · Geometry</div>
-            <div className="mt-2 flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#e1f3ef] text-[#0f766e]">
-                <Cpu size={21} />
-              </span>
-              <div>
-                <h2 className="text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-                  Reconstruction & alignment
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-[#6f7c78]">
-                  Build a connected camera graph, solve global geometry and
-                  align it to DJI GNSS, RTK or PPK positions.
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 rounded-2xl border border-[#dce5e1] bg-[#f7faf9] px-4 py-3">
+    <div className="space-y-5">
+      <StageHeader
+        eyebrow="Étape 02 · Géométrie"
+        title="Reconstruction et alignement"
+        description="Choisissez un objectif de production, puis ajustez uniquement les contrôles qui ont un impact direct sur la durée ou la précision."
+        icon={<Cpu size={21} />}
+        iconClassName="bg-[#e1f3ef] text-[#0f766e]"
+        status={
+          <div className="flex items-center gap-2 rounded-2xl border border-[#dce5e1] bg-white px-4 py-3">
             <Gauge size={17} className="text-[#0f766e]" />
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-[#8a9692]">
-                Current objective
+                Moteur actif
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {pipeline === "modern" ? "Fast global alignment" : "Legacy reference"}
+                {pipeline === "modern" ? "Alignement global rapide" : "Référence legacy"}
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        }
+      />
 
-      <section className="surface p-5 sm:p-6">
-        <div className="mb-4">
-          <div className="eyebrow">Recommended profiles</div>
-          <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            Choose the speed/quality tradeoff
-          </h3>
-        </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          {ALIGNMENT_PRESETS.map((preset) => (
-            <PresetButton
-              key={preset.id}
-              preset={preset}
-              parameterValues={parameterValues}
-              layout="row"
-              tone="teal"
-              onApply={(values) =>
-                setParameterValues((previous) => ({ ...previous, ...values }))
-              }
-            />
-          ))}
-        </div>
-      </section>
-
-      {/* Work Drive selector */}
-      {workDrives.length > 0 && (
-        <section className="surface p-5 sm:p-6">
-          <h3 className="mb-4 flex items-center gap-2 text-sm font-bold text-[#34413d]">
-            <HardDrive size={15} /> Work Drive
-          </h3>
-          <p className="mb-3 text-xs text-[#788580]">
-            Choose where COLMAP temporary files are stored during processing.
-          </p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-            {workDrives.map((d) => (
-              <button
-                key={d.name}
-                onClick={() => setWorkDrive(d.name)}
-                className={`rounded-xl border px-4 py-3 text-left transition ${
-                  workDrive === d.name
-                    ? "border-[#68bfae] bg-[#edf9f6]"
-                    : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-                }`}
-              >
-                <div className="text-sm font-semibold text-[#34413d]">{d.label}</div>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
-
-      {/* Pipeline mode */}
-      <section className="surface p-5 sm:p-6">
-        <div className="eyebrow">Geometry engine family</div>
-        <h3 className="mb-4 mt-1 text-lg font-bold text-[#293632]">
-          Pipeline foundation
-        </h3>
-        <div className="grid gap-3 sm:grid-cols-2">
-          {(["modern", "legacy"] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPipeline(p)}
-              className={`rounded-2xl border px-4 py-4 text-left transition ${
-                pipeline === p
-                  ? "border-[#68bfae] bg-[#edf9f6]"
-                  : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-              }`}
-            >
-              <div className="text-sm font-bold capitalize text-[#2f3d38]">{p}</div>
-              <div className="mt-1 text-[11px] leading-5 text-[#77847f]">
-                {p === "modern"
-                  ? "SIFT CUDA + bounded GPS pairs + GLOMAP GPU"
-                  : "High-resolution SIFT + spatial pairs + Ceres mapper"}
-              </div>
-            </button>
-          ))}
-        </div>
-      </section>
-
-      {/* Effective fast-alignment summary */}
-      <section className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
-        <div className="eyebrow">
-          Effective alignment profile
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-3 text-sm sm:grid-cols-5">
-          <div>
-            <div className="text-xs text-[#6f7c78]">Feature resolution</div>
-            <div className="font-bold text-[#25332f]">
-              {parameterValues.feature_max_image_size ?? "—"} px
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-[#6f7c78]">Global BA passes</div>
-            <div className="font-bold text-[#25332f]">
-              {parameterValues.global_mapper_ba_iterations ?? "—"}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-[#6f7c78]">Retriangulation</div>
-            <div className="font-bold text-[#25332f]">
-              {retriangulationEnabled ? "Enabled" : "Skipped"}
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-[#6f7c78]">Mapping budget</div>
-            <div className="font-bold text-[#25332f]">
-              {parameterValues.mapping_timeout_seconds ?? "—"} s
-            </div>
-          </div>
-          <div>
-            <div className="text-xs text-[#6f7c78]">Projected CRS</div>
-            <div className="font-bold text-[#25332f]">
-              {parameterValues.projected_crs_mode === "custom"
-                ? parameterValues.projected_crs || "Missing EPSG"
-                : parameterValues.projected_crs_mode ?? "auto-local"}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Status indicator */}
       {colmapSvc && (
         <div className={`rounded-2xl border p-4 ${
           colmapSvc.status === "success" ? "border-emerald-200 bg-emerald-50"
@@ -290,37 +182,162 @@ export default function PhaseReconstruction() {
         </div>
       )}
 
-      {/* COLMAP Parameters */}
-      {groupedParams.map(({ group, keys }) => (
-        <details
-          key={group}
-          className="surface group"
-          open={group === "Features" || group === "Mapping" ? true : undefined}
-        >
-          <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-5 sm:px-6">
-            <span>
-              <span className="block text-base font-bold text-[#2d3a36]">{group}</span>
-              <span className="mt-1 block text-xs leading-5 text-[#77847f]">
-                {GROUP_DESCRIPTIONS[group]}
-              </span>
-            </span>
-            <span className="rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#5d6b66]">
-              {keys.length} controls
-            </span>
-          </summary>
-          <div className="parameter-grid border-t border-[#e5ebe8] px-5 py-5 sm:px-6">
-            {keys.map((k) => metadata[k] && (
-              <ParamField
-                key={k}
-                paramKey={k}
-                meta={metadata[k] as ParameterMeta}
-                value={parameterValues[k] ?? ""}
-                onChange={updateParameter}
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="surface p-5 sm:p-6">
+          <div className="eyebrow">Profil de production</div>
+          <h3 className="mt-1 text-lg font-bold text-[#26332f]">
+            Vitesse ou détail
+          </h3>
+          <p className="mt-1 text-xs leading-5 text-[#77847f]">
+            Un profil applique un ensemble cohérent et éprouvé. Les réglages
+            essentiels restent modifiables ci-dessous.
+          </p>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {ALIGNMENT_PRESETS.map((preset) => (
+              <PresetButton
+                key={preset.id}
+                preset={preset}
+                parameterValues={parameterValues}
+                layout="row"
+                tone="teal"
+                onApply={(values) =>
+                  setParameterValues((previous) => ({ ...previous, ...values }))
+                }
               />
             ))}
           </div>
-        </details>
-      ))}
+        </div>
+
+        <div className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
+          <div className="eyebrow">Résumé effectif</div>
+          <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-5">
+            {[
+              ["Résolution SIFT", `${parameterValues.feature_max_image_size ?? "—"} px`],
+              ["Passes BA", String(parameterValues.global_mapper_ba_iterations ?? "—")],
+              ["Retriangulation", retriangulationEnabled ? "Activée" : "Ignorée"],
+              [
+                "CRS",
+                parameterValues.projected_crs_mode === "custom"
+                  ? String(parameterValues.projected_crs || "EPSG requis")
+                  : String(parameterValues.projected_crs_mode ?? "auto-local"),
+              ],
+            ].map(([label, value]) => (
+              <div key={label}>
+                <div className="text-[10px] font-bold uppercase tracking-wide text-[#78908a]">
+                  {label}
+                </div>
+                <div className="mt-1 truncate text-sm font-bold text-[#25332f]" title={value}>
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="surface p-5 sm:p-6">
+        <div className="mb-5 flex items-start justify-between gap-4">
+          <div>
+            <div className="eyebrow">Contrôles essentiels</div>
+            <h3 className="mt-1 text-lg font-bold text-[#293632]">
+              Les réglages qui changent vraiment le résultat
+            </h3>
+          </div>
+          <span className="hidden rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#65736e] sm:inline">
+            {essentialKeys.length} réglages
+          </span>
+        </div>
+        <div className="parameter-grid">
+          {essentialKeys.map((key) => (
+            <ParamField
+              key={key}
+              paramKey={key}
+              meta={metadata[key]}
+              value={parameterValues[key] ?? ""}
+              onChange={updateParameter}
+            />
+          ))}
+        </div>
+      </section>
+
+      <details className="surface">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 sm:px-6">
+          <span className="flex items-center gap-3">
+            <HardDrive size={16} className="text-[#0f766e]" />
+            <span>
+              <span className="block text-sm font-bold text-[#2d3a36]">
+                Environnement d’exécution
+              </span>
+              <span className="mt-0.5 block text-xs text-[#77847f]">
+                {workDrives.find((drive) => drive.name === workDrive)?.label ??
+                  "Stockage automatique"}{" "}
+                · {pipeline === "modern" ? "pipeline moderne" : "pipeline legacy"}
+              </span>
+            </span>
+          </span>
+          <span className="text-xs font-semibold text-[#0f766e]">Modifier</span>
+        </summary>
+        <div className="grid gap-5 border-t border-[#e5ebe8] p-5 sm:p-6 lg:grid-cols-2">
+          <div>
+            <h4 className="text-sm font-bold text-[#34413d]">Disque de travail</h4>
+            <div className="mt-3 grid gap-2">
+              {workDrives.map((drive) => (
+                <button
+                  key={drive.name}
+                  type="button"
+                  onClick={() => setWorkDrive(drive.name)}
+                  className={`rounded-xl border px-4 py-3 text-left text-sm font-semibold transition ${
+                    workDrive === drive.name
+                      ? "border-[#68bfae] bg-[#edf9f6]"
+                      : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
+                  }`}
+                >
+                  {drive.label}
+                </button>
+              ))}
+              {workDrives.length === 0 && (
+                <p className="text-xs text-[#77847f]">
+                  Le meilleur volume disponible sera sélectionné automatiquement.
+                </p>
+              )}
+            </div>
+          </div>
+          <div>
+            <h4 className="text-sm font-bold text-[#34413d]">Famille de moteur</h4>
+            <div className="mt-3 grid gap-2">
+              {(["modern", "legacy"] as const).map((engine) => (
+                <button
+                  key={engine}
+                  type="button"
+                  onClick={() => setPipeline(engine)}
+                  className={`rounded-xl border px-4 py-3 text-left transition ${
+                    pipeline === engine
+                      ? "border-[#68bfae] bg-[#edf9f6]"
+                      : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
+                  }`}
+                >
+                  <span className="block text-sm font-bold capitalize text-[#2f3d38]">
+                    {engine}
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-[#77847f]">
+                    {engine === "modern"
+                      ? "SIFT CUDA, paires GPS bornées et GLOMAP GPU"
+                      : "SIFT haute résolution, paires spatiales et mapper Ceres"}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <AdvancedParameters
+        groups={advancedGroups}
+        metadata={metadata}
+        values={parameterValues}
+        onChange={updateParameter}
+        description="Matching, solveur, RTK, garde-fous et budgets de temps restent disponibles sans encombrer la configuration courante."
+      />
     </div>
   );
 }

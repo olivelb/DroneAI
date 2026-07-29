@@ -36,8 +36,8 @@ The runtime data path is:
    uploads them to S3, and publishes `image-tiles`.
 6. The IA worker downloads each tile, runs YOLO OBB or SAM 3, and publishes
    `tile-detections`.
-7. The processing worker merges overlap duplicates, persists detections,
-   writes an annotated GeoTIFF, and uploads the raster to S3.
+7. The processing worker merges overlap duplicates, publishes verified
+   GeoJSON and optionally persists indexed PostGIS features.
 8. Workers emit `pipeline-status`; the API applies each unique event to
    PostgreSQL through its inbox transaction and forwards it over WebSocket.
 
@@ -190,6 +190,15 @@ Primary endpoints:
 - `GET /maps/{vol_id}/metadata/{layer}`
 - `GET /maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png`
 - `GET /maps/{vol_id}/vectors.geojson?bbox=west,south,east,north`
+- `GET /maps/{vol_id}/export/raster/{layer}?format=cog|geotiff`
+- `GET /maps/{vol_id}/export/vectors?format=gpkg|geojson&scope=...&crs=...`
+- `GET|POST /maps/{vol_id}/analyses`
+- `POST /maps/{vol_id}/analyses/{run_id}/retry`
+- `POST /maps/{vol_id}/analyses/{run_id}/cancel`
+- `GET /maps/{vol_id}/analyses/{run_id}/vectors.geojson`
+- `GET /maps/{vol_id}/search`
+- `POST /maps/{vol_id}/features`
+- `PATCH|DELETE /maps/{vol_id}/features/{feature_id}`
 - `GET /operations/outbox/dead` (admin)
 - `POST /operations/outbox/{id}/replay` (admin)
 - `GET /`
@@ -210,6 +219,10 @@ Primary responsibilities:
 - expose pod health and restart information through `GET /pods`
 - fall back to a static pod list when Kubernetes service-account credentials are unavailable
 - expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
+- expose bounded COG map tiles, rerunnable AI campaigns, indexed feature
+  search and optimistic manual-vector editing
+- stream raster downloads and generate QGIS-ready GeoPackage/GeoJSON exports;
+  GeoPackages default to the raster EPSG and reproject from WGS84 on demand
 
 The bounded WebSocket replay buffer remains in memory, but mission state,
 service progress, logs, original parameters, and resume metadata are persisted
@@ -239,11 +252,14 @@ The API package is split by responsibility:
 | `routers/map_rasters.py` | bounded COG rendering and legacy/manual vector reads |
 | `routers/map_analyses.py` | AI campaign lifecycle and campaign vector reads |
 | `routers/map_features.py` | spatial search and manual vector CRUD |
+| `routers/map_exports.py` | streamed raster downloads and CRS-aware vector exports |
 | `map_schemas.py` | geospatial HTTP request contracts |
 | `map_support.py` | mission lookup, validation and GeoJSON serialization |
 | `routers/operations.py` | dead-outbox inspection and controlled replay |
 | `shared/geospatial_assets.py` | COG conversion, preview, tiles and WGS84 vectors |
 | `shared/geospatial_workspace.py` | GeoJSON/style validation and viewport bounds helpers |
+| `shared/qgis_crs.py` | framework-neutral EPSG resolution and lazy vector reprojection |
+| `shared/qgis_exports.py` | bounded-memory GeoJSON and standards-compliant GeoPackage writing |
 
 HTTP routes do not own Kafka polling, image conversion, Kubernetes parsing, or
 mission-state policy. `main.py` is intentionally only the composition root.
@@ -294,8 +310,8 @@ In practice it does the following:
 - publish tile jobs to `image-tiles`
 - journal per-mission and per-campaign state in PostgreSQL
 - collect detections from all returned tiles
-- merge overlap duplicates before final rendering
-- resolve GPS labels from either direct detection coordinates or orthomosaic CRS/affine metadata
+- merge overlap duplicates before final vector publication
+- transform pixel polygons through the orthomosaic affine/CRS into WGS84
 
 `main.py` remains the Kafka composition root and dispatcher. Raster mechanics
 live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
@@ -303,10 +319,11 @@ live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
 orchestration modules and architecture tests cap the composition roots and
 dashboard containers so responsibilities cannot silently collapse back into
 monoliths.
-- render masks, contours, center points, and GPS labels onto the orthomosaic
-- save the final annotated GeoTIFF
+- publish verified GeoJSON to object storage
+- optionally rebuild the indexed PostGIS feature set transactionally
 
-This service owns the transition from one georeferenced orthomosaic to many detector tiles, then back to one annotated orthomosaic.
+This service owns the transition from one georeferenced orthomosaic to many
+detector tiles, then back to one deduplicated vector product.
 
 ### IA worker (`app2-ia`)
 
@@ -778,9 +795,9 @@ sequenceDiagram
     end
     P->>K: consume tile-detections
     P->>P: aggregate all detections
-    P->>P: render masks, centers, and GPS labels
-    P->>DB: persist detections
-    P->>S3: upload annotated GeoTIFF
+    P->>P: deduplicate and project vector geometries
+    P->>DB: optionally replace indexed campaign features
+    P->>S3: upload verified detections.geojson
     P->>K: publish pipeline-status DONE
     K->>API: pipeline-status stream
     API->>DB: inbox + mission state + log
@@ -1675,7 +1692,11 @@ status and stops processing that mission.
 
 ### Partial tile-return problem
 
-The processing worker waits for all tile indices. If the IA worker never returns one or more tiles, final aggregation never fires. There is currently no timeout-based reconciliation or dead-letter handling in app3.
+The processing worker journals every expected tile and receipt. Periodic
+recovery re-finalizes complete stale campaigns, republishes bounded batches of
+missing tiles and reclaims stale finalization leases. Failed outbox events
+enter a visible dead state after their retry budget and require an explicit
+administrator replay.
 
 ## Important invariants
 
@@ -1691,7 +1712,8 @@ These are the assumptions that must remain true for the current implementation t
 7. Tile events must carry the original orthomosaic transform and CRS.
 8. App3 must set `total_tiles` before tile events begin returning.
 9. `tile_index` uniqueness is the process-local aggregator's completion key.
-10. The final annotated GeoTIFF is written by app3, not app1.
+10. The final deduplicated GeoJSON is written by app3; raster annotation is a
+    viewer overlay rather than a second full-size GeoTIFF.
 11. Durable mission artifacts must be uploaded before temporary worker
     directories are removed.
 

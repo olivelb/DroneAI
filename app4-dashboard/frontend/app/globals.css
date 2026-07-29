@@ -46,7 +46,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -57,6 +58,7 @@ button {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 a:focus-visible,
 summary:focus-visible {
   outline: 3px solid rgba(15, 118, 110, 0.22);
@@ -74,6 +76,15 @@ summary:focus-visible {
   border: 1px solid rgba(216, 225, 221, 0.82);
   border-radius: 1rem;
   background: rgba(248, 250, 249, 0.9);
+}
+
+.stage-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1.25rem;
+  border-bottom: 1px solid rgba(209, 219, 215, 0.9);
+  padding: 0.35rem 0 1.35rem;
 }
 
 .eyebrow {
@@ -115,6 +126,37 @@ summary:focus-visible {
   .parameter-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .stage-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+.viewer-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 850;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  background: #eef2f0;
+}
+
+.viewer-map-shell .leaflet-container {
+  background: #16201d;
+}
+
+.viewer-map-shell .leaflet-control-zoom a {
+  border: 0;
+  color: #34413d;
+}
+
+.viewer-map-shell .leaflet-control-attribution {
+  border-radius: 0.5rem 0 0 0;
+  background: rgba(255, 255, 255, 0.78);
+  font-size: 9px;
+  backdrop-filter: blur(8px);
 }
 
 ::-webkit-scrollbar {

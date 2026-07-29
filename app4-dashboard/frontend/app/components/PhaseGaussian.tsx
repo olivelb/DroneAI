@@ -3,17 +3,16 @@
 import React from "react";
 import {
   Activity,
-  Filter,
   Gauge,
   ShieldCheck,
   Sparkles,
-  TimerReset,
   Zap,
 } from "lucide-react";
+import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
 import { PresetButton } from "./PresetButton";
+import StageHeader from "./StageHeader";
 import { useStore } from "../lib/store";
-import type { ParameterMeta } from "../lib/types";
 
 const PARAMETER_GROUPS = [
   {
@@ -186,6 +185,16 @@ const PRODUCTION_TRAINING_KEYS = new Set([
   "gs_canary_min_ssim",
 ]);
 
+const ESSENTIAL_KEYS = new Set([
+  "ortho_mesh_resolution",
+  "gs_iterations",
+  "gs_max_width",
+  "gs_cap_max",
+  "gs_checkpoint_every",
+  "gs_canary_min_psnr",
+  "gs_canary_min_ssim",
+]);
+
 export default function PhaseGaussian() {
   const {
     parameterSchema,
@@ -227,28 +236,21 @@ export default function PhaseGaussian() {
     "gs_filter_cc",
     "gs_filter_z_floater",
   ].filter((key) => isTrue(parameterValues[key])).length;
+  const essentialKeys = [...ESSENTIAL_KEYS].filter((key) => metadata[key]);
+  const advancedGroups = PARAMETER_GROUPS.map((group) => ({
+    ...group,
+    keys: group.keys.filter((key) => !ESSENTIAL_KEYS.has(key)),
+  }));
 
   return (
-    <div className="space-y-6">
-      <section className="surface overflow-hidden">
-        <div className="flex flex-col gap-5 p-5 sm:p-6 md:flex-row md:items-end md:justify-between">
-          <div className="max-w-2xl">
-            <div className="eyebrow">Stage 03 · Appearance</div>
-            <div className="mt-2 flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#fff1cf] text-[#b66b05]">
-                <Sparkles size={21} />
-              </span>
-              <div>
-                <h2 className="text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-                  DroneGS & orthomosaic
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-[#6f7c78]">
-                  Train a bounded Gaussian scene, enforce held-out quality gates
-                  and render georeferenced raster products.
-                </p>
-              </div>
-            </div>
-          </div>
+    <div className="space-y-5">
+      <StageHeader
+        eyebrow="Étape 03 · Apparence"
+        title="DroneGS et orthomosaïque"
+        description="Sélectionnez un budget de production, contrôlez la résolution finale et laissez les réglages de recherche accessibles à la demande."
+        icon={<Sparkles size={21} />}
+        iconClassName="bg-[#fff1cf] text-[#b66b05]"
+        status={
           <div
             className={`flex items-center gap-2 rounded-2xl border px-4 py-3 ${
               hasReconstruction
@@ -265,22 +267,42 @@ export default function PhaseGaussian() {
                 Input readiness
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {hasReconstruction ? "Sparse model ready" : "Waiting for reconstruction"}
+                {hasReconstruction ? "Modèle sparse prêt" : "Reconstruction requise"}
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        }
+      />
 
-      <section className="surface p-5 sm:p-6">
+      {colmapService?.step === "GAUSS" && (
+        <section className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-semibold text-[#31504a]">
+              Entraînement DroneGS en cours
+            </span>
+            <span className="font-bold text-[#0f766e]">
+              {colmapService.progress ?? 0}%
+            </span>
+          </div>
+          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/80">
+            <div
+              className="h-full rounded-full bg-[#0f766e] transition-all duration-500"
+              style={{ width: `${colmapService.progress ?? 0}%` }}
+            />
+          </div>
+        </section>
+      )}
+
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
+        <div className="surface p-5 sm:p-6">
         <div className="mb-4">
           <div className="eyebrow">DroneGS profiles</div>
           <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            Start from an operational budget
+            Partir d’un budget opérationnel
           </h3>
           <p className="mt-1 max-w-2xl text-xs leading-5 text-[#77847f]">
-            Profiles update the core budget without hiding any parameter. You can
-            refine every value below before launching the complete mission.
+            Le profil équilibré reprend la recette de production validée. Les
+            profils aperçu et détaillé bornent clairement le coût GPU.
           </p>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
@@ -297,92 +319,50 @@ export default function PhaseGaussian() {
             />
           ))}
         </div>
+        </div>
+        <div className="rounded-[1.25rem] border border-[#eadcb9] bg-[#fff9e9] p-5">
+          <div className="eyebrow text-[#a76509]">Budget effectif</div>
+          <div className="mt-4 space-y-4">
+            {([
+              ["Itérations", String(parameterValues.gs_iterations ?? "—")],
+              ["Largeur d’entraînement", `${String(parameterValues.gs_max_width ?? "—")} px`],
+              ["Plafond de Gaussiennes", Number(parameterValues.gs_cap_max || 0).toLocaleString()],
+              ["Nettoyages actifs", String(activeFilters)],
+            ] satisfies Array<[string, string]>).map(([label, value]) => (
+              <div key={label} className="flex items-end justify-between gap-3 border-b border-[#eadfca] pb-3 last:border-0 last:pb-0">
+                <span className="text-xs text-[#766f62]">{label}</span>
+                <span className="text-sm font-bold text-[#3a352c]">{value}</span>
+              </div>
+            ))}
+          </div>
+        </div>
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {([
-          ["Iterations", String(parameterValues.gs_iterations ?? "—")],
-          ["Training width", `${String(parameterValues.gs_max_width ?? "—")} px`],
-          ["Gaussian cap", Number(parameterValues.gs_cap_max || 0).toLocaleString()],
-          ["Cleanup modules", `${activeFilters} active`],
-        ] satisfies Array<[string, string]>).map(([label, value]) => (
-          <div key={label} className="surface-soft px-4 py-3">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-[#8a9692]">
-              {label}
-            </div>
-            <div className="mt-1 text-base font-bold text-[#2a3733]">{value}</div>
-          </div>
-        ))}
-      </section>
-
-      {colmapService?.step === "GAUSS" && (
-        <section className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-semibold text-[#31504a]">
-              DroneGS training in progress
-            </span>
-            <span className="font-bold text-[#0f766e]">
-              {colmapService.progress ?? 0}%
-            </span>
-          </div>
-          <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/80">
-            <div
-              className="h-full rounded-full bg-[#0f766e] transition-all duration-500"
-              style={{ width: `${colmapService.progress ?? 0}%` }}
+      <section className="surface p-5 sm:p-6">
+        <div className="eyebrow">Contrôles essentiels</div>
+        <h3 className="mt-1 text-lg font-bold text-[#293632]">
+          Sortie, budget et seuils qualité
+        </h3>
+        <div className="parameter-grid mt-5">
+          {essentialKeys.map((key) => (
+            <ParamField
+              key={key}
+              paramKey={key}
+              meta={metadata[key]}
+              value={parameterValues[key] ?? ""}
+              onChange={updateDroneGSParameter}
             />
-          </div>
-        </section>
-      )}
+          ))}
+        </div>
+      </section>
 
-      {PARAMETER_GROUPS.map((group, index) => {
-        const Icon =
-          group.id === "filters"
-            ? Filter
-            : group.id === "reliability"
-              ? TimerReset
-              : group.id === "schedule"
-                ? Activity
-                : Sparkles;
-        const availableKeys = group.keys.filter((key) => metadata[key]);
-        if (availableKeys.length === 0) return null;
-        return (
-          <details
-            key={group.id}
-            className="surface"
-            open={index < 2 ? true : undefined}
-          >
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-5 sm:px-6">
-              <span className="flex min-w-0 items-start gap-3">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#fff4d9] text-[#a76509]">
-                  <Icon size={16} />
-                </span>
-                <span>
-                  <span className="block text-base font-bold text-[#2d3a36]">
-                    {group.label}
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-[#77847f]">
-                    {group.description}
-                  </span>
-                </span>
-              </span>
-              <span className="shrink-0 rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#5d6b66]">
-                {availableKeys.length} controls
-              </span>
-            </summary>
-            <div className="parameter-grid border-t border-[#e5ebe8] px-5 py-5 sm:px-6">
-              {availableKeys.map((key) => (
-                <ParamField
-                  key={key}
-                  paramKey={key}
-                  meta={metadata[key] as ParameterMeta}
-                  value={parameterValues[key] ?? ""}
-                  onChange={updateDroneGSParameter}
-                />
-              ))}
-            </div>
-          </details>
-        );
-      })}
+      <AdvancedParameters
+        groups={advancedGroups}
+        metadata={metadata}
+        values={parameterValues}
+        onChange={updateDroneGSParameter}
+        description="Capacité, optimiseur, checkpoints, stratégie de test et filtres spatiaux sont regroupés et recherchables."
+      />
     </div>
   );
 }

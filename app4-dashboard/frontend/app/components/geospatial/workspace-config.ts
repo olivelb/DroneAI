@@ -10,7 +10,7 @@ import type { AnalysisCreate } from "../../lib/types";
 import type { MapTool } from "../GeospatialMap";
 
 export type ViewerLayer = "ortho" | "depth";
-export type WorkspacePanel = "layers" | "analysis" | "search";
+export type WorkspacePanel = "layers" | "analysis" | "search" | "export";
 
 export const DEFAULT_ANALYSIS: AnalysisCreate = {
   name: "Détection véhicules",
@@ -38,6 +38,15 @@ export const TOOL_BUTTONS: Array<{
   { id: "measure-distance", label: "Distance", icon: Ruler },
   { id: "measure-area", label: "Surface", icon: Pentagon },
 ];
+
+export const TOOL_SHORTCUTS: Record<MapTool, string> = {
+  navigate: "V",
+  point: "P",
+  line: "L",
+  polygon: "G",
+  "measure-distance": "D",
+  "measure-area": "A",
+};
 
 export const statusTone = (status: string) => {
   if (status === "completed") return "bg-emerald-50 text-emerald-700";

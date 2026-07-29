@@ -81,6 +81,17 @@ function FitBounds({
   return null;
 }
 
+function ResizeController() {
+  const map = useMap();
+  useEffect(() => {
+    const container = map.getContainer();
+    const observer = new ResizeObserver(() => map.invalidateSize(false));
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [map]);
+  return null;
+}
+
 const distanceMetres = (points: [number, number][]) =>
   points.slice(1).reduce(
     (total, point, index) =>
@@ -133,7 +144,7 @@ function DrawController({
         ? ""
         : tool === "point"
           ? "Cliquez pour placer le point"
-          : "Cliquez pour ajouter des sommets · double-cliquez pour terminer · Échap pour annuler",
+          : "Cliquez pour ajouter des sommets · Entrée ou double-clic pour terminer · Retour pour annuler le dernier sommet",
     );
   }, [onHint, tool]);
 
@@ -182,12 +193,30 @@ function DrawController({
   );
 
   useEffect(() => {
-    const cancel = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setPoints([]);
+    const handleKeyboard = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+      ) {
+        return;
+      }
+      if (event.key === "Escape") {
+        setPoints([]);
+      } else if (
+        (event.key === "Backspace" || event.key === "Delete") &&
+        points.length > 0
+      ) {
+        event.preventDefault();
+        setPoints((current) => current.slice(0, -1));
+      } else if (event.key === "Enter" && points.length > 0) {
+        event.preventDefault();
+        finish(points);
+      }
     };
-    window.addEventListener("keydown", cancel);
-    return () => window.removeEventListener("keydown", cancel);
-  }, []);
+    window.addEventListener("keydown", handleKeyboard);
+    return () => window.removeEventListener("keydown", handleKeyboard);
+  }, [finish, points]);
 
   useMapEvents({
     click: (event) => {
@@ -455,6 +484,7 @@ export default function GeospatialMap({
       doubleClickZoom={false}
       zoomControl={false}
     >
+      <ResizeController />
       <FitBounds bounds={bounds} />
       {searchBounds && <FitBounds bounds={searchBounds} padding={42} />}
       <TileLayer

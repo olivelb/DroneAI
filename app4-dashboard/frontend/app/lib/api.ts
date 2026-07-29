@@ -266,3 +266,92 @@ export const deleteMapFeature = (missionId: string, featureId: string) =>
     `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}`,
     { method: "DELETE" },
   );
+
+type SaveFilePickerType = {
+  description: string;
+  accept: Record<string, string[]>;
+};
+
+type SaveFileHandle = {
+  createWritable: () => Promise<WritableStream<Uint8Array>>;
+};
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: SaveFilePickerType[];
+  }) => Promise<SaveFileHandle>;
+};
+
+export type ExportDownloadResult = "saved" | "download" | "cancelled";
+
+export const downloadMapExport = async (
+  path: string,
+  suggestedName: string,
+  fileType: SaveFilePickerType,
+): Promise<ExportDownloadResult> => {
+  const url = `${getApiBaseUrl()}${path}`;
+  const picker = (window as SaveFilePickerWindow).showSaveFilePicker?.bind(
+    window,
+  );
+  if (!picker) {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = suggestedName;
+    anchor.rel = "noopener";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return "download";
+  }
+
+  let handle: SaveFileHandle;
+  try {
+    handle = await picker({
+      suggestedName,
+      types: [fileType],
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return "cancelled";
+    }
+    throw error;
+  }
+
+  const response = await fetch(url, {
+    cache: "no-store",
+    credentials: apiCredentials(),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    const detail =
+      payload && typeof payload === "object" && "detail" in payload
+        ? String(payload.detail)
+        : `HTTP ${response.status}`;
+    throw new ApiError(response.status, detail);
+  }
+  if (!response.body) throw new Error("Le navigateur ne peut pas enregistrer ce flux.");
+
+  const writable = await handle.createWritable();
+  await response.body.pipeTo(writable);
+  return "saved";
+};
+
+export const getRasterExportPath = (
+  missionId: string,
+  layer: "ortho" | "depth",
+  format: "cog" | "geotiff",
+) =>
+  `/maps/${encodeURIComponent(missionId)}/export/raster/${layer}?format=${format}`;
+
+export const getVectorExportPath = (
+  missionId: string,
+  format: "gpkg" | "geojson",
+  scope: "all" | "manual" | "ai" | "legacy",
+  runIds: string[] = [],
+  crs = "raster",
+) => {
+  const params = new URLSearchParams({ format, scope, crs });
+  if (runIds.length) params.set("run_ids", runIds.join(","));
+  return `/maps/${encodeURIComponent(missionId)}/export/vectors?${params.toString()}`;
+};

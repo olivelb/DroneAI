@@ -18,7 +18,8 @@ DroneAI explores an end-to-end drone-image workflow:
 4. CuPy renders a georeferenced orthomosaic and height map.
 5. The orthomosaic is split into overlapping tiles.
 6. Ultralytics YOLO OBB or Meta SAM 3 detects objects.
-7. Tile detections are deduplicated and rendered on an annotated GeoTIFF.
+7. Tile detections are deduplicated, published as GeoJSON and optionally
+   persisted as indexed PostGIS vectors.
 
 The repository supports two execution modes:
 
@@ -35,7 +36,7 @@ The repository supports two execution modes:
 |---|---|
 | `app1-colmap` | COLMAP reconstruction, GPS alignment, Gaussian training, orthomosaic generation |
 | `app2-ia` | Tile-level YOLO OBB or SAM 3 inference |
-| `app3-processing` | Tiling, overlap deduplication, detection persistence and annotated GeoTIFF output |
+| `app3-processing` | Tiling, durable recovery, overlap deduplication and GeoJSON/PostGIS vector publication |
 | `app4-dashboard/api` | FastAPI control plane, S3 dataset API, status consumer, transactional inbox/outbox |
 | `app4-dashboard/frontend` | Next.js operator dashboard |
 | `shared` | Configuration, persistence, storage, event contracts, delivery helpers and validation |
@@ -146,6 +147,11 @@ missions/<mission-id>/analyses/<run-id>/detections.geojson
 Orthomosaics and height maps are tiled Cloud Optimized GeoTIFFs (COGs) with
 internal overviews. The dashboard reads only the windows required by the
 current zoom, while AI detections remain a viewport-filtered vector overlay.
+The full-screen Results workspace supports measurements, manual vector
+editing, database search with automatic framing, rerunnable IA campaigns and
+QGIS-ready downloads. Raster exports preserve their source CRS; GeoPackages
+default to that same CRS and may instead use WGS84 or an operator-selected
+EPSG code. RFC 7946 GeoJSON remains WGS84.
 COLMAP downloads a selected `datasets/...` prefix into an ephemeral or
 host-mounted work drive under `/work`, uploads durable outputs to S3, then
 cleans its local mission workspace.
@@ -232,6 +238,8 @@ Current routes:
 | `GET` | `/maps/{vol_id}/metadata/{layer}` | inspect COG map metadata |
 | `GET` | `/maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png` | render one COG map tile |
 | `GET` | `/maps/{vol_id}/vectors.geojson` | query AI vectors in a WGS84 bbox |
+| `GET` | `/maps/{vol_id}/export/raster/{layer}` | stream a COG/GeoTIFF without buffering it in the API |
+| `GET` | `/maps/{vol_id}/export/vectors` | export sources/annotations as GeoPackage or GeoJSON with CRS selection |
 | `GET/POST` | `/maps/{vol_id}/analyses` | list or queue rerunnable COG AI campaigns |
 | `POST` | `/maps/{vol_id}/analyses/{run_id}/retry` | retry a failed AI campaign |
 | `POST` | `/maps/{vol_id}/analyses/{run_id}/cancel` | cancel an active AI campaign |
@@ -266,8 +274,9 @@ the COLMAP base image.
 The repository contains Alembic migrations:
 
 - `0001_initial_schema.py`;
-- `0002_inbox_outbox.py`.
-- `0003_geospatial_aggregation.py`.
+- `0002_inbox_outbox.py`;
+- `0003_geospatial_aggregation.py`;
+- `0004_geospatial_workspace.py`.
 
 For a manually managed database:
 

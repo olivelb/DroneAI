@@ -74,6 +74,8 @@ GeoTIFF previews never read the full raster.
 GET /maps/{vol_id}/metadata/{ortho|depth}
 GET /maps/{vol_id}/tiles/{ortho|depth}/{z}/{x}/{y}.png
 GET /maps/{vol_id}/vectors.geojson?bbox=west,south,east,north
+GET /maps/{vol_id}/export/raster/{ortho|depth}?format=cog|geotiff
+GET /maps/{vol_id}/export/vectors?format=gpkg|geojson&scope=...&crs=...
 ```
 
 Raster tiles are read through COG HTTP range requests and reprojected with a
@@ -95,6 +97,10 @@ missions/<id>/detections.geojson
 The dashboard queries only the visible bounding box and overlays returned
 GeoJSON on Leaflet. The spatial GiST index handles polygon intersection;
 longitude/latitude centers remain a fallback for point-only detections.
+QGIS delivery is generated on demand: GeoJSON remains WGS84, while GeoPackage
+reprojects detections and manual annotations to the orthomosaic CRS by default
+or to an explicitly selected EPSG code. The exported GeoPackage records that
+CRS in both its spatial-reference and geometry metadata.
 
 ## Alignment quality gate
 

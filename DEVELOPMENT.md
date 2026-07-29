@@ -33,7 +33,9 @@ make test
 The tests include architecture checks for the API composition root, public
 route inventory, shared worker messaging, versioned event contracts, retry and
 dead-letter behavior, transactional inbox/outbox rollback and retry using
-SQLite, and local orchestrator resumability.
+SQLite, local orchestrator resumability, GeoPackage metadata and WGS84-to-EPSG
+vector reprojection. When Fiona/GDAL is installed, the QGIS export tests also
+open the generated GeoPackage through the GDAL driver and verify its layer CRS.
 
 GPU and external-service tests are excluded from the default test command:
 
