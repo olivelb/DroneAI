@@ -1,0 +1,223 @@
+name: droneai-local
+
+x-common-environment: &common-environment
+  KAFKA_BROKER: kafka:9092
+  S3_ENDPOINT: http://minio:9000
+  S3_PUBLIC_ENDPOINT: http://${DRONEAI_ACCESS_HOST:-localhost}:${DRONEAI_MINIO_API_PORT:-30091}
+  S3_BUCKET: drone-ai
+  S3_ACCESS_KEY: minioadmin
+  S3_SECRET_KEY: minioadmin
+  S3_REGION: us-east-1
+  DATABASE_URL: postgresql://droneai:droneai-local@postgres:5432/droneai
+
+x-worker-dependencies: &worker-dependencies
+  kafka-init:
+    condition: service_completed_successfully
+  minio-init:
+    condition: service_completed_successfully
+  db-migrate:
+    condition: service_completed_successfully
+
+x-gpu-reservation: &gpu-reservation
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.5
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: droneai
+      POSTGRES_USER: droneai
+      POSTGRES_PASSWORD: droneai-local
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U droneai -d droneai]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.7.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      CLUSTER_ID: droneai-local-cluster-001
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for topic in \
+          vols-bruts \
+          images-ortho \
+          pipeline-status \
+          pipeline-control \
+          image-tiles \
+          tile-detections \
+          pipeline-dead-letter
+        do
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server kafka:9092 \
+            --create \
+            --if-not-exists \
+            --partitions 1 \
+            --replication-factor 1 \
+            --topic "$$topic"
+        done
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - ${DRONEAI_MINIO_CONSOLE_PORT:-30090}:9001
+      - ${DRONEAI_MINIO_API_PORT:-30091}:9000
+    volumes:
+      - minio-data:/data
+
+  minio-init:
+    image: minio/mc:latest
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        until mc alias set droneai http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; do
+          sleep 2
+        done
+        mc mb --ignore-existing droneai/drone-ai
+
+  db-migrate:
+    image: drone-dashboard-api:latest
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-environment
+    command: [alembic, upgrade, head]
+
+  colmap-worker:
+    image: drone-colmap:latest
+    restart: unless-stopped
+    depends_on: *worker-dependencies
+    environment:
+      <<: *common-environment
+      QT_QPA_PLATFORM: offscreen
+      WORK_DRIVES: '[{"name":"system","label":"Local persistent workspace","mount":"/work/system"}]'
+      WORK_DRIVE_DEFAULT: system
+      DRONEAI_GAUSSIAN_BACKEND: dronegs
+    volumes:
+      - colmap-work:/work/system
+    deploy: *gpu-reservation
+
+  ia-worker:
+    image: drone-ia:latest
+    restart: unless-stopped
+    depends_on: *worker-dependencies
+    environment:
+      <<: *common-environment
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /cache/huggingface
+      HF_HUB_CACHE: /cache/huggingface/hub
+      TRANSFORMERS_CACHE: /cache/huggingface/transformers
+    volumes:
+      - model-cache:/cache/huggingface
+    deploy: *gpu-reservation
+
+  processing-worker:
+    image: drone-processing:latest
+    restart: unless-stopped
+    depends_on: *worker-dependencies
+    environment:
+      <<: *common-environment
+      UNTILER_DEDUPE_CENTER_THRESHOLD: "40"
+      UNTILER_DEDUPE_IOU_THRESHOLD: "0.05"
+
+  dashboard-api:
+    image: drone-dashboard-api:latest
+    restart: unless-stopped
+    depends_on: *worker-dependencies
+    environment:
+      <<: *common-environment
+      CORS_ORIGINS: "*"
+      DRONEAI_ENV: development
+      DRONEAI_AUTH_DISABLED: "true"
+      DRONEAI_RUNTIME_MODE: compose
+      DRONEAI_UPLOAD_MAX_FILES: "2500"
+      DRONEAI_UPLOAD_MAX_FILE_BYTES: "2147483648"
+      DRONEAI_UPLOAD_MAX_BATCH_BYTES: "53687091200"
+      WORK_DRIVES: '[{"name":"system","label":"Local persistent workspace","mount":"/work/system"}]'
+      WORK_DRIVE_DEFAULT: system
+    ports:
+      - ${DRONEAI_API_PORT:-30080}:8000
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  dashboard-frontend:
+    image: drone-dashboard-frontend:latest
+    restart: unless-stopped
+    depends_on:
+      dashboard-api:
+        condition: service_healthy
+    environment:
+      DRONEAI_PUBLIC_API_URL: http://${DRONEAI_ACCESS_HOST:-localhost}:${DRONEAI_API_PORT:-30080}
+    ports:
+      - ${DRONEAI_DASHBOARD_PORT:-30000}:3000
+    healthcheck:
+      test: [CMD-SHELL, wget -q -O /dev/null http://localhost:3000/]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  postgres-data:
+  kafka-data:
+  minio-data:
+  model-cache:
+  colmap-work:

@@ -1,4 +1,9 @@
-# Local photogrammetry workflow
+# Infrastructure-free photogrammetry workflow
+
+> [!NOTE]
+> This is the advanced dashboard-free diagnostic runner. For a complete local
+> dashboard, Kafka, storage, database and all workers from a fresh clone, use
+> `./deploy.sh local` as documented in [`DEPLOYMENT.md`](DEPLOYMENT.md).
 
 This workflow validates image metadata, sparse reconstruction, GPS alignment,
 image undistortion, and an optional Gaussian orthophoto without Kafka, S3,

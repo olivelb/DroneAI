@@ -1,0 +1,200 @@
+# One-command local deployment
+
+DroneAI has one public build-and-deploy entry point:
+
+```bash
+./deploy.sh local
+./deploy.sh distributed
+```
+
+Both modes build the same five application images and expose the complete
+operator dashboard. A mission launched from either dashboard uses Kafka,
+MinIO, PostgreSQL/PostGIS, COLMAP/GLOMAP, DroneGS, COG processing and the AI
+worker. The difference is the container orchestrator:
+
+| Mode | Orchestrator | Intended use |
+|---|---|---|
+| `local` | Docker Compose | simplest workstation and WSL deployment |
+| `distributed` | single-node K3s + Helm | Kubernetes/Helm validation and production-like operations |
+
+The infrastructure-free Python runner in `tools/run_local_pipeline.sh` remains
+available for scientific diagnostics, but it is not the dashboard deployment.
+
+## Clone to dashboard
+
+On Ubuntu or WSL2 Ubuntu:
+
+```bash
+git clone https://github.com/olivelb/DroneAI.git
+cd DroneAI
+
+# Recommended first workstation deployment
+./deploy.sh local
+```
+
+For the Kubernetes topology:
+
+```bash
+git clone https://github.com/olivelb/DroneAI.git
+cd DroneAI
+./deploy.sh distributed
+```
+
+The script prints the effective dashboard, API and MinIO URLs only after the
+runtime is healthy. It is safe to rerun. Use `--no-build` after a successful
+build to redeploy or refresh runtime configuration without rebuilding images:
+
+```bash
+./deploy.sh local --no-build
+./deploy.sh distributed --no-build
+```
+
+## Host requirements
+
+The script supports Ubuntu and Ubuntu under WSL2. It installs missing host
+packages when possible. The non-installable prerequisites are:
+
+- a compatible NVIDIA GPU and host driver;
+- outbound network access for packages, source archives and container images;
+- at least 16 GiB RAM; 24 GiB or more is recommended;
+- sufficient disk space for CUDA/COLMAP images and build cache. A clean build
+  can require 60–100 GiB temporarily.
+
+`local` works with native Docker Engine or Docker Desktop WSL integration.
+`distributed` requires systemd because K3s runs as a system service. For WSL,
+enable it in `/etc/wsl.conf` when necessary:
+
+```ini
+[boot]
+systemd=true
+```
+
+Then run `wsl --shutdown` once from Windows and reopen Ubuntu.
+
+The script validates both host `nvidia-smi` and a CUDA 12.8 Docker container
+before building the large images. In distributed mode it also validates the
+K3s NVIDIA RuntimeClass, installs the NVIDIA device plugin, enables two
+time-sliced allocation slots and checks the allocatable GPU resource.
+
+## What the script performs
+
+The shared part of both modes:
+
+1. validates Ubuntu/WSL, RAM, disk and the NVIDIA GPU;
+2. installs or reuses Docker, Docker Compose and NVIDIA Container Toolkit;
+3. clones pinned Ceres and COLMAP sources and checksum-verifies generated
+   dependency caches;
+4. builds `drone-colmap-base` when absent and builds the five service images;
+5. starts the runtime, applies Alembic migrations and waits for health;
+6. verifies the dashboard and API over their browser-facing URLs.
+
+`local` additionally:
+
+- creates a Docker Compose project named `droneai-local`;
+- starts Kafka, creates all pipeline topics, starts MinIO and its bucket,
+  starts PostGIS, runs migrations and starts all workers;
+- uses named Docker volumes for persistent data and COLMAP scratch state.
+
+`distributed` additionally:
+
+- installs or reuses K3s and Helm;
+- installs the NVIDIA device plugin with the `nvidia` RuntimeClass;
+- imports local service images into K3s containerd, skipping matching digests;
+- creates the optional `hf-token` secret, renders portable host paths, sizes
+  memory limits from available RAM and deploys `charts/drone-ai`;
+- selects free NodePorts when another service owns a requested default;
+- injects a WSL-reachable API and MinIO origin into the dashboard.
+
+## Options
+
+```text
+--base                     no-cache rebuild of the base and all services
+--no-build                 reuse the five existing service images
+--skip-host-setup          validate but do not install host runtimes
+--data-root PATH           distributed persistent-data root
+--dashboard-port PORT      dashboard port, default 30000
+--api-port PORT            API port, default 30080
+--minio-console-port PORT  MinIO console port, default 30090
+--minio-api-port PORT      browser-facing MinIO port, default 30091
+```
+
+Examples:
+
+```bash
+./deploy.sh local --base
+
+./deploy.sh distributed \
+  --data-root "$HOME/droneai-data" \
+  --dashboard-port 30100 \
+  --api-port 30180
+```
+
+The distributed data root must remain stable across upgrades because
+Kubernetes hostPath persistent volumes are intentionally retained.
+
+## Hugging Face and AI backends
+
+YOLO OBB does not require a Hugging Face token. The deployment creates an
+empty compatible value when `HF_TOKEN` is not set.
+
+SAM 3 requires approved access to its gated distribution:
+
+```bash
+export HF_TOKEN=hf_...
+./deploy.sh local
+# or
+./deploy.sh distributed
+```
+
+The token is passed at runtime and is never compiled into an image or printed
+by the deployment script.
+
+## Operating the local mode
+
+```bash
+# Inspect containers and health
+docker compose -p droneai-local -f compose.local.yaml ps
+
+# Follow service logs
+docker compose -p droneai-local -f compose.local.yaml logs -f
+
+# Stop containers while preserving named volumes
+docker compose -p droneai-local -f compose.local.yaml down
+
+# Remove containers and local persistent volumes
+docker compose -p droneai-local -f compose.local.yaml down --volumes
+```
+
+The last command permanently removes local databases, datasets and results.
+
+## Operating the distributed mode
+
+```bash
+sudo k3s kubectl get pods -n drone-ai
+sudo k3s kubectl logs -n drone-ai deployment/dashboard-api
+sudo k3s kubectl logs -n drone-ai deployment/colmap-worker
+
+# Redeploy after code or WSL address changes, without rebuilding
+./deploy.sh distributed --no-build
+```
+
+Under WSL, the K3s NodePort link uses the current WSL address because Windows
+localhost forwarding does not consistently proxy K3s NodePorts. Rerun the
+script with `--no-build` after a full WSL restart if that address changes.
+
+## Dashboard end-to-end test
+
+1. Open the dashboard URL printed by `deploy.sh`.
+2. Enter a dataset name and select all images for one flight or survey.
+3. Upload and select the resulting dataset folder.
+4. In Reconstruction, choose the modern fast profile and a local work drive.
+5. Review feature resolution, BA passes, retriangulation and projected CRS.
+6. Select a DroneGS profile and YOLO OBB configuration.
+7. Launch the mission and follow live status through reconstruction,
+   orthomosaic/COG generation, tiling, inference and aggregation.
+8. Open Results to inspect raster tiles, vector detections, measurements,
+   search and manual annotations.
+
+Mission state, object-store outputs and database records survive process
+restarts. The dashboard exposes resume, retry and cancellation controls for
+the supported pipeline stages.

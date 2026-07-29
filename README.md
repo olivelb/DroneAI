@@ -22,14 +22,12 @@ DroneAI explores an end-to-end drone-image workflow:
 
 The repository supports two execution modes:
 
-- **local pipeline**: one resumable orchestrator, Docker, and no Kafka,
-  PostgreSQL, MinIO, Kubernetes, or dashboard;
-- **distributed pipeline**: five application services deployed by the Helm
-  chart with Kafka, S3-compatible storage, and PostgreSQL/PostGIS.
-
-The local pipeline is the fastest way to exercise the code. The distributed
-stack is useful for studying service boundaries and delivery semantics, but it
-is substantially heavier.
+- **local dashboard deployment**: Docker Compose with Kafka, MinIO,
+  PostgreSQL/PostGIS, all workers and the complete dashboard;
+- **distributed dashboard deployment**: the same application deployed to
+  K3s by Helm with the NVIDIA device plugin;
+- **infrastructure-free runner**: an advanced CLI for isolated scientific
+  diagnostics without the dashboard.
 
 ## Services
 
@@ -47,6 +45,8 @@ For implementation details, read:
 
 - [`DOCUMENTATION.md`](DOCUMENTATION.md) for architecture, event contracts,
   state and processing algorithms;
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) for the clone-to-dashboard local and
+  distributed installation;
 - [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) for the infrastructure-free
   workflow;
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) for tests, linting and dependency locks;
@@ -66,55 +66,40 @@ orthomosaic. See
 [`docs/GAJAN_R2S_VALIDATION.md`](docs/GAJAN_R2S_VALIDATION.md) for the measured
 results of the local, non-RTK validation run.
 
-## Quick start: local pipeline
+## Quick start: clone to dashboard
 
-The unified entry point runs COLMAP, Gaussian orthophoto generation and YOLO
-OBB detection in order:
-
-```bash
-./tools/run_local_pipeline.sh /path/to/drone/photos /path/to/workspace \
-  --profile standard
-```
-
-Use `--profile smoke` for a smaller 25-image validation. Existing outputs are
-validated before a stage is skipped. Forced upstream rebuilds propagate to
-dependent stages, and the orchestrator writes `pipeline_run.json` plus one log
-per stage.
-
-Useful controls:
+The recommended workstation deployment uses Docker Compose:
 
 ```bash
-# Inspect the planned commands without running them
-./tools/run_local_pipeline.sh DATASET WORKSPACE --profile standard --dry-run
-
-# Rebuild Gaussian outputs and the dependent detection stage
-./tools/run_local_pipeline.sh DATASET WORKSPACE \
-  --profile standard --from-stage gaussian --force-stage gaussian
-
-# Run only detection when its prerequisites already exist
-./tools/run_local_pipeline.sh DATASET WORKSPACE \
-  --profile standard --from-stage detection
+git clone https://github.com/olivelb/DroneAI.git
+cd DroneAI
+./deploy.sh local
 ```
 
-The shell entry point itself only needs Python 3.11 or 3.12, but its stages
-launch Docker images:
-
-| Stage | Required local image |
-|---|---|
-| dataset preflight | `droneai-api:local` |
-| COLMAP | `drone-colmap:latest` |
-| Gaussian | `droneai-gaussian-local:latest` |
-| detection | `drone-ia:latest` |
-
-GPU-backed stages require Docker, the NVIDIA Container Toolkit and a compatible
-NVIDIA driver. Build the lightweight preflight image with:
+The production-like single-node Kubernetes deployment uses the same entry
+point:
 
 ```bash
-docker build -f app4-dashboard/api/Dockerfile -t droneai-api:local .
+./deploy.sh distributed
 ```
 
-The heavier image preparation and stage-specific commands are documented in
-[`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
+Both commands prepare pinned external sources, build the five service images,
+start Kafka, MinIO, PostGIS, migrations, workers and the dashboard, validate
+the GPU runtime and print the effective dashboard link. `HF_TOKEN` is optional
+for YOLO and required only for gated Hugging Face models such as SAM 3.
+
+Use `--no-build` for a fast idempotent redeploy and `--base` for a full
+no-cache rebuild. All options, prerequisites, persistence and operational
+commands are documented in [`DEPLOYMENT.md`](DEPLOYMENT.md).
+
+The dashboard-free diagnostic orchestrator remains available for focused
+scientific tests:
+
+```bash
+./tools/run_local_pipeline.sh DATASET WORKSPACE --profile smoke
+```
+
+See [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) for that advanced workflow.
 
 DroneGS is the default Gaussian backend. The same frozen 172-view evaluator on
 Albagnac measured 22.175919 dB PSNR, 0.642557 SSIM, and 0.325408 LPIPS in
@@ -178,88 +163,33 @@ is documented in
 
 ## Distributed local installation
 
-### Host requirements
-
-Use Linux or WSL2 Ubuntu with:
-
-- Docker and K3s;
-- Helm;
-- an NVIDIA GPU, driver and NVIDIA Container Toolkit for the GPU workers;
-- outbound access for system packages, images and source dependencies;
-- enough memory and disk for the COLMAP/DroneGS build and mission data.
-
-The current local chart requests 80 GiB for the COLMAP worker and one GPU for
-both COLMAP and IA. Adjust
-[`charts/drone-ai/values.yaml`](charts/drone-ai/values.yaml) to match the host.
-The first base-image build can take tens of minutes and consume tens of
-gigabytes of transient build cache.
-
-### External build sources
-
-The COLMAP base image copies external source trees that are intentionally
-ignored by Git. Prepare them once:
+Use the one-command deployment from a fresh clone:
 
 ```bash
-bash setup_deps.sh
+git clone https://github.com/olivelb/DroneAI.git
+cd DroneAI
+./deploy.sh distributed
 ```
 
-`setup_deps.sh` prepares the default COLMAP dependencies:
+The script installs or reuses K3s, Helm and the NVIDIA device plugin, prepares
+the pinned external sources, builds and imports the five images, creates
+portable persistent paths, sizes memory for the host, applies migrations and
+waits for every deployment and browser endpoint.
 
-| Directory | Source/version |
-|---|---|
-| `app1-colmap/ceres-solver/` | commit `849f854ff98f…`, Ceres 2.3-dev with cuDSS |
-| `app1-colmap/colmap-local/` | tag `4.1.1`, minimal-pipeline patch applied |
-| `app1-colmap/colmap-deps/` | SHA-addressed PoseLib and faiss archives |
+The older `setup.sh` and `build_and_deploy.sh` names are compatibility wrappers
+around this command. Manual dependency preparation, namespace creation,
+RuntimeClass patching and `hf-token` creation are no longer required.
 
-ONNX Runtime GPU and the ALIKED/LightGlue model files are also checksum
-verified by `setup_deps.sh`; production workers do not download them at
-runtime.
-
-LichtFeld and its vcpkg toolchain are not build dependencies. The exact
-historical upstream revision used to derive GPL-covered DroneGS components is
-recorded in
-[`docs/dronegs/GPL_COMPONENTS.md`](docs/dronegs/GPL_COMPONENTS.md); this
-provenance record is intentionally retained.
-
-### Install and deploy
-
-The automated setup installs the local dependencies and then deploys the Helm
-release:
+For YOLO, `HF_TOKEN` may remain unset. Export it before deployment only when a
+gated Hugging Face model such as SAM 3 is needed. Use:
 
 ```bash
-bash setup.sh
+./deploy.sh distributed --no-build  # fast idempotent redeploy
+./deploy.sh distributed --base      # complete no-cache rebuild
 ```
 
-For an already prepared host:
-
-```bash
-bash setup_deps.sh
-
-export HF_TOKEN=your_huggingface_token
-sudo kubectl create namespace drone-ai --dry-run=client -o yaml \
-  | sudo kubectl apply -f -
-sudo kubectl -n drone-ai create secret generic hf-token \
-  --from-literal=HF_TOKEN="$HF_TOKEN"
-
-bash build_and_deploy.sh
-```
-
-The `hf-token` secret is currently required by the IA deployment even if only
-YOLO will be selected. SAM 3 additionally requires approved access to the
-gated `facebook/sam3` distribution.
-
-`build_and_deploy.sh`:
-
-1. checks the external sources and `hf-token`;
-2. builds the COLMAP base when needed and all five service images;
-3. imports the images into K3s containerd;
-4. runs `helm upgrade --install` for `charts/drone-ai`;
-5. waits for the `drone-ai` release in namespace `drone-ai`.
-
-Use `bash build_and_deploy.sh --base` for a no-cache rebuild.
-
-The chart deploys Kafka, MinIO, PostgreSQL/PostGIS, the five services, RBAC,
-storage secrets and schema initialization.
+See [`DEPLOYMENT.md`](DEPLOYMENT.md) for host requirements, WSL systemd,
+custom ports, persistence, lifecycle and the dashboard end-to-end procedure.
 
 For a reviewed single-tenant production deployment, start from
 [`charts/drone-ai/values-production.example.yaml`](charts/drone-ai/values-production.example.yaml),
@@ -270,27 +200,10 @@ HttpOnly cookie. The key is never compiled into the browser bundle or stored
 in that cookie. The auth Secret must provide both `api-keys.json` and an
 independent `session-secret`.
 
-### Verify and access
-
-```bash
-kubectl get pods -n drone-ai
-kubectl get svc -n drone-ai
-kubectl logs deployment/kafka-broker -n drone-ai
-kubectl logs deployment/dashboard-api -n drone-ai
-```
-
-With the default local values:
-
-- dashboard: `http://localhost:30000`;
-- API: `http://localhost:30080`;
-- MinIO console: `http://localhost:30090`;
-- MinIO API: `http://localhost:30091`;
-- in-cluster Kafka:
-  `my-kafka.drone-ai.svc.cluster.local:9092`.
-
-Upload a dataset from the dashboard or through `POST /datasets/upload`, then
-submit a mission referencing its normalized `datasets/<name>` S3 prefix.
-Select a configured work drive, a COLMAP profile and either YOLO OBB or SAM 3.
+The effective dashboard, API and MinIO URLs are printed after readiness.
+Under native Ubuntu they normally use `localhost`; under WSL, distributed mode
+prints the current WSL address because K3s NodePorts are not consistently
+forwarded through Windows localhost.
 
 ### API surface
 
@@ -309,7 +222,7 @@ Current routes:
 | `GET` | `/mission/state` | inspect one mission |
 | `GET` | `/mission/parameters` | pipeline metadata and work drives |
 | `GET` | `/status/summary` | aggregate mission state |
-| `GET` | `/pods` | Kubernetes pod status |
+| `GET` | `/pods` | Kubernetes pod or local Compose service inventory |
 | `GET` | `/browse` | browse S3 prefixes |
 | `GET` | `/datasets` | list datasets |
 | `POST` | `/datasets/upload` | upload a dataset batch |

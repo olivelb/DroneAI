@@ -52,8 +52,13 @@ The control path is:
 
 ## Deployment topology
 
-The current deployed runtime is driven by the Helm chart under
-`charts/drone-ai/`.
+`deploy.sh` exposes the complete system through two orchestrators:
+
+- `local` uses `compose.local.yaml`;
+- `distributed` uses the Helm chart under `charts/drone-ai/`.
+
+Both topologies run the same five application images, Kafka, MinIO,
+PostgreSQL/PostGIS and the same dashboard API contract.
 
 Main runtime objects:
 
@@ -83,8 +88,8 @@ Operational notes:
 - The dashboard API deployment runs as service account `dashboard-api-sa`.
 - `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods so the API
   can serve `/pods`.
-- `build_and_deploy.sh` and every incremental deploy script run
-  `helm upgrade --install`.
+- `deploy.sh distributed` runs `helm upgrade --install`; the legacy
+  `build_and_deploy.sh` and `setup.sh` entry points delegate to it.
 - The chart's revisioned migration job executes `alembic upgrade head`;
   database-dependent pods wait for the head revision in an init container and
   CI verifies an upgrade/downgrade/re-upgrade round-trip.

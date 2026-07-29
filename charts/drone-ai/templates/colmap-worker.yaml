@@ -21,6 +21,9 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      {{- with .Values.gpu.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
       {{- with .Values.gpu.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -115,7 +115,9 @@ colmap-src/build/
 plat
 
 # === Local helper scripts ===
-/scripts/
+/scripts/*
+!/scripts/deploy/
+!/scripts/deploy/*.sh
 
 # === Local editor/runtime state ===
 .zed_server/

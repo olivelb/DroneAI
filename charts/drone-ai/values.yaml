@@ -152,9 +152,11 @@ dashboardApi:
     sessionSecretKey: session-secret
     sessionMaxAgeSeconds: 28800
   uploads:
-    maxFiles: 2500
-    maxFileBytes: 2147483648
-    maxBatchBytes: 53687091200
+    # Strings prevent large byte counts from being rendered in scientific
+    # notation by Helm/YAML before they reach the integer-only API parser.
+    maxFiles: "2500"
+    maxFileBytes: "2147483648"
+    maxBatchBytes: "53687091200"
 
 # --------------------------------------------------------------------------
 # Dashboard Frontend
@@ -201,6 +203,9 @@ ingress:
 # GPU scheduling (no selectors for single-node local)
 # --------------------------------------------------------------------------
 gpu:
+  # K3s creates this RuntimeClass automatically when
+  # nvidia-container-runtime is installed before K3s starts.
+  runtimeClassName: nvidia
   nodeSelector: {}
   tolerations: []
 

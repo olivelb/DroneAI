@@ -121,4 +121,5 @@ download_verified "$COLMAP_MODEL_BASE_URL/aliked-lightglue.onnx" "app1-colmap/co
 download_verified "$COLMAP_MODEL_BASE_URL/sift-lightglue.onnx" "app1-colmap/colmap-deps/sift-lightglue.onnx" "$SIFT_LIGHTGLUE_SHA256" "SIFT LightGlue"
 
 info "All dependencies ready. You can now run:"
-info "  sudo bash deploy_app1_colmap.sh --base"
+info "  ./deploy.sh local"
+info "  ./deploy.sh distributed"

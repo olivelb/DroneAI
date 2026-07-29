@@ -76,7 +76,7 @@ npm run lint
 npm run build
 ```
 
-The lock currently pins Next.js `16.2.11`. Security advisories change over
+The lock currently pins Next.js `16.2.12`. Security advisories change over
 time, so verify the current dependency graph locally:
 
 ```bash
@@ -88,6 +88,14 @@ use `npm audit fix --force` as an unreviewed lock-file rewrite.
 
 ## Full pipeline
 
-The end-to-end pipeline additionally requires K3s, Docker, an NVIDIA GPU,
-Kafka, MinIO, Postgres/PostGIS, and the external sources prepared by
-`setup_deps.sh`. See `README.md` for that workflow.
+The supported end-to-end entry point installs or validates runtime
+dependencies, prepares external sources, builds every image and deploys the
+dashboard:
+
+```bash
+./deploy.sh local
+./deploy.sh distributed
+```
+
+Use `./deploy.sh <mode> --no-build` while iterating on runtime configuration.
+See [`DEPLOYMENT.md`](DEPLOYMENT.md) for lifecycle and troubleshooting.
