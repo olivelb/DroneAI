@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import struct
+import sys
 
 import pytest
 
@@ -9,6 +10,7 @@ from shared.rtk_refinement import inject_database_pose_priors
 from tools.run_local_colmap import (
     WORKSPACE_MARKER,
     ensure_workspace,
+    parse_args,
     select_records,
     sparse_model_identity,
     sparse_model_path,
@@ -96,6 +98,28 @@ def _rtk_records(count: int) -> list[dict]:
             }
         )
     return records
+
+
+def test_default_cli_profile_matches_planimetric_survey_defaults(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_local_colmap.py", "/data", "/work"],
+    )
+
+    args = parse_args()
+
+    assert args.matcher == "gps"
+    assert args.engine == "auto"
+    assert args.feature_type == "SIFT"
+    assert args.matcher_type == "SIFT_BRUTEFORCE"
+    assert args.camera_model == "SIMPLE_RADIAL"
+    assert args.feature_max_image_size == 2400
+    assert args.feature_max_num_features == 4096
+    assert args.global_ba_iterations == 2
+    assert args.global_ceres_iterations == 50
+    assert args.global_retriangulation is True
+    assert args.mapping_timeout_seconds == 2400
 
 
 def test_select_records_supports_contiguous_and_uniform_strategies():

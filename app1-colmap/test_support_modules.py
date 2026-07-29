@@ -206,7 +206,11 @@ class TestPipelineSupport(unittest.TestCase):
         modern = pipeline_support.merge_pipeline_params("modern", {})
 
         self.assertEqual(legacy["mvs_max_image_size"], "4000")
-        self.assertEqual(modern["mvs_max_image_size"], "1600")
+        self.assertEqual(modern["feature_max_image_size"], "2400")
+        self.assertEqual(modern["feature_max_num_features"], "4096")
+        self.assertEqual(modern["global_mapper_ba_iterations"], "2")
+        self.assertFalse(modern["global_mapper_skip_retriangulation"])
+        self.assertEqual(modern["mvs_max_image_size"], "2400")
         self.assertFalse(legacy["rtk_refinement_enabled"])
         self.assertTrue(modern["rtk_refinement_enabled"])
         self.assertEqual(modern["rtk_refinement_iterations"], "25")

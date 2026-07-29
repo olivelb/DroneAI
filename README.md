@@ -21,6 +21,11 @@ DroneAI explores an end-to-end drone-image workflow:
 7. Tile detections are deduplicated, published as GeoJSON and optionally
    persisted as indexed PostGIS vectors.
 
+The modern reconstruction default is the checkpoint-tested planimetric survey
+profile (GPS pairs, SIFT CUDA at 2400 px, 4096 features, two GLOMAP BA passes
+and final retriangulation). The dashboard also exposes the measured 1600 px
+fast profile for large missions where turnaround time is the priority.
+
 The repository supports two execution modes:
 
 - **local dashboard deployment**: Docker Compose with Kafka, MinIO,

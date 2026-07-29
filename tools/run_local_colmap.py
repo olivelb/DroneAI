@@ -42,9 +42,11 @@ from alignment_support import (
     write_pair_list,
 )
 
+from shared.pipeline_params import PIPELINE_DEFAULTS
 from shared.rtk_refinement import inject_database_pose_priors
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
+MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 GENERATED_PATHS = (
     "database.db",
     "geo_data.txt",
@@ -131,21 +133,41 @@ def parse_args() -> argparse.Namespace:
         default=8,
         help="Parallel copy workers used when image-staging-mode=copy.",
     )
-    parser.add_argument("--feature-max-image-size", type=int, default=1600)
-    parser.add_argument("--feature-max-num-features", type=int, default=2048)
+    parser.add_argument(
+        "--feature-max-image-size",
+        type=int,
+        default=int(MODERN_DEFAULTS["feature_max_image_size"]),
+    )
+    parser.add_argument(
+        "--feature-max-num-features",
+        type=int,
+        default=int(MODERN_DEFAULTS["feature_max_num_features"]),
+    )
     parser.add_argument("--gps-max-neighbors", type=int, default=32)
     parser.add_argument("--gps-min-neighbors", type=int, default=8)
     parser.add_argument("--gps-temporal-neighbors", type=int, default=6)
     parser.add_argument("--gps-max-distance-m", type=float, default=0.0)
     parser.add_argument("--minimum-registration-ratio", type=float, default=0.97)
-    parser.add_argument("--mapping-timeout-seconds", type=float, default=3600.0)
+    parser.add_argument(
+        "--mapping-timeout-seconds",
+        type=float,
+        default=float(MODERN_DEFAULTS["mapping_timeout_seconds"]),
+    )
     parser.add_argument("--global-max-tracks", type=int, default=2_000_000)
-    parser.add_argument("--global-ba-iterations", type=int, default=1)
-    parser.add_argument("--global-ceres-iterations", type=int, default=50)
+    parser.add_argument(
+        "--global-ba-iterations",
+        type=int,
+        default=int(MODERN_DEFAULTS["global_mapper_ba_iterations"]),
+    )
+    parser.add_argument(
+        "--global-ceres-iterations",
+        type=int,
+        default=int(MODERN_DEFAULTS["global_mapper_ceres_iterations"]),
+    )
     parser.add_argument(
         "--global-retriangulation",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=not bool(MODERN_DEFAULTS["global_mapper_skip_retriangulation"]),
         help="Enable GLOMAP's expensive final retriangulation/refinement pass.",
     )
     parser.add_argument(
