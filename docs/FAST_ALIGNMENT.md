@@ -16,7 +16,7 @@ CPU bundle adjustment.
 
 ## Build
 
-From `/home/olivier/droneAI`:
+From the cloned DroneAI repository:
 
 ```bash
 bash setup_deps.sh
@@ -54,7 +54,7 @@ copying or modifying the source photographs:
 ```bash
 tools/run_local_colmap.sh \
   /mnt/y/PHOTOS_ALBAGNAC_MAVIC3E \
-  /home/olivier/droneai-workspaces/albagnac-fast \
+  "$HOME/droneai-workspaces/albagnac-fast" \
   --stage align \
   --include-prefix DJI_202306011707_001_Oblique8 \
   --include-prefix DJI_202306011738_002_Oblique9 \

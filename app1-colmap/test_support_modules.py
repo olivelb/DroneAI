@@ -76,7 +76,7 @@ class TestWorkerSupport(unittest.TestCase):
         self.assertFalse(state.should_cancel("vol-1"))
 
     def test_build_mission_context_uses_s3_input_and_contained_work_path(self):
-        drives = '[{"name":"system"},{"name":"drive-i"}]'
+        drives = '[{"name":"system"},{"name":"fast-storage"}]'
         with patch.dict(
             os.environ,
             {"WORK_DRIVES": drives, "WORK_DRIVE_DEFAULT": "system"},
@@ -88,13 +88,29 @@ class TestWorkerSupport(unittest.TestCase):
                         "vol_id": "vol-007",
                         "input_dataset": "datasets/banyuls",
                         "pipeline": "modern",
-                        "work_drive": "drive-i",
+                        "work_drive": "fast-storage",
                     }
                 )
 
         self.assertEqual(mission_context.vol_id, "vol-007")
         self.assertEqual(mission_context.input_dir, "datasets/banyuls")
-        self.assertEqual(mission_context.work_dir, "/work/drive-i/vol-007")
+        self.assertEqual(mission_context.work_dir, "/work/fast-storage/vol-007")
+
+    def test_build_mission_context_rejects_disappeared_work_drive(self):
+        drives = '[{"name":"fast-storage"}]'
+        with patch.dict(
+            os.environ,
+            {"WORK_DRIVES": drives, "WORK_DRIVE_DEFAULT": "fast-storage"},
+            clear=False,
+        ):
+            with patch("pathlib.Path.is_dir", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "is not mounted"):
+                    worker_support.build_mission_context(
+                        {
+                            "vol_id": "vol-008",
+                            "input_dataset": "datasets/banyuls",
+                        }
+                    )
 
     def test_publish_next_stage_message_uses_current_contract(self):
         producer = MagicMock()

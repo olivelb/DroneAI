@@ -158,7 +158,7 @@ mean PSNR 19.4122 dB (sample standard deviation 0.0075) and mean SSIM 0.49155
 The lightweight, reviewable record is
 `docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json`. The complete
 6,917,872,584-byte evidence archive remains outside Git at
-`/home/olivier/droneai-workspaces/benchmarks/saleres-dronegs-production-v1.tar.gz`;
+`<benchmark-root>/saleres-dronegs-production-v1.tar.gz`;
 its SHA-256 is
 `5ed455a9f4a1f3cc628bec0d18f8fa15231490e2e86e13d5d7f186780cf9b7e2`.
 

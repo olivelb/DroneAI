@@ -5,35 +5,52 @@ Skips training entirely — just loads the PLY, applies geo-alignment,
 filters, renders, and writes GeoTIFF.
 
 Usage (inside the pod):
-  python3 /app/test_cupy_ortho.py
+  python3 /app/tools/smoke_cupy_ortho.py /work/local/my-mission/dense \
+      /work/local/my-mission/gaussian_checkpoints/final.ply \
+      /work/local/my-mission/test_cupy_ortho.tif
 
 This file is intentionally outside the automated pytest suite because it
 requires a CUDA GPU and mission-specific reconstruction artifacts.
 """
 
+import argparse
 import gc
 import math
 import os
 import sys
 import time
+from pathlib import Path
 
 import cupy as cp
 import numpy as np
 
-# --- Configuration ---
-DENSE_PATH = "/host/mnt/j/workspace/vol_villeseque/dense"
-CHECKPOINT_PLY = "/host/mnt/j/workspace/vol_villeseque/gaussian_checkpoints/final.ply"
-OUTPUT_ORTHO = "/host/mnt/j/workspace/vol_villeseque/test_cupy_ortho.tif"
-UTM_CRS = "EPSG:32631"
-RESOLUTION = 0.02  # metres/pixel
-SH_DEGREE = 3
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("dense_path", help="COLMAP dense reconstruction directory")
+parser.add_argument("checkpoint_ply", help="Trained Gaussian PLY checkpoint")
+parser.add_argument("output_ortho", help="Output GeoTIFF path")
+parser.add_argument("--crs", default="EPSG:32631", help="Projected output CRS")
+parser.add_argument("--resolution", type=float, default=0.02, help="Metres per pixel")
+parser.add_argument("--sh-degree", type=int, default=3)
+parser.add_argument("--transform", help="Optional alignment_transform.json")
+parser.add_argument(
+    "--source-root",
+    default=os.getenv("DRONEAI_SOURCE_ROOT", str(Path(__file__).resolve().parents[1])),
+    help="DroneAI source root containing app1-colmap",
+)
+args = parser.parse_args()
+
+DENSE_PATH = os.path.realpath(args.dense_path)
+CHECKPOINT_PLY = os.path.realpath(args.checkpoint_ply)
+OUTPUT_ORTHO = os.path.realpath(args.output_ortho)
+UTM_CRS = args.crs
+RESOLUTION = args.resolution
+SH_DEGREE = args.sh_degree
 
 # Look for alignment_transform.json
-TRANSFORM_FILE = None
-for p in [
-    "/host/mnt/j/workspace/vol_villeseque/alignment_transform.json",
-    os.path.join(DENSE_PATH, "..", "alignment_transform.json"),
-]:
+TRANSFORM_FILE = os.path.realpath(args.transform) if args.transform else None
+for p in [TRANSFORM_FILE, os.path.join(DENSE_PATH, "..", "alignment_transform.json")]:
+    if not p:
+        continue
     if os.path.isfile(p):
         TRANSFORM_FILE = os.path.realpath(p)
         break
@@ -63,8 +80,8 @@ t0 = time.time()
 
 # --- 1. Load COLMAP reconstruction ---
 log("LOAD", 5, "Loading COLMAP reconstruction...")
-# Use the CuPy version of gaussian_ortho from the host, not the old PyTorch code in /app
-sys.path.insert(0, "/host/home/olivier/app1-colmap")
+# Load the selected source tree rather than a developer-specific host path.
+sys.path.insert(0, os.path.join(os.path.realpath(args.source_root), "app1-colmap"))
 from gaussian_ortho.colmap_loader import apply_sim3_to_points, load_colmap_reconstruction
 from gaussian_ortho.exif_altitude import compute_colmap_scale, extract_exif_altitudes
 from gaussian_ortho.gaussian_model import GaussianModel
@@ -216,8 +233,6 @@ if mean_exif_alt is not None:
     height = height + z_offset
 
 log("WRITE", 95, "Writing GeoTIFF...")
-from pathlib import Path
-
 height_file = str(Path(OUTPUT_ORTHO).with_suffix(".height.tif"))
 write_geotiff(
     output_path=OUTPUT_ORTHO,

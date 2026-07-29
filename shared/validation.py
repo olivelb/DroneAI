@@ -47,25 +47,38 @@ def validate_dataset_prefix(value: str) -> str:
     return normalized
 
 
-def configured_work_drive_names(raw_value: str | None = None) -> set[str]:
+def configured_work_drives(raw_value: str | None = None) -> list[dict[str, str]]:
     raw_value = os.getenv("WORK_DRIVES", "") if raw_value is None else raw_value
     if not raw_value:
-        return set()
+        return []
     try:
         entries = json.loads(raw_value)
     except (TypeError, json.JSONDecodeError):
-        return set()
+        return []
     if not isinstance(entries, list):
-        return set()
+        return []
 
+    drives = []
     names = set()
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         name = str(entry.get("name") or "").strip()
-        if SAFE_SEGMENT_RE.fullmatch(name):
-            names.add(name)
-    return names
+        if not SAFE_SEGMENT_RE.fullmatch(name) or name in names:
+            continue
+        mount = str(entry.get("mount") or f"/work/{name}").strip()
+        if mount != f"/work/{name}":
+            continue
+        label = " ".join(str(entry.get("label") or name).split())
+        if not label or len(label) > 160:
+            continue
+        names.add(name)
+        drives.append({"name": name, "label": label, "mount": mount})
+    return drives
+
+
+def configured_work_drive_names(raw_value: str | None = None) -> set[str]:
+    return {entry["name"] for entry in configured_work_drives(raw_value)}
 
 
 def validate_work_drive(value: str, *, configured_names: set[str] | None = None) -> str:

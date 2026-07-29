@@ -16,7 +16,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: {{ .Values.iaWorker.modelCache.hostPath }}
-    type: DirectoryOrCreate
+    type: Directory
 ---
 {{- end }}
 # --- PersistentVolumeClaim ---

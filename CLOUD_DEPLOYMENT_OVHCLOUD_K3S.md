@@ -267,6 +267,26 @@ kubectl -n drone-ai create secret docker-registry regcred \
   --docker-password=<token>
 ```
 
+Create the persistent COLMAP workspace referenced by the cloud values:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: drone-ai-colmap-work
+  namespace: drone-ai
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: csi-cinder-high-speed
+  resources:
+    requests:
+      storage: 500Gi
+```
+
+Apply this manifest before Helm. The CSI driver binds the claim to real cloud
+block storage; a missing or unbound claim prevents the COLMAP pod from becoming
+ready instead of advertising an unusable workspace.
+
 ## Step 6: Create `values-cloud.yaml`
 
 This overrides `charts/drone-ai/values.yaml` for cloud deployment. Only set what changes.
@@ -321,10 +341,10 @@ colmapWorker:
   workVolume:
     sizeLimit: 200Gi
     drives:
-      - name: system
-        hostPath: ""                      # /work/system is an emptyDir
-        label: "Ephemeral node storage"
-    default: system
+      - name: cloud-workspace
+        existingClaim: drone-ai-colmap-work
+        label: "Cloud persistent workspace"
+    default: cloud-workspace
 
 # --- Storage connection strings ---
 # If using managed S3, override these:

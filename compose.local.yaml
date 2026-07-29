@@ -142,11 +142,11 @@ services:
     environment:
       <<: *common-environment
       QT_QPA_PLATFORM: offscreen
-      WORK_DRIVES: '[{"name":"system","label":"Local persistent workspace","mount":"/work/system"}]'
-      WORK_DRIVE_DEFAULT: system
+      WORK_DRIVES: '${DRONEAI_WORK_DRIVES_JSON:-[{"name":"local","label":"Local persistent workspace","mount":"/work/local"}]}'
+      WORK_DRIVE_DEFAULT: ${DRONEAI_WORK_DRIVE_DEFAULT:-local}
       DRONEAI_GAUSSIAN_BACKEND: dronegs
     volumes:
-      - colmap-work:/work/system
+      - ${DRONEAI_DATA_ROOT:-./.droneai-data}/colmap-work:/work/local
     deploy: *gpu-reservation
 
   ia-worker:
@@ -185,8 +185,8 @@ services:
       DRONEAI_UPLOAD_MAX_FILES: "2500"
       DRONEAI_UPLOAD_MAX_FILE_BYTES: "2147483648"
       DRONEAI_UPLOAD_MAX_BATCH_BYTES: "53687091200"
-      WORK_DRIVES: '[{"name":"system","label":"Local persistent workspace","mount":"/work/system"}]'
-      WORK_DRIVE_DEFAULT: system
+      WORK_DRIVES: '${DRONEAI_WORK_DRIVES_JSON:-[{"name":"local","label":"Local persistent workspace","mount":"/work/local"}]}'
+      WORK_DRIVE_DEFAULT: ${DRONEAI_WORK_DRIVE_DEFAULT:-local}
     ports:
       - ${DRONEAI_API_PORT:-30080}:8000
     healthcheck:
@@ -220,4 +220,3 @@ volumes:
   kafka-data:
   minio-data:
   model-cache:
-  colmap-work:

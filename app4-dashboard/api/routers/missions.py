@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,6 +11,7 @@ from shared.config import TOPIC_CONTROL, TOPIC_MISSION
 from shared.database import Mission, get_or_create_mission, get_session
 from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
+from shared.validation import configured_work_drives
 
 from ..kubernetes_status import get_pod_states
 from ..messaging import (
@@ -156,15 +156,16 @@ def pod_statuses():
 
 @router.get("/mission/parameters")
 def mission_parameters():
-    try:
-        work_drives = json.loads(os.getenv("WORK_DRIVES", "") or "[]")
-    except json.JSONDecodeError:
-        work_drives = []
+    work_drives = configured_work_drives()
+    configured_names = {drive["name"] for drive in work_drives}
+    work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
+    if work_drive_default not in configured_names:
+        work_drive_default = work_drives[0]["name"] if work_drives else ""
     return {
         "pipelines": PIPELINE_DEFAULTS,
         "metadata": PARAMETER_METADATA,
         "work_drives": work_drives,
-        "work_drive_default": os.getenv("WORK_DRIVE_DEFAULT", ""),
+        "work_drive_default": work_drive_default,
     }
 
 

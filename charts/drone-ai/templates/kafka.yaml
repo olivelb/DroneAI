@@ -17,7 +17,7 @@ spec:
   persistentVolumeReclaimPolicy: Retain
   hostPath:
     path: {{ .Values.kafka.persistence.hostPath }}
-    type: DirectoryOrCreate
+    type: Directory
 ---
 {{- end }}
 # --- PersistentVolumeClaim ---

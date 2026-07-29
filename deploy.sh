@@ -30,6 +30,8 @@ Options:
 Environment:
   HF_TOKEN                  Optional. Required only for Hugging Face gated models.
   DRONEAI_DATA_ROOT         Alternative default for --data-root.
+  DRONEAI_DISCOVER_WORK_DRIVES
+                            Set to 0 to expose only the primary data root.
 
 Examples:
   git clone https://github.com/olivelb/DroneAI.git

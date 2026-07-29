@@ -22,6 +22,16 @@ minio:
 postgres:
   enabled: false
 
+# Workspaces shown in the dashboard must correspond to volumes mounted in the
+# COLMAP pod. Create this claim (or use a cloud CSI provisioner) before install.
+colmapWorker:
+  workVolume:
+    drives:
+      - name: cloud-workspace
+        existingClaim: drone-ai-colmap-work
+        label: "Cloud persistent workspace"
+    default: cloud-workspace
+
 dashboardApi:
   environment: production
   service:

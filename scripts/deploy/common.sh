@@ -276,3 +276,67 @@ detect_distributed_access_host() {
         printf 'localhost\n'
     fi
 }
+
+discover_work_drives() {
+    local primary_path="$DATA_ROOT/colmap-work"
+    local drives target source available workspace name label
+    drives="$(jq --compact-output --null-input \
+        --arg path "$primary_path" \
+        '[{"name":"local","hostPath":$path,"label":"Local persistent workspace"}]')"
+
+    case "${DRONEAI_DISCOVER_WORK_DRIVES:-1}" in
+        0|false|FALSE|no|NO)
+            printf '%s\n' "$drives"
+            return
+            ;;
+    esac
+
+    # Only real mount targets are considered. In particular, the mere
+    # existence of /mnt/<letter> is not enough to advertise a drive in WSL.
+    while IFS= read -r target; do
+        [[ -n "$target" ]] || continue
+        case "$target" in
+            /mnt/wsl|/mnt/wsl/*|/mnt/wslg|/mnt/wslg/*) continue ;;
+            /mnt/*|/media|/media/*|/data|/data/*) ;;
+            *) continue ;;
+        esac
+        [[ -d "$target" && -w "$target" ]] || continue
+        case "$primary_path/" in
+            "$target/"*) continue ;;
+        esac
+
+        workspace="$target/.droneai/colmap-work"
+        if ! mkdir -p "$workspace" 2>/dev/null; then
+            warn "Mounted storage $target is not writable; it will not be advertised."
+            continue
+        fi
+        chmod 0777 "$workspace" 2>/dev/null || true
+
+        source="$(findmnt --noheadings --raw --output SOURCE --target "$target" 2>/dev/null | head -n 1)"
+        available="$(df --human-readable --output=avail "$target" 2>/dev/null | tail -n 1 | xargs)"
+        if [[ "$target" =~ ^/mnt/([a-zA-Z])$ ]]; then
+            name="drive-${BASH_REMATCH[1],,}"
+            label="${BASH_REMATCH[1]^^}: mounted storage"
+            # WSL reports sources such as C:\x5c; the drive letter already
+            # carries the useful identity and is clearer in the dashboard.
+            source=""
+        else
+            name="disk-$(printf '%s' "${target#/}" | tr '[:upper:]/' '[:lower:]-' | tr -c 'a-z0-9-' '-')"
+            name="${name%-}"
+            label="$(basename "$target") mounted storage"
+        fi
+        [[ -n "$available" ]] && label="$label — $available available"
+        [[ -n "$source" ]] && label="$label ($source)"
+
+        drives="$(jq --compact-output \
+            --arg name "$name" \
+            --arg path "$workspace" \
+            --arg label "$label" \
+            'if any(.[]; .hostPath == $path or .name == $name)
+             then .
+             else . + [{"name":$name,"hostPath":$path,"label":$label}]
+             end' <<<"$drives")"
+    done < <(findmnt --noheadings --raw --output TARGET | sort --unique)
+
+    printf '%s\n' "$drives"
+}

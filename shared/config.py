@@ -39,7 +39,7 @@ DATABASE_URL = os.getenv(
 # Legacy filesystem workspace (kept for migration transition)
 # ---------------------------------------------------------------------------
 
-DEFAULT_WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/mnt/j/workspace")
+DEFAULT_WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/work/system")
 
 # ---------------------------------------------------------------------------
 # Pipeline

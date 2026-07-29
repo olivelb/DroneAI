@@ -200,9 +200,30 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     try {
       const data = (await fetchParameters()) as ParameterConfigResponse;
       setParameterSchema(data);
-      setParameterValues(data.pipelines["modern"] ?? {});
-      if (data.work_drive_default) setWorkDrive(data.work_drive_default);
-    } catch (e) { console.error("Param error:", e); }
+      setParameterValues((current) =>
+        Object.keys(current).length > 0
+          ? current
+          : (data.pipelines["modern"] ?? {}),
+      );
+      setWorkDrive((current) => {
+        const names = new Set((data.work_drives ?? []).map((drive) => drive.name));
+        if (current && names.has(current)) return current;
+        if (data.work_drive_default && names.has(data.work_drive_default)) {
+          return data.work_drive_default;
+        }
+        return data.work_drives?.[0]?.name ?? "";
+      });
+    } catch (e) {
+      // Never leave a disappeared disk selectable after a redeploy or API
+      // outage. Keep the pipeline schema and the operator's edited values.
+      setParameterSchema((current) =>
+        current
+          ? { ...current, work_drives: [], work_drive_default: "" }
+          : current,
+      );
+      setWorkDrive("");
+      console.error("Param error:", e);
+    }
   }, []);
 
   const setPipeline = useCallback((p: PipelineName) => {
@@ -279,10 +300,12 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     }, 0);
     const si = setInterval(() => void refreshSummary(), 5000);
     const pi = setInterval(() => void refreshPodsData(), 10000);
+    const wi = setInterval(() => void loadParameters(), 15000);
     return () => {
       window.clearTimeout(initialLoad);
       clearInterval(si);
       clearInterval(pi);
+      clearInterval(wi);
     };
   }, [
     authStatus,

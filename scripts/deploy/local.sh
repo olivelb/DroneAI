@@ -3,17 +3,40 @@
 deploy_local() {
     info "Deploying the complete local pipeline with Docker Compose"
 
+    mkdir -p "$DATA_ROOT/colmap-work"
+    chmod 0777 "$DATA_ROOT/colmap-work"
+
+    local drives_json work_drive_override
+    drives_json="$(discover_work_drives)"
+    work_drive_override="$DATA_ROOT/compose.work-drives.json"
+    jq --indent 2 --null-input \
+        --argjson drives "$drives_json" \
+        '{
+          "services": {
+            "colmap-worker": {
+              "volumes": ($drives | map(.hostPath + ":/work/" + .name))
+            }
+          }
+        }' >"$work_drive_override"
+
     export DRONEAI_DASHBOARD_PORT="$DASHBOARD_PORT"
     export DRONEAI_API_PORT="$API_PORT"
     export DRONEAI_MINIO_CONSOLE_PORT="$MINIO_CONSOLE_PORT"
     export DRONEAI_MINIO_API_PORT="$MINIO_API_PORT"
     export DRONEAI_ACCESS_HOST="localhost"
+    export DRONEAI_DATA_ROOT="$DATA_ROOT"
+    export DRONEAI_WORK_DRIVES_JSON
+    DRONEAI_WORK_DRIVES_JSON="$(jq --compact-output \
+        'map({name, label, mount: ("/work/" + .name)})' <<<"$drives_json")"
+    export DRONEAI_WORK_DRIVE_DEFAULT=local
     export HF_TOKEN="${HF_TOKEN:-}"
+    info "Work drives: $(jq --raw-output 'map(.label) | join(", ")' <<<"$drives_json")"
 
     local compose=(
         "${DOCKER[@]}" compose
         --project-name droneai-local
         --file "$REPO_ROOT/compose.local.yaml"
+        --file "$work_drive_override"
     )
 
     "${compose[@]}" up \

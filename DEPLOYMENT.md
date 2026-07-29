@@ -93,7 +93,8 @@ The shared part of both modes:
 - creates a Docker Compose project named `droneai-local`;
 - starts Kafka, creates all pipeline topics, starts MinIO and its bucket,
   starts PostGIS, runs migrations and starts all workers;
-- uses named Docker volumes for persistent data and COLMAP scratch state.
+- uses named Docker volumes for service data and a bind-mounted persistent
+  COLMAP workspace below the selected data root.
 
 `distributed` additionally:
 
@@ -102,6 +103,8 @@ The shared part of both modes:
 - imports local service images into K3s containerd, skipping matching digests;
 - creates the optional `hf-token` secret, renders portable host paths, sizes
   memory limits from available RAM and deploys `charts/drone-ai`;
+- discovers writable storage mounted below `/mnt`, `/media` or `/data` and
+  exposes only those real mount points as additional work drives;
 - selects free NodePorts when another service owns a requested default;
 - injects a WSL-reachable API and MinIO origin into the dashboard.
 
@@ -111,7 +114,7 @@ The shared part of both modes:
 --base                     no-cache rebuild of the base and all services
 --no-build                 reuse the five existing service images
 --skip-host-setup          validate but do not install host runtimes
---data-root PATH           distributed persistent-data root
+--data-root PATH           local/distributed persistent-data root
 --dashboard-port PORT      dashboard port, default 30000
 --api-port PORT            API port, default 30080
 --minio-console-port PORT  MinIO console port, default 30090
@@ -131,6 +134,35 @@ Examples:
 
 The distributed data root must remain stable across upgrades because
 Kubernetes hostPath persistent volumes are intentionally retained.
+
+## Work-drive discovery
+
+Both one-command modes always expose the persistent workspace below
+`--data-root`. They also inspect the operating system mount table and add
+writable filesystems mounted below `/mnt`, `/media` or `/data`. On WSL this
+means that `C:`, `D:` or another Windows drive is shown only while its exact
+`/mnt/<letter>` mount is present and writable. Each discovered filesystem gets
+an isolated `.droneai/colmap-work` directory; the dashboard never receives the
+filesystem root.
+
+Set `DRONEAI_DISCOVER_WORK_DRIVES=0` to expose only the primary data root.
+Manual/cloud Helm installations can mount a pre-existing persistent claim:
+
+```yaml
+colmapWorker:
+  workVolume:
+    drives:
+      - name: cloud-workspace
+        existingClaim: drone-ai-colmap-work
+        label: "Cloud persistent workspace"
+    default: cloud-workspace
+```
+
+Helm rejects a default that is not backed by an `emptyDir`, verified host
+directory or PVC configuration. All application host paths use Kubernetes
+`Directory`, not `DirectoryOrCreate`, so a missing disk cannot silently become
+a Kafka, MinIO, PostgreSQL, model-cache or COLMAP directory on the node's root
+filesystem.
 
 ## Hugging Face and AI backends
 

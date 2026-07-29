@@ -472,7 +472,7 @@ Expected payload shape:
   "sam_prompt": "car",
   "classes": ["car"],
   "colmap_params": {},
-  "work_drive": "drive-i"
+  "work_drive": "local"
 }
 ```
 
@@ -1435,12 +1435,10 @@ Implications:
 
 ### Path normalization and tile location
 
-When the processing worker receives an orthomosaic path, it rewrites it to `/host/...` if needed so the container can access the host file.
-
-Tile files are then written into either:
-
-- a configured `TILES_BASE_DIR`, or
-- a mission-scoped `tiles/<vol_id>/` subdirectory next to the orthomosaic
+The processing worker downloads the mission-scoped orthomosaic key from S3
+into `/tmp/processing/<vol_id>/<run-id>/`. Tile files remain in that isolated
+temporary workspace while their durable journal and object-store artifacts
+are published.
 
 Before new tiles are written, stale `tile_*.jpg` files are removed only from that mission directory.
 

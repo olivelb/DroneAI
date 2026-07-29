@@ -68,7 +68,48 @@ Common environment variables injected into all worker pods
 {{/*
 JSON array of available work drives for the colmap worker.
 Each entry: {"name": "...", "label": "...", "mount": "/work/..."}
+Only drives backed by an actual pod volume are advertised.
 */}}
 {{- define "colmap.workDrivesJson" -}}
-[{{- range $i, $d := .Values.colmapWorker.workVolume.drives }}{{- if $i }},{{ end }}{"name":"{{ $d.name }}","label":"{{ $d.label }}","mount":"/work/{{ $d.name }}"}{{- end }}]
+[
+{{- $first := true -}}
+{{- range $d := .Values.colmapWorker.workVolume.drives -}}
+  {{- $configured := or (eq (default "" $d.type) "emptyDir") (not (empty $d.hostPath)) (not (empty $d.existingClaim)) -}}
+  {{- if $configured -}}
+    {{- if not $first }},{{ end -}}
+    {{- dict "name" $d.name "label" $d.label "mount" (printf "/work/%s" $d.name) | toJson -}}
+    {{- $first = false -}}
+  {{- end -}}
+{{- end -}}
+]
+{{- end }}
+
+{{/*
+Fail the Helm render if the configured default is not one of the volumes that
+will actually be mounted. This prevents a healthy dashboard from advertising
+an unusable selection.
+*/}}
+{{- define "colmap.assertWorkDriveConfig" -}}
+{{- $defaultFound := false -}}
+{{- $names := dict -}}
+{{- range $d := .Values.colmapWorker.workVolume.drives -}}
+  {{- $sourceCount := 0 -}}
+  {{- if eq (default "" $d.type) "emptyDir" }}{{- $sourceCount = add1 $sourceCount -}}{{- end -}}
+  {{- if not (empty $d.hostPath) }}{{- $sourceCount = add1 $sourceCount -}}{{- end -}}
+  {{- if not (empty $d.existingClaim) }}{{- $sourceCount = add1 $sourceCount -}}{{- end -}}
+  {{- if ne $sourceCount 1 -}}
+    {{- fail (printf "work drive %q must define exactly one of type=emptyDir, hostPath, or existingClaim" $d.name) -}}
+  {{- end -}}
+  {{- if hasKey $names $d.name -}}
+    {{- fail (printf "work drive name %q is duplicated" $d.name) -}}
+  {{- end -}}
+  {{- $_ := set $names $d.name true -}}
+  {{- $configured := or (eq (default "" $d.type) "emptyDir") (not (empty $d.hostPath)) (not (empty $d.existingClaim)) -}}
+  {{- if and $configured (eq $d.name $.Values.colmapWorker.workVolume.default) -}}
+    {{- $defaultFound = true -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $defaultFound -}}
+  {{- fail (printf "colmapWorker.workVolume.default %q is not a configured work drive" .Values.colmapWorker.workVolume.default) -}}
+{{- end -}}
 {{- end }}

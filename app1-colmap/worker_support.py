@@ -194,8 +194,10 @@ def build_mission_context(mission):
     work_drive = validate_work_drive(work_drive, configured_names=configured_work_drive_names())
     work_base = safe_child_path("/work", work_drive, field_name="work_drive")
     if not work_base.is_dir():
-        print(f"⚠️ Work drive '{work_drive}' not mounted at {work_base}, falling back to /work/system")
-        work_base = safe_child_path("/work", "system", field_name="work_drive")
+        raise RuntimeError(
+            f"Configured work drive '{work_drive}' is not mounted at {work_base}. "
+            "Redeploy after restoring the disk or select another advertised drive."
+        )
     work_dir = safe_child_path(work_base, vol_id, field_name="vol_id")
     # Input: S3 prefix for the dataset (downloaded at runtime)
     input_dataset = validate_dataset_prefix(mission.get("input_dataset", ""))

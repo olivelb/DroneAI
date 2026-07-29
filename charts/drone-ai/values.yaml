@@ -1,6 +1,7 @@
 # ==========================================================================
-# DroneAI Helm values — LOCAL K3s defaults
-# For cloud, override with:  helm install -f values-cloud.yaml ...
+# DroneAI Helm values — portable K3s/Kubernetes defaults
+# Host paths are intentionally empty: deploy.sh discovers/configures local
+# storage, while cloud installations should use PVC-backed storage.
 # ==========================================================================
 
 global:
@@ -18,8 +19,8 @@ kafka:
   clusterId: "droneai-local-cluster-001"
   persistence:
     enabled: true
-    hostPath: /mnt/j/droneAI_workspace/kafka-data   # local only; remove for cloud
-    storageClass: ""                                 # set to cloud class (e.g. "gp3") when hostPath is removed
+    hostPath: ""
+    storageClass: ""
     size: 10Gi
 
 # --------------------------------------------------------------------------
@@ -31,8 +32,8 @@ minio:
   consoleNodePort: 30090
   apiNodePort: 30091
   persistence:
-    hostPath: /mnt/j/droneAI_workspace/minio-data   # local only; remove for cloud
-    storageClass: ""                                 # set to cloud class when hostPath is removed
+    hostPath: ""
+    storageClass: ""
     size: 200Gi
   accessKey: minioadmin
   secretKey: minioadmin
@@ -45,8 +46,8 @@ postgres:
   enabled: true
   image: postgis/postgis:16-3.5
   persistence:
-    hostPath: /var/lib/droneai/postgres-data         # local only; remove for cloud
-    storageClass: ""                                 # set to cloud class when hostPath is removed
+    hostPath: ""
+    storageClass: ""
     size: 20Gi
   database: droneai
   user: droneai
@@ -87,17 +88,15 @@ colmapWorker:
     sizeLimit: 100Gi
     # Available work drives mounted into the pod.
     # The user picks one per-mission from the dashboard UI.
+    # Supported sources:
+    #   type: emptyDir
+    #   hostPath: /existing/writable/directory
+    #   existingClaim: existing-pvc-name
     drives:
       - name: system
-        hostPath: ""          # emptyDir on root disk (fast but limited)
-        label: "System SSD (fast, limited)"
-      - name: drive-i
-        hostPath: /mnt/i/droneAI_workspace/colmap-work
-        label: "Drive I: (1.9 TB HDD)"
-      - name: drive-j
-        hostPath: /mnt/j/droneAI_workspace/colmap-work
-        label: "Drive J: (1.9 TB HDD)"
-    default: drive-i
+        type: emptyDir
+        label: "Ephemeral node workspace"
+    default: system
 
 # --------------------------------------------------------------------------
 # IA Worker
@@ -112,8 +111,8 @@ iaWorker:
     requests:
       memory: "2Gi"
   modelCache:
-    hostPath: /mnt/j/droneAI_workspace/model-cache   # local only; remove for cloud
-    storageClass: ""                                  # set to cloud class when hostPath is removed
+    hostPath: ""
+    storageClass: ""
     size: 30Gi
 
 # --------------------------------------------------------------------------

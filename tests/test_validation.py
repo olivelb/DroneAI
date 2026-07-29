@@ -5,6 +5,7 @@ import pytest
 
 from shared.pipeline_params import PARAMETER_METADATA, merge_pipeline_params
 from shared.validation import (
+    configured_work_drives,
     configured_work_drive_names,
     safe_child_path,
     validate_dataset_prefix,
@@ -42,12 +43,26 @@ def test_safe_child_path_stays_under_base(tmp_path):
 
 
 def test_work_drive_must_be_configured():
-    raw = json.dumps([{"name": "system"}, {"name": "drive-i"}])
+    raw = json.dumps([{"name": "system"}, {"name": "fast-storage"}])
     names = configured_work_drive_names(raw)
-    assert names == {"system", "drive-i"}
-    assert validate_work_drive("drive-i", configured_names=names) == "drive-i"
+    assert names == {"system", "fast-storage"}
+    assert validate_work_drive("fast-storage", configured_names=names) == "fast-storage"
     with pytest.raises(ValueError, match="work_drive must be one of"):
-        validate_work_drive("drive-j", configured_names=names)
+        validate_work_drive("missing-storage", configured_names=names)
+
+
+def test_work_drive_metadata_rejects_unmounted_or_duplicate_entries():
+    raw = json.dumps(
+        [
+            {"name": "local", "label": "Local", "mount": "/work/local"},
+            {"name": "local", "label": "Duplicate", "mount": "/work/local"},
+            {"name": "escape", "label": "Unsafe", "mount": "/etc"},
+            {"name": "../bad", "label": "Unsafe"},
+        ]
+    )
+    assert configured_work_drives(raw) == [
+        {"name": "local", "label": "Local", "mount": "/work/local"}
+    ]
 
 
 def test_pipeline_overrides_reject_unknown_and_out_of_range_values():

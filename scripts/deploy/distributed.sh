@@ -176,9 +176,8 @@ deploy_distributed() {
     access_host="$(detect_distributed_access_host)"
     memory_values="$(distributed_memory_values)"
     read -r colmap_limit processing_limit <<<"$memory_values"
-    drives_json="$(jq --compact-output --null-input \
-        --arg path "$DATA_ROOT/colmap-work" \
-        '[{"name":"local","hostPath":$path,"label":"Local persistent workspace"}]')"
+    drives_json="$(discover_work_drives)"
+    info "Work drives: $(jq --raw-output 'map(.label) | join(", ")' <<<"$drives_json")"
 
     info "Deploying DroneAI through Helm"
     helm_root upgrade --install drone-ai "$REPO_ROOT/charts/drone-ai" \
