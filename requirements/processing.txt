@@ -15,7 +15,9 @@ botocore==1.43.54
     #   boto3
     #   s3transfer
 certifi==2026.7.22
-    # via rasterio
+    # via
+    #   pyproj
+    #   rasterio
 click==8.4.2
     # via
     #   click-plugins
@@ -43,10 +45,14 @@ opencv-python-headless==5.0.0.93
     # via -r requirements/processing.in
 packaging==26.2
     # via geoalchemy2
+pillow==12.3.0
+    # via -r requirements/processing.in
 psycopg2-binary==2.9.12
     # via -r requirements/processing.in
 pyparsing==3.3.2
     # via rasterio
+pyproj==3.7.2
+    # via -r requirements/processing.in
 python-dateutil==2.9.0.post0
     # via botocore
 rasterio==1.4.4

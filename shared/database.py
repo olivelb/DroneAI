@@ -12,23 +12,23 @@ import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
+from uuid import uuid4
 
 from geoalchemy2 import Geometry
 from sqlalchemy import (
+    JSON,
     BigInteger,
+    Boolean,
     Column,
     DateTime,
-    Enum,
     Float,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
     create_engine,
-    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import (
@@ -107,6 +107,26 @@ class Base(DeclarativeBase):
     pass
 
 
+PORTABLE_JSON = JSON().with_variant(JSONB(), "postgresql")
+PORTABLE_BIGINT = BigInteger().with_variant(Integer(), "sqlite")
+
+
+class RequiredTimestampMixin:
+    """Reusable non-null creation/update timestamps for durable entities."""
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mission statuses
 # ---------------------------------------------------------------------------
@@ -137,17 +157,17 @@ class Mission(Base):
     workspace_prefix = Column(String(1024), nullable=True)  # S3 prefix for mission workspace
 
     # Pipeline parameters (full JSON blob from mission launch message)
-    params = Column(JSONB, nullable=True)
+    params = Column(PORTABLE_JSON, nullable=True)
 
     # Progress tracking
     current_step = Column(String(64), nullable=True)
     progress = Column(Integer, default=0)
 
     # Per-service state snapshots (e.g. {"COLMAP": {...}, "TILER": {...}, "IA": {...}})
-    service_states = Column(JSONB, nullable=True, default=dict)
+    service_states = Column(PORTABLE_JSON, nullable=True, default=dict)
 
     # Resume info (replaces mission_state.json's resume fields)
-    resume_info = Column(JSONB, nullable=True)
+    resume_info = Column(PORTABLE_JSON, nullable=True)
 
     # Error tracking
     error_message = Column(Text, nullable=True)
@@ -156,6 +176,11 @@ class Mission(Base):
     total_tiles = Column(Integer, nullable=True)
     tiles_received = Column(Integer, default=0)
     ortho_s3_key = Column(String(1024), nullable=True)
+    tiling_metadata = Column(PORTABLE_JSON, nullable=True)
+    aggregation_status = Column(
+        String(32), nullable=False, default="pending"
+    )
+    aggregation_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -167,6 +192,21 @@ class Mission(Base):
 
     # Relationships
     detections = relationship("Detection", back_populates="mission", cascade="all, delete-orphan")
+    processed_tiles = relationship(
+        "ProcessedTile",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    analysis_runs = relationship(
+        "AIAnalysisRun",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    map_features = relationship(
+        "MapFeature",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
     logs = relationship("MissionLog", back_populates="mission", cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -209,7 +249,7 @@ class Detection(Base):
     geo_lat = Column(Float, nullable=True)
 
     # Raw polygon vertices (OBB corners as JSON array of [x,y] pairs)
-    segment = Column(JSONB, nullable=True)
+    segment = Column(PORTABLE_JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -221,6 +261,204 @@ class Detection(Base):
             f"<Detection(vol_id={self.vol_id!r}, tile={self.tile_index}, "
             f"class={self.class_name!r}, conf={self.confidence:.2f})>"
         )
+
+
+class ProcessedTile(Base):
+    """Durable receipt for every AI tile, including zero-detection tiles."""
+
+    __tablename__ = "processed_tiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "vol_id",
+            "tile_index",
+            name="uq_processed_tile_vol_index",
+        ),
+        Index("ix_processed_tiles_mission", "mission_id", "tile_index"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    vol_id = Column(String(256), nullable=False, index=True)
+    tile_index = Column(Integer, nullable=False)
+    detection_count = Column(Integer, nullable=False, default=0)
+    received_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    mission = relationship("Mission", back_populates="processed_tiles")
+
+
+class AIAnalysisRun(RequiredTimestampMixin, Base):
+    """Durable, independently rerunnable AI analysis of a mission COG."""
+
+    __tablename__ = "ai_analysis_runs"
+    __table_args__ = (
+        Index("ix_ai_runs_mission_created", "mission_id", "created_at"),
+        Index("ix_ai_runs_recovery", "status", "heartbeat_at"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    vol_id = Column(String(256), nullable=False, index=True)
+    name = Column(String(160), nullable=False)
+    description = Column(Text, nullable=True)
+    color = Column(String(9), nullable=False, default="#f43f5e")
+    tags = Column(PORTABLE_JSON, nullable=False, default=list)
+
+    backend = Column(String(32), nullable=False, default="yolo")
+    model_variant = Column(String(128), nullable=True)
+    prompt = Column(String(256), nullable=True)
+    classes = Column(PORTABLE_JSON, nullable=False, default=list)
+    confidence = Column(Float, nullable=False, default=0.3)
+    tile_size = Column(Integer, nullable=False, default=1024)
+    persist_results = Column(Boolean, nullable=False, default=True)
+
+    status = Column(String(32), nullable=False, default="queued")
+    phase = Column(String(64), nullable=False, default="queued")
+    total_tiles = Column(Integer, nullable=False, default=0)
+    tiles_completed = Column(Integer, nullable=False, default=0)
+    detection_count = Column(Integer, nullable=False, default=0)
+    progress = Column(Integer, nullable=False, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
+    error_message = Column(Text, nullable=True)
+
+    ortho_s3_key = Column(String(1024), nullable=False)
+    result_s3_key = Column(String(1024), nullable=True)
+    tiling_metadata = Column(PORTABLE_JSON, nullable=True)
+    heartbeat_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_by = Column(String(256), nullable=True)
+
+    mission = relationship("Mission", back_populates="analysis_runs")
+    tiles = relationship(
+        "AIAnalysisTile",
+        back_populates="analysis_run",
+        cascade="all, delete-orphan",
+    )
+    features = relationship(
+        "MapFeature",
+        back_populates="analysis_run",
+        cascade="all, delete-orphan",
+    )
+
+
+class AIAnalysisTile(Base):
+    """Recovery journal for one tile of an AI analysis campaign."""
+
+    __tablename__ = "ai_analysis_tiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "analysis_run_id",
+            "tile_index",
+            name="uq_ai_analysis_tile_run_index",
+        ),
+        Index("ix_ai_analysis_tiles_status", "analysis_run_id", "status"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    analysis_run_id = Column(
+        Integer,
+        ForeignKey("ai_analysis_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tile_index = Column(Integer, nullable=False)
+    status = Column(String(32), nullable=False, default="queued")
+    tile_s3_key = Column(String(1024), nullable=False)
+    result_s3_key = Column(String(1024), nullable=True)
+    offset_x = Column(Integer, nullable=False)
+    offset_y = Column(Integer, nullable=False)
+    width = Column(Integer, nullable=False)
+    height = Column(Integer, nullable=False)
+    bounds_wgs84 = Column(PORTABLE_JSON, nullable=True)
+    detection_count = Column(Integer, nullable=False, default=0)
+    attempts = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text, nullable=True)
+    queued_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    analysis_run = relationship("AIAnalysisRun", back_populates="tiles")
+
+
+class MapFeature(RequiredTimestampMixin, Base):
+    """Searchable PostGIS feature created manually or by a persisted AI run."""
+
+    __tablename__ = "map_features"
+    __table_args__ = (
+        Index("ix_map_features_geometry", "geometry", postgresql_using="gist"),
+        Index("ix_map_features_mission_source", "mission_id", "source"),
+        Index("ix_map_features_run_class", "analysis_run_id", "class_name"),
+        Index("ix_map_features_name", "name"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    feature_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    analysis_run_id = Column(
+        Integer,
+        ForeignKey("ai_analysis_runs.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    vol_id = Column(String(256), nullable=False, index=True)
+    source = Column(String(32), nullable=False, default="manual")
+    geometry = Column(
+        Geometry("GEOMETRY", srid=4326, spatial_index=False),
+        nullable=False,
+    )
+    name = Column(String(160), nullable=False)
+    description = Column(Text, nullable=True)
+    color = Column(String(9), nullable=False, default="#10b981")
+    tags = Column(PORTABLE_JSON, nullable=False, default=list)
+    properties = Column(PORTABLE_JSON, nullable=False, default=dict)
+    class_name = Column(String(128), nullable=True, index=True)
+    confidence = Column(Float, nullable=True)
+    tile_index = Column(Integer, nullable=True)
+    created_by = Column(String(256), nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+
+    mission = relationship("Mission", back_populates="map_features")
+    analysis_run = relationship("AIAnalysisRun", back_populates="features")
 
 
 class MissionLog(Base):
@@ -241,7 +479,7 @@ class MissionLog(Base):
     status = Column(String(32), nullable=True)  # processing, success, error
     progress = Column(Integer, nullable=True)
     message = Column(Text, nullable=True)
-    details = Column(JSONB, nullable=True)
+    details = Column(PORTABLE_JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
@@ -250,10 +488,6 @@ class MissionLog(Base):
 
     def __repr__(self):
         return f"<MissionLog(vol_id={self.vol_id!r}, service={self.service!r}, step={self.step!r})>"
-
-
-PORTABLE_JSON = JSON().with_variant(JSONB(), "postgresql")
-PORTABLE_BIGINT = BigInteger().with_variant(Integer(), "sqlite")
 
 
 class InboxEvent(Base):
@@ -319,6 +553,7 @@ class OutboxEvent(Base):
         default=lambda: datetime.now(timezone.utc),
     )
     published_at = Column(DateTime(timezone=True), nullable=True)
+    dead_at = Column(DateTime(timezone=True), nullable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +600,12 @@ def update_mission_progress(
 
 
 def count_received_tiles(session: Session, vol_id: str) -> int:
-    """Count distinct tile indexes received for a mission."""
-    result = (
-        session.query(Detection.tile_index)
-        .filter(Detection.vol_id == vol_id)
-        .distinct()
+    """Count durable AI responses, including tiles with no detections."""
+    return (
+        session.query(ProcessedTile)
+        .filter(ProcessedTile.vol_id == vol_id)
         .count()
     )
-    return result
 
 
 def get_mission_detections(session: Session, vol_id: str) -> list[Detection]:

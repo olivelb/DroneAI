@@ -8,8 +8,9 @@ import struct
 
 from PIL import Image
 
-
-Image.MAX_IMAGE_PIXELS = 500_000_000
+# Reject decompression bombs before copying pixels into another full-size
+# buffer. Orthomosaics use the COG preview/tile endpoints instead.
+Image.MAX_IMAGE_PIXELS = 80_000_000
 
 
 def _depth_color(value: float) -> tuple[int, int, int]:
@@ -76,9 +77,7 @@ def render_preview(
         image = _colorize_depth(image)
     elif image.mode in {"I;16", "I", "F"}:
         image = _normalize_grayscale(image)
-    elif image.mode in {"P", "CMYK"}:
-        image = image.convert("RGB")
-    elif image.mode not in {"RGB", "RGBA", "L"}:
+    elif image.mode in {"P", "CMYK"} or image.mode not in {"RGB", "RGBA", "L"}:
         image = image.convert("RGB")
 
     width, height = image.size

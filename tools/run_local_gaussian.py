@@ -16,19 +16,18 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
 for import_path in (REPO_ROOT, APP1_ROOT):
     if str(import_path) not in sys.path:
         sys.path.insert(0, str(import_path))
 
+from shared.dronegs_profile import (  # noqa: E402
+    DRONEGS_PRODUCTION_PROFILE_V1,
+)
 from shared.geo_alignment import (  # noqa: E402
     compute_reconstruction_alignment,
     write_alignment_transform,
-)
-from shared.dronegs_profile import (  # noqa: E402
-    DRONEGS_PRODUCTION_PROFILE_V1,
 )
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"

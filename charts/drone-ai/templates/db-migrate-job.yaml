@@ -1,25 +1,29 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: db-migrate
+  name: db-migrate-{{ .Release.Revision }}
   namespace: {{ include "drone-ai.namespace" . }}
   labels:
     {{- include "drone-ai.labels" . | nindent 4 }}
-  annotations:
-    helm.sh/hook: post-install,post-upgrade
-    helm.sh/hook-weight: "5"
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
 spec:
   backoffLimit: 5
+  ttlSecondsAfterFinished: 300
   template:
     spec:
       restartPolicy: OnFailure
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
       - name: migrate
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command:
@@ -35,17 +39,8 @@ spec:
           " 2>/dev/null; do
             sleep 2
           done
-          echo "Creating tables via SQLAlchemy metadata..."
-          cd /app && python3 -c "
-          import os, sqlalchemy
-          from shared.database import Base, _get_engine
-          engine = _get_engine()
-          with engine.connect() as conn:
-              conn.execute(sqlalchemy.text('CREATE EXTENSION IF NOT EXISTS postgis'))
-              conn.commit()
-          Base.metadata.create_all(engine)
-          print('All tables created successfully.')
-          "
+          echo "Applying versioned Alembic migrations..."
+          cd /app && alembic upgrade head
           echo "Migrations complete."
         env:
         - name: DATABASE_URL

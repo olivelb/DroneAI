@@ -10,11 +10,12 @@ Usage (inside the pod):
 This file is intentionally outside the automated pytest suite because it
 requires a CUDA GPU and mission-specific reconstruction artifacts.
 """
+
 import gc
+import math
 import os
 import sys
 import time
-import math
 
 import cupy as cp
 import numpy as np
@@ -55,8 +56,7 @@ print(f"Transform   : {TRANSFORM_FILE or 'None (PCA path)'}")
 # Check GPU
 mem_free, mem_total = cp.cuda.Device(0).mem_info
 gpu_props = cp.cuda.runtime.getDeviceProperties(0)
-print(f"GPU         : {gpu_props['name'].decode()} "
-      f"({mem_free // 2**20} / {mem_total // 2**20} MB free)")
+print(f"GPU         : {gpu_props['name'].decode()} ({mem_free // 2**20} / {mem_total // 2**20} MB free)")
 print()
 
 t0 = time.time()
@@ -65,19 +65,19 @@ t0 = time.time()
 log("LOAD", 5, "Loading COLMAP reconstruction...")
 # Use the CuPy version of gaussian_ortho from the host, not the old PyTorch code in /app
 sys.path.insert(0, "/host/home/olivier/app1-colmap")
-from gaussian_ortho.colmap_loader import load_colmap_reconstruction, apply_sim3_to_points
+from gaussian_ortho.colmap_loader import apply_sim3_to_points, load_colmap_reconstruction
+from gaussian_ortho.exif_altitude import compute_colmap_scale, extract_exif_altitudes
 from gaussian_ortho.gaussian_model import GaussianModel
-from gaussian_ortho.ortho_renderer import render_orthophoto, compute_ortho_extent
 from gaussian_ortho.geo_writer import write_geotiff
-from gaussian_ortho.exif_altitude import extract_exif_altitudes, compute_colmap_scale
+from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
 
 images_dir = os.path.join(DENSE_PATH, "images")
 
 train_cameras, test_cameras, point_cloud, transform_data = load_colmap_reconstruction(
-    DENSE_PATH, TRANSFORM_FILE,
+    DENSE_PATH,
+    TRANSFORM_FILE,
 )
-log("LOAD", 10,
-    f"Loaded {len(train_cameras)} cameras, {point_cloud.points.shape[0]} points")
+log("LOAD", 10, f"Loaded {len(train_cameras)} cameras, {point_cloud.points.shape[0]} points")
 
 # --- 2. Extract EXIF altitudes & compute scale ---
 exif_altitudes = extract_exif_altitudes(images_dir)
@@ -114,17 +114,17 @@ if transform_data:
     R_quat = merged_model._matrix_to_quaternion(cp.asnumpy(R))
     R_quat_cp = cp.array(R_quat, dtype=cp.float32)
     merged_model._rotation = merged_model._quaternion_multiply(
-        R_quat_cp[None, :], merged_model._rotation,
+        R_quat_cp[None, :],
+        merged_model._rotation,
     )
     geo_origin = t_f64
 
-    geo_cam_positions = apply_sim3_to_points(
-        np.array([c.T for c in train_cameras], dtype=np.float64), transform_data)
+    geo_cam_positions = apply_sim3_to_points(np.array([c.T for c in train_cameras], dtype=np.float64), transform_data)
     log("GEO", 35, f"Applied Sim3: scale={s:.6f}")
 else:
     log("GEO", 30, "Computing PCA nadir direction...")
-    from gaussian_ortho.pca_alignment import compute_pca_rotation
     from gaussian_ortho.exif_altitude import extract_exif_gps
+    from gaussian_ortho.pca_alignment import compute_pca_rotation
     from pyproj import Transformer as _Transformer
 
     cam_positions = np.array([c.T for c in train_cameras], dtype=np.float64)
@@ -146,8 +146,7 @@ else:
         _gps_centroid = np.mean(_utm_pts, axis=0).astype(np.float64)
         _model_centroid = geo_cam_positions.mean(axis=0) * colmap_to_meters
         geo_origin = _gps_centroid - _model_centroid
-        log("GEO", 35,
-            f"GeoTIFF origin: E={geo_origin[0]:.2f}, N={geo_origin[1]:.2f}")
+        log("GEO", 35, f"GeoTIFF origin: E={geo_origin[0]:.2f}, N={geo_origin[1]:.2f}")
 
 # --- 5. Filter ---
 if transform_data:
@@ -159,6 +158,7 @@ del point_cloud
 
 log("FILTER", 40, "Filtering Gaussians...")
 from gaussian_ortho.model_filtering import filter_gaussians
+
 filter_gaussians(
     merged_model,
     local_cam_positions,
@@ -182,16 +182,15 @@ cp.get_default_memory_pool().free_all_blocks()
 model_extent = compute_ortho_extent(merged_model, pad=2.0, R_geo=R_geo)
 log("RENDER", 60, f"Ortho extent: {model_extent}")
 
-if transform_data:
-    local_gsd = RESOLUTION
-else:
-    local_gsd = RESOLUTION / colmap_to_meters
+local_gsd = RESOLUTION if transform_data else RESOLUTION / colmap_to_meters
 
 log("RENDER", 65, f"Rendering at {RESOLUTION} m/px (local GSD={local_gsd:.6f})...")
 t_render = time.time()
 
 result = render_orthophoto(
-    merged_model, gsd=local_gsd, extent=model_extent,
+    merged_model,
+    gsd=local_gsd,
+    extent=model_extent,
     R_geo=R_geo,
 )
 
@@ -218,11 +217,14 @@ if mean_exif_alt is not None:
 
 log("WRITE", 95, "Writing GeoTIFF...")
 from pathlib import Path
+
 height_file = str(Path(OUTPUT_ORTHO).with_suffix(".height.tif"))
 write_geotiff(
     output_path=OUTPUT_ORTHO,
     rgb=rgb,
-    x_min=geo_x_min, y_max=geo_y_max, gsd=RESOLUTION,
+    x_min=geo_x_min,
+    y_max=geo_y_max,
+    gsd=RESOLUTION,
     crs=UTM_CRS,
     height_map=height,
     height_output_path=height_file,

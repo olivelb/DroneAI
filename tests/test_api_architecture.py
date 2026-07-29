@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
 main = importlib.import_module("app4-dashboard.api.main")
 messaging = importlib.import_module("app4-dashboard.api.messaging")
@@ -49,6 +48,19 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     } <= paths
     assert any(path.startswith("/preview/{s3_key}") for path in paths)
     assert any(path.startswith("/files/{s3_key}") for path in paths)
+    assert "/maps/{vol_id}/metadata/{layer}" in paths
+    assert (
+        "/maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png"
+        in paths
+    )
+    assert "/maps/{vol_id}/vectors.geojson" in paths
+    assert "/maps/{vol_id}/analyses" in paths
+    assert "/maps/{vol_id}/analyses/{run_id}/retry" in paths
+    assert "/maps/{vol_id}/analyses/{run_id}/vectors.geojson" in paths
+    assert "/maps/{vol_id}/features" in paths
+    assert "/maps/{vol_id}/features/{feature_id}" in paths
+    assert "/maps/{vol_id}/search" in paths
+    assert "/operations/outbox/dead" in paths
     assert "/ws/status" in direct_paths
 
 

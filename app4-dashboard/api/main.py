@@ -7,28 +7,21 @@ import logging
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from shared.database import get_session
 from shared.inbox_outbox import run_outbox_dispatcher
 
 from . import security
-from .kubernetes_status import fallback_pod_states, get_pod_states
-from .messaging import get_producer, publish_outbox_event
-from .mission_state import (
-    build_colmap_resume_state,
-    compute_overall_status,
-    get_status_summary,
-    is_mission_stale,
-    serialize_mission,
-    update_mission_state,
-)
+from .messaging import publish_outbox_event
 from .realtime import consume_status_events, status_hub
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
+from .routers.maps import router as maps_router
 from .routers.missions import router as missions_router
-
+from .routers.operations import router as operations_router
 
 logger = logging.getLogger("droneai.api")
 
@@ -69,12 +62,23 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=security.configured_cors_origins(),
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
+
+    @application.middleware("http")
+    async def cookie_csrf_guard(request: Request, call_next):
+        try:
+            security.enforce_cookie_csrf(request)
+        except HTTPException as error:
+            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+        return await call_next(request)
+
     application.include_router(auth_router)
     application.include_router(missions_router)
     application.include_router(datasets_router)
+    application.include_router(maps_router)
+    application.include_router(operations_router)
 
     @application.get("/")
     def read_root():
@@ -99,20 +103,3 @@ app = create_app()
 manager = status_hub
 kafka_consumer_thread_func = consume_status_events
 status_history = status_hub.history
-
-__all__ = [
-    "app",
-    "build_colmap_resume_state",
-    "compute_overall_status",
-    "create_app",
-    "fallback_pod_states",
-    "get_pod_states",
-    "get_status_summary",
-    "is_mission_stale",
-    "kafka_consumer_thread_func",
-    "manager",
-    "get_producer",
-    "serialize_mission",
-    "status_history",
-    "update_mission_state",
-]

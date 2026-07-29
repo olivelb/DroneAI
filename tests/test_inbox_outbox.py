@@ -150,7 +150,12 @@ def test_dispatcher_marks_successful_publication(session_scope):
         now=now,
     )
 
-    assert result == {"selected": 1, "published": 1, "failed": 0}
+    assert result == {
+        "selected": 1,
+        "published": 1,
+        "failed": 0,
+        "dead": 0,
+    }
     assert published == [("vols-bruts", "mission:dispatch", "mission-1")]
     with session_scope() as session:
         record = session.query(OutboxEvent).one()
@@ -199,10 +204,65 @@ def test_dispatcher_schedules_failed_publication_for_retry(session_scope):
         now=now + timedelta(seconds=2),
     )
 
-    assert first == {"selected": 1, "published": 0, "failed": 1}
+    assert first == {
+        "selected": 1,
+        "published": 0,
+        "failed": 1,
+        "dead": 0,
+    }
     assert too_early["selected"] == 0
-    assert retried == {"selected": 1, "published": 1, "failed": 0}
+    assert retried == {
+        "selected": 1,
+        "published": 1,
+        "failed": 0,
+        "dead": 0,
+    }
     with session_scope() as session:
         record = session.query(OutboxEvent).one()
         assert record.status == "published"
         assert record.attempts == 2
+
+
+def test_dispatcher_dead_letters_outbox_after_retry_budget(session_scope):
+    now = datetime(2026, 7, 23, tzinfo=timezone.utc)
+    with session_scope() as session:
+        enqueue_outbox(
+            session,
+            topic="vols-bruts",
+            event=make_event(
+                "mission",
+                {"vol_id": "mission-1"},
+                event_id="mission:dead",
+            ),
+            now=now,
+        )
+
+    def fail(*_args):
+        raise OSError("broker unavailable")
+
+    policy = RetryPolicy(2, 0, 0)
+    dispatch_outbox_batch(
+        session_scope,
+        publisher=fail,
+        worker_id="test-worker",
+        retry_policy=policy,
+        now=now,
+    )
+    result = dispatch_outbox_batch(
+        session_scope,
+        publisher=fail,
+        worker_id="test-worker",
+        retry_policy=policy,
+        now=now,
+    )
+
+    assert result == {
+        "selected": 1,
+        "published": 0,
+        "failed": 0,
+        "dead": 1,
+    }
+    with session_scope() as session:
+        record = session.query(OutboxEvent).one()
+        assert record.status == "dead"
+        assert record.dead_at is not None

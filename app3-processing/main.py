@@ -1,21 +1,28 @@
-import os
 import json
 import logging
+import os
 import shutil
 import sys
 import threading
-import numpy as np
-import rasterio
-from rasterio.windows import Window
-from rasterio.warp import transform as warp_transform
-import cv2
-from confluent_kafka import Consumer, Producer
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+import cv2
+import numpy as np
+from confluent_kafka import Consumer, Producer
+from geoalchemy2.elements import WKTElement
+from rasterio.warp import transform as warp_transform
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
+from analysis_workflow import AnalysisWorkflow
+from orthomosaic_tiler import OrthomosaicTiler
+from processing_core import dedupe_mission_detections as dedupe_detection_core
+
+from shared import storage
 from shared.config import (
     KAFKA_BROKER,
     TOPIC_CONTROL,
@@ -25,28 +32,28 @@ from shared.config import (
     TOPIC_STATUS,
     TOPIC_TILE_DETECTIONS,
 )
-from shared.event_contracts import deterministic_event_id, make_event
+from shared.database import (
+    Detection as DBDetection,
+)
+from shared.database import (
+    Mission,
+    ProcessedTile,
+    count_received_tiles,
+    get_mission_detections,
+    get_or_create_mission,
+    get_session,
+)
+from shared.geospatial_assets import (
+    detections_feature_collection,
+    pixel_segment_to_wgs84,
+)
 from shared.kafka_reliability import (
     process_message,
     reliable_consumer_config,
 )
-from shared.pipeline_params import normalize_ai_backend
 from shared.worker_messaging import (
     make_progress_publisher,
     run_control_consumer,
-)
-from shared import storage
-from shared.database import (
-    get_session,
-    get_or_create_mission,
-    Mission,
-    Detection as DBDetection,
-    count_received_tiles,
-    get_mission_detections,
-)
-from processing_core import (
-    build_tile_starts,
-    dedupe_mission_detections as dedupe_detection_core,
 )
 
 # --- CONFIGURATION KAFKA ---
@@ -87,17 +94,20 @@ class CancelManager:
         self._cancelled_vols = set()
         self._lock = threading.Lock()
 
-    def cancel(self, vol_id):
+    def cancel(self, vol_id, run_id=None):
         with self._lock:
-            self._cancelled_vols.add(vol_id)
+            self._cancelled_vols.add((vol_id, run_id))
 
-    def is_cancelled(self, vol_id):
+    def is_cancelled(self, vol_id, run_id=None):
         with self._lock:
-            return vol_id in self._cancelled_vols
+            return (
+                (vol_id, None) in self._cancelled_vols
+                or (vol_id, run_id) in self._cancelled_vols
+            )
 
-    def clear(self, vol_id):
+    def clear(self, vol_id, run_id=None):
         with self._lock:
-            self._cancelled_vols.discard(vol_id)
+            self._cancelled_vols.discard((vol_id, run_id))
 
 cancel_manager = CancelManager()
 
@@ -107,8 +117,13 @@ def control_consumer_thread():
             return
         vol_id = data.get("vol_id")
         if vol_id:
-            cancel_manager.cancel(vol_id)
-            logger.info("⚠️ Cancel requested for %s", vol_id)
+            run_id = data.get("analysis_run_id")
+            cancel_manager.cancel(vol_id, run_id)
+            logger.info(
+                "⚠️ Cancel requested for %s analysis=%s",
+                vol_id,
+                run_id or "all",
+            )
 
     run_control_consumer(
         kafka_broker=KAFKA_BROKER,
@@ -119,56 +134,6 @@ def control_consumer_thread():
         handler=handle_control,
         logger=logger,
     )
-
-class MissionRegistry:
-    def __init__(self):
-        self._missions = {}
-        self._lock = threading.RLock()
-
-    def get(self, vol_id):
-        with self._lock:
-            return self._missions.get(vol_id)
-
-    def set(self, vol_id, mission):
-        with self._lock:
-            self._missions[vol_id] = mission
-
-    def set_total_tiles(self, vol_id, total_tiles):
-        with self._lock:
-            mission = self._missions.get(vol_id)
-            if mission is not None:
-                mission['total_tiles'] = total_tiles
-
-    def record_tile_detections(self, vol_id, tile_index, detections):
-        with self._lock:
-            mission = self._missions.get(vol_id)
-            if mission is None:
-                return None, False
-            if tile_index in mission['received_tiles']:
-                total = mission.get('total_tiles')
-                return mission, total is not None and len(mission['received_tiles']) == total
-            mission['detections'].extend(detections)
-            mission['received_tiles'].add(tile_index)
-            total = mission.get('total_tiles')
-            is_complete = total is not None and len(mission['received_tiles']) == total
-            return mission, is_complete
-
-    def pop(self, vol_id):
-        with self._lock:
-            return self._missions.pop(vol_id, None)
-
-
-missions = MissionRegistry()
-
-
-def cleanup_tiles_directory(tiles_dir):
-    for entry in os.listdir(tiles_dir):
-        if entry.startswith("tile_") and entry.lower().endswith(".jpg"):
-            try:
-                os.remove(os.path.join(tiles_dir, entry))
-            except OSError as error:
-                logger.warning("Failed to remove stale tile %s: %s", entry, error)
-
 
 def report_progress(vol_id, step, progress, status="processing", log=None):
     progress_publisher(
@@ -233,6 +198,22 @@ def dedupe_mission_detections(detections):
     )
 
 
+analysis_workflow = AnalysisWorkflow(
+    producer=producer,
+    orthomosaic_topic=TOPIC_IN_ORTHO,
+    tile_topic=TOPIC_OUT_TILES,
+    dedupe=dedupe_mission_detections,
+    logger=logger,
+)
+orthomosaic_tiler = OrthomosaicTiler(
+    producer=producer,
+    tile_topic=TOPIC_OUT_TILES,
+    is_cancelled=cancel_manager.is_cancelled,
+    report_progress=report_progress,
+    logger=logger,
+)
+
+
 def draw_detection_label(img, anchor_x, anchor_y, lines):
     if not lines:
         return
@@ -280,320 +261,222 @@ def draw_detection_label(img, anchor_x, anchor_y, lines):
         cv2.putText(img, line, text_origin, font, font_scale, (0, 0, 0), 3, cv2.LINE_AA)
         cv2.putText(img, line, text_origin, font, font_scale, (255, 255, 0), font_thickness, cv2.LINE_AA)
 
-def generate_final_ortho(vol_id, mission):
-    ortho_s3_key = mission['ortho_s3_key']
-    local_ortho = f"/tmp/processing/{vol_id}/orthomosaic.tif"
-    os.makedirs(os.path.dirname(local_ortho), exist_ok=True)
+def generate_vector_results(vol_id, mission):
+    """Publish lightweight AI vectors; never duplicate the full raster."""
 
-    # Download orthomosaic from S3
-    try:
-        storage.download_file(ortho_s3_key, local_ortho)
-    except Exception as dl_err:
-        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download ortho from S3: {dl_err}")
-        raise
+    with get_session() as session:
+        db_detections = get_mission_detections(session, vol_id)
+        raw_detections = [
+            {
+                "id": detection.id,
+                "tile_index": detection.tile_index,
+                "class_name": detection.class_name,
+                "class_id": detection.class_id,
+                "confidence": detection.confidence,
+                "global_pixel_x": detection.pixel_x,
+                "global_pixel_y": detection.pixel_y,
+                "geo_lat": detection.geo_lat,
+                "geo_lon": detection.geo_lon,
+                "segment": detection.segment,
+            }
+            for detection in db_detections
+        ]
 
-    # Get detections — prefer DB-backed, fallback to in-memory
-    raw_detections = mission.get('detections', [])
-    if not raw_detections:
-        try:
-            with get_session() as session:
-                db_dets = get_mission_detections(session, vol_id)
-                for d in db_dets:
-                    raw_detections.append({
-                        'class_name': d.class_name,
-                        'confidence': d.confidence,
-                        'global_pixel_x': d.pixel_x,
-                        'global_pixel_y': d.pixel_y,
-                        'geo_lat': d.geo_lat,
-                        'geo_lon': d.geo_lon,
-                        'segment': d.segment,
-                    })
-        except Exception as db_err:
-            logger.warning("Failed to load detections from DB for %s: %s", vol_id, db_err)
+    deduped = dedupe_mission_detections(raw_detections)
+    metadata = mission.get("tiling_metadata") or {}
+    feature_collection = detections_feature_collection(
+        deduped,
+        geotransform=metadata.get("transform"),
+        source_crs=metadata.get("crs"),
+        vol_id=vol_id,
+    )
+    output_directory = Path(f"/tmp/processing/{vol_id}")
+    output_directory.mkdir(parents=True, exist_ok=True)
+    output = output_directory / "detections.geojson"
+    temporary = output.with_suffix(".geojson.tmp")
+    temporary.write_text(
+        json.dumps(feature_collection, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    os.replace(temporary, output)
+    vector_key = f"missions/{vol_id}/detections.geojson"
+    storage.upload_verified_file(output, vector_key)
 
-    raw_detection_count = len(raw_detections)
-    deduped_detections = dedupe_mission_detections(raw_detections)
+    with get_session() as session:
+        mission_object = (
+            session.query(Mission)
+            .filter(Mission.vol_id == vol_id)
+            .with_for_update()
+            .one()
+        )
+        mission_object.aggregation_status = "completed"
+        mission_object.aggregation_completed_at = datetime.now(timezone.utc)
 
-    output_path = f"/tmp/processing/{vol_id}/orthomosaic_annotated.tif"
-    
     report_progress(
         vol_id,
-        "FINAL_IMAGE",
-        90,
-        log=f"Generating annotated orthomosaic with {len(deduped_detections)} merged detections from {raw_detection_count} raw detections...",
+        "DONE",
+        100,
+        status="success",
+        log=(
+            f"COG ready with {len(feature_collection['features'])} "
+            f"vector detections ({len(raw_detections)} raw)"
+        ),
     )
+    shutil.rmtree(output_directory, ignore_errors=True)
+
+def _process_orthomosaic(data):
+    vol_id = data["vol_id"]
+    analysis_run_id = data.get("analysis_run_id")
+    cancel_manager.clear(vol_id, analysis_run_id)
+    ortho_s3_key = data.get("ortho_s3_key") or data.get(
+        "ortho_path",
+        "",
+    )
+    orthomosaic_tiler.slice(
+        ortho_s3_key,
+        vol_id,
+        tile_size=int(data.get("tile_size", 1024)),
+        classes=data.get("classes", ["car"]),
+        ai_confidence=data.get("ai_confidence", 0.3),
+        ai_backend=data.get("ai_backend", "yolo"),
+        ai_model_variant=data.get("ai_model_variant", "yolo26l"),
+        sam_prompt=data.get("sam_prompt", "car"),
+        analysis_run_id=analysis_run_id,
+    )
+
+
+def _project_detection_geometry(
+    detection,
+    metadata,
+    *,
+    vol_id,
+    tile_index,
+):
+    segment = detection.get("segment") or []
+    if (
+        len(segment) < 3
+        or not metadata.get("transform")
+        or not metadata.get("crs")
+    ):
+        return None
     try:
-        with rasterio.open(local_ortho) as src:
-            meta = src.meta.copy()
-            data = src.read()
-            
-            # Data is usually (C, H, W). Rasterio expects RGB, we need HWC for OpenCV
-            img = data[:3].transpose(1, 2, 0).copy() # C,H,W -> H,W,C
-            
-            # Dessiner les masques — use ROI-local overlay to avoid
-            # copying the entire image per detection (OOM on large orthos).
-            for det in deduped_detections:
-                if 'segment' in det and len(det['segment']) > 0:
-                    pts = np.array(det['segment'], np.int32)
-                    pts = pts.reshape((-1, 1, 2))
-
-                    # Compute bounding box of the polygon + margin for the local overlay
-                    bx, by, bw, bh = cv2.boundingRect(pts)
-                    margin = 4
-                    rx0 = max(bx - margin, 0)
-                    ry0 = max(by - margin, 0)
-                    rx1 = min(bx + bw + margin, img.shape[1])
-                    ry1 = min(by + bh + margin, img.shape[0])
-
-                    # Draw transparent red overlay only on the ROI
-                    roi = img[ry0:ry1, rx0:rx1]
-                    roi_overlay = roi.copy()
-                    pts_local = pts - np.array([rx0, ry0], dtype=np.int32)
-                    cv2.fillPoly(roi_overlay, [pts_local], (255, 0, 0))
-                    cv2.addWeighted(roi_overlay, 0.4, roi, 0.6, 0, roi)
-                    del roi_overlay
-
-                    # Draw the contour
-                    cv2.polylines(img, [pts], True, (255, 0, 0), 2)
-                    
-                    # Draw center point / label
-                    cx, cy = int(det['global_pixel_x']), int(det['global_pixel_y'])
-                    cv2.circle(img, (cx, cy), 5, (0, 255, 0), -1)
-                    gps_lines = format_detection_gps(det, mission)
-                    draw_detection_label(img, cx, cy, gps_lines)
-            
-            # Back to C,H,W
-            out_data = img.transpose(2, 0, 1)
-            
-            with rasterio.open(output_path, 'w', **meta) as dst:
-                dst.write(out_data)
-
-            # Free large arrays now that we're done writing
-            del data, img, out_data
-            import gc
-            gc.collect()
-
-        # Upload annotated ortho to S3
-        annotated_s3_key = f"missions/{vol_id}/orthomosaic_annotated.tif"
-        try:
-            storage.upload_file(output_path, annotated_s3_key)
-        except Exception as upload_err:
-            logger.warning("Failed to upload annotated ortho to S3: %s", upload_err)
-
-        report_progress(
-            vol_id,
-            "DONE",
-            100,
-            status="success",
-            log=f"Annotated orthomosaic saved ({len(deduped_detections)} merged detections from {raw_detection_count} raw detections)",
+        ring = pixel_segment_to_wgs84(
+            segment,
+            geotransform=metadata["transform"],
+            source_crs=metadata["crs"],
         )
-
-        # Clean up local temp files
-        import shutil
-        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
-        
-    except Exception as e:
-        logger.exception("Failed to generate final image for %s", vol_id)
-        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to generate final image: {e}")
-        raise
-    finally:
-        # Always clean up temp files to avoid filling the system disk.
-        import shutil
-        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
-
-def slice_orthomosaic(ortho_s3_key, vol_id, tile_size=1024, classes=["car"], ai_confidence=0.3, ai_backend="yolo", ai_model_variant="yolo26l", sam_prompt="car"):
-    """Download orthomosaic from S3, tile it locally, upload tiles to S3, and send Kafka messages."""
-    ai_backend = normalize_ai_backend(ai_backend)
-
-    # Download orthomosaic from S3 to local temp
-    local_ortho = f"/tmp/processing/{vol_id}/orthomosaic.tif"
-    os.makedirs(os.path.dirname(local_ortho), exist_ok=True)
-    try:
-        storage.download_file(ortho_s3_key, local_ortho)
-    except Exception as dl_err:
-        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download orthomosaic from S3: {dl_err}")
-        raise
-
-    tiles_dir = f"/tmp/processing/{vol_id}/tiles"
-    os.makedirs(tiles_dir, exist_ok=True)
-    cleanup_tiles_directory(tiles_dir)
-    tiles_s3_prefix = f"missions/{vol_id}/tiles"
-    
-    report_progress(vol_id, "TILING_START", 0)
-
-    try:
-        with rasterio.open(local_ortho) as src:
-            width = src.width
-            height = src.height
-            tile_overlap = max(0, min(tile_size // 2, int(os.getenv("TILE_OVERLAP", str(tile_size // 4)))))
-            x_starts = build_tile_starts(width, tile_size, tile_overlap)
-            y_starts = build_tile_starts(height, tile_size, tile_overlap)
-            
-            transform_list = list(src.transform.to_gdal()) if src.transform else None
-            crs_str = src.crs.to_string() if src.crs else "unknown"
-            
-            missions.set(vol_id, {
-                "ortho_s3_key": ortho_s3_key,
-                "transform": transform_list,
-                "crs": crs_str,
-                "tiles_count": 0,
-                "detections": [],
-                "received_tiles": set()
-            })
-            
-            # Calculer le nombre total de tuiles pour le calcul du progrès
-            total_cols = len(x_starts)
-            total_rows = len(y_starts)
-            total_tiles = total_cols * total_rows
-            
-            # Set total_tiles BEFORE producing any tile messages to avoid
-            # race condition where detections arrive before count is known (BUG 1)
-            missions.set_total_tiles(vol_id, total_tiles)
-            
-            tile_index = 0
-            report_progress(vol_id, "TILING_START", 0, log=f"Writing {total_tiles} overlapping tiles (size={tile_size}, overlap={tile_overlap})")
-
-            for y in y_starts:
-                for x in x_starts:
-                    if cancel_manager.is_cancelled(vol_id):
-                        logger.info("Tiling cancelled mid-loop for %s", vol_id)
-                        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
-                        return
-                    window = Window(x, y, min(tile_size, width - x), min(tile_size, height - y))
-                    
-                    tile_data = src.read(window=window)
-                    tile_meta = src.meta.copy()
-                    
-                    # Force 3-band RGB for JPEG if it has more, or use PNG/WEBP
-                    driver = "JPEG"
-                    if src.count > 3:
-                        tile_data = tile_data[:3, :, :]
-                    elif src.count == 1:
-                        # Convert 1-band (grayscale) to 3-band (RGB) for JPEG compatibility
-                        tile_data = np.repeat(tile_data, 3, axis=0)
-                        
-                    tile_meta.update({
-                        "driver": driver,
-                        "height": window.height,
-                        "width": window.width,
-                        "transform": src.window_transform(window),
-                        "count": 3
-                    })
-                    
-                    tile_filename = f"tile_{tile_index}.jpg"
-                    tile_path = os.path.join(tiles_dir, tile_filename)
-                    
-                    with rasterio.open(tile_path, 'w', **tile_meta) as dst:
-                        dst.write(tile_data)
-                    
-                    # Upload tile to S3
-                    tile_s3_key = f"{tiles_s3_prefix}/{tile_filename}"
-                    try:
-                        storage.upload_file(tile_path, tile_s3_key)
-                    except Exception as upload_err:
-                        raise RuntimeError(
-                            f"Failed to upload tile {tile_filename}: {upload_err}"
-                        ) from upload_err
-
-                    tile_msg = {
-                        "vol_id": vol_id,
-                        "tile_index": tile_index,
-                        "tile_s3_key": tile_s3_key,
-                        "offset_x": x,
-                        "offset_y": y,
-                        "ai_backend": ai_backend,
-                        "ai_model_variant": ai_model_variant,
-                        "sam_prompt": sam_prompt,
-                        "classes": classes,
-                        "ai_confidence": ai_confidence,
-                        "total_tiles": total_tiles,
-                        "ortho_transform": transform_list,
-                        "ortho_crs": crs_str
-                    }
-                    tile_msg = make_event(
-                        "image_tile",
-                        tile_msg,
-                        event_id=deterministic_event_id(
-                            "image_tile",
-                            vol_id,
-                            tile_index,
-                        ),
-                        correlation_id=vol_id,
-                    )
-                    producer.produce(TOPIC_OUT_TILES, key=f"{vol_id}_{tile_index}", value=json.dumps(tile_msg))
-                    
-                    tile_index += 1
-                    progress = int((tile_index / total_tiles) * 100)
-                    if tile_index % 10 == 0:
-                        report_progress(vol_id, "TILING_IN_PROGRESS", progress)
-            
-            # Update to exact count (may differ from estimate if loop was interrupted)
-            missions.set_total_tiles(vol_id, tile_index)
-            if producer.flush():
-                raise RuntimeError("one or more tile events were not delivered")
-            report_progress(vol_id, "TILING_DONE", 100, status="success")
-            print(f"📦 Orthomosaïque découpée en {tile_index} tuiles pour le vol {vol_id}.")
-            
-    except Exception as e:
-        logger.exception("Failed to tile orthomosaic for %s", vol_id)
-        error_msg = f"Failed to tile orthomosaic: {str(e)}"
-        report_progress(vol_id, "ERROR", 0, status="error", log=error_msg)
-        print(f"❌ {error_msg}")
-        shutil.rmtree(f"/tmp/processing/{vol_id}", ignore_errors=True)
-        raise
-
-def process_pipeline_event(data, topic):
-    if topic == TOPIC_IN_ORTHO:
-        vol_id = data['vol_id']
-        cancel_manager.clear(vol_id)
-        ortho_s3_key = data.get('ortho_s3_key') or data.get('ortho_path', '')
-        slice_orthomosaic(
-            ortho_s3_key,
-            vol_id,
-            classes=data.get('classes', ['car']),
-            ai_confidence=data.get('ai_confidence', 0.3),
-            ai_backend=normalize_ai_backend(data.get('ai_backend', 'yolo')),
-            ai_model_variant=data.get('ai_model_variant', 'yolo26l'),
-            sam_prompt=data.get('sam_prompt', 'car'),
+        coordinates = ", ".join(
+            f"{longitude} {latitude}"
+            for longitude, latitude in ring
         )
-        return
+        return WKTElement(f"POLYGON(({coordinates}))", srid=4326)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Unable to project detection polygon for %s tile %s",
+            vol_id,
+            tile_index,
+        )
+        return None
 
-    vol_id = data['vol_id']
-    if cancel_manager.is_cancelled(vol_id):
-        return
 
-    tile_detections = data.get('detections', [])
-    tile_index = data['tile_index']
-    try:
-        with get_session() as session:
-            mission_obj = get_or_create_mission(session, vol_id)
-            already_persisted = (
-                session.query(DBDetection.id)
-                .filter(
-                    DBDetection.vol_id == vol_id,
-                    DBDetection.tile_index == tile_index,
-                )
-                .first()
-                is not None
+def _store_detection(session, mission, detection, tile_index):
+    metadata = mission.tiling_metadata or {}
+    segment = detection.get("segment") or []
+    session.add(
+        DBDetection(
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            tile_index=tile_index,
+            class_name=detection.get("class_name", "unknown"),
+            class_id=detection.get("class_id"),
+            confidence=float(detection.get("confidence", 0)),
+            geometry=_project_detection_geometry(
+                detection,
+                metadata,
+                vol_id=mission.vol_id,
+                tile_index=tile_index,
+            ),
+            pixel_x=detection.get("global_pixel_x"),
+            pixel_y=detection.get("global_pixel_y"),
+            geo_lon=detection.get("geo_lon"),
+            geo_lat=detection.get("geo_lat"),
+            segment=segment,
+        )
+    )
+
+
+def _store_legacy_tile(vol_id, tile_index, detections):
+    finalize_mission = None
+    with get_session() as session:
+        mission = (
+            session.query(Mission)
+            .filter(Mission.vol_id == vol_id)
+            .with_for_update()
+            .first()
+        )
+        if mission is None:
+            mission = get_or_create_mission(session, vol_id)
+        receipt = (
+            session.query(ProcessedTile)
+            .filter(
+                ProcessedTile.vol_id == vol_id,
+                ProcessedTile.tile_index == tile_index,
             )
-            if not already_persisted:
-                for det in tile_detections:
-                    session.add(
-                        DBDetection(
-                            mission_id=mission_obj.id,
-                            vol_id=vol_id,
-                            tile_index=tile_index,
-                            class_name=det.get('class_name', 'unknown'),
-                            class_id=det.get('class_id'),
-                            confidence=float(det.get('confidence', 0)),
-                            pixel_x=det.get('global_pixel_x'),
-                            pixel_y=det.get('global_pixel_y'),
-                            geo_lon=det.get('geo_lon'),
-                            geo_lat=det.get('geo_lat'),
-                            segment=det.get('segment'),
-                        )
-                    )
-            mission_obj.tiles_received = count_received_tiles(session, vol_id)
+            .first()
+        )
+        if receipt is None:
+            session.add(
+                ProcessedTile(
+                    mission_id=mission.id,
+                    vol_id=vol_id,
+                    tile_index=tile_index,
+                    detection_count=len(detections),
+                )
+            )
+            for detection in detections:
+                _store_detection(
+                    session,
+                    mission,
+                    detection,
+                    tile_index,
+                )
+            session.flush()
+        mission.tiles_received = count_received_tiles(session, vol_id)
+        if (
+            mission.total_tiles is not None
+            and mission.tiles_received >= mission.total_tiles
+            and mission.aggregation_status
+            not in {"finalizing", "completed"}
+        ):
+            mission.aggregation_status = "finalizing"
+            finalize_mission = {
+                "ortho_s3_key": mission.ortho_s3_key,
+                "tiling_metadata": mission.tiling_metadata or {},
+            }
+    return finalize_mission
+
+
+def _mark_legacy_aggregation_failed(vol_id):
+    with get_session() as session:
+        mission = (
+            session.query(Mission)
+            .filter(Mission.vol_id == vol_id)
+            .with_for_update()
+            .first()
+        )
+        if mission is not None:
+            mission.aggregation_status = "failed"
+
+
+def _process_legacy_detection(data):
+    vol_id = data["vol_id"]
+    tile_index = data["tile_index"]
+    try:
+        finalize_mission = _store_legacy_tile(
+            vol_id,
+            tile_index,
+            data.get("detections", []),
+        )
     except Exception:
         logger.exception(
             "Failed to persist detections to DB for %s tile %s",
@@ -602,24 +485,96 @@ def process_pipeline_event(data, topic):
         )
         raise
 
-    mission, is_complete = missions.record_tile_detections(
-        vol_id,
-        tile_index,
-        tile_detections,
-    )
-    if mission is not None and is_complete:
-        report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
-        generate_final_ortho(vol_id, mission)
-        missions.pop(vol_id)
+    if finalize_mission is None:
+        return
+    report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+    try:
+        generate_vector_results(vol_id, finalize_mission)
+    except Exception:
+        _mark_legacy_aggregation_failed(vol_id)
+        raise
+
+
+def process_pipeline_event(data, topic):
+    if topic == TOPIC_IN_ORTHO:
+        _process_orthomosaic(data)
+        return
+    vol_id = data["vol_id"]
+    analysis_run_id = data.get("analysis_run_id")
+    if cancel_manager.is_cancelled(vol_id, analysis_run_id):
+        return
+    if analysis_run_id:
+        analysis_workflow.process_detection(data)
+        return
+    _process_legacy_detection(data)
+
+
+def recover_ready_aggregations():
+    """Resume completed tile sets left behind by a crashed replica."""
+
+    stale_before = datetime.now(timezone.utc) - timedelta(minutes=10)
+    ready = []
+    with get_session() as session:
+        candidates = (
+            session.query(Mission)
+            .filter(
+                Mission.total_tiles.isnot(None),
+                Mission.tiles_received >= Mission.total_tiles,
+                (
+                    Mission.aggregation_status.in_(("collecting", "failed"))
+                    | (
+                        (Mission.aggregation_status == "finalizing")
+                        & (Mission.updated_at < stale_before)
+                    )
+                ),
+            )
+            .with_for_update(skip_locked=True)
+            .limit(10)
+            .all()
+        )
+        for mission in candidates:
+            mission.aggregation_status = "finalizing"
+            ready.append(
+                (
+                    mission.vol_id,
+                    {
+                        "ortho_s3_key": mission.ortho_s3_key,
+                        "tiling_metadata": mission.tiling_metadata or {},
+                    },
+                )
+            )
+    for vol_id, descriptor in ready:
+        try:
+            report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+            generate_vector_results(vol_id, descriptor)
+        except Exception:
+            logger.exception(
+                "Failed to recover aggregation for %s",
+                vol_id,
+            )
+            with get_session() as session:
+                mission = (
+                    session.query(Mission)
+                    .filter(Mission.vol_id == vol_id)
+                    .with_for_update()
+                    .first()
+                )
+                if mission is not None:
+                    mission.aggregation_status = "failed"
 
 
 def worker_main():
     work_consumer = create_work_consumer()
     threading.Thread(target=control_consumer_thread, daemon=True).start()
     print("🎧 App 3 (Tiler/Aggregator) en attente...")
+    last_recovery = 0.0
     try:
         while True:
             message = work_consumer.poll(1.0)
+            if time.monotonic() - last_recovery >= 60:
+                recover_ready_aggregations()
+                analysis_workflow.recover()
+                last_recovery = time.monotonic()
             if message is None or message.error():
                 continue
             topic = message.topic()

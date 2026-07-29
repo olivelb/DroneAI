@@ -5,6 +5,7 @@ All services use this module instead of direct filesystem I/O for
 persistent data (datasets, mission artifacts, tiles, orthomosaics).
 """
 
+import hashlib
 import io
 import logging
 import os
@@ -103,6 +104,56 @@ def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = Non
     return s3_key
 
 
+def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(chunk_size):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def upload_verified_file(
+    local_path: str | Path,
+    s3_key: str,
+    bucket: Optional[str] = None,
+) -> dict[str, int | str]:
+    """Upload a required artifact and verify size and SHA-256 with HEAD.
+
+    S3 multipart ETags are not content hashes, so the digest is stored as
+    object metadata and checked after publication.
+    """
+
+    bucket = bucket or S3_BUCKET
+    path = Path(local_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Required local artifact not found: {path}")
+    size = path.stat().st_size
+    digest = _sha256_file(path)
+    client = _get_client()
+    client.upload_file(
+        str(path),
+        bucket,
+        s3_key,
+        ExtraArgs={"Metadata": {"sha256": digest}},
+    )
+    head = client.head_object(Bucket=bucket, Key=s3_key)
+    remote_size = int(head.get("ContentLength", -1))
+    remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
+    if remote_size != size or remote_digest != digest:
+        raise IOError(
+            f"S3 verification failed for s3://{bucket}/{s3_key}: "
+            f"size={remote_size}/{size}, sha256={remote_digest}/{digest}"
+        )
+    logger.info(
+        "Published and verified %s -> s3://%s/%s (%d bytes)",
+        path,
+        bucket,
+        s3_key,
+        size,
+    )
+    return {"key": s3_key, "size": size, "sha256": digest}
+
+
 def download_file(s3_key: str, local_path: str | Path, bucket: Optional[str] = None) -> Path:
     """Download a file from S3 to a local path. Creates parent dirs. Returns local Path."""
     bucket = bucket or S3_BUCKET
@@ -142,12 +193,15 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[s
     bucket = bucket or S3_BUCKET
     local_dir = Path(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
+    root = local_dir.resolve()
     count = 0
     for key in list_objects(s3_prefix, bucket):
         relative = key[len(s3_prefix):].lstrip("/")
         if not relative:
             continue
-        local_path = local_dir / relative
+        local_path = (root / relative).resolve()
+        if local_path != root and root not in local_path.parents:
+            raise ValueError(f"Unsafe S3 object key outside destination: {key}")
         download_file(key, local_path, bucket)
         count += 1
     logger.info("Downloaded %d files from s3://%s/%s → %s", count, bucket, s3_prefix, local_dir)
@@ -238,14 +292,20 @@ def get_object_stream(s3_key: str, bucket: Optional[str] = None):
     )
 
 
-def get_presigned_url(s3_key: str, expires: int = 3600, bucket: Optional[str] = None) -> str:
+def get_presigned_url(
+    s3_key: str,
+    expires: int = 3600,
+    bucket: Optional[str] = None,
+    *,
+    public: bool = True,
+) -> str:
     """Generate a presigned GET URL for an S3 object.
 
     Uses S3_PUBLIC_ENDPOINT when set so the URL is reachable from browsers.
     *expires* is the URL lifetime in seconds (default 1 hour).
     """
     bucket = bucket or S3_BUCKET
-    client = _get_public_client()
+    client = _get_public_client() if public else _get_client()
     url = client.generate_presigned_url(
         "get_object",
         Params={"Bucket": bucket, "Key": s3_key},

@@ -499,7 +499,11 @@ class DroneGSBackend:
                     )
                 elif event_name == "checkpoint_saved" and checkpoint_fn:
                     checkpoint = Path(
-                        str(event.get("checkpoint") or "")
+                        str(
+                            event.get("path")
+                            or event.get("checkpoint")
+                            or ""
+                        )
                     )
                     if checkpoint.is_file():
                         checkpoint_fn(

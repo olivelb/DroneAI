@@ -174,10 +174,15 @@ class CancelManager:
     def __init__(self):
         self._set = set()
         self._lock = threading.Lock()
-    def cancel(self, v):
-        with self._lock: self._set.add(v)
-    def is_cancelled(self, v):
-        with self._lock: return v in self._set
+    def cancel(self, vol_id, run_id=None):
+        with self._lock:
+            self._set.add((vol_id, run_id))
+    def is_cancelled(self, vol_id, run_id=None):
+        with self._lock:
+            return (
+                (vol_id, None) in self._set
+                or (vol_id, run_id) in self._set
+            )
 
 cancel_manager = CancelManager()
 
@@ -187,8 +192,13 @@ def control_consumer_thread():
             return
         vol_id = data.get("vol_id")
         if vol_id:
-            cancel_manager.cancel(vol_id)
-            logger.info("⚠️ Cancel requested for %s", vol_id)
+            run_id = data.get("analysis_run_id")
+            cancel_manager.cancel(vol_id, run_id)
+            logger.info(
+                "⚠️ Cancel requested for %s analysis=%s",
+                vol_id,
+                run_id or "all",
+            )
 
     run_control_consumer(
         kafka_broker=KAFKA_BROKER,
@@ -237,10 +247,12 @@ def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
 
 def process_tile(tile_info):
     vol_id = tile_info['vol_id']
+    analysis_run_id = tile_info.get("analysis_run_id")
+    stats_key = analysis_run_id or vol_id
     total_tiles = int(tile_info.get('total_tiles', 0) or 0)
 
     tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
-    local_tile_dir = f"/tmp/ia_tiles/{vol_id}"
+    local_tile_dir = f"/tmp/ia_tiles/{vol_id}/{analysis_run_id or 'pipeline'}"
     os.makedirs(local_tile_dir, exist_ok=True)
     tile_filename = tile_s3_key.split('/')[-1] if '/' in tile_s3_key else tile_s3_key
     tile_path = os.path.join(local_tile_dir, tile_filename)
@@ -248,10 +260,10 @@ def process_tile(tile_info):
     offset_x = tile_info['offset_x']
     offset_y = tile_info['offset_y']
 
-    if cancel_manager.is_cancelled(vol_id):
+    if cancel_manager.is_cancelled(vol_id, analysis_run_id):
         if os.path.isdir(local_tile_dir):
             shutil.rmtree(local_tile_dir, ignore_errors=True)
-        mission_stats.pop(vol_id, None)
+        mission_stats.pop(stats_key, None)
         return
 
     ortho_transform = tile_info.get('ortho_transform')
@@ -263,7 +275,10 @@ def process_tile(tile_info):
         report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}")
         raise
 
-    stats = mission_stats.setdefault(vol_id, {"processed": 0, "detections": 0, "total_tiles": total_tiles})
+    stats = mission_stats.setdefault(
+        stats_key,
+        {"processed": 0, "detections": 0, "total_tiles": total_tiles},
+    )
     if total_tiles:
         stats["total_tiles"] = total_tiles
 
@@ -308,10 +323,12 @@ def process_tile(tile_info):
             "vol_id": vol_id,
             "tile_index": tile_info['tile_index'],
             "detections": detections,
+            "analysis_run_id": analysis_run_id,
         },
         event_id=deterministic_event_id(
             "tile_detection",
             vol_id,
+            analysis_run_id or "pipeline",
             tile_info["tile_index"],
         ),
         correlation_id=tile_info.get("correlation_id"),
@@ -331,7 +348,7 @@ def process_tile(tile_info):
     if total_tiles and stats["processed"] >= total_tiles:
         summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
         report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
-        mission_stats.pop(vol_id, None)
+        mission_stats.pop(stats_key, None)
         if os.path.isdir(local_tile_dir):
             shutil.rmtree(local_tile_dir, ignore_errors=True)
         import gc

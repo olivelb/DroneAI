@@ -1,6 +1,6 @@
 # DroneAI production readiness
 
-Date: 2026-07-28
+Date: 2026-07-29
 
 ## Supported deployment boundary
 
@@ -49,8 +49,9 @@ Roles are cumulative:
 - `operator`: viewer plus mission start/cancel/resume and upload;
 - `admin`: operator plus mission/dataset deletion.
 
-Clients use `Authorization: Bearer <key>` or `X-API-Key`. WebSocket clients use
-an `access_token` query parameter or the `droneai_api_key` secure cookie.
+Clients use `Authorization: Bearer <key>` or `X-API-Key`. Production WebSocket
+clients use the `droneai_api_key` secure cookie; query-string tokens are
+accepted only in development.
 Mission Studio prompts for the provisioned key and exchanges it through
 `POST /auth/session` for an eight-hour HttpOnly, Secure, SameSite=Lax cookie.
 The cookie contains a signed expiry-bearing session token, not the raw key.
@@ -66,6 +67,8 @@ Production startup fails when:
 - `CORS_ORIGINS` contains `*`;
 - authentication is disabled or no API key registry is present;
 - S3/database variables are missing or use known local defaults.
+
+Cookie-authenticated mutations also require a configured trusted `Origin`.
 
 ## Upload policy
 
@@ -90,6 +93,26 @@ DJI MRK `Ellh` remains **ellipsoidal**. The CRS sidecar records the source and
 vertical uncertainty and states that no orthometric conversion was applied.
 NGF-IGN69 publication requires an explicit, versioned RAF20/Circé grid
 transformation and must not be inferred from EXIF.
+
+Raster products are tiled COGs with internal overviews, a bounded WebP preview
+and a metadata sidecar. The map API reprojects each requested tile precisely
+to Web Mercator without loading the complete orthomosaic. AI segmentations and
+detections are WGS84/PostGIS vectors queried by viewport and downloadable as
+GeoJSON; no second full-size annotated raster is generated.
+
+## Distributed durability contract
+
+- The required orthomosaic is uploaded with SHA-256 metadata and verified by
+  `HEAD` before `DONE` or the downstream event can be published.
+- Every AI tile response has a unique database receipt, including responses
+  with zero detections.
+- Aggregation completion is locked in PostgreSQL and stale finalizations are
+  recovered after a worker restart.
+- Outbox events enter `dead` after their retry budget; administrators can list
+  and explicitly replay them.
+- The revisioned Helm migration job runs `alembic upgrade head`, while init
+  containers prevent database-dependent services from starting on an old
+  schema.
 
 ## Release gates
 

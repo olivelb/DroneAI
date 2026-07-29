@@ -85,8 +85,9 @@ Operational notes:
   can serve `/pods`.
 - `build_and_deploy.sh` and every incremental deploy script run
   `helm upgrade --install`.
-- The chart's `db-migrate` hook currently enables PostGIS and calls SQLAlchemy
-  `Base.metadata.create_all()`. It does not execute Alembic migrations.
+- The chart's revisioned migration job executes `alembic upgrade head`;
+  database-dependent pods wait for the head revision in an init container and
+  CI verifies an upgrade/downgrade/re-upgrade round-trip.
 
 ## Shared Python package
 
@@ -181,6 +182,11 @@ Primary endpoints:
 - `DELETE /mission/{vol_id}`
 - `POST /datasets/upload-file`
 - `GET /preview/{s3_key}`
+- `GET /maps/{vol_id}/metadata/{layer}`
+- `GET /maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png`
+- `GET /maps/{vol_id}/vectors.geojson?bbox=west,south,east,north`
+- `GET /operations/outbox/dead` (admin)
+- `POST /operations/outbox/{id}/replay` (admin)
 - `GET /`
 - `WS /ws/status`
 
@@ -202,9 +208,8 @@ Primary responsibilities:
 
 The bounded WebSocket replay buffer remains in memory, but mission state,
 service progress, logs, original parameters, and resume metadata are persisted
-in PostgreSQL. Alembic defines versioned migrations for manually managed
-databases; the current Helm hook only creates missing tables from SQLAlchemy
-metadata.
+in PostgreSQL. Alembic defines and applies versioned migrations both for
+manually managed databases and through the Helm migration hook.
 
 Every non-health HTTP route and the status WebSocket require authentication
 when enabled. A raw API client may use `Authorization: Bearer` or `X-API-Key`.
@@ -225,6 +230,15 @@ The API package is split by responsibility:
 | `image_preview.py` | framework-independent image conversion |
 | `routers/missions.py` | mission and operational HTTP endpoints |
 | `routers/datasets.py` | S3 browsing, preview, upload, download, deletion |
+| `routers/maps.py` | authenticated composition root for geospatial routes |
+| `routers/map_rasters.py` | bounded COG rendering and legacy/manual vector reads |
+| `routers/map_analyses.py` | AI campaign lifecycle and campaign vector reads |
+| `routers/map_features.py` | spatial search and manual vector CRUD |
+| `map_schemas.py` | geospatial HTTP request contracts |
+| `map_support.py` | mission lookup, validation and GeoJSON serialization |
+| `routers/operations.py` | dead-outbox inspection and controlled replay |
+| `shared/geospatial_assets.py` | COG conversion, preview, tiles and WGS84 vectors |
+| `shared/geospatial_workspace.py` | GeoJSON/style validation and viewport bounds helpers |
 
 HTTP routes do not own Kafka polling, image conversion, Kubernetes parsing, or
 mission-state policy. `main.py` is intentionally only the composition root.
@@ -255,10 +269,13 @@ This is the most stateful and operationally complex service in the pipeline.
 
 ### Processing worker (`app3-processing`)
 
-The processing worker combines two runtime roles:
+The processing worker combines two runtime roles behind explicit services:
 
-1. orthomosaic tiler
-2. detection aggregator and final-image renderer
+1. `OrthomosaicTiler`, which owns raster windows, tile uploads and the durable
+   tile journal;
+2. `AnalysisWorkflow`, which owns AI receipts, recovery, deduplication and
+   final publication;
+3. the compatibility aggregator for the initial mission pipeline.
 
 It consumes two topics simultaneously:
 
@@ -270,10 +287,17 @@ In practice it does the following:
 - open the produced orthomosaic GeoTIFF
 - slice it into overlapping JPEG tiles
 - publish tile jobs to `image-tiles`
-- track per-mission state in memory
+- journal per-mission and per-campaign state in PostgreSQL
 - collect detections from all returned tiles
 - merge overlap duplicates before final rendering
 - resolve GPS labels from either direct detection coordinates or orthomosaic CRS/affine metadata
+
+`main.py` remains the Kafka composition root and dispatcher. Raster mechanics
+live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
+`analysis_workflow.py`. CI applies Ruff cyclomatic-complexity budgets to these
+orchestration modules and architecture tests cap the composition roots and
+dashboard containers so responsibilities cannot silently collapse back into
+monoliths.
 - render masks, contours, center points, and GPS labels onto the orthomosaic
 - save the final annotated GeoTIFF
 
@@ -356,6 +380,20 @@ Migration `0002_inbox_outbox.py` adds:
 
 - `inbox_events`, unique on `(consumer_group, event_id)`
 - `outbox_events`, unique on `event_id`
+
+Migration `0003_geospatial_aggregation.py` adds durable legacy tile receipts.
+Migration `0004_geospatial_workspace.py` adds:
+
+- `ai_analysis_runs`, the campaign lifecycle, style, inference configuration,
+  progress, error and object-store result reference;
+- `ai_analysis_tiles`, unique on `(analysis_run_id, tile_index)`, including
+  offsets, WGS84 bounds and verified result keys for recovery;
+- `map_features`, a generic EPSG:4326 PostGIS geometry table with GiST index,
+  provenance, names, descriptions, colors, tags and optimistic versions.
+
+See
+[`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md)
+for the rerun, viewport and recovery contract.
 
 The first integration boundary covers the dashboard control plane:
 
@@ -650,6 +688,8 @@ For `vol_id=mission_001`, the COLMAP worker uses temporary scratch space:
   gaussian_checkpoints/
     final.ply
   orthomosaic.tif
+  orthomosaic.tif.cog.json
+  orthomosaic.preview.webp
   orthomosaic.height.tif
 ```
 
@@ -673,7 +713,12 @@ missions/mission_001/
     tile_0.jpg
     tile_1.jpg
     ...
-  orthomosaic_annotated.tif
+  detections.geojson
+  analyses/
+    <run-id>/
+      tiles/...
+      results/tile_<index>.geojson
+      detections.geojson
 ```
 
 Important mission artifacts include:
@@ -684,9 +729,12 @@ Important mission artifacts include:
 - `alignment_transform.json`: Sim3 transform from COLMAP coordinates to projected coordinates
 - `gaussian_checkpoints/`: 3D Gaussian Splatting model checkpoints and final merged PLY
 - `gaussian_checkpoints/final.ply`: final filtered Gaussian model in COLMAP-local coordinates
-- `orthomosaic.tif`: georeferenced RGB orthomosaic
-- `orthomosaic.height.tif`: companion height map (DSM) GeoTIFF with real-world altitudes from drone EXIF
-- `orthomosaic_annotated.tif`: final annotated orthomosaic produced by app3
+- `orthomosaic.tif`: tiled COG RGB with internal overview levels
+- `orthomosaic.height.tif`: companion tiled COG height map (DSM)
+- `*.cog.json`: native/WGS84 bounds, zoom range and raster metadata
+- `*.preview.webp`: bounded preview that never decodes the full COG
+- `detections.geojson`: deduplicated WGS84 AI polygons/points; the API also
+  serves a viewport-filtered layer backed by the PostGIS spatial index
 
 ## End-to-end event sequence
 

@@ -15,7 +15,6 @@ import numpy as np
 import rasterio
 from pyproj import Transformer
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP2_ROOT = REPO_ROOT / "app2-ia"
 APP3_ROOT = REPO_ROOT / "app3-processing"
@@ -36,7 +35,6 @@ from processing_core import (  # noqa: E402
     write_json,
     write_orthomosaic_tiles,
 )
-
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 

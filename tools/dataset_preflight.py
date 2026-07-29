@@ -23,9 +23,10 @@ from shared.dji_metadata import load_dji_mrk_overrides
 from shared.projected_crs import (
     PROJECTED_CRS_POLICIES,
     select_projected_crs,
-    utm_epsg,
 )
-
+from shared.projected_crs import (
+    utm_epsg as utm_epsg,  # noqa: F401 - retained as a public compatibility export
+)
 
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 GPS_IFD_TAG = 0x8825
@@ -54,10 +55,7 @@ def haversine_distance_m(first: tuple[float, float], second: tuple[float, float]
     lat2, lon2 = map(math.radians, second)
     delta_lat = lat2 - lat1
     delta_lon = lon2 - lon1
-    value = (
-        math.sin(delta_lat / 2.0) ** 2
-        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2.0) ** 2
-    )
+    value = math.sin(delta_lat / 2.0) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(delta_lon / 2.0) ** 2
     return 6_371_008.8 * 2.0 * math.atan2(math.sqrt(value), math.sqrt(1.0 - value))
 
 
@@ -148,11 +146,7 @@ def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
                     "camera_make": str(exif.get(EXIF_MAKE_TAG) or "").strip() or None,
                     "camera_model": str(exif.get(EXIF_MODEL_TAG) or "").strip() or None,
                     "captured_at": str(captured_at or "").strip() or None,
-                    "focal_length_mm": (
-                        _as_float(focal_length)
-                        if focal_length is not None
-                        else None
-                    ),
+                    "focal_length_mm": (_as_float(focal_length) if focal_length is not None else None),
                 }
             )
             gps = _named_gps_data(exif)
@@ -170,9 +164,7 @@ def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
                     "latitude": latitude,
                     "longitude": longitude,
                     "altitude_m": altitude,
-                    "horizontal_error_m": (
-                        _as_float(horizontal_error) if horizontal_error is not None else None
-                    ),
+                    "horizontal_error_m": (_as_float(horizontal_error) if horizontal_error is not None else None),
                     "position_std_m": None,
                     "vertical_reference": "unknown",
                     "vertical_reference_source": "exif_gps_altitude",
@@ -197,15 +189,8 @@ def build_report(
 ) -> dict[str, Any]:
     readable = [record for record in records if record["readable"]]
     positioned = [record for record in readable if record["gps"] is not None]
-    coordinates = [
-        (record["gps"]["latitude"], record["gps"]["longitude"])
-        for record in positioned
-    ]
-    altitudes = [
-        record["gps"]["altitude_m"]
-        for record in positioned
-        if record["gps"]["altitude_m"] is not None
-    ]
+    coordinates = [(record["gps"]["latitude"], record["gps"]["longitude"]) for record in positioned]
+    altitudes = [record["gps"]["altitude_m"] for record in positioned if record["gps"]["altitude_m"] is not None]
     horizontal_errors = [
         record["gps"]["horizontal_error_m"]
         for record in positioned
@@ -214,30 +199,19 @@ def build_report(
     vertical_errors = [
         record["gps"]["position_std_m"]["vertical_m"]
         for record in positioned
-        if record["gps"].get("position_std_m")
-        and record["gps"]["position_std_m"].get("vertical_m") is not None
+        if record["gps"].get("position_std_m") and record["gps"]["position_std_m"].get("vertical_m") is not None
     ]
-    vertical_references = _counter_dict(
-        record["gps"].get("vertical_reference", "unknown")
-        for record in positioned
-    )
-    timestamps = sorted(
-        record["captured_at"]
-        for record in readable
-        if record.get("captured_at")
-    )
+    vertical_references = _counter_dict(record["gps"].get("vertical_reference", "unknown") for record in positioned)
+    timestamps = sorted(record["captured_at"] for record in readable if record.get("captured_at"))
     path_length_m = sum(
-        haversine_distance_m(first, second)
-        for first, second in zip(coordinates, coordinates[1:])
+        haversine_distance_m(first, second) for first, second in zip(coordinates, coordinates[1:], strict=False)
     )
 
     warnings = []
     if len(positioned) != len(records):
         warnings.append(f"{len(records) - len(positioned)} image(s) have no usable GPS position.")
     if gps_quality != "rtk":
-        warnings.append(
-            "GPS positions are not treated as centimetric ground truth; use robust alignment tolerances."
-        )
+        warnings.append("GPS positions are not treated as centimetric ground truth; use robust alignment tolerances.")
     elif horizontal_errors and median(horizontal_errors) > 0.2:
         warnings.append(
             "RTK was requested, but the median sidecar/EXIF horizontal "
@@ -245,9 +219,7 @@ def build_report(
         )
     if altitudes and max(altitudes) - min(altitudes) > 50:
         warnings.append("The EXIF altitude range exceeds 50 m; verify the vertical reference.")
-    if positioned and vertical_references != {
-        "ellipsoidal": len(positioned)
-    }:
+    if positioned and vertical_references != {"ellipsoidal": len(positioned)}:
         warnings.append(
             "The altitude reference is unknown or mixed; do not publish an "
             "orthometric height product without an explicit vertical datum "
@@ -284,10 +256,7 @@ def build_report(
             "readable_count": len(readable),
             "gps_count": len(positioned),
             "gps_coverage_percent": round(100.0 * len(positioned) / len(records), 2) if records else 0.0,
-            "gps_sources": _counter_dict(
-                record["gps"].get("source", "exif")
-                for record in positioned
-            ),
+            "gps_sources": _counter_dict(record["gps"].get("source", "exif") for record in positioned),
             "horizontal_error_m": (
                 {
                     "minimum": min(horizontal_errors),
@@ -310,16 +279,12 @@ def build_report(
             ),
             "vertical_references": vertical_references,
             "height_product_reference": (
-                "ellipsoidal"
-                if vertical_references == {"ellipsoidal": len(positioned)}
-                else "unknown-or-mixed"
+                "ellipsoidal" if vertical_references == {"ellipsoidal": len(positioned)} else "unknown-or-mixed"
             ),
             "total_size_bytes": sum(record["size_bytes"] for record in records),
             "camera_makes": _counter_dict(record.get("camera_make") for record in readable),
             "camera_models": _counter_dict(record.get("camera_model") for record in readable),
-            "dimensions": _counter_dict(
-                f"{record['width']}x{record['height']}" for record in readable
-            ),
+            "dimensions": _counter_dict(f"{record['width']}x{record['height']}" for record in readable),
             "capture_start": timestamps[0] if timestamps else None,
             "capture_end": timestamps[-1] if timestamps else None,
             "approximate_flight_path_m": round(path_length_m, 2),
@@ -335,12 +300,8 @@ def build_report(
             ),
             "centroid": centroid,
             "bounds": bounds,
-            "recommended_projected_crs": (
-                projected_crs_choice.crs if projected_crs_choice else None
-            ),
-            "projected_crs_selection": (
-                projected_crs_choice.to_dict() if projected_crs_choice else None
-            ),
+            "recommended_projected_crs": (projected_crs_choice.crs if projected_crs_choice else None),
+            "projected_crs_selection": (projected_crs_choice.to_dict() if projected_crs_choice else None),
         },
         "warnings": warnings,
         "images": records,
@@ -370,7 +331,7 @@ def build_geojson(records: list[dict[str, Any]]) -> dict[str, Any]:
             "geometry": {"type": "Point", "coordinates": coordinates},
             "properties": {"kind": "camera", "file": record["file"], "index": index},
         }
-        for index, (record, coordinates) in enumerate(zip(positioned, line_coordinates))
+        for index, (record, coordinates) in enumerate(zip(positioned, line_coordinates, strict=True))
     )
     return {"type": "FeatureCollection", "features": features}
 

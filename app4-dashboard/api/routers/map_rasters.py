@@ -1,0 +1,174 @@
+"""COG metadata/tiles and the combined legacy/manual vector layer."""
+
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+
+from shared import storage
+from shared.database import Detection, MapFeature, get_session
+from shared.geospatial_assets import (
+    detections_feature_collection,
+    inspect_remote_cog,
+    render_cog_tile,
+)
+
+from ..map_support import (
+    apply_detection_spatial_filter,
+    apply_spatial_filter,
+    feature_collection,
+    get_mission,
+    map_feature_geojson,
+    mission_key,
+    parse_bbox,
+    require_object,
+)
+
+router = APIRouter()
+
+
+@router.get("/{vol_id}/metadata/{layer}")
+def raster_layer_metadata(vol_id: str, layer: str):
+    key, _ = mission_key(vol_id, layer)
+    require_object(key)
+    sidecar_key = f"{key}.cog.json"
+    if storage.file_exists(sidecar_key):
+        stream, content_length, _ = storage.get_object_stream(sidecar_key)
+        if content_length > 1_000_000:
+            stream.close()
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Invalid COG metadata sidecar",
+            )
+        try:
+            payload = json.loads(stream.read())
+        finally:
+            stream.close()
+        payload["s3_key"] = key
+        return payload
+    try:
+        return inspect_remote_cog(
+            storage.get_presigned_url(key, public=False),
+            s3_key=key,
+        )
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to inspect COG: {error}",
+        ) from error
+
+
+@router.get("/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png")
+def raster_tile(vol_id: str, layer: str, z: int, x: int, y: int):
+    key, default_colormap = mission_key(vol_id, layer)
+    require_object(key)
+    try:
+        output = render_cog_tile(
+            storage.get_presigned_url(key, expires=900, public=False),
+            z=z,
+            x=x,
+            y=y,
+            colormap=default_colormap,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(error),
+        ) from error
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"COG tile rendering failed: {error}",
+        ) from error
+    return StreamingResponse(
+        output,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+def _legacy_features(session, mission, vol_id, bounds, limit):
+    query = session.query(Detection).filter(Detection.vol_id == vol_id)
+    query = apply_detection_spatial_filter(query, bounds)
+    records = query.order_by(Detection.id).limit(limit + 1).all()
+    metadata = mission.tiling_metadata or {}
+    payload = detections_feature_collection(
+        records[:limit],
+        geotransform=metadata.get("transform"),
+        source_crs=metadata.get("crs"),
+        vol_id=vol_id,
+    )
+    for feature in payload["features"]:
+        feature["properties"].update(
+            {"source": "legacy", "color": "#f43f5e"}
+        )
+    return payload["features"], len(records) > limit
+
+
+def _stored_features(
+    session,
+    vol_id,
+    bounds,
+    requested_sources,
+    requested_runs,
+    limit,
+):
+    query = session.query(MapFeature).filter(
+        MapFeature.vol_id == vol_id,
+        MapFeature.source.in_(requested_sources),
+    )
+    if requested_runs:
+        from shared.database import AIAnalysisRun
+
+        query = query.join(AIAnalysisRun).filter(
+            AIAnalysisRun.run_id.in_(requested_runs)
+        )
+    query = apply_spatial_filter(query, MapFeature.geometry, bounds)
+    records = query.order_by(MapFeature.id).limit(limit + 1).all()
+    return (
+        [map_feature_geojson(session, record) for record in records[:limit]],
+        len(records) > limit,
+    )
+
+
+@router.get("/{vol_id}/vectors.geojson")
+def vector_layer(
+    vol_id: str,
+    bbox: str | None = Query(default=None),
+    sources: str = Query(default="legacy,manual,ai"),
+    run_ids: str | None = Query(default=None),
+    limit: int = Query(default=10_000, ge=1, le=50_000),
+):
+    mission_key(vol_id, "ortho")
+    bounds = parse_bbox(bbox)
+    requested_sources = {
+        value.strip() for value in sources.split(",") if value.strip()
+    }
+    requested_runs = {
+        value.strip() for value in (run_ids or "").split(",") if value.strip()
+    }
+    features: list[dict[str, Any]] = []
+    truncated = False
+    with get_session() as session:
+        mission = get_mission(session, vol_id)
+        if "legacy" in requested_sources:
+            legacy, truncated = _legacy_features(
+                session, mission, vol_id, bounds, limit
+            )
+            features.extend(legacy)
+        remaining = max(0, limit - len(features))
+        if remaining and requested_sources.intersection({"manual", "ai"}):
+            stored, stored_truncated = _stored_features(
+                session,
+                vol_id,
+                bounds,
+                requested_sources,
+                requested_runs,
+                remaining,
+            )
+            features.extend(stored)
+            truncated = truncated or stored_truncated
+    return feature_collection(features, vol_id=vol_id, truncated=truncated)

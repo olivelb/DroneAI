@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import statistics
 import subprocess
 from pathlib import Path
 
@@ -425,3 +426,60 @@ def inspect_sparse_reconstruction(model_path):
     except Exception as error:
         logger.warning("Failed to inspect sparse reconstruction %s: %s", model_path, error)
         return 0, 0
+
+
+def inspect_sparse_quality(model_path):
+    """Return registration, reprojection and track-health metrics."""
+
+    empty = {
+        "registered_images": 0,
+        "points3D": 0,
+        "mean_reprojection_error_px": None,
+        "median_reprojection_error_px": None,
+        "median_track_length": None,
+    }
+    if not os.path.isdir(model_path):
+        return empty
+    try:
+        import math
+        import pycolmap
+
+        reconstruction = pycolmap.Reconstruction(model_path)
+        errors = []
+        track_lengths = []
+        for point in reconstruction.points3D.values():
+            try:
+                error = float(point.error)
+                if math.isfinite(error):
+                    errors.append(error)
+            except (TypeError, ValueError):
+                pass
+            try:
+                track_lengths.append(int(point.track.length()))
+            except (AttributeError, TypeError):
+                try:
+                    track_lengths.append(len(point.track.elements))
+                except (AttributeError, TypeError):
+                    pass
+        return {
+            "registered_images": len(reconstruction.reg_image_ids()),
+            "points3D": len(reconstruction.points3D),
+            "mean_reprojection_error_px": (
+                statistics.fmean(errors) if errors else None
+            ),
+            "median_reprojection_error_px": (
+                statistics.median(errors) if errors else None
+            ),
+            "median_track_length": (
+                statistics.median(track_lengths)
+                if track_lengths
+                else None
+            ),
+        }
+    except Exception as error:
+        logger.warning(
+            "Failed to inspect sparse quality %s: %s",
+            model_path,
+            error,
+        )
+        return empty

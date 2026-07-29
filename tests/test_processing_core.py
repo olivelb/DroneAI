@@ -6,7 +6,6 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 
-
 APP3_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
 sys.path.insert(0, str(APP3_ROOT))
 

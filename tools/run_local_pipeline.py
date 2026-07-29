@@ -5,13 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_MARKER = ".droneai-local-workspace.json"

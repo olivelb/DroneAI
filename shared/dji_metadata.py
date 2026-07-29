@@ -13,7 +13,6 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-
 SEQUENCE_PATTERN = re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$")
 
 
