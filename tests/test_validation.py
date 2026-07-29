@@ -156,6 +156,18 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
 
     assert params["projected_crs_mode"] == "auto-local"
     assert params["projected_crs"] == ""
+    assert params["feature_type"] == "SIFT"
+    assert params["feature_max_image_size"] == "2400"
+    assert params["feature_max_num_features"] == "4096"
+    assert params["matcher_type"] == "STANDARD"
+    assert params["matching_strategy"] == "gps_pairs"
+    assert params["camera_model"] == "SIMPLE_RADIAL"
+    assert params["alignment_engine"] == "auto"
+    assert params["global_mapper_ba_iterations"] == "2"
+    assert params["global_mapper_ceres_iterations"] == "50"
+    assert params["global_mapper_skip_retriangulation"] is False
+    assert params["mapping_timeout_seconds"] == "2400"
+    assert params["mvs_max_image_size"] == "2400"
     assert params["gs_backend"] == "dronegs"
     assert params["gs_iterations"] == "15000"
     assert params["gs_cap_max"] == "1500000"

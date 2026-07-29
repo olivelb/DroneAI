@@ -94,9 +94,9 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "projected_crs_mode": "auto-local",
         "projected_crs": "",
         "feature_type": "SIFT",
-        "feature_max_image_size": "1600",
+        "feature_max_image_size": "2400",
         "feature_num_threads": "-1",
-        "feature_max_num_features": "2048",
+        "feature_max_num_features": "4096",
         "matcher_type": "STANDARD",
         "matching_strategy": "gps_pairs",
         "camera_model": "SIMPLE_RADIAL",
@@ -109,18 +109,18 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "gps_pair_temporal_neighbors": "6",
         "gps_pair_max_distance_m": "0",
         "global_mapper_max_tracks": "2000000",
-        "global_mapper_ba_iterations": "1",
-        "global_mapper_skip_retriangulation": True,
+        "global_mapper_ba_iterations": "2",
+        "global_mapper_skip_retriangulation": False,
         "global_mapper_ceres_iterations": "50",
         "minimum_registration_ratio": "0.97",
         "maximum_mean_reprojection_error_px": "2.0",
         "minimum_median_track_length": "3.0",
-        "mapping_timeout_seconds": "1200",
+        "mapping_timeout_seconds": "2400",
         "rtk_refinement_enabled": True,
         "rtk_refinement_timeout_seconds": "900",
         "rtk_refinement_iterations": "25",
         "alignment_max_error": "10.0",
-        "mvs_max_image_size": "1600",
+        "mvs_max_image_size": "2400",
         "ortho_mesh_resolution": "0.02",
         **DRONEGS_PRODUCTION_DEFAULTS,
         "gs_filter_enabled": True,
@@ -158,7 +158,10 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "feature_type": {"label": "Feature Extractor", "type": "select", "group": "Features", "options": FEATURE_TYPES},
     "feature_max_image_size": {
         "label": "Feature Resolution (maximum side, px)",
-        "description": "1600 px is the validated fast profile; 2400 px is a slower quality comparison.",
+        "description": (
+            "2400 px is the default planimetric survey profile validated on "
+            "Helenenschacht; use 1600 px for the explicit fast profile."
+        ),
         "type": "int",
         "group": "Features",
         "min": 256,
@@ -176,7 +179,10 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "feature_max_num_features": {
         "label": "Maximum Features per Image",
-        "description": "2048 is optimized for speed; increase with resolution only when additional detail is useful.",
+        "description": (
+            "4096 is the planimetric survey default; 2048 reduces extraction "
+            "and matching time in the fast profile."
+        ),
         "type": "int",
         "group": "Features",
         "min": 256,
@@ -271,7 +277,10 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "global_mapper_ba_iterations": {
         "label": "Global BA Passes",
-        "description": "One pass is the validated fast profile; a second pass improves the quality comparison but adds several minutes.",
+        "description": (
+            "Two passes are the validated planimetric default; one pass is "
+            "reserved for the explicit fast profile."
+        ),
         "type": "int",
         "group": "Mapping",
         "min": 1,
@@ -280,7 +289,10 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "global_mapper_skip_retriangulation": {
         "label": "Skip Final Retriangulation",
-        "description": "Keep enabled for the sub-hour profile. Disable it to run the slower quality refinement.",
+        "description": (
+            "Disabled by default so the final survey reconstruction is "
+            "retriangulated; enable it only for the faster profile."
+        ),
         "type": "bool",
         "group": "Mapping",
     },

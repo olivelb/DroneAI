@@ -878,14 +878,14 @@ The worker supports two profile families.
 
 Characteristics:
 
-- feature type: SIFT CUDA, 1,600 px and 2,048 features by default
+- feature type: SIFT CUDA, 2,400 px and 4,096 features by default
 - matcher type: bounded brute-force CUDA over a GPS/temporal pair graph
 - mapper command: `global_mapper`
 - view graph calibration enabled
 - orientation reading enabled
-- one global BA pass and no final iterative retriangulation
+- two global BA passes and final iterative retriangulation
 - automatic GLOMAP primary with compatible Caspar/Ceres fallback inside one
-  shared 20-minute budget
+  shared 40-minute budget
 - covariance-aware RTK refinement enabled only when corrected MRK coverage is
   sufficient
 - Gaussian Splatting orthomosaic enabled (default)
@@ -1242,13 +1242,16 @@ instead of hiding it behind fixed worker constants:
 | Matching | brute-force/LightGlue choice, GPS/spatial/sequential graph, neighbor and distance bounds |
 | Mapping | camera model, GLOMAP/Caspar/Ceres engine, BA passes and iterations, retriangulation, registration gate and timeout |
 | Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance and bounded RTK pass |
-| Undistortion | maximum image size, 1,600 px in production V1 |
+| Undistortion | maximum image size, 2,400 px in the survey profile |
 
-The `modern` defaults reproduce the measured sub-hour ALBAGNAC/SAVERES path:
-SIFT CUDA at 1,600 px, 2,048 features, bounded GPS pairs, one GLOMAP BA pass,
-no final retriangulation, a 20-minute mapping budget and a 1,600 px
-undistortion ceiling. Selecting a preset resets every field; editing an expert
-value keeps it visible and marks the recipe custom.
+The `modern` defaults use the best planimetric candidate measured on
+Helenenschacht: SIFT CUDA at 2,400 px, 4,096 features, bounded GPS pairs, two
+GLOMAP BA passes, final retriangulation, a 40-minute mapping budget and a
+2,400 px undistortion ceiling. It registered 176/176 images in 174 seconds and
+reached 5.0 cm horizontal checkpoint RMSE. The measured ALBAGNAC/SAVERES
+sub-hour path remains the explicit fast preset at 1,600 px, 2,048 features,
+one BA pass and no retriangulation. Selecting a preset resets every field;
+editing an expert value keeps it visible and marks the recipe custom.
 
 ### GS pipeline tunables exposed in the dashboard UI
 

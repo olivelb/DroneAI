@@ -1,9 +1,10 @@
-# Fast aerial alignment
+# Fast and planimetric aerial alignment
 
 DroneAI's modern alignment path targets COLMAP 4.1.1 and uses:
 
 - a bounded GPS/temporal pair graph instead of exhaustive matching;
-- SIFT CUDA extraction and brute-force matching at 1600 px by default;
+- SIFT CUDA extraction and brute-force matching at 2400 px and 4096 features
+  by default;
 - optional ALIKED N16Rot/N32 frontends for smaller datasets or higher-end GPUs;
 - GLOMAP as the primary global SfM engine;
 - incremental mapping with Caspar BA as the automatic fallback when the
@@ -13,6 +14,13 @@ DroneAI's modern alignment path targets COLMAP 4.1.1 and uses:
 
 The pipeline never automatically launches exhaustive matching or an unbounded
 CPU bundle adjustment.
+
+The production default is the best horizontal-checkpoint candidate measured
+on Helenenschacht: two global BA passes and final retriangulation. It reached
+5.0 cm horizontal RMSE on five independent checkpoints in 174 seconds for
+176/176 registered images. The earlier 1600 px, 2048-feature, one-pass profile
+remains available as the explicit fast preset. See
+[`benchmarks/helenenschacht-alignment-quality-2026-07-29.md`](benchmarks/helenenschacht-alignment-quality-2026-07-29.md).
 
 ## Build
 
@@ -64,6 +72,10 @@ tools/run_local_colmap.sh \
   --matcher-type SIFT_BRUTEFORCE \
   --camera-model SIMPLE_RADIAL \
   --gps-quality standard \
+  --feature-max-image-size 1600 \
+  --feature-max-num-features 2048 \
+  --global-ba-iterations 1 \
+  --no-global-retriangulation \
   --mapping-timeout-seconds 1200
 ```
 
@@ -81,14 +93,17 @@ processes the locally staged images close to one image per second, and the
 bounded GPS graph keeps brute-force matching tractable.
 
 The mapping timeout is shared by GLOMAP and its incremental fallback. The
-fallback receives only the unused portion of the 20-minute default, preventing
-two consecutive long attempts from silently doubling the runtime.
+fallback receives only the unused portion of the budget, preventing two
+consecutive long attempts from silently doubling the runtime. Production
+defaults to 40 minutes for large surveys; the explicit fast profile uses
+20 minutes.
 
-The fast profile runs one global BA round and skips GLOMAP's final iterative
+The explicit fast profile runs one global BA round and skips GLOMAP's final iterative
 retriangulation. On ALBAGNAC, a second BA round cost about 5.4 minutes and the
 retriangulation exceeded 4 minutes after the model was already globally
-optimized. Use `--global-ba-iterations 2 --global-retriangulation` for an
-offline high-quality comparison when the one-hour target does not apply.
+optimized. The dashboard's default survey profile accepts that cost for the
+better measured planimetry; select the fast preset when the one-hour target is
+the governing constraint.
 
 The provided ALBAGNAC MRK files report median horizontal uncertainties around
 1.5–1.6 m and vertical uncertainties around 2.5–2.7 m, so the uncorrected
@@ -135,10 +150,10 @@ points and 2,559,516 observations, and has a mean track length of 7.61. At the
 residual and a 2.18 m horizontal P95, consistent with the approximately 1.53 m
 median uncertainty reported by these non-RTK MRK records.
 
-Use the fast profile for the operational one-hour target. For a controlled
-quality comparison, preserve this model and run a separate workspace at
-2400 px with two BA rounds and retriangulation; judge the benefit using surveyed
-checkpoints rather than the input GNSS residual alone.
+Use the fast profile for the operational one-hour target. The default survey
+profile uses 2400 px, two BA rounds and retriangulation. Judge every new
+camera/network combination using surveyed checkpoints rather than the input
+GNSS residual alone.
 
 ### Measured SAVERES RTK result
 

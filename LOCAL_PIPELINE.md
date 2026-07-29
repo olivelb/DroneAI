@@ -46,8 +46,9 @@ Profiles:
 
 - `smoke`: 25 contiguous images, sequential matching, Gaussian `smoke`,
   one-tile YOLO smoke detection
-- `standard`: all readable images, spatial matching, Gaussian `low-memory`,
-  full YOLO detection
+- `standard`: all readable images, bounded GPS matching, SIFT CUDA at 2400 px
+  and 4096 features, two global BA passes with final retriangulation, Gaussian
+  `low-memory`, and full YOLO detection
 
 Resume and control examples:
 
@@ -162,10 +163,12 @@ After a successful smoke test:
   "/mnt/d/GAJAN/GAJAN R2S" \
   "$HOME/droneAI-workspaces/gajan-r2s-full" \
   --stage align \
-  --matcher spatial \
-  --feature-max-image-size 3200 \
   --alignment-max-error 10
 ```
+
+With no alignment overrides, this command uses the same planimetric survey
+profile as the dashboard: GPS pairs, SIFT brute force, `SIMPLE_RADIAL`,
+2400 px, 4096 features, two BA passes and final retriangulation.
 
 Use `--stage undistort` after validating the sparse model if undistorted images
 are required for a later Gaussian Splatting experiment.

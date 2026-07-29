@@ -38,6 +38,35 @@ def test_standard_pipeline_selects_dronegs_explicitly():
     assert command[command.index("--backend") + 1] == "dronegs"
 
 
+def test_standard_pipeline_uses_planimetric_survey_alignment_defaults():
+    profile = MODULE.PROFILES["standard"]
+    command = MODULE.stage_command(
+        "colmap",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+
+    expected_values = {
+        "--matcher": "gps",
+        "--engine": "auto",
+        "--feature-type": "SIFT",
+        "--matcher-type": "SIFT_BRUTEFORCE",
+        "--camera-model": "SIMPLE_RADIAL",
+        "--feature-max-image-size": "2400",
+        "--feature-max-num-features": "4096",
+        "--global-ba-iterations": "2",
+        "--global-ceres-iterations": "50",
+        "--mapping-timeout-seconds": "2400",
+    }
+    for flag, expected in expected_values.items():
+        assert command[command.index(flag) + 1] == expected
+    assert "--global-retriangulation" in command
+    assert "--no-global-retriangulation" not in command
+
+
 def test_colmap_completion_requires_model_alignment_and_images(tmp_path):
     workspace = tmp_path / "workspace"
     for name in ("cameras.bin", "images.bin", "points3D.bin"):

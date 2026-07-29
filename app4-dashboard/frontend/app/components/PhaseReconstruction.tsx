@@ -69,12 +69,19 @@ const isTrue = (value: unknown) =>
 const ALIGNMENT_PRESETS = [
   {
     id: "fast",
-    label: "Operational fast",
-    description: "Validated ALBAGNAC profile, designed to stay below one hour.",
+    label: "Rapide · grande mission",
+    description: "Profil ALBAGNAC sous une heure, avec une passe BA sans retriangulation finale.",
     icon: <Zap size={16} />,
     values: {
+      feature_type: "SIFT",
       feature_max_image_size: "1600",
       feature_max_num_features: "2048",
+      matcher_type: "STANDARD",
+      matching_strategy: "gps_pairs",
+      camera_model: "SIMPLE_RADIAL",
+      alignment_engine: "auto",
+      use_view_graph_calibrator: true,
+      read_orientation: true,
       global_mapper_ba_iterations: "1",
       global_mapper_ceres_iterations: "50",
       global_mapper_skip_retriangulation: true,
@@ -86,21 +93,28 @@ const ALIGNMENT_PRESETS = [
     },
   },
   {
-    id: "quality",
-    label: "Quality comparison",
-    description: "More image detail, two BA passes and final retriangulation.",
+    id: "survey",
+    label: "Relevé précis · défaut",
+    description: "Meilleur profil planimétrique mesuré : 2400 px, deux passes BA et retriangulation.",
     icon: <ShieldCheck size={16} />,
     values: {
+      feature_type: "SIFT",
       feature_max_image_size: "2400",
       feature_max_num_features: "4096",
+      matcher_type: "STANDARD",
+      matching_strategy: "gps_pairs",
+      camera_model: "SIMPLE_RADIAL",
+      alignment_engine: "auto",
+      use_view_graph_calibrator: true,
+      read_orientation: true,
       global_mapper_ba_iterations: "2",
-      global_mapper_ceres_iterations: "80",
+      global_mapper_ceres_iterations: "50",
       global_mapper_skip_retriangulation: false,
       mapping_timeout_seconds: "2400",
       mvs_max_image_size: "2400",
       rtk_refinement_enabled: true,
-      rtk_refinement_timeout_seconds: "1200",
-      rtk_refinement_iterations: "50",
+      rtk_refinement_timeout_seconds: "900",
+      rtk_refinement_iterations: "25",
     },
   },
 ] as const;
@@ -186,11 +200,11 @@ export default function PhaseReconstruction() {
         <div className="surface p-5 sm:p-6">
           <div className="eyebrow">Profil de production</div>
           <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            Vitesse ou détail
+            Relevé précis ou traitement rapide
           </h3>
           <p className="mt-1 text-xs leading-5 text-[#77847f]">
-            Un profil applique un ensemble cohérent et éprouvé. Les réglages
-            essentiels restent modifiables ci-dessous.
+            Le relevé précis est sélectionné par défaut. Le profil rapide reste
+            disponible pour les grandes missions ou les contrôles exploratoires.
           </p>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             {ALIGNMENT_PRESETS.map((preset) => (

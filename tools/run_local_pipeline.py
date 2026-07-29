@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -12,9 +13,15 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from shared.pipeline_params import PIPELINE_DEFAULTS
+
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 MANIFEST_NAME = "pipeline_run.json"
 STAGE_ORDER = ("colmap", "gaussian", "detection")
+MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 
 
 @dataclass(frozen=True)
@@ -50,9 +57,30 @@ PROFILES = {
             "--selection",
             "uniform",
             "--matcher",
-            "spatial",
+            "gps",
+            "--engine",
+            str(MODERN_DEFAULTS["alignment_engine"]),
+            "--feature-type",
+            str(MODERN_DEFAULTS["feature_type"]),
+            "--matcher-type",
+            "SIFT_BRUTEFORCE",
+            "--camera-model",
+            str(MODERN_DEFAULTS["camera_model"]),
             "--feature-max-image-size",
-            "3200",
+            str(MODERN_DEFAULTS["feature_max_image_size"]),
+            "--feature-max-num-features",
+            str(MODERN_DEFAULTS["feature_max_num_features"]),
+            "--global-ba-iterations",
+            str(MODERN_DEFAULTS["global_mapper_ba_iterations"]),
+            "--global-ceres-iterations",
+            str(MODERN_DEFAULTS["global_mapper_ceres_iterations"]),
+            *(
+                ("--no-global-retriangulation",)
+                if MODERN_DEFAULTS["global_mapper_skip_retriangulation"]
+                else ("--global-retriangulation",)
+            ),
+            "--mapping-timeout-seconds",
+            str(MODERN_DEFAULTS["mapping_timeout_seconds"]),
         ),
         gaussian_profile="low-memory",
         gaussian_backend="dronegs",
