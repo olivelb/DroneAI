@@ -7,10 +7,27 @@ The frontend:
 - establishes a role-bearing HttpOnly session from an operator-provided API
   key without storing that key in JavaScript or browser storage;
 - uploads and browses S3-backed datasets through the dashboard API;
-- submits, resumes, cancels and deletes missions;
-- renders pipeline parameters and configured COLMAP work drives;
-- displays persisted mission summaries and live WebSocket status;
-- previews mission rasters and links to generated S3 objects.
+- presents the complete workflow as five focused stages: preparation,
+  reconstruction, DroneGS production, AI detection and Results;
+- discovers the work drives actually mounted by the runtime instead of
+  exposing host-specific drive letters;
+- keeps production presets prominent while resolution, BA passes,
+  retriangulation, quality gates and expert parameters remain accessible in
+  collapsible advanced sections;
+- submits, resumes, cancels and deletes missions and exposes live status in a
+  dedicated monitor drawer;
+- renders large orthomosaics and height maps through bounded COG tiles;
+- launches retryable YOLO/SAM analyses, controls campaign visibility and
+  searches persisted objects with automatic map framing;
+- provides a full-screen GIS viewer with measurements and manual
+  point/line/polygon creation, editing, tags, descriptions and colors;
+- downloads COG/GeoTIFF rasters and QGIS-ready GeoPackage/GeoJSON layers.
+  GeoPackages default to the raster CRS or use WGS84/custom EPSG; GeoJSON stays
+  in EPSG:4326.
+
+Chromium-based browsers open a native save-file picker and stream large
+downloads directly to the selected file. Other browsers use their configured
+download folder.
 
 ## Local development
 

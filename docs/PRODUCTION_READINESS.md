@@ -97,8 +97,12 @@ transformation and must not be inferred from EXIF.
 Raster products are tiled COGs with internal overviews, a bounded WebP preview
 and a metadata sidecar. The map API reprojects each requested tile precisely
 to Web Mercator without loading the complete orthomosaic. AI segmentations and
-detections are WGS84/PostGIS vectors queried by viewport and downloadable as
-GeoJSON; no second full-size annotated raster is generated.
+detections are stored as WGS84/PostGIS vectors and queried by viewport; no
+second full-size annotated raster is generated. On download, RFC 7946 GeoJSON
+remains EPSG:4326 while GeoPackage defaults to the orthomosaic EPSG and can be
+reprojected to WGS84 or an explicitly validated EPSG code. Raster and vector
+downloads are streamed, and a missing/unresolvable raster CRS produces an
+explicit WGS84 fallback header.
 
 ## Distributed durability contract
 

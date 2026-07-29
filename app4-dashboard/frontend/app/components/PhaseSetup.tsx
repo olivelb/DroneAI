@@ -3,17 +3,15 @@
 import React, { useState } from "react";
 import {
   ChevronRight,
-  Cpu,
   File,
   Folder,
   Home,
-  ScanSearch,
-  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
 import { useStore } from "../lib/store";
 import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi } from "../lib/api";
+import StageHeader from "./StageHeader";
 
 export default function PhaseSetup() {
   const {
@@ -58,63 +56,28 @@ export default function PhaseSetup() {
   };
 
   return (
-    <div className="space-y-6">
-      <section className="surface overflow-hidden">
-        <div className="p-5 sm:p-6">
-          <div className="eyebrow">Stage 01 · Mission intake</div>
-          <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-            Prepare the aerial mission
-          </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-[#6f7c78]">
-            Choose the source imagery, name the mission and review the complete
-            processing chain before committing GPU time.
-          </p>
-        </div>
-      </section>
-
-      <section className="surface p-4 sm:p-5">
-        <div className="grid gap-2 sm:grid-cols-3">
-          {[
-            {
-              icon: <Cpu size={17} />,
-              title: "Align",
-              text: "GPS graph + GLOMAP",
-              tone: "bg-[#e1f3ef] text-[#0f766e]",
-            },
-            {
-              icon: <Sparkles size={17} />,
-              title: "Render",
-              text: "DroneGS + orthomosaic",
-              tone: "bg-[#fff1cf] text-[#b66b05]",
-            },
-            {
-              icon: <ScanSearch size={17} />,
-              title: "Understand",
-              text: "Tiling + AI detection",
-              tone: "bg-[#e8eefb] text-[#3458a5]",
-            },
-          ].map((stage, index) => (
-            <div
-              key={stage.title}
-              className="flex items-center gap-3 rounded-2xl border border-[#e1e8e5] bg-[#fafcfb] p-3"
-            >
-              <span
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${stage.tone}`}
-              >
-                {stage.icon}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-bold text-[#2e3b37]">
-                  {index + 1}. {stage.title}
-                </span>
-                <span className="block truncate text-[11px] text-[#7a8783]">
-                  {stage.text}
-                </span>
-              </span>
+    <div className="space-y-5">
+      <StageHeader
+        eyebrow="Étape 01 · Préparation"
+        title="Préparer la mission aérienne"
+        description="Sélectionnez la collection d’images et donnez un identifiant durable à cette exécution. Les imports et anciennes missions restent accessibles sans encombrer le parcours principal."
+        icon={<Folder size={21} />}
+        iconClassName="bg-[#e1f3ef] text-[#0f766e]"
+        status={
+          <div className={`rounded-2xl border px-4 py-3 ${
+            selectedPath
+              ? "border-emerald-200 bg-emerald-50"
+              : "border-amber-200 bg-amber-50"
+          }`}>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-[#7c8884]">
+              Entrée
             </div>
-          ))}
-        </div>
-      </section>
+            <div className="mt-0.5 max-w-56 truncate text-sm font-semibold text-[#34413d]">
+              {selectedPath || "Dataset à sélectionner"}
+            </div>
+          </div>
+        }
+      />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* Left: Dataset browser */}
@@ -227,20 +190,22 @@ export default function PhaseSetup() {
           )}
         </div>
 
-        {/* Upload */}
-        <div className="border-t border-[#e7ecea] p-4">
-          <h3 className="eyebrow mb-3">Upload dataset</h3>
-          <div className="space-y-2">
+        <details className="border-t border-[#e7ecea]">
+          <summary className="flex min-h-14 cursor-pointer list-none items-center gap-2 px-4 text-xs font-bold text-[#52615c] hover:bg-[#f7faf9]">
+            <Upload size={14} className="text-[#0f766e]" />
+            Importer un nouveau dataset
+          </summary>
+          <div className="space-y-2 border-t border-[#edf1ef] p-4">
             <input
               type="text"
-              placeholder="Dataset name"
+              placeholder="Nom du dataset"
               value={uploadDatasetName}
               onChange={(e) => setUploadDatasetName(e.target.value)}
               className="input-control min-h-11"
             />
             <label className="flex min-h-12 cursor-pointer items-center gap-2 rounded-xl border border-dashed border-[#c8d3cf] bg-[#f7faf9] px-3 py-3 text-xs text-[#687571] hover:border-[#68bfae] hover:text-[#0f766e]">
               <Upload size={14} />
-              {uploadFiles ? `${uploadFiles.length} file(s) selected` : "Select images…"}
+              {uploadFiles ? `${uploadFiles.length} fichier(s) sélectionné(s)` : "Sélectionner les images…"}
               <input type="file" multiple className="hidden" onChange={(e) => setUploadFiles(e.target.files)} />
             </label>
             <button
@@ -248,7 +213,7 @@ export default function PhaseSetup() {
               disabled={isUploading || !uploadFiles || uploadFiles.length === 0 || !uploadDatasetName.trim()}
               className="min-h-11 w-full rounded-xl bg-[#0f766e] px-3 py-2 text-sm font-semibold text-white hover:bg-[#115e59] disabled:cursor-not-allowed disabled:bg-[#d4ddda] disabled:text-white"
             >
-              {isUploading ? "Uploading…" : "Upload"}
+              {isUploading ? "Import en cours…" : "Importer"}
             </button>
             {uploadProgress && (
               <div className="space-y-1">
@@ -267,7 +232,7 @@ export default function PhaseSetup() {
               </div>
             )}
           </div>
-        </div>
+        </details>
       </div>
 
       {/* Right: Mission config */}
@@ -307,11 +272,17 @@ export default function PhaseSetup() {
           )}
         </div>
 
-        {/* Existing missions */}
-        <div className="surface p-5 sm:p-6">
-          <h3 className="text-sm font-bold text-[#34413d]">Previous missions</h3>
-          <p className="mt-1 text-xs text-[#7a8783]">Resume or inspect an existing production run.</p>
-          <div className="mt-3 max-h-[250px] space-y-1.5 overflow-y-auto">
+        <details className="surface">
+          <summary className="flex min-h-16 cursor-pointer list-none items-center justify-between gap-3 px-5">
+            <span>
+              <span className="block text-sm font-bold text-[#34413d]">Missions précédentes</span>
+              <span className="mt-0.5 block text-xs text-[#7a8783]">Reprendre ou inspecter une production.</span>
+            </span>
+            <span className="rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#65736e]">
+              {Object.keys(missions).length}
+            </span>
+          </summary>
+          <div className="max-h-[300px] space-y-1.5 overflow-y-auto border-t border-[#e5ebe8] p-4">
             {Object.values(missions).sort((a, b) => b.updated_at - a.updated_at).map((m) => (
               <button
                 key={m.vol_id}
@@ -328,9 +299,9 @@ export default function PhaseSetup() {
                 }`}>{m.overall_status}</span>
               </button>
             ))}
-            {Object.keys(missions).length === 0 && <p className="text-xs text-gray-400">No missions yet</p>}
+            {Object.keys(missions).length === 0 && <p className="text-xs text-gray-400">Aucune mission</p>}
           </div>
-        </div>
+        </details>
       </div>
     </div>
     </div>

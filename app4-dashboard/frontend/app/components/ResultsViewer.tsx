@@ -6,10 +6,7 @@ import type { Feature, Geometry } from "geojson";
 import {
   AlertTriangle,
   CheckCircle2,
-  Layers,
   Map as MapIcon,
-  Search,
-  Sparkles,
   X,
 } from "lucide-react";
 import {
@@ -26,17 +23,17 @@ import {
 import { useStore } from "../lib/store";
 import type { AnalysisCreate, AnalysisRun } from "../lib/types";
 import type { MapTool } from "./GeospatialMap";
-import AnalysisPanel from "./geospatial/AnalysisPanel";
 import {
   DraftFeatureEditor,
   SelectedFeatureEditor,
 } from "./geospatial/FeatureEditors";
-import LayersPanel from "./geospatial/LayersPanel";
-import SearchPanel from "./geospatial/SearchPanel";
+import ViewerHeader from "./geospatial/ViewerHeader";
+import ViewerSidePanel from "./geospatial/ViewerSidePanel";
+import ViewerToolbar from "./geospatial/ViewerToolbar";
 import {
   DEFAULT_ANALYSIS,
   splitTags,
-  TOOL_BUTTONS,
+  TOOL_SHORTCUTS,
   type ViewerLayer,
   type WorkspacePanel,
 } from "./geospatial/workspace-config";
@@ -44,6 +41,23 @@ import {
 const GeospatialMap = dynamic(() => import("./GeospatialMap"), {
   ssr: false,
 });
+
+const geometryTool = (geometry?: Geometry): MapTool => {
+  if (geometry?.type === "Point" || geometry?.type === "MultiPoint") {
+    return "point";
+  }
+  if (geometry?.type === "LineString" || geometry?.type === "MultiLineString") {
+    return "line";
+  }
+  return "polygon";
+};
+
+const isTypingTarget = (target: EventTarget | null) =>
+  target instanceof HTMLElement &&
+  (target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT" ||
+    target.isContentEditable);
 
 export default function ResultsViewer() {
   const { activeMission, missions } = useStore();
@@ -56,13 +70,13 @@ export default function ResultsViewer() {
   );
   const [selectedVol, setSelectedVol] = useState<string | null>(null);
   const mission = selectedVol ? missions[selectedVol] : activeMission;
-  const missionId =
-    mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
+  const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
 
-  const [activePanel, setActivePanel] =
-    useState<WorkspacePanel>("layers");
-  const [activeLayer, setActiveLayer] =
-    useState<ViewerLayer>("ortho");
+  const [expanded, setExpanded] = useState(false);
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [activePanel, setActivePanel] = useState<WorkspacePanel>("layers");
+  const [activeLayer, setActiveLayer] = useState<ViewerLayer>("ortho");
   const [rasterOpacity, setRasterOpacity] = useState(1);
   const [showLegacy, setShowLegacy] = useState(true);
   const [showManual, setShowManual] = useState(true);
@@ -76,16 +90,14 @@ export default function ResultsViewer() {
 
   const [tool, setTool] = useState<MapTool>("navigate");
   const [toolHint, setToolHint] = useState("");
-  const [draftGeometry, setDraftGeometry] =
-    useState<Geometry | null>(null);
+  const [draftGeometry, setDraftGeometry] = useState<Geometry | null>(null);
+  const [redrawingFeature, setRedrawingFeature] = useState(false);
   const [measurement, setMeasurement] = useState("");
   const [annotationName, setAnnotationName] = useState("");
-  const [annotationDescription, setAnnotationDescription] =
-    useState("");
+  const [annotationDescription, setAnnotationDescription] = useState("");
   const [annotationColor, setAnnotationColor] = useState("#10b981");
   const [annotationTags, setAnnotationTags] = useState("terrain");
-  const [selectedFeature, setSelectedFeature] =
-    useState<Feature | null>(null);
+  const [selectedFeature, setSelectedFeature] = useState<Feature | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
 
   const [searchText, setSearchText] = useState("");
@@ -142,6 +154,58 @@ export default function ResultsViewer() {
     };
   }, [missionId, refreshAnalyses]);
 
+  useEffect(() => {
+    if (!expanded) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [expanded]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
+      const key = event.key.toLocaleLowerCase();
+      const shortcut = Object.entries(TOOL_SHORTCUTS).find(
+        ([, value]) => value.toLocaleLowerCase() === key,
+      );
+      if (shortcut) {
+        const nextTool = shortcut[0] as MapTool;
+        setTool(nextTool);
+        setRedrawingFeature(false);
+        if (nextTool !== "navigate") {
+          setSelectedFeature(null);
+          setDraftGeometry(null);
+          setMeasurement("");
+        }
+        return;
+      }
+      if (key === "f") {
+        setExpanded((current) => !current);
+        return;
+      }
+      if (key === "b") {
+        setPanelOpen((current) => !current);
+        return;
+      }
+      if (event.key === "Escape") {
+        if (draftGeometry) {
+          setDraftGeometry(null);
+          return;
+        }
+        if (redrawingFeature || tool !== "navigate") {
+          setRedrawingFeature(false);
+          setTool("navigate");
+          return;
+        }
+        if (expanded) setExpanded(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [draftGeometry, expanded, redrawingFeature, tool]);
+
   const hasDepth = availableFiles.some((file) =>
     file.endsWith("orthomosaic.height.tif"),
   );
@@ -166,9 +230,7 @@ export default function ResultsViewer() {
       setShowAnalysisForm(false);
       setNotice("Analyse IA mise en file avec reprise automatique.");
     } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : "Échec du lancement",
-      );
+      setError(reason instanceof Error ? reason.message : "Échec du lancement");
     } finally {
       setSubmittingAnalysis(false);
     }
@@ -187,11 +249,10 @@ export default function ResultsViewer() {
       setSearchResults(response.features);
       if (response.bounds) setFocusBounds(response.bounds);
       setActivePanel("search");
+      setPanelOpen(true);
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Recherche impossible",
+        reason instanceof Error ? reason.message : "Recherche impossible",
       );
     } finally {
       setBusySearch(false);
@@ -199,12 +260,17 @@ export default function ResultsViewer() {
   };
 
   const geometryReady = (geometry: Geometry, result?: string) => {
+    if (redrawingFeature && selectedFeature) {
+      setSelectedFeature({ ...selectedFeature, geometry });
+      setRedrawingFeature(false);
+      setTool("navigate");
+      setNotice("Nouvelle géométrie prête. Enregistrez pour confirmer.");
+      return;
+    }
     setDraftGeometry(geometry);
     setMeasurement(result ?? "");
     setTool("navigate");
-    setAnnotationName(
-      result ? `Mesure ${result}` : "Nouvelle annotation",
-    );
+    setAnnotationName(result ? `Mesure ${result}` : "Nouvelle annotation");
   };
 
   const saveAnnotation = async () => {
@@ -233,9 +299,7 @@ export default function ResultsViewer() {
   };
 
   const selectedFeatureId = String(
-    selectedFeature?.properties?.feature_id ??
-      selectedFeature?.id ??
-      "",
+    selectedFeature?.properties?.feature_id ?? selectedFeature?.id ?? "",
   );
 
   const removeSelected = async () => {
@@ -247,9 +311,7 @@ export default function ResultsViewer() {
       setNotice("Annotation supprimée.");
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Suppression impossible",
+        reason instanceof Error ? reason.message : "Suppression impossible",
       );
     }
   };
@@ -257,27 +319,36 @@ export default function ResultsViewer() {
   const saveSelected = async () => {
     if (!missionId || !selectedFeature || !selectedFeatureId) return;
     try {
-      const updated = await updateMapFeature(
-        missionId,
-        selectedFeatureId,
-        {
-          name: selectedFeature.properties?.name || "Annotation",
-          description: selectedFeature.properties?.description || "",
-          color: selectedFeature.properties?.color || "#10b981",
-          tags: selectedFeature.properties?.tags || [],
-          version: selectedFeature.properties?.version || 1,
-        },
-      );
+      const updated = await updateMapFeature(missionId, selectedFeatureId, {
+        geometry: selectedFeature.geometry,
+        name: selectedFeature.properties?.name || "Annotation",
+        description: selectedFeature.properties?.description || "",
+        color: selectedFeature.properties?.color || "#10b981",
+        tags: selectedFeature.properties?.tags || [],
+        version: selectedFeature.properties?.version || 1,
+      });
       setSelectedFeature(updated);
       setRefreshToken((value) => value + 1);
-      setNotice("Annotation mise à jour.");
+      setNotice("Annotation et géométrie mises à jour.");
     } catch (reason) {
       setError(
-        reason instanceof Error
-          ? reason.message
-          : "Mise à jour impossible",
+        reason instanceof Error ? reason.message : "Mise à jour impossible",
       );
     }
+  };
+
+  const beginRedraw = () => {
+    if (!selectedFeature?.geometry) return;
+    setRedrawingFeature(true);
+    setTool(geometryTool(selectedFeature.geometry));
+    setNotice("");
+  };
+
+  const selectFeature = (feature: Feature) => {
+    setSelectedFeature(feature);
+    setDraftGeometry(null);
+    setRedrawingFeature(false);
+    setTool("navigate");
   };
 
   if (!missionId || sortedMissions.length === 0) {
@@ -294,63 +365,33 @@ export default function ResultsViewer() {
   }
 
   return (
-    <div className="space-y-4">
-      <section className="surface flex flex-col gap-4 p-4 sm:p-5 xl:flex-row xl:items-center">
-        <div className="min-w-0">
-          <div className="eyebrow">Espace géospatial</div>
-          <h2 className="mt-1 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-            Analyse, recherche et annotation
-          </h2>
-        </div>
-        <div className="flex flex-1 flex-col gap-2 sm:flex-row xl:justify-end">
-          <select
-            value={selectedVol ?? missionId}
-            onChange={(event) => setSelectedVol(event.target.value)}
-            className="input-control min-h-11 sm:max-w-64"
-          >
-            {sortedMissions.map((item) => (
-              <option key={item.vol_id} value={item.vol_id}>
-                {item.vol_id}
-              </option>
-            ))}
-          </select>
-          <div className="flex min-w-0 flex-1 sm:max-w-xl">
-            <input
-              value={searchText}
-              onChange={(event) => setSearchText(event.target.value)}
-              onKeyDown={(event) =>
-                event.key === "Enter" && void runSearch()
-              }
-              placeholder="Nom, description, tag ou classe…"
-              className="input-control min-h-11 rounded-r-none"
-            />
-            <button
-              type="button"
-              onClick={() => void runSearch()}
-              disabled={busySearch}
-              className="flex min-w-12 items-center justify-center rounded-r-xl bg-[#173f38] text-white hover:bg-[#0f766e] disabled:opacity-50"
-              aria-label="Rechercher"
-            >
-              <Search size={17} />
-            </button>
-          </div>
-        </div>
-      </section>
+    <div className={expanded ? "viewer-fullscreen" : "space-y-3"}>
+      <ViewerHeader
+        expanded={expanded}
+        panelOpen={panelOpen}
+        missionId={missionId}
+        selectedMission={selectedVol ?? missionId}
+        missions={sortedMissions}
+        searchText={searchText}
+        busySearch={busySearch}
+        onMissionChange={setSelectedVol}
+        onSearchTextChange={setSearchText}
+        onSearch={() => void runSearch()}
+        onPanelToggle={() => setPanelOpen((current) => !current)}
+        onShortcutsToggle={() => setShortcutsOpen((current) => !current)}
+        onExpandedToggle={() => setExpanded((current) => !current)}
+      />
 
       {(notice || error) && (
         <div
-          className={`flex items-center justify-between rounded-xl px-4 py-3 text-sm ${
+          className={`mx-3 mt-2 flex shrink-0 items-center justify-between rounded-xl px-4 py-2.5 text-sm ${
             error
               ? "bg-rose-50 text-rose-700"
               : "bg-emerald-50 text-emerald-700"
           }`}
         >
           <span className="flex items-center gap-2">
-            {error ? (
-              <AlertTriangle size={16} />
-            ) : (
-              <CheckCircle2 size={16} />
-            )}
+            {error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
             {error || notice}
           </span>
           <button
@@ -366,153 +407,132 @@ export default function ResultsViewer() {
         </div>
       )}
 
-      <div className="grid min-h-[720px] gap-4 xl:h-[calc(100vh-220px)] xl:grid-cols-[330px_minmax(0,1fr)]">
-        <aside className="surface order-2 flex min-h-0 flex-col overflow-hidden xl:order-none">
-          <div className="grid grid-cols-3 border-b border-[#e1e8e5] p-2">
-            {[
-              ["layers", Layers, "Couches"],
-              ["analysis", Sparkles, "IA"],
-              ["search", Search, "Objets"],
-            ].map(([id, Icon, label]) => (
-              <button
-                type="button"
-                key={String(id)}
-                onClick={() => setActivePanel(id as WorkspacePanel)}
-                className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold ${
-                  activePanel === id
-                    ? "bg-[#e8f5f1] text-[#0f766e]"
-                    : "text-[#76827e] hover:bg-[#f3f6f5]"
-                }`}
-              >
-                <Icon size={14} /> {String(label)}
-              </button>
-            ))}
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {activePanel === "layers" && (
-              <LayersPanel
-                missionId={missionId}
-                activeLayer={activeLayer}
-                hasDepth={hasDepth}
-                rasterOpacity={rasterOpacity}
-                showLegacy={showLegacy}
-                showManual={showManual}
-                analyses={analyses}
-                visibleRuns={visibleRuns}
-                onLayerChange={setActiveLayer}
-                onOpacityChange={setRasterOpacity}
-                onLegacyChange={setShowLegacy}
-                onManualChange={setShowManual}
-                onRunVisibilityChange={(runId, visible) =>
+      <div
+        className={`min-h-0 ${
+          expanded ? "flex-1 p-2 sm:p-3" : ""
+        }`}
+      >
+        <div
+          className={`relative grid min-h-0 gap-3 ${
+            expanded ? "h-full" : "min-h-[720px] xl:h-[calc(100vh-220px)]"
+          } ${
+            panelOpen
+              ? "xl:grid-cols-[320px_minmax(0,1fr)]"
+              : "grid-cols-[minmax(0,1fr)]"
+          }`}
+        >
+          {panelOpen && (
+            <ViewerSidePanel
+              expanded={expanded}
+              activePanel={activePanel}
+              onPanelChange={setActivePanel}
+              layers={{
+                missionId,
+                activeLayer,
+                hasDepth,
+                rasterOpacity,
+                showLegacy,
+                showManual,
+                analyses,
+                visibleRuns,
+                onLayerChange: setActiveLayer,
+                onOpacityChange: setRasterOpacity,
+                onLegacyChange: setShowLegacy,
+                onManualChange: setShowManual,
+                onRunVisibilityChange: (runId, visible) =>
                   setVisibleRuns((current) =>
                     visible
-                      ? [...current, runId]
+                      ? [...new Set([...current, runId])]
                       : current.filter((id) => id !== runId),
-                  )
-                }
-              />
-            )}
-            {activePanel === "analysis" && (
-              <AnalysisPanel
-                analyses={analyses}
-                form={analysisForm}
-                formVisible={showAnalysisForm}
-                submitting={submittingAnalysis}
-                onFormChange={setAnalysisForm}
-                onFormVisibilityChange={setShowAnalysisForm}
-                onSubmit={() => void submitAnalysis()}
-                onRetry={(runId) =>
-                  void retryAnalysis(missionId, runId).then(
-                    refreshAnalyses,
-                  )
-                }
-                onCancel={(runId) =>
-                  void cancelAnalysis(missionId, runId).then(
-                    refreshAnalyses,
-                  )
-                }
-              />
-            )}
-            {activePanel === "search" && (
-              <SearchPanel
-                source={searchSource}
-                runId={searchRun}
-                analyses={analyses}
-                results={searchResults}
-                onSourceChange={setSearchSource}
-                onRunChange={setSearchRun}
-                onSearch={() => void runSearch()}
-                onFeatureSelect={setSelectedFeature}
-                onFocus={setFocusBounds}
-              />
-            )}
-          </div>
-        </aside>
+                  ),
+              }}
+              analysis={{
+                analyses,
+                form: analysisForm,
+                formVisible: showAnalysisForm,
+                submitting: submittingAnalysis,
+                onFormChange: setAnalysisForm,
+                onFormVisibilityChange: setShowAnalysisForm,
+                onSubmit: () => void submitAnalysis(),
+                onRetry: (runId) =>
+                  void retryAnalysis(missionId, runId).then(refreshAnalyses),
+                onCancel: (runId) =>
+                  void cancelAnalysis(missionId, runId).then(refreshAnalyses),
+              }}
+              search={{
+                source: searchSource,
+                runId: searchRun,
+                analyses,
+                results: searchResults,
+                onSourceChange: setSearchSource,
+                onRunChange: setSearchRun,
+                onSearch: () => void runSearch(),
+                onFeatureSelect: selectFeature,
+                onFocus: setFocusBounds,
+              }}
+              exportPanel={{ missionId, hasDepth, visibleRunIds: visibleRuns }}
+            />
+          )}
 
-        <main className="relative order-1 min-h-[620px] overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#16201d] shadow-[0_20px_50px_rgba(20,32,28,0.12)] xl:order-none">
-          <div className="absolute left-3 top-3 z-[500] flex max-w-[calc(100%-24px)] flex-wrap gap-1.5 rounded-2xl border border-white/40 bg-white/92 p-2 shadow-lg backdrop-blur">
-            {TOOL_BUTTONS.map(({ id, label, icon: Icon }) => (
-              <button
-                type="button"
-                key={id}
-                title={label}
-                onClick={() => setTool(id)}
-                className={`flex min-h-9 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold ${
-                  tool === id
-                    ? "bg-[#173f38] text-white"
-                    : "text-[#53615d] hover:bg-[#edf3f1]"
-                }`}
-              >
-                <Icon size={14} />
-                <span className="hidden 2xl:inline">{label}</span>
-              </button>
-            ))}
-          </div>
-          {toolHint && (
-            <div className="absolute left-1/2 top-16 z-[500] -translate-x-1/2 rounded-full bg-[#17201e]/85 px-4 py-2 text-center text-xs text-white shadow backdrop-blur">
-              {toolHint}
-            </div>
-          )}
-          <GeospatialMap
-            key={`${missionId}:${activeLayer}`}
-            missionId={missionId}
-            layer={activeLayer}
-            rasterOpacity={rasterOpacity}
-            showLegacy={showLegacy}
-            showManual={showManual}
-            analyses={visibleAnalyses}
-            tool={tool}
-            focusBounds={focusBounds}
-            refreshToken={refreshToken}
-            onGeometryReady={geometryReady}
-            onFeatureSelect={setSelectedFeature}
-            onHint={setToolHint}
-          />
-          {draftGeometry && (
-            <DraftFeatureEditor
-              measurement={measurement}
-              name={annotationName}
-              description={annotationDescription}
-              color={annotationColor}
-              tags={annotationTags}
-              onNameChange={setAnnotationName}
-              onDescriptionChange={setAnnotationDescription}
-              onColorChange={setAnnotationColor}
-              onTagsChange={setAnnotationTags}
-              onClose={() => setDraftGeometry(null)}
-              onSave={() => void saveAnnotation()}
+          <main className="viewer-map-shell relative order-1 min-h-[620px] overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#16201d] shadow-[0_20px_50px_rgba(20,32,28,0.12)] xl:order-none xl:min-h-0">
+            <ViewerToolbar
+              tool={tool}
+              toolHint={toolHint}
+              redrawingFeature={redrawingFeature}
+              shortcutsOpen={shortcutsOpen}
+              onShortcutsClose={() => setShortcutsOpen(false)}
+              onToolChange={(nextTool) => {
+                setTool(nextTool);
+                setRedrawingFeature(false);
+                if (nextTool !== "navigate") {
+                  setSelectedFeature(null);
+                  setDraftGeometry(null);
+                  setMeasurement("");
+                }
+              }}
             />
-          )}
-          {selectedFeature && !draftGeometry && (
-            <SelectedFeatureEditor
-              feature={selectedFeature}
-              onChange={setSelectedFeature}
-              onClose={() => setSelectedFeature(null)}
-              onDelete={() => void removeSelected()}
-              onSave={() => void saveSelected()}
+
+            <GeospatialMap
+              missionId={missionId}
+              layer={activeLayer}
+              rasterOpacity={rasterOpacity}
+              showLegacy={showLegacy}
+              showManual={showManual}
+              analyses={visibleAnalyses}
+              tool={tool}
+              focusBounds={focusBounds}
+              refreshToken={refreshToken}
+              onGeometryReady={geometryReady}
+              onFeatureSelect={selectFeature}
+              onHint={setToolHint}
             />
-          )}
-        </main>
+            {draftGeometry && (
+              <DraftFeatureEditor
+                measurement={measurement}
+                name={annotationName}
+                description={annotationDescription}
+                color={annotationColor}
+                tags={annotationTags}
+                onNameChange={setAnnotationName}
+                onDescriptionChange={setAnnotationDescription}
+                onColorChange={setAnnotationColor}
+                onTagsChange={setAnnotationTags}
+                onClose={() => setDraftGeometry(null)}
+                onSave={() => void saveAnnotation()}
+              />
+            )}
+            {selectedFeature && !draftGeometry && !redrawingFeature && (
+              <SelectedFeatureEditor
+                feature={selectedFeature}
+                onChange={setSelectedFeature}
+                onClose={() => setSelectedFeature(null)}
+                onDelete={() => void removeSelected()}
+                onRedraw={beginRedraw}
+                onSave={() => void saveSelected()}
+              />
+            )}
+          </main>
+        </div>
       </div>
     </div>
   );

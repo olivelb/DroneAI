@@ -226,6 +226,9 @@ script with `--no-build` after a full WSL restart if that address changes.
    orthomosaic/COG generation, tiling, inference and aggregation.
 8. Open Results to inspect raster tiles, vector detections, measurements,
    search and manual annotations.
+9. Open Export, download the COG and a GeoPackage using the raster CRS, then
+   verify both layers superpose in QGIS. Repeat with WGS84 or a custom
+   `EPSG:<code>` when that delivery contract is required.
 
 Mission state, object-store outputs and database records survive process
 restarts. The dashboard exposes resume, retry and cancellation controls for

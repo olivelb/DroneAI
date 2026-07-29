@@ -9,6 +9,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useStore } from "../lib/store";
+import StageHeader from "./StageHeader";
 import {
   AVAILABLE_AI_BACKENDS,
   AVAILABLE_CLASSES,
@@ -53,26 +54,14 @@ export default function PhaseDetection() {
   };
 
   return (
-    <div className="space-y-6">
-      <section className="surface overflow-hidden">
-        <div className="flex flex-col gap-5 p-5 sm:p-6 md:flex-row md:items-end md:justify-between">
-          <div className="max-w-2xl">
-            <div className="eyebrow">Stage 04 · Intelligence</div>
-            <div className="mt-2 flex items-center gap-3">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-[#e8eefb] text-[#3458a5]">
-                <ScanSearch size={21} />
-              </span>
-              <div>
-                <h2 className="text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-                  Tiling & detection
-                </h2>
-                <p className="mt-1 text-sm leading-6 text-[#6f7c78]">
-                  Split the orthomosaic into inference-ready tiles and run
-                  oriented detection or prompt-driven segmentation.
-                </p>
-              </div>
-            </div>
-          </div>
+    <div className="space-y-5">
+      <StageHeader
+        eyebrow="Étape 04 · Intelligence"
+        title="Tuilage et détection"
+        description="Choisissez le type d’analyse et sa sensibilité. Le modèle et le tuilage restent accessibles pour les cas spécialisés."
+        icon={<ScanSearch size={21} />}
+        iconClassName="bg-[#e8eefb] text-[#3458a5]"
+        status={
           <div
             className={`flex items-center gap-2 rounded-2xl border px-4 py-3 ${
               hasOrthomosaic
@@ -89,12 +78,12 @@ export default function PhaseDetection() {
                 Input readiness
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {hasOrthomosaic ? "Orthomosaic ready" : "Waiting for DroneGS"}
+                {hasOrthomosaic ? "Orthomosaïque prête" : "En attente de DroneGS"}
               </div>
             </div>
           </div>
-        </div>
-      </section>
+        }
+      />
 
       {iaService && (
         <section className="rounded-[1.25rem] border border-[#cbd9f4] bg-[#f0f4fc] p-5">
@@ -121,10 +110,11 @@ export default function PhaseDetection() {
         </section>
       )}
 
-      <section className="surface p-5 sm:p-6">
-        <div className="eyebrow">Inference strategy</div>
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="surface p-5 sm:p-6">
+        <div className="eyebrow">Stratégie d’inférence</div>
         <h3 className="mb-4 mt-1 text-lg font-bold text-[#26332f]">
-          Choose the AI backend
+          Quel résultat recherchez-vous ?
         </h3>
         <div className="grid gap-3 sm:grid-cols-2">
           {AVAILABLE_AI_BACKENDS.map((backend) => (
@@ -152,19 +142,17 @@ export default function PhaseDetection() {
             </button>
           ))}
         </div>
-      </section>
-
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+        </div>
         <div className="surface p-5 sm:p-6">
           <div className="flex items-center gap-2">
             <SlidersHorizontal size={16} className="text-[#4568b1]" />
             <h3 className="text-base font-bold text-[#2d3a36]">
-              Inference sensitivity
+              Sensibilité
             </h3>
           </div>
           <p className="mt-1 text-xs leading-5 text-[#77847f]">
-            Lower confidence finds more candidates; higher confidence reduces
-            false positives.
+            Une valeur basse retrouve plus de candidats ; une valeur haute
+            limite les faux positifs.
           </p>
           <div className="mt-5 flex items-center gap-4">
             <input
@@ -184,68 +172,16 @@ export default function PhaseDetection() {
             </span>
           </div>
         </div>
-
-        <div className="surface p-5 sm:p-6">
-          <label className="block">
-            <span className="text-sm font-bold text-[#2d3a36]">Tile size</span>
-            <span className="mt-1 block text-xs leading-5 text-[#77847f]">
-              Larger tiles preserve context but consume more inference memory.
-            </span>
-            <select
-              value={tileSize}
-              onChange={(event) => setTileSize(Number(event.target.value))}
-              className="input-control mt-4 min-h-11"
-            >
-              {[512, 768, 1024, 1536, 2048].map((size) => (
-                <option key={size} value={size}>
-                  {size} × {size} px
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
       </section>
-
-      {aiBackend === "yolo" && (
-        <section className="surface p-5 sm:p-6">
-          <div className="eyebrow">Model capacity</div>
-          <h3 className="mb-4 mt-1 text-lg font-bold text-[#26332f]">
-            YOLO OBB model
-          </h3>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {AVAILABLE_YOLO_MODELS.map((model) => (
-              <button
-                key={model.value}
-                type="button"
-                onClick={() =>
-                  setAiModelVariant(model.value as YOLOModelVariant)
-                }
-                className={`min-h-[82px] rounded-2xl border p-3 text-left transition ${
-                  aiModelVariant === model.value
-                    ? "border-[#7f9bd4] bg-[#f0f4fc]"
-                    : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-                }`}
-              >
-                <span className="block text-xs font-bold text-[#2f3c38]">
-                  {model.label}
-                </span>
-                <span className="mt-1 block text-[10px] leading-4 text-[#7a8783]">
-                  {model.description}
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
 
       <section className="surface p-5 sm:p-6">
         <h3 className="text-base font-bold text-[#2d3a36]">
-          {aiBackend === "sam3" ? "Segmentation prompt" : "Object classes"}
+          {aiBackend === "sam3" ? "Prompt de segmentation" : "Classes à conserver"}
         </h3>
         <p className="mt-1 text-xs leading-5 text-[#77847f]">
           {aiBackend === "sam3"
-            ? "Describe the visual category to segment across the orthomosaic."
-            : "Select every class that should be retained in the final detections."}
+            ? "Décrivez la catégorie visuelle à segmenter sur toute l’orthomosaïque."
+            : "Les classes sélectionnées seront indexées et affichées dans le viewer."}
         </p>
         {aiBackend === "sam3" ? (
           <div className="relative mt-4">
@@ -283,6 +219,73 @@ export default function PhaseDetection() {
           </div>
         )}
       </section>
+
+      <details className="surface">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 sm:px-6">
+          <span>
+            <span className="block text-sm font-bold text-[#2d3a36]">
+              Modèle et tuilage
+            </span>
+            <span className="mt-0.5 block text-xs text-[#77847f]">
+              {aiBackend === "yolo" ? aiModelVariant : "SAM 3"} · {tileSize} × {tileSize} px
+            </span>
+          </span>
+          <span className="text-xs font-semibold text-[#4568b1]">Modifier</span>
+        </summary>
+        <div className="grid gap-6 border-t border-[#e5ebe8] p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_280px]">
+          <div>
+            <h3 className="text-sm font-bold text-[#2d3a36]">
+              {aiBackend === "yolo" ? "Capacité du modèle YOLO OBB" : "Backend SAM 3"}
+            </h3>
+            {aiBackend === "yolo" ? (
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {AVAILABLE_YOLO_MODELS.map((model) => (
+                  <button
+                    key={model.value}
+                    type="button"
+                    onClick={() =>
+                      setAiModelVariant(model.value as YOLOModelVariant)
+                    }
+                    className={`min-h-[78px] rounded-xl border p-3 text-left transition ${
+                      aiModelVariant === model.value
+                        ? "border-[#7f9bd4] bg-[#f0f4fc]"
+                        : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
+                    }`}
+                  >
+                    <span className="block text-xs font-bold text-[#2f3c38]">
+                      {model.label}
+                    </span>
+                    <span className="mt-1 block text-[10px] leading-4 text-[#7a8783]">
+                      {model.description}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs leading-5 text-[#77847f]">
+                La catégorie à segmenter est pilotée par le prompt principal.
+              </p>
+            )}
+          </div>
+          <label className="block">
+            <span className="text-sm font-bold text-[#2d3a36]">Taille des tuiles</span>
+            <span className="mt-1 block text-xs leading-5 text-[#77847f]">
+              Les grandes tuiles préservent le contexte mais consomment davantage de VRAM.
+            </span>
+            <select
+              value={tileSize}
+              onChange={(event) => setTileSize(Number(event.target.value))}
+              className="input-control mt-4 min-h-11"
+            >
+              {[512, 768, 1024, 1536, 2048].map((size) => (
+                <option key={size} value={size}>
+                  {size} × {size} px
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </details>
     </div>
   );
 }

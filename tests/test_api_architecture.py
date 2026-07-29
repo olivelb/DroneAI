@@ -26,9 +26,7 @@ class FakeProducer:
 def test_main_is_a_small_composition_root_with_all_public_routes():
     source_lines = inspect.getsource(main).splitlines()
     paths = set(main.app.openapi()["paths"])
-    direct_paths = {
-        route.path for route in main.app.routes if hasattr(route, "path")
-    }
+    direct_paths = {route.path for route in main.app.routes if hasattr(route, "path")}
 
     assert len(source_lines) < 120
     assert "shared import storage" not in inspect.getsource(main)
@@ -49,11 +47,10 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     assert any(path.startswith("/preview/{s3_key}") for path in paths)
     assert any(path.startswith("/files/{s3_key}") for path in paths)
     assert "/maps/{vol_id}/metadata/{layer}" in paths
-    assert (
-        "/maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png"
-        in paths
-    )
+    assert "/maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png" in paths
     assert "/maps/{vol_id}/vectors.geojson" in paths
+    assert "/maps/{vol_id}/export/raster/{layer}" in paths
+    assert "/maps/{vol_id}/export/vectors" in paths
     assert "/maps/{vol_id}/analyses" in paths
     assert "/maps/{vol_id}/analyses/{run_id}/retry" in paths
     assert "/maps/{vol_id}/analyses/{run_id}/vectors.geojson" in paths

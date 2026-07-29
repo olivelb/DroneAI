@@ -16,6 +16,7 @@ def test_map_api_keeps_a_small_composition_router():
     composition = "app4-dashboard/api/routers/maps.py"
     feature_modules = [
         "app4-dashboard/api/routers/map_analyses.py",
+        "app4-dashboard/api/routers/map_exports.py",
         "app4-dashboard/api/routers/map_features.py",
         "app4-dashboard/api/routers/map_rasters.py",
     ]
@@ -23,10 +24,16 @@ def test_map_api_keeps_a_small_composition_router():
     assert _line_count(composition) < 40
     assert all(_line_count(module) < 330 for module in feature_modules)
     assert "include_router" in _source(composition)
-    assert all(
-        "confluent_kafka" not in _source(module)
-        for module in [composition, *feature_modules]
-    )
+    assert all("confluent_kafka" not in _source(module) for module in [composition, *feature_modules])
+
+
+def test_qgis_crs_logic_stays_framework_neutral():
+    source = _source("shared/qgis_crs.py")
+
+    assert "fastapi" not in source
+    assert "HTTPException" not in source
+    assert "def resolve_export_crs" in source
+    assert "def reproject_features" in source
 
 
 def test_processing_worker_delegates_long_running_workflows():
@@ -58,12 +65,23 @@ def test_results_workspace_is_split_into_focused_components():
     viewer = "app4-dashboard/frontend/app/components/ResultsViewer.tsx"
     components = [
         "app4-dashboard/frontend/app/components/geospatial/AnalysisPanel.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/ExportCrsSelector.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/ExportPanel.tsx",
         "app4-dashboard/frontend/app/components/geospatial/FeatureEditors.tsx",
         "app4-dashboard/frontend/app/components/geospatial/LayersPanel.tsx",
         "app4-dashboard/frontend/app/components/geospatial/SearchPanel.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/VectorExportCards.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/ViewerHeader.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/ViewerSidePanel.tsx",
+        "app4-dashboard/frontend/app/components/geospatial/ViewerToolbar.tsx",
     ]
     source = _source(viewer)
+    workspace_source = (
+        source
+        + _source("app4-dashboard/frontend/app/components/geospatial/ViewerSidePanel.tsx")
+        + _source("app4-dashboard/frontend/app/components/geospatial/ExportPanel.tsx")
+    )
 
     assert _line_count(viewer) < 550
     assert all(_line_count(component) < 300 for component in components)
-    assert all(Path(component).stem in source for component in components)
+    assert all(Path(component).stem in workspace_source for component in components)

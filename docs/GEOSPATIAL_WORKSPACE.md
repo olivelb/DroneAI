@@ -58,6 +58,8 @@ Read routes require `viewer`; mutations require `operator`.
 | `POST` | `/maps/{vol_id}/analyses/{run_id}/cancel` | cancel an active campaign |
 | `GET` | `/maps/{vol_id}/analyses/{run_id}/vectors.geojson` | viewport vectors for either persistence mode |
 | `GET` | `/maps/{vol_id}/search` | attribute/spatial search with aggregate result bounds |
+| `GET` | `/maps/{vol_id}/export/raster/{layer}` | stream the orthomosaic or height map as COG/GeoTIFF |
+| `GET` | `/maps/{vol_id}/export/vectors` | create a GeoPackage or GeoJSON export by source/campaign and CRS |
 | `POST` | `/maps/{vol_id}/features` | create a manual WGS84 feature |
 | `PATCH` | `/maps/{vol_id}/features/{feature_id}` | optimistic update using `version` |
 | `DELETE` | `/maps/{vol_id}/features/{feature_id}` | delete a manual feature |
@@ -75,7 +77,7 @@ class and spatial extent.
 
 ## Dashboard use
 
-The workspace is responsive and contains three panels:
+The workspace is responsive and contains four panels:
 
 - **Couches** controls the COG/depth raster, opacity, legacy detections,
   manual objects and independent AI campaign visibility.
@@ -84,6 +86,38 @@ The workspace is responsive and contains three panels:
   tile progress, errors, retry/cancel controls and final download.
 - **Objets** applies database filters, lists matches and zooms to one result or
   to the aggregate result bounds.
+- **Export** streams the orthomosaic or height raster as COG/GeoTIFF and exports
+  all vectors, AI/legacy subsets or manual annotations as GeoPackage or
+  GeoJSON. GeoPackage is the recommended QGIS 4+ interchange format because it
+  preserves mixed geometries, long field names and UTF-8 attributes in one
+  file. One CRS control applies consistently to AI detections, legacy vectors
+  and manual annotations: the orthomosaic CRS is the default, WGS84 is
+  available explicitly, and an operator may enter a validated `EPSG:<code>`.
+  The backend reprojects the WGS84 database geometries while streaming them
+  into the GeoPackage and records the selected EPSG definition and extent in
+  its metadata. If the raster CRS is absent or cannot be resolved to EPSG, the
+  default falls back to EPSG:4326 and the response declares that fallback.
+  GeoJSON always uses EPSG:4326 as required by RFC 7946. Every vector format
+  keeps the source, campaign, confidence, name, description, tags, color and
+  full source property JSON.
+
+`GET /maps/{vol_id}/export/vectors` accepts:
+
+- `format=gpkg|geojson`;
+- `scope=all|manual|ai|legacy`;
+- optional comma-separated `run_ids`;
+- `crs=raster|EPSG:<code>`.
+
+For GeoPackage, `crs=raster` is the default. A non-WGS84 CRS requested with
+GeoJSON is rejected rather than producing a non-standard or misleading file.
+Downloaded names include the effective EPSG code, and the response exposes it
+through `X-Coordinate-Reference-System`.
+
+Chromium browsers use the native save-file picker and stream large rasters
+directly to the selected destination without buffering the complete GeoTIFF in
+browser memory. Browsers without the File System Access API fall back to their
+normal download destination. The server never accepts a client-provided
+filesystem path.
 
 The map toolbar supports navigation, point/line/polygon creation and
 distance/area measurement. A measure can remain temporary or be saved as a
@@ -94,11 +128,14 @@ return HTTP 409 rather than overwriting another operator's change.
 ### Maintenance boundaries
 
 `ResultsViewer.tsx` coordinates mission selection and shared map state only.
-The layers, AI campaign, search and feature-editing interfaces live in focused
-components under `components/geospatial/`; shared defaults and geometry helpers
-live in `workspace-config.ts`. On the API side, `routers/maps.py` only composes
-the raster, campaign and feature routers. Request models and framework-neutral
-GeoJSON helpers are kept outside those routers.
+The layers, AI campaign, search, export and feature-editing interfaces live in
+focused components under `components/geospatial/`; CRS selection and vector
+export cards are separate from download orchestration, and shared defaults and
+geometry helpers live in `workspace-config.ts`. On the API side,
+`routers/maps.py` only composes the raster, export, campaign and feature
+routers. Request models and the framework-neutral GeoJSON/GeoPackage writer
+are kept outside those routers; CRS resolution and lazy reprojection live in a
+separate shared module.
 
 These boundaries are checked in `tests/test_modular_boundaries.py`. CI also
 runs Ruff's C90 complexity rules against the geospatial API and processing
