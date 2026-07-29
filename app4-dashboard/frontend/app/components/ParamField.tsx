@@ -61,7 +61,17 @@ export function ParamField({
           onChange={(e) => onChange(paramKey, e.target.value)}
           className="input-control min-h-11"
         >
-          {meta.options?.map((o) => <option key={o} value={o}>{o}</option>)}
+          {meta.options?.map((option) => {
+            const value =
+              typeof option === "string" ? option : option.value;
+            const label =
+              typeof option === "string" ? option : option.label;
+            return (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            );
+          })}
         </select>
         {meta.description && (
           <span className="mt-1.5 block text-[11px] leading-4 text-[#7a8783]">

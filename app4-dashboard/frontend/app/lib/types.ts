@@ -5,6 +5,10 @@ export type YOLOModelVariant =
   | "yolo26l" | "yolo26m" | "yolo26s" | "yolo26n"
   | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
 export type ParamValue = string | boolean;
+export type ParameterOption = string | {
+  value: string;
+  label: string;
+};
 export type PhaseId = "setup" | "reconstruction" | "gaussian" | "detection" | "results";
 
 export type StatusPayload = {
@@ -159,7 +163,7 @@ export type ParameterMeta = {
   min?: number;
   max?: number;
   step?: number;
-  options?: string[];
+  options?: ParameterOption[];
 };
 
 export type WorkDrive = {
