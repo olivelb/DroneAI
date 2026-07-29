@@ -412,7 +412,11 @@ def generate_gaussian_orthophoto(
             resize_factor=data_factor,
             max_width=max_width,
             tile_mode=tile_mode,
-            seed=training_seed + i,
+            # The validated production profile is deterministic across full
+            # and partitioned runs. Cell identity already lives in its
+            # dataset fingerprint/output path; changing the seed silently
+            # violates the DroneGS V1 request contract.
+            seed=training_seed,
             dataset_fingerprint=dataset_identity.fingerprint,
             dronegs=DroneGSTuning(
                 profile_id=dronegs_profile_id,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from shared import storage
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
@@ -31,7 +31,6 @@ from ..security import (
     require_operator,
 )
 
-
 router = APIRouter(
     tags=["missions"],
     dependencies=[Depends(require_authenticated)],
@@ -43,7 +42,10 @@ def status_summary():
     try:
         return get_status_summary()
     except Exception as error:
-        return {"active_vol_id": None, "missions": [], "error": str(error)}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Mission status storage unavailable: {error}",
+        ) from error
 
 
 @router.get("/mission/state")
@@ -51,11 +53,10 @@ def mission_state(vol_id: str):
     try:
         return get_mission_state(vol_id)
     except Exception as error:
-        return {
-            "vol_id": vol_id,
-            "workspace_state": None,
-            "error": str(error),
-        }
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Mission state unavailable: {error}",
+        ) from error
 
 
 @router.post(
@@ -85,12 +86,10 @@ def delete_mission(vol_id: str):
     try:
         deleted_count = storage.delete_prefix(f"missions/{vol_id}/")
     except Exception as error:
-        return {
-            "status": "error",
-            "message": f"S3 delete failed: {error}",
-            "s3_objects_deleted": 0,
-            "db_deleted": False,
-        }
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"S3 delete failed: {error}",
+        ) from error
 
     try:
         with get_session() as session:
@@ -102,15 +101,13 @@ def delete_mission(vol_id: str):
             if mission:
                 session.delete(mission)
     except Exception as error:
-        return {
-            "status": "error",
-            "message": (
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
                 f"S3 cleaned ({deleted_count} objects) but DB delete failed: "
                 f"{error}"
             ),
-            "s3_objects_deleted": deleted_count,
-            "db_deleted": False,
-        }
+        ) from error
     return {
         "status": "success",
         "message": f"Mission {vol_id} deleted.",
@@ -135,9 +132,20 @@ async def resume_mission(vol_id: str):
                     key=vol_id,
                 )
     except Exception as error:
-        return {"status": "error", "message": str(error)}
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Unable to queue mission resume: {error}",
+        ) from error
     if payload is None:
-        return response
+        code = (
+            status.HTTP_404_NOT_FOUND
+            if "not found" in response.get("message", "").lower()
+            else status.HTTP_409_CONFLICT
+        )
+        raise HTTPException(
+            status_code=code,
+            detail=response.get("message", "Mission cannot be resumed"),
+        )
     return response
 
 
@@ -184,9 +192,8 @@ async def start_mission(params: MissionParams):
                 key=params.vol_id,
             )
     except Exception as error:
-        return {
-            "status": "error",
-            "vol_id": params.vol_id,
-            "message": f"Failed to persist mission: {error}",
-        }
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Failed to persist mission: {error}",
+        ) from error
     return {"status": "success", "vol_id": params.vol_id}

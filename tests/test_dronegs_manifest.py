@@ -6,20 +6,19 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
 if str(APP1_ROOT) not in sys.path:
     sys.path.insert(0, str(APP1_ROOT))
 
+from gaussian_ortho.generate_gaussian_orthophoto import (  # noqa: E402
+    _quarantine_incompatible_dronegs_output,
+)
 from gaussian_training.manifest_contract import (  # noqa: E402
     DuplicateManifestKeyError,
     load_run_manifest,
     manifest_matches_ply,
     promote_run_manifest,
-)
-from gaussian_ortho.generate_gaussian_orthophoto import (  # noqa: E402
-    _quarantine_incompatible_dronegs_output,
 )
 
 

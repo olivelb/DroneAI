@@ -10,7 +10,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
 for import_path in (REPO_ROOT, APP1_ROOT):

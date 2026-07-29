@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+.map-crosshair,
+.map-crosshair .leaflet-interactive {
+  cursor: crosshair;
+}
+
 :root {
   --background: #f3f5f4;
   --foreground: #17201e;

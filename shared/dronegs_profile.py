@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass
 from types import MappingProxyType
 from typing import Any
 
-
 DRONEGS_PRODUCTION_PROFILE_ID = "DRONEGS_PRODUCTION_PROFILE_V1"
 
 

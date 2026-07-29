@@ -222,7 +222,11 @@ function DashboardInner() {
           </div>
         </aside>
 
-        <main className="min-w-0">
+        <main
+          className={`min-w-0 ${
+            activePhase === "results" ? "xl:col-span-2" : ""
+          }`}
+        >
           <nav
             className="mb-4 flex gap-2 overflow-x-auto pb-1 lg:hidden"
             aria-label="Pipeline phases"

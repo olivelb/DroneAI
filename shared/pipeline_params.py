@@ -2,7 +2,6 @@ from typing import Any
 
 from shared.dronegs_profile import DRONEGS_PRODUCTION_DEFAULTS
 
-
 SAM3_BACKEND_ALIASES = {
     "sam",
     "sam3",
@@ -71,6 +70,8 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "global_mapper_skip_retriangulation": False,
         "global_mapper_ceres_iterations": "50",
         "minimum_registration_ratio": "0.97",
+        "maximum_mean_reprojection_error_px": "2.0",
+        "minimum_median_track_length": "3.0",
         "mapping_timeout_seconds": "3600",
         "rtk_refinement_enabled": False,
         "rtk_refinement_timeout_seconds": "900",
@@ -112,6 +113,8 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "global_mapper_skip_retriangulation": True,
         "global_mapper_ceres_iterations": "50",
         "minimum_registration_ratio": "0.97",
+        "maximum_mean_reprojection_error_px": "2.0",
+        "minimum_median_track_length": "3.0",
         "mapping_timeout_seconds": "1200",
         "rtk_refinement_enabled": True,
         "rtk_refinement_timeout_seconds": "900",
@@ -298,6 +301,30 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 0.5,
         "max": 1,
         "step": 0.01,
+    },
+    "maximum_mean_reprojection_error_px": {
+        "label": "Maximum Mean Reprojection Error (px)",
+        "description": (
+            "Rejects a visually unstable sparse model even when enough "
+            "cameras were registered."
+        ),
+        "type": "float",
+        "group": "Mapping",
+        "min": 0.25,
+        "max": 10,
+        "step": 0.05,
+    },
+    "minimum_median_track_length": {
+        "label": "Minimum Median Track Length",
+        "description": (
+            "Requires sparse points to be observed by enough cameras; "
+            "short tracks are fragile for DroneGS."
+        ),
+        "type": "float",
+        "group": "Mapping",
+        "min": 2,
+        "max": 20,
+        "step": 0.5,
     },
     "mapping_timeout_seconds": {
         "label": "Shared Mapping Budget (seconds)",

@@ -2,6 +2,8 @@ boto3
 confluent-kafka
 geoalchemy2
 opencv-python-headless
+pillow
 psycopg2-binary
+pyproj
 rasterio
 sqlalchemy

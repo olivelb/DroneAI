@@ -13,7 +13,6 @@ from shared.validation import (
     validate_work_drive,
 )
 
-
 MissionParams = importlib.import_module("app4-dashboard.api.schemas").MissionParams
 
 

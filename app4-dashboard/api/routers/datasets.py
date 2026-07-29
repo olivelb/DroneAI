@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
+from typing import Annotated
 
 from fastapi import (
     APIRouter,
@@ -27,12 +28,12 @@ from ..security import (
     upload_limits,
 )
 
-
 router = APIRouter(
     tags=["datasets"],
     dependencies=[Depends(require_authenticated)],
 )
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+MAX_INLINE_PREVIEW_BYTES = 64 * 1024 * 1024
 DATASET_SUFFIXES = {
     *IMAGE_SUFFIXES,
     ".tif",
@@ -75,10 +76,7 @@ def validate_uploads(files: list[UploadFile]) -> None:
     total_size = 0
     for upload in files:
         filename = Path(upload.filename or "").name
-        if (
-            not filename
-            or Path(filename).suffix.lower() not in DATASET_SUFFIXES
-        ):
+        if not filename or Path(filename).suffix.lower() not in DATASET_SUFFIXES:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail=f"Unsupported dataset file: {filename or '<empty>'}",
@@ -125,7 +123,10 @@ def browse_path(prefix: str = "datasets/"):
             key=lambda item: (not item["is_dir"], item["name"]),
         )
     except Exception as error:
-        return {"error": str(error)}
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Object storage browse failed: {error}",
+        ) from error
 
 
 @router.get("/preview/{s3_key:path}")
@@ -135,13 +136,36 @@ def preview_image(
     colormap: str = "",
 ):
     if not storage.file_exists(s3_key):
-        return {"error": "File not found"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found",
+        )
     try:
-        stream, _, _ = storage.get_object_stream(s3_key)
+        preview_key = s3_key
+        if s3_key.lower().endswith((".tif", ".tiff")):
+            path = Path(s3_key)
+            preview_key = str(path.with_name(f"{path.stem}.preview.webp")).replace("\\", "/")
+            if not storage.file_exists(preview_key):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=("Large raster preview is not available; use the COG map tile endpoint"),
+                )
+        stream, content_length, _ = storage.get_object_stream(preview_key)
+        if content_length > MAX_INLINE_PREVIEW_BYTES:
+            stream.close()
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Preview source is too large",
+            )
         try:
-            raw = stream.read()
+            raw = stream.read(MAX_INLINE_PREVIEW_BYTES + 1)
         finally:
             stream.close()
+        if len(raw) > MAX_INLINE_PREVIEW_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Preview source is too large",
+            )
         output = render_preview(
             raw,
             max_size=max_size,
@@ -152,8 +176,13 @@ def preview_image(
             media_type="image/png",
             headers={"Cache-Control": "public, max-age=3600"},
         )
+    except HTTPException:
+        raise
     except Exception as error:
-        return {"error": f"Preview generation failed: {error}"}
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Preview generation failed: {error}",
+        ) from error
 
 
 @router.get("/datasets")
@@ -173,8 +202,11 @@ def list_datasets():
                     }
                 )
         return results
-    except Exception:
-        return []
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Dataset listing unavailable: {error}",
+        ) from error
 
 
 @router.delete(
@@ -184,7 +216,10 @@ def list_datasets():
 def delete_dataset(name: str):
     safe_name = sanitize_dataset_name(name)
     if not safe_name or safe_name != name.strip():
-        return {"status": "error", "message": "Invalid dataset name"}
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid dataset name",
+        )
     try:
         deleted = storage.delete_prefix(f"datasets/{safe_name}/")
         return {
@@ -193,13 +228,19 @@ def delete_dataset(name: str):
             "objects_deleted": deleted,
         }
     except Exception as error:
-        return {"status": "error", "message": str(error)}
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Dataset deletion failed: {error}",
+        ) from error
 
 
 @router.get("/files/{s3_key:path}")
 def get_file(s3_key: str):
     if not storage.file_exists(s3_key):
-        return {"error": "File not found"}
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="File not found",
+        )
     return RedirectResponse(
         url=storage.get_presigned_url(s3_key),
         status_code=302,
@@ -211,24 +252,26 @@ def get_file(s3_key: str):
     dependencies=[Depends(require_operator)],
 )
 async def upload_single_file(
-    dataset_name: str = Query(...),
-    file: UploadFile = File(...),
+    dataset_name: Annotated[str, Query()],
+    file: Annotated[UploadFile, File()],
 ):
     validate_uploads([file])
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:
-        return {"error": "Invalid dataset name"}
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid dataset name",
+        )
     filename = Path(file.filename or "file").name
     s3_key = f"datasets/{safe_name}/{filename}"
     try:
         storage.put_object(s3_key, file.file)
         return {"name": filename, "s3_key": s3_key, "status": "ok"}
     except Exception as error:
-        return {
-            "name": filename,
-            "status": "error",
-            "error": str(error),
-        }
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upload failed for {filename}: {error}",
+        ) from error
 
 
 @router.post(
@@ -236,13 +279,16 @@ async def upload_single_file(
     dependencies=[Depends(require_operator)],
 )
 async def upload_dataset_batch(
-    dataset_name: str = Query(...),
-    files: list[UploadFile] = File(...),
+    dataset_name: Annotated[str, Query()],
+    files: Annotated[list[UploadFile], File()],
 ):
     validate_uploads(files)
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:
-        return {"error": "Invalid dataset name"}
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid dataset name",
+        )
     result = {
         "upload_id": uuid.uuid4().hex[:12],
         "dataset": safe_name,

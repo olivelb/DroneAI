@@ -8,7 +8,6 @@ import ssl
 import urllib.error
 import urllib.request
 
-
 POD_NAMES = (
     "kafka-broker",
     "colmap-worker",

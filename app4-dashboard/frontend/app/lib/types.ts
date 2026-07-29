@@ -110,6 +110,47 @@ export type PodState = {
   memory_request?: string | null;
 };
 
+export type AnalysisRun = {
+  run_id: string;
+  vol_id: string;
+  name: string;
+  description: string;
+  color: string;
+  tags: string[];
+  backend: AIBackend;
+  model_variant?: string;
+  prompt?: string;
+  classes: string[];
+  confidence: number;
+  tile_size: number;
+  persist_results: boolean;
+  status: string;
+  phase: string;
+  progress: number;
+  total_tiles: number;
+  tiles_completed: number;
+  detection_count: number;
+  retry_count: number;
+  error_message?: string | null;
+  result_s3_key?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type AnalysisCreate = {
+  name: string;
+  description: string;
+  color: string;
+  tags: string[];
+  backend: AIBackend;
+  model_variant: string;
+  prompt: string;
+  classes: string[];
+  confidence: number;
+  tile_size: number;
+  persist_results: boolean;
+};
+
 export type ParameterMeta = {
   label: string;
   description?: string;

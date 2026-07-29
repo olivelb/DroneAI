@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import os
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from .. import security
-
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -47,7 +47,10 @@ def create_session(payload: SessionRequest, response: Response):
 
 @router.get("/session")
 def read_session(
-    principal: security.Principal = Depends(security.require_authenticated),
+    principal: Annotated[
+        security.Principal,
+        Depends(security.require_authenticated),
+    ],
 ):
     return {
         "subject": principal.subject,

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from typing import Any
 
 from confluent_kafka import Producer
@@ -15,7 +15,6 @@ from shared.config import (
 )
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_reliability import publish_json
-
 
 _producer = None
 _producer_lock = threading.Lock()

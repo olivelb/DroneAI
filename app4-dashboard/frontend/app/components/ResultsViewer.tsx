@@ -1,344 +1,519 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { Map as MapIcon, Layers, Eye, Download, Box } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import type { Feature, Geometry } from "geojson";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Layers,
+  Map as MapIcon,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
+import {
+  cancelAnalysis,
+  createAnalysis,
+  createMapFeature,
+  deleteMapFeature,
+  fetchAnalyses,
+  fetchBrowse,
+  retryAnalysis,
+  searchMapFeatures,
+  updateMapFeature,
+} from "../lib/api";
 import { useStore } from "../lib/store";
-import { getFileUrl, getPreviewUrl, getApiBaseUrl, fetchBrowse } from "../lib/api";
+import type { AnalysisCreate, AnalysisRun } from "../lib/types";
+import type { MapTool } from "./GeospatialMap";
+import AnalysisPanel from "./geospatial/AnalysisPanel";
+import {
+  DraftFeatureEditor,
+  SelectedFeatureEditor,
+} from "./geospatial/FeatureEditors";
+import LayersPanel from "./geospatial/LayersPanel";
+import SearchPanel from "./geospatial/SearchPanel";
+import {
+  DEFAULT_ANALYSIS,
+  splitTags,
+  TOOL_BUTTONS,
+  type ViewerLayer,
+  type WorkspacePanel,
+} from "./geospatial/workspace-config";
 
-type ViewerLayer = "ortho" | "depth" | "annotated";
-
-const LAYER_META: Record<ViewerLayer, { label: string; s3Suffix: string }> = {
-  ortho: { label: "Orthomosaic", s3Suffix: "orthomosaic.tif" },
-  depth: { label: "Depth Map", s3Suffix: "orthomosaic.height.tif" },
-  annotated: { label: "Annotated", s3Suffix: "orthomosaic_annotated.tif" },
-};
-
-function ImageViewer({ src, alt, depthMode }: { src: string; alt: string; depthMode?: boolean }) {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const imgRef = React.useRef<HTMLImageElement>(null);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [dragging, setDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState(false);
-  const [baseScale, setBaseScale] = useState(1);
-
-  // Compute the scale that fits the image inside the container
-  const computeFit = React.useCallback(() => {
-    const container = containerRef.current;
-    const img = imgRef.current;
-    if (!container || !img || !img.naturalWidth) return;
-    const cw = container.clientWidth;
-    const ch = container.clientHeight;
-    const iw = img.naturalWidth;
-    const ih = img.naturalHeight;
-    const scale = Math.min(cw / iw, ch / ih, 1); // don't upscale beyond 1:1
-    setBaseScale(scale);
-  }, []);
-
-  // Recompute fit on load and on resize
-  useEffect(() => {
-    if (!loaded) return;
-    computeFit();
-    const observer = new ResizeObserver(() => computeFit());
-    if (containerRef.current) observer.observe(containerRef.current);
-    return () => observer.disconnect();
-  }, [loaded, computeFit]);
-
-  const handleWheel = (e: React.WheelEvent) => {
-    e.preventDefault();
-    setZoom((z) => Math.max(0.1, Math.min(20, z * (e.deltaY < 0 ? 1.15 : 0.87))));
-  };
-
-  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    setDragging(true);
-    setDragStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragging) return;
-    setPan({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId);
-    }
-    setDragging(false);
-  };
-
-  const fitToView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
-
-  // Effective scale = baseScale * zoom
-  const effectiveScale = baseScale * zoom;
-
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center text-gray-400">
-        <div className="text-center">
-          <MapIcon size={36} className="mx-auto mb-2 text-gray-300" />
-          <p className="text-sm">File not available yet</p>
-          <p className="mt-1 text-xs text-gray-300">Run the pipeline to generate this output</p>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      ref={containerRef}
-      className="relative h-full w-full touch-none cursor-grab overflow-hidden bg-gray-900 active:cursor-grabbing"
-      onWheel={handleWheel}
-      onPointerDown={handlePointerDown}
-      onPointerMove={handlePointerMove}
-      onPointerUp={handlePointerUp}
-      onPointerCancel={() => setDragging(false)}
-    >
-      {!loaded && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-2 border-gray-600 border-t-blue-400" />
-        </div>
-      )}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        ref={imgRef}
-        src={src}
-        alt={alt}
-        onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
-        draggable={false}
-        className={`absolute left-1/2 top-1/2 max-w-none select-none transition-opacity ${loaded ? "opacity-100" : "opacity-0"}`}
-        style={{
-          transform: `translate(-50%, -50%) translate(${pan.x}px, ${pan.y}px) scale(${effectiveScale})`,
-          transformOrigin: "center center",
-          filter: depthMode ? "hue-rotate(0deg)" : undefined,
-        }}
-      />
-      <div className="absolute bottom-3 right-3 flex gap-1.5 rounded-lg bg-black/60 px-3 py-1.5 text-xs text-white backdrop-blur">
-        <button type="button" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(20, z * 1.5))} className="min-h-8 min-w-8 hover:text-blue-300">+</button>
-        <span className="mx-1 text-gray-400">|</span>
-        <button type="button" aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.1, z / 1.5))} className="min-h-8 min-w-8 hover:text-blue-300">−</button>
-        <span className="mx-1 text-gray-400">|</span>
-        <button type="button" onClick={fitToView} className="min-h-8 px-1 hover:text-blue-300">Fit</button>
-        <span className="mx-1 text-gray-400">|</span>
-        <button type="button" onClick={() => { setZoom(1 / baseScale); setPan({ x: 0, y: 0 }); }} className="min-h-8 px-1 hover:text-blue-300">1:1</button>
-        <span className="mx-1 text-gray-400">|</span>
-        <span>{Math.round(effectiveScale * 100)}%</span>
-      </div>
-      {depthMode && (
-        <div className="absolute bottom-3 left-3 flex items-center gap-2 rounded-lg bg-black/60 px-3 py-1.5 text-xs text-white backdrop-blur">
-          <div className="h-2 w-24 rounded-full" style={{ background: "linear-gradient(90deg, #3b82f6, #22d3ee, #22c55e, #eab308, #ef4444)" }} />
-          <span className="text-gray-300">Low → High</span>
-        </div>
-      )}
-    </div>
-  );
-}
+const GeospatialMap = dynamic(() => import("./GeospatialMap"), {
+  ssr: false,
+});
 
 export default function ResultsViewer() {
   const { activeMission, missions } = useStore();
-  const [activeLayer, setActiveLayer] = useState<ViewerLayer>("ortho");
-  const [selectedVol, setSelectedVol] = useState<string | null>(null);
-  const [availableFiles, setAvailableFiles] = useState<string[]>([]);
-
   const sortedMissions = useMemo(
-    () => Object.values(missions).sort((a, b) => b.updated_at - a.updated_at),
+    () =>
+      Object.values(missions).sort(
+        (left, right) => right.updated_at - left.updated_at,
+      ),
     [missions],
   );
-
+  const [selectedVol, setSelectedVol] = useState<string | null>(null);
   const mission = selectedVol ? missions[selectedVol] : activeMission;
-  const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
+  const missionId =
+    mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
 
-  // Fetch available files for the selected mission (top-level + key subdirs)
+  const [activePanel, setActivePanel] =
+    useState<WorkspacePanel>("layers");
+  const [activeLayer, setActiveLayer] =
+    useState<ViewerLayer>("ortho");
+  const [rasterOpacity, setRasterOpacity] = useState(1);
+  const [showLegacy, setShowLegacy] = useState(true);
+  const [showManual, setShowManual] = useState(true);
+  const [availableFiles, setAvailableFiles] = useState<string[]>([]);
+  const [analyses, setAnalyses] = useState<AnalysisRun[]>([]);
+  const [visibleRuns, setVisibleRuns] = useState<string[]>([]);
+  const [analysisForm, setAnalysisForm] =
+    useState<AnalysisCreate>(DEFAULT_ANALYSIS);
+  const [showAnalysisForm, setShowAnalysisForm] = useState(false);
+  const [submittingAnalysis, setSubmittingAnalysis] = useState(false);
+
+  const [tool, setTool] = useState<MapTool>("navigate");
+  const [toolHint, setToolHint] = useState("");
+  const [draftGeometry, setDraftGeometry] =
+    useState<Geometry | null>(null);
+  const [measurement, setMeasurement] = useState("");
+  const [annotationName, setAnnotationName] = useState("");
+  const [annotationDescription, setAnnotationDescription] =
+    useState("");
+  const [annotationColor, setAnnotationColor] = useState("#10b981");
+  const [annotationTags, setAnnotationTags] = useState("terrain");
+  const [selectedFeature, setSelectedFeature] =
+    useState<Feature | null>(null);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  const [searchText, setSearchText] = useState("");
+  const [searchSource, setSearchSource] = useState("");
+  const [searchRun, setSearchRun] = useState("");
+  const [searchResults, setSearchResults] = useState<Feature[]>([]);
+  const [focusBounds, setFocusBounds] = useState<
+    [number, number, number, number] | null
+  >(null);
+  const [busySearch, setBusySearch] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [error, setError] = useState("");
+
+  const refreshAnalyses = useCallback(async () => {
+    if (!missionId) return;
+    const payload = await fetchAnalyses(missionId);
+    setAnalyses(payload.runs);
+    setVisibleRuns((current) => {
+      const known = new Set(payload.runs.map((run) => run.run_id));
+      const retained = current.filter((runId) => known.has(runId));
+      const completed = payload.runs
+        .filter((run) => run.status === "completed")
+        .map((run) => run.run_id);
+      return [...new Set([...retained, ...completed])];
+    });
+  }, [missionId]);
+
   useEffect(() => {
     if (!missionId) return;
     let cancelled = false;
-
-    const loadFiles = async () => {
-      try {
-        const prefix = `missions/${missionId}/`;
-        const [top, sparse, gaussian] = await Promise.all([
-          fetchBrowse(prefix).catch(() => []),
-          fetchBrowse(`${prefix}colmap/sparse/0/`).catch(() => []),
-          fetchBrowse(`${prefix}gaussian/`).catch(() => []),
-        ]);
-        const all = [...(top as Record<string, string>[]), ...(sparse as Record<string, string>[]), ...(gaussian as Record<string, string>[])];
-        const paths = all.map((d) => d.path ?? d.name ?? "");
-        if (!cancelled) setAvailableFiles(paths);
-      } catch {
-        if (!cancelled) setAvailableFiles([]);
-      }
+    Promise.all([
+      fetchBrowse(`missions/${missionId}/`).catch(() => []),
+      fetchAnalyses(missionId).catch(() => ({ runs: [] })),
+    ]).then(([files, runs]) => {
+      if (cancelled) return;
+      setAvailableFiles(
+        (files as Record<string, string>[]).map(
+          (item) => item.path ?? item.name ?? "",
+        ),
+      );
+      setAnalyses(runs.runs);
+      setVisibleRuns(
+        runs.runs
+          .filter((run) => run.status === "completed")
+          .map((run) => run.run_id),
+      );
+    });
+    const timer = window.setInterval(() => {
+      void refreshAnalyses().catch(() => undefined);
+    }, 4_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
     };
+  }, [missionId, refreshAnalyses]);
 
-    void loadFiles();
-    return () => { cancelled = true; };
-  }, [missionId]);
-
-  const hasFile = useCallback(
-    (suffix: string) => availableFiles.some((f) => f.endsWith(suffix)),
-    [availableFiles],
+  const hasDepth = availableFiles.some((file) =>
+    file.endsWith("orthomosaic.height.tif"),
+  );
+  const visibleAnalyses = useMemo(
+    () =>
+      analyses.filter(
+        (run) =>
+          visibleRuns.includes(run.run_id) &&
+          (run.status === "completed" || run.tiles_completed > 0),
+      ),
+    [analyses, visibleRuns],
   );
 
-  const effectiveLayer = useMemo<ViewerLayer>(() => {
-    if (hasFile(LAYER_META[activeLayer].s3Suffix)) return activeLayer;
-    return (Object.entries(LAYER_META) as [ViewerLayer, { s3Suffix: string }][])
-      .find(([, meta]) => hasFile(meta.s3Suffix))?.[0] ?? activeLayer;
-  }, [activeLayer, hasFile]);
+  const submitAnalysis = async () => {
+    if (!missionId) return;
+    setSubmittingAnalysis(true);
+    setError("");
+    try {
+      const created = await createAnalysis(missionId, analysisForm);
+      setAnalyses((current) => [created, ...current]);
+      setVisibleRuns((current) => [...current, created.run_id]);
+      setShowAnalysisForm(false);
+      setNotice("Analyse IA mise en file avec reprise automatique.");
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Échec du lancement",
+      );
+    } finally {
+      setSubmittingAnalysis(false);
+    }
+  };
 
-  // Use the preview endpoint (TIF→PNG) instead of the raw file
-  const imageUrl = useMemo(() => {
-    if (!missionId) return null;
-    const suffix = LAYER_META[effectiveLayer].s3Suffix;
-    const cmap = effectiveLayer === "depth" ? "depth" : "";
-    return getPreviewUrl(`missions/${missionId}/${suffix}`, 4096, cmap);
-  }, [missionId, effectiveLayer]);
+  const runSearch = async () => {
+    if (!missionId) return;
+    setBusySearch(true);
+    setError("");
+    try {
+      const response = await searchMapFeatures(missionId, {
+        q: searchText,
+        source: searchSource || undefined,
+        runId: searchRun || undefined,
+      });
+      setSearchResults(response.features);
+      if (response.bounds) setFocusBounds(response.bounds);
+      setActivePanel("search");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Recherche impossible",
+      );
+    } finally {
+      setBusySearch(false);
+    }
+  };
 
-  // Detect point cloud files
-  const hasPointCloud = hasFile("points3D.bin") || hasFile("points3D.ply");
-  const hasGaussianPly = availableFiles.some((f) => f.includes("gaussian/") && f.endsWith(".ply"));
-  const gaussianPlyKey = availableFiles.find((f) => f.includes("gaussian/") && f.endsWith("final.ply"))
-    ?? availableFiles.find((f) => f.includes("gaussian/") && f.endsWith(".ply"));
+  const geometryReady = (geometry: Geometry, result?: string) => {
+    setDraftGeometry(geometry);
+    setMeasurement(result ?? "");
+    setTool("navigate");
+    setAnnotationName(
+      result ? `Mesure ${result}` : "Nouvelle annotation",
+    );
+  };
+
+  const saveAnnotation = async () => {
+    if (!missionId || !draftGeometry || !annotationName.trim()) return;
+    setError("");
+    try {
+      await createMapFeature(missionId, {
+        geometry: draftGeometry,
+        name: annotationName.trim(),
+        description: annotationDescription.trim(),
+        color: annotationColor,
+        tags: splitTags(annotationTags),
+        properties: measurement ? { measurement } : {},
+      });
+      setDraftGeometry(null);
+      setMeasurement("");
+      setRefreshToken((value) => value + 1);
+      setNotice("Annotation enregistrée dans la couche collaborative.");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Échec de l’enregistrement",
+      );
+    }
+  };
+
+  const selectedFeatureId = String(
+    selectedFeature?.properties?.feature_id ??
+      selectedFeature?.id ??
+      "",
+  );
+
+  const removeSelected = async () => {
+    if (!missionId || !selectedFeatureId) return;
+    try {
+      await deleteMapFeature(missionId, selectedFeatureId);
+      setSelectedFeature(null);
+      setRefreshToken((value) => value + 1);
+      setNotice("Annotation supprimée.");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Suppression impossible",
+      );
+    }
+  };
+
+  const saveSelected = async () => {
+    if (!missionId || !selectedFeature || !selectedFeatureId) return;
+    try {
+      const updated = await updateMapFeature(
+        missionId,
+        selectedFeatureId,
+        {
+          name: selectedFeature.properties?.name || "Annotation",
+          description: selectedFeature.properties?.description || "",
+          color: selectedFeature.properties?.color || "#10b981",
+          tags: selectedFeature.properties?.tags || [],
+          version: selectedFeature.properties?.version || 1,
+        },
+      );
+      setSelectedFeature(updated);
+      setRefreshToken((value) => value + 1);
+      setNotice("Annotation mise à jour.");
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Mise à jour impossible",
+      );
+    }
+  };
 
   if (!missionId || sortedMissions.length === 0) {
     return (
       <div className="surface flex min-h-[520px] items-center justify-center text-[#87938f]">
         <div className="text-center">
-          <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-[#edf3f1] text-[#78908a]">
-            <MapIcon size={26} />
-          </span>
-          <p className="mt-4 text-sm font-bold text-[#485651]">No mission results yet</p>
-          <p className="mt-1 text-xs text-[#8a9692]">Launch the pipeline to generate maps and point clouds.</p>
+          <MapIcon size={30} className="mx-auto mb-3" />
+          <p className="font-semibold">
+            Aucun produit cartographique disponible
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      <section className="surface p-5 sm:p-6">
-        <div className="eyebrow">Stage 05 · Delivery</div>
-        <h2 className="mt-2 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
-          Mission products
-        </h2>
-        <p className="mt-1 max-w-2xl text-sm leading-6 text-[#6f7c78]">
-          Inspect georeferenced rasters, compare derived layers and download the
-          sparse or Gaussian scene for downstream GIS and 3D workflows.
-        </p>
-      </section>
-
-      <div className="flex min-h-[620px] flex-col gap-4 lg:h-[calc(100vh-250px)] lg:flex-row">
-      {/* Sidebar */}
-      <div className="grid shrink-0 gap-3 sm:grid-cols-3 lg:block lg:w-72 lg:space-y-4 lg:overflow-y-auto">
-        {/* Mission selector */}
-        <div className="surface p-4">
-          <h3 className="eyebrow mb-3">Mission</h3>
+    <div className="space-y-4">
+      <section className="surface flex flex-col gap-4 p-4 sm:p-5 xl:flex-row xl:items-center">
+        <div className="min-w-0">
+          <div className="eyebrow">Espace géospatial</div>
+          <h2 className="mt-1 text-2xl font-bold tracking-[-0.035em] text-[#17201e]">
+            Analyse, recherche et annotation
+          </h2>
+        </div>
+        <div className="flex flex-1 flex-col gap-2 sm:flex-row xl:justify-end">
           <select
             value={selectedVol ?? missionId}
-            onChange={(e) => setSelectedVol(e.target.value)}
-            className="input-control min-h-11 font-mono"
+            onChange={(event) => setSelectedVol(event.target.value)}
+            className="input-control min-h-11 sm:max-w-64"
           >
-            {sortedMissions.map((m) => (
-              <option key={m.vol_id} value={m.vol_id}>{m.vol_id}</option>
+            {sortedMissions.map((item) => (
+              <option key={item.vol_id} value={item.vol_id}>
+                {item.vol_id}
+              </option>
             ))}
           </select>
-        </div>
-
-        {/* Layer selector */}
-        <div className="surface p-4">
-          <h3 className="eyebrow mb-3">
-            <Layers size={13} className="mr-1.5 inline" /> Layer
-          </h3>
-          <div className="space-y-1.5">
-            {(Object.entries(LAYER_META) as [ViewerLayer, typeof LAYER_META[ViewerLayer]][]).map(([key, meta]) => {
-              const available = hasFile(meta.s3Suffix);
-              return (
-                <button
-                  key={key}
-                  onClick={() => available && setActiveLayer(key)}
-                  disabled={!available}
-                  className={`flex w-full items-center gap-2 rounded-xl border px-3 py-2.5 text-left text-sm transition ${
-                    !available
-                      ? "border-gray-50 text-gray-300 cursor-not-allowed"
-                      : effectiveLayer === key
-                        ? "border-[#68bfae] bg-[#edf9f6] text-[#0f766e]"
-                        : "border-[#dce4e1] text-[#5d6965] hover:border-[#b8c9c3]"
-                  }`}
-                >
-                  <Eye size={14} />
-                  {meta.label}
-                  {!available && <span className="ml-auto text-[10px] text-gray-300">N/A</span>}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Downloads */}
-        <div className="surface p-4">
-          <h3 className="eyebrow mb-3">
-            <Download size={13} className="mr-1.5 inline" /> Downloads
-          </h3>
-          <div className="space-y-1.5">
-            {(Object.entries(LAYER_META) as [ViewerLayer, typeof LAYER_META[ViewerLayer]][]).map(([key, meta]) => (
-              hasFile(meta.s3Suffix) && (
-                <a
-                  key={key}
-                  href={getFileUrl(`missions/${missionId}/${meta.s3Suffix}`)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
-                >
-                  <Download size={12} /> {meta.label} (.tif)
-                </a>
-              )
-            ))}
-            {hasGaussianPly && gaussianPlyKey && (
-              <a
-                href={getFileUrl(gaussianPlyKey)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
-              >
-                <Box size={12} /> Gaussian Point Cloud (.ply)
-              </a>
-            )}
-            {hasPointCloud && (
-              <a
-                href={getFileUrl(`missions/${missionId}/colmap/sparse/0/${hasFile("points3D.ply") ? "points3D.ply" : "points3D.bin"}`)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
-              >
-                <Box size={12} /> Sparse Point Cloud (COLMAP)
-              </a>
-            )}
-            <a
-              href={`${getApiBaseUrl()}/browse?prefix=${encodeURIComponent(`missions/${missionId}/tiles/`)}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex min-h-10 items-center gap-2 rounded-xl border border-[#e1e8e5] px-3 py-2 text-xs text-[#5d6965] hover:border-[#83cfc1] hover:text-[#0f766e]"
+          <div className="flex min-w-0 flex-1 sm:max-w-xl">
+            <input
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              onKeyDown={(event) =>
+                event.key === "Enter" && void runSearch()
+              }
+              placeholder="Nom, description, tag ou classe…"
+              className="input-control min-h-11 rounded-r-none"
+            />
+            <button
+              type="button"
+              onClick={() => void runSearch()}
+              disabled={busySearch}
+              className="flex min-w-12 items-center justify-center rounded-r-xl bg-[#173f38] text-white hover:bg-[#0f766e] disabled:opacity-50"
+              aria-label="Rechercher"
             >
-              <Download size={12} /> Tiles folder
-            </a>
+              <Search size={17} />
+            </button>
           </div>
         </div>
-      </div>
+      </section>
 
-      {/* Main viewer */}
-      <div className="min-h-[520px] flex-1 overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#16201d] shadow-[0_20px_50px_rgba(20,32,28,0.12)]">
-        <ImageViewer
-          key={imageUrl}
-          src={imageUrl!}
-          alt={LAYER_META[effectiveLayer].label}
-          depthMode={effectiveLayer === "depth"}
-        />
+      {(notice || error) && (
+        <div
+          className={`flex items-center justify-between rounded-xl px-4 py-3 text-sm ${
+            error
+              ? "bg-rose-50 text-rose-700"
+              : "bg-emerald-50 text-emerald-700"
+          }`}
+        >
+          <span className="flex items-center gap-2">
+            {error ? (
+              <AlertTriangle size={16} />
+            ) : (
+              <CheckCircle2 size={16} />
+            )}
+            {error || notice}
+          </span>
+          <button
+            type="button"
+            onClick={() => {
+              setError("");
+              setNotice("");
+            }}
+            aria-label="Fermer"
+          >
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
+      <div className="grid min-h-[720px] gap-4 xl:h-[calc(100vh-220px)] xl:grid-cols-[330px_minmax(0,1fr)]">
+        <aside className="surface order-2 flex min-h-0 flex-col overflow-hidden xl:order-none">
+          <div className="grid grid-cols-3 border-b border-[#e1e8e5] p-2">
+            {[
+              ["layers", Layers, "Couches"],
+              ["analysis", Sparkles, "IA"],
+              ["search", Search, "Objets"],
+            ].map(([id, Icon, label]) => (
+              <button
+                type="button"
+                key={String(id)}
+                onClick={() => setActivePanel(id as WorkspacePanel)}
+                className={`flex min-h-10 items-center justify-center gap-1.5 rounded-lg text-xs font-semibold ${
+                  activePanel === id
+                    ? "bg-[#e8f5f1] text-[#0f766e]"
+                    : "text-[#76827e] hover:bg-[#f3f6f5]"
+                }`}
+              >
+                <Icon size={14} /> {String(label)}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            {activePanel === "layers" && (
+              <LayersPanel
+                missionId={missionId}
+                activeLayer={activeLayer}
+                hasDepth={hasDepth}
+                rasterOpacity={rasterOpacity}
+                showLegacy={showLegacy}
+                showManual={showManual}
+                analyses={analyses}
+                visibleRuns={visibleRuns}
+                onLayerChange={setActiveLayer}
+                onOpacityChange={setRasterOpacity}
+                onLegacyChange={setShowLegacy}
+                onManualChange={setShowManual}
+                onRunVisibilityChange={(runId, visible) =>
+                  setVisibleRuns((current) =>
+                    visible
+                      ? [...current, runId]
+                      : current.filter((id) => id !== runId),
+                  )
+                }
+              />
+            )}
+            {activePanel === "analysis" && (
+              <AnalysisPanel
+                analyses={analyses}
+                form={analysisForm}
+                formVisible={showAnalysisForm}
+                submitting={submittingAnalysis}
+                onFormChange={setAnalysisForm}
+                onFormVisibilityChange={setShowAnalysisForm}
+                onSubmit={() => void submitAnalysis()}
+                onRetry={(runId) =>
+                  void retryAnalysis(missionId, runId).then(
+                    refreshAnalyses,
+                  )
+                }
+                onCancel={(runId) =>
+                  void cancelAnalysis(missionId, runId).then(
+                    refreshAnalyses,
+                  )
+                }
+              />
+            )}
+            {activePanel === "search" && (
+              <SearchPanel
+                source={searchSource}
+                runId={searchRun}
+                analyses={analyses}
+                results={searchResults}
+                onSourceChange={setSearchSource}
+                onRunChange={setSearchRun}
+                onSearch={() => void runSearch()}
+                onFeatureSelect={setSelectedFeature}
+                onFocus={setFocusBounds}
+              />
+            )}
+          </div>
+        </aside>
+
+        <main className="relative order-1 min-h-[620px] overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#16201d] shadow-[0_20px_50px_rgba(20,32,28,0.12)] xl:order-none">
+          <div className="absolute left-3 top-3 z-[500] flex max-w-[calc(100%-24px)] flex-wrap gap-1.5 rounded-2xl border border-white/40 bg-white/92 p-2 shadow-lg backdrop-blur">
+            {TOOL_BUTTONS.map(({ id, label, icon: Icon }) => (
+              <button
+                type="button"
+                key={id}
+                title={label}
+                onClick={() => setTool(id)}
+                className={`flex min-h-9 items-center gap-1.5 rounded-xl px-2.5 text-xs font-semibold ${
+                  tool === id
+                    ? "bg-[#173f38] text-white"
+                    : "text-[#53615d] hover:bg-[#edf3f1]"
+                }`}
+              >
+                <Icon size={14} />
+                <span className="hidden 2xl:inline">{label}</span>
+              </button>
+            ))}
+          </div>
+          {toolHint && (
+            <div className="absolute left-1/2 top-16 z-[500] -translate-x-1/2 rounded-full bg-[#17201e]/85 px-4 py-2 text-center text-xs text-white shadow backdrop-blur">
+              {toolHint}
+            </div>
+          )}
+          <GeospatialMap
+            key={`${missionId}:${activeLayer}`}
+            missionId={missionId}
+            layer={activeLayer}
+            rasterOpacity={rasterOpacity}
+            showLegacy={showLegacy}
+            showManual={showManual}
+            analyses={visibleAnalyses}
+            tool={tool}
+            focusBounds={focusBounds}
+            refreshToken={refreshToken}
+            onGeometryReady={geometryReady}
+            onFeatureSelect={setSelectedFeature}
+            onHint={setToolHint}
+          />
+          {draftGeometry && (
+            <DraftFeatureEditor
+              measurement={measurement}
+              name={annotationName}
+              description={annotationDescription}
+              color={annotationColor}
+              tags={annotationTags}
+              onNameChange={setAnnotationName}
+              onDescriptionChange={setAnnotationDescription}
+              onColorChange={setAnnotationColor}
+              onTagsChange={setAnnotationTags}
+              onClose={() => setDraftGeometry(null)}
+              onSave={() => void saveAnnotation()}
+            />
+          )}
+          {selectedFeature && !draftGeometry && (
+            <SelectedFeatureEditor
+              feature={selectedFeature}
+              onChange={setSelectedFeature}
+              onClose={() => setSelectedFeature(null)}
+              onDelete={() => void removeSelected()}
+              onSave={() => void saveSelected()}
+            />
+          )}
+        </main>
       </div>
-    </div>
     </div>
   );
 }

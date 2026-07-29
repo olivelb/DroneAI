@@ -7,6 +7,8 @@ pillow
 psycopg2-binary
 pydantic
 python-multipart
+pyproj
+rasterio
 sqlalchemy
 uvicorn[standard]
 websockets

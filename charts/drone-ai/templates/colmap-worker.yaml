@@ -18,6 +18,9 @@ spec:
       labels:
         app: colmap
     spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       {{- with .Values.gpu.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -30,8 +33,25 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+      - name: wait-for-schema
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - until cd /app && alembic current 2>/dev/null | grep -q "(head)"; do sleep 2; done
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: drone-ai-storage
+              key: database-url
       containers:
       - name: colmap
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.colmapWorker.image "tag" .Values.colmapWorker.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         env:

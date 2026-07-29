@@ -9,11 +9,8 @@ from datetime import datetime, timezone
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
 
-
 TERMINAL_STATUSES = {"success", "error"}
-MISSION_PROCESSING_STALE_SECONDS = float(
-    os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120")
-)
+MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
 
 
 def apply_mission_state(session, payload: dict) -> None:
@@ -82,16 +79,15 @@ def compute_overall_status(services: dict) -> str:
     if not services:
         return "idle"
     statuses = [
-        payload.get("status", "processing")
-        if isinstance(payload, dict)
-        else "processing"
+        payload.get("status", "processing") if isinstance(payload, dict) else "processing"
         for payload in services.values()
     ]
     if "error" in statuses:
         return "error"
-    if all(status == "success" for status in statuses if status):
-        if all(service in services for service in SERVICE_ORDER):
-            return "success"
+    if all(status == "success" for status in statuses if status) and all(
+        service in services for service in SERVICE_ORDER
+    ):
+        return "success"
     return "processing"
 
 
@@ -105,28 +101,19 @@ def is_mission_stale(mission: Mission) -> bool:
 def build_colmap_resume_state(mission: Mission) -> dict:
     services = mission.service_states or {}
     colmap_service = services.get("COLMAP", {})
-    colmap_status = (
-        colmap_service.get("status")
-        if isinstance(colmap_service, dict)
-        else None
-    )
+    colmap_status = colmap_service.get("status") if isinstance(colmap_service, dict) else None
     stale = colmap_status == "processing" and is_mission_stale(mission)
     downstream = [
         name
         for name, service in services.items()
-        if name != "COLMAP"
-        and isinstance(service, dict)
-        and service.get("status") == "processing"
+        if name != "COLMAP" and isinstance(service, dict) and service.get("status") == "processing"
     ]
 
     if colmap_status == "processing" and not stale:
         return {
             "available": False,
             "state": "running",
-            "reason": (
-                "COLMAP is currently running. Resume is only relevant after "
-                "an interruption."
-            ),
+            "reason": ("COLMAP is currently running. Resume is only relevant after an interruption."),
             "downstream_processing": downstream,
         }
     if stale:
@@ -155,8 +142,7 @@ def build_colmap_resume_state(mission: Mission) -> dict:
             "available": has_params,
             "state": "resumable" if has_params else "unavailable",
             "reason": (
-                "COLMAP stopped with an error. A resume action can restart "
-                "from the last checkpoint."
+                "COLMAP stopped with an error. A resume action can restart from the last checkpoint."
                 if has_params
                 else "COLMAP errored but no saved mission parameters found."
             ),
@@ -199,29 +185,18 @@ def serialize_mission(mission: Mission) -> dict:
         "colmap_resume": build_colmap_resume_state(mission),
         "services": services,
         "logs": [],
-        "updated_at": (
-            mission.updated_at.timestamp() if mission.updated_at else time.time()
-        ),
+        "updated_at": (mission.updated_at.timestamp() if mission.updated_at else time.time()),
         "overall_status": overall,
     }
 
 
 def get_status_summary() -> dict:
     with get_session() as session:
-        missions = (
-            session.query(Mission)
-            .order_by(Mission.updated_at.desc())
-            .limit(50)
-            .all()
-        )
+        missions = session.query(Mission).order_by(Mission.updated_at.desc()).limit(50).all()
         serialized = [serialize_mission(mission) for mission in missions]
     serialized.sort(key=lambda item: item["updated_at"], reverse=True)
     active = next(
-        (
-            item
-            for item in serialized
-            if item["overall_status"] == "processing"
-        ),
+        (item for item in serialized if item["overall_status"] == "processing"),
         serialized[0] if serialized else None,
     )
     return {
@@ -258,10 +233,7 @@ def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
     if not mission.params:
         return None, {
             "status": "error",
-            "message": (
-                f"Saved state for {vol_id} does not contain the original "
-                "mission payload."
-            ),
+            "message": (f"Saved state for {vol_id} does not contain the original mission payload."),
             "colmap_resume": resume_state,
         }
 

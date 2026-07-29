@@ -144,3 +144,125 @@ export const getPreviewUrl = (s3Key: string, maxSize = 4096, colormap = "") => {
   if (colormap) params.set("colormap", colormap);
   return `${getApiBaseUrl()}/preview/${encodeS3Key(s3Key)}?${params.toString()}`;
 };
+
+export const getMapMetadata = (
+  missionId: string,
+  layer: "ortho" | "depth",
+) => api(`/maps/${encodeURIComponent(missionId)}/metadata/${layer}`);
+
+export const getMapTileUrl = (
+  missionId: string,
+  layer: "ortho" | "depth",
+) => `${getApiBaseUrl()}/maps/${encodeURIComponent(missionId)}/tiles/${layer}/{z}/{x}/{y}.png`;
+
+export const getVectorLayer = (
+  missionId: string,
+  bbox: [number, number, number, number],
+  options?: { sources?: string[]; runIds?: string[] },
+) => api<import("geojson").FeatureCollection>(
+  `/maps/${encodeURIComponent(missionId)}/vectors.geojson?${new URLSearchParams({
+    bbox: bbox.join(","),
+    sources: (options?.sources ?? ["legacy", "manual"]).join(","),
+    ...(options?.runIds?.length
+      ? { run_ids: options.runIds.join(",") }
+      : {}),
+  }).toString()}`,
+);
+
+export const fetchAnalyses = (missionId: string) =>
+  api<{ runs: import("./types").AnalysisRun[] }>(
+    `/maps/${encodeURIComponent(missionId)}/analyses`,
+  );
+
+export const createAnalysis = (
+  missionId: string,
+  request: import("./types").AnalysisCreate,
+) => api<import("./types").AnalysisRun>(
+  `/maps/${encodeURIComponent(missionId)}/analyses`,
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
+
+export const retryAnalysis = (missionId: string, runId: string) =>
+  api<import("./types").AnalysisRun>(
+    `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/retry`,
+    { method: "POST" },
+  );
+
+export const cancelAnalysis = (missionId: string, runId: string) =>
+  api<import("./types").AnalysisRun>(
+    `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/cancel`,
+    { method: "POST" },
+  );
+
+export const getAnalysisVectors = (
+  missionId: string,
+  runId: string,
+  bbox: [number, number, number, number],
+) => api<import("geojson").FeatureCollection>(
+  `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/vectors.geojson?bbox=${bbox.join(",")}`,
+);
+
+export const searchMapFeatures = (
+  missionId: string,
+  filters: {
+    q?: string;
+    source?: string;
+    runId?: string;
+    className?: string;
+    minConfidence?: number;
+  },
+) => {
+  const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
+  if (filters.source) params.set("source", filters.source);
+  if (filters.runId) params.set("run_id", filters.runId);
+  if (filters.className) params.set("class_name", filters.className);
+  if (filters.minConfidence !== undefined) {
+    params.set("min_confidence", String(filters.minConfidence));
+  }
+  return api<import("geojson").FeatureCollection & { bounds?: [number, number, number, number] | null }>(
+    `/maps/${encodeURIComponent(missionId)}/search?${params.toString()}`,
+  );
+};
+
+export const createMapFeature = (
+  missionId: string,
+  request: {
+    geometry: import("geojson").Geometry;
+    name: string;
+    description: string;
+    color: string;
+    tags: string[];
+    properties?: Record<string, unknown>;
+  },
+) => api<import("geojson").Feature>(
+  `/maps/${encodeURIComponent(missionId)}/features`,
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
+
+export const updateMapFeature = (
+  missionId: string,
+  featureId: string,
+  request: Record<string, unknown>,
+) => api<import("geojson").Feature>(
+  `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}`,
+  {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
+
+export const deleteMapFeature = (missionId: string, featureId: string) =>
+  api<void>(
+    `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}`,
+    { method: "DELETE" },
+  );

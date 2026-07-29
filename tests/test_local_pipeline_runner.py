@@ -3,7 +3,6 @@ import json
 import sys
 from pathlib import Path
 
-
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "tools" / "run_local_pipeline.py"
 SPEC = importlib.util.spec_from_file_location("run_local_pipeline", SCRIPT_PATH)
 MODULE = importlib.util.module_from_spec(SPEC)

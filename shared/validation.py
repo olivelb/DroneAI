@@ -4,9 +4,8 @@ import re
 from pathlib import Path
 from typing import Any
 
-from shared.pipeline_params import PARAMETER_METADATA, PARAM_OVERRIDE_KEYS
+from shared.pipeline_params import PARAM_OVERRIDE_KEYS, PARAMETER_METADATA
 from shared.projected_crs import normalize_epsg
-
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MISSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
@@ -19,8 +18,7 @@ def validate_mission_id(value: str) -> str:
     normalized = str(value or "").strip()
     if not MISSION_ID_RE.fullmatch(normalized):
         raise ValueError(
-            "vol_id must contain 3-64 letters, digits, underscores, or hyphens "
-            "and must start with a letter or digit"
+            "vol_id must contain 3-64 letters, digits, underscores, or hyphens and must start with a letter or digit"
         )
     return normalized
 
@@ -120,24 +118,33 @@ def _validate_numeric_parameter(key: str, value: Any, metadata: dict[str, Any]) 
         raise ValueError(f"{key} must be <= {metadata['max']}")
 
 
+def _validate_pipeline_parameter(
+    key: str,
+    value: Any,
+    metadata: dict[str, Any],
+) -> None:
+    parameter_type = metadata.get("type")
+    if parameter_type in {"int", "float"}:
+        _validate_numeric_parameter(key, value, metadata)
+    elif parameter_type == "select":
+        options = {str(option) for option in metadata.get("options", [])}
+        if str(value) not in options:
+            raise ValueError(f"{key} must be one of: {', '.join(map(str, metadata['options']))}")
+    elif parameter_type == "bool":
+        normalized = str(value).strip().lower()
+        if not isinstance(value, bool) and normalized not in BOOLEAN_STRINGS:
+            raise ValueError(f"{key} must be a boolean")
+    elif key == "projected_crs" and str(value).strip():
+        normalize_epsg(str(value))
+
+
 def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     unknown_keys = sorted(set(overrides) - set(PARAM_OVERRIDE_KEYS))
     if unknown_keys:
         raise ValueError(f"unknown COLMAP parameters: {', '.join(unknown_keys)}")
 
     for key, value in overrides.items():
-        metadata = PARAMETER_METADATA[key]
-        parameter_type = metadata.get("type")
-        if parameter_type in {"int", "float"}:
-            _validate_numeric_parameter(key, value, metadata)
-        elif parameter_type == "select":
-            if str(value) not in {str(option) for option in metadata.get("options", [])}:
-                raise ValueError(f"{key} must be one of: {', '.join(map(str, metadata['options']))}")
-        elif parameter_type == "bool":
-            if not isinstance(value, bool) and str(value).strip().lower() not in BOOLEAN_STRINGS:
-                raise ValueError(f"{key} must be a boolean")
-        elif key == "projected_crs" and str(value).strip():
-            normalize_epsg(str(value))
+        _validate_pipeline_parameter(key, value, PARAMETER_METADATA[key])
 
     if {
         "gps_pair_min_neighbors",
@@ -146,17 +153,13 @@ def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
         minimum_neighbors = int(overrides["gps_pair_min_neighbors"])
         maximum_neighbors = int(overrides["gps_pair_max_neighbors"])
         if minimum_neighbors > maximum_neighbors:
-            raise ValueError(
-                "gps_pair_min_neighbors must be <= gps_pair_max_neighbors"
-            )
+            raise ValueError("gps_pair_min_neighbors must be <= gps_pair_max_neighbors")
 
     if (
         str(overrides.get("alignment_engine", "")).lower() == "caspar"
         and str(overrides.get("camera_model", "")).upper() == "OPENCV"
     ):
-        raise ValueError(
-            "alignment_engine=caspar requires camera_model PINHOLE or SIMPLE_RADIAL"
-        )
+        raise ValueError("alignment_engine=caspar requires camera_model PINHOLE or SIMPLE_RADIAL")
     if str(overrides.get("projected_crs_mode", "")).lower() == "custom":
         normalize_epsg(str(overrides.get("projected_crs", "")))
     return overrides

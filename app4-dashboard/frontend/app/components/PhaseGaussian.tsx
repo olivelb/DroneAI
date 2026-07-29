@@ -11,6 +11,7 @@ import {
   Zap,
 } from "lucide-react";
 import { ParamField } from "./ParamField";
+import { PresetButton } from "./PresetButton";
 import { useStore } from "../lib/store";
 import type { ParameterMeta } from "../lib/types";
 
@@ -283,44 +284,18 @@ export default function PhaseGaussian() {
           </p>
         </div>
         <div className="grid gap-3 md:grid-cols-3">
-          {DRONEGS_PRESETS.map((preset) => {
-            const selected = Object.entries(preset.values).every(
-              ([key, value]) => String(parameterValues[key]) === String(value),
-            );
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                onClick={() =>
-                  setParameterValues((previous) => ({
-                    ...previous,
-                    ...preset.values,
-                  }))
-                }
-                className={`min-h-[130px] rounded-2xl border p-4 text-left transition ${
-                  selected
-                    ? "border-[#e2b557] bg-[#fff8e7] shadow-[0_8px_24px_rgba(180,116,12,0.08)]"
-                    : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#c8b986]"
-                }`}
-              >
-                <span
-                  className={`flex h-9 w-9 items-center justify-center rounded-xl ${
-                    selected
-                      ? "bg-[#b66b05] text-white"
-                      : "bg-white text-[#7a7568]"
-                  }`}
-                >
-                  {preset.icon}
-                </span>
-                <span className="mt-3 block text-sm font-bold text-[#2b3834]">
-                  {preset.label}
-                </span>
-                <span className="mt-1 block text-xs leading-5 text-[#75827e]">
-                  {preset.description}
-                </span>
-              </button>
-            );
-          })}
+          {DRONEGS_PRESETS.map((preset) => (
+            <PresetButton
+              key={preset.id}
+              preset={preset}
+              parameterValues={parameterValues}
+              layout="stacked"
+              tone="amber"
+              onApply={(values) =>
+                setParameterValues((previous) => ({ ...previous, ...values }))
+              }
+            />
+          ))}
         </div>
       </section>
 

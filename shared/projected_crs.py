@@ -8,7 +8,6 @@ from dataclasses import asdict, dataclass
 from statistics import mean
 from typing import Iterable
 
-
 EPSG_RE = re.compile(r"^EPSG:(\d{4,6})$", re.IGNORECASE)
 PROJECTED_CRS_POLICIES = ("auto-local", "france-cc", "utm", "custom")
 

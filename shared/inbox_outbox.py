@@ -21,7 +21,6 @@ from shared.database import InboxEvent, OutboxEvent
 from shared.event_contracts import validate_event
 from shared.kafka_reliability import RetryPolicy, message_location
 
-
 SessionScope = Callable[[], AbstractContextManager]
 DomainHandler = Callable[[Any, dict[str, Any]], None]
 Publisher = Callable[[str, dict[str, Any], str | None], None]
@@ -182,10 +181,14 @@ def deliver_outbox_event(
     try:
         publisher(record.topic, record.payload, record.message_key)
     except Exception as error:
-        record.status = "failed"
         record.last_error = f"{type(error).__name__}: {error}"
-        delay = retry_policy.delay_before(record.attempts)
-        record.available_at = now + timedelta(seconds=delay)
+        if record.attempts >= retry_policy.max_attempts:
+            record.status = "dead"
+            record.dead_at = now
+        else:
+            record.status = "failed"
+            delay = retry_policy.delay_before(record.attempts)
+            record.available_at = now + timedelta(seconds=delay)
         record.locked_at = None
         record.locked_by = None
         return False
@@ -209,7 +212,7 @@ def dispatch_outbox_batch(
 ) -> dict[str, int]:
     policy = retry_policy or RetryPolicy.from_environment()
     current_time = now or utc_now()
-    results = {"selected": 0, "published": 0, "failed": 0}
+    results = {"selected": 0, "published": 0, "failed": 0, "dead": 0}
     with session_scope() as session:
         records = (
             session.query(OutboxEvent)
@@ -235,7 +238,10 @@ def dispatch_outbox_batch(
             ):
                 results["published"] += 1
             else:
-                results["failed"] += 1
+                if record.status == "dead":
+                    results["dead"] += 1
+                else:
+                    results["failed"] += 1
     return results
 
 

@@ -4,7 +4,6 @@ from pathlib import Path
 
 import pytest
 
-
 APP1_DIR = Path(__file__).resolve().parents[1] / "app1-colmap"
 if str(APP1_DIR) not in sys.path:
     sys.path.insert(0, str(APP1_DIR))

@@ -86,6 +86,18 @@ jobs:
           app4-dashboard/api shared alembic tests tools
       - name: Lint
         run: python -m ruff check .
+      - name: Enforce complexity budgets on orchestration modules
+        run: >-
+          python -m ruff check --select C90,F401,F841
+          app3-processing/main.py
+          app3-processing/analysis_workflow.py
+          app3-processing/orthomosaic_tiler.py
+          app4-dashboard/api/map_schemas.py
+          app4-dashboard/api/map_support.py
+          app4-dashboard/api/routers/maps.py
+          app4-dashboard/api/routers/map_analyses.py
+          app4-dashboard/api/routers/map_features.py
+          app4-dashboard/api/routers/map_rasters.py
       - name: Run CPU tests
         run: python -m pytest -m "not gpu and not integration" --junitxml=test-results/pytest.xml
       - name: Upload test report
@@ -145,5 +157,57 @@ jobs:
           cache: npm
           cache-dependency-path: app4-dashboard/frontend/package-lock.json
       - run: npm ci
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
       - run: npm run lint
       - run: npm run build
+
+  container-smoke:
+    name: Service image import smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: droneai-api:ci
+            dockerfile: app4-dashboard/api/Dockerfile
+            command: >-
+              import importlib;
+              app = importlib.import_module('app4-dashboard.api.main').app;
+              assert len(app.openapi()['paths']) >= 25
+          - image: drone-processing:ci
+            dockerfile: app3-processing/Dockerfile
+            command: >-
+              import sys;
+              sys.path.insert(0, '/app/app3-processing');
+              import analysis_workflow, orthomosaic_tiler
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.image }}
+        run: >-
+          docker build
+          --tag "${{ matrix.image }}"
+          --file "${{ matrix.dockerfile }}"
+          .
+      - name: Import runtime modules
+        run: >-
+          docker run --rm
+          --entrypoint python3
+          "${{ matrix.image }}"
+          -c "${{ matrix.command }}"
+
+  helm:
+    name: Helm production render
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - name: Lint chart
+        run: helm lint charts/drone-ai
+      - name: Render production values
+        run: >-
+          helm template drone-ai charts/drone-ai
+          --values charts/drone-ai/values-production.example.yaml
+          > /tmp/drone-ai-production.yaml

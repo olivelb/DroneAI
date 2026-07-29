@@ -12,8 +12,7 @@ from hashlib import sha256
 from hmac import new as hmac_new
 from typing import Any
 
-from fastapi import Cookie, Header, HTTPException, WebSocket, status
-
+from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
 
 ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2}
 SESSION_COOKIE_NAME = "droneai_api_key"
@@ -251,10 +250,34 @@ require_operator = require_role("operator")
 require_admin = require_role("admin")
 
 
+def enforce_cookie_csrf(request: Request) -> None:
+    """Require a trusted Origin for state changes authenticated by cookie."""
+
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return
+    if SESSION_COOKIE_NAME not in request.cookies:
+        return
+    origin = request.headers.get("origin", "").rstrip("/")
+    trusted = {
+        configured.rstrip("/")
+        for configured in configured_cors_origins()
+        if configured != "*"
+    }
+    # Development without a configured Origin remains usable; production
+    # configuration validation already forbids the wildcard.
+    if not is_production() and not trusted:
+        return
+    if (is_production() and not origin) or (origin and origin not in trusted):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Untrusted request origin",
+        )
+
+
 async def authorize_websocket(websocket: WebSocket) -> bool:
-    token = websocket.query_params.get("access_token")
-    if token is None:
-        token = websocket.cookies.get(SESSION_COOKIE_NAME)
+    token = websocket.cookies.get(SESSION_COOKIE_NAME)
+    if token is None and not is_production():
+        token = websocket.query_params.get("access_token")
     if authenticate_token(token) is not None:
         return True
     await websocket.close(code=4401, reason="Authentication required")

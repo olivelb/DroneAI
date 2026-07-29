@@ -18,6 +18,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from shared.config import KAFKA_BROKER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_ORTHO, TOPIC_STATUS
 from shared import storage
+from shared.geospatial_assets import convert_to_cog, metadata_path, preview_path
 from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
@@ -32,6 +33,7 @@ from pipeline_support import (
     detect_existing_pipeline,
     extract_gps_data,
     inspect_sparse_reconstruction,
+    inspect_sparse_quality,
     is_aliked_feature_type,
     merge_pipeline_params,
     normalize_ai_backend,
@@ -661,6 +663,27 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 3,
                 int(math.ceil(len(images) * minimum_registration_ratio)),
             )
+            maximum_reprojection_error = float(
+                params["maximum_mean_reprojection_error_px"]
+            )
+            minimum_track_length = float(
+                params["minimum_median_track_length"]
+            )
+
+            def passes_sparse_quality(quality):
+                reprojection_error = quality[
+                    "mean_reprojection_error_px"
+                ]
+                track_length = quality["median_track_length"]
+                return (
+                    quality["registered_images"]
+                    >= minimum_registered_images
+                    and quality["points3D"] > 0
+                    and reprojection_error is not None
+                    and reprojection_error <= maximum_reprojection_error
+                    and track_length is not None
+                    and track_length >= minimum_track_length
+                )
 
             def remaining_mapping_budget():
                 remaining = mapping_timeout - (time.monotonic() - mapping_started_at)
@@ -742,13 +765,12 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 )
 
             sparse_model_path = os.path.join(sparse_path, "0")
-            registered_images, sparse_points = inspect_sparse_reconstruction(
-                sparse_model_path
-            )
+            quality = inspect_sparse_quality(sparse_model_path)
+            registered_images = quality["registered_images"]
+            sparse_points = quality["points3D"]
             primary_usable = (
                 primary_error is None
-                and registered_images >= minimum_registered_images
-                and sparse_points > 0
+                and passes_sparse_quality(quality)
             )
             report_mission_progress(
                 vol_id,
@@ -766,6 +788,11 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "total_images": len(images),
                     "points3D": sparse_points,
                     "minimum_registered_images": minimum_registered_images,
+                    "maximum_mean_reprojection_error_px": (
+                        maximum_reprojection_error
+                    ),
+                    "minimum_median_track_length": minimum_track_length,
+                    **quality,
                     "accepted": primary_usable,
                 },
             )
@@ -794,20 +821,21 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 shutil.rmtree(sparse_path, ignore_errors=True)
                 os.makedirs(sparse_path, exist_ok=True)
                 run_mapping_engine(fallback_engine, 48)
-                registered_images, sparse_points = inspect_sparse_reconstruction(
-                    sparse_model_path
-                )
+                quality = inspect_sparse_quality(sparse_model_path)
+                registered_images = quality["registered_images"]
+                sparse_points = quality["points3D"]
                 primary_engine = fallback_engine
 
-            if (
-                registered_images < minimum_registered_images
-                or sparse_points <= 0
-            ):
+            if not passes_sparse_quality(quality):
                 raise RuntimeError(
                     "Sparse reconstruction failed the alignment quality gate "
                     f"after {primary_engine}: registered_images={registered_images}/"
                     f"{len(images)}, required={minimum_registered_images}, "
-                    f"points3D={sparse_points}. Exhaustive matching and unbounded "
+                    f"points3D={sparse_points}, "
+                    f"mean_reprojection_error_px="
+                    f"{quality['mean_reprojection_error_px']}, "
+                    f"median_track_length={quality['median_track_length']}. "
+                    "Exhaustive matching and unbounded "
                     "CPU bundle adjustment are intentionally disabled."
                 )
         else:
@@ -1384,21 +1412,74 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         #       full/splat_*.ply       — Training output PLY
         #       full/checkpoints/      — Resume checkpoint
 
-        report_mission_progress(vol_id, "UPLOADING", 90, log="Uploading ALL pipeline artifacts to S3...")
+        report_mission_progress(
+            vol_id,
+            "UPLOADING",
+            90,
+            log="Converting orthomosaic to a tiled COG and publishing verified assets...",
+        )
         upload_count = 0
-        try:
-            # 1. Orthomosaic
-            ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
-            if os.path.exists(ortho_file):
-                storage.upload_file(ortho_file, ortho_s3_key)
-                upload_count += 1
+        ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
+        if not os.path.isfile(ortho_file):
+            raise FileNotFoundError(
+                f"Required orthomosaic artifact is missing: {ortho_file}"
+            )
 
+        # The final raster is a required, independently verifiable product.
+        # Never announce DONE or start downstream processing unless conversion,
+        # upload and remote integrity verification all succeeded.
+        convert_to_cog(ortho_file)
+        storage.upload_verified_file(ortho_file, ortho_s3_key)
+        storage.upload_verified_file(
+            metadata_path(ortho_file),
+            f"{ortho_s3_key}.cog.json",
+        )
+        storage.upload_verified_file(
+            preview_path(ortho_file),
+            f"{mission_s3_prefix}/orthomosaic.preview.webp",
+        )
+        upload_count += 3
+        report_mission_progress(
+            vol_id,
+            "UPLOADING",
+            92,
+            log="Verified COG, map metadata and bounded preview uploaded",
+        )
+
+        # Remaining recovery/debug products are useful but do not invalidate a
+        # successfully published orthomosaic when one of them cannot be copied.
+        try:
             height_tif = os.path.join(workspace_dir, "orthomosaic.height.tif")
             if os.path.exists(height_tif):
-                storage.upload_file(height_tif, f"{mission_s3_prefix}/orthomosaic.height.tif")
-                upload_count += 1
-
-            report_mission_progress(vol_id, "UPLOADING", 91, log="Orthomosaic uploaded")
+                try:
+                    convert_to_cog(height_tif)
+                    height_key = (
+                        f"{mission_s3_prefix}/orthomosaic.height.tif"
+                    )
+                    for local_path, remote_key in (
+                        (height_tif, height_key),
+                        (
+                            metadata_path(height_tif),
+                            f"{height_key}.cog.json",
+                        ),
+                        (
+                            preview_path(height_tif),
+                            f"{mission_s3_prefix}/"
+                            "orthomosaic.height.preview.webp",
+                        ),
+                    ):
+                        storage.upload_verified_file(local_path, remote_key)
+                        upload_count += 1
+                except Exception as height_error:
+                    report_mission_progress(
+                        vol_id,
+                        "UPLOADING",
+                        93,
+                        log=(
+                            "Warning: optional height COG publication "
+                            f"failed: {height_error}"
+                        ),
+                    )
 
             # 2. Alignment & geo data
             if align_tf and os.path.exists(align_tf):
@@ -1459,8 +1540,15 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
 
             report_mission_progress(vol_id, "UPLOADING", 99, log=f"All artifacts uploaded to S3 ({upload_count} files total)")
         except Exception as upload_err:
-            report_mission_progress(vol_id, "UPLOADING", 98, log=f"Warning: S3 upload partially failed: {upload_err}")
-            ortho_s3_key = f"{mission_s3_prefix}/orthomosaic.tif"
+            report_mission_progress(
+                vol_id,
+                "UPLOADING",
+                98,
+                log=(
+                    "Warning: an optional recovery/debug artifact could not "
+                    f"be uploaded: {upload_err}"
+                ),
+            )
 
         # --- Cleanup local workspace to free WSL disk ---
         try:

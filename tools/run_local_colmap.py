@@ -25,7 +25,6 @@ from typing import Any
 import numpy as np
 from pyproj import Transformer
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -42,6 +41,7 @@ from alignment_support import (
     positioned_records_from_preflight,
     write_pair_list,
 )
+
 from shared.rtk_refinement import inject_database_pose_priors
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
@@ -122,8 +122,7 @@ def parse_args() -> argparse.Namespace:
         choices=["symlink", "copy"],
         default="copy",
         help=(
-            "copy reads mounted Windows/network datasets in parallel and then "
-            "runs COLMAP on the fast Linux filesystem"
+            "copy reads mounted Windows/network datasets in parallel and then runs COLMAP on the fast Linux filesystem"
         ),
     )
     parser.add_argument(
@@ -213,21 +212,13 @@ def ensure_workspace(dataset: Path, workspace: Path) -> dict[str, Any]:
     if marker_path.exists():
         marker = json.loads(marker_path.read_text(encoding="utf-8"))
         if Path(marker["source_dataset"]).resolve() != dataset:
-            raise ValueError(
-                f"workspace already belongs to another dataset: {marker['source_dataset']}"
-            )
+            raise ValueError(f"workspace already belongs to another dataset: {marker['source_dataset']}")
         return marker
 
     preflight_outputs = {"dataset_preflight.json", "flight_path.geojson"}
-    unexpected = [
-        path
-        for path in workspace.iterdir()
-        if path.name not in preflight_outputs | {WORKSPACE_MARKER}
-    ]
+    unexpected = [path for path in workspace.iterdir() if path.name not in preflight_outputs | {WORKSPACE_MARKER}]
     if unexpected:
-        raise ValueError(
-            "workspace is not empty and has no DroneAI local marker; refusing to modify it"
-        )
+        raise ValueError("workspace is not empty and has no DroneAI local marker; refusing to modify it")
     marker = {"schema_version": 1, "source_dataset": str(dataset)}
     marker_path.write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
     return marker
@@ -261,10 +252,7 @@ def select_records(
         return candidates[:maximum]
     if maximum == 1:
         return [candidates[0]]
-    indices = {
-        round(index * (len(candidates) - 1) / (maximum - 1))
-        for index in range(maximum)
-    }
+    indices = {round(index * (len(candidates) - 1) / (maximum - 1)) for index in range(maximum)}
     return [candidates[index] for index in sorted(indices)]
 
 
@@ -289,10 +277,7 @@ def stage_images(
     if copy_workers < 1:
         raise ValueError("copy_workers must be positive")
     image_dir = workspace / "images"
-    selection = [
-        _selection_descriptor(record, staging_mode)
-        for record in selected_records
-    ]
+    selection = [_selection_descriptor(record, staging_mode) for record in selected_records]
     selection_path = workspace / "selection.json"
     previous = None
     if selection_path.exists():
@@ -303,6 +288,7 @@ def stage_images(
         if image_dir.exists():
             shutil.rmtree(image_dir)
         image_dir.mkdir(parents=True)
+
         def stage_record(record: dict[str, Any]) -> None:
             source = dataset / record["file"]
             destination = image_dir / record["file"]
@@ -394,13 +380,15 @@ def sparse_model_identity(model_path: Path) -> str:
 
 def sparse_model_path(workspace: Path) -> Path:
     sparse_root = workspace / "sparse"
-    candidates = sorted(
-        path
-        for path in sparse_root.iterdir()
-        if path.is_dir()
-        and (path / "cameras.bin").is_file()
-        and (path / "images.bin").is_file()
-    ) if sparse_root.exists() else []
+    candidates = (
+        sorted(
+            path
+            for path in sparse_root.iterdir()
+            if path.is_dir() and (path / "cameras.bin").is_file() and (path / "images.bin").is_file()
+        )
+        if sparse_root.exists()
+        else []
+    )
     if not candidates:
         raise RuntimeError("COLMAP did not produce a usable sparse model")
     return min(candidates, key=lambda path: (-registered_image_count(path), path.name))
@@ -418,11 +406,7 @@ def run_rtk_refinement(
 ) -> tuple[Path, dict[str, Any]]:
     output_path = args.workspace / "sparse_rtk"
     report_path = args.workspace / "rtk_prior_report.json"
-    report = (
-        json.loads(report_path.read_text(encoding="utf-8"))
-        if report_path.is_file()
-        else {}
-    )
+    report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else {}
     if (output_path / "cameras.bin").is_file():
         report["status"] = "completed"
         report["last_action"] = "reused"
@@ -509,14 +493,15 @@ def run_rtk_refinement(
         )
         write_json(report_path, report)
         print(
-            f"RTK refinement was not usable ({error}); keeping the verified "
-            "GLOMAP/CASPAR model.",
+            f"RTK refinement was not usable ({error}); keeping the verified GLOMAP/CASPAR model.",
             flush=True,
         )
         return sparse_model, report
 
 
-def run_sparse(
+# Keep failover and resume decisions in one ordered state machine: splitting them
+# would make timeout-budget and artifact-cleanup invariants harder to verify.
+def run_sparse(  # noqa: C901
     args: argparse.Namespace,
     selected_records: list[dict[str, Any]],
     projected_crs: str | None,
@@ -528,9 +513,7 @@ def run_sparse(
     sparse_root.mkdir(exist_ok=True)
     use_gpu = "1" if args.use_gpu else "0"
     selected_count = len(selected_records)
-    model_dir = Path(
-        os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models")
-    )
+    model_dir = Path(os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models"))
 
     if database_image_count(database_path) != selected_count:
         feature_options = [
@@ -579,10 +562,7 @@ def run_sparse(
             + feature_options
         )
 
-    if (
-        rtk_refinement_enabled(args)
-        and not (workspace / "sparse_rtk" / "cameras.bin").is_file()
-    ):
+    if rtk_refinement_enabled(args) and not (workspace / "sparse_rtk" / "cameras.bin").is_file():
         prior_report = inject_database_pose_priors(database_path, selected_records)
         prior_report["status"] = "priors-injected"
         write_json(workspace / "rtk_prior_report.json", prior_report)
@@ -609,8 +589,7 @@ def run_sparse(
             write_pair_list(pair_path, pairs)
             atomic_write_json(workspace / "pair_graph.json", pair_stats)
             print(
-                f"GPS graph: {pair_stats['pair_count']} pairs, "
-                f"mean degree {pair_stats['mean_degree']:.1f}.",
+                f"GPS graph: {pair_stats['pair_count']} pairs, mean degree {pair_stats['mean_degree']:.1f}.",
                 flush=True,
             )
             matcher_command = [
@@ -679,8 +658,7 @@ def run_sparse(
             supported, models = caspar_compatibility(database_path)
             if not supported:
                 raise RuntimeError(
-                    "Caspar requires PINHOLE or SIMPLE_RADIAL cameras; "
-                    f"database contains {sorted(models)}"
+                    f"Caspar requires PINHOLE or SIMPLE_RADIAL cameras; database contains {sorted(models)}"
                 )
         mapper_command = build_mapping_command(
             primary_engine,
@@ -696,9 +674,7 @@ def run_sparse(
         mapping_started_at = time.monotonic()
 
         def remaining_mapping_budget() -> float:
-            remaining = args.mapping_timeout_seconds - (
-                time.monotonic() - mapping_started_at
-            )
+            remaining = args.mapping_timeout_seconds - (time.monotonic() - mapping_started_at)
             if remaining <= 0:
                 raise subprocess.TimeoutExpired(
                     mapper_command,
@@ -717,8 +693,7 @@ def run_sparse(
             if args.engine != "auto":
                 raise
             print(
-                f"GLOMAP failed within its bounded budget ({error}); "
-                "selecting an incremental GPU fallback.",
+                f"GLOMAP failed within its bounded budget ({error}); selecting an incremental GPU fallback.",
                 flush=True,
             )
 
@@ -728,17 +703,12 @@ def run_sparse(
                 primary_model = sparse_model_path(workspace)
             except RuntimeError:
                 primary_model = None
-        primary_registered = (
-            registered_image_count(primary_model) if primary_model is not None else 0
-        )
+        primary_registered = registered_image_count(primary_model) if primary_model is not None else 0
         minimum_registered = max(
             3,
             math.ceil(selected_count * args.minimum_registration_ratio),
         )
-        if (
-            args.engine == "auto"
-            and (primary_error is not None or primary_registered < minimum_registered)
-        ):
+        if args.engine == "auto" and (primary_error is not None or primary_registered < minimum_registered):
             _, models = caspar_compatibility(database_path)
             fallback_engine = choose_auto_fallback(models)
             print(
@@ -804,15 +774,11 @@ def write_colmap_references(
     (workspace / "geo_data.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     (workspace / "geo_data.txt.crs").write_text(projected_crs + "\n", encoding="utf-8")
     positioned = [record for record in records if record.get("gps")]
-    vertical_references = {
-        str(record["gps"].get("vertical_reference", "unknown"))
-        for record in positioned
-    }
+    vertical_references = {str(record["gps"].get("vertical_reference", "unknown")) for record in positioned}
     vertical_errors = [
         float(record["gps"]["position_std_m"]["vertical_m"])
         for record in positioned
-        if record["gps"].get("position_std_m")
-        and record["gps"]["position_std_m"].get("vertical_m") is not None
+        if record["gps"].get("position_std_m") and record["gps"]["position_std_m"].get("vertical_m") is not None
     ]
     selection = projected_crs_selection or {}
     write_json(
@@ -824,16 +790,8 @@ def write_colmap_references(
             "source": selection.get("source", "preflight"),
             "name": selection.get("name"),
             "vertical": {
-                "reference": (
-                    next(iter(vertical_references))
-                    if len(vertical_references) == 1
-                    else "mixed-or-unknown"
-                ),
-                "source": (
-                    "dji_mrk_ellh"
-                    if vertical_references == {"ellipsoidal"}
-                    else "exif_gps_altitude_or_mixed"
-                ),
+                "reference": (next(iter(vertical_references)) if len(vertical_references) == 1 else "mixed-or-unknown"),
+                "source": ("dji_mrk_ellh" if vertical_references == {"ellipsoidal"} else "exif_gps_altitude_or_mixed"),
                 "uncertainty_m": (
                     {
                         "minimum": min(vertical_errors),
@@ -860,11 +818,7 @@ def run_alignment(
     aligned_path = workspace / "sparse_geo"
     input_identity = sparse_model_identity(sparse_model)
     marker_path = workspace / "alignment_input.json"
-    marker = (
-        json.loads(marker_path.read_text(encoding="utf-8"))
-        if marker_path.is_file()
-        else {}
-    )
+    marker = json.loads(marker_path.read_text(encoding="utf-8")) if marker_path.is_file() else {}
     reusable = (
         (aligned_path / "cameras.bin").is_file()
         and marker.get("input_model_sha256") == input_identity
@@ -911,6 +865,8 @@ def write_alignment_transform(
 ) -> Path:
     from shared.geo_alignment import (
         compute_reconstruction_alignment,
+    )
+    from shared.geo_alignment import (
         write_alignment_transform as write_transform,
     )
 
@@ -936,11 +892,7 @@ def analyze_model(
     import pycolmap
 
     reconstruction = pycolmap.Reconstruction(str(model_path))
-    point_errors = [
-        float(point.error)
-        for point in reconstruction.points3D.values()
-        if math_is_finite(point.error)
-    ]
+    point_errors = [float(point.error) for point in reconstruction.points3D.values() if math_is_finite(point.error)]
     metrics: dict[str, Any] = {
         "model_path": str(model_path),
         "selected_images": selected_count,
@@ -990,11 +942,7 @@ def run_undistortion(
     dense_path = workspace / "dense"
     marker_path = workspace / "undistortion_input.json"
     input_identity = sparse_model_identity(sparse_model)
-    marker = (
-        json.loads(marker_path.read_text(encoding="utf-8"))
-        if marker_path.is_file()
-        else {}
-    )
+    marker = json.loads(marker_path.read_text(encoding="utf-8")) if marker_path.is_file() else {}
     reusable = (
         (dense_path / "sparse" / "cameras.bin").is_file()
         and marker.get("input_model_sha256") == input_identity
@@ -1046,87 +994,74 @@ def export_model(model_path: Path, output_path: Path) -> None:
     )
 
 
-def main() -> int:
-    args = parse_args()
-    args.dataset = args.dataset.resolve()
-    args.workspace = args.workspace.resolve()
-    if args.max_images < 0:
-        raise ValueError("max-images cannot be negative")
-    if args.feature_max_image_size < 256:
-        raise ValueError("feature-max-image-size must be at least 256")
-    if args.image_copy_workers < 1:
-        raise ValueError("image-copy-workers must be positive")
-    if args.alignment_max_error <= 0:
-        raise ValueError("alignment-max-error must be positive")
-    if not 0 < args.minimum_registration_ratio <= 1:
-        raise ValueError("minimum-registration-ratio must be in (0, 1]")
-    if args.mapping_timeout_seconds <= 0:
-        raise ValueError("mapping-timeout-seconds must be positive")
-    if args.rtk_refinement_timeout_seconds <= 0:
-        raise ValueError("rtk-refinement-timeout-seconds must be positive")
-    if args.rtk_refinement_iterations < 1:
-        raise ValueError("rtk-refinement-iterations must be positive")
-    if not 1 <= args.gps_min_neighbors <= args.gps_max_neighbors:
-        raise ValueError("gps neighbor bounds are inconsistent")
-    if args.feature_type.startswith("ALIKED") != args.matcher_type.startswith("ALIKED"):
-        raise ValueError("feature-type and matcher-type descriptor families must match")
+def _validate_arguments(args: argparse.Namespace) -> None:
+    checks = (
+        (args.max_images < 0, "max-images cannot be negative"),
+        (
+            args.feature_max_image_size < 256,
+            "feature-max-image-size must be at least 256",
+        ),
+        (args.image_copy_workers < 1, "image-copy-workers must be positive"),
+        (args.alignment_max_error <= 0, "alignment-max-error must be positive"),
+        (
+            not 0 < args.minimum_registration_ratio <= 1,
+            "minimum-registration-ratio must be in (0, 1]",
+        ),
+        (
+            args.mapping_timeout_seconds <= 0,
+            "mapping-timeout-seconds must be positive",
+        ),
+        (
+            args.rtk_refinement_timeout_seconds <= 0,
+            "rtk-refinement-timeout-seconds must be positive",
+        ),
+        (
+            args.rtk_refinement_iterations < 1,
+            "rtk-refinement-iterations must be positive",
+        ),
+        (
+            not 1 <= args.gps_min_neighbors <= args.gps_max_neighbors,
+            "gps neighbor bounds are inconsistent",
+        ),
+        (
+            args.feature_type.startswith("ALIKED") != args.matcher_type.startswith("ALIKED"),
+            "feature-type and matcher-type descriptor families must match",
+        ),
+    )
+    for invalid, message in checks:
+        if invalid:
+            raise ValueError(message)
 
-    ensure_workspace(args.dataset, args.workspace)
-    preflight_path = args.workspace / "dataset_preflight.json"
+
+def _load_preflight_report(workspace: Path) -> dict[str, Any]:
+    preflight_path = workspace / "dataset_preflight.json"
     if not preflight_path.is_file():
         raise RuntimeError(
             "dataset_preflight.json is missing; use tools/run_local_colmap.sh "
             "so the lightweight preflight container runs first"
         )
-    report = json.loads(preflight_path.read_text(encoding="utf-8"))
-    records = report["images"]
-    if args.include_prefix:
-        prefixes = [
-            prefix.strip().replace("\\", "/").strip("/")
-            for prefix in args.include_prefix
-            if prefix.strip()
-        ]
-        records = [
-            record
-            for record in records
-            if any(
-                record["file"] == prefix
-                or record["file"].startswith(f"{prefix}/")
-                for prefix in prefixes
-            )
-        ]
-        if not records:
-            raise ValueError(
-                f"include-prefix filters selected no images: {args.include_prefix}"
-            )
+    return json.loads(preflight_path.read_text(encoding="utf-8"))
 
-    selected = select_records(
-        records,
-        maximum=args.max_images,
-        start_index=args.start_index,
-        strategy=args.selection,
-    )
-    print(
-        f"Selected {len(selected)}/{len(records)} images "
-        f"({args.selection}, start index {args.start_index}).",
-        flush=True,
-    )
-    if args.stage == "preflight":
-        return 0
 
-    selection_changed = stage_images(
-        args.dataset,
-        args.workspace,
-        selected,
-        staging_mode=args.image_staging_mode,
-        copy_workers=args.image_copy_workers,
-    )
-    if args.force and not selection_changed:
-        reset_generated_artifacts(args.workspace)
-    projected_crs = report["summary"]["recommended_projected_crs"]
-    sparse_model = run_sparse(args, selected, projected_crs)
-    metrics = analyze_model(sparse_model, selected_count=len(selected))
-    alignment_configuration = {
+def _filter_records(
+    records: list[dict[str, Any]],
+    include_prefixes: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not include_prefixes:
+        return records
+    prefixes = [prefix.strip().replace("\\", "/").strip("/") for prefix in include_prefixes if prefix.strip()]
+    filtered = [
+        record
+        for record in records
+        if any(record["file"] == prefix or record["file"].startswith(f"{prefix}/") for prefix in prefixes)
+    ]
+    if not filtered:
+        raise ValueError(f"include-prefix filters selected no images: {include_prefixes}")
+    return filtered
+
+
+def _alignment_configuration(args: argparse.Namespace) -> dict[str, Any]:
+    configuration = {
         "engine": args.engine,
         "matcher": args.matcher,
         "feature_type": args.feature_type,
@@ -1140,9 +1075,18 @@ def main() -> int:
     }
     rtk_report_path = args.workspace / "rtk_prior_report.json"
     if rtk_report_path.is_file():
-        alignment_configuration["rtk"] = json.loads(
-            rtk_report_path.read_text(encoding="utf-8")
-        )
+        configuration["rtk"] = json.loads(rtk_report_path.read_text(encoding="utf-8"))
+    return configuration
+
+
+def _finish_pipeline(
+    args: argparse.Namespace,
+    report: dict[str, Any],
+    selected: list[dict[str, Any]],
+    sparse_model: Path,
+) -> None:
+    projected_crs = report["summary"]["recommended_projected_crs"]
+    metrics = analyze_model(sparse_model, selected_count=len(selected))
     references = None
     result_model = sparse_model
 
@@ -1180,14 +1124,53 @@ def main() -> int:
         ["colmap", "model_analyzer", "--path", str(sparse_model)],
         capture=True,
     )
-    (args.workspace / "model_analyzer.txt").write_text(analyzer.stdout or "", encoding="utf-8")
-    metrics["alignment_configuration"] = alignment_configuration
+    (args.workspace / "model_analyzer.txt").write_text(
+        analyzer.stdout or "",
+        encoding="utf-8",
+    )
+    metrics["alignment_configuration"] = _alignment_configuration(args)
     write_json(args.workspace / "metrics.json", metrics)
     write_json(
         args.workspace / "command_timings.json",
         {"commands": COMMAND_TIMINGS},
     )
     print(json.dumps(metrics, indent=2), flush=True)
+
+
+def main() -> int:
+    args = parse_args()
+    args.dataset = args.dataset.resolve()
+    args.workspace = args.workspace.resolve()
+    _validate_arguments(args)
+    ensure_workspace(args.dataset, args.workspace)
+
+    report = _load_preflight_report(args.workspace)
+    records = _filter_records(report["images"], args.include_prefix)
+    selected = select_records(
+        records,
+        maximum=args.max_images,
+        start_index=args.start_index,
+        strategy=args.selection,
+    )
+    print(
+        f"Selected {len(selected)}/{len(records)} images ({args.selection}, start index {args.start_index}).",
+        flush=True,
+    )
+    if args.stage == "preflight":
+        return 0
+
+    selection_changed = stage_images(
+        args.dataset,
+        args.workspace,
+        selected,
+        staging_mode=args.image_staging_mode,
+        copy_workers=args.image_copy_workers,
+    )
+    if args.force and not selection_changed:
+        reset_generated_artifacts(args.workspace)
+    projected_crs = report["summary"]["recommended_projected_crs"]
+    sparse_model = run_sparse(args, selected, projected_crs)
+    _finish_pipeline(args, report, selected, sparse_model)
     return 0
 
 

@@ -6,6 +6,7 @@ import asyncio
 import json
 import threading
 from collections import deque
+from contextlib import suppress
 from typing import Any
 
 from confluent_kafka import Consumer
@@ -40,10 +41,8 @@ class StatusHub:
             await websocket.send_text(message)
 
     def disconnect(self, websocket: WebSocket) -> None:
-        try:
+        with suppress(ValueError):
             self.connections.remove(websocket)
-        except ValueError:
-            pass
 
     async def broadcast(self, message: str) -> None:
         failed = []

@@ -151,10 +151,16 @@ Datasets and mission outputs use S3-compatible object storage:
 ```text
 datasets/<dataset-name>/...
 missions/<mission-id>/orthomosaic.tif
+missions/<mission-id>/orthomosaic.tif.cog.json
+missions/<mission-id>/orthomosaic.preview.webp
 missions/<mission-id>/orthomosaic.height.tif
-missions/<mission-id>/orthomosaic_annotated.tif
+missions/<mission-id>/detections.geojson
+missions/<mission-id>/analyses/<run-id>/detections.geojson
 ```
 
+Orthomosaics and height maps are tiled Cloud Optimized GeoTIFFs (COGs) with
+internal overviews. The dashboard reads only the windows required by the
+current zoom, while AI detections remain a viewport-filtered vector overlay.
 COLMAP downloads a selected `datasets/...` prefix into an ephemeral or
 host-mounted work drive under `/work`, uploads durable outputs to S3, then
 cleans its local mission workspace.
@@ -164,6 +170,11 @@ outbox rows in PostgreSQL/PostGIS. Mission creation, resume, cancellation and
 status persistence use the transactional inbox/outbox boundary. GPU and
 object-store worker outputs still use deterministic event IDs, explicit Kafka
 flushes and manual commits; replay is therefore possible after a crash.
+The complete audit remediation and geospatial delivery contract is documented
+in [`AUDIT_COG_HARDENING_2026-07-29.md`](docs/AUDIT_COG_HARDENING_2026-07-29.md).
+The rerunnable AI, spatial search, measurement and manual annotation contract
+is documented in
+[`GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md).
 
 ## Distributed local installation
 
@@ -304,7 +315,19 @@ Current routes:
 | `POST` | `/datasets/upload` | upload a dataset batch |
 | `POST` | `/datasets/upload-file` | upload one dataset file |
 | `DELETE` | `/datasets/{name}` | delete a dataset |
-| `GET` | `/preview/{s3_key}` | render an image/GeoTIFF preview |
+| `GET` | `/preview/{s3_key}` | render a bounded image preview |
+| `GET` | `/maps/{vol_id}/metadata/{layer}` | inspect COG map metadata |
+| `GET` | `/maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png` | render one COG map tile |
+| `GET` | `/maps/{vol_id}/vectors.geojson` | query AI vectors in a WGS84 bbox |
+| `GET/POST` | `/maps/{vol_id}/analyses` | list or queue rerunnable COG AI campaigns |
+| `POST` | `/maps/{vol_id}/analyses/{run_id}/retry` | retry a failed AI campaign |
+| `POST` | `/maps/{vol_id}/analyses/{run_id}/cancel` | cancel an active AI campaign |
+| `GET` | `/maps/{vol_id}/analyses/{run_id}/vectors.geojson` | query one persisted or object-store campaign |
+| `GET` | `/maps/{vol_id}/search` | search indexed spatial features and return zoom bounds |
+| `POST` | `/maps/{vol_id}/features` | create a tagged manual vector |
+| `PATCH/DELETE` | `/maps/{vol_id}/features/{feature_id}` | update or remove a manual vector |
+| `GET` | `/operations/outbox/dead` | list dead outbox events (admin) |
+| `POST` | `/operations/outbox/{id}/replay` | replay a dead event (admin) |
 | `GET` | `/files/{s3_key}` | redirect to a presigned S3 URL |
 | `WS` | `/ws/status` | stream pipeline status |
 
@@ -331,6 +354,7 @@ The repository contains Alembic migrations:
 
 - `0001_initial_schema.py`;
 - `0002_inbox_outbox.py`.
+- `0003_geospatial_aggregation.py`.
 
 For a manually managed database:
 
@@ -338,10 +362,9 @@ For a manually managed database:
 alembic upgrade head
 ```
 
-The current Helm `db-migrate` hook does **not** invoke Alembic: it enables
-PostGIS and calls `Base.metadata.create_all()`. That creates missing tables,
-including inbox/outbox, but does not migrate changed columns. Replace the hook
-with `alembic upgrade head` before relying on in-place schema evolution.
+The Helm `db-migrate-<revision>` job invokes `alembic upgrade head`.
+Database-dependent pods use a schema-readiness init container, so they cannot
+start before the target Alembic revision is active.
 
 ## Development checks
 

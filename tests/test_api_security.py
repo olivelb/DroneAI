@@ -6,7 +6,6 @@ import pytest
 from fastapi import HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
-
 security = importlib.import_module("app4-dashboard.api.security")
 datasets = importlib.import_module("app4-dashboard.api.routers.datasets")
 api_main = importlib.import_module("app4-dashboard.api.main")
@@ -121,6 +120,28 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
 
     with pytest.raises(RuntimeError, match="DRONEAI_SESSION_SECRET"):
         security.validate_production_configuration()
+
+
+def test_cookie_authenticated_mutation_requires_trusted_origin(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
+    monkeypatch.setenv(
+        "DRONEAI_SESSION_SECRET",
+        "session-signing-secret-with-at-least-32-bytes",
+    )
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+    token = security.issue_session_token(
+        security.Principal("operations", "admin"),
+        3600,
+    )
+    client = TestClient(api_main.app)
+    client.cookies.set(security.SESSION_COOKIE_NAME, token)
+
+    response = client.post("/mission/cancel?vol_id=mission-1")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Untrusted request origin"
 
 
 def test_dataset_upload_quota_and_extension_are_enforced(monkeypatch):

@@ -10,8 +10,8 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 > `charts/drone-ai/values-production.example.yaml` as the security baseline:
 > external Secrets, explicit CORS, API-key sessions, managed S3/PostgreSQL and
 > TLS ingress. Public multi-tenancy additionally requires OIDC and ownership
-> isolation. The chart still initializes missing tables with SQLAlchemy
-> `create_all()` rather than running Alembic migrations in the Helm hook.
+> isolation. The chart applies versioned Alembic migrations and should be
+> deployed with Helm `--wait` in production.
 
 ## Target setup
 
@@ -428,12 +428,10 @@ storage:
   databaseUrl: "postgresql://droneai:<password>@<managed-db-host>:5432/droneai"
 ```
 
-Ensure the managed instance has PostGIS enabled. The current `db-migrate` Helm
-hook calls `Base.metadata.create_all()`; it does not run Alembic. Apply
-`alembic upgrade head` separately for an existing managed database until the
-hook itself invokes Alembic. The database role also needs permission to create
-the PostGIS extension, or the extension must be installed by an administrator
-beforehand.
+Ensure the managed instance has PostGIS enabled. The revisioned `db-migrate`
+job runs `alembic upgrade head`. The database role needs permission to create the
+PostGIS extension during the initial migration, or an administrator must
+install the extension beforehand.
 
 ## Step 7: Create secrets
 
@@ -487,9 +485,8 @@ minio-xxx                             1/1     Running   # if enabled
 postgres-xxx                          1/1     Running   # if enabled
 ```
 
-The `db-migrate` job runs automatically as a Helm post-install/post-upgrade
-hook. Despite its name, it currently enables PostGIS and calls SQLAlchemy
-`create_all()`; it does not run Alembic.
+The revisioned `db-migrate` job applies `alembic upgrade head`; init containers
+keep database-dependent pods unready until that target revision is active.
 
 ## Step 9: Validate
 
@@ -531,7 +528,8 @@ open https://droneai.example.fr
 1. Upload images to a mission directory via the dashboard UI
 2. Submit the mission
 3. Watch progress via WebSocket in the frontend
-4. Verify `orthomosaic.tif` and `orthomosaic_annotated.tif` appear in S3
+4. Verify the COG `orthomosaic.tif`, its `.cog.json`/WebP preview and
+   `detections.geojson` appear in S3
 5. Check the mission summary through `/status/summary` and inspect the
    `detections` table directly when database-level validation is needed
 

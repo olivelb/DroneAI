@@ -4,6 +4,7 @@ import React from "react";
 import { Cpu, Gauge, HardDrive, ShieldCheck, Zap } from "lucide-react";
 import { useStore } from "../lib/store";
 import { ParamField } from "./ParamField";
+import { PresetButton } from "./PresetButton";
 import type { ParameterMeta } from "../lib/types";
 
 const RECONSTRUCTION_PARAMS = [
@@ -156,46 +157,18 @@ export default function PhaseReconstruction() {
           </h3>
         </div>
         <div className="grid gap-3 md:grid-cols-2">
-          {ALIGNMENT_PRESETS.map((preset) => {
-            const selected = Object.entries(preset.values).every(
-              ([key, value]) => String(parameterValues[key]) === String(value),
-            );
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                onClick={() =>
-                  setParameterValues((previous) => ({
-                    ...previous,
-                    ...preset.values,
-                  }))
-                }
-                className={`flex min-h-[92px] items-start gap-3 rounded-2xl border p-4 text-left transition ${
-                  selected
-                    ? "border-[#68bfae] bg-[#edf9f6] shadow-[0_8px_24px_rgba(15,118,110,0.08)]"
-                    : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-                }`}
-              >
-                <span
-                  className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
-                    selected
-                      ? "bg-[#0f766e] text-white"
-                      : "bg-white text-[#65736f]"
-                  }`}
-                >
-                  {preset.icon}
-                </span>
-                <span>
-                  <span className="block text-sm font-bold text-[#2b3834]">
-                    {preset.label}
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-[#75827e]">
-                    {preset.description}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
+          {ALIGNMENT_PRESETS.map((preset) => (
+            <PresetButton
+              key={preset.id}
+              preset={preset}
+              parameterValues={parameterValues}
+              layout="row"
+              tone="teal"
+              onApply={(values) =>
+                setParameterValues((previous) => ({ ...previous, ...values }))
+              }
+            />
+          ))}
         </div>
       </section>
 

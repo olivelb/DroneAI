@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import cv2
 import numpy as np
@@ -35,6 +35,29 @@ def build_tile_starts(full_size: int, tile_size: int, overlap: int) -> list[int]
     return starts
 
 
+def _read_rgb_tile(src, window: Window) -> np.ndarray:
+    indexes = list(range(1, min(src.count, 3) + 1))
+    tile_data = src.read(indexes, window=window)
+    if tile_data.shape[0] == 1:
+        tile_data = np.repeat(tile_data, 3, axis=0)
+    elif tile_data.shape[0] == 2:
+        tile_data = np.concatenate([tile_data, tile_data[:1]], axis=0)
+    tile_rgb = tile_data[:3].transpose(1, 2, 0)
+    if tile_rgb.dtype != np.uint8:
+        tile_rgb = np.clip(tile_rgb, 0, 255).astype(np.uint8)
+    return tile_rgb
+
+
+def _write_jpeg_tile(tile_path: Path, tile_rgb: np.ndarray) -> None:
+    written = cv2.imwrite(
+        str(tile_path),
+        cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR),
+        [cv2.IMWRITE_JPEG_QUALITY, 95],
+    )
+    if not written:
+        raise RuntimeError(f"failed to write tile: {tile_path}")
+
+
 def write_orthomosaic_tiles(
     ortho_path: Path,
     tiles_dir: Path,
@@ -63,28 +86,9 @@ def write_orthomosaic_tiles(
                 width = min(tile_size, src.width - x)
                 height = min(tile_size, src.height - y)
                 window = Window(x, y, width, height)
-                indexes = list(range(1, min(src.count, 3) + 1))
-                tile_data = src.read(indexes, window=window)
-                if tile_data.shape[0] == 1:
-                    tile_data = np.repeat(tile_data, 3, axis=0)
-                elif tile_data.shape[0] == 2:
-                    tile_data = np.concatenate(
-                        [tile_data, tile_data[:1]],
-                        axis=0,
-                    )
-                tile_rgb = tile_data[:3].transpose(1, 2, 0)
-                if tile_rgb.dtype != np.uint8:
-                    tile_rgb = np.clip(tile_rgb, 0, 255).astype(np.uint8)
-
                 index = len(records)
                 tile_path = tiles_dir / f"tile_{index:04d}.jpg"
-                written = cv2.imwrite(
-                    str(tile_path),
-                    cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR),
-                    [cv2.IMWRITE_JPEG_QUALITY, 95],
-                )
-                if not written:
-                    raise RuntimeError(f"failed to write tile: {tile_path}")
+                _write_jpeg_tile(tile_path, _read_rgb_tile(src, window))
                 records.append(
                     {
                         "tile_index": index,
@@ -208,23 +212,14 @@ def are_duplicate_detections(
         candidate_centroid[1],
     ):
         return True
-    if any(
-        polygon_contains_point(kept_segment, point_x, point_y)
-        for point_x, point_y in candidate_segment
-    ):
+    if any(polygon_contains_point(kept_segment, point_x, point_y) for point_x, point_y in candidate_segment):
         return True
 
-    delta_x = float(candidate["global_pixel_x"]) - float(
-        kept["global_pixel_x"]
-    )
-    delta_y = float(candidate["global_pixel_y"]) - float(
-        kept["global_pixel_y"]
-    )
+    delta_x = float(candidate["global_pixel_x"]) - float(kept["global_pixel_x"])
+    delta_y = float(candidate["global_pixel_y"]) - float(kept["global_pixel_y"])
     if abs(delta_x) > center_threshold or abs(delta_y) > center_threshold:
         return False
-    return (
-        bbox_iou(candidate["_bbox"], kept["_bbox"]) >= iou_threshold
-    )
+    return bbox_iou(candidate["_bbox"], kept["_bbox"]) >= iou_threshold
 
 
 def dedupe_mission_detections(
@@ -333,11 +328,7 @@ def detections_to_geojson(
             geographic_polygon.append([float(longitude), float(latitude)])
         geographic_polygon.append(geographic_polygon[0])
 
-        properties = {
-            key: value
-            for key, value in detection.items()
-            if key not in {"segment", "polygon"}
-        }
+        properties = {key: value for key, value in detection.items() if key not in {"segment", "polygon"}}
         properties["detection_id"] = index
         features.append(
             {
@@ -369,10 +360,7 @@ def _draw_label(
     font_thickness = 1
     line_height = 14
     padding = 4
-    sizes = [
-        cv2.getTextSize(line, font, font_scale, font_thickness)[0]
-        for line in lines
-    ]
+    sizes = [cv2.getTextSize(line, font, font_scale, font_thickness)[0] for line in lines]
     box_width = max(size[0] for size in sizes) + 2 * padding
     box_height = len(lines) * line_height + 2 * padding
     box_x = min(max(0, anchor_x + 6), max(0, image.shape[1] - box_width))

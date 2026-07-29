@@ -4,7 +4,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-
 APP2_ROOT = Path(__file__).resolve().parents[1] / "app2-ia"
 sys.path.insert(0, str(APP2_ROOT))
 

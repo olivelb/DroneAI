@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 APP1_ROOT = REPO_ROOT / "app1-colmap"
 if str(APP1_ROOT) not in sys.path:
@@ -19,6 +18,7 @@ from gaussian_training.backends import (  # noqa: E402
     TrainingRequest,
     resolve_training_backend,
 )
+
 from shared.dronegs_profile import (  # noqa: E402
     DRONEGS_PRODUCTION_PROFILE_V1,
 )
@@ -80,14 +80,10 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--raster-profile") + 1] == "fastgs"
     assert command[command.index("--topology-cooldown") + 1] == "100"
     assert command[command.index("--profile-id") + 1] == "test-profile"
-    assert command[command.index("--dataset-fingerprint") + 1] == (
-        "test-dataset:sha256:fixture"
-    )
+    assert command[command.index("--dataset-fingerprint") + 1] == ("test-dataset:sha256:fixture")
     assert command[command.index("--run-manifest") + 1] == "/output/trainer_run.json"
     assert command[command.index("--checkpoint-every") + 1] == "2000"
-    assert command[command.index("--checkpoint-path") + 1] == (
-        "/output/training.ckpt"
-    )
+    assert command[command.index("--checkpoint-path") + 1] == ("/output/training.ckpt")
     assert command[command.index("--test-split") + 1] == "modulo"
     assert command[command.index("--test-guard-percent") + 1] == "0"
     assert "--resize_factor" not in command
@@ -111,9 +107,7 @@ def test_dronegs_adapter_passes_validated_production_tuning():
 
     command = DroneGSBackend("/opt/dronegs").build_command(training_request)
 
-    assert command[command.index("--optimizer-profile") + 1] == (
-        "dev38-staged-rotation008-absgrad050-fastgs"
-    )
+    assert command[command.index("--optimizer-profile") + 1] == ("dev38-staged-rotation008-absgrad050-fastgs")
     assert command[command.index("--pruning-policy") + 1] == "spatial-bounds"
     assert command[command.index("--raster-profile") + 1] == "fastgs"
     assert command[command.index("--topology-cooldown") + 1] == "100"
@@ -178,22 +172,20 @@ print(json.dumps({
     executable.chmod(0o755)
     progress = []
     training_request = request(
-        data_path=str(dataset), output_path=str(tmp_path / "output"),
+        data_path=str(dataset),
+        output_path=str(tmp_path / "output"),
     )
 
     result = DroneGSBackend(str(executable)).train(
-        training_request, report_fn=lambda *event: progress.append(event),
+        training_request,
+        report_fn=lambda *event: progress.append(event),
     )
 
     assert result.ply_path.is_file()
     assert result.manifest_path.is_file()
     assert result.effective_seed == 42
     assert progress == [(5, 0.25, 2)]
-    assert json.loads(
-        (tmp_path / "output" / "canary_result.json").read_text(
-            encoding="utf-8"
-        )
-    )["status"] == "passed"
+    assert json.loads((tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8"))["status"] == "passed"
     assert not (tmp_path / "output" / "training.ckpt").exists()
 
 
@@ -291,11 +283,7 @@ Path(arguments["--run-manifest"]).write_text(
     with pytest.raises(RuntimeError, match="quality canary failed"):
         DroneGSBackend(str(executable)).train(training_request)
 
-    canary = json.loads(
-        (tmp_path / "output" / "canary_result.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    canary = json.loads((tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8"))
     assert canary["status"] == "failed"
     assert canary["failed_metrics"] == ["psnr", "ssim"]
 
@@ -335,9 +323,7 @@ def test_spatial_split_requires_valid_guard_configuration():
         test_split="spatial-block",
         test_guard_percent=25,
     )
-    command = DroneGSBackend("/opt/dronegs").build_command(
-        request(dronegs=spatial)
-    )
+    command = DroneGSBackend("/opt/dronegs").build_command(request(dronegs=spatial))
     assert command[command.index("--test-split") + 1] == "spatial-block"
     assert command[command.index("--test-guard-percent") + 1] == "25"
 
@@ -380,7 +366,7 @@ def test_production_profile_command_matches_accepted_dev45_recipe():
     )
 
     command = DroneGSBackend("/opt/dronegs").build_command(training_request)
-    arguments = dict(zip(command[1::2], command[2::2]))
+    arguments = dict(zip(command[1::2], command[2::2], strict=True))
 
     assert arguments["--profile-id"] == "DRONEGS_PRODUCTION_PROFILE_V1"
     assert arguments["--optimizer-profile"] == "reference-absolute"
@@ -417,7 +403,7 @@ checkpoint.write_bytes(b"recoverable")
 print(json.dumps({
     "event": "checkpoint_saved",
     "iteration": 10,
-    "checkpoint": str(checkpoint),
+    "path": str(checkpoint),
 }), flush=True)
 time.sleep(60)
 """,
@@ -441,9 +427,7 @@ time.sleep(60)
                 output_path=str(tmp_path / "output"),
             ),
             cancellation_check=cancel,
-            checkpoint_fn=lambda path, iteration: checkpoints.append(
-                (path, iteration)
-            ),
+            checkpoint_fn=lambda path, iteration: checkpoints.append((path, iteration)),
         )
 
     assert time.monotonic() - started < 5

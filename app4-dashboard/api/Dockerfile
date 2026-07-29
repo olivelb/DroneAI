@@ -5,10 +5,16 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements/api.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --requirement /tmp/requirements.txt
 
 COPY shared/ /app/shared/
+COPY alembic.ini /app/alembic.ini
+COPY alembic/ /app/alembic/
 # Ensure we copy the whole app4-dashboard/api to maintain import paths
 COPY app4-dashboard/api/ /app/app4-dashboard/api/
 

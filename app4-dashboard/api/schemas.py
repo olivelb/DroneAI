@@ -10,7 +10,6 @@ from shared.validation import (
     validate_work_drive,
 )
 
-
 YOLOModelVariant = Literal[
     "yolo26l",
     "yolo26m",

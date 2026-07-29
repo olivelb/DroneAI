@@ -3,6 +3,7 @@
 # ============================================================
 FROM nvidia/cuda:12.8.1-devel-ubuntu24.04 AS builder
 
+ARG CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real;90-real;100-real;120"
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -17,7 +18,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopengl-dev libglew-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Ceres Solver 2.3.0 (master) with CUDA + cuDSS (cloned by setup_deps.sh)
+# Bundled, commit-pinned Ceres 2.3 development snapshot (849f854) with
+# CUDA + cuDSS. setup_deps.sh verifies the source revision.
 # cuDSS support requires Ceres >= 2.3.0 — 2.2.0 silently ignores USE_CUDSS
 COPY app1-colmap/ceres-solver /tmp/ceres-solver
 # Fix cuDSS header lookup: cmake config expects headers relative to its own dir
@@ -27,7 +29,7 @@ RUN cd /tmp/ceres-solver && mkdir build && cd build && \
     cmake .. -GNinja \
         -DBUILD_TESTING=OFF -DBUILD_EXAMPLES=OFF \
         -DUSE_CUDA=ON \
-        -DCMAKE_CUDA_ARCHITECTURES="86;89" \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
         -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
         -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
         -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu/libcudss/12
@@ -70,7 +72,7 @@ RUN cd /tmp/colmap \
         -DCGAL_ENABLED=OFF \
         -DIPO_ENABLED=OFF \
         -DOPENGL_ENABLED=OFF \
-        -DCMAKE_CUDA_ARCHITECTURES="86;89" \
+        -DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
         -Dcudss_DIR=/usr/lib/x86_64-linux-gnu/libcudss/12/cmake/cudss \
         -Dcudss_INCLUDE_DIR=/usr/include/libcudss/12 \
     && ninja install \
