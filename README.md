@@ -123,6 +123,11 @@ The production V1 recipe was subsequently repeated five times on the complete
 mean held-out PSNR 19.4122 dB and SSIM 0.49155. The complete machine-readable
 record is
 [`saleres-dronegs-production-v1-2026-07-28.json`](docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json).
+An intentionally demanding Helenenschacht run at 5 mm/pixel took 1 h 46 min
+44 s and failed the production SSIM gate; its
+[benchmark report](docs/benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md)
+documents why output GSD must not be confused with survey accuracy and why the
+extreme recipe is not the new default.
 
 ## Distributed architecture
 

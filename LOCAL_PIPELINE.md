@@ -292,6 +292,37 @@ from `training.ckpt`; completed models must pass the configured held-out
 PSNR/SSIM canary before rendering. Existing profile outputs are preserved
 unless `--force` is passed.
 
+### Expert overrides and production identity
+
+The local runner accepts the following profile overrides:
+
+| Group | Options |
+|---|---|
+| Budget | `--iterations`, `--cap-max`, `--sh-degree` |
+| Input | `--data-factor`, `--max-width`, `--tile-mode` |
+| Optimizer | `--optimizer-profile`, `--pruning-policy`, `--raster-profile` |
+| Schedules | `--sh-degree-interval`, `--topology-cooldown`, `--photometric-finish`, `--photometric-mse-percent` |
+| Qualification | `--canary-min-psnr`, `--canary-min-ssim` |
+| Reproducibility | `--seed` |
+| Raster | `--resolution`, `--filter` / `--no-filter` |
+
+Any trainer or qualification override that no longer equals the immutable V1
+recipe automatically changes the recorded `profile_id` from
+`DRONEGS_PRODUCTION_PROFILE_V1` to `custom`. Raster-only choices such as
+`--resolution` do not change the trainer identity. The effective values and
+identity are written to `gaussian_run.<profile>.json`.
+
+Canary thresholds are validated (`PSNR >= 0`, `0 <= SSIM <= 1`). Lowering a
+threshold is appropriate only for an explicitly labelled diagnostic render:
+it does not repair failed quality and does not qualify the result for
+production.
+
+The
+[Helenenschacht ultra 5 mm report](docs/benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md)
+records a demanding 30,000-step, factor-1 run. It produced a sharper COG but
+failed the production SSIM gate and retained a 5,0 cm horizontal GCP RMSE.
+Consequently it remains `custom`; it is not a new default.
+
 ## Optional local YOLO OBB detection
 
 The detector can consume a generated orthomosaic without Kafka, MinIO,
