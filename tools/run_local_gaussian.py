@@ -191,6 +191,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topology-cooldown", type=int)
     parser.add_argument("--photometric-finish", type=int)
     parser.add_argument("--photometric-mse-percent", type=int)
+    parser.add_argument("--canary-min-psnr", type=float)
+    parser.add_argument("--canary-min-ssim", type=float)
     parser.add_argument(
         "--filter",
         dest="filter_enabled",
@@ -211,6 +213,17 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         if getattr(args, field, None) is not None
     }
     resolved = replace(profile, **overrides)
+    if resolved.profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
+        production_parameters = (
+            DRONEGS_PRODUCTION_PROFILE_V1.trainer_parameters()
+        )
+        has_training_override = any(
+            name != "profile_id"
+            and getattr(resolved, name) != expected
+            for name, expected in production_parameters.items()
+        )
+        if has_training_override:
+            resolved = replace(resolved, profile_id="custom")
     if resolved.iterations <= 0:
         raise ValueError("iterations must be positive")
     if resolved.cap_max <= 0:
@@ -232,6 +245,10 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("sh-degree-interval must be positive")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
+    if resolved.canary_min_psnr < 0:
+        raise ValueError("canary-min-psnr must be non-negative")
+    if not 0 <= resolved.canary_min_ssim <= 1:
+        raise ValueError("canary-min-ssim must be between 0 and 1")
     return resolved
 
 

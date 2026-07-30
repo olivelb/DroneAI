@@ -170,3 +170,16 @@ This closes the repeated-run gate for SAVERES and production V1. It does not
 promote the optional spatial-block V2 candidate: that requires equivalent
 ALBAGNAC and SAVERES comparison runs and independently chosen acceptance
 thresholds.
+
+## Helenenschacht ultra-resolution negative evidence
+
+The custom 30,000-step Helenenschacht run rendered a 5 mm/pixel COG but failed
+the production SSIM threshold (0,2763 measured versus 0,35 required), took
+6404 seconds and retained 4,997 cm horizontal checkpoint RMSE from the sparse
+alignment. It therefore does not change the production default.
+
+The complete reviewable record is
+`docs/benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md`. It establishes
+three independent release gates: projected raster GSD, held-out rendering
+quality and independently measured survey accuracy. Lowering a canary for a
+diagnostic render cannot satisfy the production quality gate.

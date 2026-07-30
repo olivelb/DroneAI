@@ -62,3 +62,18 @@ five 15,000-step seeds against `${SALERES_DENSE_DATASET}`. The 2026-07-28
 qualification completed 5/5 runs; its lightweight aggregate, binary/dataset
 identity and five PLY hashes are recorded in
 `docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json`.
+
+## Helenenschacht ultra-resolution diagnostic
+
+The
+[Helenenschacht 5 mm report](../benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md)
+records a single deliberately demanding custom run: factor 1, width 4096,
+30,000 steps, 2 million Gaussians and a 5 mm/pixel COG. It took 6404 seconds,
+passed PSNR, failed the immutable production SSIM gate and retained 5,0 cm
+horizontal GCP RMSE from the reused sparse alignment.
+
+This is negative qualification evidence, not a production profile. It shows
+that output resolution, held-out image quality and survey accuracy are
+separate gates. Any diagnostic threshold override must remain visible in the
+run manifest, and any modified V1 trainer or canary parameter must be recorded
+as `custom`.

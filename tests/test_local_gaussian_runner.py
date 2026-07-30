@@ -15,6 +15,8 @@ def _arguments(**overrides):
         "max_width": None,
         "tile_mode": None,
         "resolution": None,
+        "canary_min_psnr": None,
+        "canary_min_ssim": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -57,6 +59,43 @@ def test_profile_overrides_are_explicit_and_validated():
     assert profile.max_width == 1200
     assert profile.filter_enabled is False
     assert profile.cap_max == PROFILES["low-memory"].cap_max
+
+
+def test_balanced_training_overrides_become_custom_recipe():
+    profile = resolve_profile(
+        _arguments(
+            profile="balanced",
+            iterations=30_000,
+            cap_max=2_000_000,
+            data_factor=1,
+            max_width=4096,
+        )
+    )
+
+    assert profile.profile_id == "custom"
+    assert profile.optimizer_profile == "reference-absolute"
+    assert profile.canary_min_psnr == PROFILES["balanced"].canary_min_psnr
+    assert profile.canary_min_ssim == PROFILES["balanced"].canary_min_ssim
+
+
+def test_balanced_raster_only_override_keeps_production_recipe():
+    profile = resolve_profile(
+        _arguments(profile="balanced", resolution=0.005)
+    )
+
+    assert profile.profile_id == "DRONEGS_PRODUCTION_PROFILE_V1"
+
+
+def test_canary_overrides_are_validated():
+    profile = resolve_profile(
+        _arguments(canary_min_psnr=18.0, canary_min_ssim=0.25)
+    )
+
+    assert profile.canary_min_psnr == 18.0
+    assert profile.canary_min_ssim == 0.25
+
+    with pytest.raises(ValueError, match="canary-min-ssim"):
+        resolve_profile(_arguments(canary_min_ssim=1.1))
 
 
 def test_profile_rejects_invalid_resolution():
