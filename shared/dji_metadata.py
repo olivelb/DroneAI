@@ -1,24 +1,199 @@
-"""DJI timestamp/position sidecar parsing.
+"""Aerial RTK metadata parsing with a DJI-compatible facade.
 
 DJI Enterprise ``*_Timestamp.MRK`` files contain one exposure record per
 image, including ellipsoidal coordinates and estimated N/E/V standard
 deviations. The parser is intentionally permissive because firmware versions
-vary in spacing while retaining the comma-suffixed field names.
+vary in spacing while retaining the comma-suffixed field names. Autel and DJI
+also embed equivalent RTK covariance in an XMP APP1 segment.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterable
 
-SEQUENCE_PATTERN = re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$")
+SEQUENCE_PATTERNS = (
+    re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$"),
+    re.compile(r"_(\d{4,6})\.[^.]+$"),
+)
+XMP_APP1_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"
+INVALID_RTK_FLAGS = {"", "0", "false", "invalid", "none", "no fix", "nofix"}
 
 
 def image_sequence_number(path: str | Path) -> int | None:
-    match = SEQUENCE_PATTERN.search(Path(path).name)
-    return int(match.group(1)) if match else None
+    for pattern in SEQUENCE_PATTERNS:
+        match = pattern.search(Path(path).name)
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def clean_metadata_text(value: Any) -> str | None:
+    """Normalize EXIF/XMP strings, including vendor NUL padding."""
+
+    if value is None:
+        return None
+    cleaned = str(value).replace("\x00", "").strip()
+    return cleaned or None
+
+
+def _jpeg_xmp_packet(path: str | Path) -> bytes | None:
+    """Read the standard XMP APP1 payload without decoding image pixels."""
+
+    try:
+        with Path(path).open("rb") as handle:
+            if handle.read(2) != b"\xff\xd8":
+                return None
+            while True:
+                prefix = handle.read(1)
+                if not prefix:
+                    return None
+                if prefix != b"\xff":
+                    continue
+                marker = handle.read(1)
+                while marker == b"\xff":
+                    marker = handle.read(1)
+                if not marker or marker in {b"\xd9", b"\xda"}:
+                    return None
+                if marker in {
+                    b"\x01",
+                    *[bytes([value]) for value in range(0xD0, 0xD8)],
+                }:
+                    continue
+                raw_length = handle.read(2)
+                if len(raw_length) != 2:
+                    return None
+                payload_length = int.from_bytes(raw_length, "big") - 2
+                if payload_length < 0:
+                    return None
+                payload = handle.read(payload_length)
+                if len(payload) != payload_length:
+                    return None
+                if marker == b"\xe1" and payload.startswith(XMP_APP1_HEADER):
+                    return payload[len(XMP_APP1_HEADER) :]
+    except OSError:
+        return None
+
+
+def _xmp_properties(path: str | Path) -> dict[str, str]:
+    packet = _jpeg_xmp_packet(path)
+    if not packet:
+        return {}
+    lowered = packet.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise ValueError(f"Unsafe XMP declaration in {Path(path).name}")
+    try:
+        root = ET.fromstring(packet)
+    except ET.ParseError:
+        return {}
+    properties: dict[str, str] = {}
+    for element in root.iter():
+        for raw_name, raw_value in element.attrib.items():
+            local_name = raw_name.rsplit("}", 1)[-1]
+            value = clean_metadata_text(raw_value)
+            if value is not None:
+                properties[local_name] = value
+    return properties
+
+
+def _optional_float(properties: dict[str, str], *names: str) -> float | None:
+    for name in names:
+        value = properties.get(name)
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def parse_aerial_xmp(path: str | Path) -> dict[str, Any]:
+    """Return normalized Autel/DJI XMP calibration and RTK metadata."""
+
+    properties = _xmp_properties(path)
+    if not properties:
+        return {}
+
+    latitude = _optional_float(properties, "GpsLatitude", "GPSLatitude")
+    longitude = _optional_float(
+        properties,
+        "GpsLongtitude",  # spelling used by Autel and DJI
+        "GpsLongitude",
+        "GPSLongitude",
+    )
+    altitude = _optional_float(properties, "AbsoluteAltitude")
+    rtk_flag = clean_metadata_text(properties.get("RtkFlag"))
+    standard_deviations = {
+        "north_m": _optional_float(properties, "RtkStdLat"),
+        "east_m": _optional_float(properties, "RtkStdLon"),
+        "vertical_m": _optional_float(properties, "RtkStdHgt"),
+    }
+    covariance_complete = all(
+        value is not None and value > 0
+        for value in standard_deviations.values()
+    )
+    rtk_valid = (
+        rtk_flag is not None
+        and rtk_flag.lower() not in INVALID_RTK_FLAGS
+        and covariance_complete
+        and latitude is not None
+        and longitude is not None
+        and altitude is not None
+    )
+
+    metadata: dict[str, Any] = {
+        "provider": "autel_dji_xmp",
+        "camera_make": clean_metadata_text(properties.get("Make")),
+        "camera_model": clean_metadata_text(properties.get("Model")),
+        "captured_at": clean_metadata_text(
+            properties.get("DateTimeOriginal")
+            or properties.get("CreateDate")
+        ),
+        "calibrated_focal_length_px": _optional_float(
+            properties,
+            "CalibratedFocalLength",
+        ),
+        "rtk_flag": rtk_flag,
+        "flight_attitude_deg": {
+            "roll": _optional_float(properties, "FlightRollDegree"),
+            "pitch": _optional_float(properties, "FlightPitchDegree"),
+            "yaw": _optional_float(properties, "FlightYawDegree"),
+        },
+        "gimbal_attitude_deg": {
+            "roll": _optional_float(properties, "GimbalRollDegree"),
+            "pitch": _optional_float(properties, "GimbalPitchDegree"),
+            "yaw": _optional_float(properties, "GimbalYawDegree"),
+        },
+    }
+    if rtk_valid:
+        metadata["gps"] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "altitude_m": altitude,
+            "horizontal_error_m": max(
+                standard_deviations["north_m"],
+                standard_deviations["east_m"],
+            ),
+            "position_std_m": standard_deviations,
+            # Vendor XMP does not carry an EPSG vertical CRS. Keep the
+            # reference explicit instead of silently calling it orthometric.
+            "vertical_reference": "vendor-ellipsoidal",
+            "vertical_reference_source": "xmp_absolute_altitude",
+            "source": "xmp_rtk",
+            "rtk_flag": rtk_flag,
+            "provider": metadata["provider"],
+        }
+    return metadata
+
+
+def parse_xmp_rtk(path: str | Path) -> dict[str, Any] | None:
+    """Compatibility helper returning only a valid RTK position."""
+
+    return parse_aerial_xmp(path).get("gps")
 
 
 def _field_value(fields: Iterable[str], suffix: str) -> float | None:
@@ -100,14 +275,20 @@ def load_dji_mrk_overrides(
     image_paths: Iterable[Path],
 ) -> dict[str, dict[str, Any]]:
     root = Path(dataset).resolve()
-    images_by_parent_and_sequence: dict[tuple[Path, int], Path] = {}
+    images_by_parent_and_sequence: dict[tuple[Path, int], list[Path]] = {}
+    images_by_sequence: dict[int, list[Path]] = {}
     for image_path in image_paths:
-        image_path = Path(image_path)
+        image_path = Path(image_path).resolve()
         sequence = image_sequence_number(image_path)
         if sequence is not None:
-            images_by_parent_and_sequence[(image_path.parent, sequence)] = image_path
+            images_by_parent_and_sequence.setdefault(
+                (image_path.parent, sequence),
+                [],
+            ).append(image_path)
+            images_by_sequence.setdefault(sequence, []).append(image_path)
 
     overrides: dict[str, dict[str, Any]] = {}
+    assigned_sidecars: dict[str, Path] = {}
     sidecars = sorted(
         Path(directory) / filename
         for directory, _, filenames in os.walk(root)
@@ -116,10 +297,52 @@ def load_dji_mrk_overrides(
     )
     for sidecar in sidecars:
         for sequence, gps in parse_dji_mrk_file(sidecar).items():
-            image_path = images_by_parent_and_sequence.get(
-                (sidecar.parent, sequence)
+            local_candidates = images_by_parent_and_sequence.get(
+                (sidecar.parent.resolve(), sequence),
+                [],
             )
-            if image_path is None:
+            candidates = (
+                local_candidates
+                if local_candidates
+                else images_by_sequence.get(sequence, [])
+            )
+            if not candidates:
                 continue
-            overrides[image_path.relative_to(root).as_posix()] = gps
+            if len(candidates) != 1:
+                names = ", ".join(
+                    path.relative_to(root).as_posix()
+                    for path in candidates
+                )
+                raise ValueError(
+                    f"Ambiguous MRK sequence {sequence} from "
+                    f"{sidecar.relative_to(root).as_posix()}: {names}"
+                )
+            image_path = candidates[0]
+            relative = image_path.relative_to(root).as_posix()
+            previous_sidecar = assigned_sidecars.get(relative)
+            if previous_sidecar is not None and previous_sidecar != sidecar:
+                raise ValueError(
+                    f"Multiple MRK sidecars match {relative}: "
+                    f"{previous_sidecar.relative_to(root).as_posix()}, "
+                    f"{sidecar.relative_to(root).as_posix()}"
+                )
+            overrides[relative] = gps
+            assigned_sidecars[relative] = sidecar
+    return overrides
+
+
+def load_position_overrides(
+    dataset: str | Path,
+    image_paths: Iterable[Path],
+) -> dict[str, dict[str, Any]]:
+    """Resolve positions by priority: MRK, valid XMP RTK, then caller EXIF."""
+
+    root = Path(dataset).resolve()
+    paths = [Path(path).resolve() for path in image_paths]
+    overrides = {
+        path.relative_to(root).as_posix(): gps
+        for path in paths
+        if (gps := parse_xmp_rtk(path)) is not None
+    }
+    overrides.update(load_dji_mrk_overrides(root, paths))
     return overrides

@@ -276,6 +276,11 @@ def build_mapping_command(
     global_ba_iterations: int = 1,
     global_ceres_iterations: int = 50,
     global_skip_retriangulation: bool = True,
+    global_random_seed: int = 42,
+    global_ba_min_track_length: int = 3,
+    global_tri_complete_max_reproj_error: float = 15.0,
+    global_tri_merge_max_reproj_error: float = 15.0,
+    global_tri_min_angle: float = 1.0,
 ) -> list[str]:
     normalized = engine.strip().lower()
     common = [
@@ -304,6 +309,16 @@ def build_mapping_command(
             str(global_ceres_iterations),
             "--GlobalMapper.keep_max_num_tracks",
             str(global_max_tracks),
+            "--GlobalMapper.random_seed",
+            str(global_random_seed),
+            "--GlobalMapper.ba_min_track_length",
+            str(global_ba_min_track_length),
+            "--GlobalMapper.tri_complete_max_reproj_error",
+            str(global_tri_complete_max_reproj_error),
+            "--GlobalMapper.tri_merge_max_reproj_error",
+            str(global_tri_merge_max_reproj_error),
+            "--GlobalMapper.tri_min_angle",
+            str(global_tri_min_angle),
         ]
         if global_skip_retriangulation:
             command += ["--GlobalMapper.skip_retriangulation", "1"]

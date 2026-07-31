@@ -29,7 +29,11 @@ from shared.rtk_refinement import (
     load_rtk_records,
 )
 from pipeline_support import (
+    build_colmap_cache_config,
+    changed_colmap_cache_parameters,
+    discover_input_assets,
     load_copy_manifest,
+    load_colmap_cache_config,
     detect_existing_pipeline,
     extract_gps_data,
     inspect_sparse_reconstruction,
@@ -44,6 +48,7 @@ from pipeline_support import (
     sanitize_exif_for_colmap,
     save_projected_crs,
     save_copy_manifest,
+    save_colmap_cache_config,
     plan_clean_image_copy,
 )
 from runtime_support import run_command
@@ -129,6 +134,7 @@ def invalidate_pipeline_artifacts(clean_images_dir, workspace_dir, db_path, spar
         os.path.join(workspace_dir, "gps_pairs.txt"),
         os.path.join(workspace_dir, "alignment_pair_graph.json"),
         os.path.join(workspace_dir, "rtk_prior_report.json"),
+        os.path.join(workspace_dir, ".colmap_pipeline_config.json"),
         geo_data_file,
         f"{geo_data_file}.crs",
         f"{geo_data_file}.crs.json",
@@ -273,10 +279,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         geo_data_file = os.path.join(workspace_dir, "geo_data.txt")
         dense_path = os.path.join(workspace_dir, "dense")
         
-        images = [f for f in os.listdir(raw_image_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-        position_sidecars = [
-            f for f in os.listdir(raw_image_dir) if f.lower().endswith(".mrk")
-        ]
+        images, position_sidecars = discover_input_assets(raw_image_dir)
         copy_candidates = images + position_sidecars
         report_mission_progress(
             vol_id,
@@ -291,15 +294,20 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         copied_count = 0
         skipped_count = 0
         copy_manifest = load_copy_manifest(clean_images_dir)
-        for i, img in enumerate(copy_candidates):
+        for i, input_path in enumerate(copy_candidates):
             try:
                 cancellation_state.ensure_not_cancelled()
             except RuntimeError as error:
                 raise PipelineCancelledError(str(error)) from error
-            
-            src_path = os.path.join(raw_image_dir, img)
-            dst_path = os.path.join(clean_images_dir, img)
-            needs_copy, source_descriptor = plan_clean_image_copy(src_path, dst_path, copy_manifest.get(img))
+
+            asset_name = input_path.name
+            src_path = str(input_path)
+            dst_path = os.path.join(clean_images_dir, asset_name)
+            needs_copy, source_descriptor = plan_clean_image_copy(
+                src_path,
+                dst_path,
+                copy_manifest.get(asset_name),
+            )
 
             if not needs_copy:
                 skipped_count += 1
@@ -307,10 +315,14 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 shutil.copy2(src_path, dst_path)
                 copied_count += 1
                 if source_descriptor is None:
-                    needs_copy, source_descriptor = plan_clean_image_copy(src_path, dst_path, copy_manifest.get(img))
+                    needs_copy, source_descriptor = plan_clean_image_copy(
+                        src_path,
+                        dst_path,
+                        copy_manifest.get(asset_name),
+                    )
 
             if source_descriptor is not None:
-                copy_manifest[img] = source_descriptor
+                copy_manifest[asset_name] = source_descriptor
 
             if (i + 1) % 50 == 0 or i == len(copy_candidates) - 1:
                 save_copy_manifest(clean_images_dir, copy_manifest)
@@ -350,6 +362,36 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 "Input images changed since the last cached run.",
             )
 
+        requested_cache_config = build_colmap_cache_config(params)
+        previous_cache_config = load_colmap_cache_config(workspace_dir)
+        has_cached_reconstruction = any(
+            os.path.exists(path)
+            for path in (db_path, sparse_path, dense_path)
+        )
+        if (
+            has_cached_reconstruction
+            and (
+                previous_cache_config is None
+                or previous_cache_config.get("fingerprint")
+                != requested_cache_config["fingerprint"]
+            )
+        ):
+            changed_parameters = changed_colmap_cache_parameters(
+                previous_cache_config,
+                requested_cache_config,
+            )
+            invalidate_pipeline_artifacts(
+                clean_images_dir,
+                workspace_dir,
+                db_path,
+                sparse_path,
+                dense_path,
+                geo_data_file,
+                vol_id,
+                "COLMAP reconstruction parameters changed "
+                f"({', '.join(changed_parameters)}).",
+            )
+
         image_reader_camera_model = str(params.get("camera_model", "SIMPLE_RADIAL")).upper()
         image_reader_camera_params = None
         
@@ -382,6 +424,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 )
             else:
                 report_mission_progress(vol_id, "PREPARING", 3, log=f"Existing database compatible ({existing_type}). Resuming...")
+
+        save_colmap_cache_config(workspace_dir, requested_cache_config)
         
         # --- 2. GPS ---
         saved_projected_crs = read_saved_projected_crs(geo_data_file)
@@ -513,6 +557,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "--FeatureExtraction.gpu_index", feature_gpu_index,
                     "--FeatureExtraction.max_image_size", params["feature_max_image_size"],
                     "--SiftExtraction.max_num_features", params["feature_max_num_features"],
+                    "--SiftExtraction.first_octave", str(params["sift_first_octave"]),
                 ]
             
             run_command(feat_cmd, vol_id, "FEATURES", 15, report_mission_progress, ensure_not_cancelled)
@@ -581,6 +626,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "1",
                     "--FeatureMatching.gpu_index",
                     feature_gpu_index,
+                    "--FeatureMatching.guided_matching",
+                    "1" if params.get("guided_matching", False) else "0",
                 ]
             elif matching_strategy == "sequential":
                 match_cmd = [
@@ -594,6 +641,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "1",
                     "--FeatureMatching.gpu_index",
                     feature_gpu_index,
+                    "--FeatureMatching.guided_matching",
+                    "1" if params.get("guided_matching", False) else "0",
                 ]
             else:
                 if matching_strategy == "gps_pairs":
@@ -620,6 +669,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "1",
                     "--FeatureMatching.gpu_index",
                     feature_gpu_index,
+                    "--FeatureMatching.guided_matching",
+                    "1" if params.get("guided_matching", False) else "0",
                 ]
 
             match_cmd += matching_model_options
@@ -708,6 +759,21 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     ),
                     global_skip_retriangulation=bool(
                         params.get("global_mapper_skip_retriangulation", True)
+                    ),
+                    global_random_seed=int(
+                        float(params["global_mapper_random_seed"])
+                    ),
+                    global_ba_min_track_length=int(
+                        float(params["global_mapper_ba_min_track_length"])
+                    ),
+                    global_tri_complete_max_reproj_error=float(
+                        params["global_mapper_tri_complete_max_reproj_error"]
+                    ),
+                    global_tri_merge_max_reproj_error=float(
+                        params["global_mapper_tri_merge_max_reproj_error"]
+                    ),
+                    global_tri_min_angle=float(
+                        params["global_mapper_tri_min_angle"]
                     ),
                 )
                 report_mission_progress(
@@ -845,12 +911,13 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         base_sparse_model_path = os.path.join(sparse_path, "0")
         rtk_sparse_model_path = os.path.join(workspace_dir, "sparse_rtk")
         rtk_report_path = os.path.join(workspace_dir, "rtk_prior_report.json")
+        rtk_refinement_enabled = bool(params.get("rtk_refinement_enabled", True))
         active_sparse_model_path = (
             rtk_sparse_model_path
-            if os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin"))
+            if rtk_refinement_enabled
+            and os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin"))
             else base_sparse_model_path
         )
-        rtk_refinement_enabled = bool(params.get("rtk_refinement_enabled", True))
         if (
             rtk_refinement_enabled
             and not ortho_only_ready
@@ -873,13 +940,15 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     os.makedirs(rtk_sparse_model_path, exist_ok=True)
                     rtk_timeout = float(params["rtk_refinement_timeout_seconds"])
                     rtk_iterations = int(float(params["rtk_refinement_iterations"]))
+                    rtk_loss_scale = float(params["rtk_refinement_loss_scale"])
                     report_mission_progress(
                         vol_id,
                         "RTK_REFINEMENT",
                         55,
                         log=(
-                            f"Refining {rtk_report['updated_pose_priors']} camera poses "
-                            f"with DJI MRK covariance, robust Ceres GPU BA, "
+                            f"Constraining the completed visual reconstruction with "
+                            f"{rtk_report['updated_pose_priors']} camera-position priors "
+                            f"and MRK/XMP RTK covariance using robust Ceres GPU BA, "
                             f"{rtk_iterations} iterations and a {rtk_timeout:.0f}s budget."
                         ),
                         details={"event": "rtk_refinement_started", **rtk_report},
@@ -918,7 +987,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                             "--use_robust_loss_on_prior_position",
                             "1",
                             "--prior_position_loss_scale",
-                            "7.82",
+                            str(rtk_loss_scale),
                         ],
                         vol_id,
                         "RTK_REFINEMENT",
@@ -942,7 +1011,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                             "timeout_seconds": rtk_timeout,
                             "ba_backend": "CERES_GPU",
                             "robust_loss": "cauchy",
-                            "robust_loss_scale": 7.82,
+                            "robust_loss_scale": rtk_loss_scale,
                         }
                     )
                     atomic_write_json(rtk_report_path, rtk_report)

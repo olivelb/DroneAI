@@ -413,6 +413,10 @@ Migration `0004_geospatial_workspace.py` adds:
 - `map_features`, a generic EPSG:4326 PostGIS geometry table with GiST index,
   provenance, names, descriptions, colors, tags and optimistic versions.
 
+Migration `0005_analysis_recovery_leases.py` adds bounded retry and exclusive
+finalization state for analysis campaigns: generation-aware attempts, dead
+tiles, lease owner/expiry and explicit replay-safe recovery fields.
+
 See
 [`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md)
 for the rerun, viewport and recovery contract.
@@ -882,8 +886,10 @@ Characteristics:
 - matcher type: bounded brute-force CUDA over a GPS/temporal pair graph
 - mapper command: `global_mapper`
 - view graph calibration enabled
-- orientation reading enabled
-- two global BA passes and final iterative retriangulation
+- orientation priors disabled until the IMU/gimbal-to-camera frame conversion
+  is validated per aircraft/camera pair
+- two global BA passes and final iterative retriangulation, with a deterministic
+  seed; stricter track thresholds remain isolated in the experimental preset
 - automatic GLOMAP primary with compatible Caspar/Ceres fallback inside one
   shared 40-minute budget
 - covariance-aware RTK refinement enabled only when corrected MRK coverage is
@@ -891,6 +897,18 @@ Characteristics:
 - Gaussian Splatting orthomosaic enabled (default)
 
 This is the default and the main intended runtime path.
+
+Two measured modern presets deliberately optimize different objectives:
+
+| Preset | Sparse recipe | Intended use | Helenenschacht checkpoint result |
+|---|---|---|---|
+| Survey / planimetry | 2,400 px, 4,096 features, first octave -1, guided matching off, general RTK loss scale 7.82 | XY and faster turnaround | about 5.0 cm horizontal RMSE |
+| `Precision 3D · RTK` | 3,200 px, 8,192 features, first octave 0, guided matching on, RTK loss scale 62.56 | DSM, relief and volume | 6.32 cm H, 15.74 cm V, 16.96 cm 3D RMSE |
+
+The 3D preset is not a universal replacement for Survey. On Helenenschacht it
+improves the selected DSM RMSE to 11.44 cm but gives up about 1.3 cm of sparse
+horizontal RMSE compared with the best 2,400 px RTK run. The stronger Cauchy
+scale is therefore preset-specific; the general default remains 7.82.
 
 ALIKED N16Rot/N32 and LightGlue remain available as explicit expert choices.
 The image includes ONNX Runtime GPU and checksum-verified embedded models, but
@@ -914,14 +932,20 @@ SfM defaults, not the orthomosaic mode.
 
 ### Smart resume and compatibility checks
 
-Before reconstruction, the worker checks whether an existing `database.db` is compatible with the requested pipeline profile.
+Before reconstruction, the worker checks whether existing COLMAP artifacts are
+compatible with the requested reconstruction recipe. A versioned SHA-256
+fingerprint covers feature resolution/count/octave, matching, camera/mapping,
+RTK refinement iterations and robust-loss scale, and undistortion parameters.
+A changed or missing legacy fingerprint invalidates the dependent artifacts
+once instead of silently reusing stale features or poses.
 
 The logic infers descriptor type by inspecting descriptor blob size:
 
 - 128 bytes per feature means SIFT
 - 512 bytes per feature means ALIKED float descriptors
 
-If the persisted database was created by the opposite profile, it is deleted so the worker can re-extract features cleanly.
+If the persisted database was created by the opposite descriptor family, it is
+also deleted so the worker can re-extract features cleanly.
 
 This is important because reusing a database with the wrong feature representation would corrupt the remainder of the pipeline.
 
@@ -935,6 +959,14 @@ The Gaussian Splatting path treats the workspace as reusable when:
 - undistorted images exist in `dense/images/`
 
 This readiness is checked at startup and refreshed again after `image_undistorter`. If undistorted images and the sparse model are present, the worker jumps directly to the `GAUSS` stage.
+
+A completed Gaussian training result is reusable according to its immutable
+training contract, not according to the current PSNR/SSIM acceptance
+thresholds. If only a canary threshold changes, app1 recomputes the canary from
+the persisted manifest and evaluation metrics. It neither quarantines the
+valid PLY nor restarts 30,000 iterations. A compatible result that still fails
+the new threshold fails fast; a newly accepted result discards the large
+optimizer checkpoint after promotion.
 
 ### GPU index normalization
 
@@ -974,6 +1006,23 @@ If GPS extraction has already been done, the worker reuses the persisted CRS
 only when the requested policy and source identity still match. Changing the
 CRS invalidates stale georeferencing products without discarding reusable
 features or sparse geometry.
+
+### Independent checkpoint evaluation
+
+Checkpoint evaluation is deliberately separate from reconstruction. The GCP
+file may be used after a sparse model or DSM exists, but it must not feed the
+bundle adjustment when the objective is an independent accuracy measurement.
+
+- `tools/evaluate_gcp_checkpoints.py` triangulates annotated target centres
+  from registered camera rays and reports horizontal, vertical, 3D and
+  reprojection errors.
+- `tools/evaluate_dsm_checkpoints.py` verifies the raster/model CRS, reads one
+  1×1 window per surveyed point, and reports signed and absolute vertical
+  statistics without loading a multi-gigabyte DSM into memory.
+
+Horizontal and vertical acceptance thresholds must remain distinct. A fine
+output GSD is not an acceptance criterion, and a denser tie cloud is not a
+substitute for checkpoints.
 
 ## COLMAP worker state diagram
 
@@ -1040,7 +1089,8 @@ Pipeline steps:
    - **PCA path** (no alignment transform): compute `R_geo` rotation matrix from camera PCA, pass it to the renderer — the model stays in the original COLMAP coordinate frame to preserve SH coefficient consistency
 7. Configurable multi-stage post-processing filter chain: max-scale → spatial crop → opacity → needle removal → SOR → connected-component → Z-floater removal (each individually togglable)
 8. Render orthographic RGB orthomosaic and height map via CuPy CUDA rasteriser (with `R_geo` for PCA path)
-9. Shift height map to match mean drone EXIF GPS altitude
+9. Convert local model Z to the available vertical reference: add the
+   withheld Sim3 Z translation, or the GPS/EXIF-derived origin on the PCA path
 10. Write GeoTIFF with projected CRS
 
 ### Gaussian Splatting orthophoto pipeline
@@ -1134,7 +1184,7 @@ Default training parameters (configurable via dashboard UI):
 | `gs_test_split` | modulo | V1 parity split; custom supports spatial-block |
 | `gs_test_guard_percent` | 0 | Guard ring excluded from training for spatial-block |
 | `gs_canary_min_psnr` | 18.0 | Minimum held-out PSNR required before rendering |
-| `gs_canary_min_ssim` | 0.35 | Minimum held-out SSIM required before rendering |
+| `gs_canary_min_ssim` | 0.25 | Minimum held-out SSIM required before rendering |
 
 #### Step 4: Merge
 
@@ -1182,28 +1232,35 @@ The cleaned model is rendered using a custom CuPy CUDA rasteriser:
 - For large outputs, rendering is chunked into 4096×4096-pixel tiles and stitched
 - Both RGB (uint8) and height (float32) maps are produced
 
-The height map converts depth-in-camera to world Z: `height = z_top - depth`.
+The height map converts depth-in-camera to world Z:
+`height = z_top - normalized_depth`. The CUDA rasterizer divides its weighted
+depth sum by accumulated opacity before this conversion. Pixels without
+Gaussian coverage are written as `NaN`, not as the ortho-camera elevation.
 
 #### Step 7: Height map altitude correction
 
-If EXIF altitudes were found in step 1b, the mean height map value is shifted to match the mean drone EXIF altitude:
+On the Sim3 path, scale and rotation have already been applied to the model,
+but the large translation is deliberately withheld to preserve float32
+precision. Its Z component is therefore added to the height map, just as its
+X/Y components are added to the GeoTIFF origin.
 
-```
-z_offset = mean_exif_altitude - mean(height_map)
-height_map = height_map + z_offset
-```
+On the PCA path, model heights are first converted to metres. When compatible
+GPS/EXIF altitudes exist, the same camera-centroid origin used for horizontal
+georeferencing is applied vertically. The ground surface is never shifted to
+the mean drone altitude: a camera altitude is not a ground elevation.
 
-This anchors the relative height values to the same, explicitly recorded
-vertical reference as the camera observations. It is not a geoid-grid
+This preserves the recorded vertical reference; it is not a geoid-grid
 transformation or an independent elevation-accuracy validation. If no
-compatible altitude data was found, the raw model Z values are kept.
+compatible absolute altitude is available, the raster remains explicitly in
+local model Z.
 
 #### Step 8: GeoTIFF writing
 
 The output is written as two GeoTIFF files:
 
 1. **RGB orthomosaic** (`orthomosaic.tif`): 3-band uint8, LZW compressed, with projected CRS and affine transform from `from_origin(geo_x_min, geo_y_max, resolution, resolution)`
-2. **Height map** (`orthomosaic.height.tif`): 1-band float32, LZW compressed, same CRS and affine transform
+2. **Height map** (`orthomosaic.height.tif`): 1-band float32, LZW compressed,
+   same CRS and affine transform, with uncovered pixels marked `nodata=NaN`
 
 The `geo_x_min` and `geo_y_max` are computed by adding the float64 `geo_origin` translation to the local-coordinate extent bounds. This preserves sub-centimetre positional accuracy.
 
@@ -1220,8 +1277,9 @@ flowchart TD
   D1 --> D[Multi-stage filtering: max-scale → spatial → opacity → needle → SOR → CC → Z-floater]
   D2 --> D
   D --> E[Render orthographic RGB + height map via CuPy CUDA rasteriser with R_geo]
-  E --> E1[Shift height map to match mean EXIF altitude]
-  E1 --> H[Write GeoTIFF + height GeoTIFF]
+  E --> E1[Normalize depth by opacity and mark uncovered pixels nodata]
+  E1 --> E2[Apply Sim3 Z translation or GPS/EXIF vertical origin]
+  E2 --> H[Write GeoTIFF + height GeoTIFF]
 ```
 
 ### Gaussian Splatting ortho rerun readiness
@@ -1238,10 +1296,10 @@ instead of hiding it behind fixed worker constants:
 
 | Group | Principal controls |
 | --- | --- |
-| Features | extractor, maximum resolution, feature cap and CPU threads |
-| Matching | brute-force/LightGlue choice, GPS/spatial/sequential graph, neighbor and distance bounds |
-| Mapping | camera model, GLOMAP/Caspar/Ceres engine, BA passes and iterations, retriangulation, registration gate and timeout |
-| Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance and bounded RTK pass |
+| Features | extractor, maximum resolution, feature cap, SIFT first octave and CPU threads |
+| Matching | brute-force/LightGlue choice, optional guided pass, GPS/spatial/sequential graph, neighbor and distance bounds |
+| Mapping | camera model, GLOMAP/Caspar/Ceres engine, deterministic seed, BA/track limits, strict retriangulation, registration gate and timeout |
+| Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance, bounded RTK pass and robust-loss scale |
 | Undistortion | maximum image size, 2,400 px in the survey profile |
 
 The `modern` defaults use the best planimetric candidate measured on
@@ -1250,8 +1308,15 @@ GLOMAP BA passes, final retriangulation, a 40-minute mapping budget and a
 2,400 px undistortion ceiling. It registered 176/176 images in 174 seconds and
 reached 5.0 cm horizontal checkpoint RMSE. The measured ALBAGNAC/SAVERES
 sub-hour path remains the explicit fast preset at 1,600 px, 2,048 features,
-one BA pass and no retriangulation. Selecting a preset resets every field;
+one BA pass and no retriangulation. The separate `Precision 3D · RTK` preset
+uses the measured 3,200/8,192 recipe and a 3,200 px undistortion ceiling.
+Selecting a preset resets every field;
 editing an expert value keeps it visible and marks the recipe custom.
+
+The former 4,096 px A/B candidate is no longer presented as the precision
+preset: it did not beat the selected 3,200 px recipe in 3D and cost more time.
+Position priors constrain the subsequent `pose_prior_mapper`; current GLOMAP
+global positioning itself does not consume RTK positions.
 
 ### GS pipeline tunables exposed in the dashboard UI
 
@@ -1281,7 +1346,7 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | DroneGS Held-out Split Policy | `gs_test_split` | select | modulo | modulo/spatial-block |
 | DroneGS Spatial Guard Ring | `gs_test_guard_percent` | float | 0 | 0–100 |
 | DroneGS Canary Minimum PSNR | `gs_canary_min_psnr` | float | 18.0 | 0–100 |
-| DroneGS Canary Minimum SSIM | `gs_canary_min_ssim` | float | 0.35 | 0–1 |
+| DroneGS Canary Minimum SSIM | `gs_canary_min_ssim` | float | 0.25 | 0–1 |
 | Enable Post-training Filters | `gs_filter_enabled` | bool | true | — |
 | Max Scale Filter | `gs_filter_max_scale` | float | 1.0 | 0–100 |
 | Distance Filter Multiplier | `gs_filter_dist` | float | 1.0 | 0–10 |
@@ -1365,8 +1430,9 @@ flowchart LR
   M[Ortho camera over AABB<br/>min_x max_x min_y max_y] --> N[CuPy CUDA rasterise ortho tiles<br/>RGB + depth, viewmat includes R_geo]
   N --> O[Assemble full raster<br/>pixel grid at chosen resolution]
 
-  O --> P1[Shift height map<br/>+ float64 t + EXIF altitude]
-  P1 --> P2[GeoTIFF affine transform<br/>from_origin min_x max_y res]
+  O --> P1[Normalize depth by opacity<br/>uncovered pixels = nodata]
+  P1 --> P1B[Apply one vertical origin<br/>Sim3 t.z or GPS/EXIF PCA origin]
+  P1B --> P2[GeoTIFF affine transform<br/>from_origin min_x max_y res]
   P2 --> P[orthomosaic.tif + orthomosaic.height.tif<br/>with projected CRS]
 
   P --> Q[app2/app3 use affine + CRS]
@@ -1381,7 +1447,8 @@ Read it in this order:
 3. Shared camera centers between local and geo sparse models estimate a Sim3 or PCA transform.
 4. **Sim3 path**: R·s is applied to Gaussian means and covariance axes in float32; the translation t is kept as a float64 GeoTIFF origin to avoid precision loss. **PCA path**: the model stays in COLMAP frame (preserving SH coefficient consistency); `R_geo` is passed to the renderer which embeds it in the view matrix.
 5. An orthographic camera is set over the axis-aligned bounding box and the CuPy CUDA rasteriser renders tiled RGB + depth.
-6. The height map is shifted by the float64 translation z-component plus mean EXIF GPS altitude.
+6. The opacity-normalized height map receives exactly one vertical origin:
+   the float64 Sim3 Z translation, or the GPS/EXIF-derived PCA origin.
 7. The final GeoTIFF affine transform and CRS let downstream services convert orthomosaic pixels back into latitude and longitude.
 
 ## Processing worker detailed behavior
@@ -1719,6 +1786,9 @@ These are the assumptions that must remain true for the current implementation t
     viewer overlay rather than a second full-size GeoTIFF.
 11. Durable mission artifacts must be uploaded before temporary worker
     directories are removed.
+12. GCP used to claim accuracy must remain outside pose, intrinsic and scene
+    optimization; horizontal and vertical product checks are evaluated only
+    after the corresponding artefact exists.
 
 ## Operator-oriented stage map
 

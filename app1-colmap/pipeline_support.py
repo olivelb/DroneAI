@@ -17,13 +17,136 @@ from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
 )
-from shared.dji_metadata import load_dji_mrk_overrides
+from shared.dji_metadata import load_position_overrides
 from shared.projected_crs import select_projected_crs
 
 
 logger = logging.getLogger("app1-colmap.support")
 
 COPY_MANIFEST_FILENAME = ".copy_manifest.json"
+COLMAP_CACHE_CONFIG_FILENAME = ".colmap_pipeline_config.json"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
+POSITION_SIDECAR_SUFFIXES = {".mrk"}
+
+# Parameters that can change the COLMAP database, sparse reconstruction, RTK
+# model, or undistorted images. Runtime budgets and quality gates are omitted:
+# they decide whether a run is accepted, not what target reconstruction is
+# requested.
+COLMAP_CACHE_PARAMETER_KEYS = (
+    "feature_type",
+    "feature_max_image_size",
+    "feature_max_num_features",
+    "sift_first_octave",
+    "matcher_type",
+    "guided_matching",
+    "matching_strategy",
+    "gps_pair_max_neighbors",
+    "gps_pair_min_neighbors",
+    "gps_pair_temporal_neighbors",
+    "gps_pair_max_distance_m",
+    "camera_model",
+    "alignment_engine",
+    "use_view_graph_calibrator",
+    "global_mapper_max_tracks",
+    "global_mapper_ba_iterations",
+    "global_mapper_ceres_iterations",
+    "global_mapper_skip_retriangulation",
+    "global_mapper_random_seed",
+    "global_mapper_ba_min_track_length",
+    "global_mapper_tri_complete_max_reproj_error",
+    "global_mapper_tri_merge_max_reproj_error",
+    "global_mapper_tri_min_angle",
+    "rtk_refinement_enabled",
+    "rtk_refinement_iterations",
+    "rtk_refinement_loss_scale",
+    "mvs_max_image_size",
+)
+
+
+def build_colmap_cache_config(params):
+    """Return a stable reconstruction recipe and content fingerprint."""
+
+    parameters = {
+        key: params.get(key)
+        for key in COLMAP_CACHE_PARAMETER_KEYS
+    }
+    canonical = json.dumps(
+        {"schema_version": 1, "parameters": parameters},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "schema_version": 1,
+        "fingerprint": hashlib.sha256(canonical).hexdigest(),
+        "parameters": parameters,
+    }
+
+
+def colmap_cache_config_path(workspace_dir):
+    return os.path.join(workspace_dir, COLMAP_CACHE_CONFIG_FILENAME)
+
+
+def load_colmap_cache_config(workspace_dir):
+    path = colmap_cache_config_path(workspace_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("fingerprint"):
+        return None
+    return payload
+
+
+def save_colmap_cache_config(workspace_dir, config):
+    path = Path(colmap_cache_config_path(workspace_dir))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(config, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def changed_colmap_cache_parameters(previous, requested):
+    if previous is None:
+        return ["legacy-or-missing-fingerprint"]
+    previous_parameters = previous.get("parameters") or {}
+    requested_parameters = requested.get("parameters") or {}
+    return sorted(
+        key
+        for key in set(previous_parameters) | set(requested_parameters)
+        if previous_parameters.get(key) != requested_parameters.get(key)
+    )
+
+
+def discover_input_assets(image_dir):
+    """Find nested images/sidecars that can be flattened for COLMAP safely."""
+
+    root = Path(image_dir)
+    images = []
+    sidecars = []
+    by_basename = {}
+    for path in sorted(candidate for candidate in root.rglob("*") if candidate.is_file()):
+        suffix = path.suffix.lower()
+        if suffix not in IMAGE_SUFFIXES | POSITION_SIDECAR_SUFFIXES:
+            continue
+        collision = by_basename.get(path.name)
+        if collision is not None:
+            first = collision.relative_to(root).as_posix()
+            second = path.relative_to(root).as_posix()
+            raise ValueError(
+                f"Input files cannot be flattened safely: duplicate name "
+                f"{path.name!r} in {first} and {second}"
+            )
+        by_basename[path.name] = path
+        if suffix in IMAGE_SUFFIXES:
+            images.append(path)
+        else:
+            sidecars.append(path)
+    return images, sidecars
 
 
 def is_aliked_feature_type(feature_type):
@@ -133,7 +256,10 @@ def extract_gps_data(
         vol_id,
         "GPS_EXTRACTION",
         10,
-        log="Extracting DJI MRK/EXIF positions and selecting a metric projected CRS...",
+        log=(
+            "Extracting MRK/XMP RTK/EXIF positions and selecting a metric "
+            "projected CRS..."
+        ),
     )
     images = sorted(
         f
@@ -141,22 +267,34 @@ def extract_gps_data(
         if f.lower().endswith((".jpg", ".jpeg", ".png"))
     )
     image_paths = [Path(image_dir) / image_name for image_name in images]
-    mrk_overrides = load_dji_mrk_overrides(image_dir, image_paths)
+    position_overrides = load_position_overrides(image_dir, image_paths)
     positions = []
-    mrk_count = 0
-    mrk_vertical_errors = []
+    source_counts = {"dji_mrk": 0, "xmp_rtk": 0, "exif": 0}
+    vertical_errors = []
+    vertical_references = []
+    vertical_sources = []
     for img_name in images:
         img_path = os.path.join(image_dir, img_name)
         try:
-            mrk_gps = mrk_overrides.get(img_name)
-            if mrk_gps:
-                lat = float(mrk_gps["latitude"])
-                lon = float(mrk_gps["longitude"])
-                alt = float(mrk_gps.get("altitude_m") or 0.0)
-                mrk_count += 1
-                position_std = mrk_gps.get("position_std_m") or {}
+            precise_gps = position_overrides.get(img_name)
+            if precise_gps:
+                lat = float(precise_gps["latitude"])
+                lon = float(precise_gps["longitude"])
+                alt = float(precise_gps.get("altitude_m") or 0.0)
+                source = str(precise_gps.get("source") or "xmp_rtk")
+                source_counts[source] = source_counts.get(source, 0) + 1
+                vertical_references.append(
+                    str(precise_gps.get("vertical_reference") or "unknown")
+                )
+                vertical_sources.append(
+                    str(
+                        precise_gps.get("vertical_reference_source")
+                        or "unknown"
+                    )
+                )
+                position_std = precise_gps.get("position_std_m") or {}
                 if position_std.get("vertical_m") is not None:
-                    mrk_vertical_errors.append(
+                    vertical_errors.append(
                         float(position_std["vertical_m"])
                     )
             else:
@@ -180,6 +318,9 @@ def extract_gps_data(
                         lon = -lon
                     gps_alt = gps_info.get("GPSAltitude", 0)
                     alt = float(gps_alt) if gps_alt else 0
+                source_counts["exif"] += 1
+                vertical_references.append("unknown")
+                vertical_sources.append("exif_gps_altitude")
             positions.append((img_name, lat, lon, alt))
         except Exception as error:
             logger.debug("Skipping GPS extraction for %s: %s", img_name, error)
@@ -212,15 +353,19 @@ def extract_gps_data(
         12,
         log=(
             f"Extracted positions from {count}/{len(images)} images "
-            f"({mrk_count} DJI MRK, {count - mrk_count} EXIF). "
+            f"({source_counts['dji_mrk']} DJI MRK, "
+            f"{source_counts['xmp_rtk']} XMP RTK, "
+            f"{source_counts['exif']} EXIF). "
             f"Using CRS {choice.crs if choice else None} "
             f"({choice.source if choice else 'unavailable'})"
         ),
     )
     vertical_reference = (
-        "ellipsoidal"
-        if count > 0 and mrk_count == count
-        else ("mixed-or-unknown" if mrk_count else "unknown")
+        vertical_references[0]
+        if count > 0
+        and len(vertical_references) == count
+        and len(set(vertical_references)) == 1
+        else ("mixed-or-unknown" if vertical_references else "unknown")
     )
     save_projected_crs(
         output_file,
@@ -229,18 +374,18 @@ def extract_gps_data(
         requested_crs=projected_crs,
         vertical_reference=vertical_reference,
         vertical_source=(
-            "dji_mrk_ellh"
-            if vertical_reference == "ellipsoidal"
+            vertical_sources[0]
+            if vertical_sources and len(set(vertical_sources)) == 1
             else "exif_gps_altitude_or_mixed"
         ),
         vertical_uncertainty_m=(
             {
-                "minimum": min(mrk_vertical_errors),
-                "maximum": max(mrk_vertical_errors),
-                "mean": sum(mrk_vertical_errors)
-                / len(mrk_vertical_errors),
+                "minimum": min(vertical_errors),
+                "maximum": max(vertical_errors),
+                "mean": sum(vertical_errors)
+                / len(vertical_errors),
             }
-            if mrk_vertical_errors
+            if vertical_errors
             else None
         ),
     )

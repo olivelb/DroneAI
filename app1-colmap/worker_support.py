@@ -274,6 +274,7 @@ def make_progress_reporter(producer, topic_status, service_name="COLMAP"):
 
 
 def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, mission_params, normalize_ai_backend_fn):
+    attempt = int(mission_params.get("attempt", 0))
     message = make_event(
         "orthomosaic",
         {
@@ -286,9 +287,10 @@ def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, missio
             "sam_prompt": mission_params.get("sam_prompt", "car"),
             "tile_size": mission_params.get("tile_size", 1024),
         },
-        event_id=deterministic_event_id("orthomosaic", vol_id),
+        event_id=deterministic_event_id("orthomosaic", vol_id, attempt),
         correlation_id=mission_params.get("correlation_id") or vol_id,
         causation_id=mission_params.get("event_id"),
+        attempt=attempt,
     )
     publish_json(producer, topic_out, message, key=vol_id)
 

@@ -111,6 +111,20 @@ def test_report_preserves_ellipsoidal_rtk_vertical_reference():
     assert not any(
         "orthometric" in warning for warning in report["warnings"]
     )
+    assert report["errors"] == []
+
+
+def test_report_rejects_requested_rtk_without_covariance():
+    records = [
+        _record("MAX_0002.JPG", 47.0, 16.0),
+        _record("MAX_0003.JPG", 47.0001, 16.0001),
+    ]
+
+    report = build_report(records, dataset=Path("/data"), gps_quality="rtk")
+
+    assert len(report["errors"]) == 1
+    assert "0/2 images" in report["errors"][0]
+    assert "95% required" in report["errors"][0]
 
 
 def test_geojson_contains_flight_path_and_camera_points():

@@ -37,7 +37,9 @@ from gaussian_training import (
     DroneGSTuning,
     TrainingRequest,
     TrainingResult,
+    evaluate_quality_canary,
     resolve_training_backend,
+    write_quality_canary,
 )
 from gaussian_training.dataset_identity import compute_dataset_identity
 from gaussian_training.manifest_contract import (
@@ -65,17 +67,14 @@ def _reusable_dronegs_result(
     """Return a previously promoted result only when its contract matches."""
     output = Path(request.output_path)
     manifest_path = output / "trainer_run.json"
-    canary_path = output / "canary_result.json"
     ply_path = output / "point_cloud.ply"
     if not (
         manifest_path.is_file()
-        and canary_path.is_file()
         and ply_path.is_file()
     ):
         return None
     try:
         manifest = load_run_manifest(manifest_path)
-        canary = json.loads(canary_path.read_text(encoding="utf-8"))
         validate_run_manifest(manifest)
     except (OSError, ValueError, json.JSONDecodeError):
         return None
@@ -114,13 +113,20 @@ def _reusable_dronegs_result(
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
         or manifest.get("dataset", {}).get("fingerprint")
         != request.dataset_fingerprint
-        or canary.get("status") != "passed"
-        or canary.get("minimum_psnr") != request.dronegs.canary_min_psnr
-        or canary.get("minimum_ssim") != request.dronegs.canary_min_ssim
         or any(parameters.get(key) != value for key, value in expected.items())
         or not manifest_matches_ply(manifest, ply_path)
     ):
         return None
+    canary = evaluate_quality_canary(manifest, request.dronegs)
+    write_quality_canary(output, canary)
+    if canary["failed_metrics"]:
+        raise RuntimeError(
+            "DroneGS quality canary failed: "
+            + ", ".join(canary["failed_metrics"])
+        )
+    # The promoted PLY + manifest + canary are the durable result. Keeping the
+    # much larger optimizer checkpoint after a successful recovery wastes disk.
+    (output / "training.ckpt").unlink(missing_ok=True)
     return TrainingResult(
         backend="dronegs",
         ply_path=ply_path,
@@ -693,16 +699,40 @@ def generate_gaussian_orthophoto(
         geo_x_min = float(np.float64(x_min) * colmap_to_meters + geo_origin[0])
         geo_y_max = float(np.float64(y_max) * colmap_to_meters + geo_origin[1])
 
-    # --- Altitude correction: shift model Z to match mean EXIF altitude if available ---
-    # For PCA path, height is in COLMAP units — scale to metres first.
-    if not transform_data and colmap_to_meters != 1.0:
-        height = height * colmap_to_meters
-    if mean_exif_alt is not None:
-        z_offset = mean_exif_alt - np.mean(height)
-        height = height + z_offset
-        _report(vol_id, "GAUSS", 97, f"Shifted height map by {z_offset:.2f} m to match mean EXIF altitude {mean_exif_alt:.2f}", report_fn)
+    # --- Altitude correction: convert local model Z to the georeferenced datum ---
+    from .height_reference import georeference_height_map
+
+    height, z_offset, vertical_reference = georeference_height_map(
+        height,
+        sim3_aligned=bool(transform_data),
+        geo_origin_z=float(geo_origin[2]),
+        colmap_to_meters=colmap_to_meters,
+        exif_altitude_available=mean_exif_alt is not None,
+    )
+    if vertical_reference == "sim3":
+        _report(
+            vol_id,
+            "GAUSS",
+            97,
+            f"Applied Sim3 vertical translation ({z_offset:+.2f} m) to height map.",
+            report_fn,
+        )
+    elif vertical_reference == "exif":
+        _report(
+            vol_id,
+            "GAUSS",
+            97,
+            f"Applied GPS/EXIF vertical origin ({z_offset:+.2f} m) to height map.",
+            report_fn,
+        )
     else:
-        _report(vol_id, "GAUSS", 97, "No EXIF altitudes found; using model Z for height map.", report_fn)
+        _report(
+            vol_id,
+            "GAUSS",
+            97,
+            "No absolute altitude reference found; height map remains in local model Z.",
+            report_fn,
+        )
 
     _report(vol_id, "GAUSS", 98, "Writing GeoTIFF\u2026", report_fn)
 

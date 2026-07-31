@@ -23,8 +23,11 @@ DroneAI explores an end-to-end drone-image workflow:
 
 The modern reconstruction default is the checkpoint-tested planimetric survey
 profile (GPS pairs, SIFT CUDA at 2400 px, 4096 features, two GLOMAP BA passes
-and final retriangulation). The dashboard also exposes the measured 1600 px
-fast profile for large missions where turnaround time is the priority.
+and final retriangulation). A separate `Precision 3D · RTK` preset uses
+3200 px, 8192 features, guided matching and covariance-aware pose priors for
+DSM/volume work; it is not the preferred planimetric preset. The dashboard
+also exposes the measured 1600 px fast profile for large missions where
+turnaround time is the priority.
 
 The repository supports two execution modes:
 
@@ -60,6 +63,10 @@ For implementation details, read:
   COLMAP/GLOMAP and RTK alignment path;
 - [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) for the
   supported deployment boundary, required secrets and measured release gates;
+- [`docs/benchmarks/helenenschacht-our-workflow-vs-metashape-2026-08-01.md`](docs/benchmarks/helenenschacht-our-workflow-vs-metashape-2026-08-01.md)
+  for the independent GCP comparison between COLMAP/DroneGS and Metashape;
+- [`docs/CONTRE_AUDIT_MERGE_C8D0464_2026-07-31.md`](docs/CONTRE_AUDIT_MERGE_C8D0464_2026-07-31.md)
+  for the post-merge counter-audit and the resulting hardening work;
 - [`CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md`](CLOUD_DEPLOYMENT_OVHCLOUD_K3S.md) for
   the experimental Helm/K3s cloud path.
 
@@ -71,6 +78,29 @@ The example shows georeferenced vehicle detections reprojected onto an
 orthomosaic. See
 [`docs/GAJAN_R2S_VALIDATION.md`](docs/GAJAN_R2S_VALIDATION.md) for the measured
 results of the local, non-RTK validation run.
+
+## Measured geospatial accuracy
+
+Helenenschacht provides 176 Autel XT705 RTK images and five surveyed targets
+annotated in 35 source images. The targets are held out of pose, intrinsic and
+reconstruction optimization and are read only after the products exist.
+
+The selected `Precision 3D · RTK` run measured 6.320 cm horizontal, 15.741 cm
+vertical and 16.962 cm 3D sparse checkpoint RMSE. Its final 5 mm DroneGS
+orthomosaic preserved 6.24 cm horizontal RMSE when the five rendered target
+centres were reconstructed, while the matching Metashape orthomosaic measured
+14.88 cm. The final DroneGS DSM measured 11.44 cm vertical RMSE. Metashape was
+denser in sparse tie points, but its current RTK-only project showed a 2.77 m
+vertical bias at the checkpoints.
+
+These are single-site results, not a universal accuracy claim. Output GSD is
+sampling density rather than ground accuracy, Gaussian target centres can be
+less certain when blurred or saturated, and only independent checkpoints can
+validate a deliverable. The complete protocol, per-target coordinates,
+uncertainty and weaknesses are documented in the
+[comparative report](docs/benchmarks/helenenschacht-our-workflow-vs-metashape-2026-08-01.md)
+and the earlier
+[RTK/GeoTIFF A/B report](docs/benchmarks/helenenschacht-rtk-geotiff-ab-2026-07-31.md).
 
 ## Quick start: clone to dashboard
 
@@ -124,7 +154,8 @@ mean held-out PSNR 19.4122 dB and SSIM 0.49155. The complete machine-readable
 record is
 [`saleres-dronegs-production-v1-2026-07-28.json`](docs/benchmarks/saleres-dronegs-production-v1-2026-07-28.json).
 An intentionally demanding Helenenschacht run at 5 mm/pixel took 1 h 46 min
-44 s and failed the production SSIM gate; its
+44 s and failed the then-current 0.35 SSIM gate. Later full-scene evidence set
+the current gate to 0.25 and made threshold-only re-evaluation reusable; its
 [benchmark report](docs/benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md)
 documents why output GSD must not be confused with survey accuracy and why the
 extreme recipe is not the new default.
@@ -286,7 +317,8 @@ The repository contains Alembic migrations:
 - `0001_initial_schema.py`;
 - `0002_inbox_outbox.py`;
 - `0003_geospatial_aggregation.py`;
-- `0004_geospatial_workspace.py`.
+- `0004_geospatial_workspace.py`;
+- `0005_analysis_recovery_leases.py`.
 
 For a manually managed database:
 

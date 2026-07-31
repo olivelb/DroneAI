@@ -19,6 +19,11 @@ spec:
         app: processing
     spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.global.imagePullSecrets }}
@@ -27,6 +32,11 @@ spec:
       {{- end }}
       initContainers:
       - name: wait-for-schema
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command: ["/bin/sh", "-c"]
@@ -36,12 +46,16 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: drone-ai-storage
-              key: database-url
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: processing
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.processingWorker.image "tag" .Values.processingWorker.tag) }}
@@ -52,5 +66,23 @@ spec:
           value: "40"
         - name: UNTILER_DEDUPE_IOU_THRESHOLD
           value: "0.05"
+        - name: ANALYSIS_MAX_TILE_ATTEMPTS
+          value: {{ .Values.processingWorker.analysis.maximumTileAttempts | quote }}
+        - name: ANALYSIS_FINALIZATION_LEASE_SECONDS
+          value: {{ .Values.processingWorker.analysis.finalizationLeaseSeconds | quote }}
+        - name: ANALYSIS_MAX_TILE_RESULT_BYTES
+          value: {{ .Values.processingWorker.analysis.maximumTileResultBytes | quote }}
+        - name: ANALYSIS_MAX_AGGREGATE_RESULT_BYTES
+          value: {{ .Values.processingWorker.analysis.maximumAggregateResultBytes | quote }}
+        - name: ANALYSIS_MAX_RAW_DETECTIONS
+          value: {{ .Values.processingWorker.analysis.maximumRawDetections | quote }}
+        - name: ANALYSIS_MAX_FINAL_DETECTIONS
+          value: {{ .Values.processingWorker.analysis.maximumFinalDetections | quote }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         resources:
           {{- toYaml .Values.processingWorker.resources | nindent 10 }}
+      volumes:
+      - name: tmp
+        emptyDir: {}

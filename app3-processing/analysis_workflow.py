@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
 
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import func
@@ -37,12 +39,68 @@ class AnalysisWorkflow:
         tile_topic: str,
         dedupe: Callable[[list[dict]], list[dict]],
         logger,
+        maximum_tile_attempts: int | None = None,
+        finalization_lease_seconds: int | None = None,
+        finalization_owner: str | None = None,
+        maximum_tile_result_bytes: int | None = None,
+        maximum_aggregate_result_bytes: int | None = None,
+        maximum_raw_detections: int | None = None,
+        maximum_final_detections: int | None = None,
     ):
         self.producer = producer
         self.orthomosaic_topic = orthomosaic_topic
         self.tile_topic = tile_topic
         self.dedupe = dedupe
         self.logger = logger
+        configured_attempts = (
+            maximum_tile_attempts
+            if maximum_tile_attempts is not None
+            else int(os.getenv("ANALYSIS_MAX_TILE_ATTEMPTS", "5"))
+        )
+        self.maximum_tile_attempts = max(1, configured_attempts)
+        configured_lease = (
+            finalization_lease_seconds
+            if finalization_lease_seconds is not None
+            else int(os.getenv("ANALYSIS_FINALIZATION_LEASE_SECONDS", "1800"))
+        )
+        self.finalization_lease_seconds = max(60, configured_lease)
+        self.finalization_owner = finalization_owner or (
+            f"{socket.gethostname()}:{os.getpid()}:{uuid4()}"
+        )
+        self.maximum_tile_result_bytes = max(
+            1,
+            maximum_tile_result_bytes
+            if maximum_tile_result_bytes is not None
+            else int(
+                os.getenv(
+                    "ANALYSIS_MAX_TILE_RESULT_BYTES",
+                    str(10 * 1024 * 1024),
+                )
+            ),
+        )
+        self.maximum_aggregate_result_bytes = max(
+            self.maximum_tile_result_bytes,
+            maximum_aggregate_result_bytes
+            if maximum_aggregate_result_bytes is not None
+            else int(
+                os.getenv(
+                    "ANALYSIS_MAX_AGGREGATE_RESULT_BYTES",
+                    str(256 * 1024 * 1024),
+                )
+            ),
+        )
+        self.maximum_raw_detections = max(
+            1,
+            maximum_raw_detections
+            if maximum_raw_detections is not None
+            else int(os.getenv("ANALYSIS_MAX_RAW_DETECTIONS", "100000")),
+        )
+        self.maximum_final_detections = max(
+            1,
+            maximum_final_detections
+            if maximum_final_detections is not None
+            else int(os.getenv("ANALYSIS_MAX_FINAL_DETECTIONS", "50000")),
+        )
 
     @staticmethod
     def _styled_collection(detections, *, vol_id, run, tile_index=None):
@@ -141,18 +199,65 @@ class AnalysisWorkflow:
             },
         )()
 
-    @staticmethod
-    def _load_tile_payloads(tile_keys):
+    def _load_tile_payloads(self, tile_keys):
         detections = []
+        total_payload_bytes = 0
         for tile_key in tile_keys:
             if not tile_key:
                 continue
-            stream, _, _ = storage.get_object_stream(tile_key)
+            stream, content_length, _ = storage.get_object_stream(tile_key)
+            content_length = int(content_length or 0)
+            if content_length > self.maximum_tile_result_bytes:
+                stream.close()
+                raise RuntimeError(
+                    f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
+                    f"limit: {tile_key}"
+                )
+            if (
+                total_payload_bytes + content_length
+                > self.maximum_aggregate_result_bytes
+            ):
+                stream.close()
+                raise RuntimeError(
+                    "AI analysis exceeds the aggregate result size limit "
+                    f"({self.maximum_aggregate_result_bytes} bytes)"
+                )
             try:
-                payload = json.loads(stream.read())
+                raw_payload = stream.read(self.maximum_tile_result_bytes + 1)
             finally:
                 stream.close()
-            detections.extend(payload.get("raw_detections", []))
+            if len(raw_payload) > self.maximum_tile_result_bytes:
+                raise RuntimeError(
+                    f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
+                    f"limit: {tile_key}"
+                )
+            total_payload_bytes += len(raw_payload)
+            if total_payload_bytes > self.maximum_aggregate_result_bytes:
+                raise RuntimeError(
+                    "AI analysis exceeds the aggregate result size limit "
+                    f"({self.maximum_aggregate_result_bytes} bytes)"
+                )
+            payload = json.loads(raw_payload)
+            if not isinstance(payload, dict):
+                raise RuntimeError(f"AI tile result must be an object: {tile_key}")
+            tile_detections = payload.get("raw_detections", [])
+            if not isinstance(tile_detections, list):
+                raise RuntimeError(
+                    f"AI tile result has invalid raw_detections: {tile_key}"
+                )
+            if any(not isinstance(item, dict) for item in tile_detections):
+                raise RuntimeError(
+                    f"AI tile result contains a non-object detection: {tile_key}"
+                )
+            if (
+                len(detections) + len(tile_detections)
+                > self.maximum_raw_detections
+            ):
+                raise RuntimeError(
+                    "AI analysis exceeds the raw detection safety limit "
+                    f"({self.maximum_raw_detections})"
+                )
+            detections.extend(tile_detections)
         return detections
 
     def _replace_persisted_features(self, session, run, collection):
@@ -183,15 +288,30 @@ class AnalysisWorkflow:
                 )
             )
 
-    def finalize(self, run_id):
+    @staticmethod
+    def _lease_is_active(run, now):
+        lease_until = run.finalization_lease_until
+        if lease_until is None:
+            return False
+        if lease_until.tzinfo is None:
+            lease_until = lease_until.replace(tzinfo=timezone.utc)
+        return lease_until > now
+
+    def _claim_finalization(self, run_id):
+        now = datetime.now(timezone.utc)
         with get_session() as session:
             run = (
                 session.query(AIAnalysisRun)
                 .filter(AIAnalysisRun.run_id == run_id)
+                .with_for_update()
                 .first()
             )
-            if run is None or run.status == "cancelled":
-                return
+            if (
+                run is None
+                or run.status in {"cancelled", "completed"}
+                or self._lease_is_active(run, now)
+            ):
+                return None
             tiles = (
                 session.query(AIAnalysisTile)
                 .filter(
@@ -201,11 +321,32 @@ class AnalysisWorkflow:
                 .order_by(AIAnalysisTile.tile_index)
                 .all()
             )
+            if not run.total_tiles or len(tiles) < run.total_tiles:
+                return None
+            run.status = "finalizing"
+            run.phase = "deduplicating"
+            run.finalization_owner = self.finalization_owner
+            run.finalization_lease_until = now + timedelta(
+                seconds=self.finalization_lease_seconds
+            )
+            run.heartbeat_at = now
             descriptor = self._run_descriptor(run)
             tile_keys = [tile.result_s3_key for tile in tiles]
+            return descriptor, tile_keys
+
+    def finalize(self, run_id):
+        claim = self._claim_finalization(run_id)
+        if claim is None:
+            return False
+        descriptor, tile_keys = claim
 
         raw = self._load_tile_payloads(tile_keys)
         unique = self.dedupe(raw)
+        if len(unique) > self.maximum_final_detections:
+            raise RuntimeError(
+                "AI analysis exceeds the final detection safety limit "
+                f"({self.maximum_final_detections})"
+            )
         collection = self._styled_collection(
             unique,
             vol_id=descriptor["vol_id"],
@@ -232,7 +373,9 @@ class AnalysisWorkflow:
                 .one()
             )
             if run.status == "cancelled":
-                return
+                return False
+            if run.finalization_owner != self.finalization_owner:
+                return False
             if descriptor["persist_results"]:
                 self._replace_persisted_features(session, run, collection)
             run.result_s3_key = result_key
@@ -244,6 +387,9 @@ class AnalysisWorkflow:
             run.completed_at = datetime.now(timezone.utc)
             run.heartbeat_at = datetime.now(timezone.utc)
             run.error_message = None
+            run.finalization_owner = None
+            run.finalization_lease_until = None
+        return True
 
     @staticmethod
     def _get_tile_context(session, vol_id, run_id, tile_index):
@@ -253,6 +399,7 @@ class AnalysisWorkflow:
                 AIAnalysisRun.run_id == run_id,
                 AIAnalysisRun.vol_id == vol_id,
             )
+            .with_for_update()
             .first()
         )
         if run is None:
@@ -263,6 +410,7 @@ class AnalysisWorkflow:
                 AIAnalysisTile.analysis_run_id == run.id,
                 AIAnalysisTile.tile_index == tile_index,
             )
+            .with_for_update()
             .first()
         )
         if receipt is None:
@@ -287,6 +435,10 @@ class AnalysisWorkflow:
             run.status == "completed"
             or not run.total_tiles
             or completed < run.total_tiles
+            or AnalysisWorkflow._lease_is_active(
+                run,
+                datetime.now(timezone.utc),
+            )
         ):
             return False
         run.status = "finalizing"
@@ -324,7 +476,13 @@ class AnalysisWorkflow:
         return result_key, len(detections)
 
     @staticmethod
-    def _mark_tile_complete(run_id, tile_index, result_key, count):
+    def _mark_tile_complete(
+        run_id,
+        tile_index,
+        result_key,
+        count,
+        expected_attempt,
+    ):
         with get_session() as session:
             run = (
                 session.query(AIAnalysisRun)
@@ -341,11 +499,15 @@ class AnalysisWorkflow:
                 .with_for_update()
                 .one()
             )
+            if (
+                run.status == "cancelled"
+                or int(run.retry_count or 0) != int(expected_attempt)
+            ):
+                return False
             if receipt.status != "completed":
                 receipt.status = "completed"
                 receipt.result_s3_key = result_key
                 receipt.detection_count = count
-                receipt.attempts += 1
                 receipt.completed_at = datetime.now(timezone.utc)
             run.tiles_completed = (
                 session.query(AIAnalysisTile)
@@ -378,8 +540,7 @@ class AnalysisWorkflow:
                 return True
             return False
 
-    @staticmethod
-    def _mark_finalization_failed(run_id, error):
+    def _mark_finalization_failed(self, run_id, error):
         with get_session() as session:
             run = (
                 session.query(AIAnalysisRun)
@@ -387,11 +548,16 @@ class AnalysisWorkflow:
                 .with_for_update()
                 .first()
             )
-            if run is not None:
+            if run is not None and run.finalization_owner in {
+                None,
+                self.finalization_owner,
+            }:
                 run.status = "failed"
                 run.phase = "finalization_failed"
                 run.error_message = str(error)
                 run.heartbeat_at = datetime.now(timezone.utc)
+                run.finalization_owner = None
+                run.finalization_lease_until = None
 
     def process_detection(self, data):
         vol_id = data["vol_id"]
@@ -401,7 +567,11 @@ class AnalysisWorkflow:
             run, receipt = self._get_tile_context(
                 session, vol_id, run_id, tile_index
             )
-            if run.status == "cancelled":
+            event_attempt = int(data.get("attempt", 0))
+            if (
+                run.status == "cancelled"
+                or int(run.retry_count or 0) != event_attempt
+            ):
                 return
             resume_finalization = self._resume_finalization_if_ready(
                 session, run, receipt
@@ -413,11 +583,19 @@ class AnalysisWorkflow:
                     self._run_descriptor(run)
                 )
         if resume_finalization:
-            self.finalize(run_id)
+            try:
+                self.finalize(run_id)
+            except Exception as error:
+                self._mark_finalization_failed(run_id, error)
+                raise
             return
         result_key, count = self._stage_tile_result(data, run_descriptor)
         if not self._mark_tile_complete(
-            run_id, tile_index, result_key, count
+            run_id,
+            tile_index,
+            result_key,
+            count,
+            event_attempt,
         ):
             return
         try:
@@ -477,9 +655,10 @@ class AnalysisWorkflow:
                 run.vol_id,
                 run.run_id,
                 tile.tile_index,
+                run.retry_count,
             ),
             correlation_id=run.run_id,
-            attempt=tile.attempts,
+            attempt=run.retry_count,
         )
 
     def _plan_recovery(self):
@@ -507,6 +686,8 @@ class AnalysisWorkflow:
                 .all()
             )
             for run in runs:
+                if run.phase == "tile_attempts_exhausted":
+                    continue
                 tiles = (
                     session.query(AIAnalysisTile)
                     .filter(AIAnalysisTile.analysis_run_id == run.id)
@@ -528,10 +709,32 @@ class AnalysisWorkflow:
                         self._orthomosaic_recovery_event(run)
                     )
                 else:
-                    for tile in [
+                    incomplete_tiles = [
                         item for item in tiles
                         if item.status != "completed"
-                    ][:100]:
+                    ]
+                    exhausted_tiles = [
+                        item
+                        for item in incomplete_tiles
+                        if item.attempts >= self.maximum_tile_attempts
+                    ]
+                    if exhausted_tiles:
+                        for tile in exhausted_tiles:
+                            tile.status = "dead"
+                            tile.last_error = (
+                                "Maximum AI tile attempts exhausted "
+                                f"({self.maximum_tile_attempts})"
+                            )
+                        run.status = "failed"
+                        run.phase = "tile_attempts_exhausted"
+                        run.error_message = (
+                            f"{len(exhausted_tiles)} AI tile(s) exhausted "
+                            f"the {self.maximum_tile_attempts}-attempt budget; "
+                            "manual retry is required"
+                        )
+                        run.heartbeat_at = datetime.now(timezone.utc)
+                        continue
+                    for tile in incomplete_tiles[:100]:
                         tile.attempts += 1
                         tile.status = "queued"
                         tile.last_error = None

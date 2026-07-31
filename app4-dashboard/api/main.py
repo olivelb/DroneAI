@@ -16,6 +16,7 @@ from shared.inbox_outbox import run_outbox_dispatcher
 
 from . import security
 from .messaging import publish_outbox_event
+from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
@@ -65,6 +66,7 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
+    application.add_middleware(RasterTileRateLimitMiddleware)
 
     @application.middleware("http")
     async def cookie_csrf_guard(request: Request, call_next):

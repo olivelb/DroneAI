@@ -26,6 +26,7 @@ from shared.config import (
     TOPIC_STATUS,
     TOPIC_TILE_DETECTIONS,
 )
+from shared.cancellation import AttemptCancellationRegistry
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_reliability import (
     process_message,
@@ -170,21 +171,7 @@ progress_publisher = make_progress_publisher(
 mission_stats = {}
 
 
-class CancelManager:
-    def __init__(self):
-        self._set = set()
-        self._lock = threading.Lock()
-    def cancel(self, vol_id, run_id=None):
-        with self._lock:
-            self._set.add((vol_id, run_id))
-    def is_cancelled(self, vol_id, run_id=None):
-        with self._lock:
-            return (
-                (vol_id, None) in self._set
-                or (vol_id, run_id) in self._set
-            )
-
-cancel_manager = CancelManager()
+cancel_manager = AttemptCancellationRegistry()
 
 def control_consumer_thread():
     def handle_control(data):
@@ -193,7 +180,7 @@ def control_consumer_thread():
         vol_id = data.get("vol_id")
         if vol_id:
             run_id = data.get("analysis_run_id")
-            cancel_manager.cancel(vol_id, run_id)
+            cancel_manager.cancel(vol_id, run_id, data.get("attempt", 0))
             logger.info(
                 "⚠️ Cancel requested for %s analysis=%s",
                 vol_id,
@@ -248,7 +235,8 @@ def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
 def process_tile(tile_info):
     vol_id = tile_info['vol_id']
     analysis_run_id = tile_info.get("analysis_run_id")
-    stats_key = analysis_run_id or vol_id
+    analysis_attempt = int(tile_info.get("attempt", 0))
+    stats_key = (analysis_run_id or vol_id, analysis_attempt)
     total_tiles = int(tile_info.get('total_tiles', 0) or 0)
 
     tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
@@ -260,7 +248,11 @@ def process_tile(tile_info):
     offset_x = tile_info['offset_x']
     offset_y = tile_info['offset_y']
 
-    if cancel_manager.is_cancelled(vol_id, analysis_run_id):
+    if cancel_manager.is_cancelled(
+        vol_id,
+        analysis_run_id,
+        analysis_attempt,
+    ):
         if os.path.isdir(local_tile_dir):
             shutil.rmtree(local_tile_dir, ignore_errors=True)
         mission_stats.pop(stats_key, None)
@@ -330,9 +322,11 @@ def process_tile(tile_info):
             vol_id,
             analysis_run_id or "pipeline",
             tile_info["tile_index"],
+            analysis_attempt,
         ),
         correlation_id=tile_info.get("correlation_id"),
         causation_id=tile_info.get("event_id"),
+        attempt=analysis_attempt,
     )
     publish_json(producer, TOPIC_OUT, tile_result, key=str(vol_id))
 
@@ -349,6 +343,7 @@ def process_tile(tile_info):
         summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
         report_progress(vol_id, "DETECTING", 100, status="success", log=summary)
         mission_stats.pop(stats_key, None)
+        cancel_manager.clear(vol_id, analysis_run_id, analysis_attempt)
         if os.path.isdir(local_tile_dir):
             shutil.rmtree(local_tile_dir, ignore_errors=True)
         import gc

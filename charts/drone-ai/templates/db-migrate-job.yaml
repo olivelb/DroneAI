@@ -12,6 +12,10 @@ spec:
     spec:
       restartPolicy: OnFailure
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.global.imagePullSecrets }}
@@ -22,6 +26,7 @@ spec:
       - name: migrate
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
@@ -46,5 +51,11 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: drone-ai-storage
-              key: database-url
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}

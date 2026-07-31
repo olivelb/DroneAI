@@ -29,12 +29,18 @@ def get_producer():
     return _producer
 
 
-def build_cancel_event(vol_id: str) -> dict:
-    return make_event("control", {"vol_id": vol_id, "command": "cancel"})
+def build_cancel_event(vol_id: str, *, attempt: int = 0) -> dict:
+    return make_event(
+        "control",
+        {"vol_id": vol_id, "command": "cancel"},
+        correlation_id=vol_id,
+        attempt=attempt,
+    )
 
 
 def build_new_mission_event(payload: dict) -> dict:
     vol_id = payload["vol_id"]
+    attempt = int(payload.get("attempt", 0))
     return make_event(
         "mission",
         payload,
@@ -44,16 +50,24 @@ def build_new_mission_event(payload: dict) -> dict:
             time.time_ns(),
         ),
         correlation_id=vol_id,
+        attempt=attempt,
     )
 
 
 def build_resume_event(payload: dict) -> dict:
     vol_id = payload["vol_id"]
+    attempt = int(payload.get("attempt", 0))
     return make_event(
         "mission",
         payload,
-        event_id=deterministic_event_id("mission", vol_id, "resume"),
+        event_id=deterministic_event_id(
+            "mission",
+            vol_id,
+            "resume",
+            attempt,
+        ),
         correlation_id=vol_id,
+        attempt=attempt,
     )
 
 
@@ -68,11 +82,12 @@ def publish_outbox_event(
 def publish_cancel(
     vol_id: str,
     *,
+    attempt: int = 0,
     kafka_producer: Any | None = None,
 ) -> None:
     if kafka_producer is None:
         kafka_producer = get_producer()
-    event = build_cancel_event(vol_id)
+    event = build_cancel_event(vol_id, attempt=attempt)
     publish_json(kafka_producer, TOPIC_CONTROL, event, key=vol_id)
 
 

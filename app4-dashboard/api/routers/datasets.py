@@ -20,7 +20,7 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 
 from shared import storage
 
-from ..image_preview import render_preview
+from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
     require_admin,
     require_authenticated,
@@ -178,6 +178,11 @@ def preview_image(
         )
     except HTTPException:
         raise
+    except PreviewTooLargeError as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=str(error),
+        ) from error
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

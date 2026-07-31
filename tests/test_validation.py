@@ -142,6 +142,8 @@ def test_fast_alignment_dashboard_parameters_are_validated_and_merged():
                 "gps_pair_max_neighbors": 32,
             }
         )
+    with pytest.raises(ValueError, match="rtk_refinement_loss_scale must be >="):
+        validate_pipeline_overrides({"rtk_refinement_loss_scale": 0})
     with pytest.raises(ValueError, match="requires camera_model"):
         validate_pipeline_overrides(
             {
@@ -159,6 +161,8 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["feature_type"] == "SIFT"
     assert params["feature_max_image_size"] == "2400"
     assert params["feature_max_num_features"] == "4096"
+    assert params["sift_first_octave"] == "-1"
+    assert params["guided_matching"] is False
     assert params["matcher_type"] == "STANDARD"
     assert params["matching_strategy"] == "gps_pairs"
     assert params["camera_model"] == "SIMPLE_RADIAL"
@@ -166,7 +170,13 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["global_mapper_ba_iterations"] == "2"
     assert params["global_mapper_ceres_iterations"] == "50"
     assert params["global_mapper_skip_retriangulation"] is False
+    assert params["global_mapper_random_seed"] == "42"
+    assert params["global_mapper_ba_min_track_length"] == "3"
+    assert params["global_mapper_tri_complete_max_reproj_error"] == "15.0"
+    assert params["global_mapper_tri_merge_max_reproj_error"] == "15.0"
+    assert params["global_mapper_tri_min_angle"] == "1.0"
     assert params["mapping_timeout_seconds"] == "2400"
+    assert params["rtk_refinement_loss_scale"] == "7.82"
     assert params["mvs_max_image_size"] == "2400"
     assert params["gs_backend"] == "dronegs"
     assert params["gs_iterations"] == "15000"
@@ -187,7 +197,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["gs_checkpoint_every"] == "2000"
     assert params["gs_test_every"] == "8"
     assert params["gs_canary_min_psnr"] == "18.0"
-    assert params["gs_canary_min_ssim"] == "0.35"
+    assert params["gs_canary_min_ssim"] == "0.25"
 
 
 def test_dashboard_exposes_complete_dronegs_quality_configuration():

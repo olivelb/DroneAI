@@ -20,7 +20,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
-from gaussian_ortho.cuda_rasterizer import eval_sh_basis, eval_sh, quat_to_rotmat
+from gaussian_ortho.cuda_rasterizer import (
+    eval_sh_basis,
+    eval_sh,
+    quat_to_rotmat,
+    rasterize_ortho,
+)
 from gaussian_ortho.colmap_loader import (
     CameraInfo, PointCloud, apply_sim3_to_points, apply_sim3_to_camera,
 )
@@ -245,6 +250,26 @@ class TestOrthoRenderer:
         assert "height" in result
         assert result["rgb"].ndim == 3
 
+    def test_depth_is_normalized_by_accumulated_opacity(self):
+        """A translucent surface keeps its geometric depth, not alpha*depth."""
+        _rgb, depth = rasterize_ortho(
+            means_3d=cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32),
+            quats=cp.array([[1.0, 0.0, 0.0, 0.0]], dtype=cp.float32),
+            scales=cp.ones((1, 3), dtype=cp.float32),
+            opacities=cp.array([0.5], dtype=cp.float32),
+            sh_coeffs=cp.zeros((1, 1, 3), dtype=cp.float32),
+            sh_degree=0,
+            viewmat=cp.eye(4, dtype=cp.float32),
+            fx=1.0,
+            fy=1.0,
+            cx=0.5,
+            cy=0.5,
+            width=1,
+            height=1,
+        )
+
+        assert float(depth[0, 0]) == pytest.approx(10.0, abs=1e-5)
+
 
 # ---------------------------------------------------------------------------
 #  GeoTIFF writer
@@ -260,8 +285,11 @@ class TestGeoWriter:
             assert os.path.getsize(path) > 0
 
     def test_write_with_height(self):
+        import rasterio
+
         rgb = np.random.randint(0, 255, (50, 100, 3), dtype=np.uint8)
         height = np.random.randn(50, 100).astype(np.float32)
+        height[0, 0] = np.nan
         with tempfile.TemporaryDirectory() as tmpdir:
             rgb_path = os.path.join(tmpdir, "test.tif")
             h_path = os.path.join(tmpdir, "test.height.tif")
@@ -269,3 +297,6 @@ class TestGeoWriter:
                           height_map=height, height_output_path=h_path)
             assert os.path.exists(rgb_path)
             assert os.path.exists(h_path)
+            with rasterio.open(h_path) as dataset:
+                assert np.isnan(dataset.nodata)
+                assert np.isnan(dataset.read(1)[0, 0])

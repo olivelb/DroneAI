@@ -3,6 +3,7 @@ boto3
 confluent-kafka
 fastapi
 geoalchemy2
+numpy
 pillow
 psycopg2-binary
 pydantic

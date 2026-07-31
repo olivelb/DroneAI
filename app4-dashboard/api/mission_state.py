@@ -239,6 +239,8 @@ def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
 
     payload = dict(mission.params)
     payload["vol_id"] = vol_id
+    mission.retry_count = int(mission.retry_count or 0) + 1
+    payload["attempt"] = mission.retry_count
     mission.status = "processing"
     mission.current_step = "RESUMING"
     mission.error_message = None

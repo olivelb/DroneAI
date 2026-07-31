@@ -173,13 +173,15 @@ jobs:
           - image: droneai-api:ci
             dockerfile: app4-dashboard/api/Dockerfile
             command: >-
-              import importlib;
+              import importlib, os;
+              assert os.getuid() == 10001;
               app = importlib.import_module('app4-dashboard.api.main').app;
               assert len(app.openapi()['paths']) >= 25
           - image: drone-processing:ci
             dockerfile: app3-processing/Dockerfile
             command: >-
-              import sys;
+              import os, sys;
+              assert os.getuid() == 10001;
               sys.path.insert(0, '/app/app3-processing');
               import analysis_workflow, orthomosaic_tiler
     steps:
@@ -193,6 +195,8 @@ jobs:
       - name: Import runtime modules
         run: >-
           docker run --rm
+          --read-only
+          --tmpfs /tmp
           --entrypoint python3
           "${{ matrix.image }}"
           -c "${{ matrix.command }}"
@@ -211,3 +215,10 @@ jobs:
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-production.example.yaml
           > /tmp/drone-ai-production.yaml
+      - name: Verify production storage Secret references
+        run: |
+          if grep -Eq '^[[:space:]]+name: drone-ai-storage$' /tmp/drone-ai-production.yaml; then
+            echo "Production render still references the chart-managed storage Secret" >&2
+            exit 1
+          fi
+          grep -Eq '^[[:space:]]+name: drone-ai-storage-production$' /tmp/drone-ai-production.yaml

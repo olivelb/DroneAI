@@ -65,6 +65,11 @@ spec:
         app: ia
     spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.gpu.runtimeClassName }}
@@ -84,6 +89,11 @@ spec:
       {{- end }}
       initContainers:
       - name: wait-for-schema
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command: ["/bin/sh", "-c"]
@@ -93,12 +103,16 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: drone-ai-storage
-              key: database-url
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: ia
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.iaWorker.image "tag" .Values.iaWorker.tag) }}
@@ -119,9 +133,13 @@ spec:
         volumeMounts:
         - name: model-cache
           mountPath: /cache/huggingface
+        - name: tmp
+          mountPath: /tmp
         resources:
           {{- toYaml .Values.iaWorker.resources | nindent 10 }}
       volumes:
       - name: model-cache
         persistentVolumeClaim:
           claimName: model-cache-pvc
+      - name: tmp
+        emptyDir: {}

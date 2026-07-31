@@ -108,6 +108,9 @@ def test_mapping_commands_use_glomap_and_caspar_backends():
         image_path="images",
         output_path="sparse",
         gpu_index=0,
+        global_tri_complete_max_reproj_error=4.0,
+        global_tri_merge_max_reproj_error=4.0,
+        global_tri_min_angle=1.5,
     )
     caspar = build_mapping_command(
         "caspar",
@@ -121,6 +124,15 @@ def test_mapping_commands_use_glomap_and_caspar_backends():
     assert "--GlobalMapper.keep_max_num_tracks" in glomap
     assert glomap[glomap.index("--GlobalMapper.ba_num_iterations") + 1] == "1"
     assert glomap[glomap.index("--GlobalMapper.skip_retriangulation") + 1] == "1"
+    assert glomap[glomap.index("--GlobalMapper.random_seed") + 1] == "42"
+    assert glomap[glomap.index("--GlobalMapper.ba_min_track_length") + 1] == "3"
+    assert (
+        glomap[
+            glomap.index("--GlobalMapper.tri_complete_max_reproj_error") + 1
+        ]
+        == "4.0"
+    )
+    assert glomap[glomap.index("--GlobalMapper.tri_min_angle") + 1] == "1.5"
     assert caspar[1] == "mapper"
     assert caspar[caspar.index("--Mapper.ba_local_backend") + 1] == "CASPAR"
     assert "--Mapper.ba_use_gpu" not in caspar

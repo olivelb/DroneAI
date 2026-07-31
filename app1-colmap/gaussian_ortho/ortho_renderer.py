@@ -209,8 +209,10 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
 
     height_np = np.zeros((H, W), dtype=np.float32)
     if "depth" in result:
+        from .height_reference import depth_buffer_to_height
+
         depth = result["depth"]
-        height_np = z_cam_geo - depth.squeeze(0).get()
+        height_np = depth_buffer_to_height(depth.squeeze(0).get(), z_cam_geo)
 
     del result
     return img_np, height_np

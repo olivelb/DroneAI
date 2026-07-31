@@ -44,6 +44,12 @@ from alignment_support import (
 
 from shared.pipeline_params import PIPELINE_DEFAULTS
 from shared.rtk_refinement import inject_database_pose_priors
+from pipeline_support import (
+    build_colmap_cache_config,
+    changed_colmap_cache_parameters,
+    load_colmap_cache_config,
+    save_colmap_cache_config,
+)
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
@@ -67,6 +73,7 @@ GENERATED_PATHS = (
     "pair_graph.json",
     "rtk_prior_report.json",
     "model_analyzer.txt",
+    ".colmap_pipeline_config.json",
 )
 
 COMMAND_TIMINGS: list[dict[str, Any]] = []
@@ -143,6 +150,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(MODERN_DEFAULTS["feature_max_num_features"]),
     )
+    parser.add_argument(
+        "--sift-first-octave",
+        type=int,
+        default=int(MODERN_DEFAULTS["sift_first_octave"]),
+    )
+    parser.add_argument(
+        "--guided-matching",
+        action=argparse.BooleanOptionalAction,
+        default=bool(MODERN_DEFAULTS["guided_matching"]),
+    )
     parser.add_argument("--gps-max-neighbors", type=int, default=32)
     parser.add_argument("--gps-min-neighbors", type=int, default=8)
     parser.add_argument("--gps-temporal-neighbors", type=int, default=6)
@@ -163,6 +180,35 @@ def parse_args() -> argparse.Namespace:
         "--global-ceres-iterations",
         type=int,
         default=int(MODERN_DEFAULTS["global_mapper_ceres_iterations"]),
+    )
+    parser.add_argument(
+        "--global-random-seed",
+        type=int,
+        default=int(MODERN_DEFAULTS["global_mapper_random_seed"]),
+    )
+    parser.add_argument(
+        "--global-ba-min-track-length",
+        type=int,
+        default=int(MODERN_DEFAULTS["global_mapper_ba_min_track_length"]),
+    )
+    parser.add_argument(
+        "--global-tri-complete-max-reproj-error",
+        type=float,
+        default=float(
+            MODERN_DEFAULTS["global_mapper_tri_complete_max_reproj_error"]
+        ),
+    )
+    parser.add_argument(
+        "--global-tri-merge-max-reproj-error",
+        type=float,
+        default=float(
+            MODERN_DEFAULTS["global_mapper_tri_merge_max_reproj_error"]
+        ),
+    )
+    parser.add_argument(
+        "--global-tri-min-angle",
+        type=float,
+        default=float(MODERN_DEFAULTS["global_mapper_tri_min_angle"]),
     )
     parser.add_argument(
         "--global-retriangulation",
@@ -202,6 +248,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=25,
         help="Maximum Ceres iterations for the optional pose-prior global BA.",
+    )
+    parser.add_argument(
+        "--rtk-refinement-loss-scale",
+        type=float,
+        default=float(MODERN_DEFAULTS["rtk_refinement_loss_scale"]),
+        help="Cauchy loss scale for covariance-aware RTK position priors.",
     )
     parser.add_argument(
         "--projected-crs-mode",
@@ -468,7 +520,7 @@ def run_rtk_refinement(
         "--use_robust_loss_on_prior_position",
         "1",
         "--prior_position_loss_scale",
-        "7.82",
+        str(args.rtk_refinement_loss_scale),
     ]
     started_at = time.monotonic()
     try:
@@ -483,7 +535,7 @@ def run_rtk_refinement(
                 "iterations": args.rtk_refinement_iterations,
                 "timeout_seconds": args.rtk_refinement_timeout_seconds,
                 "robust_loss": "cauchy",
-                "robust_loss_scale": 7.82,
+                "robust_loss_scale": args.rtk_refinement_loss_scale,
                 "ba_backend": "CERES_GPU" if args.use_gpu else "CERES_CPU",
             }
         )
@@ -537,6 +589,58 @@ def run_sparse(  # noqa: C901
     selected_count = len(selected_records)
     model_dir = Path(os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models"))
 
+    local_recipe = dict(MODERN_DEFAULTS)
+    local_recipe.update(
+        {
+            "feature_type": args.feature_type,
+            "feature_max_image_size": str(args.feature_max_image_size),
+            "feature_max_num_features": str(args.feature_max_num_features),
+            "sift_first_octave": str(args.sift_first_octave),
+            "matcher_type": args.matcher_type,
+            "guided_matching": args.guided_matching,
+            "matching_strategy": args.matcher,
+            "camera_model": args.camera_model,
+            "alignment_engine": args.engine,
+            "gps_pair_max_neighbors": str(args.gps_max_neighbors),
+            "gps_pair_min_neighbors": str(args.gps_min_neighbors),
+            "gps_pair_temporal_neighbors": str(args.gps_temporal_neighbors),
+            "gps_pair_max_distance_m": str(args.gps_max_distance_m),
+            "global_mapper_max_tracks": str(args.global_max_tracks),
+            "global_mapper_ba_iterations": str(args.global_ba_iterations),
+            "global_mapper_ceres_iterations": str(args.global_ceres_iterations),
+            "global_mapper_skip_retriangulation": not args.global_retriangulation,
+            "global_mapper_random_seed": str(args.global_random_seed),
+            "global_mapper_ba_min_track_length": str(
+                args.global_ba_min_track_length
+            ),
+            "global_mapper_tri_complete_max_reproj_error": str(
+                args.global_tri_complete_max_reproj_error
+            ),
+            "global_mapper_tri_merge_max_reproj_error": str(
+                args.global_tri_merge_max_reproj_error
+            ),
+            "global_mapper_tri_min_angle": str(args.global_tri_min_angle),
+            "rtk_refinement_enabled": rtk_refinement_enabled(args),
+            "rtk_refinement_iterations": str(args.rtk_refinement_iterations),
+            "rtk_refinement_loss_scale": str(args.rtk_refinement_loss_scale),
+        }
+    )
+    requested_recipe = build_colmap_cache_config(local_recipe)
+    previous_recipe = load_colmap_cache_config(workspace)
+    has_cached_sparse = database_path.exists() or any(
+        sparse_root.glob("*/cameras.bin")
+    )
+    if has_cached_sparse and (
+        previous_recipe is None
+        or previous_recipe.get("fingerprint") != requested_recipe["fingerprint"]
+    ):
+        changed = changed_colmap_cache_parameters(previous_recipe, requested_recipe)
+        raise RuntimeError(
+            "local COLMAP parameters changed "
+            f"({', '.join(changed)}); rerun with --force or use a new workspace"
+        )
+    save_colmap_cache_config(workspace, requested_recipe)
+
     if database_image_count(database_path) != selected_count:
         feature_options = [
             "--FeatureExtraction.type",
@@ -567,6 +671,8 @@ def run_sparse(  # noqa: C901
             feature_options += [
                 "--SiftExtraction.max_num_features",
                 str(args.feature_max_num_features),
+                "--SiftExtraction.first_octave",
+                str(args.sift_first_octave),
             ]
         run_command(
             [
@@ -629,6 +735,8 @@ def run_sparse(  # noqa: C901
                 use_gpu,
                 "--FeatureMatching.gpu_index",
                 str(args.gpu_index),
+                "--FeatureMatching.guided_matching",
+                "1" if args.guided_matching else "0",
             ]
         else:
             matcher_command = [
@@ -642,6 +750,8 @@ def run_sparse(  # noqa: C901
                 use_gpu,
                 "--FeatureMatching.gpu_index",
                 str(args.gpu_index),
+                "--FeatureMatching.guided_matching",
+                "1" if args.guided_matching else "0",
             ]
             if args.matcher == "spatial":
                 matcher_command += [
@@ -692,6 +802,15 @@ def run_sparse(  # noqa: C901
             global_ba_iterations=args.global_ba_iterations,
             global_ceres_iterations=args.global_ceres_iterations,
             global_skip_retriangulation=not args.global_retriangulation,
+            global_random_seed=args.global_random_seed,
+            global_ba_min_track_length=args.global_ba_min_track_length,
+            global_tri_complete_max_reproj_error=(
+                args.global_tri_complete_max_reproj_error
+            ),
+            global_tri_merge_max_reproj_error=(
+                args.global_tri_merge_max_reproj_error
+            ),
+            global_tri_min_angle=args.global_tri_min_angle,
         )
         mapping_started_at = time.monotonic()
 
@@ -751,6 +870,15 @@ def run_sparse(  # noqa: C901
                 global_ba_iterations=args.global_ba_iterations,
                 global_ceres_iterations=args.global_ceres_iterations,
                 global_skip_retriangulation=not args.global_retriangulation,
+                global_random_seed=args.global_random_seed,
+                global_ba_min_track_length=args.global_ba_min_track_length,
+                global_tri_complete_max_reproj_error=(
+                    args.global_tri_complete_max_reproj_error
+                ),
+                global_tri_merge_max_reproj_error=(
+                    args.global_tri_merge_max_reproj_error
+                ),
+                global_tri_min_angle=args.global_tri_min_angle,
             )
             run_command(
                 fallback_command,
@@ -1042,6 +1170,10 @@ def _validate_arguments(args: argparse.Namespace) -> None:
             "rtk-refinement-iterations must be positive",
         ),
         (
+            args.rtk_refinement_loss_scale <= 0,
+            "rtk-refinement-loss-scale must be positive",
+        ),
+        (
             not 1 <= args.gps_min_neighbors <= args.gps_max_neighbors,
             "gps neighbor bounds are inconsistent",
         ),
@@ -1094,6 +1226,7 @@ def _alignment_configuration(args: argparse.Namespace) -> dict[str, Any]:
         "rtk_refinement": rtk_refinement_enabled(args),
         "rtk_refinement_timeout_seconds": args.rtk_refinement_timeout_seconds,
         "rtk_refinement_iterations": args.rtk_refinement_iterations,
+        "rtk_refinement_loss_scale": args.rtk_refinement_loss_scale,
     }
     rtk_report_path = args.workspace / "rtk_prior_report.json"
     if rtk_report_path.is_file():

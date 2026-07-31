@@ -143,6 +143,21 @@ def retry_analysis(
         run.phase = "recovery_queued"
         run.error_message = None
         run.heartbeat_at = datetime.now(timezone.utc)
+        (
+            session.query(AIAnalysisTile)
+            .filter(
+                AIAnalysisTile.analysis_run_id == run.id,
+                AIAnalysisTile.status != "completed",
+            )
+            .update(
+                {
+                    AIAnalysisTile.status: "queued",
+                    AIAnalysisTile.attempts: 0,
+                    AIAnalysisTile.last_error: None,
+                },
+                synchronize_session=False,
+            )
+        )
         event = make_event(
             "orthomosaic",
             _analysis_event(run),
@@ -186,6 +201,7 @@ def cancel_analysis(
                 "control", vol_id, "cancel", run_id, run.retry_count
             ),
             correlation_id=run_id,
+            attempt=run.retry_count,
         )
         enqueue_outbox(session, topic=TOPIC_CONTROL, event=event, key=vol_id)
         return serialize_run(run)

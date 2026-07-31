@@ -19,6 +19,10 @@ spec:
         app: dashboard-frontend
     spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.global.imagePullSecrets }}
@@ -29,6 +33,7 @@ spec:
       - name: frontend
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardFrontend.image "tag" .Values.dashboardFrontend.tag) }}
@@ -40,6 +45,11 @@ spec:
         {{- end }}
         ports:
         - containerPort: 3000
+        volumeMounts:
+        - name: next-cache
+          mountPath: /app/.next/cache
+        - name: tmp
+          mountPath: /tmp
         readinessProbe:
           httpGet:
             path: /
@@ -54,6 +64,11 @@ spec:
           periodSeconds: 30
         resources:
           {{- toYaml .Values.dashboardFrontend.resources | nindent 10 }}
+      volumes:
+      - name: next-cache
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service

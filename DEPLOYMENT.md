@@ -181,7 +181,46 @@ export HF_TOKEN=hf_...
 The token is passed at runtime and is never compiled into an image or printed
 by the deployment script.
 
+## Resource safety and container identities
+
+The API, migration job, processing worker, AI worker and frontend run with
+fixed non-root identities in Kubernetes. Their root filesystems are read-only;
+the chart mounts only the required temporary/cache directories as writable
+volumes. The COLMAP worker remains the explicit exception because existing
+GPU workspaces can be host paths with host-specific ownership. Migrate those
+directories deliberately before applying a non-root UID to COLMAP.
+
+AI campaign finalization rejects pathological aggregate payloads instead of
+allowing an unbounded in-memory allocation. Helm defaults are configurable at
+`processingWorker.analysis`; the corresponding environment variables are:
+
+```text
+ANALYSIS_MAX_TILE_RESULT_BYTES=10485760
+ANALYSIS_MAX_AGGREGATE_RESULT_BYTES=268435456
+ANALYSIS_MAX_RAW_DETECTIONS=100000
+ANALYSIS_MAX_FINAL_DETECTIONS=50000
+ANALYSIS_MAX_TILE_ATTEMPTS=5
+```
+
+Raster PNG responses retain their one-hour private browser cache and are
+protected by a per-process token bucket. Configure it through
+`dashboardApi.tiles` or `DRONEAI_TILE_RATE_LIMIT_PER_MINUTE`,
+`DRONEAI_TILE_RATE_LIMIT_BURST` and
+`DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS`. A multi-replica public deployment
+should enforce an additional shared limit at the ingress or API gateway.
+
 ## Operating the local mode
+
+Compose binds the dashboard, API and MinIO ports to `127.0.0.1` by default.
+This is intentional because local mode uses development credentials. To allow
+access from the LAN, opt in explicitly and configure matching public hosts,
+CORS and authentication:
+
+```bash
+export DRONEAI_BIND_ADDRESS=0.0.0.0
+export DRONEAI_ACCESS_HOST=<workstation-lan-address>
+./deploy.sh local
+```
 
 ```bash
 # Inspect containers and health
