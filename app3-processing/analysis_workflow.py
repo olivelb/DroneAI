@@ -199,38 +199,45 @@ class AnalysisWorkflow:
             },
         )()
 
+    def _read_tile_payload(self, tile_key, total_payload_bytes):
+        stream, content_length, _ = storage.get_object_stream(tile_key)
+        content_length = int(content_length or 0)
+        if content_length > self.maximum_tile_result_bytes:
+            stream.close()
+            raise RuntimeError(
+                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
+                f"limit: {tile_key}"
+            )
+        if (
+            total_payload_bytes + content_length
+            > self.maximum_aggregate_result_bytes
+        ):
+            stream.close()
+            raise RuntimeError(
+                "AI analysis exceeds the aggregate result size limit "
+                f"({self.maximum_aggregate_result_bytes} bytes)"
+            )
+        try:
+            raw_payload = stream.read(self.maximum_tile_result_bytes + 1)
+        finally:
+            stream.close()
+        if len(raw_payload) > self.maximum_tile_result_bytes:
+            raise RuntimeError(
+                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
+                f"limit: {tile_key}"
+            )
+        return raw_payload, content_length
+
     def _load_tile_payloads(self, tile_keys):
         detections = []
         total_payload_bytes = 0
         for tile_key in tile_keys:
             if not tile_key:
                 continue
-            stream, content_length, _ = storage.get_object_stream(tile_key)
-            content_length = int(content_length or 0)
-            if content_length > self.maximum_tile_result_bytes:
-                stream.close()
-                raise RuntimeError(
-                    f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
-                    f"limit: {tile_key}"
-                )
-            if (
-                total_payload_bytes + content_length
-                > self.maximum_aggregate_result_bytes
-            ):
-                stream.close()
-                raise RuntimeError(
-                    "AI analysis exceeds the aggregate result size limit "
-                    f"({self.maximum_aggregate_result_bytes} bytes)"
-                )
-            try:
-                raw_payload = stream.read(self.maximum_tile_result_bytes + 1)
-            finally:
-                stream.close()
-            if len(raw_payload) > self.maximum_tile_result_bytes:
-                raise RuntimeError(
-                    f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
-                    f"limit: {tile_key}"
-                )
+            raw_payload, _ = self._read_tile_payload(
+                tile_key,
+                total_payload_bytes,
+            )
             total_payload_bytes += len(raw_payload)
             if total_payload_bytes > self.maximum_aggregate_result_bytes:
                 raise RuntimeError(
