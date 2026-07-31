@@ -18,6 +18,32 @@ import pipeline_support
 
 
 class TestPipelineSupport(unittest.TestCase):
+    def test_discover_input_assets_supports_nested_vendor_dataset(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = os.path.join(tmp_dir, "images")
+            rtk_dir = os.path.join(tmp_dir, "RTK_Data")
+            os.makedirs(images_dir)
+            os.makedirs(rtk_dir)
+            image_path = os.path.join(images_dir, "MAX_0002.JPG")
+            sidecar_path = os.path.join(rtk_dir, "mission_Timestamp.MRK")
+            open(image_path, "wb").close()
+            open(sidecar_path, "wb").close()
+
+            images, sidecars = pipeline_support.discover_input_assets(tmp_dir)
+
+            self.assertEqual([str(path) for path in images], [image_path])
+            self.assertEqual([str(path) for path in sidecars], [sidecar_path])
+
+    def test_discover_input_assets_rejects_duplicate_flattened_names(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            for directory in ("first", "second"):
+                nested = os.path.join(tmp_dir, directory)
+                os.makedirs(nested)
+                open(os.path.join(nested, "image.jpg"), "wb").close()
+
+            with self.assertRaisesRegex(ValueError, "duplicate name"):
+                pipeline_support.discover_input_assets(tmp_dir)
+
     def test_projected_crs_policy_round_trip_is_recorded(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             geo_data_file = os.path.join(tmp_dir, "geo_data.txt")
@@ -91,7 +117,8 @@ class TestPipelineSupport(unittest.TestCase):
             12,
             log=(
                 "Extracted positions from 1/1 images "
-                "(0 DJI MRK, 1 EXIF). Using CRS EPSG:3946 (france-cc9)"
+                "(0 DJI MRK, 0 XMP RTK, 1 EXIF). "
+                "Using CRS EPSG:3946 (france-cc9)"
             ),
         )
 

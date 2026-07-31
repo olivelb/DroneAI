@@ -165,6 +165,77 @@ def test_dispatcher_marks_successful_publication(session_scope):
         assert record.locked_by is None
 
 
+def test_dispatcher_publishes_outside_the_claim_transaction(session_scope):
+    now = datetime(2026, 7, 23, tzinfo=timezone.utc)
+    with session_scope() as session:
+        enqueue_outbox(
+            session,
+            topic="vols-bruts",
+            event=make_event(
+                "mission",
+                {"vol_id": "mission-1"},
+                event_id="mission:outside-transaction",
+            ),
+            now=now,
+        )
+
+    active_sessions = 0
+
+    @contextmanager
+    def tracked_scope():
+        nonlocal active_sessions
+        with session_scope() as session:
+            active_sessions += 1
+            try:
+                yield session
+            finally:
+                active_sessions -= 1
+
+    def publish(*_args):
+        assert active_sessions == 0
+
+    result = dispatch_outbox_batch(
+        tracked_scope,
+        publisher=publish,
+        worker_id="test-worker",
+        now=now,
+    )
+
+    assert result["published"] == 1
+
+
+def test_dispatcher_reclaims_an_expired_publication_lease(session_scope):
+    now = datetime(2026, 7, 23, tzinfo=timezone.utc)
+    with session_scope() as session:
+        record = enqueue_outbox(
+            session,
+            topic="vols-bruts",
+            event=make_event(
+                "mission",
+                {"vol_id": "mission-1"},
+                event_id="mission:expired-lease",
+            ),
+            now=now,
+        )
+        record.status = "publishing"
+        record.locked_by = "crashed-worker"
+        record.locked_at = now - timedelta(minutes=10)
+
+    published = []
+    result = dispatch_outbox_batch(
+        session_scope,
+        publisher=lambda topic, payload, key: published.append(
+            (topic, payload["event_id"], key)
+        ),
+        worker_id="replacement-worker",
+        now=now,
+        lease_seconds=60,
+    )
+
+    assert result["published"] == 1
+    assert published[0][1] == "mission:expired-lease"
+
+
 def test_dispatcher_schedules_failed_publication_for_retry(session_scope):
     now = datetime(2026, 7, 23, tzinfo=timezone.utc)
     with session_scope() as session:

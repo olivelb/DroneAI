@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-import array
 import io
-import struct
 
+import numpy as np
 from PIL import Image
 
 # Reject decompression bombs before copying pixels into another full-size
 # buffer. Orthomosaics use the COG preview/tile endpoints instead.
-Image.MAX_IMAGE_PIXELS = 80_000_000
+MAX_PREVIEW_PIXELS = 20_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PREVIEW_PIXELS
+
+
+class PreviewTooLargeError(ValueError):
+    """Raised before decoding a preview that exceeds the pixel budget."""
 
 
 def _depth_color(value: float) -> tuple[int, int, int]:
@@ -27,40 +31,37 @@ def _depth_color(value: float) -> tuple[int, int, int]:
     return 255, int((1 - scale) * 255), 0
 
 
-def _pixels(image: Image.Image) -> list[float | int]:
-    if image.mode == "I;16":
-        data = image.tobytes()
-        return list(struct.unpack(f"<{len(data) // 2}H", data))
-    return list(image.getdata())
+def _normalized_luminance(image: Image.Image) -> Image.Image:
+    values = np.array(image, dtype=np.float32, copy=True)
+    if not values.size:
+        raise ValueError("image contains no pixels")
+    finite = np.isfinite(values)
+    if not finite.any():
+        raise ValueError("image contains no finite pixels")
+    low = float(values[finite].min())
+    high = float(values[finite].max())
+    values[~finite] = low
+    values -= low
+    if high != low:
+        values *= 255.0 / (high - low)
+    np.clip(values, 0, 255, out=values)
+    normalized = values.astype(np.uint8)
+    return Image.fromarray(normalized, mode="L")
 
 
 def _normalize_grayscale(image: Image.Image) -> Image.Image:
-    pixels = _pixels(image)
-    if not pixels:
-        raise ValueError("image contains no pixels")
-    low, high = min(pixels), max(pixels)
-    value_range = float(high - low) if high != low else 1.0
-    normalized = bytes(
-        max(0, min(255, int((value - low) / value_range * 255)))
-        for value in pixels
-    )
-    return Image.frombytes("L", image.size, normalized).convert("RGB")
+    return _normalized_luminance(image).convert("RGB")
 
 
 def _colorize_depth(image: Image.Image) -> Image.Image:
-    pixels = _pixels(image)
-    if not pixels:
-        raise ValueError("image contains no pixels")
-    low, high = min(pixels), max(pixels)
-    value_range = float(high - low) if high != low else 1.0
-    rgb = array.array("B", [0] * (len(pixels) * 3))
-    for index, value in enumerate(pixels):
-        red, green, blue = _depth_color((value - low) / value_range)
-        rgb[index * 3 : index * 3 + 3] = array.array(
-            "B",
-            (red, green, blue),
-        )
-    return Image.frombytes("RGB", image.size, bytes(rgb))
+    indexed = _normalized_luminance(image).convert("P")
+    palette = [
+        channel
+        for value in range(256)
+        for channel in _depth_color(value / 255.0)
+    ]
+    indexed.putpalette(palette)
+    return indexed.convert("RGB")
 
 
 def render_preview(
@@ -71,6 +72,11 @@ def render_preview(
 ) -> io.BytesIO:
     max_size = min(max(256, max_size), 8192)
     with Image.open(io.BytesIO(raw)) as source:
+        if source.width * source.height > MAX_PREVIEW_PIXELS:
+            raise PreviewTooLargeError(
+                "Preview exceeds the "
+                f"{MAX_PREVIEW_PIXELS:,}-pixel safety limit"
+            )
         image = source.copy()
 
     if colormap == "depth" and image.mode in {"I;16", "I", "F", "L"}:

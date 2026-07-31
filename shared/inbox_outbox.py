@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable
 
+from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
 
 from shared.database import InboxEvent, OutboxEvent
@@ -209,16 +210,38 @@ def dispatch_outbox_batch(
     batch_size: int = 50,
     retry_policy: RetryPolicy | None = None,
     now: datetime | None = None,
+    lease_seconds: int | None = None,
 ) -> dict[str, int]:
     policy = retry_policy or RetryPolicy.from_environment()
     current_time = now or utc_now()
+    configured_lease = (
+        lease_seconds
+        if lease_seconds is not None
+        else int(os.getenv("OUTBOX_LEASE_SECONDS", "300"))
+    )
+    lease_cutoff = current_time - timedelta(
+        seconds=max(30, configured_lease)
+    )
     results = {"selected": 0, "published": 0, "failed": 0, "dead": 0}
+    claimed: list[dict[str, Any]] = []
+
+    # Claim with a short transaction, then release all row locks before the
+    # potentially slow network publication. A crashed publisher is recovered
+    # after the lease expires.
     with session_scope() as session:
         records = (
             session.query(OutboxEvent)
             .filter(
-                OutboxEvent.status.in_(("pending", "failed")),
-                OutboxEvent.available_at <= current_time,
+                or_(
+                    and_(
+                        OutboxEvent.status.in_(("pending", "failed")),
+                        OutboxEvent.available_at <= current_time,
+                    ),
+                    and_(
+                        OutboxEvent.status == "publishing",
+                        OutboxEvent.locked_at <= lease_cutoff,
+                    ),
+                )
             )
             .order_by(OutboxEvent.created_at, OutboxEvent.id)
             .with_for_update(skip_locked=True)
@@ -230,18 +253,65 @@ def dispatch_outbox_batch(
             record.status = "publishing"
             record.locked_at = current_time
             record.locked_by = worker_id
-            if deliver_outbox_event(
-                record,
-                publisher=publisher,
-                retry_policy=policy,
-                now=current_time,
+            claimed.append(
+                {
+                    "id": record.id,
+                    "topic": record.topic,
+                    "payload": record.payload,
+                    "message_key": record.message_key,
+                }
+            )
+
+    for item in claimed:
+        publication_error: Exception | None = None
+        try:
+            publisher(
+                item["topic"],
+                item["payload"],
+                item["message_key"],
+            )
+        except Exception as error:
+            publication_error = error
+
+        with session_scope() as session:
+            record = (
+                session.query(OutboxEvent)
+                .filter(OutboxEvent.id == item["id"])
+                .with_for_update()
+                .one()
+            )
+            if (
+                record.status != "publishing"
+                or record.locked_by != worker_id
             ):
+                continue
+            if publication_error is None:
+                record.attempts += 1
+                record.status = "published"
+                record.published_at = current_time
+                record.last_error = None
+                record.locked_at = None
+                record.locked_by = None
                 results["published"] += 1
             else:
-                if record.status == "dead":
+                record.attempts += 1
+                record.last_error = (
+                    f"{type(publication_error).__name__}: "
+                    f"{publication_error}"
+                )
+                if record.attempts >= policy.max_attempts:
+                    record.status = "dead"
+                    record.dead_at = current_time
                     results["dead"] += 1
                 else:
+                    record.status = "failed"
+                    delay = policy.delay_before(record.attempts)
+                    record.available_at = current_time + timedelta(
+                        seconds=delay
+                    )
                     results["failed"] += 1
+                record.locked_at = None
+                record.locked_by = None
     return results
 
 

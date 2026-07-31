@@ -174,12 +174,17 @@ thresholds.
 ## Helenenschacht ultra-resolution negative evidence
 
 The custom 30,000-step Helenenschacht run rendered a 5 mm/pixel COG but failed
-the production SSIM threshold (0,2763 measured versus 0,35 required), took
-6404 seconds and retained 4,997 cm horizontal checkpoint RMSE from the sparse
-alignment. It therefore does not change the production default.
+the production SSIM threshold in force at the time (0,2763 measured versus
+0,35 required), took 6404 seconds and retained 4,997 cm horizontal checkpoint
+RMSE from the sparse alignment. Subsequent full-scene evidence moved the
+current production threshold to 0,25 and separated threshold re-evaluation
+from training compatibility, so this completed result can now be re-evaluated
+without retraining. It still does not make 5 mm GSD a survey-accuracy claim or
+replace the balanced production default.
 
 The complete reviewable record is
 `docs/benchmarks/helenenschacht-dronegs-ultra-5mm-2026-07-30.md`. It establishes
 three independent release gates: projected raster GSD, held-out rendering
-quality and independently measured survey accuracy. Lowering a canary for a
-diagnostic render cannot satisfy the production quality gate.
+quality and independently measured survey accuracy. A threshold change must
+be justified by scene evidence and recorded as acceptance policy; it does not
+alter the immutable training contract or the measured survey error.

@@ -117,6 +117,7 @@ class OrthomosaicTiler:
         vol_id,
         ortho_s3_key,
         analysis_run_id,
+        analysis_attempt,
         plan,
     ):
         with get_session() as session:
@@ -134,6 +135,8 @@ class OrthomosaicTiler:
                 )
                 if run.status == "cancelled":
                     return False
+                if int(run.retry_count or 0) != int(analysis_attempt):
+                    return False
                 now = datetime.now(timezone.utc)
                 run.status = "tiling"
                 run.phase = "tiling"
@@ -144,6 +147,8 @@ class OrthomosaicTiler:
                 run.error_message = None
                 return True
 
+            if int(mission.retry_count or 0) != int(analysis_attempt):
+                return False
             mission.ortho_s3_key = ortho_s3_key
             mission.total_tiles = plan["total_tiles"]
             mission.tiles_received = count_received_tiles(session, vol_id)
@@ -190,6 +195,7 @@ class OrthomosaicTiler:
     def _journal_analysis_tile(
         *,
         analysis_run_id,
+        analysis_attempt,
         tile_index,
         tile_s3_key,
         x,
@@ -204,6 +210,11 @@ class OrthomosaicTiler:
                 .with_for_update()
                 .one()
             )
+            if (
+                run.status == "cancelled"
+                or int(run.retry_count or 0) != int(analysis_attempt)
+            ):
+                return False
             receipt = (
                 session.query(AIAnalysisTile)
                 .filter(
@@ -223,6 +234,7 @@ class OrthomosaicTiler:
                         width=int(window.width),
                         height=int(window.height),
                         bounds_wgs84=bounds,
+                        attempts=1,
                     )
                 )
             else:
@@ -230,13 +242,16 @@ class OrthomosaicTiler:
                 receipt.bounds_wgs84 = bounds
                 if receipt.status != "completed":
                     receipt.status = "queued"
+                    receipt.attempts = max(1, receipt.attempts)
             run.heartbeat_at = datetime.now(timezone.utc)
+            return True
 
     @staticmethod
     def _tile_event(
         *,
         vol_id,
         analysis_run_id,
+        analysis_attempt,
         tile_index,
         tile_s3_key,
         x,
@@ -264,8 +279,10 @@ class OrthomosaicTiler:
                 vol_id,
                 analysis_run_id or "pipeline",
                 tile_index,
+                analysis_attempt,
             ),
             correlation_id=analysis_run_id or vol_id,
+            attempt=analysis_attempt,
         )
 
     def _create_tile(
@@ -276,6 +293,7 @@ class OrthomosaicTiler:
         tiles_s3_prefix,
         vol_id,
         analysis_run_id,
+        analysis_attempt,
         tile_index,
         x,
         y,
@@ -300,18 +318,21 @@ class OrthomosaicTiler:
             ) from error
 
         if analysis_run_id:
-            self._journal_analysis_tile(
+            if not self._journal_analysis_tile(
                 analysis_run_id=analysis_run_id,
+                analysis_attempt=analysis_attempt,
                 tile_index=tile_index,
                 tile_s3_key=tile_s3_key,
                 x=x,
                 y=y,
                 window=window,
                 bounds=self._wgs84_bounds(src, window),
-            )
+            ):
+                return False
         event = self._tile_event(
             vol_id=vol_id,
             analysis_run_id=analysis_run_id,
+            analysis_attempt=analysis_attempt,
             tile_index=tile_index,
             tile_s3_key=tile_s3_key,
             x=x,
@@ -324,9 +345,15 @@ class OrthomosaicTiler:
             key=f"{vol_id}_{tile_index}",
             value=json.dumps(event),
         )
+        return True
 
     @staticmethod
-    def _complete_database_state(vol_id, analysis_run_id, tile_count):
+    def _complete_database_state(
+        vol_id,
+        analysis_run_id,
+        analysis_attempt,
+        tile_count,
+    ):
         with get_session() as session:
             if analysis_run_id:
                 run = (
@@ -335,6 +362,8 @@ class OrthomosaicTiler:
                     .with_for_update()
                     .one()
                 )
+                if int(run.retry_count or 0) != int(analysis_attempt):
+                    return False
                 run.total_tiles = tile_count
                 run.status = "running"
                 run.phase = "detecting"
@@ -347,16 +376,25 @@ class OrthomosaicTiler:
                         / max(run.total_tiles, 1)
                     ),
                 )
-                return
+                return True
             mission = (
                 session.query(Mission)
                 .filter(Mission.vol_id == vol_id)
                 .with_for_update()
                 .one()
             )
+            if int(mission.retry_count or 0) != int(analysis_attempt):
+                return False
             mission.total_tiles = tile_count
+            return True
 
-    def _mark_failed(self, vol_id, analysis_run_id, error):
+    def _mark_failed(
+        self,
+        vol_id,
+        analysis_run_id,
+        analysis_attempt,
+        error,
+    ):
         self.logger.exception("Failed to tile orthomosaic for %s", vol_id)
         message = f"Failed to tile orthomosaic: {error}"
         self.report_progress(
@@ -375,7 +413,11 @@ class OrthomosaicTiler:
                 .with_for_update()
                 .first()
             )
-            if run is not None and run.status != "cancelled":
+            if (
+                run is not None
+                and run.status != "cancelled"
+                and int(run.retry_count or 0) == int(analysis_attempt)
+            ):
                 run.status = "failed"
                 run.phase = "tiling_failed"
                 run.error_message = str(error)
@@ -390,6 +432,7 @@ class OrthomosaicTiler:
         ortho_s3_key,
         vol_id,
         analysis_run_id,
+        analysis_attempt,
         tile_size,
         options,
     ):
@@ -399,6 +442,7 @@ class OrthomosaicTiler:
                 vol_id=vol_id,
                 ortho_s3_key=ortho_s3_key,
                 analysis_run_id=analysis_run_id,
+                analysis_attempt=analysis_attempt,
                 plan=plan,
             ):
                 return None
@@ -414,24 +458,30 @@ class OrthomosaicTiler:
             tile_count = 0
             coordinates = product(plan["y_starts"], plan["x_starts"])
             for tile_index, (y, x) in enumerate(coordinates):
-                if self.is_cancelled(vol_id, analysis_run_id):
+                if self.is_cancelled(
+                    vol_id,
+                    analysis_run_id,
+                    analysis_attempt,
+                ):
                     self.logger.info(
                         "Tiling cancelled mid-loop for %s",
                         vol_id,
                     )
                     return None
-                self._create_tile(
+                if not self._create_tile(
                     src=src,
                     tiles_dir=tiles_dir,
                     tiles_s3_prefix=tiles_s3_prefix,
                     vol_id=vol_id,
                     analysis_run_id=analysis_run_id,
+                    analysis_attempt=analysis_attempt,
                     tile_index=tile_index,
                     x=x,
                     y=y,
                     plan=plan,
                     options=options,
-                )
+                ):
+                    return None
                 tile_count = tile_index + 1
                 if tile_count % 10 == 0:
                     progress = int(
@@ -456,6 +506,7 @@ class OrthomosaicTiler:
         ai_model_variant="yolo26l",
         sam_prompt="car",
         analysis_run_id=None,
+        analysis_attempt=0,
     ):
         """Tile one orthomosaic and publish inference work."""
 
@@ -486,17 +537,21 @@ class OrthomosaicTiler:
                 ortho_s3_key=ortho_s3_key,
                 vol_id=vol_id,
                 analysis_run_id=analysis_run_id,
+                analysis_attempt=analysis_attempt,
                 tile_size=tile_size,
                 options=options,
             )
             if tile_count is None:
                 shutil.rmtree(workspace, ignore_errors=True)
                 return
-            self._complete_database_state(
+            if not self._complete_database_state(
                 vol_id,
                 analysis_run_id,
+                analysis_attempt,
                 tile_count,
-            )
+            ):
+                shutil.rmtree(workspace, ignore_errors=True)
+                return
             if self.producer.flush():
                 raise RuntimeError(
                     "one or more tile events were not delivered"
@@ -513,6 +568,11 @@ class OrthomosaicTiler:
                 vol_id,
             )
         except Exception as error:
-            self._mark_failed(vol_id, analysis_run_id, error)
+            self._mark_failed(
+                vol_id,
+                analysis_run_id,
+                analysis_attempt,
+                error,
+            )
             shutil.rmtree(workspace, ignore_errors=True)
             raise

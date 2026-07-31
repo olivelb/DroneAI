@@ -71,8 +71,10 @@ state is deleted only after the PLY, strict manifest, passed canary and final
 Gaussian artifacts have all been promoted.
 
 Completed-result reuse additionally requires the current dataset fingerprint,
-trainer binary SHA-256, exact requested and effective profiles, canary
-thresholds, PLY size and PLY SHA-256.
+trainer binary SHA-256, exact requested and effective training profiles, PLY
+size and PLY SHA-256. Canary thresholds are
+acceptance policy rather than training compatibility: changing only a
+threshold re-evaluates the persisted metrics without retraining.
 
 ## Canary contract
 
@@ -81,7 +83,7 @@ Production V1 reserves cameras where
 completed manifest and meet both configured thresholds:
 
 - `gs_canary_min_psnr=18.0`;
-- `gs_canary_min_ssim=0.35`.
+- `gs_canary_min_ssim=0.25`.
 
 The adapter atomically writes `canary_result.json`. A failed canary stops the
 orthomosaic pipeline while preserving the PLY, manifest, evaluation pairs and

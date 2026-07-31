@@ -1,7 +1,16 @@
 import importlib
+import json
 import sys
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from shared.database import AIAnalysisRun, AIAnalysisTile, Mission
 
 PROCESSING_DIR = (
     Path(__file__).resolve().parents[1] / "app3-processing"
@@ -11,6 +20,60 @@ if str(PROCESSING_DIR) not in sys.path:
 
 analysis_workflow = importlib.import_module("analysis_workflow")
 orthomosaic_tiler = importlib.import_module("orthomosaic_tiler")
+
+
+def _analysis_session_scope():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Mission.__table__.create(engine)
+    AIAnalysisRun.__table__.create(engine)
+    AIAnalysisTile.__table__.create(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def scope():
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    return scope
+
+
+def _workflow(**overrides):
+    return analysis_workflow.AnalysisWorkflow(
+        producer=SimpleNamespace(),
+        orthomosaic_topic="orthomosaic",
+        tile_topic="tiles",
+        dedupe=lambda records: records,
+        logger=SimpleNamespace(),
+        maximum_tile_attempts=overrides.get("maximum_tile_attempts", 3),
+        finalization_lease_seconds=120,
+        finalization_owner=overrides.get(
+            "finalization_owner",
+            "test-worker",
+        ),
+        maximum_tile_result_bytes=overrides.get(
+            "maximum_tile_result_bytes",
+            1024,
+        ),
+        maximum_aggregate_result_bytes=overrides.get(
+            "maximum_aggregate_result_bytes",
+            2048,
+        ),
+        maximum_raw_detections=overrides.get(
+            "maximum_raw_detections",
+            100,
+        ),
+        maximum_final_detections=overrides.get(
+            "maximum_final_detections",
+            50,
+        ),
+    )
 
 
 def test_analysis_json_publication_is_atomic_and_verified(
@@ -69,3 +132,210 @@ def test_tiling_plan_has_bounded_overlap_and_private_iteration_state(
     assert public["crs"] == "EPSG:2154"
     assert "x_starts" not in public
     assert "y_starts" not in public
+
+
+def test_analysis_workflow_has_a_bounded_tile_retry_budget():
+    workflow = _workflow()
+
+    assert workflow.maximum_tile_attempts == 3
+    assert workflow.finalization_lease_seconds == 120
+    assert workflow.finalization_owner == "test-worker"
+    assert workflow.maximum_tile_result_bytes == 1024
+    assert workflow.maximum_aggregate_result_bytes == 2048
+    assert workflow.maximum_raw_detections == 100
+    assert workflow.maximum_final_detections == 50
+
+
+def test_analysis_tile_payload_limits_are_enforced(monkeypatch):
+    import io
+
+    payload = json.dumps(
+        {"raw_detections": [{"class_name": "tree"}] * 3}
+    ).encode("utf-8")
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "get_object_stream",
+        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+    )
+
+    workflow = _workflow(maximum_raw_detections=2)
+    with pytest.raises(RuntimeError, match="raw detection safety limit"):
+        workflow._load_tile_payloads(["tile-result.json"])
+
+
+def test_analysis_tile_payload_size_is_bounded_before_read(monkeypatch):
+    import io
+
+    stream = io.BytesIO(b"{}")
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "get_object_stream",
+        lambda _key: (stream, 11, "application/json"),
+    )
+
+    workflow = _workflow(maximum_tile_result_bytes=10)
+    with pytest.raises(RuntimeError, match="tile result exceeds"):
+        workflow._load_tile_payloads(["oversized.json"])
+    assert stream.closed
+
+
+def test_analysis_aggregate_payload_size_is_bounded(monkeypatch):
+    import io
+
+    payload = b'{"raw_detections": []}'
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "get_object_stream",
+        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+    )
+
+    workflow = _workflow(
+        maximum_tile_result_bytes=len(payload),
+        maximum_aggregate_result_bytes=len(payload) + 1,
+    )
+    with pytest.raises(RuntimeError, match="aggregate result size limit"):
+        workflow._load_tile_payloads(["one.json", "two.json"])
+
+
+def test_active_finalization_lease_rejects_second_owner(monkeypatch):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            total_tiles=1,
+            status="finalizing",
+            finalization_owner="worker-a",
+            finalization_lease_until=(
+                datetime.now(timezone.utc) + timedelta(minutes=5)
+            ),
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="completed",
+                tile_s3_key="tile.jpg",
+                result_s3_key="result.json",
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+            )
+        )
+
+    assert _workflow(finalization_owner="worker-b")._claim_finalization(
+        "run-1"
+    ) is None
+
+
+def test_recovery_marks_exhausted_tiles_dead(monkeypatch):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            total_tiles=1,
+            status="running",
+            heartbeat_at=(
+                datetime.now(timezone.utc) - timedelta(minutes=20)
+            ),
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="queued",
+                tile_s3_key="tile.jpg",
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+                attempts=3,
+            )
+        )
+
+    ready, ortho_events, tile_events = _workflow()._plan_recovery()
+
+    assert ready == []
+    assert ortho_events == []
+    assert tile_events == []
+    with session_scope() as session:
+        run = session.query(AIAnalysisRun).one()
+        tile = session.query(AIAnalysisTile).one()
+        assert run.status == "failed"
+        assert run.phase == "tile_attempts_exhausted"
+        assert tile.status == "dead"
+
+
+def test_stale_analysis_attempt_cannot_stage_tile_result(monkeypatch):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            retry_count=2,
+            total_tiles=1,
+            status="running",
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="queued",
+                tile_s3_key="tile.jpg",
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+            )
+        )
+
+    workflow = _workflow()
+    monkeypatch.setattr(
+        workflow,
+        "_stage_tile_result",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale result was staged")
+        ),
+    )
+
+    workflow.process_detection(
+        {
+            "vol_id": "mission-1",
+            "analysis_run_id": "run-1",
+            "tile_index": 0,
+            "attempt": 1,
+            "detections": [],
+        }
+    )
+
+    with session_scope() as session:
+        assert session.query(AIAnalysisTile).one().status == "queued"

@@ -4,6 +4,7 @@ import io
 import json
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
@@ -65,6 +66,48 @@ def test_importing_the_api_does_not_create_a_kafka_producer():
     assert messaging._producer is None
 
 
+def test_resume_events_are_unique_per_mission_attempt():
+    first = messaging.build_resume_event(
+        {"vol_id": "mission-1", "attempt": 1}
+    )
+    second = messaging.build_resume_event(
+        {"vol_id": "mission-1", "attempt": 2}
+    )
+
+    assert first["attempt"] == 1
+    assert second["attempt"] == 2
+    assert first["event_id"] != second["event_id"]
+
+
+def test_prepare_resume_increments_mission_attempt():
+    mission = SimpleNamespace(
+        service_states={"COLMAP": {"status": "error"}},
+        params={"vol_id": "mission-1", "pipeline": "modern"},
+        retry_count=4,
+        status="error",
+        current_step="ERROR",
+        error_message="interrupted",
+        updated_at=None,
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return mission
+
+    session = SimpleNamespace(query=lambda _model: Query())
+    payload, response = mission_state.prepare_resume_in_session(
+        session,
+        "mission-1",
+    )
+
+    assert response["status"] == "success"
+    assert payload["attempt"] == 5
+    assert mission.retry_count == 5
+
+
 def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert mission_state.compute_overall_status({}) == "idle"
     assert (
@@ -113,6 +156,16 @@ def test_image_preview_conversion_is_framework_independent():
         assert rendered.format == "PNG"
         assert rendered.mode == "RGB"
         assert rendered.size == (16, 8)
+
+
+def test_image_preview_rejects_pixel_bomb_before_copy(monkeypatch):
+    source = Image.new("L", (11, 10))
+    raw = io.BytesIO()
+    source.save(raw, format="PNG")
+    monkeypatch.setattr(image_preview, "MAX_PREVIEW_PIXELS", 100)
+
+    with pytest.raises(image_preview.PreviewTooLargeError):
+        image_preview.render_preview(raw.getvalue())
 
 
 def test_messaging_gateway_adds_contract_metadata():

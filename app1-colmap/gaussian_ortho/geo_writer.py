@@ -86,5 +86,6 @@ def write_geotiff(output_path: str, rgb: np.ndarray,
             height=H, width=W, count=1,
             dtype='float32', crs=crs, transform=geo_transform,
             compress='lzw',
+            nodata=np.nan,
         ) as dst:
             dst.write(height_map.reshape(1, H, W))

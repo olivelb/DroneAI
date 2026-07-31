@@ -198,7 +198,14 @@ extern "C" __global__ void render_tiles(
     out_rgb[idx * 3]     = r_acc + T * bg_r;
     out_rgb[idx * 3 + 1] = g_acc + T * bg_g;
     out_rgb[idx * 3 + 2] = b_acc + T * bg_b;
-    out_depth[idx] = d_acc;
+    // d_acc uses the same front-to-back alpha weights as RGB.  Unlike RGB,
+    // depth has no background value to contribute, so leaving it
+    // premultiplied by accumulated opacity biases semi-transparent pixels
+    // toward zero and makes z_cam - depth several metres too high.
+    float accumulated_opacity = 1.0f - T;
+    out_depth[idx] = accumulated_opacity > 1.0e-6f
+        ? d_acc / accumulated_opacity
+        : 0.0f;
 }
 ''', 'render_tiles')
 

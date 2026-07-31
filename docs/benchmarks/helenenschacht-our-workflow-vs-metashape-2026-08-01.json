@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-01",
+  "dataset": "odm_data_helenenschacht",
+  "base_revision": "c8d0464",
+  "image_count": 176,
+  "checkpoint_count": 5,
+  "annotated_observation_count": 35,
+  "horizontal_crs": "EPSG:32633",
+  "gcp_policy": "verification-only",
+  "sparse": {
+    "our_workflow": {
+      "point_count": 58454,
+      "horizontal_rmse_m": 0.06320064460813397,
+      "vertical_rmse_m": 0.15740935437180084,
+      "euclidean_rmse_m": 0.169623189224324,
+      "mean_signed_vertical_error_m": 0.12071397578284859,
+      "centered_vertical_rmse_m": 0.10102396198152704
+    },
+    "metashape": {
+      "version": "2.3.1.22398",
+      "point_count": 192850,
+      "horizontal_rmse_m": 0.16006154887336296,
+      "vertical_rmse_m": 2.76737283466208,
+      "euclidean_rmse_m": 2.771997854518177,
+      "mean_signed_vertical_error_m": -2.7654264439061307,
+      "centered_vertical_rmse_m": 0.1037737412370129,
+      "gcp_markers_present": false,
+      "camera_references_enabled": true
+    }
+  },
+  "orthomosaics": {
+    "our_workflow_dronegs": {
+      "crs": "EPSG:32633",
+      "pixel_size_m": 0.005,
+      "horizontal_mean_m": 0.058198322260126764,
+      "horizontal_median_m": 0.0491172067948644,
+      "horizontal_rmse_m": 0.06241994873607491,
+      "horizontal_maximum_m": 0.102041658294757
+    },
+    "metashape": {
+      "crs": "EPSG:4326",
+      "approximate_pixel_size_m": 0.0122,
+      "horizontal_mean_m": 0.14207401074526127,
+      "horizontal_median_m": 0.12902514636141224,
+      "horizontal_rmse_m": 0.14877309365050398,
+      "horizontal_maximum_m": 0.21655022872050736
+    }
+  },
+  "dsm_our_workflow": {
+    "crs": "EPSG:32633",
+    "pixel_size_m": 0.005,
+    "successful_checkpoint_count": 5,
+    "vertical_mae_m": 0.10353774414061263,
+    "vertical_median_absolute_error_m": 0.10790112304687227,
+    "vertical_rmse_m": 0.1144357952746585,
+    "vertical_maximum_m": 0.16245776367185272
+  },
+  "checkpoints": [
+    {
+      "point_id": "1",
+      "surveyed_utm": [610852.3941993355, 5277733.590924213, 463.662],
+      "metashape_ortho_center_utm": [610852.3039038939, 5277733.722562559],
+      "metashape_ortho_error_xy_m": [-0.09029544156510383, 0.13163834623992443],
+      "metashape_ortho_horizontal_error_m": 0.15963057654540783,
+      "dronegs_ortho_center_utm": [610852.346699335, 5277733.61842421],
+      "dronegs_ortho_error_xy_m": [-0.0474999999860302, 0.0274999998509884],
+      "dronegs_ortho_horizontal_error_m": 0.0548862459135003,
+      "dronegs_center_uncertainty_m": 0.015
+    },
+    {
+      "point_id": "2",
+      "surveyed_utm": [610872.9578724512, 5277729.735570951, 461.732],
+      "metashape_ortho_center_utm": [610873.0156623565, 5277729.840588293],
+      "metashape_ortho_error_xy_m": [0.057789905345998704, 0.10501734167337418],
+      "metashape_ortho_horizontal_error_m": 0.11986790734822103,
+      "dronegs_ortho_center_utm": [610873.002872451, 5277729.72307095],
+      "dronegs_ortho_error_xy_m": [0.0450000000419095, -0.0125000001862645],
+      "dronegs_ortho_horizontal_error_m": 0.0467038543209066,
+      "dronegs_center_uncertainty_m": 0.03
+    },
+    {
+      "point_id": "3",
+      "surveyed_utm": [610858.079125889, 5277710.724677977, 461.463],
+      "metashape_ortho_center_utm": [610857.9940337363, 5277710.718781674],
+      "metashape_ortho_error_xy_m": [-0.08509215270169079, -0.005896302871406078],
+      "metashape_ortho_horizontal_error_m": 0.08529619475075788,
+      "dronegs_ortho_center_utm": [610858.031625889, 5277710.71217798],
+      "dronegs_ortho_error_xy_m": [-0.0474999999860302, -0.0125000001862645],
+      "dronegs_ortho_horizontal_error_m": 0.0491172067948644,
+      "dronegs_center_uncertainty_m": 0.025
+    },
+    {
+      "point_id": "4",
+      "surveyed_utm": [610862.4096326625, 5277691.951711656, 460.152],
+      "metashape_ortho_center_utm": [610862.41051344, 5277691.822689516],
+      "metashape_ortho_error_xy_m": [0.0008807774865999818, -0.12902214005589485],
+      "metashape_ortho_horizontal_error_m": 0.12902514636141224,
+      "dronegs_ortho_center_utm": [610862.417132662, 5277691.91421166],
+      "dronegs_ortho_error_xy_m": [0.00749999994877726, -0.037499999627471],
+      "dronegs_ortho_horizontal_error_m": 0.0382426459766055,
+      "dronegs_center_uncertainty_m": 0.015
+    },
+    {
+      "point_id": "5",
+      "surveyed_utm": [610843.8856560246, 5277696.165012538, 461.928],
+      "metashape_ortho_center_utm": [610843.7010356318, 5277696.051834307],
+      "metashape_ortho_error_xy_m": [-0.18462039274163544, -0.11317823175340891],
+      "metashape_ortho_horizontal_error_m": 0.21655022872050736,
+      "dronegs_ortho_center_utm": [610843.798156025, 5277696.11251254],
+      "dronegs_ortho_error_xy_m": [-0.0875000000232831, -0.0525000002235174],
+      "dronegs_ortho_horizontal_error_m": 0.102041658294757,
+      "dronegs_center_uncertainty_m": 0.015
+    }
+  ]
+}

@@ -32,6 +32,7 @@ from shared.config import (
     TOPIC_STATUS,
     TOPIC_TILE_DETECTIONS,
 )
+from shared.cancellation import AttemptCancellationRegistry
 from shared.database import (
     Detection as DBDetection,
 )
@@ -89,27 +90,7 @@ progress_publisher = make_progress_publisher(
     service_name="TILER",
 )
 
-class CancelManager:
-    def __init__(self):
-        self._cancelled_vols = set()
-        self._lock = threading.Lock()
-
-    def cancel(self, vol_id, run_id=None):
-        with self._lock:
-            self._cancelled_vols.add((vol_id, run_id))
-
-    def is_cancelled(self, vol_id, run_id=None):
-        with self._lock:
-            return (
-                (vol_id, None) in self._cancelled_vols
-                or (vol_id, run_id) in self._cancelled_vols
-            )
-
-    def clear(self, vol_id, run_id=None):
-        with self._lock:
-            self._cancelled_vols.discard((vol_id, run_id))
-
-cancel_manager = CancelManager()
+cancel_manager = AttemptCancellationRegistry()
 
 def control_consumer_thread():
     def handle_control(data):
@@ -118,7 +99,7 @@ def control_consumer_thread():
         vol_id = data.get("vol_id")
         if vol_id:
             run_id = data.get("analysis_run_id")
-            cancel_manager.cancel(vol_id, run_id)
+            cancel_manager.cancel(vol_id, run_id, data.get("attempt", 0))
             logger.info(
                 "⚠️ Cancel requested for %s analysis=%s",
                 vol_id,
@@ -327,7 +308,8 @@ def generate_vector_results(vol_id, mission):
 def _process_orthomosaic(data):
     vol_id = data["vol_id"]
     analysis_run_id = data.get("analysis_run_id")
-    cancel_manager.clear(vol_id, analysis_run_id)
+    analysis_attempt = int(data.get("attempt", 0))
+    cancel_manager.clear(vol_id, analysis_run_id, analysis_attempt)
     ortho_s3_key = data.get("ortho_s3_key") or data.get(
         "ortho_path",
         "",
@@ -342,6 +324,7 @@ def _process_orthomosaic(data):
         ai_model_variant=data.get("ai_model_variant", "yolo26l"),
         sam_prompt=data.get("sam_prompt", "car"),
         analysis_run_id=analysis_run_id,
+        analysis_attempt=analysis_attempt,
     )
 
 
@@ -405,7 +388,12 @@ def _store_detection(session, mission, detection, tile_index):
     )
 
 
-def _store_legacy_tile(vol_id, tile_index, detections):
+def _store_legacy_tile(
+    vol_id,
+    tile_index,
+    detections,
+    expected_attempt,
+):
     finalize_mission = None
     with get_session() as session:
         mission = (
@@ -416,6 +404,8 @@ def _store_legacy_tile(vol_id, tile_index, detections):
         )
         if mission is None:
             mission = get_or_create_mission(session, vol_id)
+        if int(mission.retry_count or 0) != int(expected_attempt):
+            return None
         receipt = (
             session.query(ProcessedTile)
             .filter(
@@ -476,6 +466,7 @@ def _process_legacy_detection(data):
             vol_id,
             tile_index,
             data.get("detections", []),
+            data.get("attempt", 0),
         )
     except Exception:
         logger.exception(
@@ -501,7 +492,11 @@ def process_pipeline_event(data, topic):
         return
     vol_id = data["vol_id"]
     analysis_run_id = data.get("analysis_run_id")
-    if cancel_manager.is_cancelled(vol_id, analysis_run_id):
+    if cancel_manager.is_cancelled(
+        vol_id,
+        analysis_run_id,
+        data.get("attempt", 0),
+    ):
         return
     if analysis_run_id:
         analysis_workflow.process_detection(data)

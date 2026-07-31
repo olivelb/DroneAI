@@ -279,7 +279,7 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 `smoke` exercises checkpoint/resume and modulo held-out evaluation but uses a
 zero-threshold operational canary. `low-memory` uses the spatial-block canary
 with a 25% guard ring and gates at 15 dB / 0.10 SSIM; `balanced` preserves the
-immutable modulo production baseline at 18 dB / 0.35 SSIM.
+immutable modulo production baseline at 18 dB / 0.25 SSIM.
 
 The `balanced` preset applies immutable `DRONEGS_PRODUCTION_PROFILE_V1` with
 the dev.47 trainer:

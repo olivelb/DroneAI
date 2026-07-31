@@ -11,7 +11,7 @@ import subprocess
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
@@ -286,6 +286,63 @@ class TrainingResult:
     effective_seed: int | None = None
 
 
+def evaluate_quality_canary(
+    manifest: Mapping[str, Any],
+    tuning: DroneGSTuning,
+) -> dict[str, Any]:
+    """Evaluate post-training metrics without changing training compatibility."""
+
+    metrics = manifest.get("metrics", {})
+    failures = []
+    if tuning.canary_min_psnr is not None and (
+        metrics.get("psnr") is None
+        or metrics["psnr"] < tuning.canary_min_psnr
+    ):
+        failures.append("psnr")
+    if tuning.canary_min_ssim is not None and (
+        metrics.get("ssim") is None
+        or metrics["ssim"] < tuning.canary_min_ssim
+    ):
+        failures.append("ssim")
+    return {
+        "contract_version": 1,
+        "backend": "dronegs",
+        "psnr": metrics.get("psnr"),
+        "ssim": metrics.get("ssim"),
+        "minimum_psnr": tuning.canary_min_psnr,
+        "minimum_ssim": tuning.canary_min_ssim,
+        "test_split": tuning.test_split,
+        "test_guard_percent": tuning.test_guard_percent,
+        "training_image_count": manifest.get("dataset", {}).get(
+            "training_image_count"
+        ),
+        "held_out_image_count": manifest.get("dataset", {}).get(
+            "held_out_image_count"
+        ),
+        "ignored_image_count": manifest.get("dataset", {}).get(
+            "ignored_image_count", 0
+        ),
+        "status": "passed" if not failures else "failed",
+        "failed_metrics": failures,
+    }
+
+
+def write_quality_canary(
+    output_path: str | Path,
+    canary: Mapping[str, Any],
+) -> Path:
+    """Persist a quality-gate decision independently of trainer artifacts."""
+
+    canary_path = Path(output_path) / "canary_result.json"
+    temporary_canary = canary_path.with_suffix(".json.tmp")
+    temporary_canary.write_text(
+        json.dumps(dict(canary), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_canary.replace(canary_path)
+    return canary_path
+
+
 class TrainingBackend(Protocol):
     """Trainer implementation boundary used by DroneAI."""
 
@@ -557,49 +614,12 @@ class DroneGSBackend:
             raise RuntimeError(
                 "DroneGS manifest does not describe the requested dataset/profile"
             )
-        metrics = manifest.get("metrics", {})
-        canary = {
-            "contract_version": 1,
-            "backend": "dronegs",
-            "psnr": metrics.get("psnr"),
-            "ssim": metrics.get("ssim"),
-            "minimum_psnr": request.dronegs.canary_min_psnr,
-            "minimum_ssim": request.dronegs.canary_min_ssim,
-            "test_split": request.dronegs.test_split,
-            "test_guard_percent": request.dronegs.test_guard_percent,
-            "training_image_count": manifest.get("dataset", {}).get(
-                "training_image_count"
-            ),
-            "held_out_image_count": manifest.get("dataset", {}).get(
-                "held_out_image_count"
-            ),
-            "ignored_image_count": manifest.get("dataset", {}).get(
-                "ignored_image_count", 0
-            ),
-        }
-        failures = []
-        if request.dronegs.canary_min_psnr is not None and (
-            metrics.get("psnr") is None
-            or metrics["psnr"] < request.dronegs.canary_min_psnr
-        ):
-            failures.append("psnr")
-        if request.dronegs.canary_min_ssim is not None and (
-            metrics.get("ssim") is None
-            or metrics["ssim"] < request.dronegs.canary_min_ssim
-        ):
-            failures.append("ssim")
-        canary["status"] = "passed" if not failures else "failed"
-        canary["failed_metrics"] = failures
-        canary_path = output_path / "canary_result.json"
-        temporary_canary = canary_path.with_suffix(".json.tmp")
-        temporary_canary.write_text(
-            json.dumps(canary, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary_canary.replace(canary_path)
-        if failures:
+        canary = evaluate_quality_canary(manifest, request.dronegs)
+        write_quality_canary(output_path, canary)
+        if canary["failed_metrics"]:
             raise RuntimeError(
-                "DroneGS quality canary failed: " + ", ".join(failures)
+                "DroneGS quality canary failed: "
+                + ", ".join(canary["failed_metrics"])
             )
         # A completed PLY + manifest + passed canary is the durable recovery
         # point. The much larger optimizer checkpoint is only useful while

@@ -162,6 +162,7 @@ class Mission(Base):
     # Progress tracking
     current_step = Column(String(64), nullable=True)
     progress = Column(Integer, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
 
     # Per-service state snapshots (e.g. {"COLMAP": {...}, "TILER": {...}, "IA": {...}})
     service_states = Column(PORTABLE_JSON, nullable=True, default=dict)
@@ -338,6 +339,8 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     progress = Column(Integer, nullable=False, default=0)
     retry_count = Column(Integer, nullable=False, default=0)
     error_message = Column(Text, nullable=True)
+    finalization_owner = Column(String(256), nullable=True)
+    finalization_lease_until = Column(DateTime(timezone=True), nullable=True)
 
     ortho_s3_key = Column(String(1024), nullable=False)
     result_s3_key = Column(String(1024), nullable=True)

@@ -46,13 +46,14 @@ class FakeProducer:
         return self.pending
 
 
-def tile_message():
+def tile_message(*, attempt=0):
     return FakeMessage(
         json.dumps(
             {
                 "vol_id": "mission-1",
                 "tile_index": 3,
                 "tile_s3_key": "missions/mission-1/tile_3.jpg",
+                "attempt": attempt,
             }
         ).encode()
     )
@@ -78,14 +79,14 @@ def test_process_message_retries_then_commits_after_success():
     sleeps = []
 
     def handler(event):
-        calls.append(event["attempt"])
+        calls.append((event["attempt"], event["delivery_attempt"]))
         if len(calls) < 3:
             raise RuntimeError("temporary")
 
     result = process_message(
         consumer=consumer,
         producer=producer,
-        message=tile_message(),
+        message=tile_message(attempt=7),
         consumer_group="ia-workers",
         expected_type="image_tile",
         dead_letter_topic="pipeline-dead-letter",
@@ -95,7 +96,7 @@ def test_process_message_retries_then_commits_after_success():
     )
 
     assert result is True
-    assert calls == [0, 1, 2]
+    assert calls == [(7, 0), (7, 1), (7, 2)]
     assert sleeps == [0.25, 0.5]
     assert len(consumer.commits) == 1
     assert producer.messages == []

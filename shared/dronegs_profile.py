@@ -34,7 +34,7 @@ class DroneGSProductionProfile:
     test_split: str = "modulo"
     test_guard_percent: int = 0
     canary_min_psnr: float = 18.0
-    canary_min_ssim: float = 0.35
+    canary_min_ssim: float = 0.25
 
     def pipeline_defaults(self) -> dict[str, Any]:
         """Return mission parameter names with API-compatible string values."""

@@ -3,12 +3,13 @@ import io
 import json
 
 import pytest
-from fastapi import HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.testclient import TestClient
 
 security = importlib.import_module("app4-dashboard.api.security")
 datasets = importlib.import_module("app4-dashboard.api.routers.datasets")
 api_main = importlib.import_module("app4-dashboard.api.main")
+rate_limit = importlib.import_module("app4-dashboard.api.rate_limit")
 
 
 def _keys():
@@ -185,3 +186,61 @@ def test_dataset_upload_quota_and_extension_are_enforced(monkeypatch):
             ]
         )
     assert quota_error.value.status_code == 413
+
+
+def test_tile_rate_limiter_refills_deterministically():
+    now = [100.0]
+    limiter = security.TokenBucketRateLimiter(
+        requests_per_minute=2,
+        burst=2,
+        clock=lambda: now[0],
+    )
+
+    assert limiter.consume("client") is None
+    assert limiter.consume("client") is None
+    assert limiter.consume("client") == pytest.approx(30.0)
+
+    now[0] += 30.0
+    assert limiter.consume("client") is None
+
+
+def test_tile_rate_limiter_bounds_tracked_clients():
+    limiter = security.TokenBucketRateLimiter(
+        requests_per_minute=1,
+        burst=1,
+        max_keys=2,
+        clock=lambda: 100.0,
+    )
+
+    assert limiter.consume("oldest") is None
+    assert limiter.consume("newer") is None
+    assert limiter.consume("third") is None
+
+    # "oldest" was evicted, so it receives a fresh bucket. Without eviction,
+    # the second request at the same instant would still be rate limited.
+    assert limiter.consume("oldest") is None
+    assert len(limiter._buckets) == 2
+
+
+def test_raster_tile_middleware_returns_retry_after(monkeypatch):
+    limiter = security.TokenBucketRateLimiter(
+        requests_per_minute=1,
+        burst=1,
+        clock=lambda: 100.0,
+    )
+    monkeypatch.setattr(security, "tile_rate_limiter", limiter)
+    application = FastAPI()
+    application.add_middleware(rate_limit.RasterTileRateLimitMiddleware)
+
+    @application.get("/maps/{mission}/tiles/{layer}/{z}/{x}/{y}.png")
+    def tile():
+        return {"status": "ok"}
+
+    client = TestClient(application)
+    first = client.get("/maps/mission-1/tiles/ortho/1/2/3.png")
+    second = client.get("/maps/mission-1/tiles/ortho/1/2/3.png")
+
+    assert first.status_code == 200
+    assert first.headers["X-RateLimit-Limit"] == "1"
+    assert second.status_code == 429
+    assert second.headers["Retry-After"] == "60"

@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-31",
+  "dataset": "helenenschacht",
+  "images": 176,
+  "camera": "Autel Robotics XT705",
+  "model_crs": "EPSG:32633",
+  "checkpoints": {
+    "count": 5,
+    "image_observations": 35,
+    "used_in_optimization": false,
+    "gcp_sha256": "df3390a82c5a638d54046c08d8a6afd2a029a482c026627a58a7afbb5eb61dd5"
+  },
+  "rtk": {
+    "source": "dji_mrk",
+    "records": 176,
+    "median_horizontal_std_m": 0.018825187252877056,
+    "median_vertical_std_m": 0.02623,
+    "mrk_sha256": "68968937066cb7e91a0f960bcd7b2c1946b47d0c6ddea4d3a6a92d521c532e84"
+  },
+  "protocol": {
+    "rtk_comparisons_share_exact_base_sparse_and_database": true,
+    "fresh_gpu_sift_repeat_excluded_from_causal_verdict": true,
+    "global_mapper_seed": 42,
+    "global_ba_passes": 2,
+    "global_ceres_iterations": 50,
+    "rtk_refinement_iterations": 25
+  },
+  "variants": {
+    "survey_2400_no_rtk": {
+      "feature_max_image_size": 2400,
+      "feature_max_num_features": 4096,
+      "sift_first_octave": -1,
+      "guided_matching": false,
+      "duration_s": 192.9,
+      "points3d": 24981,
+      "mean_reprojection_px": 1.3423,
+      "checkpoint_rmse_horizontal_m": 0.0508498,
+      "checkpoint_rmse_vertical_m": 0.266828,
+      "checkpoint_rmse_euclidean_m": 0.27163
+    },
+    "survey_2400_rtk_causal": {
+      "base_variant": "survey_2400_no_rtk",
+      "checkpoint_rmse_horizontal_m": 0.0499729,
+      "checkpoint_rmse_vertical_m": 0.241754,
+      "checkpoint_rmse_euclidean_m": 0.24686
+    },
+    "precision_3200_no_rtk": {
+      "feature_max_image_size": 3200,
+      "feature_max_num_features": 8192,
+      "sift_first_octave": 0,
+      "guided_matching": true,
+      "duration_s": 321.9,
+      "points3d": 56965,
+      "mean_reprojection_px": 1.35741,
+      "checkpoint_rmse_horizontal_m": 0.0550274,
+      "checkpoint_rmse_vertical_m": 0.230189,
+      "checkpoint_rmse_euclidean_m": 0.23667
+    },
+    "precision_3200_rtk_causal": {
+      "base_variant": "precision_3200_no_rtk",
+      "cauchy_loss_scale": 7.82,
+      "points3d": 58442,
+      "checkpoint_rmse_horizontal_m": 0.064301,
+      "checkpoint_rmse_vertical_m": 0.161254,
+      "checkpoint_rmse_euclidean_m": 0.173602
+    },
+    "precision_3200_rtk_causal_3d": {
+      "base_variant": "precision_3200_no_rtk",
+      "cauchy_loss_scale": 62.56,
+      "checkpoint_rmse_horizontal_m": 0.063201,
+      "checkpoint_rmse_vertical_m": 0.157409,
+      "checkpoint_rmse_euclidean_m": 0.169623
+    },
+    "precision_4096_no_rtk": {
+      "feature_max_image_size": 4096,
+      "feature_max_num_features": 8192,
+      "sift_first_octave": 0,
+      "guided_matching": true,
+      "duration_s": 349.6,
+      "points3d": 66552,
+      "mean_reprojection_px": 1.34649,
+      "checkpoint_rmse_horizontal_m": 0.0621449,
+      "checkpoint_rmse_vertical_m": 0.197747,
+      "checkpoint_rmse_euclidean_m": 0.20728
+    },
+    "precision_4096_rtk_causal": {
+      "base_variant": "precision_4096_no_rtk",
+      "checkpoint_rmse_horizontal_m": 0.0526001,
+      "checkpoint_rmse_vertical_m": 0.195327,
+      "checkpoint_rmse_euclidean_m": 0.20229
+    }
+  },
+  "ablations": {
+    "precision_4096_historical_retriangulation_thresholds": {
+      "complete_and_merge_max_reprojection_error_px": 15.0,
+      "minimum_angle_deg": 1.0,
+      "checkpoint_rmse_horizontal_m": 0.0622066,
+      "checkpoint_rmse_vertical_m": 0.194647,
+      "verdict": "no_material_gain_from_strict_4px_1.5deg_thresholds"
+    },
+    "survey_2400_guided_matching": {
+      "checkpoint_rmse_horizontal_m": 1.76024,
+      "checkpoint_rmse_vertical_m": 2.56135,
+      "verdict": "geometry_failure_keep_guided_matching_disabled"
+    },
+    "rtk_cauchy_loss_scale_62_56": {
+      "survey_2400_checkpoint_rmse_euclidean_m": 0.205162,
+      "precision_3200_checkpoint_rmse_euclidean_m": 0.169623,
+      "precision_4096_checkpoint_rmse_euclidean_m": 0.183854,
+      "verdict": "consistent_3d_gain_but_keep_specialized_due_xy_tradeoff_and_five_checkpoint_sample"
+    }
+  },
+  "recommendation": {
+    "planimetry": "survey_2400_rtk_causal",
+    "dsm_and_3d": "precision_3200_rtk_causal_3d",
+    "generalization_warning": "Only five checkpoints from one site; validate on each sensor and mission geometry."
+  },
+  "full_geotiff_precision_3200_rtk_causal_3d": {
+    "training_wall_seconds": 6161.381903,
+    "render_and_promotion_seconds": 228.11481142044067,
+    "total_gaussian_seconds": 6389.496714420441,
+    "trained_gaussians": 1853537,
+    "filtered_gaussians": 1812454,
+    "canary_psnr_db": 19.36538315,
+    "canary_ssim": 0.2929502428,
+    "width_px": 27534,
+    "height_px": 29932,
+    "gsd_m": 0.005,
+    "bounds": [
+      610794.1343694036,
+      5277632.853914278,
+      610931.8043694036,
+      5277782.513914278
+    ],
+    "dsm_vertical_mae_m": 0.10353774414061263,
+    "dsm_vertical_rmse_m": 0.1144357952746585,
+    "dsm_vertical_maximum_m": 0.16245776367185272
+  }
+}

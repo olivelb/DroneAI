@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import threading
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
+from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
 from hmac import new as hmac_new
@@ -27,6 +29,65 @@ LOCAL_SECRET_VALUES = {
 class Principal:
     subject: str
     role: str
+
+
+class TokenBucketRateLimiter:
+    """Small per-process limiter for expensive read endpoints."""
+
+    def __init__(
+        self,
+        *,
+        requests_per_minute: int,
+        burst: int,
+        max_keys: int = 10_000,
+        clock=time.monotonic,
+    ) -> None:
+        if requests_per_minute <= 0 or burst <= 0 or max_keys <= 0:
+            raise ValueError("rate limit, burst, and max_keys must be positive")
+        self.requests_per_minute = requests_per_minute
+        self.burst = burst
+        self.max_keys = max_keys
+        self._rate_per_second = requests_per_minute / 60.0
+        self._clock = clock
+        self._buckets: OrderedDict[str, tuple[float, float]] = OrderedDict()
+        self._lock = threading.Lock()
+
+    @classmethod
+    def from_environment(cls) -> "TokenBucketRateLimiter":
+        return cls(
+            requests_per_minute=int(
+                os.getenv("DRONEAI_TILE_RATE_LIMIT_PER_MINUTE", "600")
+            ),
+            burst=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_BURST", "120")),
+            max_keys=int(
+                os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000")
+            ),
+        )
+
+    def consume(self, key: str) -> float | None:
+        """Consume one token or return the retry delay in seconds."""
+
+        now = self._clock()
+        with self._lock:
+            previous = self._buckets.pop(key, None)
+            if previous is None:
+                if len(self._buckets) >= self.max_keys:
+                    self._buckets.popitem(last=False)
+                tokens, last_seen = float(self.burst), now
+            else:
+                tokens, last_seen = previous
+            tokens = min(
+                float(self.burst),
+                tokens + max(0.0, now - last_seen) * self._rate_per_second,
+            )
+            if tokens >= 1.0:
+                self._buckets[key] = (tokens - 1.0, now)
+                return None
+            self._buckets[key] = (tokens, now)
+            return (1.0 - tokens) / self._rate_per_second
+
+
+tile_rate_limiter = TokenBucketRateLimiter.from_environment()
 
 
 def deployment_environment() -> str:

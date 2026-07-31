@@ -60,6 +60,11 @@ spec:
     spec:
       serviceAccountName: dashboard-api-sa
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.global.imagePullSecrets }}
@@ -68,6 +73,11 @@ spec:
       {{- end }}
       initContainers:
       - name: wait-for-schema
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command: ["/bin/sh", "-c"]
@@ -77,12 +87,16 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: drone-ai-storage
-              key: database-url
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: api
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
@@ -115,12 +129,21 @@ spec:
           value: {{ .Values.dashboardApi.uploads.maxFileBytes | quote }}
         - name: DRONEAI_UPLOAD_MAX_BATCH_BYTES
           value: {{ .Values.dashboardApi.uploads.maxBatchBytes | quote }}
+        - name: DRONEAI_TILE_RATE_LIMIT_PER_MINUTE
+          value: {{ .Values.dashboardApi.tiles.rateLimitPerMinute | quote }}
+        - name: DRONEAI_TILE_RATE_LIMIT_BURST
+          value: {{ .Values.dashboardApi.tiles.rateLimitBurst | quote }}
+        - name: DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS
+          value: {{ .Values.dashboardApi.tiles.rateLimitMaxClients | quote }}
         - name: WORK_DRIVES
           value: {{ include "colmap.workDrivesJson" . | quote }}
         - name: WORK_DRIVE_DEFAULT
           value: {{ .Values.colmapWorker.workVolume.default | quote }}
         ports:
         - containerPort: 8000
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         readinessProbe:
           httpGet:
             path: /
@@ -135,6 +158,9 @@ spec:
           periodSeconds: 30
         resources:
           {{- toYaml .Values.dashboardApi.resources | nindent 10 }}
+      volumes:
+      - name: tmp
+        emptyDir: {}
 ---
 # --- Service ---
 apiVersion: v1

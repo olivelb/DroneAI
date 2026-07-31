@@ -19,7 +19,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from shared.dji_metadata import load_dji_mrk_overrides
+from shared.dji_metadata import (
+    clean_metadata_text,
+    load_position_overrides,
+    parse_aerial_xmp,
+)
 from shared.projected_crs import (
     PROJECTED_CRS_POLICIES,
     select_projected_crs,
@@ -137,16 +141,32 @@ def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
                 EXIF_FOCAL_LENGTH_TAG,
                 exif.get(EXIF_FOCAL_LENGTH_TAG),
             )
+            xmp = parse_aerial_xmp(path)
             record.update(
                 {
                     "readable": True,
                     "width": image.width,
                     "height": image.height,
                     "format": image.format,
-                    "camera_make": str(exif.get(EXIF_MAKE_TAG) or "").strip() or None,
-                    "camera_model": str(exif.get(EXIF_MODEL_TAG) or "").strip() or None,
-                    "captured_at": str(captured_at or "").strip() or None,
+                    "camera_make": (
+                        clean_metadata_text(exif.get(EXIF_MAKE_TAG))
+                        or xmp.get("camera_make")
+                    ),
+                    "camera_model": (
+                        clean_metadata_text(exif.get(EXIF_MODEL_TAG))
+                        or xmp.get("camera_model")
+                    ),
+                    "captured_at": (
+                        clean_metadata_text(captured_at)
+                        or xmp.get("captured_at")
+                    ),
                     "focal_length_mm": (_as_float(focal_length) if focal_length is not None else None),
+                    "calibrated_focal_length_px": xmp.get(
+                        "calibrated_focal_length_px"
+                    ),
+                    "flight_attitude_deg": xmp.get("flight_attitude_deg"),
+                    "gimbal_attitude_deg": xmp.get("gimbal_attitude_deg"),
+                    "rtk_flag": xmp.get("rtk_flag"),
                 }
             )
             gps = _named_gps_data(exif)
@@ -170,6 +190,8 @@ def inspect_image(path: Path, dataset: Path) -> dict[str, Any]:
                     "vertical_reference_source": "exif_gps_altitude",
                     "source": "exif",
                 }
+            if xmp.get("gps") is not None:
+                record["gps"] = xmp["gps"]
     except Exception as error:  # Pillow exposes several format-specific exceptions.
         record["error"] = f"{type(error).__name__}: {error}"
     return record
@@ -208,15 +230,38 @@ def build_report(
     )
 
     warnings = []
+    errors = []
     if len(positioned) != len(records):
         warnings.append(f"{len(records) - len(positioned)} image(s) have no usable GPS position.")
     if gps_quality != "rtk":
         warnings.append("GPS positions are not treated as centimetric ground truth; use robust alignment tolerances.")
-    elif horizontal_errors and median(horizontal_errors) > 0.2:
-        warnings.append(
-            "RTK was requested, but the median sidecar/EXIF horizontal "
-            f"uncertainty is {median(horizontal_errors):.3f} m."
+    else:
+        covariance_records = [
+            record
+            for record in positioned
+            if record["gps"].get("position_std_m")
+            and all(
+                record["gps"]["position_std_m"].get(axis) is not None
+                and float(record["gps"]["position_std_m"][axis]) > 0
+                for axis in ("east_m", "north_m", "vertical_m")
+            )
+        ]
+        covariance_coverage = (
+            len(covariance_records) / len(records)
+            if records
+            else 0.0
         )
+        if covariance_coverage < 0.95:
+            errors.append(
+                "RTK was requested, but only "
+                f"{len(covariance_records)}/{len(records)} images have a "
+                "complete positive ENU covariance (95% required)."
+            )
+        elif horizontal_errors and median(horizontal_errors) > 0.2:
+            warnings.append(
+                "RTK was requested, but the median MRK/XMP horizontal "
+                f"uncertainty is {median(horizontal_errors):.3f} m."
+            )
     if altitudes and max(altitudes) - min(altitudes) > 50:
         warnings.append("The EXIF altitude range exceeds 50 m; verify the vertical reference.")
     if positioned and vertical_references != {"ellipsoidal": len(positioned)}:
@@ -304,6 +349,7 @@ def build_report(
             "projected_crs_selection": (projected_crs_choice.to_dict() if projected_crs_choice else None),
         },
         "warnings": warnings,
+        "errors": errors,
         "images": records,
     }
 
@@ -350,10 +396,10 @@ def inspect_dataset(
     if not image_paths:
         raise ValueError(f"No supported images found in: {dataset}")
     records = [inspect_image(path, dataset) for path in image_paths]
-    mrk_overrides = load_dji_mrk_overrides(dataset, image_paths)
+    position_overrides = load_position_overrides(dataset, image_paths)
     for record in records:
-        if record["file"] in mrk_overrides:
-            record["gps"] = mrk_overrides[record["file"]]
+        if record["file"] in position_overrides:
+            record["gps"] = position_overrides[record["file"]]
     return records, build_report(
         records,
         dataset=dataset,
@@ -418,7 +464,9 @@ def main() -> int:
     print(f"Approximate flight path: {summary['approximate_flight_path_m']:.1f} m")
     for warning in report["warnings"]:
         print(f"WARNING: {warning}")
-    return 0
+    for error in report["errors"]:
+        print(f"ERROR: {error}")
+    return 2 if report["errors"] else 0
 
 
 if __name__ == "__main__":

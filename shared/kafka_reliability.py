@@ -139,7 +139,10 @@ def process_message(
     for attempts in range(1, policy.max_attempts + 1):
         try:
             event = decode_event(original_value, expected_type=expected_type)
-            event["attempt"] = attempts - 1
+            # ``attempt`` is part of the producer's domain contract (for
+            # example an AI campaign retry generation). Keep it stable across
+            # local handler retries and expose the delivery retry separately.
+            event["delivery_attempt"] = attempts - 1
             handler(event)
             commit_message(consumer, message)
             return True

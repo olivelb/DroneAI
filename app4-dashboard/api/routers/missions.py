@@ -65,10 +65,24 @@ def mission_state(vol_id: str):
 )
 async def cancel_mission(vol_id: str):
     with get_session() as session:
+        mission = (
+            session.query(Mission)
+            .filter(Mission.vol_id == vol_id)
+            .with_for_update()
+            .first()
+        )
+        if mission is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Mission {vol_id} not found",
+            )
         enqueue_outbox(
             session,
             topic=TOPIC_CONTROL,
-            event=build_cancel_event(vol_id),
+            event=build_cancel_event(
+                vol_id,
+                attempt=int(mission.retry_count or 0),
+            ),
             key=vol_id,
         )
     return {
@@ -82,10 +96,36 @@ async def cancel_mission(vol_id: str):
     dependencies=[Depends(require_admin)],
 )
 def delete_mission(vol_id: str):
+    mission_exists = False
+    with get_session() as session:
+        mission = (
+            session.query(Mission)
+            .filter(Mission.vol_id == vol_id)
+            .with_for_update()
+            .first()
+        )
+        if mission is not None:
+            mission_exists = True
+            mission.status = "deleting"
+            mission.current_step = "DELETING"
+            mission.error_message = None
+
     deleted_count = 0
     try:
         deleted_count = storage.delete_prefix(f"missions/{vol_id}/")
     except Exception as error:
+        if mission_exists:
+            with get_session() as session:
+                mission = (
+                    session.query(Mission)
+                    .filter(Mission.vol_id == vol_id)
+                    .with_for_update()
+                    .first()
+                )
+                if mission is not None:
+                    mission.status = "deletion_failed"
+                    mission.current_step = "DELETION_FAILED"
+                    mission.error_message = f"S3 delete failed: {error}"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"S3 delete failed: {error}",
@@ -112,7 +152,7 @@ def delete_mission(vol_id: str):
         "status": "success",
         "message": f"Mission {vol_id} deleted.",
         "s3_objects_deleted": deleted_count,
-        "db_deleted": mission is not None,
+        "db_deleted": mission_exists,
     }
 
 

@@ -116,10 +116,18 @@ def test_default_cli_profile_matches_planimetric_survey_defaults(monkeypatch):
     assert args.camera_model == "SIMPLE_RADIAL"
     assert args.feature_max_image_size == 2400
     assert args.feature_max_num_features == 4096
+    assert args.sift_first_octave == -1
+    assert args.guided_matching is False
     assert args.global_ba_iterations == 2
     assert args.global_ceres_iterations == 50
+    assert args.global_random_seed == 42
+    assert args.global_ba_min_track_length == 3
+    assert args.global_tri_complete_max_reproj_error == 15.0
+    assert args.global_tri_merge_max_reproj_error == 15.0
+    assert args.global_tri_min_angle == 1.0
     assert args.global_retriangulation is True
     assert args.mapping_timeout_seconds == 2400
+    assert args.rtk_refinement_loss_scale == 7.82
 
 
 def test_select_records_supports_contiguous_and_uniform_strategies():

@@ -39,6 +39,14 @@ spec:
       {{- end }}
       initContainers:
       - name: wait-for-schema
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 10001
+          runAsGroup: 10001
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         command: ["/bin/sh", "-c"]
@@ -48,8 +56,11 @@ spec:
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef:
-              name: drone-ai-storage
-              key: database-url
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
       containers:
       - name: colmap
         securityContext:
@@ -78,6 +89,8 @@ spec:
         resources:
           {{- toYaml .Values.colmapWorker.resources | nindent 10 }}
       volumes:
+      - name: tmp
+        emptyDir: {}
       {{- range $drive := .Values.colmapWorker.workVolume.drives }}
       {{- if or (eq (default "" $drive.type) "emptyDir") (not (empty $drive.hostPath)) (not (empty $drive.existingClaim)) }}
       - name: work-{{ .name }}

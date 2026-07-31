@@ -54,7 +54,9 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "feature_max_image_size": "4000",
         "feature_num_threads": "-1",
         "feature_max_num_features": "8192",
+        "sift_first_octave": "-1",
         "matcher_type": "STANDARD",
+        "guided_matching": False,
         "matching_strategy": "spatial",
         "camera_model": "OPENCV",
         "alignment_engine": "ceres",
@@ -69,6 +71,11 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "global_mapper_ba_iterations": "2",
         "global_mapper_skip_retriangulation": False,
         "global_mapper_ceres_iterations": "50",
+        "global_mapper_random_seed": "42",
+        "global_mapper_ba_min_track_length": "3",
+        "global_mapper_tri_complete_max_reproj_error": "15.0",
+        "global_mapper_tri_merge_max_reproj_error": "15.0",
+        "global_mapper_tri_min_angle": "1.0",
         "minimum_registration_ratio": "0.97",
         "maximum_mean_reprojection_error_px": "2.0",
         "minimum_median_track_length": "3.0",
@@ -76,6 +83,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rtk_refinement_enabled": False,
         "rtk_refinement_timeout_seconds": "900",
         "rtk_refinement_iterations": "25",
+        "rtk_refinement_loss_scale": "7.82",
         "alignment_max_error": "10.0",
         "mvs_max_image_size": "4000",
         "ortho_mesh_resolution": "0.02",
@@ -97,13 +105,15 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "feature_max_image_size": "2400",
         "feature_num_threads": "-1",
         "feature_max_num_features": "4096",
+        "sift_first_octave": "-1",
         "matcher_type": "STANDARD",
+        "guided_matching": False,
         "matching_strategy": "gps_pairs",
         "camera_model": "SIMPLE_RADIAL",
         "alignment_engine": "auto",
         "mapper_cmd": "global_mapper",
         "use_view_graph_calibrator": True,
-        "read_orientation": True,
+        "read_orientation": False,
         "gps_pair_max_neighbors": "32",
         "gps_pair_min_neighbors": "8",
         "gps_pair_temporal_neighbors": "6",
@@ -112,6 +122,11 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "global_mapper_ba_iterations": "2",
         "global_mapper_skip_retriangulation": False,
         "global_mapper_ceres_iterations": "50",
+        "global_mapper_random_seed": "42",
+        "global_mapper_ba_min_track_length": "3",
+        "global_mapper_tri_complete_max_reproj_error": "15.0",
+        "global_mapper_tri_merge_max_reproj_error": "15.0",
+        "global_mapper_tri_min_angle": "1.0",
         "minimum_registration_ratio": "0.97",
         "maximum_mean_reprojection_error_px": "2.0",
         "minimum_median_track_length": "3.0",
@@ -119,6 +134,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rtk_refinement_enabled": True,
         "rtk_refinement_timeout_seconds": "900",
         "rtk_refinement_iterations": "25",
+        "rtk_refinement_loss_scale": "7.82",
         "alignment_max_error": "10.0",
         "mvs_max_image_size": "2400",
         "ortho_mesh_resolution": "0.02",
@@ -159,8 +175,9 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "feature_max_image_size": {
         "label": "Feature Resolution (maximum side, px)",
         "description": (
-            "2400 px is the default planimetric survey profile validated on "
-            "Helenenschacht; use 1600 px for the explicit fast profile."
+            "2400 px is the Helenenschacht planimetric profile (one Autel "
+            "dataset, five checkpoints); use 1600 px as the conservative "
+            "starting point for unknown sensors or vertical accuracy."
         ),
         "type": "int",
         "group": "Features",
@@ -189,12 +206,33 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "max": 65536,
         "step": 256,
     },
+    "sift_first_octave": {
+        "label": "SIFT First Octave",
+        "description": (
+            "0 starts at native resolution; -1 upsamples the image and is much "
+            "more expensive. The RTK 3D profile uses 0 with a 3200 px cap."
+        ),
+        "type": "int",
+        "group": "Features",
+        "min": -1,
+        "max": 2,
+        "step": 1,
+    },
     "matcher_type": {
         "label": "Matcher",
         "description": "STANDARD uses the fast brute-force CUDA matcher; LightGlue is substantially slower on an 8 GB GPU.",
         "type": "select",
         "group": "Matching",
         "options": MATCHER_TYPES,
+    },
+    "guided_matching": {
+        "label": "Guided Matching",
+        "description": (
+            "Runs a second geometry-guided correspondence pass. It increases "
+            "matching time but can recover useful observations for precise surveys."
+        ),
+        "type": "bool",
+        "group": "Matching",
     },
     "matching_strategy": {
         "label": "Pair Selection",
@@ -225,8 +263,11 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "group": "Mapping",
     },
     "read_orientation": {
-        "label": "Read DJI Orientation Priors",
-        "description": "Uses available yaw, pitch, and roll metadata as orientation priors.",
+        "label": "Orientation Priors (reserved)",
+        "description": (
+            "Reserved for a validated camera-frame IMU/gimbal conversion. It is "
+            "currently not consumed by the reconstruction pipeline."
+        ),
         "type": "bool",
         "group": "Mapping",
     },
@@ -278,8 +319,8 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "global_mapper_ba_iterations": {
         "label": "Global BA Passes",
         "description": (
-            "Two passes are the validated planimetric default; one pass is "
-            "reserved for the explicit fast profile."
+            "Two passes belong to the Helenenschacht planimetric profile; "
+            "one pass is the conservative fast profile."
         ),
         "type": "int",
         "group": "Mapping",
@@ -290,8 +331,9 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "global_mapper_skip_retriangulation": {
         "label": "Skip Final Retriangulation",
         "description": (
-            "Disabled by default so the final survey reconstruction is "
-            "retriangulated; enable it only for the faster profile."
+            "Final retriangulation improved Helenenschacht planimetry but "
+            "degraded its vertical checkpoints; enable only after validating "
+            "the project accuracy contract."
         ),
         "type": "bool",
         "group": "Mapping",
@@ -304,6 +346,51 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 10,
         "max": 200,
         "step": 10,
+    },
+    "global_mapper_random_seed": {
+        "label": "GLOMAP Random Seed",
+        "description": "Fixes stochastic mapping choices for reproducible A/B benchmarks.",
+        "type": "int",
+        "group": "Mapping",
+        "min": 0,
+        "max": 2147483647,
+        "step": 1,
+    },
+    "global_mapper_ba_min_track_length": {
+        "label": "BA Minimum Track Length",
+        "description": "Only tracks observed in at least this many images enter global BA.",
+        "type": "int",
+        "group": "Mapping",
+        "min": 2,
+        "max": 20,
+        "step": 1,
+    },
+    "global_mapper_tri_complete_max_reproj_error": {
+        "label": "Retriangulation Completion Error (px)",
+        "description": "Maximum reprojection error when completing existing tracks.",
+        "type": "float",
+        "group": "Mapping",
+        "min": 0.5,
+        "max": 20,
+        "step": 0.5,
+    },
+    "global_mapper_tri_merge_max_reproj_error": {
+        "label": "Retriangulation Merge Error (px)",
+        "description": "Maximum reprojection error when merging tracks during retriangulation.",
+        "type": "float",
+        "group": "Mapping",
+        "min": 0.5,
+        "max": 20,
+        "step": 0.5,
+    },
+    "global_mapper_tri_min_angle": {
+        "label": "Minimum Triangulation Angle (deg)",
+        "description": "Rejects weak-depth geometry below this triangulation angle.",
+        "type": "float",
+        "group": "Mapping",
+        "min": 0.1,
+        "max": 10,
+        "step": 0.1,
     },
     "minimum_registration_ratio": {
         "label": "Minimum Registration Ratio",
@@ -377,6 +464,19 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 1,
         "max": 100,
         "step": 1,
+    },
+    "rtk_refinement_loss_scale": {
+        "label": "RTK Cauchy loss scale",
+        "description": (
+            "7.82 keeps strong outlier rejection for general use. The validated "
+            "Helenenschacht 3D preset uses 62.56 to weight complete corrected RTK "
+            "priors more strongly; keep 7.82 for planimetry or unknown datasets."
+        ),
+        "type": "float",
+        "group": "Georeferencing",
+        "min": 0.1,
+        "max": 1000,
+        "step": 0.1,
     },
     "alignment_max_error": {
         "label": "GPS Alignment Max Error (m)",

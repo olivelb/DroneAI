@@ -7,7 +7,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Iterable
 
-from shared.dji_metadata import load_dji_mrk_overrides
+from shared.dji_metadata import load_position_overrides
 
 
 def load_rtk_records(image_dir: str | Path) -> list[dict[str, Any]]:
@@ -17,7 +17,7 @@ def load_rtk_records(image_dir: str | Path) -> list[dict[str, Any]]:
         for path in root.iterdir()
         if path.suffix.lower() in {".jpg", ".jpeg", ".png"}
     )
-    overrides = load_dji_mrk_overrides(root, image_paths)
+    overrides = load_position_overrides(root, image_paths)
     return [
         {"file": path.name, "gps": overrides[path.name]}
         for path in image_paths
@@ -40,7 +40,7 @@ def inject_database_pose_priors(
         position_std = gps.get("position_std_m") if gps else None
         if (
             not gps
-            or gps.get("source") != "dji_mrk"
+            or gps.get("source") not in {"dji_mrk", "xmp_rtk"}
             or gps.get("altitude_m") is None
             or not position_std
         ):
@@ -56,7 +56,7 @@ def inject_database_pose_priors(
 
     if len(precise_records) < 3:
         raise RuntimeError(
-            "RTK refinement requires at least three DJI MRK records with "
+            "RTK refinement requires at least three MRK/XMP RTK records with "
             "positive east, north, and vertical standard deviations"
         )
 
@@ -129,7 +129,12 @@ def inject_database_pose_priors(
 
     return {
         "schema_version": 1,
-        "source": "dji_mrk",
+        "sources": sorted(
+            {
+                str(gps.get("source"))
+                for gps in precise_records.values()
+            }
+        ),
         "coordinate_system": "WGS84",
         "covariance_coordinate_system": "local_cartesian_enu",
         "available_records": len(precise_records),

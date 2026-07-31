@@ -127,6 +127,7 @@ class TestWorkerSupport(unittest.TestCase):
                 "ai_confidence": 0.8,
                 "sam_prompt": "vehicle",
                 "tile_size": 2048,
+                "attempt": 3,
             },
             lambda value: "sam3" if value == "sam-3" else value,
         )
@@ -142,6 +143,7 @@ class TestWorkerSupport(unittest.TestCase):
         self.assertEqual(payload["ai_model_variant"], "yolo26l")
         self.assertEqual(payload["sam_prompt"], "vehicle")
         self.assertEqual(payload["tile_size"], 2048)
+        self.assertEqual(payload["attempt"], 3)
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["event_type"], "orthomosaic")
         self.assertEqual(payload["correlation_id"], "vol-3")
@@ -208,12 +210,20 @@ class TestPipelineSupport(unittest.TestCase):
         self.assertEqual(legacy["mvs_max_image_size"], "4000")
         self.assertEqual(modern["feature_max_image_size"], "2400")
         self.assertEqual(modern["feature_max_num_features"], "4096")
+        self.assertEqual(modern["sift_first_octave"], "-1")
+        self.assertFalse(modern["guided_matching"])
         self.assertEqual(modern["global_mapper_ba_iterations"], "2")
         self.assertFalse(modern["global_mapper_skip_retriangulation"])
+        self.assertEqual(modern["global_mapper_random_seed"], "42")
+        self.assertEqual(
+            modern["global_mapper_tri_complete_max_reproj_error"],
+            "15.0",
+        )
         self.assertEqual(modern["mvs_max_image_size"], "2400")
         self.assertFalse(legacy["rtk_refinement_enabled"])
         self.assertTrue(modern["rtk_refinement_enabled"])
         self.assertEqual(modern["rtk_refinement_iterations"], "25")
+        self.assertEqual(modern["rtk_refinement_loss_scale"], "7.82")
 
     def test_plan_clean_image_copy_skips_when_manifest_matches_hash(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -251,6 +261,47 @@ class TestPipelineSupport(unittest.TestCase):
             pipeline_support.save_copy_manifest(tmp_dir, manifest)
 
             self.assertEqual(pipeline_support.load_copy_manifest(tmp_dir), manifest)
+
+    def test_colmap_cache_fingerprint_tracks_reconstruction_parameters(self):
+        baseline_params = pipeline_support.merge_pipeline_params("modern", {})
+        baseline = pipeline_support.build_colmap_cache_config(baseline_params)
+        changed = pipeline_support.build_colmap_cache_config(
+            {
+                **baseline_params,
+                "feature_max_image_size": "4096",
+                "feature_max_num_features": "8192",
+            }
+        )
+
+        self.assertNotEqual(baseline["fingerprint"], changed["fingerprint"])
+        self.assertEqual(
+            pipeline_support.changed_colmap_cache_parameters(baseline, changed),
+            ["feature_max_image_size", "feature_max_num_features"],
+        )
+        changed_rtk_scale = pipeline_support.build_colmap_cache_config(
+            {
+                **baseline_params,
+                "rtk_refinement_loss_scale": "62.56",
+            }
+        )
+        self.assertNotEqual(
+            baseline["fingerprint"],
+            changed_rtk_scale["fingerprint"],
+        )
+        self.assertEqual(
+            pipeline_support.changed_colmap_cache_parameters(
+                baseline,
+                changed_rtk_scale,
+            ),
+            ["rtk_refinement_loss_scale"],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pipeline_support.save_colmap_cache_config(tmp_dir, changed)
+            self.assertEqual(
+                pipeline_support.load_colmap_cache_config(tmp_dir),
+                changed,
+            )
 
 
 class TestMainSupport(unittest.TestCase):
@@ -302,6 +353,7 @@ class TestMainSupport(unittest.TestCase):
                 os.path.join(clean_images_dir, ".colmap_exif_sanitized"),
                 os.path.join(tmp_dir, "alignment_transform.json"),
                 os.path.join(tmp_dir, "orthomosaic.tif"),
+                os.path.join(tmp_dir, ".colmap_pipeline_config.json"),
             ]:
                 with open(file_path, "w", encoding="utf-8") as handle:
                     handle.write("x")
@@ -328,6 +380,9 @@ class TestMainSupport(unittest.TestCase):
             self.assertFalse(os.path.exists(geo_data_file))
             self.assertFalse(os.path.exists(f"{geo_data_file}.crs"))
             self.assertFalse(os.path.exists(os.path.join(clean_images_dir, ".colmap_exif_sanitized")))
+            self.assertFalse(
+                os.path.exists(os.path.join(tmp_dir, ".colmap_pipeline_config.json"))
+            )
             report_mock.assert_called_once()
 
 
