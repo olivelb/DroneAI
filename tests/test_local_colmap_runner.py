@@ -6,7 +6,11 @@ import sys
 import pytest
 
 from shared.geo_alignment import estimate_sim3
-from shared.rtk_refinement import inject_database_pose_priors
+from shared.rtk_refinement import (
+    gimbal_attitude_to_gravity_sensor,
+    inject_database_gravity_priors,
+    inject_database_pose_priors,
+)
 from tools.run_local_colmap import (
     WORKSPACE_MARKER,
     ensure_workspace,
@@ -277,6 +281,52 @@ def test_inject_database_pose_priors_rejects_partial_mrk_coverage(tmp_path):
 
     with pytest.raises(RuntimeError, match="3/10"):
         inject_database_pose_priors(database_path, records)
+
+
+def test_inject_database_gravity_priors_uses_camera_frame_vector(tmp_path):
+    database_path = tmp_path / "database.db"
+    _create_pose_prior_database(database_path, 3)
+    records = _records(3)
+    for record in records:
+        record.update(
+            {
+                "gimbal_attitude_deg": {
+                    "roll": 0.0,
+                    "pitch": -60.0,
+                },
+                "camera_make": "Autel Robotics",
+                "camera_model": "XT705",
+            }
+        )
+
+    report = inject_database_gravity_priors(database_path, records)
+
+    with sqlite3.connect(database_path) as connection:
+        gravity = connection.execute(
+            "SELECT gravity FROM pose_priors WHERE pose_prior_id = 1"
+        ).fetchone()[0]
+    assert struct.unpack("<3d", gravity) == pytest.approx(
+        (0.0, 0.5, 3**0.5 / 2)
+    )
+    assert report["status"] == "enabled"
+    assert report["coverage"] == 1.0
+
+
+def test_gimbal_gravity_is_independent_of_yaw_and_normalized():
+    first = gimbal_attitude_to_gravity_sensor(
+        {"roll": 2.0, "pitch": -80.0, "yaw": 0.0}
+    )
+    second = gimbal_attitude_to_gravity_sensor(
+        {"roll": 2.0, "pitch": -80.0, "yaw": 170.0}
+    )
+    assert first == pytest.approx(second)
+    assert sum(value * value for value in first) == pytest.approx(1.0)
+
+
+def test_gimbal_gravity_does_not_require_yaw():
+    assert gimbal_attitude_to_gravity_sensor(
+        {"roll": 0.0, "pitch": -90.0}
+    ) == pytest.approx((0.0, 0.0, 1.0), abs=1.0e-12)
 
 
 def test_alignment_transform_schema_is_accepted_by_gaussian_loader():

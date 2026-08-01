@@ -25,11 +25,18 @@ from shared.pipeline_params import (
 )
 from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 from shared.rtk_refinement import (
+    inject_database_gravity_priors,
     inject_database_pose_priors,
     load_rtk_records,
 )
+from shared.gcp_control import (
+    build_weighted_gcp_alignment,
+    prepare_gcp_assets,
+    write_transformed_reconstruction,
+)
 from pipeline_support import (
     build_colmap_cache_config,
+    choose_dronegs_data_factor,
     changed_colmap_cache_parameters,
     discover_input_assets,
     load_copy_manifest,
@@ -134,6 +141,8 @@ def invalidate_pipeline_artifacts(clean_images_dir, workspace_dir, db_path, spar
         os.path.join(workspace_dir, "gps_pairs.txt"),
         os.path.join(workspace_dir, "alignment_pair_graph.json"),
         os.path.join(workspace_dir, "rtk_prior_report.json"),
+        os.path.join(workspace_dir, "imu_gravity_report.json"),
+        os.path.join(workspace_dir, "gcp_alignment_report.json"),
         os.path.join(workspace_dir, ".colmap_pipeline_config.json"),
         geo_data_file,
         f"{geo_data_file}.crs",
@@ -167,6 +176,7 @@ def invalidate_georeferencing_artifacts(workspace_dir, geo_data_file, vol_id, re
         os.path.join(workspace_dir, "alignment_transform.json"),
         os.path.join(workspace_dir, "orthomosaic.tif"),
         os.path.join(workspace_dir, "orthomosaic.height.tif"),
+        os.path.join(workspace_dir, "gcp_alignment_report.json"),
         geo_data_file,
         f"{geo_data_file}.crs",
         f"{geo_data_file}.crs.json",
@@ -278,6 +288,28 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         sparse_path = os.path.join(workspace_dir, "sparse")
         geo_data_file = os.path.join(workspace_dir, "geo_data.txt")
         dense_path = os.path.join(workspace_dir, "dense")
+        gcp_assets = prepare_gcp_assets(raw_image_dir, workspace_dir)
+        gcp_path = gcp_assets["gcp_path"]
+        gcp_accuracy_path = gcp_assets["accuracy_path"]
+        if gcp_path:
+            report_mission_progress(
+                vol_id,
+                "PREPARING",
+                5,
+                log=(
+                    "Prepared surveyed GCP observations"
+                    + (
+                        " with per-point covariance and roles."
+                        if gcp_accuracy_path
+                        else " with mission-level default accuracy."
+                    )
+                ),
+                details={
+                    "event": "gcp_assets_prepared",
+                    "accuracy_file": bool(gcp_accuracy_path),
+                    "changed": bool(gcp_assets["changed"]),
+                },
+            )
         
         images, position_sidecars = discover_input_assets(raw_image_dir)
         copy_candidates = images + position_sidecars
@@ -693,6 +725,35 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 ),
                 details={"event": "matching_complete", **match_counts},
             )
+
+            gravity_available = False
+            if bool(params.get("imu_gravity_enabled", False)):
+                orientation_records = load_rtk_records(clean_images_dir)
+                gravity_report = inject_database_gravity_priors(
+                    db_path,
+                    orientation_records,
+                )
+                gravity_available = bool(
+                    gravity_report["use_in_global_rotation_averaging"]
+                )
+                atomic_write_json(
+                    os.path.join(workspace_dir, "imu_gravity_report.json"),
+                    gravity_report,
+                )
+                report_mission_progress(
+                    vol_id,
+                    "MATCHING",
+                    35,
+                    log=(
+                        "Enabled gimbal-derived gravity for global rotation "
+                        f"averaging ({gravity_report['attitude_pose_priors']}/"
+                        f"{gravity_report['database_pose_priors']} images)."
+                        if gravity_available
+                        else "Gimbal gravity skipped: less than 95% of database "
+                        "images have complete compatible attitude metadata."
+                    ),
+                    details={"event": "imu_gravity", **gravity_report},
+                )
             
             # --- 5. SfM: View Graph Calibration (modern only) ---
             if params["use_view_graph_calibrator"]:
@@ -775,6 +836,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     global_tri_min_angle=float(
                         params["global_mapper_tri_min_angle"]
                     ),
+                    global_use_gravity=gravity_available,
                 )
                 report_mission_progress(
                     vol_id,
@@ -1024,6 +1086,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         os.path.join(workspace_dir, "alignment_transform.json"),
                         os.path.join(workspace_dir, "orthomosaic.tif"),
                         os.path.join(workspace_dir, "orthomosaic.height.tif"),
+                        os.path.join(workspace_dir, "gcp_alignment_report.json"),
                     ):
                         if os.path.exists(stale_path):
                             os.remove(stale_path)
@@ -1089,7 +1152,115 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
 
         def ensure_alignment_transform():
             nonlocal align_tf
-            if not (os.path.exists(geo_data_file) and os.path.getsize(geo_data_file) > 0):
+            gcp_adjustment_enabled = bool(
+                params.get("gcp_adjustment_enabled", False)
+            )
+            transform_file = os.path.join(
+                workspace_dir,
+                "alignment_transform.json",
+            )
+            if gcp_adjustment_enabled:
+                if not gcp_path:
+                    raise RuntimeError(
+                        "Weighted GCP adjustment is enabled but the dataset does "
+                        "not contain gcp_list.txt"
+                    )
+                report_mission_progress(
+                    vol_id,
+                    "ALIGNING",
+                    93,
+                    log=(
+                        "Triangulating surveyed controls and fitting a robust "
+                        "covariance-weighted GCP similarity transform..."
+                    ),
+                )
+                transform, gcp_report = build_weighted_gcp_alignment(
+                    active_sparse_model_path,
+                    gcp_path,
+                    utm_crs,
+                    accuracy_path=gcp_accuracy_path,
+                    default_horizontal_accuracy_m=float(
+                        params["gcp_horizontal_accuracy_m"]
+                    ),
+                    default_vertical_accuracy_m=float(
+                        params["gcp_vertical_accuracy_m"]
+                    ),
+                    default_image_accuracy_px=float(
+                        params["gcp_image_accuracy_px"]
+                    ),
+                    robust_loss_scale=float(params["gcp_robust_loss_scale"]),
+                )
+                from shared.geo_alignment import write_alignment_transform
+
+                write_alignment_transform(transform_file, transform)
+                write_transformed_reconstruction(
+                    active_sparse_model_path,
+                    sparse_geo_path,
+                    transform,
+                )
+                atomic_write_json(
+                    os.path.join(workspace_dir, "gcp_alignment_report.json"),
+                    gcp_report,
+                )
+                align_tf = transform_file
+                fit = transform["fit"]
+                report_mission_progress(
+                    vol_id,
+                    "ALIGNING",
+                    94,
+                    log=(
+                        "Saved weighted GCP alignment using "
+                        f"{gcp_report['adjustment_points']} adjustment controls "
+                        f"and {gcp_report['checkpoint_points']} independent "
+                        f"checkpoints (RMSE={fit['rmse']:.3f} m, "
+                        f"weighted RMSE={fit['weighted_rmse']:.2f}σ)."
+                    ),
+                    details={
+                        "event": "gcp_alignment_completed",
+                        "adjustment_points": gcp_report["adjustment_points"],
+                        "checkpoint_points": gcp_report["checkpoint_points"],
+                        **fit,
+                    },
+                )
+                return align_tf
+
+            stale_gcp_report = os.path.join(
+                workspace_dir,
+                "gcp_alignment_report.json",
+            )
+            stale_gcp_alignment = os.path.exists(stale_gcp_report)
+            if os.path.exists(stale_gcp_report):
+                os.remove(stale_gcp_report)
+
+            if align_tf and os.path.exists(align_tf):
+                try:
+                    with open(align_tf, encoding="utf-8") as handle:
+                        previous_alignment = json.load(handle)
+                    if (
+                        previous_alignment.get("fit", {}).get("source")
+                        == "covariance_weighted_gcp"
+                    ):
+                        os.remove(align_tf)
+                        align_tf = None
+                        stale_gcp_alignment = True
+                except json.JSONDecodeError:
+                    os.remove(align_tf)
+                    align_tf = None
+                    stale_gcp_alignment = True
+                except FileNotFoundError:
+                    align_tf = None
+                except OSError as error:
+                    raise RuntimeError(
+                        f"Cannot inspect cached alignment transform: {error}"
+                    ) from error
+
+            if stale_gcp_alignment:
+                shutil.rmtree(sparse_geo_path, ignore_errors=True)
+
+            if not (
+                os.path.exists(geo_data_file)
+                and os.path.getsize(geo_data_file) > 0
+            ):
                 return None
 
             os.makedirs(sparse_geo_path, exist_ok=True)
@@ -1118,7 +1289,6 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     active_sparse_model_path,
                     sparse_geo_path,
                 )
-                transform_file = os.path.join(workspace_dir, "alignment_transform.json")
                 write_alignment_transform(transform_file, transform)
                 align_tf = transform_file
                 fit = transform["fit"]
@@ -1170,13 +1340,14 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
 
             ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
 
-            # Auto data_factor: scale down training images based on dataset size and resolution
+            # Auto data_factor: preserve all source detail that max_width can
+            # consume. Dataset count is a memory/runtime concern handled by
+            # tile mode and Gaussian caps, not a reason to blur every image.
             gs_data_factor_raw = str(params.get("gs_data_factor", "auto"))
             if gs_data_factor_raw == "auto":
                 images_dir = os.path.join(dense_path, "images")
                 image_files = [f for f in os.listdir(images_dir)
                                if f.lower().endswith(('.jpg', '.jpeg', '.png'))] if os.path.isdir(images_dir) else []
-                n_images_count = len(image_files)
                 max_dim = 0
                 if image_files:
                     try:
@@ -1185,15 +1356,25 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                             max_dim = max(img.size)
                     except Exception:
                         pass
-                if max_dim > 4000 or n_images_count > 800:
-                    gs_data_factor = 8
-                elif max_dim > 2000 or n_images_count > 500:
-                    gs_data_factor = 4
-                elif max_dim > 1200:
-                    gs_data_factor = 2
-                else:
-                    gs_data_factor = 1
-                report_mission_progress(vol_id, "GAUSS", 95, log=f"Auto data_factor={gs_data_factor} for {n_images_count} images, max_dim={max_dim}px")
+                max_training_width = int(
+                    params.get(
+                        "gs_max_width",
+                        DRONEGS_PRODUCTION_PROFILE_V1.max_width,
+                    )
+                )
+                gs_data_factor = choose_dronegs_data_factor(
+                    max_dim, max_training_width
+                )
+                report_mission_progress(
+                    vol_id,
+                    "GAUSS",
+                    95,
+                    log=(
+                        f"Auto data_factor={gs_data_factor} preserves the "
+                        f"configured {max_training_width}px training ceiling "
+                        f"from a {max_dim}px source."
+                    ),
+                )
             else:
                 gs_data_factor = int(gs_data_factor_raw)
 
@@ -1416,6 +1597,12 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         DRONEGS_PRODUCTION_PROFILE_V1.max_width,
                     )
                 ),
+                ortho_mip_filter_variance=float(
+                    params.get("gs_ortho_mip_filter_variance", 0.03)
+                ),
+                ortho_mip_filter_compensation=bool(
+                    params.get("gs_ortho_mip_filter_compensation", True)
+                ),
                 tile_mode=int(
                     params.get(
                         "gs_tile_mode",
@@ -1466,6 +1653,8 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         #     orthomosaic.tif          — final GeoTIFF
         #     orthomosaic.height.tif   — height map (if generated)
         #     alignment_transform.json — Sim3 geo-alignment
+        #     gcp_alignment_report.json — weighted controls/checkpoints (optional)
+        #     imu_gravity_report.json   — attitude coverage/provenance (optional)
         #     geo_data.txt             — GPS from EXIF
         #     geo_data.txt.crs         — projected metric CRS code
         #     geo_data.txt.crs.json    — CRS selection policy and provenance
@@ -1553,6 +1742,24 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             # 2. Alignment & geo data
             if align_tf and os.path.exists(align_tf):
                 storage.upload_file(align_tf, f"{mission_s3_prefix}/alignment_transform.json")
+                upload_count += 1
+            gcp_report_file = os.path.join(
+                workspace_dir, "gcp_alignment_report.json"
+            )
+            if os.path.exists(gcp_report_file):
+                storage.upload_file(
+                    gcp_report_file,
+                    f"{mission_s3_prefix}/gcp_alignment_report.json",
+                )
+                upload_count += 1
+            imu_report_file = os.path.join(
+                workspace_dir, "imu_gravity_report.json"
+            )
+            if os.path.exists(imu_report_file):
+                storage.upload_file(
+                    imu_report_file,
+                    f"{mission_s3_prefix}/imu_gravity_report.json",
+                )
                 upload_count += 1
             if os.path.exists(geo_data_file):
                 storage.upload_file(geo_data_file, f"{mission_s3_prefix}/geo_data.txt")

@@ -177,6 +177,8 @@ def generate_gaussian_orthophoto(
     checkpoint_dir: str = None,
     data_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
     max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width,
+    ortho_mip_filter_variance: float = 0.03,
+    ortho_mip_filter_compensation: bool = True,
     tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
     cap_max: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
     filter_enabled: bool = True,
@@ -679,6 +681,8 @@ def generate_gaussian_orthophoto(
     result = render_orthophoto(
         merged_model, gsd=local_gsd, extent=render_extent,
         R_geo=R_geo,
+        mip_filter_variance=ortho_mip_filter_variance,
+        mip_filter_compensation=ortho_mip_filter_compensation,
     )
 
     rgb = result["rgb"]
@@ -758,4 +762,6 @@ def generate_gaussian_orthophoto(
         "height": H,
         "gsd": resolution,
         "n_gaussians": merged_model.num_gaussians,
+        "ortho_mip_filter_variance": ortho_mip_filter_variance,
+        "ortho_mip_filter_compensation": ortho_mip_filter_compensation,
     }

@@ -63,6 +63,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "mapper_cmd": "mapper",
         "use_view_graph_calibrator": False,
         "read_orientation": False,
+        "imu_gravity_enabled": False,
         "gps_pair_max_neighbors": "32",
         "gps_pair_min_neighbors": "8",
         "gps_pair_temporal_neighbors": "6",
@@ -84,10 +85,17 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rtk_refinement_timeout_seconds": "900",
         "rtk_refinement_iterations": "25",
         "rtk_refinement_loss_scale": "7.82",
+        "gcp_adjustment_enabled": False,
+        "gcp_horizontal_accuracy_m": "0.02",
+        "gcp_vertical_accuracy_m": "0.03",
+        "gcp_image_accuracy_px": "1.0",
+        "gcp_robust_loss_scale": "3.0",
         "alignment_max_error": "10.0",
         "mvs_max_image_size": "4000",
         "ortho_mesh_resolution": "0.02",
         **DRONEGS_PRODUCTION_DEFAULTS,
+        "gs_ortho_mip_filter_variance": "0.03",
+        "gs_ortho_mip_filter_compensation": True,
         "gs_filter_enabled": True,
         "gs_filter_max_scale": "1.0",
         "gs_filter_dist": "1.0",
@@ -114,6 +122,7 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "mapper_cmd": "global_mapper",
         "use_view_graph_calibrator": True,
         "read_orientation": False,
+        "imu_gravity_enabled": False,
         "gps_pair_max_neighbors": "32",
         "gps_pair_min_neighbors": "8",
         "gps_pair_temporal_neighbors": "6",
@@ -135,10 +144,17 @@ PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
         "rtk_refinement_timeout_seconds": "900",
         "rtk_refinement_iterations": "25",
         "rtk_refinement_loss_scale": "7.82",
+        "gcp_adjustment_enabled": False,
+        "gcp_horizontal_accuracy_m": "0.02",
+        "gcp_vertical_accuracy_m": "0.03",
+        "gcp_image_accuracy_px": "1.0",
+        "gcp_robust_loss_scale": "3.0",
         "alignment_max_error": "10.0",
         "mvs_max_image_size": "2400",
         "ortho_mesh_resolution": "0.02",
         **DRONEGS_PRODUCTION_DEFAULTS,
+        "gs_ortho_mip_filter_variance": "0.03",
+        "gs_ortho_mip_filter_compensation": True,
         "gs_filter_enabled": True,
         "gs_filter_max_scale": "1.0",
         "gs_filter_dist": "1.0",
@@ -267,6 +283,17 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "description": (
             "Reserved for a validated camera-frame IMU/gimbal conversion. It is "
             "currently not consumed by the reconstruction pipeline."
+        ),
+        "type": "bool",
+        "group": "Mapping",
+    },
+    "imu_gravity_enabled": {
+        "label": "Use IMU/gimbal gravity when available",
+        "description": (
+            "Convert complete Autel/DJI gimbal pitch and roll metadata to a "
+            "COLMAP camera-frame gravity vector. It is used only by GLOMAP "
+            "global rotation averaging, only above 95% coverage; visual bundle "
+            "adjustment remains free to refine every camera rotation."
         ),
         "type": "bool",
         "group": "Mapping",
@@ -478,6 +505,61 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "max": 1000,
         "step": 0.1,
     },
+    "gcp_adjustment_enabled": {
+        "label": "Use surveyed GCP for weighted adjustment",
+        "description": (
+            "Fit the final georeferencing transform from triangulated GCP using "
+            "their declared covariance. Upload gcp_list.txt; optionally upload "
+            "gcp_accuracy.csv to set per-point accuracy and adjustment/checkpoint roles."
+        ),
+        "type": "bool",
+        "group": "Georeferencing",
+    },
+    "gcp_horizontal_accuracy_m": {
+        "label": "Default GCP horizontal accuracy (1σ, m)",
+        "description": (
+            "Fallback horizontal standard deviation when a point is absent from "
+            "gcp_accuracy.csv. Smaller values give the control more influence."
+        ),
+        "type": "float",
+        "group": "Georeferencing",
+        "min": 0.001,
+        "max": 10,
+        "step": 0.001,
+    },
+    "gcp_vertical_accuracy_m": {
+        "label": "Default GCP vertical accuracy (1σ, m)",
+        "description": "Fallback vertical standard deviation for GCP adjustment.",
+        "type": "float",
+        "group": "Georeferencing",
+        "min": 0.001,
+        "max": 20,
+        "step": 0.001,
+    },
+    "gcp_image_accuracy_px": {
+        "label": "Default GCP image marking accuracy (1σ, px)",
+        "description": (
+            "Uncertainty of the annotated target centre. It is propagated through "
+            "ray intersection before weighting the georeferencing transform."
+        ),
+        "type": "float",
+        "group": "Georeferencing",
+        "min": 0.05,
+        "max": 20,
+        "step": 0.05,
+    },
+    "gcp_robust_loss_scale": {
+        "label": "GCP robust loss scale (σ)",
+        "description": (
+            "Cauchy transition in normalized standard deviations; 3σ protects "
+            "the fit from a misidentified or badly marked control point."
+        ),
+        "type": "float",
+        "group": "Georeferencing",
+        "min": 0.5,
+        "max": 20,
+        "step": 0.5,
+    },
     "alignment_max_error": {
         "label": "GPS Alignment Max Error (m)",
         "description": "Robust camera-position tolerance. Keep about 10 m for standard DJI GNSS; tighten only for corrected RTK/PPK.",
@@ -538,6 +620,28 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 256,
         "max": 4096,
         "step": 64,
+    },
+    "gs_ortho_mip_filter_variance": {
+        "label": "Orthographic Mip filter variance (px²)",
+        "description": (
+            "Pixel-space low-pass variance used only for the final ortho. "
+            "0.03 is the Helenenschacht sharpness/anti-aliasing compromise; "
+            "it is sharper than the former uncompensated 0.3 dilation."
+        ),
+        "type": "float",
+        "group": "Orthomosaic",
+        "min": 0.01,
+        "max": 1.0,
+        "step": 0.01,
+    },
+    "gs_ortho_mip_filter_compensation": {
+        "label": "Compensate Mip filter opacity",
+        "description": (
+            "Preserve each Gaussian's integrated opacity after pixel-space "
+            "filtering instead of dilating and blurring the splat."
+        ),
+        "type": "bool",
+        "group": "Orthomosaic",
     },
     "gs_tile_mode": {
         "label": "Training Tile Mode",

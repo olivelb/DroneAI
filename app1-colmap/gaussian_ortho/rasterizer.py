@@ -29,6 +29,8 @@ class RasterSettings:
     zfar: float = 1000.0
     bg_color: tuple = (0.0, 0.0, 0.0)
     scaling_modifier: float = 1.0
+    mip_filter_variance: float = 0.03
+    mip_filter_compensation: bool = True
     viewmatrix: np.ndarray = None      # 4×4 world-to-camera (numpy float32)
 
 
@@ -98,6 +100,8 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         settings.image_width, settings.image_height,
         settings.znear, settings.zfar,
         settings.bg_color,
+        eps2d=settings.mip_filter_variance,
+        compensate_filter=settings.mip_filter_compensation,
     )
 
     # Return in (C, H, W) layout for compatibility with callers

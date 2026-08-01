@@ -228,6 +228,30 @@ dataset residual distribution. Absolute accuracy requires RTK/PPK or surveyed
 ground control points, and altitude tags may use a vertical reference that
 differs from the target GIS product.
 
+### Weighted GCP adjustment
+
+Place `gcp_list.txt` anywhere below the dataset root. To control influence and
+retain independent checks, add `gcp_accuracy.csv`:
+
+```csv
+point_id,horizontal_accuracy_m,vertical_accuracy_m,image_accuracy_px,role
+GCP01,0.015,0.025,0.5,adjustment
+GCP02,0.015,0.025,0.5,checkpoint
+```
+
+Enable `gcp_adjustment_enabled` in the Reconstruction phase. Values are 1-sigma
+standard deviations, not tolerances: a value two times smaller gives roughly
+four times the least-squares information before robust loss. `checkpoint`
+points are triangulated and reported in `gcp_alignment_report.json` but never
+fit. Without the CSV, mission-level defaults apply and every point is an
+adjustment control.
+
+`imu_gravity_enabled` converts complete Autel/DJI gimbal pitch and roll to the
+COLMAP camera frame and enables GLOMAP gravity rotation averaging only above
+95% coverage. It is disabled by default: Helenenschacht showed no material
+accuracy gain. Enable it only for a validated camera pair or a weak/rotated
+image graph, and inspect `imu_gravity_report.json`.
+
 ## Gaussian orthophoto with DroneGS
 
 This part uses a dedicated local image containing the portable DroneGS binary
@@ -322,6 +346,12 @@ The
 records a demanding 30,000-step, factor-1 run. It produced a sharper COG but
 failed the production SSIM gate and retained a 5,0 cm horizontal GCP RMSE.
 Consequently it remains `custom`; it is not a new default.
+
+The final renderer uses compensated 0.03 px² Mip filtering. The diagnostic
+tool `tools/benchmark_dronegs_ortho_filter.py` compares it against the legacy,
+unfiltered, and 0.1 px² variants on fixed local crops. For Helenenschacht, a
+1 cm output matches the approximately 1.02 cm native flight GSD; 5 mm output is
+oversampling and cannot recover texture absent from the source photographs.
 
 ## Optional local YOLO OBB detection
 

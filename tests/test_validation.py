@@ -177,12 +177,15 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["global_mapper_tri_min_angle"] == "1.0"
     assert params["mapping_timeout_seconds"] == "2400"
     assert params["rtk_refinement_loss_scale"] == "7.82"
+    assert params["imu_gravity_enabled"] is False
     assert params["mvs_max_image_size"] == "2400"
     assert params["gs_backend"] == "dronegs"
     assert params["gs_iterations"] == "15000"
     assert params["gs_cap_max"] == "1500000"
     assert params["gs_data_factor"] == "4"
     assert params["gs_max_width"] == "1600"
+    assert params["gs_ortho_mip_filter_variance"] == "0.03"
+    assert params["gs_ortho_mip_filter_compensation"] is True
     assert params["gs_tile_mode"] == "4"
     assert params["gs_seed"] == "42"
     assert params["gs_raster_profile"] == "fastgs"
@@ -206,6 +209,8 @@ def test_dashboard_exposes_complete_dronegs_quality_configuration():
         "gs_iterations",
         "gs_data_factor",
         "gs_max_width",
+        "gs_ortho_mip_filter_variance",
+        "gs_ortho_mip_filter_compensation",
         "gs_tile_mode",
         "gs_cap_max",
         "gs_sh_degree",

@@ -102,6 +102,23 @@ uncertainty and weaknesses are documented in the
 and the earlier
 [RTK/GeoTIFF A/B report](docs/benchmarks/helenenschacht-rtk-geotiff-ab-2026-07-31.md).
 
+Surveyed control can also be used deliberately rather than only checked after
+the run. Upload `gcp_list.txt` and optionally `gcp_accuracy.csv`; DroneAI
+triangulates every target, propagates the user-declared survey and image
+marking standard deviations, and fits a robust covariance-weighted final Sim3.
+Each point may be `adjustment`, `checkpoint`, or `disabled`. This is a weighted
+georeferencing adjustment, not a fictitious native COLMAP GCP bundle
+constraint. Keep at least two points as checkpoints when the mission must make
+an independent accuracy claim.
+
+The Helenenschacht sharpness/IMU follow-up replaced the uncompensated 0.3 px²
+ortho dilation with a compensated 0.03 px² Mip filter. Across five target
+crops, Laplacian edge energy improved 15.3% at 5 mm and 25.7% at 1 cm. The
+Autel gimbal prior was accurate to 0.56° median against visual poses but changed
+horizontal GCP RMSE by only 0.011 mm and increased mapping time 17.9%, so IMU
+gravity remains an off-by-default expert option. See the complete
+[weighted-GCP, sharpness and IMU report](docs/benchmarks/helenenschacht-weighted-gcp-sharpness-imu-2026-08-01.md).
+
 ## Quick start: clone to dashboard
 
 The recommended workstation deployment uses Docker Compose:

@@ -59,6 +59,7 @@ COLMAP_CACHE_PARAMETER_KEYS = (
     "rtk_refinement_enabled",
     "rtk_refinement_iterations",
     "rtk_refinement_loss_scale",
+    "imu_gravity_enabled",
     "mvs_max_image_size",
 )
 
@@ -162,6 +163,24 @@ def resolve_feature_matching_type(feature_type, matcher_type):
     if is_aliked_feature_type(feature_type):
         return "ALIKED_LIGHTGLUE" if normalized_matcher == "LIGHTGLUE" else "ALIKED_BRUTEFORCE"
     return "SIFT_LIGHTGLUE" if normalized_matcher == "LIGHTGLUE" else "SIFT_BRUTEFORCE"
+
+
+def choose_dronegs_data_factor(max_image_dimension, max_training_width):
+    """Keep as much source detail as the configured training width can use.
+
+    The former heuristic also downscaled based on image count and could turn a
+    4K source into a 1K training image despite a 2.4K/3.2K width budget.  Image
+    count is handled by tiling and Gaussian caps; it must not silently reduce
+    spatial resolution.
+    """
+
+    max_dimension = max(int(max_image_dimension), 1)
+    training_width = max(int(max_training_width), 1)
+    factor = 1
+    for candidate in (2, 4, 8):
+        if max_dimension / candidate >= training_width:
+            factor = candidate
+    return factor
 
 
 def merge_pipeline_params(pipeline_mode, mission_params):

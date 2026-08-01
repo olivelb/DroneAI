@@ -61,6 +61,105 @@ def estimate_sim3(
     }
 
 
+def estimate_weighted_sim3(
+    source_points: Sequence[Sequence[float]] | np.ndarray,
+    target_points: Sequence[Sequence[float]] | np.ndarray,
+    standard_deviations: Sequence[Sequence[float]] | np.ndarray,
+    *,
+    robust_loss_scale: float = 3.0,
+) -> dict[str, Any]:
+    """Estimate a covariance-weighted robust Sim(3).
+
+    ``standard_deviations`` contains one positive XYZ standard deviation per
+    control point, in target-coordinate units. Residuals are normalized by
+    those values before applying a Cauchy loss. The parameterization is
+    centred before optimization so projected CRS translations of several
+    million metres do not degrade finite-difference conditioning.
+    """
+
+    from scipy.optimize import least_squares
+    from scipy.spatial.transform import Rotation
+
+    source = np.asarray(source_points, dtype=np.float64)
+    target = np.asarray(target_points, dtype=np.float64)
+    sigma = np.asarray(standard_deviations, dtype=np.float64)
+    if source.shape != target.shape or source.ndim != 2 or source.shape[1] != 3:
+        raise ValueError("source and target points must have the same Nx3 shape")
+    if sigma.shape != source.shape:
+        raise ValueError("standard deviations must have the same Nx3 shape")
+    if source.shape[0] < 3:
+        raise ValueError("at least three point correspondences are required")
+    if not np.isfinite(source).all() or not np.isfinite(target).all():
+        raise ValueError("point correspondences must be finite")
+    if not np.isfinite(sigma).all() or np.any(sigma <= 0):
+        raise ValueError("standard deviations must be positive and finite")
+    if not np.isfinite(robust_loss_scale) or robust_loss_scale <= 0:
+        raise ValueError("robust loss scale must be positive and finite")
+
+    initial = estimate_sim3(source, target)
+    source_center = np.mean(source, axis=0)
+    target_center = np.mean(target, axis=0)
+    initial_rotation = Rotation.from_matrix(np.asarray(initial["R"]))
+    parameters = np.concatenate(
+        [
+            initial_rotation.as_rotvec(),
+            [np.log(float(initial["scale"]))],
+            np.zeros(3, dtype=np.float64),
+        ]
+    )
+
+    def predict(values: np.ndarray) -> np.ndarray:
+        rotation = Rotation.from_rotvec(values[:3]).as_matrix()
+        scale = float(np.exp(values[3]))
+        offset = values[4:7]
+        return (
+            scale * (rotation @ (source - source_center).T).T
+            + target_center
+            + offset
+        )
+
+    def residuals(values: np.ndarray) -> np.ndarray:
+        return ((predict(values) - target) / sigma).reshape(-1)
+
+    result = least_squares(
+        residuals,
+        parameters,
+        loss="cauchy",
+        f_scale=float(robust_loss_scale),
+        max_nfev=2_000,
+        xtol=1.0e-12,
+        ftol=1.0e-12,
+        gtol=1.0e-12,
+    )
+    if not result.success or not np.isfinite(result.x).all():
+        raise RuntimeError(f"weighted similarity optimization failed: {result.message}")
+
+    rotation = Rotation.from_rotvec(result.x[:3]).as_matrix()
+    scale = float(np.exp(result.x[3]))
+    centered_offset = result.x[4:7]
+    translation = target_center + centered_offset - scale * rotation @ source_center
+    predicted = (scale * (rotation @ source.T)).T + translation
+    vector_residuals = predicted - target
+    distances = np.linalg.norm(vector_residuals, axis=1)
+    normalized = vector_residuals / sigma
+    normalized_norms = np.linalg.norm(normalized, axis=1)
+    return {
+        "R": rotation.tolist(),
+        "scale": scale,
+        "t": translation.tolist(),
+        "fit": {
+            "correspondences": int(source.shape[0]),
+            "rmse": float(np.sqrt(np.mean(distances**2))),
+            "max_error": float(np.max(distances)),
+            "weighted_rmse": float(np.sqrt(np.mean(normalized**2))),
+            "maximum_normalized_error": float(np.max(normalized_norms)),
+            "robust_loss": "cauchy",
+            "robust_loss_scale": float(robust_loss_scale),
+            "optimizer_evaluations": int(result.nfev),
+        },
+    }
+
+
 def alignment_from_named_centers(
     source_centers: Mapping[str, Sequence[float]],
     target_centers: Mapping[str, Sequence[float]],

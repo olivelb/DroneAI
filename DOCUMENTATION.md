@@ -886,8 +886,8 @@ Characteristics:
 - matcher type: bounded brute-force CUDA over a GPS/temporal pair graph
 - mapper command: `global_mapper`
 - view graph calibration enabled
-- orientation priors disabled until the IMU/gimbal-to-camera frame conversion
-  is validated per aircraft/camera pair
+- gimbal-derived gravity disabled by default, with an explicit 95%-coverage
+  gate and report when an operator enables GLOMAP gravity rotation averaging
 - two global BA passes and final iterative retriangulation, with a deterministic
   seed; stricter track thresholds remain isolated in the experimental preset
 - automatic GLOMAP primary with compatible Caspar/Ceres fallback inside one
@@ -1023,6 +1023,23 @@ bundle adjustment when the objective is an independent accuracy measurement.
 Horizontal and vertical acceptance thresholds must remain distinct. A fine
 output GSD is not an acceptance criterion, and a denser tie cloud is not a
 substitute for checkpoints.
+
+### Covariance-weighted GCP adjustment
+
+When `gcp_adjustment_enabled=true`, GCP are no longer independent by
+definition. DroneAI triangulates their image markings in the final sparse
+model and estimates a robust Sim3 from only the points whose role is
+`adjustment`. It does not claim that COLMAP natively supports surveyed 3D scene
+points in bundle adjustment.
+
+`gcp_accuracy.csv` supplies per-point one-sigma horizontal, vertical and image
+marking uncertainty. The triangulation covariance is rotated/scaled into the
+projected CRS, added to survey covariance, and used to normalize XYZ residuals
+before a Cauchy loss. `checkpoint` points never influence the transform;
+`disabled` points are ignored. The complete fit, hashes, rejected observations,
+per-point errors and roles are published as `gcp_alignment_report.json`.
+The same Sim3 is also applied to the published `colmap/sparse_geo` model, so it
+cannot silently remain in an older GPS-only frame while the ortho uses GCP.
 
 ## COLMAP worker state diagram
 
@@ -1276,7 +1293,7 @@ flowchart TD
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
   D1 --> D[Multi-stage filtering: max-scale → spatial → opacity → needle → SOR → CC → Z-floater]
   D2 --> D
-  D --> E[Render orthographic RGB + height map via CuPy CUDA rasteriser with R_geo]
+  D --> E[Render RGB + height via CuPy with R_geo and compensated 0.03 px² Mip filter]
   E --> E1[Normalize depth by opacity and mark uncovered pixels nodata]
   E1 --> E2[Apply Sim3 Z translation or GPS/EXIF vertical origin]
   E2 --> H[Write GeoTIFF + height GeoTIFF]
@@ -1299,7 +1316,7 @@ instead of hiding it behind fixed worker constants:
 | Features | extractor, maximum resolution, feature cap, SIFT first octave and CPU threads |
 | Matching | brute-force/LightGlue choice, optional guided pass, GPS/spatial/sequential graph, neighbor and distance bounds |
 | Mapping | camera model, GLOMAP/Caspar/Ceres engine, deterministic seed, BA/track limits, strict retriangulation, registration gate and timeout |
-| Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance, bounded RTK pass and robust-loss scale |
+| Georeferencing | automatic/France CC9/UTM/custom CRS, explicit EPSG, alignment tolerance, bounded RTK pass, optional gimbal gravity, weighted GCP adjustment and robust-loss scales |
 | Undistortion | maximum image size, 2,400 px in the survey profile |
 
 The `modern` defaults use the best planimetric candidate measured on
@@ -1318,6 +1335,13 @@ preset: it did not beat the selected 3,200 px recipe in 3D and cost more time.
 Position priors constrain the subsequent `pose_prior_mapper`; current GLOMAP
 global positioning itself does not consume RTK positions.
 
+GLOMAP can consume gravity during global rotation averaging. DroneAI converts
+complete Autel/DJI gimbal metadata to COLMAP camera axes only when explicitly
+enabled and at least 95% of database images are covered. On Helenenschacht the
+conversion agreed with visual optical axes to 0.56° median, but changed
+horizontal checkpoint RMSE by only 0.011 mm while mapping time increased
+17.9%; the default therefore remains disabled.
+
 ### GS pipeline tunables exposed in the dashboard UI
 
 All GS parameters are exposed in the **Orthomosaic** parameter group in the dashboard. The frontend renders these dynamically from `PARAMETER_METADATA` in `shared/pipeline_params.py`:
@@ -1330,6 +1354,8 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 | GS Training Iterations | `gs_iterations` | int | 15000 | 5000–100000 |
 | GS Training Image Scale | `gs_data_factor` | select | 4 | auto/1/2/4/8 |
 | GS Maximum Training Width | `gs_max_width` | int | 1600 | 256–4096 |
+| Ortho Mip Filter Variance | `gs_ortho_mip_filter_variance` | float | 0.03 | 0.01–1.0 |
+| Ortho Mip Opacity Compensation | `gs_ortho_mip_filter_compensation` | bool | true | — |
 | GS Tile Mode | `gs_tile_mode` | select | 4 | 1/2/4 |
 | GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–10000000 |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |

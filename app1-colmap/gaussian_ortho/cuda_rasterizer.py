@@ -226,7 +226,8 @@ def rasterize_ortho(
     width, height,
     znear=0.01, zfar=1000.0,
     bg_color=(1.0, 1.0, 1.0),
-    eps2d=0.3,
+    eps2d=0.03,
+    compensate_filter=True,
 ):
     """
     Orthographic rasterisation of 3D Gaussians.
@@ -236,6 +237,8 @@ def rasterize_ortho(
     rgb : cp.ndarray (H, W, 3) float32   — rendered RGB
     depth : cp.ndarray (H, W) float32     — rendered depth
     """
+    if not math.isfinite(float(eps2d)) or float(eps2d) < 0.0:
+        raise ValueError("eps2d must be finite and non-negative")
     N = means_3d.shape[0]
     bg = cp.array(bg_color[:3], dtype=cp.float32)
     fx, fy, cx, cy = float(fx), float(fy), float(cx), float(cy)
@@ -282,12 +285,23 @@ def rasterize_ortho(
     temp = cp.matmul(T_mat[None, :, :], cov3d)                    # (N, 2, 3)
     cov2d = cp.matmul(temp, T_mat[None, :, :].swapaxes(-1, -2))  # (N, 2, 2)
 
-    # Anti-alias
+    # Mip-Splatting 2D Mip filter.  The determinant ratio preserves the
+    # integrated opacity after widening the covariance by the pixel-space
+    # low-pass variance.  Omitting it dilates every splat and softens edges.
+    det_unfiltered = (
+        cov2d[:, 0, 0] * cov2d[:, 1, 1] - cov2d[:, 0, 1] ** 2
+    )
     cov2d[:, 0, 0] += eps2d
     cov2d[:, 1, 1] += eps2d
 
     # ---- 4. Conic (inverse covariance) + radius ----
     det = cov2d[:, 0, 0] * cov2d[:, 1, 1] - cov2d[:, 0, 1] ** 2
+    if compensate_filter:
+        opacity_compensation = cp.sqrt(
+            cp.maximum(det_unfiltered, 0.0) / cp.maximum(det, 1.0e-10)
+        ).astype(cp.float32)
+    else:
+        opacity_compensation = cp.ones_like(det, dtype=cp.float32)
     valid = det > 1e-10
     inv_det = cp.where(valid, 1.0 / cp.maximum(det, 1e-10), 0.0).astype(cp.float32)
 
@@ -318,7 +332,9 @@ def rasterize_ortho(
     means_2d_v = cp.ascontiguousarray(means_2d[idx_valid])
     conics_v   = cp.ascontiguousarray(conics[idx_valid])
     colors_v   = cp.ascontiguousarray(colors[idx_valid])
-    opac_v     = cp.ascontiguousarray(opacities[idx_valid])
+    opac_v     = cp.ascontiguousarray(
+        opacities[idx_valid] * opacity_compensation[idx_valid]
+    )
     depths_v   = cp.ascontiguousarray(depths[idx_valid])
     radii_v    = cp.ascontiguousarray(radii[idx_valid])
     N_v = idx_valid.size
