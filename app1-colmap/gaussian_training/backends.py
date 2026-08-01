@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
+    DRONEGS_QUALIFICATION_POLICY_ID,
     effective_raster_profile,
 )
 
@@ -39,6 +40,7 @@ class DroneGSTuning:
     """Optional native controls layered on top of trainer contract v1."""
 
     profile_id: str = DRONEGS_PRODUCTION_PROFILE_V1.profile_id
+    qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
     optimizer_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
     pruning_policy: str = DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy
     raster_profile: str = DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
@@ -77,6 +79,11 @@ class DroneGSTuning:
     def __post_init__(self) -> None:
         if not isinstance(self.profile_id, str) or not self.profile_id.strip():
             raise ValueError("profile_id must not be empty")
+        if (
+            not isinstance(self.qualification_policy_id, str)
+            or not self.qualification_policy_id.strip()
+        ):
+            raise ValueError("qualification_policy_id must not be empty")
         # The native trainer owns the versioned optimizer-profile registry.
         # Keeping this boundary open preserves old ablation manifests while
         # the mission schema exposes only supported production choices.
@@ -236,8 +243,6 @@ class TrainingRequest:
                 "test_every": self.dronegs.test_every,
                 "test_split": self.dronegs.test_split,
                 "test_guard_percent": self.dronegs.test_guard_percent,
-                "canary_min_psnr": self.dronegs.canary_min_psnr,
-                "canary_min_ssim": self.dronegs.canary_min_ssim,
             }
             expected = {
                 "iterations": production.iterations,
@@ -260,8 +265,6 @@ class TrainingRequest:
                 "test_every": production.test_every,
                 "test_split": production.test_split,
                 "test_guard_percent": production.test_guard_percent,
-                "canary_min_psnr": production.canary_min_psnr,
-                "canary_min_ssim": production.canary_min_ssim,
             }
             mismatches = [
                 name
@@ -307,6 +310,7 @@ def evaluate_quality_canary(
     return {
         "contract_version": 1,
         "backend": "dronegs",
+        "qualification_policy_id": tuning.qualification_policy_id,
         "psnr": metrics.get("psnr"),
         "ssim": metrics.get("ssim"),
         "minimum_psnr": tuning.canary_min_psnr,

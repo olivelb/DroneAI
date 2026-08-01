@@ -47,6 +47,7 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                       extent: tuple = None, chunk_size: int = 0,
                       device=None, R_geo: np.ndarray = None,
+                      sh_direction_rotation: np.ndarray = None,
                       mip_filter_variance: float = 0.03,
                       mip_filter_compensation: bool = True):
     """
@@ -100,7 +101,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     if W <= chunk_size and H <= chunk_size:
         rgb, height = _render_single_tile(
             model, x_min, x_max, y_min, y_max, z_min, z_max, W, H,
-            R_geo=R_geo, mip_filter_variance=mip_filter_variance,
+            R_geo=R_geo, sh_direction_rotation=sh_direction_rotation,
+            mip_filter_variance=mip_filter_variance,
             mip_filter_compensation=mip_filter_compensation,
         )
     else:
@@ -126,6 +128,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                 tile_rgb, tile_h = _render_single_tile(
                     model, tile_x_min, tile_x_max, tile_y_min, tile_y_max,
                     z_min, z_max, tw, th, R_geo=R_geo,
+                    sh_direction_rotation=sh_direction_rotation,
                     mip_filter_variance=mip_filter_variance,
                     mip_filter_compensation=mip_filter_compensation,
                 )
@@ -146,6 +149,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
 
 def _render_single_tile(model, x_min, x_max, y_min, y_max,
                          z_min, z_max, W, H, R_geo=None,
+                         sh_direction_rotation=None,
                          mip_filter_variance=0.03,
                          mip_filter_compensation=True):
     """Render one tile via the custom CUDA ortho rasteriser."""
@@ -209,6 +213,7 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
         mip_filter_variance=mip_filter_variance,
         mip_filter_compensation=mip_filter_compensation,
         viewmatrix=viewmat,
+        sh_direction_rotation=sh_direction_rotation,
     )
 
     result = render_ortho(model, settings, indices=indices)

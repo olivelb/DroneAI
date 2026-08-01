@@ -717,6 +717,7 @@ For `vol_id=mission_001`, the COLMAP worker uses temporary scratch space:
   orthomosaic.tif.cog.json
   orthomosaic.preview.webp
   orthomosaic.height.tif
+  product_manifest.json
 ```
 
 After upload, app1 removes this local mission directory. Durable objects use
@@ -727,14 +728,22 @@ datasets/<dataset-name>/...
 missions/mission_001/
   orthomosaic.tif
   orthomosaic.height.tif
+  product_manifest.json
   alignment_transform.json
+  rtk_prior_report.json
+  imu_gravity_report.json
+  gcp_alignment_report.json
   geo_data.txt
   geo_data.txt.crs
   colmap/
     database.db
     sparse/...
     sparse_geo/...
-  gaussian_checkpoints/...
+  gaussian/
+    final.ply
+    full/trainer_run.json
+    full/canary_result.json
+  gaussian-checkpoints/...
   tiles/
     tile_0.jpg
     tile_1.jpg
@@ -753,10 +762,14 @@ Important mission artifacts include:
 - `geo_data.txt.crs`: persisted projected CRS selected during GPS extraction
 - `database.db`: COLMAP feature and match database
 - `alignment_transform.json`: Sim3 transform from COLMAP coordinates to projected coordinates
-- `gaussian_checkpoints/`: 3D Gaussian Splatting model checkpoints and final merged PLY
-- `gaussian_checkpoints/final.ply`: final filtered Gaussian model in COLMAP-local coordinates
+- `gaussian/final.ply`: required, hash-verified filtered Gaussian model
+- `gaussian/*/trainer_run.json` and `canary_result.json`: required training
+  provenance and qualification decision
+- `gaussian-checkpoints/`: recoverable in-progress training state
 - `orthomosaic.tif`: tiled COG RGB with internal overview levels
 - `orthomosaic.height.tif`: companion tiled COG height map (DSM)
+- `product_manifest.json`: hash-linked sparse/RTK/GCP/DroneGS/render/COG/DSM
+  provenance and effective training/qualification identities
 - `*.cog.json`: native/WGS84 bounds, zoom range and raster metadata
 - `*.preview.webp`: bounded preview that never decodes the full COG
 - `detections.geojson`: deduplicated WGS84 AI polygons/points; the API also
@@ -893,7 +906,9 @@ Characteristics:
 - automatic GLOMAP primary with compatible Caspar/Ceres fallback inside one
   shared 40-minute budget
 - covariance-aware RTK refinement enabled only when corrected MRK coverage is
-  sufficient
+  sufficient; the candidate is promoted only when registration, sparse-point,
+  reprojection, track-length and focal-drift metrics remain within configured
+  tolerances
 - Gaussian Splatting orthomosaic enabled (default)
 
 This is the default and the main intended runtime path.
@@ -1041,6 +1056,12 @@ per-point errors and roles are published as `gcp_alignment_report.json`.
 The same Sim3 is also applied to the published `colmap/sparse_geo` model, so it
 cannot silently remain in an older GPS-only frame while the ortho uses GCP.
 
+Before promotion, the worker evaluates the adjustment baseline and independent
+checkpoint horizontal RMSE, vertical RMSE and normalized error. A failed gate
+stops publication. A mission without checkpoints remains supported for
+backwards compatibility but is labelled `accepted-unverified`; survey policy
+can require checkpoints with `gcp_require_checkpoints=true`.
+
 ## COLMAP worker state diagram
 
 ```mermaid
@@ -1102,10 +1123,13 @@ Pipeline steps:
 4. Train a 3DGS model per cell via the native DroneGS CLI (MRNF strategy, C++/CUDA)
 5. Merge cell models (retain only Gaussians in core, non-overlap region)
 6. Geo-alignment:
-   - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to model, keep translation as float64 for GeoTIFF origin
+   - **Sim3 path** (with `alignment_transform.json`): apply rotation+scale to
+     model, keep translation as float64 for GeoTIFF origin, and map the renderer
+     view direction back through `Rᵀ` before evaluating SH in its training frame
    - **PCA path** (no alignment transform): compute `R_geo` rotation matrix from camera PCA, pass it to the renderer — the model stays in the original COLMAP coordinate frame to preserve SH coefficient consistency
 7. Configurable multi-stage post-processing filter chain: max-scale → spatial crop → opacity → needle removal → SOR → connected-component → Z-floater removal (each individually togglable)
-8. Render orthographic RGB orthomosaic and height map via CuPy CUDA rasteriser (with `R_geo` for PCA path)
+8. Render orthographic RGB orthomosaic and height map via CuPy CUDA rasteriser
+   (with `R_geo` for PCA and an inverse Sim3 direction transform for SH)
 9. Convert local model Z to the available vertical reference: add the
    withheld Sim3 Z translation, or the GPS/EXIF-derived origin on the PCA path
 10. Write GeoTIFF with projected CRS

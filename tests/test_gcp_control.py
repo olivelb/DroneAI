@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import numpy as np
@@ -6,6 +7,7 @@ from scipy.spatial.transform import Rotation
 
 from shared.gcp_control import (
     _robust_observation_mask,
+    assess_gcp_alignment_quality,
     intersect_rays,
     parse_gcp_accuracy_file,
     parse_gcp_file,
@@ -138,3 +140,52 @@ def test_reprojection_mask_never_restores_non_finite_observations() -> None:
         False,
         True,
     ]
+
+
+def _quality_report(checkpoints: list[tuple[float, float, float]]) -> dict:
+    points = [
+        {
+            "role": "adjustment",
+            "surveyed_xyz": xyz,
+            "horizontal_error_m": 0.01,
+            "vertical_error_m": 0.01,
+            "euclidean_error_m": 0.015,
+            "normalized_error_norm_sigma": 0.5,
+        }
+        for xyz in ([0, 0, 0], [20, 0, 0], [0, 20, 0])
+    ]
+    points.extend(
+        {
+            "role": "checkpoint",
+            "surveyed_xyz": [5 + index, 5, 0],
+            "horizontal_error_m": horizontal,
+            "vertical_error_m": vertical,
+            "euclidean_error_m": math.hypot(horizontal, vertical),
+            "normalized_error_norm_sigma": normalized,
+        }
+        for index, (horizontal, vertical, normalized) in enumerate(checkpoints)
+    )
+    return {"points": points}
+
+
+def test_gcp_quality_gate_distinguishes_fit_from_independent_accuracy() -> None:
+    unverified = assess_gcp_alignment_quality(
+        _quality_report([]), minimum_adjustment_baseline_m=5.0
+    )
+    assert unverified["accepted"] is True
+    assert unverified["status"] == "accepted-unverified"
+
+    rejected = assess_gcp_alignment_quality(
+        _quality_report([(0.25, 0.05, 2.0)]),
+        maximum_checkpoint_horizontal_rmse_m=0.10,
+    )
+    assert rejected["accepted"] is False
+    assert rejected["status"] == "rejected"
+
+
+def test_gcp_quality_gate_can_require_independent_checkpoints() -> None:
+    quality = assess_gcp_alignment_quality(
+        _quality_report([]), require_checkpoints=True
+    )
+    assert quality["accepted"] is False
+    assert quality["verification"] == "unverified-no-checkpoints"

@@ -11,6 +11,134 @@ from typing import Any, Iterable
 from shared.dji_metadata import load_position_overrides, parse_aerial_xmp
 
 
+def assess_rtk_refinement_quality(
+    baseline: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    maximum_registered_image_loss: int = 0,
+    minimum_point_ratio: float = 0.90,
+    maximum_reprojection_degradation_px: float = 0.10,
+    maximum_track_length_loss_ratio: float = 0.25,
+    maximum_focal_length_change_ratio: float = 0.02,
+) -> dict[str, Any]:
+    """Compare an RTK pose-prior candidate with the visual baseline.
+
+    RTK constraints can improve absolute poses while degrading the visual
+    reconstruction.  This gate prevents automatic promotion when registration,
+    point support, reprojection error, or track health regresses beyond the
+    configured tolerances.  It deliberately does not claim absolute accuracy;
+    that still requires independent GCP checkpoints.
+    """
+
+    if maximum_registered_image_loss < 0:
+        raise ValueError("maximum registered image loss must be non-negative")
+    if not 0 <= minimum_point_ratio <= 1:
+        raise ValueError("minimum point ratio must be in [0, 1]")
+    if maximum_reprojection_degradation_px < 0:
+        raise ValueError("maximum reprojection degradation must be non-negative")
+    if not 0 <= maximum_track_length_loss_ratio <= 1:
+        raise ValueError("maximum track length loss ratio must be in [0, 1]")
+    if not 0 <= maximum_focal_length_change_ratio <= 1:
+        raise ValueError("maximum focal length change ratio must be in [0, 1]")
+
+    checks: list[dict[str, Any]] = []
+
+    def add(name: str, actual: Any, limit: Any, passed: bool) -> None:
+        checks.append(
+            {"name": name, "actual": actual, "limit": limit, "passed": bool(passed)}
+        )
+
+    base_registered = int(baseline.get("registered_images") or 0)
+    candidate_registered = int(candidate.get("registered_images") or 0)
+    add(
+        "registered_images",
+        candidate_registered,
+        {"minimum": max(0, base_registered - maximum_registered_image_loss)},
+        candidate_registered >= base_registered - maximum_registered_image_loss,
+    )
+
+    base_points = int(baseline.get("points3D") or 0)
+    candidate_points = int(candidate.get("points3D") or 0)
+    point_ratio = candidate_points / base_points if base_points else 0.0
+    add(
+        "point_ratio",
+        point_ratio,
+        {"minimum": float(minimum_point_ratio)},
+        base_points > 0 and point_ratio >= minimum_point_ratio,
+    )
+
+    base_reprojection = baseline.get("mean_reprojection_error_px")
+    candidate_reprojection = candidate.get("mean_reprojection_error_px")
+    reprojection_ok = (
+        base_reprojection is not None
+        and candidate_reprojection is not None
+        and math.isfinite(float(base_reprojection))
+        and math.isfinite(float(candidate_reprojection))
+        and float(candidate_reprojection)
+        <= float(base_reprojection) + maximum_reprojection_degradation_px
+    )
+    add(
+        "mean_reprojection_error_px",
+        candidate_reprojection,
+        {
+            "maximum": (
+                float(base_reprojection) + maximum_reprojection_degradation_px
+                if base_reprojection is not None
+                else None
+            )
+        },
+        reprojection_ok,
+    )
+
+    base_track = baseline.get("median_track_length")
+    candidate_track = candidate.get("median_track_length")
+    minimum_track = (
+        float(base_track) * (1.0 - maximum_track_length_loss_ratio)
+        if base_track is not None
+        else None
+    )
+    track_ok = (
+        minimum_track is not None
+        and candidate_track is not None
+        and math.isfinite(float(candidate_track))
+        and float(candidate_track) >= minimum_track
+    )
+    add(
+        "median_track_length",
+        candidate_track,
+        {"minimum": minimum_track},
+        track_ok,
+    )
+
+    base_focal = baseline.get("median_focal_length_px")
+    candidate_focal = candidate.get("median_focal_length_px")
+    if base_focal is None or candidate_focal is None:
+        focal_change_ratio = None
+        focal_ok = True
+    else:
+        focal_change_ratio = abs(float(candidate_focal) - float(base_focal)) / max(
+            abs(float(base_focal)), 1.0e-12
+        )
+        focal_ok = focal_change_ratio <= maximum_focal_length_change_ratio
+    add(
+        "median_focal_length_change_ratio",
+        focal_change_ratio,
+        {"maximum": float(maximum_focal_length_change_ratio)},
+        focal_ok,
+    )
+
+    accepted = all(check["passed"] for check in checks)
+    return {
+        "schema_version": 1,
+        "accepted": accepted,
+        "status": "promoted" if accepted else "rejected",
+        "accuracy_verification": "internal-visual-metrics-only",
+        "baseline": baseline,
+        "candidate": candidate,
+        "checks": checks,
+    }
+
+
 def load_rtk_records(image_dir: str | Path) -> list[dict[str, Any]]:
     root = Path(image_dir)
     image_paths = sorted(

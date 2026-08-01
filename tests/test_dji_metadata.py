@@ -1,11 +1,14 @@
 import pytest
+from PIL import Image
 
 from shared.dji_metadata import (
+    classify_rtk_flag,
     image_sequence_number,
     load_dji_mrk_overrides,
     load_position_overrides,
     parse_aerial_xmp,
     parse_dji_mrk_file,
+    _validate_mrk_xmp_position,
 )
 
 
@@ -54,6 +57,8 @@ def test_mrk_parser_reads_coordinates_and_standard_deviations(tmp_path):
     assert marks[1]["position_std_m"]["vertical_m"] == 0.055
     assert marks[1]["vertical_reference"] == "ellipsoidal"
     assert marks[1]["vertical_reference_source"] == "dji_mrk_ellh"
+    assert marks[1]["rtk_status"] == "single"
+    assert marks[1]["rtk_valid"] is False
 
 
 def test_mrk_records_are_mapped_to_images_in_the_same_flight(tmp_path):
@@ -63,7 +68,7 @@ def test_mrk_records_are_mapped_to_images_in_the_same_flight(tmp_path):
     image.write_bytes(b"jpeg")
     (flight / "flight_Timestamp.MRK").write_text(
         "1\t1.0\t[1]\t0,N\t0,E\t0,V\t44.0,Lat\t1.0,Lon\t"
-        "100.0,Ellh\t1.0, 2.0, 3.0\t16,Q\n",
+        "100.0,Ellh\t1.0, 2.0, 3.0\t50,Q\n",
         encoding="utf-8",
     )
 
@@ -91,6 +96,16 @@ def test_autel_sequence_and_xmp_rtk_covariance_are_recognized(tmp_path):
         "east_m": pytest.approx(0.01370),
         "vertical_m": pytest.approx(0.02969),
     }
+    assert metadata["rtk_status"] == "fixed"
+
+
+def test_unknown_or_float_rtk_flags_are_not_accepted_as_fixed(tmp_path):
+    assert classify_rtk_flag("50") == "fixed"
+    assert classify_rtk_flag("34") == "float"
+    assert classify_rtk_flag("vendor-new-state") == "unknown"
+    image = tmp_path / "MAX_0002.JPG"
+    _write_xmp_jpeg(image, rtk_flag="vendor-new-state")
+    assert "gps" not in parse_aerial_xmp(image)
 
 
 def test_mrk_has_priority_over_xmp_and_can_live_in_rtk_subdirectory(
@@ -103,15 +118,61 @@ def test_mrk_has_priority_over_xmp_and_can_live_in_rtk_subdirectory(
     image = images / "MAX_0002.JPG"
     _write_xmp_jpeg(image, latitude="47.0")
     (rtk_data / "flight_Timestamp.MRK").write_text(
-        "2\t1.0\t[1]\t0,N\t0,E\t0,V\t48.0,Lat\t2.0,Lon\t"
-        "514.0,Ellh\t0.01, 0.02, 0.03\t50,Q\n",
+        "2\t1.0\t[1]\t0,N\t0,E\t0,V\t47.0,Lat\t16.47592717,Lon\t"
+        "513.1,Ellh\t0.01, 0.02, 0.03\t50,Q\n",
         encoding="utf-8",
     )
 
     overrides = load_position_overrides(tmp_path, [image])
 
     assert overrides["images/MAX_0002.JPG"]["source"] == "dji_mrk"
-    assert overrides["images/MAX_0002.JPG"]["latitude"] == 48.0
+    assert overrides["images/MAX_0002.JPG"]["latitude"] == pytest.approx(47.0)
+    assert overrides["images/MAX_0002.JPG"]["association_validation"]["method"] == "sequence-and-position"
+
+
+def test_mrk_sequence_match_is_rejected_when_xmp_position_disagrees(tmp_path):
+    images = tmp_path / "images"
+    rtk_data = tmp_path / "RTK_Data"
+    images.mkdir()
+    rtk_data.mkdir()
+    image = images / "MAX_0002.JPG"
+    _write_xmp_jpeg(image, latitude="47.0")
+    (rtk_data / "flight_Timestamp.MRK").write_text(
+        "2\t1.0\t[1]\t0,N\t0,E\t0,V\t48.0,Lat\t2.0,Lon\t"
+        "514.0,Ellh\t0.01, 0.02, 0.03\t50,Q\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="MRK/XMP position mismatch"):
+        load_position_overrides(tmp_path, [image])
+
+
+def test_mrk_association_checks_exif_time_when_available(tmp_path):
+    image_path = tmp_path / "MAX_0002.JPG"
+    exif = Image.Exif()
+    exif[36867] = "2022:05:25 12:17:49"
+    Image.new("RGB", (1, 1)).save(image_path, exif=exif)
+    common = {
+        "latitude": 47.0,
+        "longitude": 16.0,
+        "altitude_m": 513.0,
+        "position_std_m": {
+            "north_m": 0.01,
+            "east_m": 0.01,
+            "vertical_m": 0.02,
+        },
+    }
+    mrk = {
+        **common,
+        "gps_week": 2211,
+        "gps_seconds_of_week": 296288.242869,
+    }
+
+    validation = _validate_mrk_xmp_position(image_path, mrk, common)
+
+    assert validation["method"] == "sequence-position-and-timestamp"
+    assert validation["exif_to_utc_offset_hours"] == 2
+    assert validation["timestamp_delta_seconds"] < 2.0
 
 
 def test_unscoped_mrk_refuses_ambiguous_duplicate_sequences(tmp_path):

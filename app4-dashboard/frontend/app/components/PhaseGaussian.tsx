@@ -62,6 +62,7 @@ const PARAMETER_GROUPS = [
       "gs_test_every",
       "gs_test_split",
       "gs_test_guard_percent",
+      "gs_qualification_policy",
       "gs_canary_min_psnr",
       "gs_canary_min_ssim",
     ],
@@ -92,6 +93,7 @@ const DRONEGS_PRESETS = [
     icon: <Zap size={16} />,
     values: {
       gs_production_profile: "custom",
+      gs_qualification_policy: "custom",
       gs_iterations: "5000",
       gs_data_factor: "8",
       gs_max_width: "1024",
@@ -119,6 +121,7 @@ const DRONEGS_PRESETS = [
     icon: <Gauge size={16} />,
     values: {
       gs_production_profile: "DRONEGS_PRODUCTION_PROFILE_V1",
+      gs_qualification_policy: "DRONEGS_QUALIFICATION_POLICY_V1",
       gs_iterations: "15000",
       gs_data_factor: "4",
       gs_max_width: "1600",
@@ -149,6 +152,7 @@ const DRONEGS_PRESETS = [
     icon: <ShieldCheck size={16} />,
     values: {
       gs_production_profile: "custom",
+      gs_qualification_policy: "custom",
       gs_iterations: "30000",
       gs_data_factor: "auto",
       gs_max_width: "3200",
@@ -189,6 +193,9 @@ const PRODUCTION_TRAINING_KEYS = new Set([
   "gs_test_every",
   "gs_test_split",
   "gs_test_guard_percent",
+]);
+
+const QUALIFICATION_KEYS = new Set([
   "gs_canary_min_psnr",
   "gs_canary_min_ssim",
 ]);
@@ -222,16 +229,38 @@ export default function PhaseGaussian() {
         (preset) => preset.id === "balanced",
       );
       if (production) {
+        const trainingValues = Object.fromEntries(
+          Object.entries(production.values).filter(
+            ([name]) =>
+              name !== "gs_qualification_policy" &&
+              !QUALIFICATION_KEYS.has(name),
+          ),
+        );
         setParameterValues((current) => ({
           ...current,
-          ...production.values,
+          ...trainingValues,
         }));
       }
+      return;
+    }
+    if (
+      key === "gs_qualification_policy" &&
+      value === "DRONEGS_QUALIFICATION_POLICY_V1"
+    ) {
+      setParameterValues((current) => ({
+        ...current,
+        gs_qualification_policy: value,
+        gs_canary_min_psnr: "18.0",
+        gs_canary_min_ssim: "0.25",
+      }));
       return;
     }
     updateParameter(key, value);
     if (PRODUCTION_TRAINING_KEYS.has(key)) {
       updateParameter("gs_production_profile", "custom");
+    }
+    if (QUALIFICATION_KEYS.has(key)) {
+      updateParameter("gs_qualification_policy", "custom");
     }
   };
   const colmapService = activeMission?.services?.COLMAP;

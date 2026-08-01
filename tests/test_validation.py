@@ -193,6 +193,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
         params["gs_production_profile"]
         == "DRONEGS_PRODUCTION_PROFILE_V1"
     )
+    assert params["gs_qualification_policy"] == "DRONEGS_QUALIFICATION_POLICY_V1"
     assert params["gs_pruning_policy"] == "spatial-bounds"
     assert params["gs_topology_cooldown"] == "1000"
     assert params["gs_photometric_finish"] == "1000"
@@ -216,6 +217,7 @@ def test_dashboard_exposes_complete_dronegs_quality_configuration():
         "gs_sh_degree",
         "gs_optimizer_profile",
         "gs_production_profile",
+        "gs_qualification_policy",
         "gs_pruning_policy",
         "gs_raster_profile",
         "gs_checkpoint_every",

@@ -29,6 +29,10 @@ def test_sparse_quality_reports_reprojection_and_track_metrics(
     class Reconstruction:
         def __init__(self, _model_path):
             self.points3D = points
+            self.cameras = {
+                1: SimpleNamespace(mean_focal_length=lambda: 1000.0),
+                2: SimpleNamespace(mean_focal_length=lambda: 1100.0),
+            }
 
         def reg_image_ids(self):
             return [1, 2, 3, 4]
@@ -46,3 +50,4 @@ def test_sparse_quality_reports_reprojection_and_track_metrics(
     assert metrics["mean_reprojection_error_px"] == 1.5
     assert metrics["median_reprojection_error_px"] == 1.5
     assert metrics["median_track_length"] == 6
+    assert metrics["median_focal_length_px"] == 1050.0

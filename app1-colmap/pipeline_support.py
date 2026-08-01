@@ -601,6 +601,7 @@ def inspect_sparse_quality(model_path):
         "mean_reprojection_error_px": None,
         "median_reprojection_error_px": None,
         "median_track_length": None,
+        "median_focal_length_px": None,
     }
     if not os.path.isdir(model_path):
         return empty
@@ -611,6 +612,7 @@ def inspect_sparse_quality(model_path):
         reconstruction = pycolmap.Reconstruction(model_path)
         errors = []
         track_lengths = []
+        focal_lengths = []
         for point in reconstruction.points3D.values():
             try:
                 error = float(point.error)
@@ -625,6 +627,13 @@ def inspect_sparse_quality(model_path):
                     track_lengths.append(len(point.track.elements))
                 except (AttributeError, TypeError):
                     pass
+        for camera in reconstruction.cameras.values():
+            try:
+                focal = float(camera.mean_focal_length())
+                if math.isfinite(focal) and focal > 0:
+                    focal_lengths.append(focal)
+            except (AttributeError, TypeError, ValueError):
+                pass
         return {
             "registered_images": len(reconstruction.reg_image_ids()),
             "points3D": len(reconstruction.points3D),
@@ -637,6 +646,11 @@ def inspect_sparse_quality(model_path):
             "median_track_length": (
                 statistics.median(track_lengths)
                 if track_lengths
+                else None
+            ),
+            "median_focal_length_px": (
+                statistics.median(focal_lengths)
+                if focal_lengths
                 else None
             ),
         }
