@@ -24,6 +24,7 @@ const RECONSTRUCTION_PARAMS = [
   "camera_model",
   "alignment_engine",
   "use_view_graph_calibrator",
+  "imu_gravity_enabled",
   "global_mapper_max_tracks",
   "global_mapper_ba_iterations",
   "global_mapper_ceres_iterations",
@@ -41,6 +42,11 @@ const RECONSTRUCTION_PARAMS = [
   "rtk_refinement_timeout_seconds",
   "rtk_refinement_iterations",
   "rtk_refinement_loss_scale",
+  "gcp_adjustment_enabled",
+  "gcp_horizontal_accuracy_m",
+  "gcp_vertical_accuracy_m",
+  "gcp_image_accuracy_px",
+  "gcp_robust_loss_scale",
   "alignment_max_error",
   "mvs_max_image_size",
 ];
@@ -68,6 +74,7 @@ const ESSENTIAL_KEYS = new Set([
   "mvs_max_image_size",
   "projected_crs_mode",
   "projected_crs",
+  "gcp_adjustment_enabled",
 ]);
 
 const isTrue = (value: unknown) =>

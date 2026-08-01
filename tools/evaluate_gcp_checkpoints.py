@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,10 @@ from typing import Any
 
 import numpy as np
 from pyproj import CRS, Transformer
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 @dataclass(frozen=True)
@@ -180,11 +185,18 @@ def _evaluate_point(
     image_lookup: dict[str, Any],
     transformer: Transformer,
     minimum_outlier_threshold_px: float,
+    alignment_transform: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_xyz = observations[0].source_xyz
     if any(observation.source_xyz != source_xyz for observation in observations):
         raise ValueError(f"GCP {point_id} has inconsistent surveyed coordinates")
     surveyed_xyz = np.asarray(transformer.transform(*source_xyz), dtype=np.float64)
+    surveyed_model_xyz = surveyed_xyz
+    if alignment_transform is not None:
+        rotation = np.asarray(alignment_transform["R"], dtype=np.float64)
+        scale = float(alignment_transform["scale"])
+        translation = np.asarray(alignment_transform["t"], dtype=np.float64)
+        surveyed_model_xyz = rotation.T @ (surveyed_xyz - translation) / scale
     usable: list[tuple[GcpObservation, Any, np.ndarray, np.ndarray]] = []
     missing_images: list[str] = []
     ray_errors: list[dict[str, str]] = []
@@ -237,7 +249,9 @@ def _evaluate_point(
     for observation, image, _, _ in usable:
         observed = np.asarray(observation.pixel_xy, dtype=np.float64)
         projected_estimated = _project_point(reconstruction, image, estimated_xyz)
-        projected_surveyed = _project_point(reconstruction, image, surveyed_xyz)
+        projected_surveyed = _project_point(
+            reconstruction, image, surveyed_model_xyz
+        )
         estimated_residual = (
             None
             if projected_estimated is None
@@ -262,12 +276,16 @@ def _evaluate_point(
             }
         )
 
+    estimated_model_xyz = estimated_xyz.copy()
+    if alignment_transform is not None:
+        estimated_xyz = scale * rotation @ estimated_xyz + translation
     delta = estimated_xyz - surveyed_xyz
     return {
         "point_id": point_id,
         "status": "ok",
         "surveyed_xyz": surveyed_xyz.tolist(),
         "estimated_xyz": estimated_xyz.tolist(),
+        "triangulated_model_xyz": estimated_model_xyz.tolist(),
         "error_xyz": delta.tolist(),
         "horizontal_error_m": float(np.linalg.norm(delta[:2])),
         "vertical_error_m": abs(float(delta[2])),
@@ -289,6 +307,7 @@ def evaluate(
     gcp_path: Path,
     model_crs: str,
     minimum_outlier_threshold_px: float,
+    camera_references_path: Path | None = None,
 ) -> dict[str, Any]:
     import pycolmap
 
@@ -296,6 +315,21 @@ def evaluate(
     destination_crs = metric_projected_crs(model_crs)
     transformer = Transformer.from_crs(source_crs, destination_crs, always_xy=True)
     reconstruction = pycolmap.Reconstruction(str(model_path))
+    alignment_transform = None
+    if camera_references_path is not None:
+        from shared.geo_alignment import alignment_from_named_centers
+
+        references = {}
+        for line in camera_references_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            name, x, y, z = line.rsplit(maxsplit=3)
+            references[name] = (float(x), float(y), float(z))
+        centers = {
+            image.name: np.asarray(image.projection_center(), dtype=np.float64)
+            for image in reconstruction.images.values()
+        }
+        alignment_transform = alignment_from_named_centers(centers, references)
     lookup = _image_lookup(reconstruction)
     grouped: dict[str, list[GcpObservation]] = defaultdict(list)
     for observation in observations:
@@ -308,6 +342,7 @@ def evaluate(
             lookup,
             transformer,
             minimum_outlier_threshold_px,
+            alignment_transform,
         )
         for point_id in sorted(grouped)
     ]
@@ -335,6 +370,7 @@ def evaluate(
         "source_crs": CRS.from_user_input(source_crs).to_string(),
         "model_crs": destination_crs.to_string(),
         "registered_images": len(reconstruction.images),
+        "camera_reference_alignment": alignment_transform,
         "checkpoint_count": len(points),
         "successful_checkpoint_count": len(successful),
         "summary": {
@@ -355,6 +391,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-crs", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--minimum-outlier-threshold-px", type=float, default=5.0)
+    parser.add_argument(
+        "--camera-references",
+        type=Path,
+        help=(
+            "Optional COLMAP name/X/Y/Z reference file used to georeference a "
+            "raw model independently of the GCP checkpoints."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -365,6 +409,7 @@ def main() -> int:
         args.gcp_file,
         args.model_crs,
         args.minimum_outlier_threshold_px,
+        args.camera_references,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(

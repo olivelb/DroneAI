@@ -44,6 +44,7 @@ DATASET_SUFFIXES = {
     ".bin",
     ".rtk",
     ".txt",
+    ".csv",
 }
 
 

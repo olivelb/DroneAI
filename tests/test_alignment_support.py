@@ -111,6 +111,7 @@ def test_mapping_commands_use_glomap_and_caspar_backends():
         global_tri_complete_max_reproj_error=4.0,
         global_tri_merge_max_reproj_error=4.0,
         global_tri_min_angle=1.5,
+        global_use_gravity=True,
     )
     caspar = build_mapping_command(
         "caspar",
@@ -133,6 +134,7 @@ def test_mapping_commands_use_glomap_and_caspar_backends():
         == "4.0"
     )
     assert glomap[glomap.index("--GlobalMapper.tri_min_angle") + 1] == "1.5"
+    assert glomap[glomap.index("--GlobalMapper.ra_use_gravity") + 1] == "1"
     assert caspar[1] == "mapper"
     assert caspar[caspar.index("--Mapper.ba_local_backend") + 1] == "CASPAR"
     assert "--Mapper.ba_use_gpu" not in caspar

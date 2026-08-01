@@ -281,6 +281,7 @@ def build_mapping_command(
     global_tri_complete_max_reproj_error: float = 15.0,
     global_tri_merge_max_reproj_error: float = 15.0,
     global_tri_min_angle: float = 1.0,
+    global_use_gravity: bool = False,
 ) -> list[str]:
     normalized = engine.strip().lower()
     common = [
@@ -319,6 +320,8 @@ def build_mapping_command(
             str(global_tri_merge_max_reproj_error),
             "--GlobalMapper.tri_min_angle",
             str(global_tri_min_angle),
+            "--GlobalMapper.ra_use_gravity",
+            "1" if global_use_gravity else "0",
         ]
         if global_skip_retriangulation:
             command += ["--GlobalMapper.skip_retriangulation", "1"]

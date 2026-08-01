@@ -43,7 +43,10 @@ from alignment_support import (
 )
 
 from shared.pipeline_params import PIPELINE_DEFAULTS
-from shared.rtk_refinement import inject_database_pose_priors
+from shared.rtk_refinement import (
+    inject_database_gravity_priors,
+    inject_database_pose_priors,
+)
 from pipeline_support import (
     build_colmap_cache_config,
     changed_colmap_cache_parameters,
@@ -72,6 +75,7 @@ GENERATED_PATHS = (
     "pairs.txt",
     "pair_graph.json",
     "rtk_prior_report.json",
+    "imu_gravity_report.json",
     "model_analyzer.txt",
     ".colmap_pipeline_config.json",
 )
@@ -236,6 +240,12 @@ def parse_args() -> argparse.Namespace:
             "Use DJI MRK positions and per-image covariance in pose_prior_mapper. "
             "The default is automatic: enabled for --gps-quality=rtk only."
         ),
+    )
+    parser.add_argument(
+        "--imu-gravity",
+        action=argparse.BooleanOptionalAction,
+        default=bool(MODERN_DEFAULTS["imu_gravity_enabled"]),
+        help="Use complete gimbal attitudes during GLOMAP rotation averaging.",
     )
     parser.add_argument(
         "--rtk-refinement-timeout-seconds",
@@ -623,6 +633,7 @@ def run_sparse(  # noqa: C901
             "rtk_refinement_enabled": rtk_refinement_enabled(args),
             "rtk_refinement_iterations": str(args.rtk_refinement_iterations),
             "rtk_refinement_loss_scale": str(args.rtk_refinement_loss_scale),
+            "imu_gravity_enabled": args.imu_gravity,
         }
     )
     requested_recipe = build_colmap_cache_config(local_recipe)
@@ -774,6 +785,17 @@ def run_sparse(  # noqa: C901
             ]
         run_command(matcher_command)
 
+        gravity_available = False
+        if args.imu_gravity:
+            gravity_report = inject_database_gravity_priors(
+                database_path,
+                selected_records,
+            )
+            gravity_available = bool(
+                gravity_report["use_in_global_rotation_averaging"]
+            )
+            write_json(workspace / "imu_gravity_report.json", gravity_report)
+
         primary_engine = "glomap" if args.engine == "auto" else args.engine
         if primary_engine == "glomap":
             run_command(
@@ -811,6 +833,7 @@ def run_sparse(  # noqa: C901
                 args.global_tri_merge_max_reproj_error
             ),
             global_tri_min_angle=args.global_tri_min_angle,
+            global_use_gravity=gravity_available,
         )
         mapping_started_at = time.monotonic()
 

@@ -1,0 +1,6 @@
+point_id,horizontal_accuracy_m,vertical_accuracy_m,image_accuracy_px,role
+1,0.02,0.03,0.5,adjustment
+2,0.02,0.03,0.5,adjustment
+3,0.02,0.03,0.5,checkpoint
+4,0.02,0.03,0.5,checkpoint
+5,0.02,0.03,0.5,adjustment
