@@ -119,13 +119,26 @@ def estimate_weighted_sim3(
         )
 
     def residuals(values: np.ndarray) -> np.ndarray:
-        return ((predict(values) - target) / sigma).reshape(-1)
+        normalized = (predict(values) - target) / sigma
+        squared_norm = np.sum(normalized * normalized, axis=1)
+        scale_squared = float(robust_loss_scale) ** 2
+        # scipy's built-in robust losses operate on each scalar residual.  A
+        # GCP is one 3-D observation, so robustify its Mahalanobis norm once
+        # and apply the same weight to XYZ.  The transformed residuals have
+        # sum-of-squares f² log(1 + ||r||²/f²), i.e. a point-wise Cauchy
+        # objective while retaining 3N residuals for a well-constrained Sim(3).
+        robust_cost = scale_squared * np.log1p(squared_norm / scale_squared)
+        weights = np.ones_like(squared_norm)
+        nonzero = squared_norm > np.finfo(np.float64).eps
+        weights[nonzero] = np.sqrt(
+            robust_cost[nonzero] / squared_norm[nonzero]
+        )
+        return (normalized * weights[:, None]).reshape(-1)
 
     result = least_squares(
         residuals,
         parameters,
-        loss="cauchy",
-        f_scale=float(robust_loss_scale),
+        loss="linear",
         max_nfev=2_000,
         xtol=1.0e-12,
         ftol=1.0e-12,
@@ -155,6 +168,7 @@ def estimate_weighted_sim3(
             "maximum_normalized_error": float(np.max(normalized_norms)),
             "robust_loss": "cauchy",
             "robust_loss_scale": float(robust_loss_scale),
+            "robust_loss_scope": "point_mahalanobis_norm",
             "optimizer_evaluations": int(result.nfev),
         },
     }

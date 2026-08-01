@@ -12,9 +12,11 @@ DroneAI explores an end-to-end drone-image workflow:
 1. COLMAP 4.1.1 reconstructs and geo-aligns a scene through a bounded
    GPS/temporal graph, GLOMAP and a compatible Caspar/Ceres fallback.
 2. Corrected RTK/PPK missions receive one covariance-aware pose-prior
-   refinement; standard GNSS missions skip it.
+   refinement, promoted only after comparison with the visual sparse model;
+   standard GNSS missions skip it.
 3. DroneGS trains a 3D Gaussian Splatting model through the immutable
-   `DRONEGS_PRODUCTION_PROFILE_V1`.
+   `DRONEGS_PRODUCTION_PROFILE_V1` and qualifies it under the separately
+   versioned `DRONEGS_QUALIFICATION_POLICY_V1`.
 4. CuPy renders a georeferenced orthomosaic and height map.
 5. The orthomosaic is split into overlapping tiles.
 6. Ultralytics YOLO OBB or Meta SAM 3 detects objects.
@@ -58,6 +60,8 @@ For implementation details, read:
   distributed installation;
 - [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) for the infrastructure-free
   workflow;
+- [`docs/audits/2026-08-01-audit-counter-analysis.md`](docs/audits/2026-08-01-audit-counter-analysis.md)
+  for the latest point-by-point geometry, RTK, GCP, SH and provenance audit;
 - [`DEVELOPMENT.md`](DEVELOPMENT.md) for tests, linting and dependency locks;
 - [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) for the sub-hour
   COLMAP/GLOMAP and RTK alignment path;

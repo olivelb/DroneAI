@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Any
 
 DRONEGS_PRODUCTION_PROFILE_ID = "DRONEGS_PRODUCTION_PROFILE_V1"
+DRONEGS_QUALIFICATION_POLICY_ID = "DRONEGS_QUALIFICATION_POLICY_V1"
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class DroneGSProductionProfile:
             "gs_sh_degree": str(self.sh_degree),
             "gs_seed": str(self.seed),
             "gs_production_profile": self.profile_id,
+            "gs_qualification_policy": DRONEGS_QUALIFICATION_POLICY_ID,
             "gs_optimizer_profile": self.optimizer_profile,
             "gs_pruning_policy": self.pruning_policy,
             "gs_raster_profile": self.raster_profile,
@@ -71,6 +73,14 @@ class DroneGSProductionProfile:
 
         values = asdict(self)
         values.pop("backend")
+        return values
+
+    def training_identity_parameters(self) -> dict[str, Any]:
+        """Return parameters that define training, excluding acceptance policy."""
+
+        values = self.trainer_parameters()
+        values.pop("canary_min_psnr")
+        values.pop("canary_min_ssim")
         return values
 
 

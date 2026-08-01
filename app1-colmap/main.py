@@ -19,12 +19,17 @@ if str(ROOT_DIR) not in sys.path:
 from shared.config import KAFKA_BROKER, TOPIC_CONTROL, TOPIC_MISSION, TOPIC_ORTHO, TOPIC_STATUS
 from shared import storage
 from shared.geospatial_assets import convert_to_cog, metadata_path, preview_path
+from shared.product_manifest import build_product_manifest, write_product_manifest
 from shared.pipeline_params import (
     normalize_feature_type,
     normalize_matcher_type,
 )
-from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
+from shared.dronegs_profile import (
+    DRONEGS_PRODUCTION_PROFILE_V1,
+    DRONEGS_QUALIFICATION_POLICY_ID,
+)
 from shared.rtk_refinement import (
+    assess_rtk_refinement_quality,
     inject_database_gravity_priors,
     inject_database_pose_priors,
     load_rtk_records,
@@ -974,26 +979,86 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         rtk_sparse_model_path = os.path.join(workspace_dir, "sparse_rtk")
         rtk_report_path = os.path.join(workspace_dir, "rtk_prior_report.json")
         rtk_refinement_enabled = bool(params.get("rtk_refinement_enabled", True))
-        active_sparse_model_path = (
-            rtk_sparse_model_path
-            if rtk_refinement_enabled
-            and os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin"))
-            else base_sparse_model_path
-        )
+        active_sparse_model_path = base_sparse_model_path
+
+        def evaluate_rtk_candidate():
+            return assess_rtk_refinement_quality(
+                inspect_sparse_quality(base_sparse_model_path),
+                inspect_sparse_quality(rtk_sparse_model_path),
+                minimum_point_ratio=float(params["rtk_minimum_point_ratio"]),
+                maximum_reprojection_degradation_px=float(
+                    params["rtk_maximum_reprojection_degradation_px"]
+                ),
+                maximum_track_length_loss_ratio=float(
+                    params["rtk_maximum_track_length_loss_ratio"]
+                ),
+                maximum_focal_length_change_ratio=float(
+                    params["rtk_maximum_focal_length_change_ratio"]
+                ),
+            )
         if (
             rtk_refinement_enabled
-            and not ortho_only_ready
             and os.path.exists(os.path.join(base_sparse_model_path, "cameras.bin"))
         ):
             if os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin")):
-                active_sparse_model_path = rtk_sparse_model_path
+                quality_gate = evaluate_rtk_candidate()
+                cached_report = {"schema_version": 1}
+                try:
+                    with open(rtk_report_path, encoding="utf-8") as handle:
+                        cached_report.update(json.load(handle))
+                except (FileNotFoundError, json.JSONDecodeError, OSError):
+                    pass
+                cached_report["quality_gate"] = quality_gate
+                previous_selected_model = cached_report.get("selected_model")
+                selected_model = (
+                    "rtk_candidate" if quality_gate["accepted"] else "visual_baseline"
+                )
+                cached_report["selected_model"] = selected_model
+                cached_report["status"] = (
+                    "completed" if quality_gate["accepted"] else "rejected-quality-gate"
+                )
+                atomic_write_json(rtk_report_path, cached_report)
+                if quality_gate["accepted"]:
+                    active_sparse_model_path = rtk_sparse_model_path
+                if (
+                    previous_selected_model is not None
+                    and previous_selected_model != selected_model
+                ) or (
+                    previous_selected_model is None
+                    and selected_model == "visual_baseline"
+                ):
+                    # Cached dense/render products may have been derived from
+                    # the previously auto-promoted RTK model. Force a rebuild
+                    # when the gate changes (or first rejects) the selection.
+                    ortho_only_ready = False
+                    for stale_path in (
+                        dense_path,
+                        os.path.join(workspace_dir, "sparse_geo"),
+                    ):
+                        shutil.rmtree(stale_path, ignore_errors=True)
+                    for stale_path in (
+                        os.path.join(workspace_dir, "alignment_transform.json"),
+                        os.path.join(workspace_dir, "orthomosaic.tif"),
+                        os.path.join(workspace_dir, "orthomosaic.height.tif"),
+                        os.path.join(workspace_dir, "gcp_alignment_report.json"),
+                    ):
+                        if os.path.exists(stale_path):
+                            os.remove(stale_path)
                 report_mission_progress(
                     vol_id,
                     "RTK_REFINEMENT",
                     57,
-                    log="Reusing the completed covariance-aware RTK sparse model.",
+                    log=(
+                        "Reusing the quality-gated covariance-aware RTK sparse model."
+                        if quality_gate["accepted"]
+                        else "Cached RTK candidate failed the comparison gate; retaining the visual baseline."
+                    ),
+                    details={
+                        "event": "rtk_refinement_reuse_gate",
+                        "quality_gate": quality_gate,
+                    },
                 )
-            else:
+            elif not ortho_only_ready:
                 try:
                     rtk_records = load_rtk_records(clean_images_dir)
                     rtk_report = inject_database_pose_priors(db_path, rtk_records)
@@ -1064,41 +1129,62 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         raise RuntimeError(
                             "pose_prior_mapper did not write a usable RTK model"
                         )
-                    active_sparse_model_path = rtk_sparse_model_path
+                    quality_gate = evaluate_rtk_candidate()
                     rtk_report.update(
                         {
-                            "status": "completed",
+                            "status": (
+                                "completed"
+                                if quality_gate["accepted"]
+                                else "rejected-quality-gate"
+                            ),
                             "elapsed_seconds": time.monotonic() - rtk_started_at,
                             "iterations": rtk_iterations,
                             "timeout_seconds": rtk_timeout,
                             "ba_backend": "CERES_GPU",
                             "robust_loss": "cauchy",
                             "robust_loss_scale": rtk_loss_scale,
+                            "quality_gate": quality_gate,
+                            "selected_model": (
+                                "rtk_candidate"
+                                if quality_gate["accepted"]
+                                else "visual_baseline"
+                            ),
                         }
                     )
                     atomic_write_json(rtk_report_path, rtk_report)
-                    for stale_path in (
-                        dense_path,
-                        os.path.join(workspace_dir, "sparse_geo"),
-                    ):
-                        shutil.rmtree(stale_path, ignore_errors=True)
-                    for stale_path in (
-                        os.path.join(workspace_dir, "alignment_transform.json"),
-                        os.path.join(workspace_dir, "orthomosaic.tif"),
-                        os.path.join(workspace_dir, "orthomosaic.height.tif"),
-                        os.path.join(workspace_dir, "gcp_alignment_report.json"),
-                    ):
-                        if os.path.exists(stale_path):
-                            os.remove(stale_path)
+                    if quality_gate["accepted"]:
+                        active_sparse_model_path = rtk_sparse_model_path
+                        for stale_path in (
+                            dense_path,
+                            os.path.join(workspace_dir, "sparse_geo"),
+                        ):
+                            shutil.rmtree(stale_path, ignore_errors=True)
+                        for stale_path in (
+                            os.path.join(workspace_dir, "alignment_transform.json"),
+                            os.path.join(workspace_dir, "orthomosaic.tif"),
+                            os.path.join(workspace_dir, "orthomosaic.height.tif"),
+                            os.path.join(workspace_dir, "gcp_alignment_report.json"),
+                        ):
+                            if os.path.exists(stale_path):
+                                os.remove(stale_path)
                     report_mission_progress(
                         vol_id,
                         "RTK_REFINEMENT",
                         58,
                         log=(
-                            "RTK pose refinement completed; downstream undistortion "
-                            "and georeferencing will use the constrained model."
+                            "RTK pose refinement passed the comparison gate; downstream "
+                            "processing will use the constrained model."
+                            if quality_gate["accepted"]
+                            else "RTK candidate degraded visual sparse metrics and was rejected; downstream processing retains the baseline model."
                         ),
-                        details={"event": "rtk_refinement_completed", **rtk_report},
+                        details={
+                            "event": (
+                                "rtk_refinement_completed"
+                                if quality_gate["accepted"]
+                                else "rtk_refinement_rejected"
+                            ),
+                            **rtk_report,
+                        },
                     )
                 except (
                     RuntimeError,
@@ -1111,6 +1197,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         "status": "skipped-or-fallback",
                         "reason": str(error),
                         "fallback_model": base_sparse_model_path,
+                        "selected_model": "visual_baseline",
                     }
                     atomic_write_json(rtk_report_path, fallback_report)
                     report_mission_progress(
@@ -1189,7 +1276,40 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         params["gcp_image_accuracy_px"]
                     ),
                     robust_loss_scale=float(params["gcp_robust_loss_scale"]),
+                    require_checkpoints=bool(
+                        params["gcp_require_checkpoints"]
+                    ),
+                    minimum_checkpoint_count=int(
+                        params["gcp_min_checkpoint_count"]
+                    ),
+                    maximum_checkpoint_horizontal_rmse_m=float(
+                        params["gcp_max_checkpoint_horizontal_rmse_m"]
+                    ),
+                    maximum_checkpoint_vertical_rmse_m=float(
+                        params["gcp_max_checkpoint_vertical_rmse_m"]
+                    ),
+                    maximum_checkpoint_normalized_error_sigma=float(
+                        params["gcp_max_checkpoint_normalized_error_sigma"]
+                    ),
+                    minimum_adjustment_baseline_m=float(
+                        params["gcp_min_adjustment_baseline_m"]
+                    ),
                 )
+                gcp_report_file = os.path.join(
+                    workspace_dir, "gcp_alignment_report.json"
+                )
+                atomic_write_json(gcp_report_file, gcp_report)
+                quality_gate = gcp_report["quality_gate"]
+                if not quality_gate["accepted"]:
+                    failed_checks = ", ".join(
+                        check["name"]
+                        for check in quality_gate["checks"]
+                        if not check["passed"]
+                    )
+                    raise RuntimeError(
+                        "GCP alignment rejected by the promotion gate: "
+                        + failed_checks
+                    )
                 from shared.geo_alignment import write_alignment_transform
 
                 write_alignment_transform(transform_file, transform)
@@ -1197,10 +1317,6 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     active_sparse_model_path,
                     sparse_geo_path,
                     transform,
-                )
-                atomic_write_json(
-                    os.path.join(workspace_dir, "gcp_alignment_report.json"),
-                    gcp_report,
                 )
                 align_tf = transform_file
                 fit = transform["fit"]
@@ -1213,12 +1329,14 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                         f"{gcp_report['adjustment_points']} adjustment controls "
                         f"and {gcp_report['checkpoint_points']} independent "
                         f"checkpoints (RMSE={fit['rmse']:.3f} m, "
-                        f"weighted RMSE={fit['weighted_rmse']:.2f}σ)."
+                        f"weighted RMSE={fit['weighted_rmse']:.2f}σ, "
+                        f"status={quality_gate['status']})."
                     ),
                     details={
                         "event": "gcp_alignment_completed",
                         "adjustment_points": gcp_report["adjustment_points"],
                         "checkpoint_points": gcp_report["checkpoint_points"],
+                        "quality_gate": quality_gate,
                         **fit,
                     },
                 )
@@ -1404,6 +1522,12 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
                 )
             )
+            gs_qualification_policy_id = str(
+                params.get(
+                    "gs_qualification_policy",
+                    DRONEGS_QUALIFICATION_POLICY_ID,
+                )
+            )
             gs_optimizer_profile = str(
                 params.get(
                     "gs_optimizer_profile",
@@ -1443,10 +1567,16 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 params.get("gs_test_guard_percent", 0)
             )
             gs_canary_min_psnr = float(
-                params.get("gs_canary_min_psnr", 18.0)
+                params.get(
+                    "gs_canary_min_psnr",
+                    DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr,
+                )
             )
             gs_canary_min_ssim = float(
-                params.get("gs_canary_min_ssim", 0.35)
+                params.get(
+                    "gs_canary_min_ssim",
+                    DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim,
+                )
             )
             gs_filter_enabled = params.get("gs_filter_enabled", True)
             gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
@@ -1490,8 +1620,6 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                     "test_every": gs_test_every,
                     "test_split": gs_test_split,
                     "test_guard_percent": gs_test_guard_percent,
-                    "canary_min_psnr": gs_canary_min_psnr,
-                    "canary_min_ssim": gs_canary_min_ssim,
                 }
                 expected_profile_values = {
                     name: getattr(production, name)
@@ -1508,6 +1636,27 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                             "recorded as custom instead of production V1."
                         ),
                     )
+
+            if (
+                gs_qualification_policy_id == DRONEGS_QUALIFICATION_POLICY_ID
+                and (
+                    gs_canary_min_psnr
+                    != DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
+                    or gs_canary_min_ssim
+                    != DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
+                )
+            ):
+                gs_qualification_policy_id = "custom"
+                report_mission_progress(
+                    vol_id,
+                    "GAUSS",
+                    94,
+                    log=(
+                        "DroneGS canary thresholds differ from qualification "
+                        "policy V1; training recipe identity is preserved and "
+                        "qualification policy is recorded as custom."
+                    ),
+                )
 
             checkpoint_root = os.getenv("DRONEGS_CHECKPOINT_ROOT")
             if not checkpoint_root:
@@ -1623,6 +1772,9 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 trainer_backend=gs_backend,
                 training_seed=gs_seed,
                 dronegs_profile_id=gs_profile_id,
+                dronegs_qualification_policy_id=(
+                    gs_qualification_policy_id
+                ),
                 dronegs_optimizer_profile=gs_optimizer_profile,
                 dronegs_pruning_policy=gs_pruning_policy,
                 dronegs_raster_profile=gs_raster_profile,
@@ -1687,6 +1839,121 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         # Never announce DONE or start downstream processing unless conversion,
         # upload and remote integrity verification all succeeded.
         convert_to_cog(ortho_file)
+        height_tif = result["height_file"]
+        if not os.path.isfile(height_tif):
+            raise FileNotFoundError(
+                f"Required DSM artifact is missing: {height_tif}"
+            )
+        convert_to_cog(height_tif)
+
+        final_ply = result["final_ply"]
+        if not os.path.isfile(final_ply):
+            raise FileNotFoundError(
+                f"Required reusable Gaussian artifact is missing: {final_ply}"
+            )
+        trainer_manifests = sorted(
+            Path(result["checkpoint_dir"]).rglob("trainer_run.json")
+        )
+        if not trainer_manifests:
+            raise FileNotFoundError(
+                "Required DroneGS training manifest is missing"
+            )
+        qualification_manifests = sorted(
+            Path(result["checkpoint_dir"]).rglob("canary_result.json")
+        )
+        if len(qualification_manifests) != len(trainer_manifests):
+            raise FileNotFoundError(
+                "Every reusable DroneGS model requires a canary qualification manifest"
+            )
+
+        gcp_enabled = bool(params.get("gcp_adjustment_enabled", False))
+        gcp_report_file = os.path.join(
+            workspace_dir, "gcp_alignment_report.json"
+        )
+        required_reports = {
+            "rtk_prior_report": (
+                rtk_report_path if os.path.isfile(rtk_report_path) else None
+            ),
+            "imu_gravity_report": os.path.join(
+                workspace_dir, "imu_gravity_report.json"
+            ),
+            "alignment_transform": align_tf,
+            "gcp_alignment_report": (
+                gcp_report_file if gcp_enabled else None
+            ),
+        }
+        product_manifest_path = os.path.join(
+            workspace_dir, "product_manifest.json"
+        )
+        product_manifest = build_product_manifest(
+            mission_id=vol_id,
+            projected_crs=utm_crs,
+            parameters={
+                "pipeline": params,
+                "effective_training_profile_id": gs_profile_id,
+                "effective_qualification_policy_id": (
+                    gs_qualification_policy_id
+                ),
+                "renderer": {
+                    "width": result["width"],
+                    "height": result["height"],
+                    "gsd_m": result["gsd"],
+                    "projected_extent": result["projected_extent"],
+                    "vertical_reference": result["vertical_reference"],
+                    "vertical_offset_m": result["vertical_offset_m"],
+                    "gaussians": result["n_gaussians"],
+                    "renderer_contract": result["renderer_contract"],
+                    "cupy_version": result["cupy_version"],
+                    "mip_filter_variance": result[
+                        "ortho_mip_filter_variance"
+                    ],
+                    "mip_filter_compensation": result[
+                        "ortho_mip_filter_compensation"
+                    ],
+                    "sh_frame_policy": "inverse-sim3-view-direction-v1",
+                },
+            },
+            products={
+                "orthomosaic_cog": ortho_file,
+                "orthomosaic_metadata": metadata_path(ortho_file),
+                "orthomosaic_preview": preview_path(ortho_file),
+                "dsm_cog": height_tif,
+                "dsm_metadata": metadata_path(height_tif),
+                "dsm_preview": preview_path(height_tif),
+                "gaussian_model": final_ply,
+            },
+            sparse_model_path=active_sparse_model_path,
+            reports=required_reports,
+            trainer_manifests=trainer_manifests,
+            qualification_manifests=qualification_manifests,
+            git_revision=os.getenv("DRONEAI_GIT_REVISION"),
+            software_components={
+                "pipeline": Path(__file__),
+                "product_manifest": ROOT_DIR / "shared" / "product_manifest.py",
+                "rtk_refinement": ROOT_DIR / "shared" / "rtk_refinement.py",
+                "gcp_control": ROOT_DIR / "shared" / "gcp_control.py",
+                "ortho_generator": (
+                    ROOT_DIR
+                    / "app1-colmap"
+                    / "gaussian_ortho"
+                    / "generate_gaussian_orthophoto.py"
+                ),
+                "ortho_renderer": (
+                    ROOT_DIR
+                    / "app1-colmap"
+                    / "gaussian_ortho"
+                    / "ortho_renderer.py"
+                ),
+                "cuda_rasterizer": (
+                    ROOT_DIR
+                    / "app1-colmap"
+                    / "gaussian_ortho"
+                    / "cuda_rasterizer.py"
+                ),
+            },
+        )
+        write_product_manifest(product_manifest_path, product_manifest)
+
         storage.upload_verified_file(ortho_file, ortho_s3_key)
         storage.upload_verified_file(
             metadata_path(ortho_file),
@@ -1697,6 +1964,75 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
             f"{mission_s3_prefix}/orthomosaic.preview.webp",
         )
         upload_count += 3
+        height_key = f"{mission_s3_prefix}/orthomosaic.height.tif"
+        for local_path, remote_key in (
+            (height_tif, height_key),
+            (metadata_path(height_tif), f"{height_key}.cog.json"),
+            (
+                preview_path(height_tif),
+                f"{mission_s3_prefix}/orthomosaic.height.preview.webp",
+            ),
+            (final_ply, f"{mission_s3_prefix}/gaussian/final.ply"),
+        ):
+            storage.upload_verified_file(local_path, remote_key)
+            upload_count += 1
+        checkpoint_root_path = Path(result["checkpoint_dir"]).resolve()
+        for required_manifest in [
+            *trainer_manifests,
+            *qualification_manifests,
+        ]:
+            relative = required_manifest.resolve().relative_to(
+                checkpoint_root_path
+            )
+            storage.upload_verified_file(
+                required_manifest,
+                f"{mission_s3_prefix}/gaussian/{relative.as_posix()}",
+            )
+            upload_count += 1
+
+        report_remote_names = {
+            "rtk_prior_report": "rtk_prior_report.json",
+            "imu_gravity_report": "imu_gravity_report.json",
+            "alignment_transform": "alignment_transform.json",
+            "gcp_alignment_report": "gcp_alignment_report.json",
+        }
+        for report_name, report_path in required_reports.items():
+            if report_path is None or not os.path.isfile(report_path):
+                continue
+            storage.upload_verified_file(
+                report_path,
+                f"{mission_s3_prefix}/{report_remote_names[report_name]}",
+            )
+            upload_count += 1
+
+        if gcp_enabled:
+            if not align_tf or not os.path.isfile(align_tf):
+                raise FileNotFoundError(
+                    "GCP mission is missing its required alignment transform"
+                )
+            if not os.path.isfile(gcp_report_file):
+                raise FileNotFoundError(
+                    "GCP mission is missing its required alignment report"
+                )
+            for required_name in ("cameras.bin", "images.bin", "points3D.bin"):
+                required_sparse_file = os.path.join(
+                    sparse_geo_path, required_name
+                )
+                if not os.path.isfile(required_sparse_file):
+                    raise FileNotFoundError(
+                        f"GCP mission is missing sparse_geo/{required_name}"
+                    )
+                storage.upload_verified_file(
+                    required_sparse_file,
+                    f"{mission_s3_prefix}/colmap/sparse_geo/{required_name}",
+                )
+                upload_count += 1
+
+        storage.upload_verified_file(
+            product_manifest_path,
+            f"{mission_s3_prefix}/product_manifest.json",
+        )
+        upload_count += 1
         report_mission_progress(
             vol_id,
             "UPLOADING",
@@ -1707,60 +2043,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
         # Remaining recovery/debug products are useful but do not invalidate a
         # successfully published orthomosaic when one of them cannot be copied.
         try:
-            height_tif = os.path.join(workspace_dir, "orthomosaic.height.tif")
-            if os.path.exists(height_tif):
-                try:
-                    convert_to_cog(height_tif)
-                    height_key = (
-                        f"{mission_s3_prefix}/orthomosaic.height.tif"
-                    )
-                    for local_path, remote_key in (
-                        (height_tif, height_key),
-                        (
-                            metadata_path(height_tif),
-                            f"{height_key}.cog.json",
-                        ),
-                        (
-                            preview_path(height_tif),
-                            f"{mission_s3_prefix}/"
-                            "orthomosaic.height.preview.webp",
-                        ),
-                    ):
-                        storage.upload_verified_file(local_path, remote_key)
-                        upload_count += 1
-                except Exception as height_error:
-                    report_mission_progress(
-                        vol_id,
-                        "UPLOADING",
-                        93,
-                        log=(
-                            "Warning: optional height COG publication "
-                            f"failed: {height_error}"
-                        ),
-                    )
-
-            # 2. Alignment & geo data
-            if align_tf and os.path.exists(align_tf):
-                storage.upload_file(align_tf, f"{mission_s3_prefix}/alignment_transform.json")
-                upload_count += 1
-            gcp_report_file = os.path.join(
-                workspace_dir, "gcp_alignment_report.json"
-            )
-            if os.path.exists(gcp_report_file):
-                storage.upload_file(
-                    gcp_report_file,
-                    f"{mission_s3_prefix}/gcp_alignment_report.json",
-                )
-                upload_count += 1
-            imu_report_file = os.path.join(
-                workspace_dir, "imu_gravity_report.json"
-            )
-            if os.path.exists(imu_report_file):
-                storage.upload_file(
-                    imu_report_file,
-                    f"{mission_s3_prefix}/imu_gravity_report.json",
-                )
-                upload_count += 1
+            # 2. Remaining geo data (reports above are hash-verified)
             if os.path.exists(geo_data_file):
                 storage.upload_file(geo_data_file, f"{mission_s3_prefix}/geo_data.txt")
                 upload_count += 1
@@ -1789,7 +2072,7 @@ def run_colmap_pipeline(workspace_dir, input_dataset, vol_id, mission_params):
                 upload_count += n
 
             sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
-            if os.path.isdir(sparse_geo_path):
+            if not gcp_enabled and os.path.isdir(sparse_geo_path):
                 n = storage.upload_directory(sparse_geo_path, f"{mission_s3_prefix}/colmap/sparse_geo/")
                 upload_count += n
 

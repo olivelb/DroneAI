@@ -326,6 +326,152 @@ def _point_accuracy(
     return configured.get(point_id, default)
 
 
+def _gcp_role_metrics(
+    point_reports: list[dict[str, Any]],
+    role: str,
+) -> dict[str, Any] | None:
+    selected = [point for point in point_reports if point["role"] == role]
+    if not selected:
+        return None
+    horizontal = np.asarray(
+        [point["horizontal_error_m"] for point in selected], dtype=np.float64
+    )
+    vertical = np.asarray(
+        [point["vertical_error_m"] for point in selected], dtype=np.float64
+    )
+    euclidean = np.asarray(
+        [point["euclidean_error_m"] for point in selected], dtype=np.float64
+    )
+    normalized = np.asarray(
+        [point["normalized_error_norm_sigma"] for point in selected],
+        dtype=np.float64,
+    )
+    return {
+        "points": len(selected),
+        "horizontal_rmse_m": float(np.sqrt(np.mean(horizontal**2))),
+        "vertical_rmse_m": float(np.sqrt(np.mean(vertical**2))),
+        "euclidean_rmse_m": float(np.sqrt(np.mean(euclidean**2))),
+        "maximum_horizontal_error_m": float(np.max(horizontal)),
+        "maximum_vertical_error_m": float(np.max(vertical)),
+        "maximum_normalized_error_sigma": float(np.max(normalized)),
+    }
+
+
+def assess_gcp_alignment_quality(
+    report: dict[str, Any],
+    *,
+    require_checkpoints: bool = False,
+    minimum_checkpoint_count: int = 1,
+    maximum_checkpoint_horizontal_rmse_m: float = 0.10,
+    maximum_checkpoint_vertical_rmse_m: float = 0.20,
+    maximum_checkpoint_normalized_error_sigma: float = 5.0,
+    minimum_adjustment_baseline_m: float = 0.0,
+) -> dict[str, Any]:
+    """Evaluate whether a fitted GCP transform is safe to promote.
+
+    Adjustment residuals describe fit, not independent accuracy.  Missions
+    without checkpoints may still be processed for backwards compatibility,
+    but are explicitly labelled ``accepted-unverified`` and never presented as
+    independently verified.
+    """
+
+    if minimum_checkpoint_count < 1:
+        raise ValueError("minimum checkpoint count must be at least one")
+    thresholds = (
+        maximum_checkpoint_horizontal_rmse_m,
+        maximum_checkpoint_vertical_rmse_m,
+        maximum_checkpoint_normalized_error_sigma,
+        minimum_adjustment_baseline_m,
+    )
+    if not all(math.isfinite(float(value)) and float(value) >= 0 for value in thresholds):
+        raise ValueError("GCP quality thresholds must be finite and non-negative")
+
+    points = list(report.get("points") or [])
+    adjustment = [point for point in points if point.get("role") == "adjustment"]
+    checkpoint_metrics = _gcp_role_metrics(points, "checkpoint")
+    adjustment_metrics = _gcp_role_metrics(points, "adjustment")
+    surveyed_xy = np.asarray(
+        [point["surveyed_xyz"][:2] for point in adjustment], dtype=np.float64
+    )
+    if len(surveyed_xy) >= 2:
+        deltas = surveyed_xy[:, None, :] - surveyed_xy[None, :, :]
+        adjustment_baseline = float(
+            np.max(np.linalg.norm(deltas, axis=2))
+        )
+    else:
+        adjustment_baseline = 0.0
+
+    checks: list[dict[str, Any]] = []
+
+    def add_check(name: str, actual: Any, limit: Any, passed: bool) -> None:
+        checks.append(
+            {"name": name, "actual": actual, "limit": limit, "passed": passed}
+        )
+
+    add_check(
+        "adjustment_baseline_m",
+        adjustment_baseline,
+        {"minimum": float(minimum_adjustment_baseline_m)},
+        adjustment_baseline >= float(minimum_adjustment_baseline_m),
+    )
+    checkpoint_count = 0 if checkpoint_metrics is None else checkpoint_metrics["points"]
+    if checkpoint_count == 0:
+        add_check(
+            "independent_checkpoints",
+            0,
+            {"minimum": minimum_checkpoint_count, "required": require_checkpoints},
+            not require_checkpoints,
+        )
+        verification = "unverified-no-checkpoints"
+    else:
+        add_check(
+            "independent_checkpoints",
+            checkpoint_count,
+            {"minimum": minimum_checkpoint_count, "required": True},
+            checkpoint_count >= minimum_checkpoint_count,
+        )
+        add_check(
+            "checkpoint_horizontal_rmse_m",
+            checkpoint_metrics["horizontal_rmse_m"],
+            {"maximum": float(maximum_checkpoint_horizontal_rmse_m)},
+            checkpoint_metrics["horizontal_rmse_m"]
+            <= float(maximum_checkpoint_horizontal_rmse_m),
+        )
+        add_check(
+            "checkpoint_vertical_rmse_m",
+            checkpoint_metrics["vertical_rmse_m"],
+            {"maximum": float(maximum_checkpoint_vertical_rmse_m)},
+            checkpoint_metrics["vertical_rmse_m"]
+            <= float(maximum_checkpoint_vertical_rmse_m),
+        )
+        add_check(
+            "checkpoint_normalized_error_sigma",
+            checkpoint_metrics["maximum_normalized_error_sigma"],
+            {"maximum": float(maximum_checkpoint_normalized_error_sigma)},
+            checkpoint_metrics["maximum_normalized_error_sigma"]
+            <= float(maximum_checkpoint_normalized_error_sigma),
+        )
+        verification = "independently-verified"
+
+    accepted = all(check["passed"] for check in checks)
+    return {
+        "schema_version": 1,
+        "accepted": accepted,
+        "status": (
+            "rejected"
+            if not accepted
+            else "accepted-verified"
+            if checkpoint_count
+            else "accepted-unverified"
+        ),
+        "verification": verification,
+        "adjustment_metrics": adjustment_metrics,
+        "checkpoint_metrics": checkpoint_metrics,
+        "adjustment_baseline_m": adjustment_baseline,
+        "checks": checks,
+    }
+
+
 def build_weighted_gcp_alignment(
     model_path: str | Path,
     gcp_path: str | Path,
@@ -336,6 +482,12 @@ def build_weighted_gcp_alignment(
     default_vertical_accuracy_m: float = 0.03,
     default_image_accuracy_px: float = 1.0,
     robust_loss_scale: float = 3.0,
+    require_checkpoints: bool = False,
+    minimum_checkpoint_count: int = 1,
+    maximum_checkpoint_horizontal_rmse_m: float = 0.10,
+    maximum_checkpoint_vertical_rmse_m: float = 0.20,
+    maximum_checkpoint_normalized_error_sigma: float = 5.0,
+    minimum_adjustment_baseline_m: float = 0.0,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Triangulate GCP image observations and fit a weighted robust Sim(3)."""
 
@@ -587,6 +739,21 @@ def build_weighted_gcp_alignment(
             "robust_loss_scale": robust_loss_scale,
         },
     }
+    report["quality_gate"] = assess_gcp_alignment_quality(
+        report,
+        require_checkpoints=require_checkpoints,
+        minimum_checkpoint_count=minimum_checkpoint_count,
+        maximum_checkpoint_horizontal_rmse_m=(
+            maximum_checkpoint_horizontal_rmse_m
+        ),
+        maximum_checkpoint_vertical_rmse_m=(
+            maximum_checkpoint_vertical_rmse_m
+        ),
+        maximum_checkpoint_normalized_error_sigma=(
+            maximum_checkpoint_normalized_error_sigma
+        ),
+        minimum_adjustment_baseline_m=minimum_adjustment_baseline_m,
+    )
     return transform, report
 
 

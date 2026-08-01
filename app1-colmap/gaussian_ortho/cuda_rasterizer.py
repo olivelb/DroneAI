@@ -228,6 +228,7 @@ def rasterize_ortho(
     bg_color=(1.0, 1.0, 1.0),
     eps2d=0.03,
     compensate_filter=True,
+    sh_direction_rotation=None,
 ):
     """
     Orthographic rasterisation of 3D Gaussians.
@@ -261,6 +262,13 @@ def rasterize_ortho(
     # ---- 2. Evaluate SH colours (uniform nadir direction) ----
     c2w = cp.linalg.inv(viewmat)
     cam_fwd = c2w[:3, 2]                             # camera +Z in world
+    if sh_direction_rotation is not None:
+        direction_rotation = cp.asarray(
+            sh_direction_rotation, dtype=cp.float32
+        )
+        if direction_rotation.shape != (3, 3):
+            raise ValueError("sh_direction_rotation must be a 3x3 matrix")
+        cam_fwd = direction_rotation @ cam_fwd
     dirs = cp.broadcast_to(cam_fwd[None, :], (N, 3)).copy()
 
     if sh_degree is not None and sh_degree > 0:

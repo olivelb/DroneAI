@@ -7,6 +7,7 @@ import pytest
 
 from shared.geo_alignment import estimate_sim3
 from shared.rtk_refinement import (
+    assess_rtk_refinement_quality,
     gimbal_attitude_to_gravity_sensor,
     inject_database_gravity_priors,
     inject_database_pose_priors,
@@ -86,6 +87,77 @@ def _create_pose_prior_database(database_path, image_count: int) -> None:
         )
     connection.commit()
     connection.close()
+
+
+def test_rtk_candidate_is_promoted_only_without_visual_regression() -> None:
+    baseline = {
+        "registered_images": 176,
+        "points3D": 100_000,
+        "mean_reprojection_error_px": 0.70,
+        "median_track_length": 5.0,
+        "median_focal_length_px": 4000.0,
+    }
+    candidate = {
+        "registered_images": 176,
+        "points3D": 95_000,
+        "mean_reprojection_error_px": 0.76,
+        "median_track_length": 4.5,
+        "median_focal_length_px": 4040.0,
+    }
+
+    quality = assess_rtk_refinement_quality(baseline, candidate)
+
+    assert quality["accepted"] is True
+    assert quality["status"] == "promoted"
+    assert quality["accuracy_verification"] == "internal-visual-metrics-only"
+
+
+def test_rtk_candidate_with_reprojection_regression_is_rejected() -> None:
+    baseline = {
+        "registered_images": 100,
+        "points3D": 10_000,
+        "mean_reprojection_error_px": 0.60,
+        "median_track_length": 4.0,
+        "median_focal_length_px": 4000.0,
+    }
+    candidate = {
+        "registered_images": 100,
+        "points3D": 9_500,
+        "mean_reprojection_error_px": 0.85,
+        "median_track_length": 4.0,
+        "median_focal_length_px": 4000.0,
+    }
+
+    quality = assess_rtk_refinement_quality(baseline, candidate)
+
+    assert quality["accepted"] is False
+    assert any(
+        check["name"] == "mean_reprojection_error_px" and not check["passed"]
+        for check in quality["checks"]
+    )
+
+
+def test_rtk_candidate_with_focal_drift_is_rejected() -> None:
+    baseline = {
+        "registered_images": 100,
+        "points3D": 10_000,
+        "mean_reprojection_error_px": 0.60,
+        "median_track_length": 4.0,
+        "median_focal_length_px": 4000.0,
+    }
+    candidate = {
+        **baseline,
+        "median_focal_length_px": 4200.0,
+    }
+
+    quality = assess_rtk_refinement_quality(baseline, candidate)
+
+    assert quality["accepted"] is False
+    assert any(
+        check["name"] == "median_focal_length_change_ratio"
+        and not check["passed"]
+        for check in quality["checks"]
+    )
 
 
 def _rtk_records(count: int) -> list[dict]:

@@ -22,6 +22,7 @@ import numpy as np
 
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
+    DRONEGS_QUALIFICATION_POLICY_ID,
     effective_raster_profile,
 )
 
@@ -194,6 +195,7 @@ def generate_gaussian_orthophoto(
     trainer_backend: str | None = None,
     training_seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed,
     dronegs_profile_id: str = DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
+    dronegs_qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID,
     dronegs_optimizer_profile: str = (
         DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
     ),
@@ -428,6 +430,7 @@ def generate_gaussian_orthophoto(
             dataset_fingerprint=dataset_identity.fingerprint,
             dronegs=DroneGSTuning(
                 profile_id=dronegs_profile_id,
+                qualification_policy_id=dronegs_qualification_policy_id,
                 optimizer_profile=dronegs_optimizer_profile,
                 pruning_policy=dronegs_pruning_policy,
                 raster_profile=dronegs_raster_profile,
@@ -556,6 +559,7 @@ def generate_gaussian_orthophoto(
     # orthographic renderer to orient the virtual nadir camera correctly.
     geo_origin = np.zeros(3, dtype=np.float64)   # will be added to GeoTIFF
     R_geo = None  # rotation COLMAP→geo for renderer (PCA path only)
+    sh_direction_rotation = None
     if transform_data:
         _report(vol_id, "GAUSS", 89, "Applying geo-alignment to Gaussian model…", report_fn)
         # Apply only scale + rotation to the model (keeps coords near 0)
@@ -571,6 +575,10 @@ def generate_gaussian_orthophoto(
         merged_model._rotation = merged_model._quaternion_multiply(
             R_quat_cp[None, :], merged_model._rotation,
         )
+        # Geometry now lives in the geographic frame, but SH coefficients
+        # were learned in the original COLMAP frame. Convert the geographic
+        # view direction back with Rᵀ before evaluating SH.
+        sh_direction_rotation = cp.asnumpy(R).astype(np.float32).T
         geo_origin = t_f64           # stored as float64, used for GeoTIFF only
 
         # Keep transformed camera positions for spatial filtering
@@ -681,6 +689,7 @@ def generate_gaussian_orthophoto(
     result = render_orthophoto(
         merged_model, gsd=local_gsd, extent=render_extent,
         R_geo=R_geo,
+        sh_direction_rotation=sh_direction_rotation,
         mip_filter_variance=ortho_mip_filter_variance,
         mip_filter_compensation=ortho_mip_filter_compensation,
     )
@@ -761,6 +770,16 @@ def generate_gaussian_orthophoto(
         "width": W,
         "height": H,
         "gsd": resolution,
+        "projected_extent": [
+            geo_x_min,
+            geo_y_max - H * resolution,
+            geo_x_min + W * resolution,
+            geo_y_max,
+        ],
+        "vertical_reference": vertical_reference,
+        "vertical_offset_m": z_offset,
+        "renderer_contract": "cupy-ortho-v2-sh-frame",
+        "cupy_version": cp.__version__,
         "n_gaussians": merged_model.num_gaussians,
         "ortho_mip_filter_variance": ortho_mip_filter_variance,
         "ortho_mip_filter_compensation": ortho_mip_filter_compensation,

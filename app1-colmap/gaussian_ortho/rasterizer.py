@@ -32,6 +32,10 @@ class RasterSettings:
     mip_filter_variance: float = 0.03
     mip_filter_compensation: bool = True
     viewmatrix: np.ndarray = None      # 4×4 world-to-camera (numpy float32)
+    # Optional world-direction transform used only for SH evaluation. A
+    # Sim(3) may rotate Gaussian geometry after training, while the learned SH
+    # coefficients remain expressed in the original training frame.
+    sh_direction_rotation: np.ndarray = None
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +106,7 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         settings.bg_color,
         eps2d=settings.mip_filter_variance,
         compensate_filter=settings.mip_filter_compensation,
+        sh_direction_rotation=settings.sh_direction_rotation,
     )
 
     # Return in (C, H, W) layout for compatibility with callers

@@ -1,7 +1,10 @@
 alembic
 boto3
 confluent-kafka
-cupy-cuda12x
+cupy-cuda12x[ctk]
+cuda-toolkit[cublas,cudart,cufft,curand,cusolver,cusparse,nvrtc]==12.8.*
+nvidia-nvjitlink-cu12==12.8.93
+nvidia-nvjitlink-cu12==12.8.93
 geoalchemy2
 numpy
 pillow

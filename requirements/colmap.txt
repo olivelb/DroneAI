@@ -33,6 +33,10 @@ confluent-kafka==2.15.0
     # via -r requirements/colmap.in
 cuda-pathfinder==1.6.0
     # via cupy-cuda12x
+cuda-toolkit==12.8.2.0
+    # via
+    #   -r requirements/colmap.in
+    #   cupy-cuda12x
 cupy-cuda12x==14.1.1
     # via -r requirements/colmap.in
 geoalchemy2==0.20.0
@@ -55,6 +59,33 @@ numpy==2.4.6
     #   pycolmap
     #   rasterio
     #   scipy
+nvidia-cublas-cu12==12.8.5.5
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver-cu12
+nvidia-cuda-nvrtc-cu12==12.8.93
+    # via
+    #   cuda-toolkit
+    #   nvidia-cublas-cu12
+nvidia-cuda-runtime-cu12==12.8.90
+    # via cuda-toolkit
+nvidia-cufft-cu12==11.3.3.83
+    # via cuda-toolkit
+nvidia-curand-cu12==10.3.9.90
+    # via cuda-toolkit
+nvidia-cusolver-cu12==11.7.3.90
+    # via cuda-toolkit
+nvidia-cusparse-cu12==12.5.8.93
+    # via
+    #   cuda-toolkit
+    #   nvidia-cusolver-cu12
+nvidia-nvjitlink-cu12==12.8.93
+    # via
+    #   -r requirements/colmap.in
+    #   cuda-toolkit
+    #   nvidia-cufft-cu12
+    #   nvidia-cusolver-cu12
+    #   nvidia-cusparse-cu12
 packaging==26.2
     # via geoalchemy2
 pillow==12.3.0

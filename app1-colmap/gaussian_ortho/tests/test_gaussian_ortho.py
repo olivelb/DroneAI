@@ -250,6 +250,24 @@ class TestOrthoRenderer:
         assert "height" in result
         assert result["rgb"].ndim == 3
 
+    def test_sim3_rotation_keeps_sh_in_training_frame(self):
+        """Rotated geometry must evaluate directional SH in its learned frame."""
+        sh = cp.zeros((1, 4, 3), dtype=cp.float32)
+        sh[:, 3, 0] = 1.0
+        rotation_geo_from_training = np.array(
+            [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        geo_direction = cp.array([[0.0, 0.0, 1.0]], dtype=cp.float32)
+        training_direction = (
+            cp.asarray(rotation_geo_from_training.T) @ geo_direction[0]
+        )
+
+        expected = eval_sh(1, training_direction[None, :], sh)
+        uncorrected = eval_sh(1, geo_direction, sh)
+
+        assert not cp.allclose(expected, uncorrected)
+
     def test_depth_is_normalized_by_accumulated_opacity(self):
         """A translucent surface keeps its geometric depth, not alpha*depth."""
         _rgb, depth = rasterize_ortho(

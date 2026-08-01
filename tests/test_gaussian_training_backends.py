@@ -185,7 +185,11 @@ print(json.dumps({
     assert result.manifest_path.is_file()
     assert result.effective_seed == 42
     assert progress == [(5, 0.25, 2)]
-    assert json.loads((tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8"))["status"] == "passed"
+    canary = json.loads(
+        (tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8")
+    )
+    assert canary["status"] == "passed"
+    assert canary["qualification_policy_id"] == "DRONEGS_QUALIFICATION_POLICY_V1"
     assert not (tmp_path / "output" / "training.ckpt").exists()
 
 
