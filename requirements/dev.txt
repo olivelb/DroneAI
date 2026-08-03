@@ -4,6 +4,8 @@
 #
 #    pip-compile --output-file=requirements/dev.txt requirements/dev.in
 #
+actionlint-py==1.7.12.24
+    # via -r requirements/dev.in
 affine==2.4.0
     # via rasterio
 alembic==1.18.5
@@ -135,6 +137,8 @@ pydantic==2.13.4
     #   fastapi
 pydantic-core==2.46.4
     # via pydantic
+pyflakes==3.4.0
+    # via -r requirements/dev.in
 pygments==2.20.0
     # via pytest
 pyparsing==3.3.2
@@ -167,6 +171,8 @@ ruff==0.15.22
 s3transfer==0.19.2
     # via boto3
 scipy==1.17.1
+    # via -r requirements/dev.in
+shellcheck-py==0.11.0.1
     # via -r requirements/dev.in
 six==1.17.0
     # via python-dateutil
