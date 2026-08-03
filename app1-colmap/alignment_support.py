@@ -6,7 +6,6 @@ from Kafka/S3 so they can be unit-tested without a COLMAP installation.
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import sqlite3
@@ -15,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+
 
 
 CASPAR_CAMERA_MODELS = frozenset({"PINHOLE", "SIMPLE_RADIAL"})
@@ -31,17 +31,6 @@ CAMERA_MODEL_NAMES = {
     9: "RADIAL_FISHEYE",
     10: "THIN_PRISM_FISHEYE",
 }
-
-
-def atomic_write_json(path: str | os.PathLike[str], payload: dict[str, Any]) -> None:
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f"{destination.name}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, destination)
 
 
 def parse_colmap_reference_file(
@@ -370,3 +359,12 @@ def build_mapping_command(
 def choose_auto_fallback(camera_models: Iterable[str]) -> str:
     normalized = {str(model).upper() for model in camera_models}
     return "caspar" if normalized and normalized <= CASPAR_CAMERA_MODELS else "ceres"
+
+
+def choose_primary_engine(requested_engine: str, *, facade: bool = False) -> str:
+    """Resolve ``auto`` without giving local facades a geographic mapper."""
+
+    normalized = str(requested_engine).strip().lower()
+    if normalized != "auto":
+        return normalized
+    return "caspar" if facade else "glomap"

@@ -28,6 +28,35 @@ def scale_dimensions(width, height, max_image_size):
     return max(1, int(round(width * scale))), max(1, int(round(height * scale)))
 
 
+def _report_heartbeat_if_due(
+    *,
+    command,
+    vol_id,
+    step,
+    base_progress,
+    report_fn,
+    start_time,
+    last_heartbeat_time,
+    heartbeat_interval,
+):
+    now = time.monotonic()
+    if heartbeat_interval <= 0 or now - last_heartbeat_time < heartbeat_interval:
+        return last_heartbeat_time
+    elapsed_seconds = int(now - start_time)
+    report_fn(
+        vol_id,
+        step,
+        base_progress,
+        log=f"Still running after {elapsed_seconds}s: {' '.join(command)}",
+        details={
+            "event": "command_heartbeat",
+            "command": command,
+            "elapsed_seconds": elapsed_seconds,
+        },
+    )
+    return now
+
+
 def run_command(
     command,
     vol_id,
@@ -93,32 +122,30 @@ def run_command(
             else:
                 if process.poll() is not None:
                     break
-                now = time.monotonic()
-                if heartbeat_interval > 0 and now - last_heartbeat_time >= heartbeat_interval:
-                    elapsed_seconds = int(now - start_time)
-                    report_fn(
-                        vol_id,
-                        step,
-                        base_progress,
-                        log=f"Still running after {elapsed_seconds}s: {' '.join(command)}",
-                        details={"event": "command_heartbeat", "command": command, "elapsed_seconds": elapsed_seconds},
-                    )
-                    last_heartbeat_time = now
+                last_heartbeat_time = _report_heartbeat_if_due(
+                    command=command,
+                    vol_id=vol_id,
+                    step=step,
+                    base_progress=base_progress,
+                    report_fn=report_fn,
+                    start_time=start_time,
+                    last_heartbeat_time=last_heartbeat_time,
+                    heartbeat_interval=heartbeat_interval,
+                )
                 time.sleep(0.1)
         except IOError:
             if process.poll() is not None:
                 break
-            now = time.monotonic()
-            if heartbeat_interval > 0 and now - last_heartbeat_time >= heartbeat_interval:
-                elapsed_seconds = int(now - start_time)
-                report_fn(
-                    vol_id,
-                    step,
-                    base_progress,
-                    log=f"Still running after {elapsed_seconds}s: {' '.join(command)}",
-                    details={"event": "command_heartbeat", "command": command, "elapsed_seconds": elapsed_seconds},
-                )
-                last_heartbeat_time = now
+            last_heartbeat_time = _report_heartbeat_if_due(
+                command=command,
+                vol_id=vol_id,
+                step=step,
+                base_progress=base_progress,
+                report_fn=report_fn,
+                start_time=start_time,
+                last_heartbeat_time=last_heartbeat_time,
+                heartbeat_interval=heartbeat_interval,
+            )
             time.sleep(0.1)
 
     # Restore blocking mode and drain any remaining output

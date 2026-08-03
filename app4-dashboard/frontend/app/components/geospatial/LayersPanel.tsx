@@ -14,6 +14,7 @@ interface LayersPanelProps {
   missionId: string;
   activeLayer: ViewerLayer;
   hasDepth: boolean;
+  availableFiles: string[];
   rasterOpacity: number;
   showLegacy: boolean;
   showManual: boolean;
@@ -30,6 +31,7 @@ export default function LayersPanel({
   missionId,
   activeLayer,
   hasDepth,
+  availableFiles,
   rasterOpacity,
   showLegacy,
   showManual,
@@ -41,6 +43,12 @@ export default function LayersPanel({
   onManualChange,
   onRunVisibilityChange,
 }: LayersPanelProps) {
+  const hasMapOrthophoto = availableFiles.some((file) =>
+    file.endsWith("orthomosaic.tif"),
+  );
+  const hasFacadeOrthophoto = availableFiles.some((file) =>
+    file.endsWith("facade_orthophoto.tif"),
+  );
   return (
     <div className="space-y-5">
       <div>
@@ -132,12 +140,30 @@ export default function LayersPanel({
 
       <div>
         <div className="eyebrow mb-2">Exports</div>
-        <a
-          href={getFileUrl(`missions/${missionId}/orthomosaic.tif`)}
-          className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
-        >
-          <Download size={14} /> GeoTIFF / COG
-        </a>
+        {hasMapOrthophoto && (
+          <a
+            href={getFileUrl(`missions/${missionId}/orthomosaic.tif`)}
+            className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
+          >
+            <Download size={14} /> GeoTIFF / COG
+          </a>
+        )}
+        {hasFacadeOrthophoto && (
+          <>
+            <a
+              href={getFileUrl(`missions/${missionId}/facade_orthophoto.tif`)}
+              className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
+            >
+              <Download size={14} /> Ortho de façade (repère local)
+            </a>
+            <a
+              href={getFileUrl(`missions/${missionId}/facade_frame.json`)}
+              className="mt-2 flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
+            >
+              <Download size={14} /> Rapport du repère façade
+            </a>
+          </>
+        )}
       </div>
     </div>
   );

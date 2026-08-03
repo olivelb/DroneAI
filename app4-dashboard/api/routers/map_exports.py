@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from collections.abc import Iterator
@@ -24,7 +23,12 @@ from shared.qgis_crs import (
 )
 from shared.qgis_exports import write_vector_export
 
-from ..map_support import get_mission, mission_key, require_object
+from ..map_support import (
+    get_mission,
+    mission_key,
+    require_object,
+    stored_map_feature_geojson,
+)
 
 router = APIRouter()
 
@@ -87,29 +91,6 @@ def _legacy_batch(records, metadata, vol_id):
         yield feature
 
 
-def _stored_feature(feature, geometry_json: str, run_id: str | None):
-    return {
-        "type": "Feature",
-        "id": feature.feature_id,
-        "geometry": json.loads(geometry_json),
-        "properties": {
-            **(feature.properties or {}),
-            "feature_id": feature.feature_id,
-            "source": feature.source,
-            "run_id": run_id,
-            "name": feature.name,
-            "description": feature.description or "",
-            "color": feature.color,
-            "tags": feature.tags or [],
-            "class_name": feature.class_name,
-            "confidence": feature.confidence,
-            "version": feature.version,
-            "created_by": feature.created_by,
-            "updated_at": (feature.updated_at.isoformat() if feature.updated_at else None),
-        },
-    }
-
-
 def _stored_features(
     session,
     vol_id: str,
@@ -136,7 +117,7 @@ def _stored_features(
             )
         )
     for feature, geometry_json, run_id in query.order_by(MapFeature.id).yield_per(1_000):
-        yield _stored_feature(feature, geometry_json, run_id)
+        yield stored_map_feature_geojson(feature, geometry_json, run_id)
 
 
 def _export_features(

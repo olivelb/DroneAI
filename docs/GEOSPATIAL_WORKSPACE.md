@@ -77,6 +77,14 @@ class and spatial extent.
 
 ## Dashboard use
 
+Facade missions expose their RGB and local-depth products in Results, but they
+are not web maps. The layer panel labels them as local, does not invent an EPSG
+code or Web Mercator position, and keeps aerial detections/analysis campaigns
+out of the process. Use the COG download together with `facade_frame.json` for
+QGIS/CAD workflows that support an explicit local engineering frame. A
+GeoJSON/PostGIS export is meaningful only after a separate, documented
+registration to a map CRS.
+
 The workspace is responsive and contains four panels:
 
 - **Couches** controls the COG/depth raster, opacity, legacy detections,

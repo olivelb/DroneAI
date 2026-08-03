@@ -188,6 +188,24 @@ def gimbal_attitude_to_gravity_sensor(
     return tuple(value / norm for value in gravity)
 
 
+def _database_pose_prior_rows(
+    connection: sqlite3.Connection,
+) -> list[tuple[str, int]]:
+    """Return the image-to-pose-prior mapping used by both RTK injectors."""
+    return connection.execute(
+        """
+        SELECT images.name, pose_priors.pose_prior_id
+        FROM images
+        JOIN frame_data
+          ON frame_data.data_id = images.image_id
+         AND frame_data.sensor_type = 0
+        JOIN pose_priors
+          ON pose_priors.corr_data_id = frame_data.frame_id
+         AND pose_priors.corr_sensor_type = 0
+        """
+    ).fetchall()
+
+
 def inject_database_gravity_priors(
     database_path: str | Path,
     records: Iterable[dict[str, Any]],
@@ -223,18 +241,7 @@ def inject_database_gravity_priors(
 
     connection = sqlite3.connect(database_path)
     try:
-        rows = connection.execute(
-            """
-            SELECT images.name, pose_priors.pose_prior_id
-            FROM images
-            JOIN frame_data
-              ON frame_data.data_id = images.image_id
-             AND frame_data.sensor_type = 0
-            JOIN pose_priors
-              ON pose_priors.corr_data_id = frame_data.frame_id
-             AND pose_priors.corr_sensor_type = 0
-            """
-        ).fetchall()
+        rows = _database_pose_prior_rows(connection)
 
         def gravity_for_name(name: str) -> tuple[float, float, float] | None:
             exact = candidates.get(name)
@@ -315,18 +322,7 @@ def inject_database_pose_priors(
 
     connection = sqlite3.connect(database_path)
     try:
-        rows = connection.execute(
-            """
-            SELECT images.name, pose_priors.pose_prior_id
-            FROM images
-            JOIN frame_data
-              ON frame_data.data_id = images.image_id
-             AND frame_data.sensor_type = 0
-            JOIN pose_priors
-              ON pose_priors.corr_data_id = frame_data.frame_id
-             AND pose_priors.corr_sensor_type = 0
-            """
-        ).fetchall()
+        rows = _database_pose_prior_rows(connection)
         matched_names = sum(
             1 for image_name, _ in rows if image_name in precise_records
         )

@@ -13,6 +13,33 @@ markers = [
     "slow: long-running test",
 ]
 
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = [
+    "shared",
+    "app1-colmap",
+    "app2-ia",
+    "app3-processing",
+    "app4-dashboard/api",
+    "tools",
+]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "app1-colmap/ceres-solver/*",
+    "app1-colmap/colmap-local/*",
+]
+
+[tool.coverage.report]
+fail_under = 45
+show_missing = true
+skip_covered = true
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
@@ -24,6 +51,9 @@ extend-exclude = [
 
 [tool.ruff.lint]
 select = ["E9", "F63", "F7", "F82"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
 
 [tool.ruff.lint.per-file-ignores]
 "app1-colmap/test_*.py" = ["E402"]

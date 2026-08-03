@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from shared.pipeline_params import PARAM_OVERRIDE_KEYS, PARAMETER_METADATA
+from shared.facade_selection import parse_excluded_basename_ranges
 from shared.projected_crs import normalize_epsg
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -159,6 +160,20 @@ def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
     for key, value in overrides.items():
         _validate_pipeline_parameter(key, value, PARAMETER_METADATA[key])
 
+    target_yaw = str(overrides.get("facade_target_yaw_deg", "")).strip()
+    if target_yaw:
+        try:
+            numeric_yaw = float(target_yaw)
+        except ValueError as exc:
+            raise ValueError("facade_target_yaw_deg must be blank or numeric") from exc
+        if not -360.0 <= numeric_yaw <= 360.0:
+            raise ValueError("facade_target_yaw_deg must be between -360 and 360")
+
+    if "facade_excluded_image_ranges" in overrides:
+        parse_excluded_basename_ranges(
+            str(overrides["facade_excluded_image_ranges"])
+        )
+
     if {
         "gps_pair_min_neighbors",
         "gps_pair_max_neighbors",
@@ -173,6 +188,9 @@ def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
         and str(overrides.get("camera_model", "")).upper() == "OPENCV"
     ):
         raise ValueError("alignment_engine=caspar requires camera_model PINHOLE or SIMPLE_RADIAL")
-    if str(overrides.get("projected_crs_mode", "")).lower() == "custom":
+    if (
+        str(overrides.get("orthophoto_mode", "map")).lower() != "facade"
+        and str(overrides.get("projected_crs_mode", "")).lower() == "custom"
+    ):
         normalize_epsg(str(overrides.get("projected_crs", "")))
     return overrides

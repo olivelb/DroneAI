@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import shutil
@@ -35,6 +34,7 @@ from shared.kafka_reliability import (
 )
 from shared.pipeline_params import normalize_ai_backend as normalize_backend_name
 from shared.worker_messaging import (
+    make_cancellation_handler,
     make_progress_publisher,
     run_control_consumer,
 )
@@ -174,26 +174,13 @@ mission_stats = {}
 cancel_manager = AttemptCancellationRegistry()
 
 def control_consumer_thread():
-    def handle_control(data):
-        if data.get("command") != "cancel":
-            return
-        vol_id = data.get("vol_id")
-        if vol_id:
-            run_id = data.get("analysis_run_id")
-            cancel_manager.cancel(vol_id, run_id, data.get("attempt", 0))
-            logger.info(
-                "⚠️ Cancel requested for %s analysis=%s",
-                vol_id,
-                run_id or "all",
-            )
-
     run_control_consumer(
         kafka_broker=KAFKA_BROKER,
         topic=TOPIC_CONTROL,
         consumer_group="ia-control-workers",
         producer=producer,
         dead_letter_topic=TOPIC_DEAD_LETTER,
-        handler=handle_control,
+        handler=make_cancellation_handler(cancel_manager, logger),
         logger=logger,
     )
 

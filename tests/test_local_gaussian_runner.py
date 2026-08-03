@@ -2,6 +2,10 @@ from argparse import Namespace
 
 import pytest
 
+from shared.facade_process import (
+    FACADE_DRONEGS_PROFILE_ID,
+    FACADE_QUALIFICATION_POLICY_ID,
+)
 from tools.run_local_gaussian import PROFILES, output_paths, resolve_profile
 
 
@@ -50,6 +54,20 @@ def test_balanced_profile_matches_validated_dev45_recipe():
     assert profile.photometric_mse_percent == 100
 
 
+def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
+    profile = PROFILES["facade-hd"]
+
+    assert profile.resolution == 0.01
+    assert profile.data_factor == 1
+    assert profile.max_width == 4096
+    assert profile.cap_max == 2_000_000
+    assert profile.sh_degree == 3
+    assert profile.iterations == 30_000
+    assert profile.test_split == "modulo"
+    assert profile.profile_id == FACADE_DRONEGS_PROFILE_ID
+    assert profile.qualification_policy_id == FACADE_QUALIFICATION_POLICY_ID
+
+
 def test_profile_overrides_are_explicit_and_validated():
     profile = resolve_profile(
         _arguments(iterations=750, max_width=1200, filter_enabled=False)
@@ -76,6 +94,23 @@ def test_balanced_training_overrides_become_custom_recipe():
     assert profile.optimizer_profile == "reference-absolute"
     assert profile.canary_min_psnr == PROFILES["balanced"].canary_min_psnr
     assert profile.canary_min_ssim == PROFILES["balanced"].canary_min_ssim
+
+
+def test_facade_hd_overrides_preserve_separate_recipe_identities():
+    training_override = resolve_profile(
+        _arguments(profile="facade-hd", iterations=20_000)
+    )
+    qualification_override = resolve_profile(
+        _arguments(profile="facade-hd", canary_min_psnr=20.0)
+    )
+
+    assert training_override.profile_id == "custom"
+    assert (
+        training_override.qualification_policy_id
+        == FACADE_QUALIFICATION_POLICY_ID
+    )
+    assert qualification_override.profile_id == FACADE_DRONEGS_PROFILE_ID
+    assert qualification_override.qualification_policy_id == "custom"
 
 
 def test_balanced_raster_only_override_keeps_production_recipe():

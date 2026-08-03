@@ -86,26 +86,24 @@ jobs:
           app4-dashboard/api shared alembic tests tools
       - name: Lint
         run: python -m ruff check .
-      - name: Enforce complexity budgets on orchestration modules
+      - name: Enforce complexity and unused-code budgets
         run: >-
           python -m ruff check --select C90,F401,F841
-          app3-processing/main.py
-          app3-processing/analysis_workflow.py
-          app3-processing/orthomosaic_tiler.py
-          app4-dashboard/api/map_schemas.py
-          app4-dashboard/api/map_support.py
-          app4-dashboard/api/routers/maps.py
-          app4-dashboard/api/routers/map_analyses.py
-          app4-dashboard/api/routers/map_features.py
-          app4-dashboard/api/routers/map_rasters.py
-      - name: Run CPU tests
-        run: python -m pytest -m "not gpu and not integration" --junitxml=test-results/pytest.xml
+          app1-colmap app2-ia app3-processing app4-dashboard/api shared tools
+      - name: Run CPU tests with branch coverage
+        run: |
+          python -m coverage erase
+          python -m coverage run -m pytest -m "not gpu and not integration" --junitxml=test-results/pytest.xml
+          python -m coverage report
+          python -m coverage xml -o test-results/coverage.xml
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pytest-results
-          path: test-results/pytest.xml
+          path: |
+            test-results/pytest.xml
+            test-results/coverage.xml
           if-no-files-found: ignore
 
   migrations:
@@ -159,6 +157,9 @@ jobs:
       - run: npm ci
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Reject duplicated Python production code
+        run: npm run duplication
+      - run: npm run test
       - run: npm run lint
       - run: npm run build
 

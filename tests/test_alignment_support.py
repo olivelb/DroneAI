@@ -14,6 +14,7 @@ from alignment_support import (  # noqa: E402
     camera_models_in_database,
     caspar_compatibility,
     choose_auto_fallback,
+    choose_primary_engine,
     parse_colmap_reference_file,
     write_pair_list,
 )
@@ -145,3 +146,9 @@ def test_auto_fallback_uses_caspar_only_for_supported_models():
     assert choose_auto_fallback({"PINHOLE"}) == "caspar"
     assert choose_auto_fallback({"OPENCV"}) == "ceres"
     assert choose_auto_fallback(set()) == "ceres"
+
+
+def test_auto_primary_uses_caspar_for_facades_only():
+    assert choose_primary_engine("auto", facade=True) == "caspar"
+    assert choose_primary_engine("auto", facade=False) == "glomap"
+    assert choose_primary_engine("ceres", facade=True) == "ceres"

@@ -104,6 +104,15 @@ reprojected to WGS84 or an explicitly validated EPSG code. Raster and vector
 downloads are streamed, and a missing/unresolvable raster CRS produces an
 explicit WGS84 fallback header.
 
+The facade process is a different product contract. It writes
+`facade_orthophoto.tif`, `facade_orthophoto.height.tif`,
+`facade_frame.json` and `facade_selection_report.json` in a local wall frame
+with no CRS. It never publishes `images-ortho`, so TILER and IA are not
+required for terminal success. Releases must verify that the RGB/depth COG
+metadata remains `coordinate_space=local`, that the manifest records
+`FACADE_HD_V1`, and that no absolute RTK, GCP or gravity option
+can leak into the facade frame.
+
 ## Distributed durability contract
 
 - The required orthomosaic is uploaded with SHA-256 metadata and verified by
@@ -128,6 +137,8 @@ Required on every candidate:
 4. Helm lint with the production overlay.
 5. One complete RTK preparation run and one non-RTK regression scene.
 6. Immutable benchmark bundle with binary/dataset/artifact hashes.
+7. Facade regression: inclusive exclusion audit, sparse-distribution metrics,
+   local CRS-free raster metadata and terminal dashboard status.
 
 The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and

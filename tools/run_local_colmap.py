@@ -18,6 +18,7 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, median
 from typing import Any
@@ -33,15 +34,18 @@ if str(APP1_DIR) not in sys.path:
     sys.path.insert(0, str(APP1_DIR))
 
 from alignment_support import (
-    atomic_write_json,
     build_gps_pair_graph,
     build_mapping_command,
     caspar_compatibility,
     choose_auto_fallback,
+    choose_primary_engine,
     positioned_records_from_preflight,
     write_pair_list,
 )
 
+from shared.facade_process import FACADE_PROCESS_OVERRIDES
+from shared.facade_selection import exclude_basename_ranges
+from shared.json_io import atomic_write_json
 from shared.pipeline_params import PIPELINE_DEFAULTS
 from shared.rtk_refinement import (
     inject_database_gravity_priors,
@@ -77,15 +81,14 @@ GENERATED_PATHS = (
     "rtk_prior_report.json",
     "imu_gravity_report.json",
     "model_analyzer.txt",
+    "facade_selection_report.json",
     ".colmap_pipeline_config.json",
 )
 
 COMMAND_TIMINGS: list[dict[str, Any]] = []
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+write_json = atomic_write_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -108,6 +111,22 @@ def parse_args() -> argparse.Namespace:
         "--matcher",
         choices=["gps", "spatial", "sequential", "exhaustive"],
         default="gps",
+    )
+    parser.add_argument(
+        "--facade",
+        action="store_true",
+        help="Prepare an unaligned local facade reconstruction without CRS/RTK/GCP fitting.",
+    )
+    parser.add_argument(
+        "--exclude-image-range",
+        action="append",
+        nargs=2,
+        default=[],
+        metavar=("START", "END"),
+        help=(
+            "Exclude an inclusive basename range from a facade solve; repeat "
+            "the option for multiple coherent detail sequences."
+        ),
     )
     parser.add_argument(
         "--engine",
@@ -155,6 +174,17 @@ def parse_args() -> argparse.Namespace:
         default=int(MODERN_DEFAULTS["feature_max_num_features"]),
     )
     parser.add_argument(
+        "--feature-max-num-matches",
+        type=int,
+        default=int(MODERN_DEFAULTS["feature_max_num_matches"]),
+    )
+    parser.add_argument(
+        "--undistort-num-threads",
+        type=int,
+        default=int(MODERN_DEFAULTS["mvs_num_threads"]),
+        help="Bound concurrent high-resolution COLMAP undistortion workers.",
+    )
+    parser.add_argument(
         "--sift-first-octave",
         type=int,
         default=int(MODERN_DEFAULTS["sift_first_octave"]),
@@ -198,16 +228,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--global-tri-complete-max-reproj-error",
         type=float,
-        default=float(
-            MODERN_DEFAULTS["global_mapper_tri_complete_max_reproj_error"]
-        ),
+        default=float(MODERN_DEFAULTS["global_mapper_tri_complete_max_reproj_error"]),
     )
     parser.add_argument(
         "--global-tri-merge-max-reproj-error",
         type=float,
-        default=float(
-            MODERN_DEFAULTS["global_mapper_tri_merge_max_reproj_error"]
-        ),
+        default=float(MODERN_DEFAULTS["global_mapper_tri_merge_max_reproj_error"]),
     )
     parser.add_argument(
         "--global-tri-min-angle",
@@ -280,7 +306,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gpu-index", type=int, default=0)
     parser.add_argument("--use-gpu", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--force", action="store_true", help="Rebuild generated workspace artifacts")
-    return parser.parse_args()
+    args = parser.parse_args()
+    supplied_options = {token.split("=", 1)[0] for token in sys.argv[1:] if token.startswith("--")}
+    if args.facade:
+        facade_cli_defaults = {
+            "matcher": ("--matcher", "matching_strategy", str),
+            "engine": ("--engine", "alignment_engine", str),
+            "feature_max_image_size": ("--feature-max-image-size", "feature_max_image_size", int),
+            "feature_max_num_features": ("--feature-max-num-features", "feature_max_num_features", int),
+            "feature_max_num_matches": ("--feature-max-num-matches", "feature_max_num_matches", int),
+            "sift_first_octave": ("--sift-first-octave", "sift_first_octave", int),
+            "gps_max_neighbors": ("--gps-max-neighbors", "gps_pair_max_neighbors", int),
+            "gps_min_neighbors": ("--gps-min-neighbors", "gps_pair_min_neighbors", int),
+            "gps_temporal_neighbors": ("--gps-temporal-neighbors", "gps_pair_temporal_neighbors", int),
+            "minimum_registration_ratio": ("--minimum-registration-ratio", "minimum_registration_ratio", float),
+            "mapping_timeout_seconds": ("--mapping-timeout-seconds", "mapping_timeout_seconds", float),
+        }
+        for attribute, (option, parameter, converter) in facade_cli_defaults.items():
+            if option not in supplied_options:
+                setattr(
+                    args,
+                    attribute,
+                    converter(FACADE_PROCESS_OVERRIDES[parameter]),
+                )
+        if not {"--guided-matching", "--no-guided-matching"} & supplied_options:
+            args.guided_matching = bool(FACADE_PROCESS_OVERRIDES["guided_matching"])
+    return args
 
 
 def ensure_workspace(dataset: Path, workspace: Path) -> dict[str, Any]:
@@ -479,9 +530,40 @@ def sparse_model_path(workspace: Path) -> Path:
 
 
 def rtk_refinement_enabled(args: argparse.Namespace) -> bool:
+    if args.facade:
+        return False
     if args.rtk_refinement is not None:
         return bool(args.rtk_refinement)
     return args.gps_quality == "rtk"
+
+
+def build_local_mapping_command(
+    args: argparse.Namespace,
+    engine: str,
+    database_path: Path,
+    image_path: Path,
+    output_path: Path,
+    *,
+    use_gravity: bool = False,
+) -> list[str]:
+    """Build a mapper command from the shared local-pipeline tuning knobs."""
+    return build_mapping_command(
+        engine,
+        database_path=database_path,
+        image_path=image_path,
+        output_path=output_path,
+        gpu_index=args.gpu_index,
+        global_max_tracks=args.global_max_tracks,
+        global_ba_iterations=args.global_ba_iterations,
+        global_ceres_iterations=args.global_ceres_iterations,
+        global_skip_retriangulation=not args.global_retriangulation,
+        global_random_seed=args.global_random_seed,
+        global_ba_min_track_length=args.global_ba_min_track_length,
+        global_tri_complete_max_reproj_error=(args.global_tri_complete_max_reproj_error),
+        global_tri_merge_max_reproj_error=args.global_tri_merge_max_reproj_error,
+        global_tri_min_angle=args.global_tri_min_angle,
+        global_use_gravity=use_gravity,
+    )
 
 
 def run_rtk_refinement(
@@ -583,34 +665,62 @@ def run_rtk_refinement(
         return sparse_model, report
 
 
-# Keep failover and resume decisions in one ordered state machine: splitting them
-# would make timeout-budget and artifact-cleanup invariants harder to verify.
-def run_sparse(  # noqa: C901
-    args: argparse.Namespace,
-    selected_records: list[dict[str, Any]],
-    projected_crs: str | None,
-) -> Path:
-    workspace = args.workspace
-    database_path = workspace / "database.db"
-    image_dir = workspace / "images"
-    sparse_root = workspace / "sparse"
-    sparse_root.mkdir(exist_ok=True)
-    use_gpu = "1" if args.use_gpu else "0"
-    selected_count = len(selected_records)
-    model_dir = Path(os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models"))
+@dataclass(frozen=True)
+class LocalSparseContext:
+    """Immutable inputs and derived paths for one local sparse reconstruction."""
 
-    local_recipe = dict(MODERN_DEFAULTS)
-    local_recipe.update(
+    args: argparse.Namespace
+    selected_records: list[dict[str, Any]]
+    projected_crs: str | None
+    workspace: Path
+    database_path: Path
+    image_dir: Path
+    sparse_root: Path
+    use_gpu: str
+    selected_count: int
+    model_dir: Path
+
+    @classmethod
+    def create(
+        cls,
+        args: argparse.Namespace,
+        selected_records: list[dict[str, Any]],
+        projected_crs: str | None,
+    ) -> "LocalSparseContext":
+        workspace = args.workspace
+        return cls(
+            args=args,
+            selected_records=selected_records,
+            projected_crs=projected_crs,
+            workspace=workspace,
+            database_path=workspace / "database.db",
+            image_dir=workspace / "images",
+            sparse_root=workspace / "sparse",
+            use_gpu="1" if args.use_gpu else "0",
+            selected_count=len(selected_records),
+            model_dir=Path(os.getenv("COLMAP_MODEL_DIR", "/usr/local/share/colmap/models")),
+        )
+
+
+def build_local_sparse_recipe(args: argparse.Namespace) -> dict[str, Any]:
+    """Return the cache identity inputs for the requested local sparse run."""
+    recipe = dict(MODERN_DEFAULTS)
+    recipe.update(
         {
+            "orthophoto_mode": "facade" if args.facade else "map",
+            "facade_selection_mode": ("all" if args.facade else recipe["facade_selection_mode"]),
+            "facade_excluded_image_ranges": ";".join(f"{start}..{end}" for start, end in args.exclude_image_range),
             "feature_type": args.feature_type,
             "feature_max_image_size": str(args.feature_max_image_size),
             "feature_max_num_features": str(args.feature_max_num_features),
+            "feature_max_num_matches": str(args.feature_max_num_matches),
             "sift_first_octave": str(args.sift_first_octave),
             "matcher_type": args.matcher_type,
             "guided_matching": args.guided_matching,
             "matching_strategy": args.matcher,
             "camera_model": args.camera_model,
             "alignment_engine": args.engine,
+            "use_view_graph_calibrator": args.engine in {"auto", "glomap"} and not args.facade,
             "gps_pair_max_neighbors": str(args.gps_max_neighbors),
             "gps_pair_min_neighbors": str(args.gps_min_neighbors),
             "gps_pair_temporal_neighbors": str(args.gps_temporal_neighbors),
@@ -620,15 +730,9 @@ def run_sparse(  # noqa: C901
             "global_mapper_ceres_iterations": str(args.global_ceres_iterations),
             "global_mapper_skip_retriangulation": not args.global_retriangulation,
             "global_mapper_random_seed": str(args.global_random_seed),
-            "global_mapper_ba_min_track_length": str(
-                args.global_ba_min_track_length
-            ),
-            "global_mapper_tri_complete_max_reproj_error": str(
-                args.global_tri_complete_max_reproj_error
-            ),
-            "global_mapper_tri_merge_max_reproj_error": str(
-                args.global_tri_merge_max_reproj_error
-            ),
+            "global_mapper_ba_min_track_length": str(args.global_ba_min_track_length),
+            "global_mapper_tri_complete_max_reproj_error": str(args.global_tri_complete_max_reproj_error),
+            "global_mapper_tri_merge_max_reproj_error": str(args.global_tri_merge_max_reproj_error),
             "global_mapper_tri_min_angle": str(args.global_tri_min_angle),
             "rtk_refinement_enabled": rtk_refinement_enabled(args),
             "rtk_refinement_iterations": str(args.rtk_refinement_iterations),
@@ -636,293 +740,364 @@ def run_sparse(  # noqa: C901
             "imu_gravity_enabled": args.imu_gravity,
         }
     )
-    requested_recipe = build_colmap_cache_config(local_recipe)
-    previous_recipe = load_colmap_cache_config(workspace)
-    has_cached_sparse = database_path.exists() or any(
-        sparse_root.glob("*/cameras.bin")
-    )
-    if has_cached_sparse and (
-        previous_recipe is None
-        or previous_recipe.get("fingerprint") != requested_recipe["fingerprint"]
-    ):
-        changed = changed_colmap_cache_parameters(previous_recipe, requested_recipe)
-        raise RuntimeError(
-            "local COLMAP parameters changed "
-            f"({', '.join(changed)}); rerun with --force or use a new workspace"
-        )
-    save_colmap_cache_config(workspace, requested_recipe)
+    return recipe
 
-    if database_image_count(database_path) != selected_count:
-        feature_options = [
-            "--FeatureExtraction.type",
-            args.feature_type,
-            "--FeatureExtraction.use_gpu",
-            use_gpu,
-            "--FeatureExtraction.gpu_index",
-            str(args.gpu_index),
-            "--FeatureExtraction.max_image_size",
-            str(args.feature_max_image_size),
+
+def build_feature_extractor_command(context: LocalSparseContext) -> list[str]:
+    """Build feature extraction without executing COLMAP."""
+    args = context.args
+    feature_options = [
+        "--FeatureExtraction.type",
+        args.feature_type,
+        "--FeatureExtraction.use_gpu",
+        context.use_gpu,
+        "--FeatureExtraction.gpu_index",
+        str(args.gpu_index),
+        "--FeatureExtraction.max_image_size",
+        str(args.feature_max_image_size),
+    ]
+    if args.feature_type.startswith("ALIKED"):
+        feature_options += [
+            "--AlikedExtraction.max_num_features",
+            str(args.feature_max_num_features),
         ]
-        if args.feature_type.startswith("ALIKED"):
-            feature_options += [
-                "--AlikedExtraction.max_num_features",
-                str(args.feature_max_num_features),
-            ]
-            if args.feature_type == "ALIKED_N32":
-                feature_options += [
-                    "--AlikedExtraction.n32_model_path",
-                    str(model_dir / "aliked-n32.onnx"),
-                ]
-            else:
-                feature_options += [
-                    "--AlikedExtraction.n16rot_model_path",
-                    str(model_dir / "aliked-n16rot.onnx"),
-                ]
-        else:
-            feature_options += [
-                "--SiftExtraction.max_num_features",
-                str(args.feature_max_num_features),
-                "--SiftExtraction.first_octave",
-                str(args.sift_first_octave),
-            ]
-        run_command(
-            [
-                "colmap",
-                "feature_extractor",
-                "--database_path",
-                str(database_path),
-                "--image_path",
-                str(image_dir),
-                "--ImageReader.single_camera",
-                "1",
-                "--ImageReader.camera_model",
-                args.camera_model,
-            ]
-            + feature_options
+        model_name = "aliked-n32.onnx" if args.feature_type == "ALIKED_N32" else "aliked-n16rot.onnx"
+        feature_options += [
+            (
+                "--AlikedExtraction.n32_model_path"
+                if args.feature_type == "ALIKED_N32"
+                else "--AlikedExtraction.n16rot_model_path"
+            ),
+            str(context.model_dir / model_name),
+        ]
+    else:
+        feature_options += [
+            "--SiftExtraction.max_num_features",
+            str(args.feature_max_num_features),
+            "--SiftExtraction.first_octave",
+            str(args.sift_first_octave),
+        ]
+    return [
+        "colmap",
+        "feature_extractor",
+        "--database_path",
+        str(context.database_path),
+        "--image_path",
+        str(context.image_dir),
+        "--ImageReader.single_camera",
+        "1",
+        "--ImageReader.camera_model",
+        args.camera_model,
+        *feature_options,
+    ]
+
+
+def ensure_local_sparse_cache(context: LocalSparseContext) -> None:
+    """Reject incompatible resume artifacts and persist the requested recipe."""
+    requested = build_colmap_cache_config(build_local_sparse_recipe(context.args))
+    previous = load_colmap_cache_config(context.workspace)
+    has_cached_sparse = context.database_path.exists() or any(context.sparse_root.glob("*/cameras.bin"))
+    if has_cached_sparse and (previous is None or previous.get("fingerprint") != requested["fingerprint"]):
+        changed = changed_colmap_cache_parameters(previous, requested)
+        raise RuntimeError(
+            f"local COLMAP parameters changed ({', '.join(changed)}); rerun with --force or use a new workspace"
         )
+    save_colmap_cache_config(context.workspace, requested)
 
-    if rtk_refinement_enabled(args) and not (workspace / "sparse_rtk" / "cameras.bin").is_file():
-        prior_report = inject_database_pose_priors(database_path, selected_records)
-        prior_report["status"] = "priors-injected"
-        write_json(workspace / "rtk_prior_report.json", prior_report)
 
-    existing_models = list(sparse_root.glob("*/cameras.bin"))
-    if not existing_models:
-        if args.matcher == "gps":
-            if not projected_crs:
-                raise RuntimeError("GPS matching requires a projected CRS")
-            positioned = positioned_records_from_preflight(
-                selected_records,
-                projected_crs,
-            )
-            pairs, pair_stats = build_gps_pair_graph(
-                positioned,
-                max_neighbors=args.gps_max_neighbors,
-                min_neighbors=args.gps_min_neighbors,
-                temporal_neighbors=args.gps_temporal_neighbors,
-                max_distance_m=args.gps_max_distance_m,
-            )
-            if not pairs:
-                raise RuntimeError("GPS pair graph is empty")
-            pair_path = workspace / "pairs.txt"
-            write_pair_list(pair_path, pairs)
-            atomic_write_json(workspace / "pair_graph.json", pair_stats)
-            print(
-                f"GPS graph: {pair_stats['pair_count']} pairs, mean degree {pair_stats['mean_degree']:.1f}.",
-                flush=True,
-            )
-            matcher_command = [
-                "colmap",
-                "matches_importer",
-                "--database_path",
-                str(database_path),
-                "--match_list_path",
-                str(pair_path),
-                "--match_type",
-                "pairs",
-                "--FeatureMatching.type",
-                args.matcher_type,
-                "--FeatureMatching.use_gpu",
-                use_gpu,
-                "--FeatureMatching.gpu_index",
-                str(args.gpu_index),
-                "--FeatureMatching.guided_matching",
-                "1" if args.guided_matching else "0",
-            ]
-        else:
-            matcher_command = [
-                "colmap",
-                f"{args.matcher}_matcher",
-                "--database_path",
-                str(database_path),
-                "--FeatureMatching.type",
-                args.matcher_type,
-                "--FeatureMatching.use_gpu",
-                use_gpu,
-                "--FeatureMatching.gpu_index",
-                str(args.gpu_index),
-                "--FeatureMatching.guided_matching",
-                "1" if args.guided_matching else "0",
-            ]
-            if args.matcher == "spatial":
-                matcher_command += [
+def ensure_local_features(context: LocalSparseContext) -> None:
+    """Extract features only when the staged image set is not in the database."""
+    if database_image_count(context.database_path) != context.selected_count:
+        run_command(build_feature_extractor_command(context))
+
+
+def ensure_local_rtk_priors(context: LocalSparseContext) -> None:
+    """Inject covariance-aware position priors before matching when required."""
+    rtk_model = context.workspace / "sparse_rtk" / "cameras.bin"
+    if not rtk_refinement_enabled(context.args) or rtk_model.is_file():
+        return
+    report = inject_database_pose_priors(
+        context.database_path,
+        context.selected_records,
+    )
+    report["status"] = "priors-injected"
+    write_json(context.workspace / "rtk_prior_report.json", report)
+
+
+def _append_matcher_model_option(
+    command: list[str],
+    matcher_type: str,
+    model_dir: Path,
+) -> None:
+    model_options = {
+        "ALIKED_LIGHTGLUE": (
+            "--AlikedMatching.lightglue_model_path",
+            "aliked-lightglue.onnx",
+        ),
+        "SIFT_LIGHTGLUE": (
+            "--SiftMatching.lightglue_model_path",
+            "sift-lightglue.onnx",
+        ),
+    }
+    option = model_options.get(matcher_type)
+    if option is not None:
+        flag, filename = option
+        command.extend((flag, str(model_dir / filename)))
+
+
+def _matching_options(context: LocalSparseContext) -> list[str]:
+    args = context.args
+    return [
+        "--FeatureMatching.type",
+        args.matcher_type,
+        "--FeatureMatching.use_gpu",
+        context.use_gpu,
+        "--FeatureMatching.gpu_index",
+        str(args.gpu_index),
+        "--FeatureMatching.guided_matching",
+        "1" if args.guided_matching else "0",
+        "--FeatureMatching.max_num_matches",
+        str(args.feature_max_num_matches),
+    ]
+
+
+def prepare_local_matcher_command(context: LocalSparseContext) -> list[str]:
+    """Build the requested matcher command and materialize a bounded GPS graph."""
+    args = context.args
+    if args.matcher == "gps":
+        if not context.projected_crs:
+            raise RuntimeError("GPS matching requires a projected CRS")
+        positioned = positioned_records_from_preflight(
+            context.selected_records,
+            context.projected_crs,
+        )
+        pairs, pair_stats = build_gps_pair_graph(
+            positioned,
+            max_neighbors=args.gps_max_neighbors,
+            min_neighbors=args.gps_min_neighbors,
+            temporal_neighbors=args.gps_temporal_neighbors,
+            max_distance_m=args.gps_max_distance_m,
+        )
+        if not pairs:
+            raise RuntimeError("GPS pair graph is empty")
+        pair_path = context.workspace / "pairs.txt"
+        write_pair_list(pair_path, pairs)
+        atomic_write_json(context.workspace / "pair_graph.json", pair_stats)
+        print(
+            f"GPS graph: {pair_stats['pair_count']} pairs, mean degree {pair_stats['mean_degree']:.1f}.",
+            flush=True,
+        )
+        command = [
+            "colmap",
+            "matches_importer",
+            "--database_path",
+            str(context.database_path),
+            "--match_list_path",
+            str(pair_path),
+            "--match_type",
+            "pairs",
+            *_matching_options(context),
+        ]
+    else:
+        command = [
+            "colmap",
+            f"{args.matcher}_matcher",
+            "--database_path",
+            str(context.database_path),
+            *_matching_options(context),
+        ]
+        if args.matcher == "spatial":
+            command.extend(
+                (
                     "--SpatialMatching.ignore_z",
                     "1",
                     "--SpatialMatching.max_num_neighbors",
                     str(args.gps_max_neighbors),
                     "--SpatialMatching.min_num_neighbors",
                     str(args.gps_min_neighbors),
-                ]
-        if args.matcher_type == "ALIKED_LIGHTGLUE":
-            matcher_command += [
-                "--AlikedMatching.lightglue_model_path",
-                str(model_dir / "aliked-lightglue.onnx"),
-            ]
-        elif args.matcher_type == "SIFT_LIGHTGLUE":
-            matcher_command += [
-                "--SiftMatching.lightglue_model_path",
-                str(model_dir / "sift-lightglue.onnx"),
-            ]
-        run_command(matcher_command)
-
-        gravity_available = False
-        if args.imu_gravity:
-            gravity_report = inject_database_gravity_priors(
-                database_path,
-                selected_records,
-            )
-            gravity_available = bool(
-                gravity_report["use_in_global_rotation_averaging"]
-            )
-            write_json(workspace / "imu_gravity_report.json", gravity_report)
-
-        primary_engine = "glomap" if args.engine == "auto" else args.engine
-        if primary_engine == "glomap":
-            run_command(
-                [
-                    "colmap",
-                    "view_graph_calibrator",
-                    "--database_path",
-                    str(database_path),
-                ]
-            )
-        if not args.use_gpu and primary_engine in {"glomap", "caspar", "ceres"}:
-            raise ValueError("the selected alignment engine requires --use-gpu")
-        if primary_engine == "caspar":
-            supported, models = caspar_compatibility(database_path)
-            if not supported:
-                raise RuntimeError(
-                    f"Caspar requires PINHOLE or SIMPLE_RADIAL cameras; database contains {sorted(models)}"
                 )
-        mapper_command = build_mapping_command(
-            primary_engine,
-            database_path=database_path,
-            image_path=image_dir,
-            output_path=sparse_root,
-            gpu_index=args.gpu_index,
-            global_max_tracks=args.global_max_tracks,
-            global_ba_iterations=args.global_ba_iterations,
-            global_ceres_iterations=args.global_ceres_iterations,
-            global_skip_retriangulation=not args.global_retriangulation,
-            global_random_seed=args.global_random_seed,
-            global_ba_min_track_length=args.global_ba_min_track_length,
-            global_tri_complete_max_reproj_error=(
-                args.global_tri_complete_max_reproj_error
-            ),
-            global_tri_merge_max_reproj_error=(
-                args.global_tri_merge_max_reproj_error
-            ),
-            global_tri_min_angle=args.global_tri_min_angle,
-            global_use_gravity=gravity_available,
-        )
-        mapping_started_at = time.monotonic()
+            )
+    _append_matcher_model_option(command, args.matcher_type, context.model_dir)
+    return command
 
-        def remaining_mapping_budget() -> float:
-            remaining = args.mapping_timeout_seconds - (time.monotonic() - mapping_started_at)
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(
-                    mapper_command,
-                    args.mapping_timeout_seconds,
-                )
-            return remaining
 
-        primary_error: BaseException | None = None
-        try:
-            run_command(
-                mapper_command,
-                timeout_seconds=remaining_mapping_budget(),
-            )
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-            primary_error = error
-            if args.engine != "auto":
-                raise
-            print(
-                f"GLOMAP failed within its bounded budget ({error}); selecting an incremental GPU fallback.",
-                flush=True,
-            )
-
-        primary_model = None
-        if primary_error is None:
-            try:
-                primary_model = sparse_model_path(workspace)
-            except RuntimeError:
-                primary_model = None
-        primary_registered = registered_image_count(primary_model) if primary_model is not None else 0
-        minimum_registered = max(
-            3,
-            math.ceil(selected_count * args.minimum_registration_ratio),
-        )
-        if args.engine == "auto" and (primary_error is not None or primary_registered < minimum_registered):
-            _, models = caspar_compatibility(database_path)
-            fallback_engine = choose_auto_fallback(models)
-            print(
-                f"GLOMAP registered {primary_registered}/{selected_count}; "
-                f"retrying the same verified matches with {fallback_engine.upper()}.",
-                flush=True,
-            )
-            if sparse_root.exists():
-                shutil.rmtree(sparse_root)
-            sparse_root.mkdir()
-            fallback_command = build_mapping_command(
-                fallback_engine,
-                database_path=database_path,
-                image_path=image_dir,
-                output_path=sparse_root,
-                gpu_index=args.gpu_index,
-                global_max_tracks=args.global_max_tracks,
-                global_ba_iterations=args.global_ba_iterations,
-                global_ceres_iterations=args.global_ceres_iterations,
-                global_skip_retriangulation=not args.global_retriangulation,
-                global_random_seed=args.global_random_seed,
-                global_ba_min_track_length=args.global_ba_min_track_length,
-                global_tri_complete_max_reproj_error=(
-                    args.global_tri_complete_max_reproj_error
-                ),
-                global_tri_merge_max_reproj_error=(
-                    args.global_tri_merge_max_reproj_error
-                ),
-                global_tri_min_angle=args.global_tri_min_angle,
-            )
-            run_command(
-                fallback_command,
-                timeout_seconds=remaining_mapping_budget(),
-            )
-
-    model = sparse_model_path(workspace)
-    registered = registered_image_count(model)
-    minimum_registered = max(
-        3,
-        math.ceil(selected_count * args.minimum_registration_ratio),
+def build_facade_sequential_matcher_command(
+    context: LocalSparseContext,
+) -> list[str]:
+    """Build the bounded temporal complement used by spatial facade matching."""
+    command = [
+        "colmap",
+        "sequential_matcher",
+        "--database_path",
+        str(context.database_path),
+        "--SequentialMatching.overlap",
+        "15",
+        *_matching_options(context),
+    ]
+    _append_matcher_model_option(
+        command,
+        context.args.matcher_type,
+        context.model_dir,
     )
+    return command
+
+
+def run_local_matching(context: LocalSparseContext) -> None:
+    run_command(prepare_local_matcher_command(context))
+    if context.args.facade and context.args.matcher == "spatial":
+        # Spatial proximity connects separate passes; capture order restores
+        # dense along-pass overlap without using exhaustive matching.
+        run_command(build_facade_sequential_matcher_command(context))
+
+
+def inject_local_gravity_prior(context: LocalSparseContext) -> bool:
+    if not context.args.imu_gravity:
+        return False
+    report = inject_database_gravity_priors(
+        context.database_path,
+        context.selected_records,
+    )
+    write_json(context.workspace / "imu_gravity_report.json", report)
+    return bool(report["use_in_global_rotation_averaging"])
+
+
+def prepare_local_mapping_engine(
+    context: LocalSparseContext,
+    engine: str,
+) -> None:
+    if engine == "glomap":
+        run_command(
+            [
+                "colmap",
+                "view_graph_calibrator",
+                "--database_path",
+                str(context.database_path),
+            ]
+        )
+    if not context.args.use_gpu and engine in {"glomap", "caspar", "ceres"}:
+        raise ValueError("the selected alignment engine requires --use-gpu")
+    if engine == "caspar":
+        supported, models = caspar_compatibility(context.database_path)
+        if not supported:
+            raise RuntimeError(f"Caspar requires PINHOLE or SIMPLE_RADIAL cameras; database contains {sorted(models)}")
+
+
+def run_local_mapping_with_fallback(
+    context: LocalSparseContext,
+    *,
+    gravity_available: bool,
+) -> None:
+    """Run primary mapping and its bounded automatic fallback."""
+    args = context.args
+    primary_engine = choose_primary_engine(args.engine, facade=args.facade)
+    prepare_local_mapping_engine(context, primary_engine)
+    primary_command = build_local_mapping_command(
+        args,
+        primary_engine,
+        context.database_path,
+        context.image_dir,
+        context.sparse_root,
+        use_gravity=gravity_available,
+    )
+    started_at = time.monotonic()
+
+    def remaining_budget() -> float:
+        remaining = args.mapping_timeout_seconds - (time.monotonic() - started_at)
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(
+                primary_command,
+                args.mapping_timeout_seconds,
+            )
+        return remaining
+
+    primary_error: BaseException | None = None
+    try:
+        run_command(primary_command, timeout_seconds=remaining_budget())
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        primary_error = error
+        if args.engine != "auto":
+            raise
+        print(
+            f"{primary_engine.upper()} failed within its bounded budget ({error}); selecting a GPU fallback.",
+            flush=True,
+        )
+
+    primary_model = None
+    if primary_error is None:
+        try:
+            primary_model = sparse_model_path(context.workspace)
+        except RuntimeError:
+            primary_model = None
+    primary_registered = registered_image_count(primary_model) if primary_model is not None else 0
+    minimum_registered = minimum_local_registered_images(context)
+    if args.engine != "auto" or (primary_error is None and primary_registered >= minimum_registered):
+        return
+
+    _, models = caspar_compatibility(context.database_path)
+    fallback_engine = "ceres" if primary_engine == "caspar" else choose_auto_fallback(models)
+    print(
+        f"{primary_engine.upper()} registered "
+        f"{primary_registered}/{context.selected_count}; retrying the same "
+        f"verified matches with {fallback_engine.upper()}.",
+        flush=True,
+    )
+    if context.sparse_root.exists():
+        shutil.rmtree(context.sparse_root)
+    context.sparse_root.mkdir()
+    fallback_command = build_local_mapping_command(
+        args,
+        fallback_engine,
+        context.database_path,
+        context.image_dir,
+        context.sparse_root,
+    )
+    run_command(fallback_command, timeout_seconds=remaining_budget())
+
+
+def minimum_local_registered_images(context: LocalSparseContext) -> int:
+    return max(
+        3,
+        math.ceil(context.selected_count * context.args.minimum_registration_ratio),
+    )
+
+
+def validated_local_sparse_model(context: LocalSparseContext) -> Path:
+    model = sparse_model_path(context.workspace)
+    registered = registered_image_count(model)
+    minimum_registered = minimum_local_registered_images(context)
     if registered < minimum_registered:
         raise RuntimeError(
-            f"alignment quality gate failed: {registered}/{selected_count} images "
-            f"registered, required {minimum_registered}; exhaustive matching and "
-            "unbounded CPU BA are disabled"
+            f"alignment quality gate failed: {registered}/{context.selected_count} "
+            f"images registered, required {minimum_registered}; exhaustive matching "
+            "and unbounded CPU BA are disabled"
         )
-    if rtk_refinement_enabled(args):
-        model, _ = run_rtk_refinement(args, model)
+    if rtk_refinement_enabled(context.args):
+        model, _ = run_rtk_refinement(context.args, model)
     return model
+
+
+def run_sparse(
+    args: argparse.Namespace,
+    selected_records: list[dict[str, Any]],
+    projected_crs: str | None,
+) -> Path:
+    context = LocalSparseContext.create(args, selected_records, projected_crs)
+    context.sparse_root.mkdir(exist_ok=True)
+    ensure_local_sparse_cache(context)
+
+    ensure_local_features(context)
+    ensure_local_rtk_priors(context)
+
+    existing_models = list(context.sparse_root.glob("*/cameras.bin"))
+    if not existing_models:
+        run_local_matching(context)
+        gravity_available = inject_local_gravity_prior(context)
+        run_local_mapping_with_fallback(
+            context,
+            gravity_available=gravity_available,
+        )
+
+    return validated_local_sparse_model(context)
 
 
 def write_colmap_references(
@@ -1111,6 +1286,7 @@ def run_undistortion(
     sparse_model: Path,
     workspace: Path,
     maximum_image_size: int,
+    num_threads: int,
 ) -> None:
     dense_path = workspace / "dense"
     marker_path = workspace / "undistortion_input.json"
@@ -1137,6 +1313,8 @@ def run_undistortion(
             str(dense_path),
             "--max_image_size",
             str(maximum_image_size),
+            "--num_threads",
+            str(num_threads),
         ]
     )
     write_json(
@@ -1173,6 +1351,10 @@ def _validate_arguments(args: argparse.Namespace) -> None:
         (
             args.feature_max_image_size < 256,
             "feature-max-image-size must be at least 256",
+        ),
+        (
+            args.feature_max_num_matches < 1024,
+            "feature-max-num-matches must be at least 1024",
         ),
         (args.image_copy_workers < 1, "image-copy-workers must be positive"),
         (args.alignment_max_error <= 0, "alignment-max-error must be positive"),
@@ -1237,6 +1419,30 @@ def _filter_records(
     return filtered
 
 
+def _exclude_facade_detail_ranges(
+    records: list[dict[str, Any]],
+    ranges: list[list[str]],
+    workspace: Path,
+) -> list[dict[str, Any]]:
+    if not ranges:
+        return records
+    paths = [Path(record["file"]) for record in records]
+    kept_paths, exclusion_report = exclude_basename_ranges(paths, ranges)
+    kept_files = {path.as_posix() for path in kept_paths}
+    filtered = [record for record in records if Path(record["file"]).as_posix() in kept_files]
+    write_json(
+        workspace / "facade_selection_report.json",
+        {
+            "schema_version": 2,
+            "mode": "all-except-ranges",
+            "input_images": len(records),
+            "selected_images": len(filtered),
+            **exclusion_report,
+        },
+    )
+    return filtered
+
+
 def _alignment_configuration(args: argparse.Namespace) -> dict[str, Any]:
     configuration = {
         "engine": args.engine,
@@ -1250,6 +1456,8 @@ def _alignment_configuration(args: argparse.Namespace) -> dict[str, Any]:
         "rtk_refinement_timeout_seconds": args.rtk_refinement_timeout_seconds,
         "rtk_refinement_iterations": args.rtk_refinement_iterations,
         "rtk_refinement_loss_scale": args.rtk_refinement_loss_scale,
+        "facade": args.facade,
+        "excluded_image_ranges": args.exclude_image_range,
     }
     rtk_report_path = args.workspace / "rtk_prior_report.json"
     if rtk_report_path.is_file():
@@ -1268,7 +1476,7 @@ def _finish_pipeline(
     references = None
     result_model = sparse_model
 
-    if args.stage in {"align", "undistort", "all"}:
+    if args.stage in {"align", "undistort", "all"} and not args.facade:
         if not projected_crs:
             raise RuntimeError("cannot align a dataset without a projected CRS")
         references = write_colmap_references(
@@ -1292,7 +1500,12 @@ def _finish_pipeline(
         )
 
     if args.stage in {"undistort", "all"}:
-        run_undistortion(sparse_model, args.workspace, args.feature_max_image_size)
+        run_undistortion(
+            sparse_model,
+            args.workspace,
+            args.feature_max_image_size,
+            args.undistort_num_threads,
+        )
 
     export_model(
         result_model,
@@ -1319,11 +1532,20 @@ def main() -> int:
     args = parse_args()
     args.dataset = args.dataset.resolve()
     args.workspace = args.workspace.resolve()
+    if args.facade:
+        args.imu_gravity = False
+    elif args.exclude_image_range:
+        raise ValueError("--exclude-image-range requires --facade")
     _validate_arguments(args)
     ensure_workspace(args.dataset, args.workspace)
 
     report = _load_preflight_report(args.workspace)
     records = _filter_records(report["images"], args.include_prefix)
+    records = _exclude_facade_detail_ranges(
+        records,
+        args.exclude_image_range,
+        args.workspace,
+    )
     selected = select_records(
         records,
         maximum=args.max_images,

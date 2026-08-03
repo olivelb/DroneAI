@@ -9,10 +9,25 @@ import { PresetButton } from "./PresetButton";
 import StageHeader from "./StageHeader";
 
 const RECONSTRUCTION_PARAMS = [
+  "orthophoto_mode",
+  "facade_selection_mode",
+  "facade_max_abs_pitch_deg",
+  "facade_min_pass_images",
+  "facade_target_yaw_deg",
+  "facade_yaw_tolerance_deg",
+  "facade_scale_mode",
+  "facade_meters_per_model_unit",
+  "facade_texture_max_incidence_deg",
+  "facade_depth_iqr_multiplier",
+  "facade_seed_max_reprojection_error",
+  "facade_seed_min_track_length",
+  "facade_canary_min_psnr",
+  "facade_canary_min_ssim",
   "feature_type",
   "feature_max_image_size",
   "feature_num_threads",
   "feature_max_num_features",
+  "feature_max_num_matches",
   "sift_first_octave",
   "matcher_type",
   "guided_matching",
@@ -59,9 +74,12 @@ const RECONSTRUCTION_PARAMS = [
   "gcp_min_adjustment_baseline_m",
   "alignment_max_error",
   "mvs_max_image_size",
+  "mvs_num_threads",
 ];
 
 const RECONSTRUCTION_GROUPS = [
+  "Product",
+  "Facade",
   "Features",
   "Matching",
   "Mapping",
@@ -70,6 +88,8 @@ const RECONSTRUCTION_GROUPS = [
 ];
 
 const GROUP_DESCRIPTIONS: Record<string, string> = {
+  Product: "Choose a georeferenced aerial map or an HD facade product in a local frame.",
+  Facade: "Image-pass selection and metric scale for a facade; no EPSG or absolute RTK alignment is used.",
   Features: "Working resolution and feature density. Higher values improve fine detail but increase extraction and matching time.",
   Matching: "Controls which image pairs are compared. GPS pairs keep large aerial datasets bounded.",
   Mapping: "Global reconstruction, bundle adjustment, fallback behavior, quality gate, and time budget.",
@@ -78,6 +98,11 @@ const GROUP_DESCRIPTIONS: Record<string, string> = {
 };
 
 const ESSENTIAL_KEYS = new Set([
+  "orthophoto_mode",
+  "facade_selection_mode",
+  "facade_excluded_image_ranges",
+  "facade_scale_mode",
+  "facade_meters_per_model_unit",
   "feature_max_image_size",
   "global_mapper_ba_iterations",
   "global_mapper_skip_retriangulation",
@@ -85,6 +110,19 @@ const ESSENTIAL_KEYS = new Set([
   "projected_crs_mode",
   "projected_crs",
   "gcp_adjustment_enabled",
+]);
+
+const HIDDEN_IN_FACADE = new Set([
+  "projected_crs_mode", "projected_crs", "rtk_refinement_enabled",
+  "rtk_refinement_timeout_seconds", "rtk_refinement_iterations",
+  "rtk_refinement_loss_scale", "rtk_minimum_point_ratio",
+  "rtk_maximum_reprojection_degradation_px", "rtk_maximum_track_length_loss_ratio",
+  "rtk_maximum_focal_length_change_ratio", "gcp_adjustment_enabled",
+  "gcp_horizontal_accuracy_m", "gcp_vertical_accuracy_m", "gcp_image_accuracy_px",
+  "gcp_robust_loss_scale", "gcp_require_checkpoints", "gcp_min_checkpoint_count",
+  "gcp_max_checkpoint_horizontal_rmse_m", "gcp_max_checkpoint_vertical_rmse_m",
+  "gcp_max_checkpoint_normalized_error_sigma", "gcp_min_adjustment_baseline_m",
+  "alignment_max_error", "imu_gravity_enabled",
 ]);
 
 const isTrue = (value: unknown) =>
@@ -197,18 +235,22 @@ export default function PhaseReconstruction() {
   } = useStore();
 
   const metadata = parameterSchema?.metadata ?? {};
+  const processes = parameterSchema?.processes ?? [];
   const workDrives = parameterSchema?.work_drives ?? [];
   const colmapSvc = activeMission?.services?.["COLMAP"];
   const retriangulationEnabled = !isTrue(
     parameterValues.global_mapper_skip_retriangulation,
   );
+  const facadeMode = parameterValues.orthophoto_mode === "facade";
 
   const advancedGroups = RECONSTRUCTION_GROUPS.map((group) => ({
     id: group.toLocaleLowerCase(),
     label: group,
     description: GROUP_DESCRIPTIONS[group],
     keys: RECONSTRUCTION_PARAMS.filter(
-      (key) => metadata[key]?.group === group && !ESSENTIAL_KEYS.has(key),
+      (key) => metadata[key]?.group === group && !ESSENTIAL_KEYS.has(key)
+        && !(facadeMode && HIDDEN_IN_FACADE.has(key))
+        && (facadeMode || metadata[key]?.group !== "Facade"),
     ),
   }));
   const essentialKeys = [
@@ -216,11 +258,29 @@ export default function PhaseReconstruction() {
     "global_mapper_ba_iterations",
     "global_mapper_skip_retriangulation",
     "mvs_max_image_size",
-    "projected_crs_mode",
-    ...(parameterValues.projected_crs_mode === "custom"
+    ...(facadeMode
+      ? [
+          "facade_selection_mode",
+          "facade_excluded_image_ranges",
+          "facade_scale_mode",
+          ...(parameterValues.facade_scale_mode === "manual"
+            ? ["facade_meters_per_model_unit"]
+            : []),
+        ]
+      : ["projected_crs_mode"]),
+    ...(!facadeMode && parameterValues.projected_crs_mode === "custom"
       ? ["projected_crs"]
       : []),
   ].filter((key) => metadata[key]);
+
+  const applyProcess = (processId: "map" | "facade") => {
+    const process = processes.find((candidate) => candidate.id === processId);
+    const pipelineDefaults = parameterSchema?.pipelines[pipeline] ?? {};
+    setParameterValues({
+      ...pipelineDefaults,
+      ...(process?.parameters ?? { orthophoto_mode: processId }),
+    });
+  };
 
   return (
     <div className="space-y-5">
@@ -266,31 +326,85 @@ export default function PhaseReconstruction() {
         </div>
       )}
 
+      <section className="surface p-5 sm:p-6">
+        <div className="eyebrow">Processus de production</div>
+        <h3 className="mt-1 text-lg font-bold text-[#26332f]">
+          Choisir le produit attendu
+        </h3>
+        <p className="mt-1 text-xs leading-5 text-[#77847f]">
+          Le choix configure toute la chaîne et ses étapes terminales. Une
+          façade reste dans un repère métrique local et ne lance pas la
+          détection cartographique.
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {processes.map((process) => {
+            const selected = parameterValues.orthophoto_mode === process.id;
+            return (
+              <button
+                key={process.id}
+                type="button"
+                onClick={() => applyProcess(process.id)}
+                aria-pressed={selected}
+                className={`rounded-2xl border p-4 text-left transition ${
+                  selected
+                    ? "border-[#54ad9d] bg-[#edf9f6] shadow-[0_8px_24px_rgba(15,118,110,0.08)]"
+                    : "border-[#dce5e1] bg-[#fafcfb] hover:border-[#aac3bb]"
+                }`}
+              >
+                <span className="flex items-center justify-between gap-3">
+                  <span className="text-sm font-bold text-[#26332f]">
+                    {process.label}
+                  </span>
+                  <span className="rounded-full bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#0f766e]">
+                    {process.stages.join(" → ")}
+                  </span>
+                </span>
+                <span className="mt-2 block text-xs leading-5 text-[#6f7d78]">
+                  {process.description}
+                </span>
+                {process.profile_id && (
+                  <span className="mt-2 block font-mono text-[9px] text-[#82908b]">
+                    Profil validé : {process.profile_id}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="surface p-5 sm:p-6">
           <div className="eyebrow">Profil de production</div>
           <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            Relevé précis ou traitement rapide
+            {facadeMode ? "Façade HD · couverture qualifiée" : "Relevé précis ou traitement rapide"}
           </h3>
           <p className="mt-1 text-xs leading-5 text-[#77847f]">
-            Le profil initial cible la planimétrie ; il ne constitue pas une
-            certification universelle. Pour un autre capteur ou un besoin
-            altimétrique, partez du profil rapide et validez sur des checkpoints.
+            {facadeMode
+              ? "Le profil Façade HD privilégie une distribution homogène des points ; les séquences de détail peuvent être exclues avant la densification DroneGS."
+              : "Le profil initial cible la planimétrie ; il ne constitue pas une certification universelle. Pour un autre capteur ou un besoin altimétrique, partez du profil rapide et validez sur des checkpoints."}
           </p>
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
-            {ALIGNMENT_PRESETS.map((preset) => (
-              <PresetButton
-                key={preset.id}
-                preset={preset}
-                parameterValues={parameterValues}
-                layout="row"
-                tone="teal"
-                onApply={(values) =>
-                  setParameterValues((previous) => ({ ...previous, ...values }))
-                }
-              />
-            ))}
-          </div>
+          {facadeMode ? (
+            <div className="mt-4 rounded-2xl border border-[#bee2da] bg-white p-4 text-xs leading-5 text-[#60716b]">
+              SIFT 4200 px · Caspar · voisinage 48/16 + 6 temporelles ·
+              DroneGS 30 000 itérations en 4K · texture ≤ 45°.
+            </div>
+          ) : (
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {ALIGNMENT_PRESETS.map((preset) => (
+                <PresetButton
+                  key={preset.id}
+                  preset={preset}
+                  parameterValues={parameterValues}
+                  layout="row"
+                  tone="teal"
+                  onApply={(values) =>
+                    setParameterValues((previous) => ({ ...previous, ...values }))
+                  }
+                />
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
@@ -302,7 +416,9 @@ export default function PhaseReconstruction() {
               ["Retriangulation", retriangulationEnabled ? "Activée" : "Ignorée"],
               [
                 "CRS",
-                parameterValues.projected_crs_mode === "custom"
+                facadeMode
+                  ? "Repère local (sans CRS)"
+                  : parameterValues.projected_crs_mode === "custom"
                   ? String(parameterValues.projected_crs || "EPSG requis")
                   : String(parameterValues.projected_crs_mode ?? "auto-local"),
               ],

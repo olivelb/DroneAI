@@ -3,7 +3,11 @@ import json
 
 import pytest
 
-from shared.pipeline_params import PARAMETER_METADATA, merge_pipeline_params
+from shared.pipeline_params import (
+    PARAMETER_METADATA,
+    PIPELINE_DEFAULTS,
+    merge_pipeline_params,
+)
 from shared.validation import (
     configured_work_drives,
     configured_work_drive_names,
@@ -151,6 +155,15 @@ def test_fast_alignment_dashboard_parameters_are_validated_and_merged():
                 "camera_model": "OPENCV",
             }
         )
+    with pytest.raises(ValueError, match="must sort before"):
+        validate_pipeline_overrides(
+            {
+                "facade_excluded_image_ranges": (
+                    "DJI_20250324163256_0658_V.JPG.."
+                    "DJI_20250324162114_0307_V.JPG"
+                )
+            }
+        )
 
 
 def test_pipeline_defaults_select_validated_dronegs_profile():
@@ -179,6 +192,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["rtk_refinement_loss_scale"] == "7.82"
     assert params["imu_gravity_enabled"] is False
     assert params["mvs_max_image_size"] == "2400"
+    assert params["mvs_num_threads"] == "12"
     assert params["gs_backend"] == "dronegs"
     assert params["gs_iterations"] == "15000"
     assert params["gs_cap_max"] == "1500000"
@@ -236,6 +250,28 @@ def test_dashboard_exposes_complete_dronegs_quality_configuration():
 
 def test_legacy_thread_default_is_allowed():
     assert validate_pipeline_overrides({"feature_num_threads": "-1"}) == {"feature_num_threads": "-1"}
+
+
+def test_map_profiles_share_one_contract_and_only_explicit_differences():
+    legacy = PIPELINE_DEFAULTS["legacy"]
+    modern = PIPELINE_DEFAULTS["modern"]
+    expected_differences = {
+        "alignment_engine",
+        "camera_model",
+        "feature_max_image_size",
+        "feature_max_num_features",
+        "mapper_cmd",
+        "mapping_timeout_seconds",
+        "matching_strategy",
+        "mvs_max_image_size",
+        "rtk_refinement_enabled",
+        "use_view_graph_calibrator",
+    }
+
+    assert legacy.keys() == modern.keys()
+    assert {
+        key for key in legacy if legacy[key] != modern[key]
+    } == expected_differences
 
 
 def test_mission_schema_rejects_extra_fields_and_invalid_bounds(monkeypatch):

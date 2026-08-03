@@ -24,6 +24,12 @@ for import_path in (REPO_ROOT, APP1_ROOT):
 
 from shared.dronegs_profile import (  # noqa: E402
     DRONEGS_PRODUCTION_PROFILE_V1,
+    DRONEGS_QUALIFICATION_POLICY_ID,
+)
+from shared.facade_process import (  # noqa: E402
+    FACADE_DRONEGS_PROFILE_ID,
+    FACADE_PROCESS_OVERRIDES,
+    FACADE_QUALIFICATION_POLICY_ID,
 )
 from shared.geo_alignment import (  # noqa: E402
     compute_reconstruction_alignment,
@@ -59,6 +65,7 @@ class GaussianProfile:
     test_guard_percent: int
     canary_min_psnr: float
     canary_min_ssim: float
+    qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -162,6 +169,42 @@ PROFILES: dict[str, GaussianProfile] = {
             DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
         ),
     ),
+    # Close-range facade production profile. Full 4K training detail is kept
+    # and the capacity can retain a coverage-balanced 1.7M-point COLMAP
+    # initialization while leaving 15% headroom on an 8 GB RTX GPU.
+    "facade-hd": GaussianProfile(
+        backend="dronegs",
+        iterations=int(FACADE_PROCESS_OVERRIDES["gs_iterations"]),
+        cap_max=int(FACADE_PROCESS_OVERRIDES["gs_cap_max"]),
+        sh_degree=int(FACADE_PROCESS_OVERRIDES["gs_sh_degree"]),
+        data_factor=int(FACADE_PROCESS_OVERRIDES["gs_data_factor"]),
+        max_width=int(FACADE_PROCESS_OVERRIDES["gs_max_width"]),
+        tile_mode=int(FACADE_PROCESS_OVERRIDES["gs_tile_mode"]),
+        resolution=float(FACADE_PROCESS_OVERRIDES["ortho_mesh_resolution"]),
+        filter_enabled=True,
+        seed=DRONEGS_PRODUCTION_PROFILE_V1.seed,
+        profile_id=FACADE_DRONEGS_PROFILE_ID,
+        optimizer_profile=DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile,
+        pruning_policy=DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
+        raster_profile=DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
+        sh_degree_interval=DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval,
+        topology_cooldown=DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown,
+        photometric_finish=DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish,
+        photometric_mse_percent=(
+            DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
+        ),
+        checkpoint_every=DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every,
+        test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
+        test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
+        test_guard_percent=DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent,
+        canary_min_psnr=float(
+            FACADE_PROCESS_OVERRIDES["facade_canary_min_psnr"]
+        ),
+        canary_min_ssim=float(
+            FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]
+        ),
+        qualification_policy_id=FACADE_QUALIFICATION_POLICY_ID,
+    ),
 }
 
 
@@ -200,6 +243,25 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--render-mode", choices=("map", "facade"), default="map")
+    parser.add_argument(
+        "--facade-scale-mode",
+        choices=("gps-baseline", "manual", "model-units"),
+        default="gps-baseline",
+    )
+    parser.add_argument("--facade-meters-per-model-unit", type=float, default=1.0)
+    parser.add_argument("--facade-texture-max-incidence-deg", type=float, default=45.0)
+    parser.add_argument("--facade-depth-iqr-multiplier", type=float, default=1.0)
+    parser.add_argument(
+        "--facade-seed-max-reprojection-error",
+        type=float,
+        default=2.0,
+    )
+    parser.add_argument(
+        "--facade-seed-min-track-length",
+        type=int,
+        default=2,
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
@@ -213,17 +275,21 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         if getattr(args, field, None) is not None
     }
     resolved = replace(profile, **overrides)
-    if resolved.profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
-        production_parameters = (
-            DRONEGS_PRODUCTION_PROFILE_V1.trainer_parameters()
-        )
-        has_training_override = any(
-            name != "profile_id"
-            and getattr(resolved, name) != expected
-            for name, expected in production_parameters.items()
-        )
-        if has_training_override:
-            resolved = replace(resolved, profile_id="custom")
+    training_identity_fields = set(
+        DRONEGS_PRODUCTION_PROFILE_V1.training_identity_parameters()
+    )
+    if any(
+        name in training_identity_fields
+        and getattr(resolved, name) != getattr(profile, name)
+        for name in overrides
+    ):
+        resolved = replace(resolved, profile_id="custom")
+    if any(
+        name in {"canary_min_psnr", "canary_min_ssim"}
+        and getattr(resolved, name) != getattr(profile, name)
+        for name in overrides
+    ):
+        resolved = replace(resolved, qualification_policy_id="custom")
     if resolved.iterations <= 0:
         raise ValueError("iterations must be positive")
     if resolved.cap_max <= 0:
@@ -252,7 +318,7 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
     return resolved
 
 
-def validate_workspace(workspace: Path) -> tuple[Path, Path, str]:
+def validate_workspace(workspace: Path, *, facade: bool = False) -> tuple[Path, Path | None, str | None]:
     workspace = workspace.resolve()
     if not (workspace / WORKSPACE_MARKER).is_file():
         raise ValueError("workspace has no DroneAI local marker")
@@ -270,13 +336,18 @@ def validate_workspace(workspace: Path) -> tuple[Path, Path, str]:
         raise ValueError(
             "workspace is not undistorted; missing " + ", ".join(missing)
         )
-    if not sparse_path.is_dir() or not aligned_path.is_dir():
-        raise ValueError("workspace needs both sparse and sparse_geo models")
+    if not sparse_path.is_dir() or (not facade and not aligned_path.is_dir()):
+        raise ValueError(
+            "workspace needs a sparse model"
+            + ("" if facade else " and a sparse_geo model")
+        )
     image_count = sum(1 for path in (dense_path / "images").rglob("*") if path.is_file())
     if image_count < 3:
         raise ValueError("workspace needs at least three undistorted images")
 
     crs_path = workspace / "geo_data.txt.crs"
+    if facade:
+        return dense_path, None, None
     if not crs_path.is_file() or not crs_path.read_text(encoding="utf-8").strip():
         raise ValueError("workspace has no projected CRS in geo_data.txt.crs")
     return dense_path, aligned_path, crs_path.read_text(encoding="utf-8").strip()
@@ -301,11 +372,16 @@ def output_paths(
     workspace: Path,
     profile_name: str,
     requested_output: Path | None,
+    render_mode: str = "map",
 ) -> tuple[Path, Path, Path]:
     ortho_path = (
         requested_output.resolve()
         if requested_output
-        else workspace / f"orthomosaic.{profile_name}.tif"
+        else workspace / (
+            f"facade_orthophoto.{profile_name}.tif"
+            if render_mode == "facade"
+            else f"orthomosaic.{profile_name}.tif"
+        )
     )
     try:
         ortho_path.relative_to(workspace)
@@ -339,12 +415,16 @@ def main() -> int:
     args = parse_args()
     profile = resolve_profile(args)
     workspace = args.workspace.resolve()
-    dense_path, aligned_path, projected_crs = validate_workspace(workspace)
-    transform_path = ensure_transform(workspace, aligned_path)
+    facade_mode = args.render_mode == "facade"
+    dense_path, aligned_path, projected_crs = validate_workspace(
+        workspace, facade=facade_mode
+    )
+    transform_path = None if facade_mode else ensure_transform(workspace, aligned_path)
     ortho_path, height_path, checkpoint_path = output_paths(
         workspace,
         args.profile,
         args.output,
+        args.render_mode,
     )
     if ortho_path.exists() or height_path.exists():
         if not args.force:
@@ -385,7 +465,7 @@ def main() -> int:
             ortho_file=str(ortho_path),
             utm_crs=projected_crs,
             vol_id=f"local-{args.profile}",
-            transform_file=str(transform_path),
+            transform_file=str(transform_path) if transform_path else None,
             resolution=profile.resolution,
             iterations=profile.iterations,
             sh_degree=profile.sh_degree,
@@ -399,6 +479,7 @@ def main() -> int:
             trainer_backend=profile.backend,
             training_seed=profile.seed,
             dronegs_profile_id=profile.profile_id,
+            dronegs_qualification_policy_id=profile.qualification_policy_id,
             dronegs_optimizer_profile=profile.optimizer_profile,
             dronegs_pruning_policy=profile.pruning_policy,
             dronegs_raster_profile=profile.raster_profile,
@@ -412,6 +493,16 @@ def main() -> int:
             dronegs_test_guard_percent=profile.test_guard_percent,
             dronegs_canary_min_psnr=profile.canary_min_psnr,
             dronegs_canary_min_ssim=profile.canary_min_ssim,
+            render_mode=args.render_mode,
+            facade_scale_mode=args.facade_scale_mode,
+            facade_meters_per_model_unit=args.facade_meters_per_model_unit,
+            facade_frame_report=str(workspace / "facade_frame.json"),
+            facade_texture_max_incidence_deg=args.facade_texture_max_incidence_deg,
+            facade_depth_iqr_multiplier=args.facade_depth_iqr_multiplier,
+            facade_seed_max_reprojection_error=(
+                args.facade_seed_max_reprojection_error
+            ),
+            facade_seed_min_track_length=args.facade_seed_min_track_length,
         )
     except Exception as error:
         report.update(

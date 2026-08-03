@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-
-def sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+from shared.checksums import sha256_file
 
 
 def describe_file(path: str | Path, *, role: str) -> dict[str, Any]:

@@ -7,7 +7,6 @@ by retaining only the Gaussians whose centres fall within the *core*
 borders.
 """
 import cupy as cp
-import numpy as np
 
 from .gaussian_model import GaussianModel
 from .partition import CellBounds

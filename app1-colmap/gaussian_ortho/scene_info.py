@@ -4,7 +4,7 @@ Scene information dataclass for 3DGS training.
 Wraps camera lists, point cloud, normalisation bounds, and workspace paths
 into a single structure consumed by the training loop.
 """
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np

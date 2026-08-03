@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from confluent_kafka import Consumer, Producer
 
 from shared.config import DEFAULT_WORKSPACE_DIR
-from shared import storage
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_reliability import publish_json, reliable_consumer_config
 from shared.worker_messaging import (

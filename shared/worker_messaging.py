@@ -14,6 +14,29 @@ from shared.kafka_reliability import (
 )
 
 
+def make_cancellation_handler(
+    registry: Any,
+    logger: Any,
+) -> Callable[[dict], None]:
+    """Build the common attempt-scoped cancellation event handler."""
+
+    def handle(data: dict) -> None:
+        if data.get("command") != "cancel":
+            return
+        vol_id = data.get("vol_id")
+        if not vol_id:
+            return
+        run_id = data.get("analysis_run_id")
+        registry.cancel(vol_id, run_id, data.get("attempt", 0))
+        logger.info(
+            "Cancellation requested for %s analysis=%s",
+            vol_id,
+            run_id or "all",
+        )
+
+    return handle
+
+
 def make_progress_publisher(
     producer: Any,
     topic: str,

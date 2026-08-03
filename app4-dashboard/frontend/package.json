@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "vitest run",
+    "duplication": "jscpd ../../shared ../../app1-colmap ../../app2-ia ../../app3-processing ../../app4-dashboard/api ../../tools --format python --config ../../.jscpd.json"
   },
   "dependencies": {
     "@types/leaflet": "^1.9.21",
@@ -25,10 +27,24 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.12",
+    "jscpd": "5.0.14",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.10"
   },
   "overrides": {
+    "@eslint/config-array": {
+      "brace-expansion": "1.1.17"
+    },
+    "@eslint/eslintrc": {
+      "brace-expansion": "1.1.17"
+    },
+    "eslint": {
+      "brace-expansion": "1.1.17"
+    },
+    "eslint-config-next": {
+      "brace-expansion": "1.1.17"
+    },
     "postcss": "8.5.24",
     "sharp": "0.35.3"
   }

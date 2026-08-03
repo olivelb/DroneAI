@@ -10,12 +10,8 @@ Each Gaussian is parametrised by:
 
 Based on Kerbl et al. 2023 (3DGS) with FAGK from Tortho-Gaussian.
 """
-import math
-
 import cupy as cp
 import numpy as np
-
-from .colmap_loader import PointCloud
 
 SH_C0 = 0.28209479177387814
 

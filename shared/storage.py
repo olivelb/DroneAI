@@ -5,7 +5,6 @@ All services use this module instead of direct filesystem I/O for
 persistent data (datasets, mission artifacts, tiles, orthomosaics).
 """
 
-import hashlib
 import io
 import logging
 import os
@@ -16,6 +15,7 @@ import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
+from shared.checksums import sha256_file
 from shared.config import (
     S3_ACCESS_KEY,
     S3_BUCKET,
@@ -105,11 +105,7 @@ def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = Non
 
 
 def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        while chunk := stream.read(chunk_size):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path, chunk_size=chunk_size)
 
 
 def upload_verified_file(

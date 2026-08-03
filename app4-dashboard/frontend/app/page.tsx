@@ -92,6 +92,7 @@ function DashboardInner() {
     wsConnected,
     authPrincipal,
     logout,
+    parameterValues,
   } = useStore();
   const [monitorOpen, setMonitorOpen] = useState(false);
 
@@ -133,6 +134,16 @@ function DashboardInner() {
     );
   }, [activeMission]);
   const isRunning = activeMission?.overall_status === "processing";
+  const facadeMode = parameterValues.orthophoto_mode === "facade";
+  const visiblePhases = facadeMode
+    ? PHASES.filter((phase) => phase.id !== "detection")
+    : PHASES;
+
+  useEffect(() => {
+    if (facadeMode && activePhase === "detection") {
+      setActivePhase("results");
+    }
+  }, [activePhase, facadeMode, setActivePhase]);
 
   return (
     <div className="min-h-screen">
@@ -218,7 +229,7 @@ function DashboardInner() {
         aria-label="Étapes du pipeline"
       >
         <div className="mx-auto flex max-w-[1500px] gap-1.5 overflow-x-auto px-3 py-2 sm:px-5">
-          {PHASES.map((phase, index) => {
+          {visiblePhases.map((phase, index) => {
             const selected = activePhase === phase.id;
             const state = phaseState(phase.id);
             return (

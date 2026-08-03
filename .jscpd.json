@@ -1,0 +1,17 @@
+{
+  "threshold": 0,
+  "minLines": 6,
+  "minTokens": 60,
+  "reporters": ["console"],
+  "ignore": [
+    "**/tests/**",
+    "**/test_*.py",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/extern/**",
+    "**/patches/**",
+    "**/ceres-solver/**",
+    "**/colmap-local/**"
+  ]
+}

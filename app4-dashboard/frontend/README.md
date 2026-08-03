@@ -7,8 +7,9 @@ The frontend:
 - establishes a role-bearing HttpOnly session from an operator-provided API
   key without storing that key in JavaScript or browser storage;
 - uploads and browses S3-backed datasets through the dashboard API;
-- presents the complete workflow as five focused stages: preparation,
-  reconstruction, DroneGS production, AI detection and Results;
+- presents aerial mapping and HD facade as explicit production
+  processes; maps use five stages through AI detection, while facades omit
+  that stage and terminate after local DroneGS raster production;
 - discovers the work drives actually mounted by the runtime instead of
   exposing host-specific drive letters;
 - keeps production presets prominent while resolution, BA passes,
@@ -16,7 +17,8 @@ The frontend:
   collapsible advanced sections;
 - submits, resumes, cancels and deletes missions and exposes live status in a
   dedicated monitor drawer;
-- renders large orthomosaics and height maps through bounded COG tiles;
+- renders aerial orthomosaics/height maps and clearly labelled local facade
+  orthophoto/depth products;
 - launches retryable YOLO/SAM analyses, controls campaign visibility and
   searches persisted objects with automatic map framing;
 - provides a full-screen GIS viewer with measurements and manual
@@ -47,6 +49,7 @@ Open `http://localhost:3000`. The client calls
 ## Checks
 
 ```bash
+npm run test
 npm run lint
 npm run build
 ```

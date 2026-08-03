@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from shared import storage
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
 from shared.database import Mission, get_or_create_mission, get_session
+from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.validation import configured_work_drives
@@ -203,6 +204,7 @@ def mission_parameters():
         work_drive_default = work_drives[0]["name"] if work_drives else ""
     return {
         "pipelines": PIPELINE_DEFAULTS,
+        "processes": product_process_catalog(),
         "metadata": PARAMETER_METADATA,
         "work_drives": work_drives,
         "work_drive_default": work_drive_default,

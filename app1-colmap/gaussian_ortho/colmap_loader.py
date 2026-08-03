@@ -7,9 +7,7 @@ training initialisation.
 """
 import json
 import os
-import struct
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -71,6 +69,7 @@ class CameraInfo:
     R: np.ndarray          # 3×3 rotation (camera-to-world)
     T: np.ndarray          # 3   translation (camera centre in world)
     image_path: str = ""
+    sparse_observations: int = 0
 
 
 @dataclass
@@ -109,8 +108,14 @@ def _camera_intrinsics(cam):
                params[3] if len(params) > 3 else 0
 
 
-def load_colmap_reconstruction(dense_path: str, transform_file: str | None = None,
-                               llffhold: int = 0):
+def load_colmap_reconstruction(
+    dense_path: str,
+    transform_file: str | None = None,
+    llffhold: int = 0,
+    *,
+    max_reproj_error: float = 1.0,
+    min_track_length: int = 3,
+):
     """
     Load a COLMAP dense workspace into 3DGS-compatible structures.
 
@@ -167,6 +172,7 @@ def load_colmap_reconstruction(dense_path: str, transform_file: str | None = Non
             R=R_c2w.astype(np.float32),
             T=C_world.astype(np.float32),
             image_path=os.path.join(images_dir, image.name),
+            sparse_observations=int(image.num_points3D),
         ))
 
     # Train/test split
@@ -190,9 +196,16 @@ def load_colmap_reconstruction(dense_path: str, transform_file: str | None = Non
         reproj_errors[i] = pt.error if hasattr(pt, "error") else 0.0
         track_lengths[i] = pt.track.length() if hasattr(pt, "track") else 0
 
-    # Filter by reprojection error and track length (like Metashape confidence)
-    max_reproj_error = 1.0   # pixels — points above this are poorly triangulated
-    min_track_length = 3     # images — points seen by <3 cameras are unreliable
+    # Filter by reprojection error and track length (like Metashape confidence).
+    # Facade products can deliberately choose a more coverage-oriented gate:
+    # two-view points are useful along thin borders where a third observation
+    # is unavailable, while map mode retains the conservative defaults.
+    max_reproj_error = float(max_reproj_error)
+    min_track_length = int(min_track_length)
+    if max_reproj_error <= 0:
+        raise ValueError("max_reproj_error must be positive")
+    if min_track_length < 2:
+        raise ValueError("min_track_length must be at least 2")
     keep = (reproj_errors <= max_reproj_error) & (track_lengths >= min_track_length)
     n_before = len(points)
     n_removed = n_before - keep.sum()

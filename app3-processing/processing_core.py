@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -12,6 +11,7 @@ import rasterio
 from affine import Affine
 from pyproj import Transformer
 from rasterio.windows import Window
+
 
 
 def build_tile_starts(full_size: int, tile_size: int, overlap: int) -> list[int]:
@@ -452,11 +452,3 @@ def render_annotated_orthomosaic(
             "crs": src.crs.to_string() if src.crs else None,
             "detections_rendered": len(detections),
         }
-
-
-def write_json(path: Path, payload: dict | list) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )

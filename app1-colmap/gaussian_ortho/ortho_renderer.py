@@ -19,7 +19,9 @@ from .rasterizer import RasterSettings, render_ortho, make_view_matrix
 
 
 def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
-                         R_geo: np.ndarray = None):
+                         R_geo: np.ndarray = None,
+                         frame_origin: np.ndarray = None,
+                         quantile: float = 0.001):
     """
     Compute the X-Y bounding box of the Gaussian scene.
 
@@ -27,12 +29,16 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
     """
     xyz = model.positions      # CuPy array
 
+    if frame_origin is not None:
+        xyz = xyz - cp.array(frame_origin, dtype=cp.float32)[None, :]
     if R_geo is not None:
         R_t = cp.array(R_geo, dtype=cp.float32)
         xyz = (R_t @ xyz.T).T
 
-    lo = cp.quantile(xyz, 0.001, axis=0)
-    hi = cp.quantile(xyz, 0.999, axis=0)
+    if not 0.0 <= quantile < 0.5:
+        raise ValueError("extent quantile must be in [0, 0.5)")
+    lo = cp.quantile(xyz, quantile, axis=0)
+    hi = cp.quantile(xyz, 1.0 - quantile, axis=0)
 
     x_lo = float(lo[0]) - pad
     x_hi = float(hi[0]) + pad
@@ -47,6 +53,7 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                       extent: tuple = None, chunk_size: int = 0,
                       device=None, R_geo: np.ndarray = None,
+                      frame_origin: np.ndarray = None,
                       sh_direction_rotation: np.ndarray = None,
                       mip_filter_variance: float = 0.03,
                       mip_filter_compensation: bool = True):
@@ -72,7 +79,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     """
     if extent is None:
         x_min, x_max, y_min, y_max, z_min, z_max = compute_ortho_extent(
-            model, R_geo=R_geo)
+            model, R_geo=R_geo, frame_origin=frame_origin)
     else:
         x_min, x_max, y_min, y_max, z_min, z_max = extent
 
@@ -101,7 +108,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     if W <= chunk_size and H <= chunk_size:
         rgb, height = _render_single_tile(
             model, x_min, x_max, y_min, y_max, z_min, z_max, W, H,
-            R_geo=R_geo, sh_direction_rotation=sh_direction_rotation,
+            R_geo=R_geo, frame_origin=frame_origin,
+            sh_direction_rotation=sh_direction_rotation,
             mip_filter_variance=mip_filter_variance,
             mip_filter_compensation=mip_filter_compensation,
         )
@@ -128,6 +136,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                 tile_rgb, tile_h = _render_single_tile(
                     model, tile_x_min, tile_x_max, tile_y_min, tile_y_max,
                     z_min, z_max, tw, th, R_geo=R_geo,
+                    frame_origin=frame_origin,
                     sh_direction_rotation=sh_direction_rotation,
                     mip_filter_variance=mip_filter_variance,
                     mip_filter_compensation=mip_filter_compensation,
@@ -149,12 +158,15 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
 
 def _render_single_tile(model, x_min, x_max, y_min, y_max,
                          z_min, z_max, W, H, R_geo=None,
+                         frame_origin=None,
                          sh_direction_rotation=None,
                          mip_filter_variance=0.03,
                          mip_filter_compensation=True):
     """Render one tile via the custom CUDA ortho rasteriser."""
     # --- Per-tile frustum culling (in geo frame) ---
     xyz = model.positions      # (N, 3) COLMAP coords
+    if frame_origin is not None:
+        xyz = xyz - cp.array(frame_origin, dtype=cp.float32)[None, :]
     if R_geo is not None:
         R_t = cp.array(R_geo, dtype=cp.float32)
         xyz_geo = (R_t @ xyz.T).T
@@ -189,8 +201,12 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
     if R_geo is not None:
         R_inv = R_geo.T.astype(np.float64)
         R_c2w = (R_inv @ R_c2w_geo).astype(np.float32)
-        T_world = (R_inv @ np.array([cx_geo, cy_geo, z_cam_geo],
-                                     dtype=np.float64)).astype(np.float32)
+        T_world = R_inv @ np.array(
+            [cx_geo, cy_geo, z_cam_geo], dtype=np.float64
+        )
+        if frame_origin is not None:
+            T_world += np.asarray(frame_origin, dtype=np.float64)
+        T_world = T_world.astype(np.float32)
     else:
         R_c2w = R_c2w_geo.astype(np.float32)
         T_world = np.array([cx_geo, cy_geo, z_cam_geo], dtype=np.float32)

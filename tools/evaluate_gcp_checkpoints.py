@@ -12,7 +12,6 @@ import json
 import math
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -24,48 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-
-@dataclass(frozen=True)
-class GcpObservation:
-    point_id: str
-    source_xyz: tuple[float, float, float]
-    pixel_xy: tuple[float, float]
-    image_name: str
-
-
-def parse_gcp_file(path: Path) -> tuple[str, list[GcpObservation]]:
-    lines = [
-        line.strip()
-        for line in path.read_text(encoding="utf-8-sig").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    if not lines:
-        raise ValueError(f"empty GCP file: {path}")
-    source_crs = lines[0]
-    CRS.from_user_input(source_crs)
-    observations: list[GcpObservation] = []
-    for line_number, line in enumerate(lines[1:], start=2):
-        fields = line.split()
-        if len(fields) < 7:
-            raise ValueError(
-                f"{path}:{line_number}: expected at least 7 fields, got {len(fields)}"
-            )
-        try:
-            source_xyz = tuple(float(value) for value in fields[0:3])
-            pixel_xy = tuple(float(value) for value in fields[3:5])
-        except ValueError as error:
-            raise ValueError(f"{path}:{line_number}: invalid numeric field") from error
-        observations.append(
-            GcpObservation(
-                point_id=fields[6],
-                source_xyz=source_xyz,
-                pixel_xy=pixel_xy,
-                image_name=fields[5],
-            )
-        )
-    if not observations:
-        raise ValueError(f"no GCP observations in {path}")
-    return source_crs, observations
+from shared.gcp_control import (
+    GcpObservation,
+    build_image_lookup,
+    intersect_rays as intersect_weighted_rays,
+    observation_ray,
+    parse_gcp_file,
+    project_point,
+)
 
 
 def metric_projected_crs(value: str) -> CRS:
@@ -85,23 +50,10 @@ def intersect_rays(
     origins: list[np.ndarray],
     directions: list[np.ndarray],
 ) -> tuple[np.ndarray, float]:
-    """Return the least-squares intersection and normal-matrix condition."""
+    """Return the shared least-squares intersection without covariance."""
 
-    if len(origins) != len(directions) or len(origins) < 2:
-        raise ValueError("at least two paired origins and directions are required")
-    normal = np.zeros((3, 3), dtype=np.float64)
-    right_hand_side = np.zeros(3, dtype=np.float64)
-    identity = np.eye(3, dtype=np.float64)
-    for origin, direction in zip(origins, directions, strict=True):
-        unit_direction = np.asarray(direction, dtype=np.float64)
-        unit_direction /= np.linalg.norm(unit_direction)
-        projector = identity - np.outer(unit_direction, unit_direction)
-        normal += projector
-        right_hand_side += projector @ np.asarray(origin, dtype=np.float64)
-    condition = float(np.linalg.cond(normal))
-    if not math.isfinite(condition) or condition > 1.0e12:
-        raise ValueError(f"ill-conditioned ray intersection ({condition:.3g})")
-    return np.linalg.solve(normal, right_hand_side), condition
+    point, _, condition = intersect_weighted_rays(origins, directions)
+    return point, condition
 
 
 def statistics(values: list[float]) -> dict[str, float | int | None]:
@@ -137,47 +89,6 @@ def robust_inlier_mask(
     return mask if sum(mask) >= 2 else [True] * len(residuals)
 
 
-def _image_lookup(reconstruction: Any) -> dict[str, Any]:
-    lookup: dict[str, Any] = {}
-    ambiguous: set[str] = set()
-    for image in reconstruction.images.values():
-        for key in (image.name, Path(image.name).name):
-            if key in lookup and lookup[key].image_id != image.image_id:
-                ambiguous.add(key)
-            else:
-                lookup[key] = image
-    for key in ambiguous:
-        lookup.pop(key, None)
-    return lookup
-
-
-def _ray_for_observation(
-    reconstruction: Any,
-    image: Any,
-    pixel_xy: tuple[float, float],
-) -> tuple[np.ndarray, np.ndarray]:
-    camera = reconstruction.cameras[image.camera_id]
-    camera_ray = camera.cam_ray_from_img(np.asarray(pixel_xy, dtype=np.float64))
-    if camera_ray is None:
-        raise ValueError("camera model could not undistort the annotated pixel")
-    cam_from_world = image.cam_from_world()
-    rotation = np.asarray(cam_from_world.rotation.matrix(), dtype=np.float64)
-    origin = np.asarray(image.projection_center(), dtype=np.float64)
-    direction = rotation.T @ np.asarray(camera_ray, dtype=np.float64)
-    return origin, direction / np.linalg.norm(direction)
-
-
-def _project_point(
-    reconstruction: Any, image: Any, xyz: np.ndarray
-) -> np.ndarray | None:
-    camera = reconstruction.cameras[image.camera_id]
-    point_camera = np.asarray(image.cam_from_world() * xyz, dtype=np.float64)
-    if point_camera[2] <= 0.0:
-        return None
-    projected = camera.img_from_cam(point_camera)
-    return None if projected is None else np.asarray(projected, dtype=np.float64)
-
-
 def _evaluate_point(
     reconstruction: Any,
     point_id: str,
@@ -206,7 +117,7 @@ def _evaluate_point(
             missing_images.append(observation.image_name)
             continue
         try:
-            origin, direction = _ray_for_observation(
+            origin, direction, _ = observation_ray(
                 reconstruction, image, observation.pixel_xy
             )
         except ValueError as error:
@@ -229,7 +140,7 @@ def _evaluate_point(
     )
     initial_residuals: list[float] = []
     for observation, image, _, _ in usable:
-        projected = _project_point(reconstruction, image, estimated_xyz)
+        projected = project_point(reconstruction, image, estimated_xyz)
         initial_residuals.append(
             float("inf")
             if projected is None
@@ -248,8 +159,8 @@ def _evaluate_point(
     inlier_images = {item[0].image_name for item in inliers}
     for observation, image, _, _ in usable:
         observed = np.asarray(observation.pixel_xy, dtype=np.float64)
-        projected_estimated = _project_point(reconstruction, image, estimated_xyz)
-        projected_surveyed = _project_point(
+        projected_estimated = project_point(reconstruction, image, estimated_xyz)
+        projected_surveyed = project_point(
             reconstruction, image, surveyed_model_xyz
         )
         estimated_residual = (
@@ -330,7 +241,7 @@ def evaluate(
             for image in reconstruction.images.values()
         }
         alignment_transform = alignment_from_named_centers(centers, references)
-    lookup = _image_lookup(reconstruction)
+    lookup = build_image_lookup(reconstruction)
     grouped: dict[str, list[GcpObservation]] = defaultdict(list)
     for observation in observations:
         grouped[observation.point_id].append(observation)

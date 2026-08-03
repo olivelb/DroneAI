@@ -6,7 +6,7 @@ import type {
   ParamValue, PipelineName, PodState, StatusPayload, YOLOModelVariant,
   PhaseId,
 } from "./types";
-import { SERVICE_ORDER } from "./types";
+import { serviceOrderFor } from "./types";
 import {
   createSession,
   deleteSession,
@@ -228,7 +228,18 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const setPipeline = useCallback((p: PipelineName) => {
     setPipelineRaw(p);
-    if (parameterSchema) setParameterValues(parameterSchema.pipelines[p] ?? {});
+    if (parameterSchema) {
+      setParameterValues((current) => {
+        const processId = current.orthophoto_mode === "facade" ? "facade" : "map";
+        const process = parameterSchema.processes.find(
+          (candidate) => candidate.id === processId,
+        );
+        return {
+          ...(parameterSchema.pipelines[p] ?? {}),
+          ...(process?.parameters ?? { orthophoto_mode: processId }),
+        };
+      });
+    }
   }, [parameterSchema]);
 
   const updateParameter = useCallback((key: string, value: ParamValue) => {
@@ -342,7 +353,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
             const mission: MissionSummary = {
               ...existing, services: svc, logs: newLogs, updated_at: Date.now() / 1000,
               overall_status: d.status === "error" ? "error"
-                : Object.values(svc).length > 0 && (SERVICE_ORDER as string[]).every((s) => (svc as Record<string, StatusPayload>)[s]?.status === "success") ? "success"
+                : Object.values(svc).length > 0 && serviceOrderFor(svc).every((s) => svc[s]?.status === "success") ? "success"
                 : "processing",
             };
             const next = { ...prev, [d.vol_id]: mission };

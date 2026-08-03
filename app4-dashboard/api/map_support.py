@@ -110,12 +110,13 @@ def serialize_run(run: AIAnalysisRun) -> dict[str, Any]:
     }
 
 
-def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
-    geometry_json = session.scalar(
-        select(func.ST_AsGeoJSON(MapFeature.geometry)).where(
-            MapFeature.id == feature.id
-        )
-    )
+def stored_map_feature_geojson(
+    feature: MapFeature,
+    geometry_json: str,
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    """Serialize one stored feature consistently across API and exports."""
+
     return {
         "type": "Feature",
         "id": feature.feature_id,
@@ -124,11 +125,7 @@ def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
             **(feature.properties or {}),
             "feature_id": feature.feature_id,
             "source": feature.source,
-            "run_id": (
-                feature.analysis_run.run_id
-                if feature.analysis_run is not None
-                else None
-            ),
+            "run_id": run_id,
             "name": feature.name,
             "description": feature.description or "",
             "color": feature.color,
@@ -142,6 +139,20 @@ def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
             ),
         },
     }
+
+
+def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
+    geometry_json = session.scalar(
+        select(func.ST_AsGeoJSON(MapFeature.geometry)).where(
+            MapFeature.id == feature.id
+        )
+    )
+    run_id = (
+        feature.analysis_run.run_id
+        if feature.analysis_run is not None
+        else None
+    )
+    return stored_map_feature_geojson(feature, geometry_json, run_id)
 
 
 def feature_collection(features: list[dict[str, Any]], **properties):

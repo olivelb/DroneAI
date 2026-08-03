@@ -6,6 +6,80 @@ import os
 import struct
 from pathlib import Path
 
+import numpy as np
+
+
+def _coverage_balanced_point_ids(points: dict, maximum: int) -> set[int]:
+    """Retain a deterministic, facade-wide seed when the GPU cap is smaller.
+
+    One high-quality point is first retained per occupied cell in the two
+    dominant PCA axes. Remaining capacity is filled by track length and
+    reprojection quality. This prevents dense central masonry from evicting
+    thin borders merely because COLMAP produced more points than DroneGS can
+    fit in VRAM.
+    """
+
+    if maximum < 1:
+        raise ValueError("max_points must be positive")
+    if len(points) <= maximum:
+        return set(points)
+
+    point_ids = np.fromiter(points.keys(), dtype=np.int64, count=len(points))
+    xyz = np.asarray([point["xyz"] for point in points.values()], dtype=np.float64)
+    errors = np.fromiter(
+        (float(point["error"]) for point in points.values()),
+        dtype=np.float64,
+        count=len(points),
+    )
+    tracks = np.fromiter(
+        (len(point["track"]) for point in points.values()),
+        dtype=np.int32,
+        count=len(points),
+    )
+
+    sample = xyz
+    if len(sample) > 50_000:
+        sample = sample[
+            np.linspace(0, len(sample) - 1, 50_000, dtype=np.int64)
+        ]
+    center = np.median(sample, axis=0)
+    covariance = np.cov((sample - center).T)
+    _, axes = np.linalg.eigh(covariance)
+    projected = (xyz - center) @ axes[:, -2:]
+    lower = np.quantile(projected, 0.001, axis=0)
+    upper = np.quantile(projected, 0.999, axis=0)
+    span = np.maximum(upper - lower, 1e-12)
+    grid_side = max(2, int(np.ceil(np.sqrt(maximum * 1.25))))
+    cells_xy = np.floor(
+        np.clip((projected - lower) / span, 0.0, 1.0)
+        * (grid_side - 1)
+    ).astype(np.int64)
+    cell_ids = cells_xy[:, 0] * grid_side + cells_xy[:, 1]
+
+    # lexsort uses the final key as primary: cell, then longer tracks, lower
+    # error, and finally point id for a stable tie-break.
+    spatial_order = np.lexsort((point_ids, errors, -tracks, cell_ids))
+    ordered_cells = cell_ids[spatial_order]
+    first_in_cell = np.ones(len(spatial_order), dtype=bool)
+    first_in_cell[1:] = ordered_cells[1:] != ordered_cells[:-1]
+    coverage_indices = spatial_order[first_in_cell]
+    if len(coverage_indices) > maximum:
+        coverage_indices = coverage_indices[
+            np.linspace(0, len(coverage_indices) - 1, maximum, dtype=np.int64)
+        ]
+        return set(point_ids[coverage_indices].tolist())
+
+    needed = maximum - len(coverage_indices)
+    if needed:
+        remaining = spatial_order[~first_in_cell]
+        quality_order = np.lexsort(
+            (point_ids[remaining], errors[remaining], -tracks[remaining])
+        )
+        coverage_indices = np.concatenate(
+            (coverage_indices, remaining[quality_order[:needed]])
+        )
+    return set(point_ids[coverage_indices].tolist())
+
 
 def export_colmap_subset(
     source_sparse_dir: str,
@@ -13,7 +87,11 @@ def export_colmap_subset(
     camera_names: list[str],
     point_ids: set[int] | None = None,
     images_dir: str | None = None,
-) -> str:
+    max_point_error: float | None = None,
+    min_track_length: int = 0,
+    max_points: int | None = None,
+    return_report: bool = False,
+) -> str | dict:
     """Write a filtered COLMAP sparse reconstruction for one training cell."""
     source = Path(source_sparse_dir)
     target_sparse = Path(target_dir) / "sparse" / "0"
@@ -48,10 +126,39 @@ def export_colmap_subset(
     else:
         visible_point_ids = point_ids
     filtered_points = {
-        point_id: point
+        point_id: {
+            **point,
+            "track": [
+                observation
+                for observation in point["track"]
+                if observation[0] in filtered_images
+            ],
+        }
         for point_id, point in points.items()
         if point_id in visible_point_ids
+        and (
+            max_point_error is None
+            or float(point["error"]) <= float(max_point_error)
+        )
+        and len(point["track"]) >= int(min_track_length)
     }
+    points_before_cap = len(filtered_points)
+    if max_points is not None and points_before_cap > int(max_points):
+        retained_ids = _coverage_balanced_point_ids(
+            filtered_points,
+            int(max_points),
+        )
+        filtered_points = {
+            point_id: point
+            for point_id, point in filtered_points.items()
+            if point_id in retained_ids
+        }
+    valid_point_ids = set(filtered_points)
+    for image in filtered_images.values():
+        image["point3D_ids"] = [
+            point_id if point_id in valid_point_ids else -1
+            for point_id in image["point3D_ids"]
+        ]
 
     _write_colmap_cameras_bin(
         filtered_cameras, target_sparse / "cameras.bin"
@@ -66,7 +173,14 @@ def export_colmap_subset(
     target_images = Path(target_dir) / "images"
     if images_dir and not target_images.exists():
         os.symlink(os.path.abspath(images_dir), target_images)
-    return str(target_sparse)
+    report = {
+        "sparse_path": str(target_sparse),
+        "points_before_cap": points_before_cap,
+        "exported_points": len(filtered_points),
+        "max_points": max_points,
+        "coverage_balanced": len(filtered_points) < points_before_cap,
+    }
+    return report if return_report else str(target_sparse)
 
 
 def _read_colmap_cameras_bin(path: Path) -> dict:
