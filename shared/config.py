@@ -36,7 +36,7 @@ DATABASE_URL = os.getenv(
 )
 
 # ---------------------------------------------------------------------------
-# Legacy filesystem workspace (kept for migration transition)
+# Worker workspace
 # ---------------------------------------------------------------------------
 
 DEFAULT_WORKSPACE_DIR = os.getenv("WORKSPACE_DIR", "/work/system")

@@ -100,14 +100,10 @@ emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
   0.25 edge-guidance factor without extra edge-render passes;
 - preallocates Gaussian/gradient/Adam capacity to `--max-cap` and resets every
   selected parent and appended child's optimizer moments after a split;
-- exposes the accepted `dronegs-dev16` quality-anchor profile, the experimental
-  `lichtfeld-absolute` profile, five exact one-family ablations, a strict
-  DC-plus-opacity combination, three intermediate-DC-plus-opacity calibration
-  profiles, and three post-KNN opacity-rate points, with dev16 retained as the
-  command-line default, `calibrated-dc-0.010-opacity-0.096` recommended for
-  balanced quality, and dev.34 scale/rotation profiles available for opt-in
-  structure-oriented training; dev.38 adds the selected FastGS-compatible
-  quality-parity profile;
+- exposes a versioned optimizer registry: `reference-absolute` is the validated
+  production optimizer, `dronegs-dev16` is the deprecated native CLI default
+  retained for compatibility, and the `reference-*`, calibrated and dev.34–38
+  profiles remain explicit experiments rather than silent fallbacks;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -291,21 +287,19 @@ Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
 and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
 the dev.8 decode behavior.
 
-`--optimizer-profile dronegs-dev16` is the default and current quality anchor.
-`--optimizer-profile lichtfeld-absolute` reproduces the rejected direct
-LichtFeld-rate experiment for controlled calibration and telemetry.
-The `lichtfeld-dc-only`, `lichtfeld-position-only`,
-`lichtfeld-opacity-only`, `lichtfeld-scale-only`, and
-`lichtfeld-rotation-only` values change exactly one family for reproducible
-ablation.
-`lichtfeld-dc-opacity` combines only the LichtFeld DC and opacity behaviors;
-position, scale, and rotation remain exactly dev16.
+`--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
+the standalone CLI. `--optimizer-profile reference-absolute` is the validated
+production optimizer selected explicitly by DroneAI. The
+`reference-dc-only`, `reference-position-only`, `reference-opacity-only`,
+`reference-scale-only`, and `reference-rotation-only` values change exactly
+one family for reproducible ablation. `reference-dc-opacity` combines only the
+reference DC and opacity behaviors; position, scale, and rotation remain
+exactly dev16.
 `calibrated-dc-0.005-opacity`, `calibrated-dc-0.010-opacity`, and
 `calibrated-dc-0.020-opacity` keep the LichtFeld opacity behavior and use the
 named intermediate DC rate; all other parameter families remain exactly
-dev16. The `0.020` profile is the recommended quality profile after two-scene
-validation; `0.010` remains the best mean-PSNR candidate. `dronegs-dev16`
-is the conservative native CLI default; DroneAI's production pipeline
-overrides it with the validated dev.45 profile.
+dev16. Their historical two-scene results remain benchmark evidence, not the
+current production selection. DroneAI's production pipeline overrides the
+native default with the immutable dev.45-derived V1 recipe.
 
 The output directory must be empty and must not contain the source dataset.

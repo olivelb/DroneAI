@@ -124,7 +124,8 @@ Key responsibilities are grouped rather than duplicated in workers:
 Current responsibilities:
 
 - define the Kafka broker and topic names used across services
-- define legacy workspace defaults still used by compatibility helpers
+- define the default COLMAP worker workspace used when a mission does not
+  select an explicitly mounted work drive
 - define the map service completion order (`COLMAP`, `TILER`, `IA`); a COLMAP
   status carrying `details.terminal=true` completes a facade mission
 - define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard

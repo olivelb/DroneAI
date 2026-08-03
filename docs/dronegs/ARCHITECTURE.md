@@ -338,29 +338,33 @@ GPL-3.0-or-later and recorded with exact upstream/local paths in
 existing MIT identifiers; the linked dev.15+ native binary, including dev.22,
 is GPL-covered.
 
-## Planned layout
+## Source layout
 
 ```text
 app1-colmap/dronegs/
-    CMakeLists.txt
-    include/dronegs/{api,colmap,model,rasterization,training}/
-    src/{api,colmap,model,rasterization,training}/
-    cuda/{rasterization,losses,optimizer,strategies}/
-    tests/
-    benchmarks/
+    CMakeLists.txt                  C++/CUDA targets and portable architecture preset
+    include/dronegs/               CLI, model, training and manifest contracts
+    src/                           CPU control plane, I/O, manifest and CLI
+    cuda/                          loss, rasterization and trainer kernels
+    tests/                         CPU and CUDA contract tests
+    benchmarks/                    native rasterization benchmark
+    schema/                        completed production-manifest schema
+    tools/                         isolated LPIPS evaluator
 
 app1-colmap/gaussian_training/
-    Python backend boundary and benchmark support
+    backend adapter, identity/reuse checks and benchmark support
 ```
 
 ## Reproducibility
 
-Run-manifest v1 reserves trainer, source, hardware, parameter, timing, metric,
-and artifact provenance. The development prototype records its version, Git
-revision, contract, parameters, seed, dataset fingerprint, training losses,
-timings, and final Gaussian count. GPU/driver/peak-VRAM fields and artifact
-hashes are not yet populated by the native binary. Benchmark seeds are
-mandatory. Dataset inputs are read-only and outputs use a new run directory.
+Run-manifest v1 records trainer, source, parameter, timing, metric and artifact
+provenance. The native process records its version, Git revision, contract,
+parameters, seed, dataset fingerprint, losses, timings and final Gaussian
+count; its hardware and artifact-hash placeholders remain null. The Python
+production boundary adds the trainer-binary and PLY SHA-256 identities before
+accepting or reusing an artifact, while the benchmark harness records GPU,
+driver and peak-VRAM telemetry. Benchmark seeds are mandatory. Dataset inputs
+are read-only and outputs use a distinct run directory.
 
 ## Large-scene performance principles
 

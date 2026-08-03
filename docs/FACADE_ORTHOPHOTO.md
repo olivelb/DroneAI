@@ -211,6 +211,31 @@ same production renderer can be exercised without Kafka or S3:
 The local runner does not require `sparse_geo`, `geo_data.txt.crs` or an
 alignment transform for this mode.
 
+## Qualification utilities
+
+Two maintained comparison tools make facade changes reproducible. Compare the
+sparse coverage of a candidate reconstruction with a reference model using:
+
+```bash
+python3 tools/compare_facade_sparse_distribution.py \
+  REFERENCE_SPARSE CANDIDATE_SPARSE \
+  --output sparse-comparison.json \
+  --preview sparse-comparison.png
+```
+
+Compare the rendered elevation with an independent reference raster using:
+
+```bash
+python3 tools/compare_facade_rasters.py \
+  CANDIDATE.png REFERENCE.png \
+  --json raster-comparison.json \
+  --preview raster-comparison.png
+```
+
+The second report records robust SIFT/homography residuals, global and gridded
+coverage, and sharpness on the common valid mask. These measurements qualify a
+specific dataset and do not replace an independent surveyed scale check.
+
 ## Acceptance checks
 
 Before using the raster for measurements, verify:

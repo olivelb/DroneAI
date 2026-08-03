@@ -38,7 +38,7 @@ DroneGS is the sole implementation of this contract.
 | `--max-width` | 1 through 4096 |
 | `--tile-mode` | 1, 2, or 4 |
 | `--seed` | Unsigned integer; mandatory for benchmarks |
-| `--run-manifest` | Final manifest conforming to the v1 schema |
+| `--run-manifest` | Final manifest conforming to the native v1 schema |
 | `--profile-id` | Versioned recipe identifier; production uses `DRONEGS_PRODUCTION_PROFILE_V1` |
 | `--dataset-fingerprint` | Optional external content identity used by distributed resume |
 
@@ -78,6 +78,12 @@ selects the two dominant spatial axes, reserves a deterministic central block
 with the same target count as `--test-every`, then excludes the requested guard
 ring from training. This evaluates geographic generalization without changing
 the immutable modulo-based V1 comparison baseline.
+
+The native process contract is described by
+[`trainer-run-v1.schema.json`](trainer-run-v1.schema.json). After a successful
+run, the production adapter adds strict binary and PLY identities and validates
+the completed artifact against
+[`../../../app1-colmap/dronegs/schema/trainer_run.schema.json`](../../../app1-colmap/dronegs/schema/trainer_run.schema.json).
 
 The DroneAI pipeline's production profile intentionally overrides the neutral
 native defaults with immutable `DRONEGS_PRODUCTION_PROFILE_V1`, derived from
