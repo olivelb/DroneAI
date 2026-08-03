@@ -1,0 +1,1 @@
+"""COLMAP worker application package."""

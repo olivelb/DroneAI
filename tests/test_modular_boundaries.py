@@ -61,6 +61,35 @@ def test_processing_worker_delegates_long_running_workflows():
     assert all(len(call.args) == 3 for call in write_calls)
 
 
+def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
+    composition = "app1-colmap/main.py"
+    worker = "app1-colmap/colmap_worker/worker.py"
+    runner = "app1-colmap/colmap_worker/mission_runner.py"
+    stage_modules = [
+        "app1-colmap/colmap_worker/stages/alignment.py",
+        "app1-colmap/colmap_worker/stages/gaussian.py",
+        "app1-colmap/colmap_worker/stages/preparation.py",
+        "app1-colmap/colmap_worker/stages/publication.py",
+        "app1-colmap/colmap_worker/stages/reconstruction.py",
+        "app1-colmap/colmap_worker/stages/rtk.py",
+    ]
+
+    composition_source = _source(composition)
+    worker_source = _source(worker)
+    runner_source = _source(runner)
+
+    assert _line_count(composition) < 120
+    assert _line_count(runner) < 120
+    assert all(_line_count(module) < 700 for module in stage_modules)
+    assert "create_producer(" not in composition_source
+    assert "basicConfig(" not in composition_source
+    assert "run_colmap_pipeline(" in runner_source
+    assert "configure_worker_runtime(" in worker_source
+    assert "create_producer(" in worker_source
+    assert all("confluent_kafka" not in _source(module) for module in stage_modules)
+    assert all("import main" not in _source(module) for module in stage_modules)
+
+
 def test_results_workspace_is_split_into_focused_components():
     viewer = "app4-dashboard/frontend/app/components/ResultsViewer.tsx"
     components = [

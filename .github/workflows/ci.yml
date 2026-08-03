@@ -90,6 +90,10 @@ jobs:
         run: >-
           python -m ruff check --select C90,F401,F841
           app1-colmap app2-ia app3-processing app4-dashboard/api shared tools
+      - name: Enforce COLMAP worker maintainability rules
+        run: |
+          python -m ruff check --select B,SIM,UP,RUF,ASYNC app1-colmap/colmap_worker app1-colmap/main.py
+          python -m ruff check --select C90 --config lint.mccabe.max-complexity=20 app1-colmap/colmap_worker
       - name: Run CPU tests with branch coverage
         run: |
           python -m coverage erase
