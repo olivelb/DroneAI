@@ -2,8 +2,9 @@ PYTHON ?= python3
 PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
+SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/deploy/*.sh
 
-.PHONY: check static compile lint worker-lint typecheck docs-check workflows-check test coverage frontend-check
+.PHONY: check static compile lint worker-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check
 
 compile:
 	$(PYTHON) -m compileall -q $(PYTHON_PATHS)
@@ -19,13 +20,19 @@ worker-lint:
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
 
+scripts-check:
+	shellcheck $(SHELL_SCRIPTS)
+
 docs-check:
 	$(PYTHON) tools/check_markdown_links.py
 
 workflows-check:
 	actionlint
 
-static: compile lint worker-lint typecheck docs-check workflows-check
+audit:
+	$(PYTHON) -m pip_audit --strict
+
+static: compile lint worker-lint typecheck scripts-check docs-check workflows-check
 
 test:
 	$(PYTHON) -m pytest -m "not gpu and not integration"
@@ -44,4 +51,4 @@ frontend-check:
 	npm run lint && \
 	npm run build
 
-check: static coverage
+check: static audit coverage
