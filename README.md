@@ -12,14 +12,16 @@ pipeline.
 
 ## Pipeline at a glance
 
-1. **Reconstruct** the scene from drone images with COLMAP, GLOMAP or Caspar.
-2. **Align** aerial missions from GNSS/RTK data and optional surveyed control.
-3. **Train** a qualified DroneGS 3D Gaussian Splatting model.
-4. **Render** a georeferenced aerial orthomosaic and height map, or a facade
-   orthophoto in a local coordinate frame.
-5. **Analyse** overlapping raster tiles with YOLO OBB or SAM 3.
-6. **Publish** deduplicated detections as GeoJSON and optional PostGIS vectors.
-7. **Operate** missions, results and exports from the Next.js dashboard.
+1. **Ingest** drone images and mission settings from the dashboard or local
+   runner.
+2. **Reconstruct** and geo-align the scene with COLMAP, GLOMAP or Caspar using
+   GNSS/RTK data and optional surveyed control.
+3. **Train** a qualified DroneGS 3D Gaussian Splatting model, then render a
+   georeferenced orthomosaic and height map.
+4. **Split** the orthomosaic into overlapping tiles for parallel processing.
+5. **Analyse** each tile with YOLO OBB or SAM 3.
+6. **Merge** overlapping detections and publish GeoJSON or PostGIS vectors.
+7. **Explore** maps, detections, measurements and exports in the dashboard.
 
 ## Ways to run DroneAI
 
@@ -32,17 +34,49 @@ pipeline.
 DroneAI uses S3-compatible object storage for datasets and mission artifacts,
 Kafka for pipeline events, and PostgreSQL/PostGIS for mission and vector data.
 
-## Repository map
+## How the parts work together
 
-| Directory | Responsibility |
-|---|---|
-| `app1-colmap` | Reconstruction, alignment, Gaussian training and raster generation |
-| `app2-ia` | YOLO OBB and SAM 3 inference |
-| `app3-processing` | Tiling, recovery, deduplication and vector publication |
-| `app4-dashboard/api` | FastAPI control plane, storage API and mission state |
-| `app4-dashboard/frontend` | Next.js operator dashboard |
-| `shared` | Shared configuration, contracts, persistence and validation |
-| `tools` | Local runners and diagnostic utilities |
+### Dashboard and API — `app4-dashboard`
+
+The Next.js frontend lets operators upload datasets, configure and launch
+missions, follow progress, inspect map layers and export results. Its FastAPI
+backend validates requests, stores mission state, publishes work to Kafka and
+serves datasets and results from S3-compatible storage and PostGIS.
+
+### Reconstruction and orthomosaic — `app1-colmap`
+
+The reconstruction worker downloads the mission images, extracts and matches
+features, builds the sparse scene and aligns it to the requested geographic
+frame. It then trains DroneGS, checks the model against the configured quality
+gates, renders the orthomosaic and height map, and uploads the products for the
+next stage.
+
+### Raster processing — `app3-processing`
+
+The processing worker converts the orthomosaic into overlapping tiles and
+queues them for inference. When detections return, it removes duplicates across
+tile boundaries, creates the final GeoJSON result and can persist indexed
+vectors in PostGIS for spatial search.
+
+### AI inference — `app2-ia`
+
+The AI worker consumes tile jobs and runs either Ultralytics YOLO OBB for
+oriented detections or Meta SAM 3 for segmentation. It sends tile-level
+geometries and confidence data back to the processing worker for aggregation.
+
+### Shared services — `shared`
+
+Shared modules define configuration, event contracts, validation, storage and
+database helpers used by every service. MinIO or another S3-compatible store
+holds large artifacts, Kafka carries asynchronous work and status events, and
+PostgreSQL/PostGIS holds durable application and vector data.
+
+### Local tools — `tools`
+
+The local runners execute focused reconstruction, Gaussian training,
+orthomosaic or full-pipeline diagnostics without the dashboard infrastructure.
+They are intended for development and scientific validation rather than normal
+operator use.
 
 ## Quick start
 
