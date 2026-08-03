@@ -8,9 +8,9 @@ affine==2.4.0
     # via rasterio
 attrs==26.1.0
     # via rasterio
-boto3==1.43.54
-    # via -r requirements/processing.in
-botocore==1.43.54
+boto3==1.43.62
+    # via -r processing.in
+botocore==1.43.63
     # via
     #   boto3
     #   s3transfer
@@ -28,9 +28,9 @@ click-plugins==1.1.1.2
 cligj==0.7.2
     # via rasterio
 confluent-kafka==2.15.0
-    # via -r requirements/processing.in
+    # via -r processing.in
 geoalchemy2==0.20.0
-    # via -r requirements/processing.in
+    # via -r processing.in
 greenlet==3.5.4
     # via sqlalchemy
 jmespath==1.1.0
@@ -42,28 +42,28 @@ numpy==2.4.6
     #   opencv-python-headless
     #   rasterio
 opencv-python-headless==5.0.0.93
-    # via -r requirements/processing.in
+    # via -r processing.in
 packaging==26.2
     # via geoalchemy2
 pillow==12.3.0
-    # via -r requirements/processing.in
+    # via -r processing.in
 psycopg2-binary==2.9.12
-    # via -r requirements/processing.in
+    # via -r processing.in
 pyparsing==3.3.2
     # via rasterio
 pyproj==3.7.2
-    # via -r requirements/processing.in
+    # via -r processing.in
 python-dateutil==2.9.0.post0
     # via botocore
 rasterio==1.4.4
-    # via -r requirements/processing.in
+    # via -r processing.in
 s3transfer==0.19.2
     # via boto3
 six==1.17.0
     # via python-dateutil
 sqlalchemy==2.0.51
     # via
-    #   -r requirements/processing.in
+    #   -r processing.in
     #   geoalchemy2
 typing-extensions==4.16.0
     # via sqlalchemy

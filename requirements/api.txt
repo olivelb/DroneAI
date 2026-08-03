@@ -4,10 +4,10 @@
 #
 #    pip-compile --output-file=requirements/api.txt --strip-extras requirements/api.in
 #
-alembic==1.18.5
-    # via -r requirements/api.in
 affine==2.4.0
     # via rasterio
+alembic==1.18.5
+    # via -r api.in
 annotated-doc==0.0.4
     # via fastapi
 annotated-types==0.7.0
@@ -18,9 +18,9 @@ anyio==4.14.2
     #   watchfiles
 attrs==26.1.0
     # via rasterio
-boto3==1.43.54
-    # via -r requirements/api.in
-botocore==1.43.54
+boto3==1.43.62
+    # via -r api.in
+botocore==1.43.63
     # via
     #   boto3
     #   s3transfer
@@ -30,8 +30,8 @@ certifi==2026.7.22
     #   rasterio
 click==8.4.2
     # via
-    #   cligj
     #   click-plugins
+    #   cligj
     #   rasterio
     #   uvicorn
 click-plugins==1.1.1.2
@@ -39,11 +39,11 @@ click-plugins==1.1.1.2
 cligj==0.7.2
     # via rasterio
 confluent-kafka==2.15.0
-    # via -r requirements/api.in
-fastapi==0.139.2
-    # via -r requirements/api.in
+    # via -r api.in
+fastapi==0.141.1
+    # via -r api.in
 geoalchemy2==0.20.0
-    # via -r requirements/api.in
+    # via -r api.in
 greenlet==3.5.4
     # via sqlalchemy
 h11==0.16.0
@@ -62,41 +62,41 @@ markupsafe==3.0.3
     # via mako
 numpy==2.4.6
     # via
-    #   -r requirements/api.in
+    #   -r api.in
     #   rasterio
 packaging==26.2
     # via geoalchemy2
 pillow==12.3.0
-    # via -r requirements/api.in
+    # via -r api.in
 psycopg2-binary==2.9.12
-    # via -r requirements/api.in
+    # via -r api.in
 pydantic==2.13.4
     # via
-    #   -r requirements/api.in
+    #   -r api.in
     #   fastapi
 pydantic-core==2.46.4
     # via pydantic
+pyparsing==3.3.2
+    # via rasterio
+pyproj==3.7.2
+    # via -r api.in
 python-dateutil==2.9.0.post0
     # via botocore
 python-dotenv==1.2.2
     # via uvicorn
 python-multipart==0.0.32
-    # via -r requirements/api.in
-pyparsing==3.3.2
-    # via rasterio
-pyproj==3.7.2
-    # via -r requirements/api.in
+    # via -r api.in
 pyyaml==6.0.3
     # via uvicorn
 rasterio==1.4.4
-    # via -r requirements/api.in
+    # via -r api.in
 s3transfer==0.19.2
     # via boto3
 six==1.17.0
     # via python-dateutil
 sqlalchemy==2.0.51
     # via
-    #   -r requirements/api.in
+    #   -r api.in
     #   alembic
     #   geoalchemy2
 starlette==1.3.1
@@ -117,13 +117,13 @@ typing-inspection==0.4.2
     #   pydantic
 urllib3==2.7.0
     # via botocore
-uvicorn==0.51.0
-    # via -r requirements/api.in
+uvicorn==0.52.0
+    # via -r api.in
 uvloop==0.22.1
     # via uvicorn
 watchfiles==1.2.0
     # via uvicorn
-websockets==16.1.1
+websockets==17.0.1
     # via
-    #   -r requirements/api.in
+    #   -r api.in
     #   uvicorn
