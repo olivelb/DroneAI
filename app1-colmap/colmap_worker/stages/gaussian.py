@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 from PIL import Image as PILImage
 
 from pipeline_support import choose_dronegs_data_factor
 from shared import storage
-from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1, DRONEGS_QUALIFICATION_POLICY_ID
-from shared.facade_process import (
-    FACADE_DRONEGS_IDENTITY_PARAMETERS,
-    FACADE_DRONEGS_PROFILE_ID,
-    FACADE_QUALIFICATION_POLICY_ID,
-    FACADE_QUALIFICATION_THRESHOLDS,
-)
+from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 
 from .. import runtime
 from ..artifacts import dense_sparse_model_ready
@@ -26,11 +22,12 @@ from ..contracts import (
     PipelinePreparation,
     PipelineReconstruction,
 )
+from ..dronegs_config import resolve_dronegs_config
 
 APP1_DIR = Path(__file__).resolve().parents[2]
 
 
-def _resolve_data_factor(params: dict, dense_path: str, vol_id: str) -> int:
+def _resolve_data_factor(params: dict[str, Any], dense_path: str, vol_id: str) -> int:
     """Choose source downscaling without blurring below the training ceiling."""
     raw_value = str(params.get("gs_data_factor", "auto"))
     if raw_value != "auto":
@@ -63,7 +60,78 @@ def _resolve_data_factor(params: dict, dense_path: str, vol_id: str) -> int:
             f"{max_training_width}px training ceiling from a {max_dimension}px source."
         ),
     )
-    return data_factor
+    return int(data_factor)
+
+
+def _prepare_checkpoint_store(
+    workspace_dir: str,
+    mission_s3_prefix: str,
+    vol_id: str,
+) -> tuple[str, str]:
+    checkpoint_root = os.getenv("DRONEGS_CHECKPOINT_ROOT") or os.path.join(
+        os.path.dirname(workspace_dir),
+        ".dronegs-checkpoints",
+    )
+    durable_checkpoint_dir = os.path.join(checkpoint_root, vol_id)
+    os.makedirs(durable_checkpoint_dir, exist_ok=True)
+    checkpoint_s3_prefix = f"{mission_s3_prefix}/gaussian-checkpoints"
+    if any(path.is_file() for path in Path(durable_checkpoint_dir).rglob("*")):
+        return durable_checkpoint_dir, checkpoint_s3_prefix
+
+    try:
+        restored_count = storage.download_directory(
+            checkpoint_s3_prefix + "/",
+            durable_checkpoint_dir,
+        )
+        if restored_count:
+            runtime.report_mission_progress(
+                vol_id,
+                "GAUSS",
+                94,
+                log=f"Restored {restored_count} durable DroneGS artifacts from S3.",
+            )
+    except Exception as restore_error:
+        runtime.report_mission_progress(
+            vol_id,
+            "GAUSS",
+            94,
+            log=f"No remote DroneGS recovery state restored: {restore_error}",
+        )
+    return durable_checkpoint_dir, checkpoint_s3_prefix
+
+
+def _checkpoint_callback(
+    durable_checkpoint_dir: str,
+    checkpoint_s3_prefix: str,
+    vol_id: str,
+) -> Callable[[Path, int], None]:
+    checkpoint_root = Path(durable_checkpoint_dir).resolve()
+
+    def persist(checkpoint_path: Path, iteration: int) -> None:
+        relative = checkpoint_path.resolve().relative_to(checkpoint_root)
+        s3_key = f"{checkpoint_s3_prefix}/{relative.as_posix()}"
+        try:
+            storage.upload_file(checkpoint_path, s3_key)
+            runtime.report_mission_progress(
+                vol_id,
+                "GAUSS",
+                95,
+                log=f"Durable DroneGS checkpoint synced at iteration {iteration}.",
+            )
+        except Exception as sync_error:
+            runtime.report_mission_progress(
+                vol_id,
+                "GAUSS",
+                95,
+                log=f"DroneGS checkpoint remains locally durable; S3 sync failed: {sync_error}",
+            )
+
+    return persist
+
+
+def _report_config_warnings(vol_id: str, warnings: tuple[str, ...]) -> None:
+    for warning in warnings:
+        runtime.report_mission_progress(vol_id, "GAUSS", 94, log=warning)
 
 
 def run_gaussian_product(
@@ -115,215 +183,26 @@ def run_gaussian_product(
         except Exception:
             pass
 
-        ortho_resolution = float(params.get("ortho_mesh_resolution", 0.02))
-
         # Dataset count is handled by tile mode and Gaussian caps, not by
         # uniformly blurring every image.
         gs_data_factor = _resolve_data_factor(params, dense_path, vol_id)
+        gs_config, config_warnings = resolve_dronegs_config(
+            params,
+            facade_mode=facade_mode,
+            data_factor=gs_data_factor,
+        )
+        _report_config_warnings(vol_id, config_warnings)
 
-        gs_iterations = int(
-            params.get(
-                "gs_iterations",
-                DRONEGS_PRODUCTION_PROFILE_V1.iterations,
-            )
+        durable_checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
+            workspace_dir,
+            mission_s3_prefix,
+            vol_id,
         )
-        gs_cap_max = int(
-            params.get(
-                "gs_cap_max",
-                DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
-            )
+        persist_dronegs_checkpoint = _checkpoint_callback(
+            durable_checkpoint_dir,
+            checkpoint_s3_prefix,
+            vol_id,
         )
-        gs_sh_degree = int(
-            params.get(
-                "gs_sh_degree",
-                DRONEGS_PRODUCTION_PROFILE_V1.sh_degree,
-            )
-        )
-        gs_backend = str(params.get("gs_backend", "dronegs"))
-        gs_seed = int(params.get("gs_seed", 42))
-        gs_profile_id = str(
-            params.get(
-                "gs_production_profile",
-                DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
-            )
-        )
-        gs_qualification_policy_id = str(
-            params.get(
-                "gs_qualification_policy",
-                DRONEGS_QUALIFICATION_POLICY_ID,
-            )
-        )
-        gs_optimizer_profile = str(
-            params.get(
-                "gs_optimizer_profile",
-                DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile,
-            )
-        )
-        gs_pruning_policy = str(
-            params.get(
-                "gs_pruning_policy",
-                DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
-            )
-        )
-        gs_raster_profile = str(
-            params.get(
-                "gs_raster_profile",
-                DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
-            )
-        )
-        gs_sh_degree_interval = int(params.get("gs_sh_degree_interval", 1_000))
-        gs_topology_cooldown = int(params.get("gs_topology_cooldown", 1_000))
-        gs_photometric_finish = int(params.get("gs_photometric_finish", 1_000))
-        gs_photometric_mse_percent = int(params.get("gs_photometric_mse_percent", 100))
-        gs_checkpoint_every = int(params.get("gs_checkpoint_every", 2_000))
-        gs_test_every = int(params.get("gs_test_every", 8))
-        gs_test_split = str(params.get("gs_test_split", "modulo"))
-        gs_test_guard_percent = int(params.get("gs_test_guard_percent", 0))
-        gs_canary_min_psnr = float(
-            params.get(
-                ("facade_canary_min_psnr" if facade_mode else "gs_canary_min_psnr"),
-                DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr,
-            )
-        )
-        gs_canary_min_ssim = float(
-            params.get(
-                ("facade_canary_min_ssim" if facade_mode else "gs_canary_min_ssim"),
-                DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim,
-            )
-        )
-        gs_filter_enabled = params.get("gs_filter_enabled", True)
-        gs_filter_max_scale = float(params.get("gs_filter_max_scale", 1.0))
-        gs_filter_dist = float(params.get("gs_filter_dist", 1.0))
-        gs_filter_opacity = float(params.get("gs_filter_opacity", 0.005))
-        gs_filter_needle = float(params.get("gs_filter_needle", 0.0))
-        gs_filter_sor = params.get("gs_filter_sor", False)
-        gs_filter_sor_sigma = float(params.get("gs_filter_sor_sigma", 4.0))
-        gs_filter_cc = params.get("gs_filter_cc", False)
-        gs_filter_z_floater = params.get("gs_filter_z_floater", False)
-        expected_profile_values = None
-        if gs_profile_id in {
-            DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
-            FACADE_DRONEGS_PROFILE_ID,
-        }:
-            profile_values = {
-                "iterations": gs_iterations,
-                "data_factor": gs_data_factor,
-                "max_width": int(
-                    params.get(
-                        "gs_max_width",
-                        DRONEGS_PRODUCTION_PROFILE_V1.max_width,
-                    )
-                ),
-                "tile_mode": int(
-                    params.get(
-                        "gs_tile_mode",
-                        DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
-                    )
-                ),
-                "cap_max": gs_cap_max,
-                "sh_degree": gs_sh_degree,
-                "seed": gs_seed,
-                "optimizer_profile": gs_optimizer_profile,
-                "pruning_policy": gs_pruning_policy,
-                "raster_profile": gs_raster_profile,
-                "sh_degree_interval": gs_sh_degree_interval,
-                "topology_cooldown": gs_topology_cooldown,
-                "photometric_finish": gs_photometric_finish,
-                "photometric_mse_percent": (gs_photometric_mse_percent),
-                "checkpoint_every": gs_checkpoint_every,
-                "test_every": gs_test_every,
-                "test_split": gs_test_split,
-                "test_guard_percent": gs_test_guard_percent,
-            }
-            if gs_profile_id == FACADE_DRONEGS_PROFILE_ID:
-                expected_profile_values = dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
-            else:
-                expected_profile_values = {
-                    name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name) for name in profile_values
-                }
-            if profile_values != expected_profile_values:
-                gs_profile_id = "custom"
-                runtime.report_mission_progress(
-                    vol_id,
-                    "GAUSS",
-                    94,
-                    log=(
-                        "DroneGS expert overrides detected; the run is recorded as custom instead of its named profile."
-                    ),
-                )
-
-        expected_qualification = None
-        if gs_qualification_policy_id == DRONEGS_QUALIFICATION_POLICY_ID:
-            expected_qualification = {
-                "canary_min_psnr": (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
-                "canary_min_ssim": (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
-            }
-        elif gs_qualification_policy_id == FACADE_QUALIFICATION_POLICY_ID:
-            expected_qualification = dict(FACADE_QUALIFICATION_THRESHOLDS)
-        if expected_qualification is not None and expected_qualification != {
-            "canary_min_psnr": gs_canary_min_psnr,
-            "canary_min_ssim": gs_canary_min_ssim,
-        }:
-            gs_qualification_policy_id = "custom"
-            runtime.report_mission_progress(
-                vol_id,
-                "GAUSS",
-                94,
-                log=(
-                    "DroneGS canary thresholds differ from qualification "
-                    "policy V1; training recipe identity is preserved and "
-                    "qualification policy is recorded as custom."
-                ),
-            )
-
-        checkpoint_root = os.getenv("DRONEGS_CHECKPOINT_ROOT")
-        if not checkpoint_root:
-            checkpoint_root = os.path.join(
-                os.path.dirname(workspace_dir),
-                ".dronegs-checkpoints",
-            )
-        durable_checkpoint_dir = os.path.join(checkpoint_root, vol_id)
-        os.makedirs(durable_checkpoint_dir, exist_ok=True)
-        checkpoint_s3_prefix = f"{mission_s3_prefix}/gaussian-checkpoints"
-        if not any(path.is_file() for path in Path(durable_checkpoint_dir).rglob("*")):
-            try:
-                restored_count = storage.download_directory(
-                    checkpoint_s3_prefix + "/",
-                    durable_checkpoint_dir,
-                )
-                if restored_count:
-                    runtime.report_mission_progress(
-                        vol_id,
-                        "GAUSS",
-                        94,
-                        log=(f"Restored {restored_count} durable DroneGS artifacts from S3."),
-                    )
-            except Exception as restore_error:
-                runtime.report_mission_progress(
-                    vol_id,
-                    "GAUSS",
-                    94,
-                    log=(f"No remote DroneGS recovery state restored: {restore_error}"),
-                )
-
-        def persist_dronegs_checkpoint(checkpoint_path, iteration):
-            relative = checkpoint_path.resolve().relative_to(Path(durable_checkpoint_dir).resolve())
-            s3_key = f"{checkpoint_s3_prefix}/{relative.as_posix()}"
-            try:
-                storage.upload_file(checkpoint_path, s3_key)
-                runtime.report_mission_progress(
-                    vol_id,
-                    "GAUSS",
-                    95,
-                    log=(f"Durable DroneGS checkpoint synced at iteration {iteration}."),
-                )
-            except Exception as sync_error:
-                runtime.report_mission_progress(
-                    vol_id,
-                    "GAUSS",
-                    95,
-                    log=(f"DroneGS checkpoint remains locally durable; S3 sync failed: {sync_error}"),
-                )
 
         result = generate_gaussian_orthophoto(
             dense_path=dense_path,
@@ -332,52 +211,42 @@ def run_gaussian_product(
             vol_id=vol_id,
             transform_file=align_tf,
             report_fn=runtime.report_mission_progress,
-            resolution=ortho_resolution,
-            iterations=gs_iterations,
-            sh_degree=gs_sh_degree,
-            data_factor=gs_data_factor,
-            max_width=int(
-                params.get(
-                    "gs_max_width",
-                    DRONEGS_PRODUCTION_PROFILE_V1.max_width,
-                )
-            ),
-            ortho_mip_filter_variance=float(params.get("gs_ortho_mip_filter_variance", 0.03)),
-            ortho_mip_filter_compensation=bool(params.get("gs_ortho_mip_filter_compensation", True)),
-            tile_mode=int(
-                params.get(
-                    "gs_tile_mode",
-                    DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
-                )
-            ),
-            cap_max=gs_cap_max,
-            filter_enabled=gs_filter_enabled,
-            filter_max_scale=gs_filter_max_scale,
-            filter_dist_multiplier=gs_filter_dist,
-            filter_opacity_threshold=gs_filter_opacity,
-            filter_needle_ratio=gs_filter_needle,
-            filter_sor=gs_filter_sor,
-            filter_sor_sigma=gs_filter_sor_sigma,
-            filter_cc=gs_filter_cc,
-            filter_z_floater=gs_filter_z_floater,
+            resolution=gs_config.resolution,
+            iterations=gs_config.iterations,
+            sh_degree=gs_config.sh_degree,
+            data_factor=gs_config.data_factor,
+            max_width=gs_config.max_width,
+            ortho_mip_filter_variance=gs_config.mip_filter_variance,
+            ortho_mip_filter_compensation=gs_config.mip_filter_compensation,
+            tile_mode=gs_config.tile_mode,
+            cap_max=gs_config.cap_max,
+            filter_enabled=gs_config.filter_enabled,
+            filter_max_scale=gs_config.filter_max_scale,
+            filter_dist_multiplier=gs_config.filter_dist,
+            filter_opacity_threshold=gs_config.filter_opacity,
+            filter_needle_ratio=gs_config.filter_needle,
+            filter_sor=gs_config.filter_sor,
+            filter_sor_sigma=gs_config.filter_sor_sigma,
+            filter_cc=gs_config.filter_cc,
+            filter_z_floater=gs_config.filter_z_floater,
             checkpoint_dir=durable_checkpoint_dir,
-            trainer_backend=gs_backend,
-            training_seed=gs_seed,
-            dronegs_profile_id=gs_profile_id,
-            dronegs_qualification_policy_id=(gs_qualification_policy_id),
-            dronegs_optimizer_profile=gs_optimizer_profile,
-            dronegs_pruning_policy=gs_pruning_policy,
-            dronegs_raster_profile=gs_raster_profile,
-            dronegs_sh_degree_interval=gs_sh_degree_interval,
-            dronegs_topology_cooldown=gs_topology_cooldown,
-            dronegs_photometric_finish=gs_photometric_finish,
-            dronegs_photometric_mse_percent=gs_photometric_mse_percent,
-            dronegs_checkpoint_every=gs_checkpoint_every,
-            dronegs_test_every=gs_test_every,
-            dronegs_test_split=gs_test_split,
-            dronegs_test_guard_percent=gs_test_guard_percent,
-            dronegs_canary_min_psnr=gs_canary_min_psnr,
-            dronegs_canary_min_ssim=gs_canary_min_ssim,
+            trainer_backend=gs_config.backend,
+            training_seed=gs_config.seed,
+            dronegs_profile_id=gs_config.profile_id,
+            dronegs_qualification_policy_id=gs_config.qualification_policy_id,
+            dronegs_optimizer_profile=gs_config.optimizer_profile,
+            dronegs_pruning_policy=gs_config.pruning_policy,
+            dronegs_raster_profile=gs_config.raster_profile,
+            dronegs_sh_degree_interval=gs_config.sh_degree_interval,
+            dronegs_topology_cooldown=gs_config.topology_cooldown,
+            dronegs_photometric_finish=gs_config.photometric_finish,
+            dronegs_photometric_mse_percent=gs_config.photometric_mse_percent,
+            dronegs_checkpoint_every=gs_config.checkpoint_every,
+            dronegs_test_every=gs_config.test_every,
+            dronegs_test_split=gs_config.test_split,
+            dronegs_test_guard_percent=gs_config.test_guard_percent,
+            dronegs_canary_min_psnr=gs_config.canary_min_psnr,
+            dronegs_canary_min_ssim=gs_config.canary_min_ssim,
             cancellation_check=runtime.ensure_not_cancelled,
             checkpoint_callback=persist_dronegs_checkpoint,
             render_mode=orthophoto_mode,
@@ -396,7 +265,7 @@ def run_gaussian_product(
             log=f"Gaussian Splatting {'facade orthophoto' if facade_mode else 'orthomosaic'} complete: "
             f"{result['width']}x{result['height']}px, "
             f"{result['n_gaussians']} Gaussians, "
-            f"pixel size={ortho_resolution} {result['gsd_units']}",
+            f"pixel size={gs_config.resolution} {result['gsd_units']}",
         )
     except Exception as e:
         _tb.print_exc()
@@ -408,6 +277,6 @@ def run_gaussian_product(
         result=result,
         durable_checkpoint_dir=durable_checkpoint_dir,
         checkpoint_s3_prefix=checkpoint_s3_prefix,
-        profile_id=gs_profile_id,
-        qualification_policy_id=gs_qualification_policy_id,
+        profile_id=gs_config.profile_id,
+        qualification_policy_id=gs_config.qualification_policy_id,
     )

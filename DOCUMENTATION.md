@@ -318,19 +318,22 @@ Its implementation is split by responsibility under
 | `mission_runner.py` | ordered application flow and guaranteed workspace cleanup |
 | `contracts.py` | immutable typed states passed between stages |
 | `stages/preparation.py` | profile resolution, download, selection, clean copy and cache invalidation |
-| `stages/reconstruction.py` | projected-reference bootstrap, feature extraction, bounded matching and sparse mapping |
+| `stages/reconstruction.py` | projected-reference bootstrap, feature extraction and bounded matching |
+| `sparse_mapping.py` | mapping-engine selection, shared timeout budget, fallback and sparse-quality promotion gate |
 | `stages/rtk.py` | optional covariance-aware RTK refinement and promotion gate |
-| `stages/alignment.py` | undistortion plus GCP, projected or local-facade alignment |
-| `stages/gaussian.py` | DroneGS configuration, recovery, training, qualification and raster rendering |
-| `stages/publication.py` | required-product verification, durable publication, optional recovery assets and completion |
+| `stages/alignment.py` | image undistortion, stale-GCP invalidation and isolated GCP, GNSS or local-facade alignment strategies |
+| `dronegs_config.py` | immutable DroneGS run configuration plus named-profile and qualification identity checks |
+| `stages/gaussian.py` | checkpoint recovery/synchronization, training, qualification and raster rendering |
+| `stages/publication.py` | preflight verification of all required assets, manifest creation, durable publication, optional recovery assets and completion |
 | `artifacts.py` | focused filesystem predicates and cache invalidation helpers |
 
 `PipelinePreparation`, `PipelineReconstruction`, `PipelineRtkState`,
 `PipelineAlignmentState`, `PipelineGaussianState` and
 `PipelinePublicationState` form the explicit data flow. Stages do not import
 the entry point, create Kafka clients or start threads. Architecture tests cap
-the composition root and stage-module sizes, while CI applies modern Ruff
-rules and a stricter McCabe ceiling to this package.
+the composition root and focused-module sizes, while CI applies modern Ruff
+rules, a McCabe ceiling of 15 across the worker and strict progressive typing
+across the complete worker package.
 
 ### Processing worker (`app3-processing`)
 
@@ -1454,6 +1457,9 @@ reached 5.0 cm horizontal checkpoint RMSE. The measured ALBAGNAC/SAVERES
 sub-hour path remains the explicit fast preset at 1,600 px, 2,048 features,
 one BA pass and no retriangulation. The separate `Precision 3D · RTK` preset
 uses the measured 3,200/8,192 recipe and a 3,200 px undistortion ceiling.
+The modular worker was revalidated end to end on the same 176-image campaign;
+the current measurements and RTK/GCP promotion-gate decisions are recorded in
+[`docs/benchmarks/helenenschacht-modular-worker-validation-2026-08-03.md`](docs/benchmarks/helenenschacht-modular-worker-validation-2026-08-03.md).
 Selecting a preset resets every field;
 editing an expert value keeps it visible and marks the recipe custom.
 

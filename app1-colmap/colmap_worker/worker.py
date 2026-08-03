@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from typing import Any
 
 from shared.config import (
     KAFKA_BROKER,
@@ -56,7 +57,7 @@ def worker_main() -> None:
 
     print("🎧 App 1 (COLMAP 4 — ALIKED/GLOMAP) ready.")
 
-    def process_mission(mission: dict) -> None:
+    def process_mission(mission: dict[str, Any]) -> None:
         mission_context = None
         try:
             mission_context = build_mission_context(mission)

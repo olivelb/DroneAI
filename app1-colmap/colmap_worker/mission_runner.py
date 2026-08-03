@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from . import runtime
 from .stages.alignment import undistort_and_align_colmap
 from .stages.gaussian import run_gaussian_product
@@ -19,7 +21,7 @@ def run_colmap_pipeline(
     workspace_dir: str,
     input_dataset: str,
     vol_id: str,
-    mission_params: dict,
+    mission_params: dict[str, Any],
 ) -> None:
     try:
         preparation = prepare_colmap_pipeline_run(

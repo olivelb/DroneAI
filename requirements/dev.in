@@ -5,6 +5,7 @@ numpy
 coverage[toml]
 fiona
 httpx2
+mypy
 pip-tools
 pyproj
 pytest

@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable
+from typing import Any, cast
 
 from pipeline_support import inspect_sparse_quality
 from runtime_support import run_command
@@ -43,8 +45,12 @@ def refine_colmap_rtk(
     rtk_refinement_enabled = bool(params.get("rtk_refinement_enabled", True))
     active_sparse_model_path = base_sparse_model_path
 
-    def evaluate_rtk_candidate():
-        return assess_rtk_refinement_quality(
+    def evaluate_rtk_candidate() -> dict[str, Any]:
+        assess_quality = cast(
+            Callable[..., dict[str, Any]],
+            assess_rtk_refinement_quality,
+        )
+        return assess_quality(
             inspect_sparse_quality(base_sparse_model_path),
             inspect_sparse_quality(rtk_sparse_model_path),
             minimum_point_ratio=float(params["rtk_minimum_point_ratio"]),
@@ -56,7 +62,7 @@ def refine_colmap_rtk(
     if rtk_refinement_enabled and os.path.exists(os.path.join(base_sparse_model_path, "cameras.bin")):
         if os.path.exists(os.path.join(rtk_sparse_model_path, "cameras.bin")):
             quality_gate = evaluate_rtk_candidate()
-            cached_report = {"schema_version": 1}
+            cached_report: dict[str, Any] = {"schema_version": 1}
             try:
                 with open(rtk_report_path, encoding="utf-8") as handle:
                     cached_report.update(json.load(handle))
