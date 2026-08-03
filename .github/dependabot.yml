@@ -20,6 +20,9 @@ updates:
       python-dependencies:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: npm
     directory: "/app4-dashboard/frontend"
@@ -30,6 +33,9 @@ updates:
       frontend-dependencies:
         patterns:
           - "*"
+        update-types:
+          - minor
+          - patch
 
   - package-ecosystem: docker
     directory: "/app1-colmap"
