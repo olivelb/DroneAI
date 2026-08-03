@@ -1,0 +1,1 @@
+"""Resumable COLMAP pipeline stages."""

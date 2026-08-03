@@ -40,6 +40,10 @@ else:
 import main as app1_main
 import pipeline_support
 import worker_support
+from colmap_worker import mission_runner
+from colmap_worker import runtime as worker_runtime
+from colmap_worker.stages import gaussian as gaussian_stage
+from colmap_worker.stages import reconstruction as reconstruction_stage
 
 if previous_rasterio_modules is not None:
     for module_name, previous_module in previous_rasterio_modules.items():
@@ -71,6 +75,42 @@ class TestWorkerSupport(unittest.TestCase):
         state.clear()
         state.ensure_not_cancelled()
         self.assertFalse(state.should_cancel("vol-1"))
+    def test_runtime_dependencies_are_lazy_and_explicit(self):
+        worker_runtime.reset_worker_runtime()
+        self.addCleanup(worker_runtime.reset_worker_runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "runtime is not configured"):
+            worker_runtime.require_producer()
+
+        reporter = MagicMock()
+        producer = object()
+        worker_runtime.configure_worker_runtime(producer, reporter)
+
+        self.assertIs(worker_runtime.require_producer(), producer)
+        with patch.object(worker_runtime.mission_state_tracker, "record_progress") as record:
+            worker_runtime.report_mission_progress(
+                "vol-runtime",
+                "TESTING",
+                42,
+                details={"source": "unit-test"},
+            )
+
+        record.assert_called_once_with(
+            "vol-runtime",
+            "TESTING",
+            42,
+            status="processing",
+            log=None,
+            details={"source": "unit-test"},
+        )
+        reporter.assert_called_once_with(
+            "vol-runtime",
+            "TESTING",
+            42,
+            status="processing",
+            log=None,
+            details={"source": "unit-test"},
+        )
 
     def test_build_mission_context_uses_s3_input_and_contained_work_path(self):
         drives = '[{"name":"system"},{"name":"fast-storage"}]'
@@ -302,6 +342,99 @@ class TestPipelineSupport(unittest.TestCase):
 
 
 class TestMainSupport(unittest.TestCase):
+    def test_feature_extraction_command_preserves_aliked_safety_clamp(self):
+        preparation = types.SimpleNamespace(
+            params={
+                "feature_num_threads": "4",
+                "feature_max_image_size": "4096",
+                "feature_type": "ALIKED_N32",
+                "feature_max_num_features": "8192",
+            },
+            db_path="/tmp/database.db",
+            clean_images_dir="/tmp/images",
+            image_reader_camera_model="SIMPLE_RADIAL",
+            image_reader_camera_params=None,
+            feature_family="ALIKED",
+            feature_type="ALIKED_N32",
+            feature_gpu_index="0",
+        )
+
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "ALIKED_SAFE_MAX_IMAGE_SIZE": "1600",
+                    "COLMAP_MODEL_DIR": "/models",
+                },
+                clear=False,
+            ),
+            patch.object(worker_runtime, "report_mission_progress") as report,
+        ):
+            command = reconstruction_stage._build_feature_extraction_command(
+                preparation,
+                "vol-aliked",
+            )
+
+        max_size_index = command.index("--FeatureExtraction.max_image_size")
+        self.assertEqual(command[max_size_index + 1], "1600")
+        self.assertIn("/models/aliked-n32.onnx", command)
+        report.assert_called_once()
+
+    def test_matching_command_keeps_selected_sequential_strategy(self):
+        preparation = types.SimpleNamespace(
+            params={
+                "matching_strategy": "sequential",
+                "guided_matching": True,
+                "feature_max_num_matches": "32768",
+            },
+            db_path="/tmp/database.db",
+            geo_data_file="/tmp/geo_data.txt",
+            resolved_matcher_type="SIFT_LIGHTGLUE",
+            feature_gpu_index="0",
+        )
+
+        with patch.dict(os.environ, {"COLMAP_MODEL_DIR": "/models"}, clear=False):
+            command, model_options, strategy = reconstruction_stage._build_matching_command(
+                preparation,
+                "/tmp/workspace",
+                "vol-sequential",
+                gps_done=False,
+            )
+
+        self.assertEqual(command[:2], ["colmap", "sequential_matcher"])
+        self.assertEqual(strategy, "sequential")
+        self.assertEqual(
+            model_options,
+            ["--SiftMatching.lightglue_model_path", "/models/sift-lightglue.onnx"],
+        )
+        guided_index = command.index("--FeatureMatching.guided_matching")
+        self.assertEqual(command[guided_index + 1], "1")
+
+    def test_auto_dronegs_data_factor_uses_source_resolution(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            images_dir = os.path.join(tmp_dir, "images")
+            os.makedirs(images_dir)
+            gaussian_stage.PILImage.new("RGB", (640, 480)).save(
+                os.path.join(images_dir, "frame.jpg")
+            )
+            with (
+                patch.object(
+                    gaussian_stage,
+                    "choose_dronegs_data_factor",
+                    return_value=2,
+                ) as choose_factor,
+                patch.object(worker_runtime, "report_mission_progress") as report,
+            ):
+                data_factor = gaussian_stage._resolve_data_factor(
+                    {"gs_data_factor": "auto", "gs_max_width": 320},
+                    tmp_dir,
+                    "vol-gaussian",
+                )
+
+        self.assertEqual(data_factor, 2)
+        choose_factor.assert_called_once_with(640, 320)
+        report.assert_called_once()
+
     def test_prepare_sparse_bootstrap_reuses_facade_dense_cache(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             dense_path = os.path.join(tmp_dir, "dense")
@@ -324,8 +457,8 @@ class TestMainSupport(unittest.TestCase):
                 requested_projected_crs="",
             )
             with (
-                patch.object(app1_main, "sanitize_exif_for_colmap"),
-                patch.object(app1_main, "report_mission_progress"),
+                patch.object(reconstruction_stage, "sanitize_exif_for_colmap"),
+                patch.object(worker_runtime, "report_mission_progress"),
             ):
                 state = app1_main.prepare_sparse_bootstrap(
                     preparation,
@@ -357,7 +490,7 @@ class TestMainSupport(unittest.TestCase):
             active_sparse_model_path="/tmp/sparse/0",
         )
 
-        with patch.object(app1_main, "report_mission_progress"):
+        with patch.object(worker_runtime, "report_mission_progress"):
             state = app1_main.undistort_and_align_colmap(
                 preparation,
                 reconstruction,
@@ -372,18 +505,18 @@ class TestMainSupport(unittest.TestCase):
         cleanup = MagicMock()
         with (
             patch.object(
-                app1_main,
+                mission_runner,
                 "prepare_colmap_pipeline_run",
-                side_effect=app1_main.PipelineCancelledError("cancelled"),
+                side_effect=worker_runtime.PipelineCancelledError("cancelled"),
             ),
-            patch.object(app1_main, "report_mission_progress") as report,
+            patch.object(worker_runtime, "report_mission_progress") as report,
             patch.object(
-                app1_main,
+                mission_runner,
                 "cleanup_pipeline_workspace",
                 cleanup,
             ),
         ):
-            app1_main.run_colmap_pipeline(
+            mission_runner.run_colmap_pipeline(
                 "/tmp/cancelled-workspace",
                 "datasets/mission",
                 "vol-cancelled",
@@ -423,47 +556,47 @@ class TestMainSupport(unittest.TestCase):
 
         with (
             patch.object(
-                app1_main,
+                mission_runner,
                 "prepare_colmap_pipeline_run",
                 side_effect=stage("prepare"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "reconstruct_colmap_sparse",
                 side_effect=stage("reconstruct"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "refine_colmap_rtk",
                 side_effect=stage("rtk"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "undistort_and_align_colmap",
                 side_effect=stage("align"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "run_gaussian_product",
                 side_effect=stage("gaussian"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "publish_colmap_products",
                 side_effect=stage("publish"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "complete_colmap_pipeline",
                 side_effect=stage("complete"),
             ),
             patch.object(
-                app1_main,
+                mission_runner,
                 "cleanup_pipeline_workspace",
                 side_effect=stage("cleanup"),
             ),
         ):
-            app1_main.run_colmap_pipeline(
+            mission_runner.run_colmap_pipeline(
                 "/tmp/mission-workspace",
                 "datasets/mission",
                 "vol-stage-order",
@@ -537,7 +670,7 @@ class TestMainSupport(unittest.TestCase):
                 with open(file_path, "w", encoding="utf-8") as handle:
                     handle.write("x")
 
-            with patch.object(app1_main, "report_mission_progress") as report_mock:
+            with patch.object(worker_runtime, "report_mission_progress") as report_mock:
                 removed_paths = app1_main.invalidate_pipeline_artifacts(
                     clean_images_dir,
                     tmp_dir,

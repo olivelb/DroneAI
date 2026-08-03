@@ -47,11 +47,13 @@ serves datasets and results from S3-compatible storage and PostGIS.
 
 ### Reconstruction and raster products — `app1-colmap`
 
-The reconstruction worker downloads the mission images, extracts and matches
-features, builds the sparse scene and creates either a georeferenced map frame
-or a local facade frame. It trains DroneGS, applies product-specific quality
-gates and renders the RGB and height/depth rasters. Only map missions continue
-to raster processing and AI.
+The reconstruction worker runs explicit preparation, sparse reconstruction,
+RTK, alignment, DroneGS and verified-publication stages. Typed stage results
+carry resume and product state between them; the Kafka entry point only owns
+the worker lifecycle. The pipeline creates either a georeferenced map frame or
+a local facade frame, applies product-specific quality gates and renders RGB
+and height/depth rasters. Only map missions continue to raster processing and
+AI.
 
 ### Raster processing — `app3-processing`
 

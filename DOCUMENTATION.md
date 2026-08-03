@@ -307,6 +307,31 @@ Its responsibilities are:
 
 This is the most stateful and operationally complex service in the pipeline.
 
+Its implementation is split by responsibility under
+`app1-colmap/colmap_worker/`:
+
+| Module | Responsibility |
+|---|---|
+| `main.py` | small compatibility entry point; re-exports the supported worker API and calls `worker_main()` only when executed |
+| `worker.py` | Kafka producer/consumer lifecycle, control thread and mission envelope |
+| `runtime.py` | explicitly configured producer/reporter, cancellation state and progress tracking; no broker connection at import time |
+| `mission_runner.py` | ordered application flow and guaranteed workspace cleanup |
+| `contracts.py` | immutable typed states passed between stages |
+| `stages/preparation.py` | profile resolution, download, selection, clean copy and cache invalidation |
+| `stages/reconstruction.py` | projected-reference bootstrap, feature extraction, bounded matching and sparse mapping |
+| `stages/rtk.py` | optional covariance-aware RTK refinement and promotion gate |
+| `stages/alignment.py` | undistortion plus GCP, projected or local-facade alignment |
+| `stages/gaussian.py` | DroneGS configuration, recovery, training, qualification and raster rendering |
+| `stages/publication.py` | required-product verification, durable publication, optional recovery assets and completion |
+| `artifacts.py` | focused filesystem predicates and cache invalidation helpers |
+
+`PipelinePreparation`, `PipelineReconstruction`, `PipelineRtkState`,
+`PipelineAlignmentState`, `PipelineGaussianState` and
+`PipelinePublicationState` form the explicit data flow. Stages do not import
+the entry point, create Kafka clients or start threads. Architecture tests cap
+the composition root and stage-module sizes, while CI applies modern Ruff
+rules and a stricter McCabe ceiling to this package.
+
 ### Processing worker (`app3-processing`)
 
 The processing worker combines two runtime roles behind explicit services:
@@ -1977,7 +2002,9 @@ If you are changing the pipeline, read the implementation in this order:
    `realtime.py`
 3. `shared/event_contracts.py`, `shared/kafka_reliability.py`, and
    `shared/inbox_outbox.py`
-4. `app1-colmap/main.py` and `app1-colmap/worker_support.py`
+4. `app1-colmap/colmap_worker/mission_runner.py`, `contracts.py`, then the
+   modules below `stages/`; read `worker.py` and `worker_support.py` for the
+   Kafka lifecycle
 5. `app3-processing/main.py` and `app3-processing/processing_core.py`
 6. `app2-ia/main.py` and `app2-ia/detection_core.py`
 7. `charts/drone-ai/templates/` and `charts/drone-ai/values.yaml`
@@ -1986,7 +2013,8 @@ Reason:
 
 - the API routers and gateways define the mission/control contract
 - shared modules define the event and delivery semantics
-- app1 defines the workspace and orthomosaic contract
+- app1's typed stages define the workspace, reconstruction and product
+  contracts; its worker module owns only the Kafka lifecycle
 - app3 defines the tile and final annotated-image contract
 - app2 fills the detection contract
 - the Helm chart defines the runtime storage, broker, database, filesystem and
