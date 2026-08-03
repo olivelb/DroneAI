@@ -303,6 +303,20 @@ void test_optimizer_profile_registry() {
         dev38->status ==
             dronegs::OptimizerProfileStatus::experimental,
         "dev38 must remain explicitly experimental");
+
+    const std::string help = dronegs::help_text();
+    for (std::size_t index = 0U;
+         index < dronegs::optimizer_profile_registry.size(); ++index) {
+        const auto& profile = dronegs::optimizer_profile_registry[index];
+        const std::string token = std::string(profile.name) +
+            (index + 1U == dronegs::optimizer_profile_registry.size()
+                 ? "]"
+                 : "|");
+        check(
+            occurrence_count(help, token) == 1U,
+            "optimizer profile must occur exactly once in CLI help: " +
+                std::string(profile.name));
+    }
 }
 
 void test_local_scale_initialization() {

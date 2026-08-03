@@ -169,6 +169,26 @@ def test_sparse_distribution_similarity_recovers_common_camera_frame():
     assert np.max(residuals[inliers]) < 1e-10
 
 
+def test_facade_raster_comparison_recovers_identity(tmp_path):
+    import cv2
+
+    from tools.compare_facade_rasters import compare
+
+    rng = np.random.default_rng(23)
+    raster = rng.integers(0, 256, size=(256, 256, 3), dtype=np.uint8)
+    source = tmp_path / "source.png"
+    reference = tmp_path / "reference.png"
+    assert cv2.imwrite(str(source), raster)
+    assert cv2.imwrite(str(reference), raster)
+
+    metrics, preview = compare(source, reference)
+
+    assert metrics["homography_inliers"] >= 8
+    assert metrics["homography_residual_px"]["rmse"] < 0.1
+    assert metrics["coverage_of_reference_content"] > 0.99
+    assert preview.shape == (256, 520, 3)
+
+
 def test_local_raster_metadata_does_not_invent_a_crs(tmp_path):
     import rasterio
     from rasterio.transform import from_origin

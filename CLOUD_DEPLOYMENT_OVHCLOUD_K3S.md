@@ -620,9 +620,7 @@ For local K3s (WSL2/Ubuntu), use the unified entry point:
 ./deploy.sh distributed --base
 ```
 
-The legacy incremental `deploy_app*.sh` scripts remain available for
-maintainers, but new installations should use `deploy.sh`. See
-[`DEPLOYMENT.md`](DEPLOYMENT.md).
+See [`DEPLOYMENT.md`](DEPLOYMENT.md) for the maintained deployment workflow.
 
 ## Post-deployment improvements
 

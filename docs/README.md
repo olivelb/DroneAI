@@ -31,6 +31,8 @@ dataset or machine. They are not operational instructions and do not describe
 the current release status:
 
 - [`benchmarks/`](benchmarks/) and [`dronegs/benchmarks/`](dronegs/benchmarks/)
+- machine-readable Helenenschacht sparse/RTK evidence:
+  [`benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json`](benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json)
 - [`audits/`](audits/) and the date-stamped `AUDIT_*` / `CONTRE_AUDIT_*` reports
 - [`GAJAN_R2S_VALIDATION.md`](GAJAN_R2S_VALIDATION.md)
 - [`dronegs/CHANGELOG.md`](dronegs/CHANGELOG.md)
