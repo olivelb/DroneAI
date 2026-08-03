@@ -2,6 +2,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GENERAL_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CONTAINER_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
 GPU_WORKFLOW = ROOT / ".github" / "workflows" / "dronegs-gpu-nightly.yml"
 VALIDATION_SCRIPT = ROOT / "scripts" / "ci" / "validate_cuda_containers.sh"
@@ -17,6 +18,17 @@ def test_hosted_ci_builds_each_cuda_dockerfile_contract() -> None:
     assert 'app1-colmap/Dockerfile.local-gaussian"' in script
     assert script.count("--target dronegs-builder") == 2
     assert "-DDRONEGS_CUDA_ARCHITECTURES=portable" in script
+
+
+def test_portable_cuda_build_only_runs_for_cuda_related_changes() -> None:
+    general_workflow = GENERAL_WORKFLOW.read_text(encoding="utf-8")
+    cuda_workflow = CONTAINER_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "DroneGS portable CUDA build" not in general_workflow
+    assert "app1-colmap/dronegs/**" in cuda_workflow
+    assert cuda_workflow.count("!app1-colmap/dronegs/**/*.md") == 2
+    assert 'app1-colmap/Dockerfile.base"' in cuda_workflow
+    assert 'app1-colmap/Dockerfile.local-gaussian"' in cuda_workflow
 
 
 def test_gpu_nightly_executes_native_cuda_tests_in_container() -> None:

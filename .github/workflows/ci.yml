@@ -42,30 +42,6 @@ jobs:
           ctest --test-dir build/dronegs-core --output-on-failure
           -R "dronegs_(core|rasterization)_tests"
 
-  dronegs-cuda-build:
-    name: DroneGS portable CUDA build
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    container:
-      image: nvidia/cuda:12.8.1-devel-ubuntu24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install native build dependencies
-        run: |
-          apt-get update
-          apt-get install --yes --no-install-recommends cmake ninja-build libjpeg-dev
-      - name: Configure portable CUDA binary
-        run: >-
-          cmake -S app1-colmap/dronegs -B build/dronegs-cuda -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DDRONEGS_CUDA_ARCHITECTURES=portable
-          -DDRONEGS_BUILD_TESTS=OFF
-          -DDRONEGS_BUILD_BENCHMARKS=OFF
-      - name: Build production binary
-        run: cmake --build build/dronegs-cuda --target dronegs
-      - name: Smoke-test CLI
-        run: build/dronegs-cuda/dronegs --version
-
   python:
     name: Python ${{ matrix.python-version }} quality and CPU tests
     runs-on: ubuntu-latest

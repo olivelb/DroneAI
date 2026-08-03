@@ -86,7 +86,11 @@ CUDA container validation is split deliberately. The hosted
 `cuda-containers.yml` workflow builds the development image, compiles a
 portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
 both production Dockerfiles. It validates Docker recipes and toolchains without
-claiming to exercise a GPU. The scheduled or manually dispatched
+claiming to exercise a GPU. On pushes and pull requests, it only runs when a
+DroneGS source, CUDA Dockerfile, or CUDA validation file changes; Markdown
+documentation and unrelated application changes do not trigger a CUDA
+compilation. The
+scheduled or manually dispatched
 `dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
 development container on a self-hosted runner, then verifies driver injection
 in each production CUDA runtime image. It requires a repository runner labelled
