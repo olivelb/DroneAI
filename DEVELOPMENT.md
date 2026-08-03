@@ -32,7 +32,7 @@ make coverage
 
 `make check` runs all three. Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
-45%. That floor is a ratchet, not a completeness claim: new or changed pure
+50%. That floor is a ratchet, not a completeness claim: new or changed pure
 logic is expected to receive focused unit tests even when subprocess, CUDA or
 external-service boundaries require integration tests.
 
@@ -56,6 +56,9 @@ mypy checks. Imports outside the worker boundary remain skipped so their
 independent typing can progress without weakening the worker contract.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
+Focused worker tests also exercise RTK candidate acceptance, rejection, cache
+reuse and bounded fallback, plus mandatory publication assets, GCP provenance,
+best-effort recovery uploads and aerial/facade completion routing.
 
 GPU and external-service tests are excluded from the default test command:
 
@@ -71,6 +74,13 @@ The infrastructure-free dataset and sparse reconstruction workflow is
 documented in [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
 
 ## Dependency locks
+
+GitHub Actions are pinned to immutable commit SHAs and annotated with their
+release major. Keep the SHA pin when updating them. Dependabot checks Actions,
+Python, frontend npm and service Docker dependencies every Monday and groups
+the Python, frontend and Actions updates to keep review volume bounded. Actions
+using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
+self-hosted GPU runner before enabling the nightly workflow.
 
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:
