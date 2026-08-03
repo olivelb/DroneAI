@@ -19,13 +19,5 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; runner >= 2.327.1
-      - name: Configure native GPU suites
-        run: >-
-          cmake -S app1-colmap/dronegs -B build/dronegs-gpu -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DDRONEGS_CUDA_ARCHITECTURES=native
-          -DDRONEGS_BUILD_TESTS=ON
-      - name: Build native GPU suites
-        run: cmake --build build/dronegs-gpu
-      - name: Run all C++ CUDA and Python suites
-        run: ctest --test-dir build/dronegs-gpu --output-on-failure
+      - name: Run native CUDA suites in the development container
+        run: scripts/ci/validate_cuda_containers.sh gpu

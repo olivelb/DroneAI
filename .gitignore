@@ -117,6 +117,8 @@ plat
 # === Local helper scripts ===
 /scripts/*
 !/scripts/bootstrap-dev.sh
+!/scripts/ci/
+!/scripts/ci/*.sh
 !/scripts/deploy/
 !/scripts/deploy/*.sh
 

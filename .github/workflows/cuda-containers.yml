@@ -1,0 +1,36 @@
+name: CUDA container validation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/cuda-containers.yml"
+      - "app1-colmap/Dockerfile.base"
+      - "app1-colmap/Dockerfile.local-gaussian"
+      - "app1-colmap/dronegs/**"
+      - "scripts/ci/validate_cuda_containers.sh"
+  pull_request:
+    paths:
+      - ".github/workflows/cuda-containers.yml"
+      - "app1-colmap/Dockerfile.base"
+      - "app1-colmap/Dockerfile.local-gaussian"
+      - "app1-colmap/dronegs/**"
+      - "scripts/ci/validate_cuda_containers.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cuda-containers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cuda-container-build:
+    name: CUDA Dockerfile build contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build CUDA images and portable binaries
+        run: scripts/ci/validate_cuda_containers.sh build
