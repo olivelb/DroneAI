@@ -17,11 +17,14 @@ Kubernetes, or a CUDA GPU.
 On Ubuntu:
 
 ```bash
-python3 -m venv .venv
+./scripts/bootstrap-dev.sh
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install --requirement requirements/dev.txt
 ```
+
+The bootstrap is idempotent. It installs missing native development tools on
+APT-based systems, creates or refreshes `.venv` from the committed development
+lock and runs the shared static checks. Set `PYTHON_BIN` to select a supported
+Python interpreter explicitly.
 
 Run the checks:
 
@@ -31,11 +34,13 @@ make coverage
 ```
 
 `make static` compiles Python sources, applies the repository and focused
-worker lint rules, runs strict worker type checking, validates the GitHub
-Actions workflows and rejects broken local Markdown links. `make check` runs
-both `make static` and `make coverage`, using the exact static checks enforced
-by CI. The development lock installs the `actionlint` executable through
-`actionlint-py`, with deterministic ShellCheck and Pyflakes integrations.
+worker lint rules, runs strict worker type checking, validates shell scripts
+and GitHub Actions workflows, and rejects broken local Markdown links.
+`make audit` checks the locked Python environment against published
+vulnerability advisories. `make check` runs the static checks, dependency
+audit and coverage suite, using the same commands enforced by CI. The
+development lock installs the `actionlint` executable through `actionlint-py`,
+with deterministic ShellCheck and Pyflakes integrations.
 
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
@@ -96,7 +101,7 @@ corresponding lock after intentionally changing one of them:
 python -m piptools compile requirements/api.in
 python -m piptools compile requirements/processing.in
 python -m piptools compile requirements/colmap.in
-python -m piptools compile requirements/dev.in
+python -m piptools compile --allow-unsafe requirements/dev.in
 ```
 
 Use the Python version of the corresponding runtime image when regenerating a

@@ -7,6 +7,8 @@ fiona
 httpx2
 mypy
 numpy
+pip
+pip-audit
 pip-tools
 pyflakes
 pyproj
