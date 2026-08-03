@@ -34,16 +34,16 @@
   },
   "overrides": {
     "@eslint/config-array": {
-      "brace-expansion": "1.1.17"
+      "brace-expansion": "1.1.18"
     },
     "@eslint/eslintrc": {
-      "brace-expansion": "1.1.17"
+      "brace-expansion": "1.1.18"
     },
     "eslint": {
-      "brace-expansion": "1.1.17"
+      "brace-expansion": "1.1.18"
     },
     "eslint-config-next": {
-      "brace-expansion": "1.1.17"
+      "brace-expansion": "1.1.18"
     },
     "postcss": "8.5.24",
     "sharp": "0.35.3"
