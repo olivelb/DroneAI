@@ -73,6 +73,10 @@ def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
         "app1-colmap/colmap_worker/stages/reconstruction.py",
         "app1-colmap/colmap_worker/stages/rtk.py",
     ]
+    helper_modules = [
+        "app1-colmap/colmap_worker/dronegs_config.py",
+        "app1-colmap/colmap_worker/sparse_mapping.py",
+    ]
 
     composition_source = _source(composition)
     worker_source = _source(worker)
@@ -81,6 +85,7 @@ def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     assert _line_count(composition) < 120
     assert _line_count(runner) < 120
     assert all(_line_count(module) < 700 for module in stage_modules)
+    assert all(_line_count(module) < 350 for module in helper_modules)
     assert "create_producer(" not in composition_source
     assert "basicConfig(" not in composition_source
     assert "run_colmap_pipeline(" in runner_source
@@ -88,6 +93,8 @@ def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     assert "create_producer(" in worker_source
     assert all("confluent_kafka" not in _source(module) for module in stage_modules)
     assert all("import main" not in _source(module) for module in stage_modules)
+    assert all("confluent_kafka" not in _source(module) for module in helper_modules)
+    assert all("import main" not in _source(module) for module in helper_modules)
 
 
 def test_results_workspace_is_split_into_focused_components():

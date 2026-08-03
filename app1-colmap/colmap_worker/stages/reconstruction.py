@@ -2,25 +2,16 @@
 
 from __future__ import annotations
 
-import math
 import os
-import shutil
-import subprocess
-import time
 
 from alignment_support import (
     build_gps_pair_graph,
-    build_mapping_command,
-    caspar_compatibility,
-    choose_auto_fallback,
-    choose_primary_engine,
     database_counts,
     parse_colmap_reference_file,
     write_pair_list,
 )
 from pipeline_support import (
     extract_gps_data,
-    inspect_sparse_quality,
     read_saved_projected_crs,
     read_saved_projected_crs_policy,
     sanitize_exif_for_colmap,
@@ -33,6 +24,7 @@ from shared.rtk_refinement import inject_database_gravity_priors, load_rtk_recor
 from .. import runtime
 from ..artifacts import dense_sparse_model_ready, invalidate_georeferencing_artifacts
 from ..contracts import PipelinePreparation, PipelineReconstruction, SparseBootstrapState
+from ..sparse_mapping import run_sparse_mapping
 
 
 def prepare_sparse_bootstrap(
@@ -104,8 +96,10 @@ def prepare_sparse_bootstrap(
     gps_done = not facade_mode and os.path.exists(geo_data_file) and os.path.getsize(geo_data_file) > 0
     sanitize_exif_for_colmap(clean_images_dir, vol_id, runtime.report_mission_progress)
 
-    align_tf = os.path.join(workspace_dir, "alignment_transform.json")
-    align_tf = align_tf if os.path.exists(align_tf) else None
+    cached_alignment_path = os.path.join(workspace_dir, "alignment_transform.json")
+    align_tf: str | None = (
+        cached_alignment_path if os.path.exists(cached_alignment_path) else None
+    )
     dense_sparse_ready = dense_sparse_model_ready(dense_path)
 
     # Gaussian Splatting only needs dense/sparse + undistorted images.
@@ -315,6 +309,7 @@ def _build_matching_command(
     return command + model_options, model_options, strategy
 
 
+
 def reconstruct_colmap_sparse(
     preparation: PipelinePreparation,
     workspace_dir: str,
@@ -327,8 +322,6 @@ def reconstruct_colmap_sparse(
     sparse_path = preparation.sparse_path
     resolved_matcher_type = preparation.resolved_matcher_type
     feature_gpu_index = preparation.feature_gpu_index
-    ba_gpu_index = preparation.ba_gpu_index
-    images = preparation.images
 
     bootstrap = prepare_sparse_bootstrap(
         preparation,
@@ -450,180 +443,12 @@ def reconstruct_colmap_sparse(
             )
 
         # --- 6. SfM: Mapping ---
-        os.makedirs(sparse_path, exist_ok=True)
-        requested_engine = str(params.get("alignment_engine", "auto")).lower()
-        if requested_engine not in {"auto", "glomap", "caspar", "ceres"}:
-            raise ValueError(f"Unsupported alignment engine: {requested_engine}")
-        mapping_timeout = float(params["mapping_timeout_seconds"])
-        mapping_started_at = time.monotonic()
-        minimum_registration_ratio = float(params["minimum_registration_ratio"])
-        minimum_registered_images = max(
-            3,
-            math.ceil(len(images) * minimum_registration_ratio),
-        )
-        maximum_reprojection_error = float(params["maximum_mean_reprojection_error_px"])
-        minimum_track_length = float(params["minimum_median_track_length"])
-
-        def passes_sparse_quality(quality):
-            reprojection_error = quality["mean_reprojection_error_px"]
-            track_length = quality["median_track_length"]
-            return (
-                quality["registered_images"] >= minimum_registered_images
-                and quality["points3D"] > 0
-                and reprojection_error is not None
-                and reprojection_error <= maximum_reprojection_error
-                and track_length is not None
-                and track_length >= minimum_track_length
-            )
-
-        def remaining_mapping_budget():
-            remaining = mapping_timeout - (time.monotonic() - mapping_started_at)
-            if remaining <= 0:
-                raise TimeoutError(f"The shared {mapping_timeout:.0f}s mapping budget is exhausted.")
-            return remaining
-
-        def run_mapping_engine(engine, progress):
-            engine_timeout = remaining_mapping_budget()
-            command = build_mapping_command(
-                engine,
-                database_path=db_path,
-                image_path=clean_images_dir,
-                output_path=sparse_path,
-                gpu_index=ba_gpu_index,
-                global_max_tracks=int(float(params["global_mapper_max_tracks"])),
-                global_ba_iterations=int(float(params["global_mapper_ba_iterations"])),
-                global_ceres_iterations=int(float(params["global_mapper_ceres_iterations"])),
-                global_skip_retriangulation=bool(params.get("global_mapper_skip_retriangulation", True)),
-                global_random_seed=int(float(params["global_mapper_random_seed"])),
-                global_ba_min_track_length=int(float(params["global_mapper_ba_min_track_length"])),
-                global_tri_complete_max_reproj_error=float(params["global_mapper_tri_complete_max_reproj_error"]),
-                global_tri_merge_max_reproj_error=float(params["global_mapper_tri_merge_max_reproj_error"]),
-                global_tri_min_angle=float(params["global_mapper_tri_min_angle"]),
-                global_use_gravity=gravity_available,
-            )
-            runtime.report_mission_progress(
-                vol_id,
-                "MAPPING",
-                progress,
-                log=(f"Starting alignment engine={engine} with a {engine_timeout:.0f}s remaining shared time budget."),
-                details={
-                    "event": "alignment_engine_started",
-                    "engine": engine,
-                    "timeout_seconds": engine_timeout,
-                },
-            )
-            run_command(
-                command,
-                vol_id,
-                "MAPPING",
-                progress,
-                runtime.report_mission_progress,
-                runtime.ensure_not_cancelled,
-                timeout_seconds=engine_timeout,
-            )
-
-        primary_engine = choose_primary_engine(
-            requested_engine,
-            facade=facade_mode,
-        )
-        if primary_engine == "caspar":
-            caspar_supported, camera_models = caspar_compatibility(db_path)
-            if not caspar_supported:
-                raise RuntimeError(
-                    "Caspar only supports PINHOLE and SIMPLE_RADIAL cameras; "
-                    f"database contains {sorted(camera_models)}."
-                )
-        primary_error = None
-        try:
-            run_mapping_engine(primary_engine, 45)
-        except (RuntimeError, subprocess.CalledProcessError, TimeoutError) as error:
-            primary_error = error
-            if requested_engine != "auto":
-                raise
-            runtime.report_mission_progress(
-                vol_id,
-                "MAPPING",
-                46,
-                log=(
-                    f"Primary {primary_engine.upper()} attempt failed within its bounded budget: "
-                    f"{type(error).__name__}: {error}"
-                ),
-                details={
-                    "event": "alignment_engine_failed",
-                    "engine": primary_engine,
-                    "error": str(error),
-                },
-            )
-
-        sparse_model_path = os.path.join(sparse_path, "0")
-        quality = inspect_sparse_quality(sparse_model_path)
-        registered_images = quality["registered_images"]
-        sparse_points = quality["points3D"]
-        primary_usable = primary_error is None and passes_sparse_quality(quality)
-        runtime.report_mission_progress(
+        run_sparse_mapping(
+            preparation,
             vol_id,
-            "MAPPING",
-            46,
-            log=(
-                f"{primary_engine} registered {registered_images}/{len(images)} "
-                f"images with {sparse_points} points; "
-                f"required={minimum_registered_images}."
-            ),
-            details={
-                "event": "alignment_quality_gate",
-                "engine": primary_engine,
-                "registered_images": registered_images,
-                "total_images": len(images),
-                "points3D": sparse_points,
-                "minimum_registered_images": minimum_registered_images,
-                "maximum_mean_reprojection_error_px": (maximum_reprojection_error),
-                "minimum_median_track_length": minimum_track_length,
-                **quality,
-                "accepted": primary_usable,
-            },
+            gravity_available=gravity_available,
+            match_counts=match_counts,
         )
-
-        if not primary_usable and requested_engine == "auto":
-            caspar_supported, camera_models = caspar_compatibility(db_path)
-            fallback_engine = "ceres" if primary_engine == "caspar" else choose_auto_fallback(camera_models)
-            runtime.report_mission_progress(
-                vol_id,
-                "MAPPING",
-                47,
-                log=(
-                    f"{primary_engine.upper()} quality gate failed. Reusing the existing features "
-                    f"and {match_counts['two_view_geometries']} verified pairs with "
-                    f"incremental {fallback_engine.upper()} BA. "
-                    f"Camera models: {sorted(camera_models)}."
-                ),
-                details={
-                    "event": "alignment_fallback",
-                    "from_engine": primary_engine,
-                    "to_engine": fallback_engine,
-                    "caspar_supported": caspar_supported,
-                    "camera_models": sorted(camera_models),
-                },
-            )
-            shutil.rmtree(sparse_path, ignore_errors=True)
-            os.makedirs(sparse_path, exist_ok=True)
-            run_mapping_engine(fallback_engine, 48)
-            quality = inspect_sparse_quality(sparse_model_path)
-            registered_images = quality["registered_images"]
-            sparse_points = quality["points3D"]
-            primary_engine = fallback_engine
-
-        if not passes_sparse_quality(quality):
-            raise RuntimeError(
-                "Sparse reconstruction failed the alignment quality gate "
-                f"after {primary_engine}: registered_images={registered_images}/"
-                f"{len(images)}, required={minimum_registered_images}, "
-                f"points3D={sparse_points}, "
-                f"mean_reprojection_error_px="
-                f"{quality['mean_reprojection_error_px']}, "
-                f"median_track_length={quality['median_track_length']}. "
-                "Exhaustive matching and unbounded "
-                "CPU bundle adjustment are intentionally disabled."
-            )
     else:
         runtime.report_mission_progress(vol_id, "MAPPING", 45, log="Sparse model found. Skipping SfM extraction and matching.")
 

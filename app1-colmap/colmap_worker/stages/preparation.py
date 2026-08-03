@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from shared import storage
 from shared.facade_process import apply_facade_process_profile
@@ -36,11 +37,208 @@ from ..artifacts import invalidate_pipeline_artifacts, normalize_gpu_index
 from ..contracts import PipelinePreparation
 
 
+def _select_input_assets(
+    raw_image_dir: str,
+    workspace_dir: str,
+    params: dict[str, Any],
+    facade_mode: bool,
+    vol_id: str,
+) -> tuple[list[Path], list[Path], str]:
+    report_path = os.path.join(workspace_dir, "facade_selection_report.json")
+    if not facade_mode:
+        images, position_sidecars = discover_input_assets(raw_image_dir)
+        return images, position_sidecars, report_path
+
+    raw_images = sorted(
+        path
+        for path in Path(raw_image_dir).rglob("*")
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+    )
+    selection_mode = str(params["facade_selection_mode"]).lower()
+    if selection_mode == "auto":
+        target_yaw_value = str(params.get("facade_target_yaw_deg", "")).strip()
+        images, selection_report = select_facade_images(
+            raw_images,
+            max_abs_pitch_deg=float(params["facade_max_abs_pitch_deg"]),
+            min_pass_images=int(float(params["facade_min_pass_images"])),
+            target_yaw_deg=float(target_yaw_value) if target_yaw_value else None,
+            yaw_tolerance_deg=float(params["facade_yaw_tolerance_deg"]),
+            excluded_basename_ranges=params["facade_excluded_image_ranges"],
+        )
+    elif selection_mode == "all":
+        images, duplicates = deduplicate_identical_basenames(raw_images)
+        unique_image_count = len(images)
+        images, exclusion_report = exclude_basename_ranges(
+            images,
+            params["facade_excluded_image_ranges"],
+        )
+        selection_report = {
+            "schema_version": 2,
+            "mode": "all",
+            "input_images": len(raw_images),
+            "unique_images": unique_image_count,
+            "selected_images": len(images),
+            "duplicate_basenames": duplicates,
+            **exclusion_report,
+        }
+    else:
+        raise ValueError(f"Unsupported facade_selection_mode: {selection_mode}")
+
+    atomic_write_json(report_path, selection_report)
+    runtime.report_mission_progress(
+        vol_id,
+        "PREPARING",
+        5,
+        log=f"Facade selection retained {len(images)}/{len(raw_images)} images with mode={selection_mode}.",
+        details={"event": "facade_selection", **selection_report},
+    )
+    return images, [], report_path
+
+
+def _copy_input_assets(
+    images: list[Path],
+    position_sidecars: list[Path],
+    raw_image_dir: str,
+    clean_images_dir: str,
+    vol_id: str,
+) -> int:
+    copy_candidates = images + position_sidecars
+    runtime.report_mission_progress(
+        vol_id,
+        "COPYING_IMAGES",
+        5,
+        log=(
+            f"Copying {len(images)} images and {len(position_sidecars)} DJI position sidecars "
+            "to the clean workspace..."
+        ),
+    )
+    copied_count = 0
+    skipped_count = 0
+    copy_manifest = load_copy_manifest(clean_images_dir)
+    for index, input_path in enumerate(copy_candidates):
+        runtime.ensure_not_cancelled()
+        asset_name = input_path.name
+        source_path = str(input_path)
+        destination_path = os.path.join(clean_images_dir, asset_name)
+        needs_copy, source_descriptor = plan_clean_image_copy(
+            source_path,
+            destination_path,
+            copy_manifest.get(asset_name),
+        )
+        if needs_copy:
+            shutil.copy2(source_path, destination_path)
+            copied_count += 1
+            if source_descriptor is None:
+                _, source_descriptor = plan_clean_image_copy(
+                    source_path,
+                    destination_path,
+                    copy_manifest.get(asset_name),
+                )
+        else:
+            skipped_count += 1
+
+        if source_descriptor is not None:
+            copy_manifest[asset_name] = source_descriptor
+        if (index + 1) % 50 == 0 or index == len(copy_candidates) - 1:
+            save_copy_manifest(clean_images_dir, copy_manifest)
+            runtime.report_mission_progress(
+                vol_id,
+                "COPYING_IMAGES",
+                5,
+                log=(
+                    f"Processed {index + 1}/{len(copy_candidates)} input files "
+                    f"(Copied: {copied_count}, Skipped: {skipped_count})"
+                ),
+                details={
+                    "event": "copy_progress",
+                    "processed": index + 1,
+                    "total": len(copy_candidates),
+                    "copied": copied_count,
+                    "skipped": skipped_count,
+                },
+            )
+
+    if os.path.isdir(raw_image_dir):
+        shutil.rmtree(raw_image_dir)
+        runtime.report_mission_progress(
+            vol_id,
+            "COPYING_IMAGES",
+            5,
+            log="Removed raw_images to free disk space",
+        )
+    return copied_count
+
+
+def _validate_reconstruction_cache(
+    *,
+    params: dict[str, Any],
+    feature_family: str,
+    feature_type: str,
+    copied_count: int,
+    clean_images_dir: str,
+    workspace_dir: str,
+    db_path: str,
+    sparse_path: str,
+    dense_path: str,
+    geo_data_file: str,
+    vol_id: str,
+) -> None:
+    def invalidate(reason: str) -> None:
+        invalidate_pipeline_artifacts(
+            clean_images_dir,
+            workspace_dir,
+            db_path,
+            sparse_path,
+            dense_path,
+            geo_data_file,
+            vol_id,
+            reason,
+        )
+
+    if copied_count > 0:
+        invalidate("Input images changed since the last cached run.")
+
+    requested_config = build_colmap_cache_config(params)
+    previous_config = load_colmap_cache_config(workspace_dir)
+    has_cached_reconstruction = any(
+        os.path.exists(path) for path in (db_path, sparse_path, dense_path)
+    )
+    if has_cached_reconstruction and (
+        previous_config is None
+        or previous_config.get("fingerprint") != requested_config["fingerprint"]
+    ):
+        changed_parameters = changed_colmap_cache_parameters(
+            previous_config,
+            requested_config,
+        )
+        invalidate(
+            f"COLMAP reconstruction parameters changed ({', '.join(changed_parameters)})."
+        )
+
+    existing_type = detect_existing_pipeline(db_path)
+    if feature_family == "ALIKED" and existing_type == "SIFT":
+        invalidate(
+            f"Existing workspace uses SIFT features but extractor {feature_type} was requested."
+        )
+    elif feature_family == "SIFT" and existing_type == "ALIKED":
+        invalidate(
+            f"Existing workspace uses ALIKED features but extractor {feature_type} was requested."
+        )
+    elif existing_type is not None:
+        runtime.report_mission_progress(
+            vol_id,
+            "PREPARING",
+            3,
+            log=f"Existing database compatible ({existing_type}). Resuming...",
+        )
+    save_colmap_cache_config(workspace_dir, requested_config)
+
+
 def prepare_colmap_pipeline_run(
     workspace_dir: str,
     input_dataset: str,
     vol_id: str,
-    mission_params: dict,
+    mission_params: dict[str, Any],
 ) -> PipelinePreparation:
     # --- Pipeline selection ---
     pipeline_mode = mission_params.get("pipeline", "modern")
@@ -108,8 +306,10 @@ def prepare_colmap_pipeline_run(
         if facade_mode
         else prepare_gcp_assets(raw_image_dir, workspace_dir)
     )
-    gcp_path = gcp_assets["gcp_path"]
-    gcp_accuracy_path = gcp_assets["accuracy_path"]
+    raw_gcp_path = gcp_assets["gcp_path"]
+    raw_gcp_accuracy_path = gcp_assets["accuracy_path"]
+    gcp_path = str(raw_gcp_path) if raw_gcp_path else None
+    gcp_accuracy_path = str(raw_gcp_accuracy_path) if raw_gcp_accuracy_path else None
     if gcp_path:
         runtime.report_mission_progress(
             vol_id,
@@ -130,192 +330,36 @@ def prepare_colmap_pipeline_run(
             },
         )
 
-    facade_selection_report_path = os.path.join(workspace_dir, "facade_selection_report.json")
-    if facade_mode:
-        raw_images = sorted(
-            path
-            for path in Path(raw_image_dir).rglob("*")
-            if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
-        )
-        selection_mode = str(params["facade_selection_mode"]).lower()
-        if selection_mode == "auto":
-            target_yaw_value = str(params.get("facade_target_yaw_deg", "")).strip()
-            images, selection_report = select_facade_images(
-                raw_images,
-                max_abs_pitch_deg=float(params["facade_max_abs_pitch_deg"]),
-                min_pass_images=int(float(params["facade_min_pass_images"])),
-                target_yaw_deg=(float(target_yaw_value) if target_yaw_value else None),
-                yaw_tolerance_deg=float(params["facade_yaw_tolerance_deg"]),
-                excluded_basename_ranges=params["facade_excluded_image_ranges"],
-            )
-        elif selection_mode == "all":
-            images, duplicates = deduplicate_identical_basenames(raw_images)
-            unique_image_count = len(images)
-            images, exclusion_report = exclude_basename_ranges(
-                images,
-                params["facade_excluded_image_ranges"],
-            )
-            selection_report = {
-                "schema_version": 2,
-                "mode": "all",
-                "input_images": len(raw_images),
-                "unique_images": unique_image_count,
-                "selected_images": len(images),
-                "duplicate_basenames": duplicates,
-                **exclusion_report,
-            }
-        else:
-            raise ValueError(f"Unsupported facade_selection_mode: {selection_mode}")
-        atomic_write_json(facade_selection_report_path, selection_report)
-        position_sidecars = []
-        runtime.report_mission_progress(
-            vol_id,
-            "PREPARING",
-            5,
-            log=(f"Facade selection retained {len(images)}/{len(raw_images)} images with mode={selection_mode}."),
-            details={"event": "facade_selection", **selection_report},
-        )
-    else:
-        images, position_sidecars = discover_input_assets(raw_image_dir)
-    copy_candidates = images + position_sidecars
-    runtime.report_mission_progress(
+    images, position_sidecars, facade_selection_report_path = _select_input_assets(
+        raw_image_dir,
+        workspace_dir,
+        params,
+        facade_mode,
         vol_id,
-        "COPYING_IMAGES",
-        5,
-        log=(
-            f"Copying {len(images)} images and {len(position_sidecars)} DJI position sidecars to the clean workspace..."
-        ),
     )
-
-    copied_count = 0
-    skipped_count = 0
-    copy_manifest = load_copy_manifest(clean_images_dir)
-    for i, input_path in enumerate(copy_candidates):
-        try:
-            runtime.cancellation_state.ensure_not_cancelled()
-        except RuntimeError as error:
-            raise runtime.PipelineCancelledError(str(error)) from error
-
-        asset_name = input_path.name
-        src_path = str(input_path)
-        dst_path = os.path.join(clean_images_dir, asset_name)
-        needs_copy, source_descriptor = plan_clean_image_copy(
-            src_path,
-            dst_path,
-            copy_manifest.get(asset_name),
-        )
-
-        if not needs_copy:
-            skipped_count += 1
-        else:
-            shutil.copy2(src_path, dst_path)
-            copied_count += 1
-            if source_descriptor is None:
-                needs_copy, source_descriptor = plan_clean_image_copy(
-                    src_path,
-                    dst_path,
-                    copy_manifest.get(asset_name),
-                )
-
-        if source_descriptor is not None:
-            copy_manifest[asset_name] = source_descriptor
-
-        if (i + 1) % 50 == 0 or i == len(copy_candidates) - 1:
-            save_copy_manifest(clean_images_dir, copy_manifest)
-
-            runtime.report_mission_progress(
-                vol_id,
-                "COPYING_IMAGES",
-                5,
-                log=(
-                    f"Processed {i + 1}/{len(copy_candidates)} input files "
-                    f"(Copied: {copied_count}, Skipped: {skipped_count})"
-                ),
-                details={
-                    "event": "copy_progress",
-                    "processed": i + 1,
-                    "total": len(copy_candidates),
-                    "copied": copied_count,
-                    "skipped": skipped_count,
-                },
-            )
-
-    # Free disk: remove raw_images now that clean_images is ready.
-    # On re-run, images will be re-downloaded from S3 (fast over local network).
-    if os.path.isdir(raw_image_dir):
-        shutil.rmtree(raw_image_dir)
-        runtime.report_mission_progress(vol_id, "COPYING_IMAGES", 5, log="Removed raw_images to free disk space")
-
-    if copied_count > 0:
-        invalidate_pipeline_artifacts(
-            clean_images_dir,
-            workspace_dir,
-            db_path,
-            sparse_path,
-            dense_path,
-            geo_data_file,
-            vol_id,
-            "Input images changed since the last cached run.",
-        )
-
-    requested_cache_config = build_colmap_cache_config(params)
-    previous_cache_config = load_colmap_cache_config(workspace_dir)
-    has_cached_reconstruction = any(os.path.exists(path) for path in (db_path, sparse_path, dense_path))
-    if has_cached_reconstruction and (
-        previous_cache_config is None
-        or previous_cache_config.get("fingerprint") != requested_cache_config["fingerprint"]
-    ):
-        changed_parameters = changed_colmap_cache_parameters(
-            previous_cache_config,
-            requested_cache_config,
-        )
-        invalidate_pipeline_artifacts(
-            clean_images_dir,
-            workspace_dir,
-            db_path,
-            sparse_path,
-            dense_path,
-            geo_data_file,
-            vol_id,
-            f"COLMAP reconstruction parameters changed ({', '.join(changed_parameters)}).",
-        )
+    copied_count = _copy_input_assets(
+        images,
+        position_sidecars,
+        raw_image_dir,
+        clean_images_dir,
+        vol_id,
+    )
 
     image_reader_camera_model = str(params.get("camera_model", "SIMPLE_RADIAL")).upper()
     image_reader_camera_params = None
-
-    # --- Smart resume: check database descriptor type compatibility ---
-    existing_type = detect_existing_pipeline(db_path)
-
-    if existing_type is not None:
-        # Database exists from a previous run
-        if feature_family == "ALIKED" and existing_type == "SIFT":
-            invalidate_pipeline_artifacts(
-                clean_images_dir,
-                workspace_dir,
-                db_path,
-                sparse_path,
-                dense_path,
-                geo_data_file,
-                vol_id,
-                f"Existing workspace uses SIFT features but extractor {feature_type} was requested.",
-            )
-        elif feature_family == "SIFT" and existing_type == "ALIKED":
-            invalidate_pipeline_artifacts(
-                clean_images_dir,
-                workspace_dir,
-                db_path,
-                sparse_path,
-                dense_path,
-                geo_data_file,
-                vol_id,
-                f"Existing workspace uses ALIKED features but extractor {feature_type} was requested.",
-            )
-        else:
-            runtime.report_mission_progress(
-                vol_id, "PREPARING", 3, log=f"Existing database compatible ({existing_type}). Resuming..."
-            )
-
-    save_colmap_cache_config(workspace_dir, requested_cache_config)
+    _validate_reconstruction_cache(
+        params=params,
+        feature_family=feature_family,
+        feature_type=feature_type,
+        copied_count=copied_count,
+        clean_images_dir=clean_images_dir,
+        workspace_dir=workspace_dir,
+        db_path=db_path,
+        sparse_path=sparse_path,
+        dense_path=dense_path,
+        geo_data_file=geo_data_file,
+        vol_id=vol_id,
+    )
     return PipelinePreparation(
         params=params,
         facade_mode=facade_mode,

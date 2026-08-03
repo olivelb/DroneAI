@@ -93,7 +93,11 @@ jobs:
       - name: Enforce COLMAP worker maintainability rules
         run: |
           python -m ruff check --select B,SIM,UP,RUF,ASYNC app1-colmap/colmap_worker app1-colmap/main.py
-          python -m ruff check --select C90 --config lint.mccabe.max-complexity=20 app1-colmap/colmap_worker
+          python -m ruff check --select C90 --config lint.mccabe.max-complexity=15 app1-colmap/colmap_worker
+      - name: Type-check the complete COLMAP worker package
+        run: >-
+          python -m mypy --strict --ignore-missing-imports --follow-imports=skip
+          app1-colmap/colmap_worker
       - name: Run CPU tests with branch coverage
         run: |
           python -m coverage erase

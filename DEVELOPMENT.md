@@ -49,9 +49,13 @@ local sparse runner, Gaussian orthophoto generator and production COLMAP worker
 are composed from focused stages with typed, immutable state objects. Keep their
 public entry points limited to stage coordination and add new behavior to the
 smallest relevant stage. The COLMAP worker package additionally enforces
-modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 20;
-`tests/test_modular_boundaries.py` prevents its entry point from growing back
-into an orchestrator monolith.
+modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 15
+across the complete worker package. Stable contracts, runtime boundaries,
+artifact helpers, mission coordination and every COLMAP stage also pass strict
+mypy checks. Imports outside the worker boundary remain skipped so their
+independent typing can progress without weakening the worker contract.
+`tests/test_modular_boundaries.py` prevents the entry point and focused modules
+from growing back into an orchestrator monolith.
 
 GPU and external-service tests are excluded from the default test command:
 

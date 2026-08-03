@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from shared import storage
 from shared.config import TOPIC_ORTHO as TOPIC_OUT
@@ -25,6 +27,187 @@ from ..contracts import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
+
+
+@dataclass(frozen=True)
+class VerifiedProductAssets:
+    height_tif: str
+    final_ply: str
+    trainer_manifests: tuple[Path, ...]
+    qualification_manifests: tuple[Path, ...]
+    required_reports: dict[str, str | None]
+    gcp_enabled: bool
+    gcp_sparse_files: tuple[str, ...]
+
+
+def _verify_product_assets(
+    preparation: PipelinePreparation,
+    rtk_state: PipelineRtkState,
+    alignment_state: PipelineAlignmentState,
+    gaussian_state: PipelineGaussianState,
+    workspace_dir: str,
+) -> VerifiedProductAssets:
+    params = preparation.params
+    result = gaussian_state.result
+    ortho_file = gaussian_state.ortho_file
+    if not os.path.isfile(ortho_file):
+        raise FileNotFoundError(f"Required orthomosaic artifact is missing: {ortho_file}")
+    convert_to_cog(ortho_file)
+
+    height_tif = str(result["height_file"])
+    if not os.path.isfile(height_tif):
+        raise FileNotFoundError(f"Required DSM artifact is missing: {height_tif}")
+    convert_to_cog(height_tif)
+
+    final_ply = str(result["final_ply"])
+    if not os.path.isfile(final_ply):
+        raise FileNotFoundError(f"Required reusable Gaussian artifact is missing: {final_ply}")
+    trainer_manifests = tuple(
+        sorted(Path(result["checkpoint_dir"]).rglob("trainer_run.json"))
+    )
+    if not trainer_manifests:
+        raise FileNotFoundError("Required DroneGS training manifest is missing")
+    qualification_manifests = tuple(
+        sorted(Path(result["checkpoint_dir"]).rglob("canary_result.json"))
+    )
+    if len(qualification_manifests) != len(trainer_manifests):
+        raise FileNotFoundError(
+            "Every reusable DroneGS model requires a canary qualification manifest"
+        )
+
+    gcp_enabled = bool(params.get("gcp_adjustment_enabled", False))
+    gcp_report_file = os.path.join(workspace_dir, "gcp_alignment_report.json")
+    required_reports = {
+        "rtk_prior_report": (
+            rtk_state.report_path if os.path.isfile(rtk_state.report_path) else None
+        ),
+        "imu_gravity_report": os.path.join(workspace_dir, "imu_gravity_report.json"),
+        "alignment_transform": alignment_state.alignment_transform_path,
+        "gcp_alignment_report": gcp_report_file if gcp_enabled else None,
+        "facade_frame_report": (
+            result.get("facade_frame_report") if preparation.facade_mode else None
+        ),
+        "facade_selection_report": (
+            preparation.facade_selection_report_path if preparation.facade_mode else None
+        ),
+    }
+
+    gcp_sparse_files: tuple[str, ...] = ()
+    if gcp_enabled:
+        align_tf = alignment_state.alignment_transform_path
+        if not align_tf or not os.path.isfile(align_tf):
+            raise FileNotFoundError("GCP mission is missing its required alignment transform")
+        if not os.path.isfile(gcp_report_file):
+            raise FileNotFoundError("GCP mission is missing its required alignment report")
+        sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
+        gcp_sparse_files = tuple(
+            os.path.join(sparse_geo_path, name)
+            for name in ("cameras.bin", "images.bin", "points3D.bin")
+        )
+        missing_sparse_files = [path for path in gcp_sparse_files if not os.path.isfile(path)]
+        if missing_sparse_files:
+            raise FileNotFoundError(
+                f"GCP mission is missing sparse_geo/{os.path.basename(missing_sparse_files[0])}"
+            )
+
+    return VerifiedProductAssets(
+        height_tif=height_tif,
+        final_ply=final_ply,
+        trainer_manifests=trainer_manifests,
+        qualification_manifests=qualification_manifests,
+        required_reports=required_reports,
+        gcp_enabled=gcp_enabled,
+        gcp_sparse_files=gcp_sparse_files,
+    )
+
+
+def _write_verified_product_manifest(
+    preparation: PipelinePreparation,
+    reconstruction: PipelineReconstruction,
+    rtk_state: PipelineRtkState,
+    gaussian_state: PipelineGaussianState,
+    assets: VerifiedProductAssets,
+    workspace_dir: str,
+    vol_id: str,
+) -> str:
+    facade_mode = preparation.facade_mode
+    result = gaussian_state.result
+    product_manifest_path = os.path.join(workspace_dir, "product_manifest.json")
+    product_manifest = build_product_manifest(
+        mission_id=vol_id,
+        projected_crs=("LOCAL_FACADE" if facade_mode else reconstruction.utm_crs),
+        parameters={
+            "pipeline": preparation.params,
+            "effective_product_profile_id": (
+                FACADE_PROCESS_PROFILE_ID if facade_mode else "AERIAL_MAP"
+            ),
+            "effective_training_profile_id": gaussian_state.profile_id,
+            "effective_qualification_policy_id": gaussian_state.qualification_policy_id,
+            "renderer": {
+                "render_mode": result["render_mode"],
+                "coordinate_system": result["coordinate_system"],
+                "width": result["width"],
+                "height": result["height"],
+                "pixel_size": result["gsd"],
+                "pixel_size_units": result["gsd_units"],
+                "scale_source": result["scale_source"],
+                "meters_per_model_unit": result["meters_per_model_unit"],
+                **({"gsd_m": result["gsd"]} if not facade_mode else {}),
+                "raster_extent": result["raster_extent"],
+                "projected_extent": result["projected_extent"],
+                "vertical_reference": result["vertical_reference"],
+                "vertical_offset_m": result["vertical_offset_m"],
+                "gaussians": result["n_gaussians"],
+                "renderer_contract": result["renderer_contract"],
+                "cupy_version": result["cupy_version"],
+                "mip_filter_variance": result["ortho_mip_filter_variance"],
+                "mip_filter_compensation": result["ortho_mip_filter_compensation"],
+                "sh_frame_policy": (
+                    "colmap-view-direction-local-facade-v1"
+                    if facade_mode
+                    else "inverse-sim3-view-direction-v1"
+                ),
+            },
+        },
+        products={
+            ("facade_orthophoto_cog" if facade_mode else "orthomosaic_cog"): gaussian_state.ortho_file,
+            ("facade_orthophoto_metadata" if facade_mode else "orthomosaic_metadata"): metadata_path(
+                gaussian_state.ortho_file
+            ),
+            ("facade_orthophoto_preview" if facade_mode else "orthomosaic_preview"): preview_path(
+                gaussian_state.ortho_file
+            ),
+            ("facade_depth_cog" if facade_mode else "dsm_cog"): assets.height_tif,
+            ("facade_depth_metadata" if facade_mode else "dsm_metadata"): metadata_path(
+                assets.height_tif
+            ),
+            ("facade_depth_preview" if facade_mode else "dsm_preview"): preview_path(
+                assets.height_tif
+            ),
+            "gaussian_model": assets.final_ply,
+        },
+        sparse_model_path=rtk_state.active_sparse_model_path,
+        reports=assets.required_reports,
+        trainer_manifests=list(assets.trainer_manifests),
+        qualification_manifests=list(assets.qualification_manifests),
+        git_revision=os.getenv("DRONEAI_GIT_REVISION"),
+        software_components={
+            "pipeline": ROOT_DIR / "app1-colmap" / "colmap_worker" / "mission_runner.py",
+            "product_manifest": ROOT_DIR / "shared" / "product_manifest.py",
+            "rtk_refinement": ROOT_DIR / "shared" / "rtk_refinement.py",
+            "gcp_control": ROOT_DIR / "shared" / "gcp_control.py",
+            "facade_selection": ROOT_DIR / "shared" / "facade_selection.py",
+            "facade_process": ROOT_DIR / "shared" / "facade_process.py",
+            "facade_frame": ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "facade_frame.py",
+            "ortho_generator": (
+                ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "generate_gaussian_orthophoto.py"
+            ),
+            "ortho_renderer": ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "ortho_renderer.py",
+            "cuda_rasterizer": ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "cuda_rasterizer.py",
+        },
+    )
+    write_product_manifest(product_manifest_path, product_manifest)
+    return product_manifest_path
 
 
 def _upload_optional_recovery_artifacts(
@@ -132,24 +315,15 @@ def publish_colmap_products(
     workspace_dir: str,
     vol_id: str,
 ) -> PipelinePublicationState:
-    params = preparation.params
     facade_mode = preparation.facade_mode
     mission_s3_prefix = preparation.mission_s3_prefix
     db_path = preparation.db_path
     sparse_path = preparation.sparse_path
     geo_data_file = preparation.geo_data_file
     dense_path = preparation.dense_path
-    facade_selection_report_path = preparation.facade_selection_report_path
-    utm_crs = reconstruction.utm_crs
-    active_sparse_model_path = rtk_state.active_sparse_model_path
-    rtk_report_path = rtk_state.report_path
-    align_tf = alignment_state.alignment_transform_path
     ortho_file = gaussian_state.ortho_file
     result = gaussian_state.result
     durable_checkpoint_dir = gaussian_state.durable_checkpoint_dir
-    gs_profile_id = gaussian_state.profile_id
-    gs_qualification_policy_id = gaussian_state.qualification_policy_id
-    sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
     gaussian_upload_complete = False
 
     # --- Upload ALL artifacts to S3 (well-organized folders) ---
@@ -184,99 +358,22 @@ def publish_colmap_products(
     upload_count = 0
     product_stem = "facade_orthophoto" if facade_mode else "orthomosaic"
     ortho_s3_key = f"{mission_s3_prefix}/{product_stem}.tif"
-    if not os.path.isfile(ortho_file):
-        raise FileNotFoundError(f"Required orthomosaic artifact is missing: {ortho_file}")
-
-    # The final raster is a required, independently verifiable product.
-    # Never announce DONE or start downstream processing unless conversion,
-    # upload and remote integrity verification all succeeded.
-    convert_to_cog(ortho_file)
-    height_tif = result["height_file"]
-    if not os.path.isfile(height_tif):
-        raise FileNotFoundError(f"Required DSM artifact is missing: {height_tif}")
-    convert_to_cog(height_tif)
-
-    final_ply = result["final_ply"]
-    if not os.path.isfile(final_ply):
-        raise FileNotFoundError(f"Required reusable Gaussian artifact is missing: {final_ply}")
-    trainer_manifests = sorted(Path(result["checkpoint_dir"]).rglob("trainer_run.json"))
-    if not trainer_manifests:
-        raise FileNotFoundError("Required DroneGS training manifest is missing")
-    qualification_manifests = sorted(Path(result["checkpoint_dir"]).rglob("canary_result.json"))
-    if len(qualification_manifests) != len(trainer_manifests):
-        raise FileNotFoundError("Every reusable DroneGS model requires a canary qualification manifest")
-
-    gcp_enabled = bool(params.get("gcp_adjustment_enabled", False))
-    gcp_report_file = os.path.join(workspace_dir, "gcp_alignment_report.json")
-    required_reports = {
-        "rtk_prior_report": (rtk_report_path if os.path.isfile(rtk_report_path) else None),
-        "imu_gravity_report": os.path.join(workspace_dir, "imu_gravity_report.json"),
-        "alignment_transform": align_tf,
-        "gcp_alignment_report": (gcp_report_file if gcp_enabled else None),
-        "facade_frame_report": (result.get("facade_frame_report") if facade_mode else None),
-        "facade_selection_report": (facade_selection_report_path if facade_mode else None),
-    }
-    product_manifest_path = os.path.join(workspace_dir, "product_manifest.json")
-    product_manifest = build_product_manifest(
-        mission_id=vol_id,
-        projected_crs=("LOCAL_FACADE" if facade_mode else utm_crs),
-        parameters={
-            "pipeline": params,
-            "effective_product_profile_id": (FACADE_PROCESS_PROFILE_ID if facade_mode else "AERIAL_MAP"),
-            "effective_training_profile_id": gs_profile_id,
-            "effective_qualification_policy_id": (gs_qualification_policy_id),
-            "renderer": {
-                "render_mode": result["render_mode"],
-                "coordinate_system": result["coordinate_system"],
-                "width": result["width"],
-                "height": result["height"],
-                "pixel_size": result["gsd"],
-                "pixel_size_units": result["gsd_units"],
-                "scale_source": result["scale_source"],
-                "meters_per_model_unit": result["meters_per_model_unit"],
-                **({"gsd_m": result["gsd"]} if not facade_mode else {}),
-                "raster_extent": result["raster_extent"],
-                "projected_extent": result["projected_extent"],
-                "vertical_reference": result["vertical_reference"],
-                "vertical_offset_m": result["vertical_offset_m"],
-                "gaussians": result["n_gaussians"],
-                "renderer_contract": result["renderer_contract"],
-                "cupy_version": result["cupy_version"],
-                "mip_filter_variance": result["ortho_mip_filter_variance"],
-                "mip_filter_compensation": result["ortho_mip_filter_compensation"],
-                "sh_frame_policy": (
-                    "colmap-view-direction-local-facade-v1" if facade_mode else "inverse-sim3-view-direction-v1"
-                ),
-            },
-        },
-        products={
-            ("facade_orthophoto_cog" if facade_mode else "orthomosaic_cog"): ortho_file,
-            ("facade_orthophoto_metadata" if facade_mode else "orthomosaic_metadata"): metadata_path(ortho_file),
-            ("facade_orthophoto_preview" if facade_mode else "orthomosaic_preview"): preview_path(ortho_file),
-            ("facade_depth_cog" if facade_mode else "dsm_cog"): height_tif,
-            ("facade_depth_metadata" if facade_mode else "dsm_metadata"): metadata_path(height_tif),
-            ("facade_depth_preview" if facade_mode else "dsm_preview"): preview_path(height_tif),
-            "gaussian_model": final_ply,
-        },
-        sparse_model_path=active_sparse_model_path,
-        reports=required_reports,
-        trainer_manifests=trainer_manifests,
-        qualification_manifests=qualification_manifests,
-        git_revision=os.getenv("DRONEAI_GIT_REVISION"),
-        software_components={
-            "pipeline": ROOT_DIR / "app1-colmap" / "colmap_worker" / "mission_runner.py",
-            "product_manifest": ROOT_DIR / "shared" / "product_manifest.py",
-            "rtk_refinement": ROOT_DIR / "shared" / "rtk_refinement.py",
-            "gcp_control": ROOT_DIR / "shared" / "gcp_control.py",
-            "facade_selection": ROOT_DIR / "shared" / "facade_selection.py",
-            "facade_process": ROOT_DIR / "shared" / "facade_process.py",
-            "facade_frame": (ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "facade_frame.py"),
-            "ortho_generator": (ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "generate_gaussian_orthophoto.py"),
-            "ortho_renderer": (ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "ortho_renderer.py"),
-            "cuda_rasterizer": (ROOT_DIR / "app1-colmap" / "gaussian_ortho" / "cuda_rasterizer.py"),
-        },
+    assets = _verify_product_assets(
+        preparation,
+        rtk_state,
+        alignment_state,
+        gaussian_state,
+        workspace_dir,
     )
-    write_product_manifest(product_manifest_path, product_manifest)
+    product_manifest_path = _write_verified_product_manifest(
+        preparation,
+        reconstruction,
+        rtk_state,
+        gaussian_state,
+        assets,
+        workspace_dir,
+        vol_id,
+    )
 
     storage.upload_verified_file(ortho_file, ortho_s3_key)
     storage.upload_verified_file(
@@ -290,20 +387,20 @@ def publish_colmap_products(
     upload_count += 3
     height_key = f"{mission_s3_prefix}/{product_stem}.height.tif"
     for local_path, remote_key in (
-        (height_tif, height_key),
-        (metadata_path(height_tif), f"{height_key}.cog.json"),
+        (assets.height_tif, height_key),
+        (metadata_path(assets.height_tif), f"{height_key}.cog.json"),
         (
-            preview_path(height_tif),
+            preview_path(assets.height_tif),
             f"{mission_s3_prefix}/{product_stem}.height.preview.webp",
         ),
-        (final_ply, f"{mission_s3_prefix}/gaussian/final.ply"),
+        (assets.final_ply, f"{mission_s3_prefix}/gaussian/final.ply"),
     ):
         storage.upload_verified_file(local_path, remote_key)
         upload_count += 1
     checkpoint_root_path = Path(result["checkpoint_dir"]).resolve()
     for required_manifest in [
-        *trainer_manifests,
-        *qualification_manifests,
+        *assets.trainer_manifests,
+        *assets.qualification_manifests,
     ]:
         relative = required_manifest.resolve().relative_to(checkpoint_root_path)
         storage.upload_verified_file(
@@ -320,7 +417,7 @@ def publish_colmap_products(
         "facade_frame_report": "facade_frame.json",
         "facade_selection_report": "facade_selection_report.json",
     }
-    for report_name, report_path in required_reports.items():
+    for report_name, report_path in assets.required_reports.items():
         if report_path is None or not os.path.isfile(report_path):
             continue
         storage.upload_verified_file(
@@ -329,15 +426,9 @@ def publish_colmap_products(
         )
         upload_count += 1
 
-    if gcp_enabled:
-        if not align_tf or not os.path.isfile(align_tf):
-            raise FileNotFoundError("GCP mission is missing its required alignment transform")
-        if not os.path.isfile(gcp_report_file):
-            raise FileNotFoundError("GCP mission is missing its required alignment report")
-        for required_name in ("cameras.bin", "images.bin", "points3D.bin"):
-            required_sparse_file = os.path.join(sparse_geo_path, required_name)
-            if not os.path.isfile(required_sparse_file):
-                raise FileNotFoundError(f"GCP mission is missing sparse_geo/{required_name}")
+    if assets.gcp_enabled:
+        for required_sparse_file in assets.gcp_sparse_files:
+            required_name = os.path.basename(required_sparse_file)
             storage.upload_verified_file(
                 required_sparse_file,
                 f"{mission_s3_prefix}/colmap/sparse_geo/{required_name}",
@@ -365,7 +456,7 @@ def publish_colmap_products(
         db_path=db_path,
         sparse_path=sparse_path,
         workspace_dir=workspace_dir,
-        gcp_enabled=gcp_enabled,
+        gcp_enabled=assets.gcp_enabled,
         dense_path=dense_path,
         durable_checkpoint_dir=durable_checkpoint_dir,
         upload_count=upload_count,
@@ -410,7 +501,7 @@ def complete_colmap_pipeline(
     gaussian_state: PipelineGaussianState,
     workspace_dir: str,
     vol_id: str,
-    mission_params: dict,
+    mission_params: dict[str, Any],
 ) -> None:
     facade_mode = preparation.facade_mode
     ortho_s3_key = publication_state.ortho_s3_key
