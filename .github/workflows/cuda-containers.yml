@@ -8,6 +8,7 @@ on:
       - "app1-colmap/Dockerfile.base"
       - "app1-colmap/Dockerfile.local-gaussian"
       - "app1-colmap/dronegs/**"
+      - "!app1-colmap/dronegs/**/*.md"
       - "scripts/ci/validate_cuda_containers.sh"
   pull_request:
     paths:
@@ -15,6 +16,7 @@ on:
       - "app1-colmap/Dockerfile.base"
       - "app1-colmap/Dockerfile.local-gaussian"
       - "app1-colmap/dronegs/**"
+      - "!app1-colmap/dronegs/**/*.md"
       - "scripts/ci/validate_cuda_containers.sh"
   workflow_dispatch:
 
