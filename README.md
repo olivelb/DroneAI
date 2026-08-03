@@ -122,9 +122,15 @@ guides for implementation and operational details:
 
 ![Vehicle detection on orthomosaic](docs/showcase_vehicle_detection.png)
 
-The image shows georeferenced vehicle detections reprojected onto an
-orthomosaic. The measured local, non-RTK validation is documented in
-[`docs/GAJAN_R2S_VALIDATION.md`](docs/GAJAN_R2S_VALIDATION.md).
+The image shows vehicle detections reprojected onto an ALBAGNAC Mavic 3E RTK
+orthomosaic. ALBAGNAC used onboard RTK without surveyed GCPs or independent
+checkpoints, so this is a workflow showcase rather than an independently
+verified accuracy claim; its reconstruction and DroneGS evidence is retained
+in the [`docs/dronegs/benchmarks/`](docs/dronegs/benchmarks/) archive. For
+comparison, [GAJAN](docs/GAJAN_R2S_VALIDATION.md) documents a standard-GNSS,
+non-RTK integration run without GCPs, while the
+[Helenenschacht comparison](docs/benchmarks/helenenschacht-our-workflow-vs-metashape-2026-08-01.md)
+provides the benchmark with independent surveyed checkpoints.
 
 ## License
 
