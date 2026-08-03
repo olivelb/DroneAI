@@ -2,6 +2,8 @@
 -r processing.in
 
 numpy
+coverage[toml]
+fiona
 httpx2
 pip-tools
 pyproj

@@ -193,6 +193,40 @@ The runner requires at least 95% pose-prior coverage before modifying the
 database, runs one robust bounded Ceres GPU pass, and retains the verified
 GLOMAP/Caspar model if refinement fails or times out.
 
+## HD facade process
+
+`--facade` selects the same qualified coverage-first recipe as the dashboard:
+Caspar, SIFT at 4200 px, 16,384 features/matched features, a 48/16 spatial
+neighbour graph with six temporal neighbours and a four-hour mapping budget.
+It creates no CRS and disables absolute RTK, GCP and gravity fitting.
+
+For the validated Cahors mission, omit the coherent rose-window/portal detail
+sequence while keeping every systematic pass:
+
+```bash
+./tools/run_local_colmap.sh DATASET WORKSPACE \
+  --facade \
+  --stage undistort \
+  --exclude-image-range \
+    DJI_20250324162114_0307_V.JPG \
+    DJI_20250324163256_0658_V.JPG
+
+./tools/run_local_gaussian.sh WORKSPACE \
+  --render-mode facade \
+  --profile facade-hd \
+  --facade-scale-mode gps-baseline \
+  --resolution 0.01
+```
+
+The exclusion is inclusive, must match the mission basenames and is recorded
+in `facade_selection_report.json`. It is not a global default: use it only for
+this sequence or after a sparse-distribution comparison demonstrates the same
+localized-density problem. The `facade-hd` profile runs 30,000 iterations
+at up to 4096 px, caps the model at two million Gaussians and gates held-out
+views at 18 dB PSNR / 0.25 SSIM. See
+[`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md) for the product and
+acceptance contract.
+
 ## Workspace safety and resumability
 
 The runner refuses to modify a non-empty directory unless it contains its

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import cupy as cp
 import numpy as np
 
-from .gaussian_model import GaussianModel, SH_C0
+from .gaussian_model import GaussianModel
 from .cuda_rasterizer import rasterize_ortho as _cuda_rasterize_ortho
 
 

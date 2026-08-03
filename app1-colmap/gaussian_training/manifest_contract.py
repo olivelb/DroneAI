@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 from typing import Any
+
+from shared.checksums import sha256_file
 
 
 class DuplicateManifestKeyError(ValueError):
@@ -28,14 +29,6 @@ def load_run_manifest(path: str | Path) -> dict[str, Any]:
         Path(path).read_text(encoding="utf-8"),
         object_pairs_hook=_unique_object,
     )
-
-
-def sha256_file(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def validate_run_manifest(manifest: dict[str, Any]) -> None:

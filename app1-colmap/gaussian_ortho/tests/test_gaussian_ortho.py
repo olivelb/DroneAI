@@ -4,7 +4,6 @@ Tests for the gaussian_ortho package (CuPy backend).
 Unit tests cover math utilities, model serialisation, partitioning,
 and the ortho rendering pipeline.
 """
-import math
 import os
 import sys
 import tempfile
@@ -12,29 +11,34 @@ import tempfile
 import numpy as np
 import pytest
 
-cp = pytest.importorskip("cupy")
-pytestmark = pytest.mark.gpu
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
-from gaussian_ortho.cuda_rasterizer import (
-    eval_sh_basis,
-    eval_sh,
-    quat_to_rotmat,
-    rasterize_ortho,
-)
 from gaussian_ortho.colmap_loader import (
     CameraInfo, PointCloud, apply_sim3_to_points, apply_sim3_to_camera,
 )
-from gaussian_ortho.scene_info import SceneInfo, compute_scene_extent, build_scene_info
+from gaussian_ortho.scene_info import build_scene_info
 from gaussian_ortho.partition import compute_partition_grid, partition_scene
-from gaussian_ortho.rasterizer import make_view_matrix, make_ortho_proj, RasterSettings
-from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
 from gaussian_ortho.geo_writer import write_geotiff
-from gaussian_ortho.merge import merge_models
+
+if cp is not None:
+    from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
+    from gaussian_ortho.cuda_rasterizer import (
+        eval_sh_basis,
+        eval_sh,
+        rasterize_ortho,
+    )
+    from gaussian_ortho.rasterizer import make_view_matrix, make_ortho_proj
+    from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
+
+
+requires_gpu = pytest.mark.skipif(cp is None, reason="CuPy is not installed")
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +96,8 @@ def _make_gpu_model(n=200, sh_degree=0, seed=42):
 #  Spherical harmonics
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
+@requires_gpu
 class TestSH:
     def test_num_coefficients(self):
         assert num_sh_coefficients(0) == 1
@@ -120,6 +126,8 @@ class TestSH:
 #  Gaussian Model
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
+@requires_gpu
 class TestGaussianModel:
     def test_properties(self):
         model = _make_gpu_model(50)
@@ -190,6 +198,8 @@ class TestSim3:
 #  Matrices
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
+@requires_gpu
 class TestMatrices:
     def test_view_matrix_identity(self):
         R = np.eye(3, dtype=np.float32)
@@ -232,6 +242,8 @@ class TestPartition:
 #  Ortho renderer
 # ---------------------------------------------------------------------------
 
+@pytest.mark.gpu
+@requires_gpu
 class TestOrthoRenderer:
     def test_compute_extent(self):
         model = _make_gpu_model(100)

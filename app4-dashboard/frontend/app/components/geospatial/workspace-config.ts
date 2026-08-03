@@ -76,8 +76,15 @@ export const geometryBounds = (
       return;
     }
     if (Array.isArray(node)) node.forEach(walk);
+    else if (node && typeof node === "object") {
+      if ("coordinates" in node) walk(node.coordinates);
+      if ("geometries" in node) walk(node.geometries);
+    }
   };
-  if ("coordinates" in geometry) walk(geometry.coordinates);
+  walk(geometry);
+  if (points.length === 0) {
+    throw new Error("Geometry has no coordinate positions");
+  }
   return [
     Math.min(...points.map((point) => point[0])),
     Math.min(...points.map((point) => point[1])),

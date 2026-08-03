@@ -27,10 +27,7 @@ try:
     import rasterio  # noqa: F401
     import rasterio.transform  # noqa: F401
 except ImportError:
-    previous_rasterio_modules = {
-        name: sys.modules.get(name)
-        for name in ("rasterio", "rasterio.transform")
-    }
+    previous_rasterio_modules = {name: sys.modules.get(name) for name in ("rasterio", "rasterio.transform")}
     rasterio_module = types.ModuleType("rasterio")
     rasterio_module.open = MagicMock()
     sys.modules["rasterio"] = rasterio_module
@@ -305,6 +302,188 @@ class TestPipelineSupport(unittest.TestCase):
 
 
 class TestMainSupport(unittest.TestCase):
+    def test_prepare_sparse_bootstrap_reuses_facade_dense_cache(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dense_path = os.path.join(tmp_dir, "dense")
+            dense_sparse_path = os.path.join(dense_path, "sparse")
+            os.makedirs(dense_sparse_path)
+            os.makedirs(os.path.join(dense_path, "images"))
+            for filename in ("cameras.bin", "images.bin", "points3D.bin"):
+                with open(
+                    os.path.join(dense_sparse_path, filename),
+                    "wb",
+                ) as handle:
+                    handle.write(b"model")
+
+            preparation = types.SimpleNamespace(
+                facade_mode=True,
+                clean_images_dir=os.path.join(tmp_dir, "images"),
+                geo_data_file=os.path.join(tmp_dir, "geo_data.txt"),
+                dense_path=dense_path,
+                projected_crs_mode="auto_utm",
+                requested_projected_crs="",
+            )
+            with (
+                patch.object(app1_main, "sanitize_exif_for_colmap"),
+                patch.object(app1_main, "report_mission_progress"),
+            ):
+                state = app1_main.prepare_sparse_bootstrap(
+                    preparation,
+                    tmp_dir,
+                    "vol-facade-cache",
+                )
+
+        self.assertIsNone(state.utm_crs)
+        self.assertIsNone(state.alignment_transform_path)
+        self.assertTrue(state.ortho_only_ready)
+        self.assertFalse(state.gps_done)
+
+    def test_undistort_and_align_facade_returns_local_frame(self):
+        preparation = types.SimpleNamespace(
+            params={},
+            facade_mode=True,
+            clean_images_dir="/tmp/images",
+            dense_path="/tmp/dense",
+            geo_data_file="/tmp/geo_data.txt",
+            gcp_path=None,
+            gcp_accuracy_path=None,
+        )
+        reconstruction = types.SimpleNamespace(
+            utm_crs=None,
+            alignment_transform_path="/tmp/stale-alignment.json",
+        )
+        rtk_state = types.SimpleNamespace(
+            ortho_only_ready=True,
+            active_sparse_model_path="/tmp/sparse/0",
+        )
+
+        with patch.object(app1_main, "report_mission_progress"):
+            state = app1_main.undistort_and_align_colmap(
+                preparation,
+                reconstruction,
+                rtk_state,
+                "/tmp/workspace",
+                "vol-facade",
+            )
+
+        self.assertIsNone(state.alignment_transform_path)
+
+    def test_run_colmap_pipeline_cancellation_still_cleans_workspace(self):
+        cleanup = MagicMock()
+        with (
+            patch.object(
+                app1_main,
+                "prepare_colmap_pipeline_run",
+                side_effect=app1_main.PipelineCancelledError("cancelled"),
+            ),
+            patch.object(app1_main, "report_mission_progress") as report,
+            patch.object(
+                app1_main,
+                "cleanup_pipeline_workspace",
+                cleanup,
+            ),
+        ):
+            app1_main.run_colmap_pipeline(
+                "/tmp/cancelled-workspace",
+                "datasets/mission",
+                "vol-cancelled",
+                {},
+            )
+
+        report.assert_called_once_with(
+            "vol-cancelled",
+            "CANCELLED",
+            0,
+            status="error",
+            log="🚫 cancelled",
+        )
+        cleanup.assert_called_once_with(
+            "/tmp/cancelled-workspace",
+            "vol-cancelled",
+            final_pass=True,
+        )
+
+    def test_run_colmap_pipeline_preserves_modular_stage_order(self):
+        calls = []
+        states = {
+            "prepare": types.SimpleNamespace(facade_mode=False),
+            "reconstruct": types.SimpleNamespace(),
+            "rtk": types.SimpleNamespace(),
+            "align": types.SimpleNamespace(),
+            "gaussian": types.SimpleNamespace(),
+            "publish": types.SimpleNamespace(),
+        }
+
+        def stage(name):
+            def run(*_args, **_kwargs):
+                calls.append(name)
+                return states.get(name)
+
+            return run
+
+        with (
+            patch.object(
+                app1_main,
+                "prepare_colmap_pipeline_run",
+                side_effect=stage("prepare"),
+            ),
+            patch.object(
+                app1_main,
+                "reconstruct_colmap_sparse",
+                side_effect=stage("reconstruct"),
+            ),
+            patch.object(
+                app1_main,
+                "refine_colmap_rtk",
+                side_effect=stage("rtk"),
+            ),
+            patch.object(
+                app1_main,
+                "undistort_and_align_colmap",
+                side_effect=stage("align"),
+            ),
+            patch.object(
+                app1_main,
+                "run_gaussian_product",
+                side_effect=stage("gaussian"),
+            ),
+            patch.object(
+                app1_main,
+                "publish_colmap_products",
+                side_effect=stage("publish"),
+            ),
+            patch.object(
+                app1_main,
+                "complete_colmap_pipeline",
+                side_effect=stage("complete"),
+            ),
+            patch.object(
+                app1_main,
+                "cleanup_pipeline_workspace",
+                side_effect=stage("cleanup"),
+            ),
+        ):
+            app1_main.run_colmap_pipeline(
+                "/tmp/mission-workspace",
+                "datasets/mission",
+                "vol-stage-order",
+                {"pipeline": "modern"},
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                "prepare",
+                "reconstruct",
+                "rtk",
+                "align",
+                "gaussian",
+                "publish",
+                "complete",
+                "cleanup",
+            ],
+        )
+
     def test_dense_sparse_model_ready_requires_all_dense_sparse_files(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             dense_path = os.path.join(tmp_dir, "dense")
@@ -380,9 +559,7 @@ class TestMainSupport(unittest.TestCase):
             self.assertFalse(os.path.exists(geo_data_file))
             self.assertFalse(os.path.exists(f"{geo_data_file}.crs"))
             self.assertFalse(os.path.exists(os.path.join(clean_images_dir, ".colmap_exif_sanitized")))
-            self.assertFalse(
-                os.path.exists(os.path.join(tmp_dir, ".colmap_pipeline_config.json"))
-            )
+            self.assertFalse(os.path.exists(os.path.join(tmp_dir, ".colmap_pipeline_config.json")))
             report_mock.assert_called_once()
 
 

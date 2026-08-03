@@ -1,27 +1,29 @@
 # DroneAI Pipeline
 
-DroneAI turns drone imagery into orthophotos, height products and searchable
-geospatial detections. It combines photogrammetric reconstruction, 3D Gaussian
-Splatting, GPU raster generation, AI inference and an operator dashboard in one
-pipeline.
+DroneAI turns drone imagery into aerial maps or high-definition facade
+products. It combines photogrammetric reconstruction, DroneGS 3D Gaussian
+Splatting, raster generation, optional AI inference and an operator dashboard.
 
 > [!IMPORTANT]
 > The current production baseline is designed for one organization behind TLS.
 > Multi-tenant isolation, identity federation, exactly-once delivery and high
 > availability are outside its present scope.
 
-## Pipeline at a glance
+## Production processes
 
-1. **Ingest** drone images and mission settings from the dashboard or local
-   runner.
-2. **Reconstruct** and geo-align the scene with COLMAP, GLOMAP or Caspar using
-   GNSS/RTK data and optional surveyed control.
-3. **Train** a qualified DroneGS 3D Gaussian Splatting model, then render a
-   georeferenced orthomosaic and height map.
-4. **Split** the orthomosaic into overlapping tiles for parallel processing.
-5. **Analyse** each tile with YOLO OBB or SAM 3.
-6. **Merge** overlapping detections and publish GeoJSON or PostGIS vectors.
-7. **Explore** maps, detections, measurements and exports in the dashboard.
+Both processes start with image ingest, feature matching, sparse
+reconstruction and qualified DroneGS training. The dashboard exposes them as
+separate choices:
+
+| Process | How it works | Products |
+|---|---|---|
+| **Aerial map** | Aligns the scene to a metric CRS with GNSS/RTK and optional surveyed control, then runs tiling and AI analysis | Orthomosaic, height map, map tiles and GeoJSON/PostGIS detections |
+| **HD facade** | Uses a coverage-first Caspar reconstruction, a local metric wall frame and no absolute RTK/GCP/gravity fit; aerial detection is skipped | HD facade orthophoto, local depth raster, frame and image-selection reports |
+
+For facades, coherent close-detail sequences can be excluded when they
+concentrate sparse points on one ornament. The validated profile favours a
+more uniform seed because DroneGS performs the later densification. See the
+[facade process guide](docs/FACADE_ORTHOPHOTO.md).
 
 ## Ways to run DroneAI
 
@@ -43,13 +45,13 @@ missions, follow progress, inspect map layers and export results. Its FastAPI
 backend validates requests, stores mission state, publishes work to Kafka and
 serves datasets and results from S3-compatible storage and PostGIS.
 
-### Reconstruction and orthomosaic — `app1-colmap`
+### Reconstruction and raster products — `app1-colmap`
 
 The reconstruction worker downloads the mission images, extracts and matches
-features, builds the sparse scene and aligns it to the requested geographic
-frame. It then trains DroneGS, checks the model against the configured quality
-gates, renders the orthomosaic and height map, and uploads the products for the
-next stage.
+features, builds the sparse scene and creates either a georeferenced map frame
+or a local facade frame. It trains DroneGS, applies product-specific quality
+gates and renders the RGB and height/depth rasters. Only map missions continue
+to raster processing and AI.
 
 ### Raster processing — `app3-processing`
 
@@ -108,11 +110,12 @@ guides for implementation and operational details:
 | Architecture, event contracts and processing | [`DOCUMENTATION.md`](DOCUMENTATION.md) |
 | Local and distributed installation | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
 | Infrastructure-free workflow | [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) |
+| HD facade process | [`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md) |
 | Development, tests and dependency locks | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
 | Production boundary and release gates | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) |
 | Reconstruction and RTK alignment | [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) |
 | Map workspace, measurements and exports | [`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md) |
-| Validation reports and benchmarks | [`docs/`](docs/) |
+| Documentation index and dated validation evidence | [`docs/README.md`](docs/README.md) |
 | Third-party components and licenses | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 
 ## Showcase

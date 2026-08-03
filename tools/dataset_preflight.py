@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import os
 import sys
@@ -24,6 +23,7 @@ from shared.dji_metadata import (
     load_position_overrides,
     parse_aerial_xmp,
 )
+from shared.json_io import atomic_write_json as write_json
 from shared.projected_crs import (
     PROJECTED_CRS_POLICIES,
     select_projected_crs,
@@ -407,11 +407,6 @@ def inspect_dataset(
         projected_crs_mode=projected_crs_mode,
         projected_crs=projected_crs,
     )
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:

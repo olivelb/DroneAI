@@ -207,7 +207,8 @@ export default function ResultsViewer() {
   }, [draftGeometry, expanded, redrawingFeature, tool]);
 
   const hasDepth = availableFiles.some((file) =>
-    file.endsWith("orthomosaic.height.tif"),
+    file.endsWith("orthomosaic.height.tif") ||
+    file.endsWith("facade_orthophoto.height.tif"),
   );
   const visibleAnalyses = useMemo(
     () =>
@@ -430,6 +431,7 @@ export default function ResultsViewer() {
                 missionId,
                 activeLayer,
                 hasDepth,
+                availableFiles,
                 rasterOpacity,
                 showLegacy,
                 showManual,

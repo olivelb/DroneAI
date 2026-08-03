@@ -27,8 +27,14 @@ Run the checks:
 ```bash
 make compile
 make lint
-make test
+make coverage
 ```
+
+`make check` runs all three. Coverage uses branch measurement across the
+application and local tools, with a repository-wide non-regression floor of
+45%. That floor is a ratchet, not a completeness claim: new or changed pure
+logic is expected to receive focused unit tests even when subprocess, CUDA or
+external-service boundaries require integration tests.
 
 The tests include architecture checks for the API composition root, public
 route inventory, shared worker messaging, versioned event contracts, retry and
@@ -36,6 +42,13 @@ dead-letter behavior, transactional inbox/outbox rollback and retry using
 SQLite, local orchestrator resumability, GeoPackage metadata and WGS84-to-EPSG
 vector reprojection. When Fiona/GDAL is installed, the QGIS export tests also
 open the generated GeoPackage through the GDAL driver and verify its layer CRS.
+
+CI also rejects unused imports/locals and any new function above the repository
+complexity budget across every Python service, shared module and local tool. The
+local sparse runner, Gaussian orthophoto generator and production COLMAP worker
+are composed from focused stages with typed, immutable state objects. Keep their
+public entry points limited to stage coordination and add new behavior to the
+smallest relevant stage.
 
 GPU and external-service tests are excluded from the default test command:
 
@@ -74,6 +87,8 @@ Torch, CUDA, or NVIDIA dependencies independently from that image.
 ```bash
 cd app4-dashboard/frontend
 npm ci
+npm run duplication
+npm run test
 npm run lint
 npm run build
 ```
@@ -89,6 +104,28 @@ Review proposed major-version or forced changes before applying them; do not
 use `npm audit fix --force` as an unreviewed lock-file rewrite.
 
 ## Full pipeline
+
+Product profiles must remain centralized. A facade parameter change belongs in
+`shared/facade_process.py`; the API publishes that catalog and the frontend
+consumes it, so values must not be copied into a React preset. Keep map defaults
+in `shared/pipeline_params.py` and DroneGS-wide defaults in
+`shared/dronegs_profile.py`.
+
+Before changing the facade process, run at least:
+
+```bash
+PYTHONPATH=. python3 -m pytest -q \
+  tests/test_facade_orthophoto.py \
+  tests/test_local_colmap_runner.py \
+  tests/test_validation.py
+```
+
+The facade tests cover the dashboard/API catalog, local-frame invariants,
+detail-range audit, local runner parity and raster metadata. Product-quality
+changes also require a dated qualification benchmark with the sparse
+distribution, held-out PSNR/SSIM, loss evolution, iterations per second and
+estimated/actual remaining time. Cahors is the current reference evidence, not
+the identity or scope of the generic HD profile.
 
 The supported end-to-end entry point installs or validates runtime
 dependencies, prepares external sources, builds every image and deploys the

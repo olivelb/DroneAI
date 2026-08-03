@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from shared.pipeline_params import PIPELINE_DEFAULTS
+from shared.json_io import atomic_write_json as write_json
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 MANIFEST_NAME = "pipeline_run.json"
@@ -91,16 +92,6 @@ PROFILES = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    temporary.replace(path)
 
 
 def read_json(path: Path) -> dict[str, Any] | None:

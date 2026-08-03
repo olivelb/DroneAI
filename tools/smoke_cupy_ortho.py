@@ -83,9 +83,17 @@ log("LOAD", 5, "Loading COLMAP reconstruction...")
 # Load the selected source tree rather than a developer-specific host path.
 sys.path.insert(0, os.path.join(os.path.realpath(args.source_root), "app1-colmap"))
 from gaussian_ortho.colmap_loader import apply_sim3_to_points, load_colmap_reconstruction
-from gaussian_ortho.exif_altitude import compute_colmap_scale, extract_exif_altitudes
+from gaussian_ortho.exif_altitude import (
+    compute_colmap_scale,
+    compute_projected_geo_origin,
+    extract_exif_altitudes,
+)
 from gaussian_ortho.gaussian_model import GaussianModel
 from gaussian_ortho.geo_writer import write_geotiff
+from gaussian_ortho.height_reference import (
+    georeference_height_map,
+    georeference_raster_origin,
+)
 from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
 
 images_dir = os.path.join(DENSE_PATH, "images")
@@ -140,9 +148,7 @@ if transform_data:
     log("GEO", 35, f"Applied Sim3: scale={s:.6f}")
 else:
     log("GEO", 30, "Computing PCA nadir direction...")
-    from gaussian_ortho.exif_altitude import extract_exif_gps
     from gaussian_ortho.pca_alignment import compute_pca_rotation
-    from pyproj import Transformer as _Transformer
 
     cam_positions = np.array([c.T for c in train_cameras], dtype=np.float64)
     R_align, angle_deg = compute_pca_rotation(train_cameras, point_cloud.points)
@@ -151,18 +157,16 @@ else:
 
     geo_cam_positions = (R_align @ cam_positions.T).T
 
-    _gps = extract_exif_gps(images_dir)
-    _t_proj = _Transformer.from_crs("EPSG:4326", UTM_CRS, always_xy=True)
-    _utm_pts = []
-    for cam in train_cameras:
-        g = _gps.get(cam.image_name)
-        if g is not None:
-            e, n = _t_proj.transform(g[1], g[0])
-            _utm_pts.append([e, n, mean_exif_alt or 0.0])
-    if _utm_pts:
-        _gps_centroid = np.mean(_utm_pts, axis=0).astype(np.float64)
-        _model_centroid = geo_cam_positions.mean(axis=0) * colmap_to_meters
-        geo_origin = _gps_centroid - _model_centroid
+    projected_origin = compute_projected_geo_origin(
+        train_cameras,
+        images_dir,
+        UTM_CRS,
+        geo_cam_positions,
+        colmap_to_meters,
+        mean_exif_alt,
+    )
+    if projected_origin is not None:
+        geo_origin = projected_origin
         log("GEO", 35, f"GeoTIFF origin: E={geo_origin[0]:.2f}, N={geo_origin[1]:.2f}")
 
 # --- 5. Filter ---
@@ -219,18 +223,20 @@ H, W = rgb.shape[:2]
 log("RENDER", 90, f"Rendered {W}x{H} px in {dt_render:.1f}s")
 
 # --- 7. Write GeoTIFF ---
-if transform_data:
-    geo_x_min = float(np.float64(x_min) + geo_origin[0])
-    geo_y_max = float(np.float64(y_max) + geo_origin[1])
-else:
-    geo_x_min = float(np.float64(x_min) * colmap_to_meters + geo_origin[0])
-    geo_y_max = float(np.float64(y_max) * colmap_to_meters + geo_origin[1])
-
-if not transform_data and colmap_to_meters != 1.0:
-    height = height * colmap_to_meters
-if mean_exif_alt is not None:
-    z_offset = mean_exif_alt - np.mean(height)
-    height = height + z_offset
+geo_x_min, geo_y_max = georeference_raster_origin(
+    x_min,
+    y_max,
+    geo_origin=geo_origin,
+    colmap_to_meters=colmap_to_meters,
+    sim3_aligned=bool(transform_data),
+)
+height, _z_offset, _vertical_reference = georeference_height_map(
+    height,
+    sim3_aligned=bool(transform_data),
+    geo_origin_z=float(geo_origin[2]),
+    colmap_to_meters=colmap_to_meters,
+    exif_altitude_available=mean_exif_alt is not None,
+)
 
 log("WRITE", 95, "Writing GeoTIFF...")
 height_file = str(Path(OUTPUT_ORTHO).with_suffix(".height.tif"))

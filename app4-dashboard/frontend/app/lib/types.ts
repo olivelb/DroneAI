@@ -18,6 +18,12 @@ export type StatusPayload = {
   status?: string;
   service?: string;
   log?: string;
+  details?: {
+    event?: string;
+    process?: "map" | "facade";
+    terminal?: boolean;
+    [key: string]: unknown;
+  };
 };
 
 export type MissionLog = {
@@ -174,12 +180,30 @@ export type WorkDrive = {
 
 export type ParameterConfigResponse = {
   pipelines: Record<PipelineName, Record<string, ParamValue>>;
+  processes: ProductProcess[];
   metadata: Record<string, ParameterMeta>;
   work_drives?: WorkDrive[];
   work_drive_default?: string;
 };
 
+export type ProductProcess = {
+  id: "map" | "facade";
+  label: string;
+  description: string;
+  stages: ServiceName[];
+  profile_id?: string;
+  parameters: Record<string, ParamValue>;
+};
+
 export const SERVICE_ORDER: ServiceName[] = ["COLMAP", "TILER", "IA"];
+
+export const serviceOrderFor = (
+  services: Record<string, StatusPayload>,
+): ServiceName[] =>
+  services.COLMAP?.details?.process === "facade"
+    && services.COLMAP.details.terminal === true
+    ? ["COLMAP"]
+    : SERVICE_ORDER;
 
 export const AVAILABLE_CLASSES = [
   "person", "bicycle", "car", "motorcycle", "airplane",

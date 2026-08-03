@@ -5,7 +5,6 @@ Splits a large scene into an m×n grid of overlapping cells, assigns
 cameras via visibility, and creates per-cell SceneInfo objects for
 independent training.
 """
-import math
 from dataclasses import dataclass
 
 import numpy as np

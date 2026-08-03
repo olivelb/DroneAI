@@ -7,6 +7,35 @@ import math
 import numpy as np
 
 
+def georeference_raster_origin(
+    x_min: float,
+    y_max: float,
+    *,
+    geo_origin: np.ndarray,
+    colmap_to_meters: float,
+    sim3_aligned: bool,
+    facade: bool = False,
+) -> tuple[float, float]:
+    """Translate a rendered local extent into its output raster origin."""
+    scale = float(colmap_to_meters)
+    origin = np.asarray(geo_origin, dtype=np.float64)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("colmap_to_meters must be a positive finite value")
+    if origin.shape != (3,) or not np.isfinite(origin).all():
+        raise ValueError("geo_origin must contain three finite coordinates")
+
+    local_x = np.float64(x_min)
+    local_y = np.float64(y_max)
+    if facade:
+        return float(local_x * scale), float(local_y * scale)
+    if sim3_aligned:
+        return float(local_x + origin[0]), float(local_y + origin[1])
+    return (
+        float(local_x * scale + origin[0]),
+        float(local_y * scale + origin[1]),
+    )
+
+
 def depth_buffer_to_height(depth: np.ndarray, camera_z: float) -> np.ndarray:
     """Convert normalized positive camera depth to world Z.
 

@@ -2,9 +2,11 @@ import json
 import sqlite3
 import struct
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+import tools.run_local_colmap as local_colmap
 from shared.geo_alignment import estimate_sim3
 from shared.rtk_refinement import (
     assess_rtk_refinement_quality,
@@ -14,6 +16,10 @@ from shared.rtk_refinement import (
 )
 from tools.run_local_colmap import (
     WORKSPACE_MARKER,
+    LocalSparseContext,
+    build_feature_extractor_command,
+    build_local_mapping_command,
+    build_local_sparse_recipe,
     ensure_workspace,
     parse_args,
     select_records,
@@ -22,6 +28,138 @@ from tools.run_local_colmap import (
     stage_images,
     write_colmap_references,
 )
+
+
+def test_local_sparse_context_and_recipe_keep_derived_state_explicit(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    dataset = tmp_path / "dataset"
+    workspace = tmp_path / "workspace"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_local_colmap.py",
+            str(dataset),
+            str(workspace),
+            "--facade",
+            "--exclude-image-range",
+            "DJI_0307.JPG",
+            "DJI_0658.JPG",
+        ],
+    )
+    args = parse_args()
+
+    context = LocalSparseContext.create(args, _records(3), None)
+    recipe = build_local_sparse_recipe(args)
+
+    assert context.workspace == workspace.resolve()
+    assert context.selected_count == 3
+    assert recipe["orthophoto_mode"] == "facade"
+    assert recipe["facade_excluded_image_ranges"] == ("DJI_0307.JPG..DJI_0658.JPG")
+
+
+def test_feature_extractor_command_is_built_without_side_effects(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_local_colmap.py", str(tmp_path / "dataset"), str(tmp_path / "work")],
+    )
+    args = parse_args()
+    context = LocalSparseContext.create(args, _records(3), "EPSG:32631")
+
+    command = build_feature_extractor_command(context)
+
+    assert command[:2] == ["colmap", "feature_extractor"]
+    assert command[command.index("--ImageReader.camera_model") + 1] == args.camera_model
+    assert command[command.index("--SiftExtraction.max_num_features") + 1] == str(args.feature_max_num_features)
+
+
+def test_run_sparse_preserves_stage_order(monkeypatch, tmp_path) -> None:
+    args = SimpleNamespace(workspace=tmp_path, use_gpu=True)
+    calls: list[str] = []
+    expected_model = tmp_path / "sparse" / "0"
+
+    monkeypatch.setattr(
+        local_colmap,
+        "ensure_local_sparse_cache",
+        lambda _context: calls.append("cache"),
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "ensure_local_features",
+        lambda _context: calls.append("features"),
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "ensure_local_rtk_priors",
+        lambda _context: calls.append("rtk-priors"),
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "run_local_matching",
+        lambda _context: calls.append("matching"),
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "inject_local_gravity_prior",
+        lambda _context: calls.append("gravity") or True,
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "run_local_mapping_with_fallback",
+        lambda _context, *, gravity_available: calls.append(f"mapping:{gravity_available}"),
+    )
+    monkeypatch.setattr(
+        local_colmap,
+        "validated_local_sparse_model",
+        lambda _context: calls.append("quality") or expected_model,
+    )
+
+    model = local_colmap.run_sparse(args, _records(3), "EPSG:32631")
+
+    assert model == expected_model
+    assert calls == [
+        "cache",
+        "features",
+        "rtk-priors",
+        "matching",
+        "gravity",
+        "mapping:True",
+        "quality",
+    ]
+
+
+def test_local_mapping_command_centralizes_primary_and_fallback_options(tmp_path) -> None:
+    args = SimpleNamespace(
+        gpu_index="0",
+        global_max_tracks=15,
+        global_ba_iterations=20,
+        global_ceres_iterations=30,
+        global_retriangulation=True,
+        global_random_seed=7,
+        global_ba_min_track_length=3,
+        global_tri_complete_max_reproj_error=4.0,
+        global_tri_merge_max_reproj_error=5.0,
+        global_tri_min_angle=1.5,
+    )
+
+    command = build_local_mapping_command(
+        args,
+        "glomap",
+        tmp_path / "database.db",
+        tmp_path / "images",
+        tmp_path / "sparse",
+        use_gravity=True,
+    )
+
+    assert command[0:2] == ["colmap", "global_mapper"]
+    assert command[command.index("--GlobalMapper.ra_use_gravity") + 1] == "1"
+    assert command[command.index("--GlobalMapper.keep_max_num_tracks") + 1] == "15"
 
 
 def _records(count: int) -> list[dict]:
@@ -131,10 +269,7 @@ def test_rtk_candidate_with_reprojection_regression_is_rejected() -> None:
     quality = assess_rtk_refinement_quality(baseline, candidate)
 
     assert quality["accepted"] is False
-    assert any(
-        check["name"] == "mean_reprojection_error_px" and not check["passed"]
-        for check in quality["checks"]
-    )
+    assert any(check["name"] == "mean_reprojection_error_px" and not check["passed"] for check in quality["checks"])
 
 
 def test_rtk_candidate_with_focal_drift_is_rejected() -> None:
@@ -154,9 +289,7 @@ def test_rtk_candidate_with_focal_drift_is_rejected() -> None:
 
     assert quality["accepted"] is False
     assert any(
-        check["name"] == "median_focal_length_change_ratio"
-        and not check["passed"]
-        for check in quality["checks"]
+        check["name"] == "median_focal_length_change_ratio" and not check["passed"] for check in quality["checks"]
     )
 
 
@@ -204,6 +337,54 @@ def test_default_cli_profile_matches_planimetric_survey_defaults(monkeypatch):
     assert args.global_retriangulation is True
     assert args.mapping_timeout_seconds == 2400
     assert args.rtk_refinement_loss_scale == 7.82
+
+
+def test_facade_cli_uses_the_shared_qualified_profile(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["run_local_colmap.py", "/data", "/work", "--facade"],
+    )
+
+    args = parse_args()
+
+    assert args.matcher == "spatial"
+    assert args.engine == "caspar"
+    assert args.feature_max_image_size == 4200
+    assert args.feature_max_num_features == 16384
+    assert args.feature_max_num_matches == 16384
+    assert args.sift_first_octave == 0
+    assert args.guided_matching is True
+    assert args.gps_max_neighbors == 48
+    assert args.gps_min_neighbors == 16
+    assert args.gps_temporal_neighbors == 6
+    assert args.minimum_registration_ratio == 0.90
+    assert args.mapping_timeout_seconds == 14400
+
+
+def test_facade_cli_preserves_explicit_quality_overrides(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_local_colmap.py",
+            "/data",
+            "/work",
+            "--facade",
+            "--feature-max-image-size",
+            "3000",
+            "--gps-min-neighbors",
+            "20",
+            "--no-guided-matching",
+        ],
+    )
+
+    args = parse_args()
+
+    assert args.feature_max_image_size == 3000
+    assert args.gps_min_neighbors == 20
+    assert args.guided_matching is False
+    assert args.gps_max_neighbors == 48
 
 
 def test_select_records_supports_contiguous_and_uniform_strategies():
@@ -374,31 +555,23 @@ def test_inject_database_gravity_priors_uses_camera_frame_vector(tmp_path):
     report = inject_database_gravity_priors(database_path, records)
 
     with sqlite3.connect(database_path) as connection:
-        gravity = connection.execute(
-            "SELECT gravity FROM pose_priors WHERE pose_prior_id = 1"
-        ).fetchone()[0]
-    assert struct.unpack("<3d", gravity) == pytest.approx(
-        (0.0, 0.5, 3**0.5 / 2)
-    )
+        gravity = connection.execute("SELECT gravity FROM pose_priors WHERE pose_prior_id = 1").fetchone()[0]
+    assert struct.unpack("<3d", gravity) == pytest.approx((0.0, 0.5, 3**0.5 / 2))
     assert report["status"] == "enabled"
     assert report["coverage"] == 1.0
 
 
 def test_gimbal_gravity_is_independent_of_yaw_and_normalized():
-    first = gimbal_attitude_to_gravity_sensor(
-        {"roll": 2.0, "pitch": -80.0, "yaw": 0.0}
-    )
-    second = gimbal_attitude_to_gravity_sensor(
-        {"roll": 2.0, "pitch": -80.0, "yaw": 170.0}
-    )
+    first = gimbal_attitude_to_gravity_sensor({"roll": 2.0, "pitch": -80.0, "yaw": 0.0})
+    second = gimbal_attitude_to_gravity_sensor({"roll": 2.0, "pitch": -80.0, "yaw": 170.0})
     assert first == pytest.approx(second)
     assert sum(value * value for value in first) == pytest.approx(1.0)
 
 
 def test_gimbal_gravity_does_not_require_yaw():
-    assert gimbal_attitude_to_gravity_sensor(
-        {"roll": 0.0, "pitch": -90.0}
-    ) == pytest.approx((0.0, 0.0, 1.0), abs=1.0e-12)
+    assert gimbal_attitude_to_gravity_sensor({"roll": 0.0, "pitch": -90.0}) == pytest.approx(
+        (0.0, 0.0, 1.0), abs=1.0e-12
+    )
 
 
 def test_alignment_transform_schema_is_accepted_by_gaussian_loader():

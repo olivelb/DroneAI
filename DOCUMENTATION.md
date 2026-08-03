@@ -13,6 +13,14 @@ For upstream COLMAP theory, command semantics, and reconstruction internals, ref
 
 This repository adds orchestration, event transport, mission state handling, geo-referencing, orthomosaic generation, tiling, oriented-object detection, aggregation, and dashboard control on top of COLMAP.
 
+HD facade orthophotos are a separate local-coordinate product. They do
+not use a projected CRS, absolute RTK/GCP alignment, terrain height semantics,
+Web Mercator tiling or the aerial detection stages. The image-selection,
+optimized-camera frame, relative/manual scale and artifact contract are
+detailed in [`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md). The first
+Mavic 3E field validation is recorded in
+[`docs/benchmarks/cahors-facade-2026-08-01.md`](docs/benchmarks/cahors-facade-2026-08-01.md).
+
 ## System overview
 
 The pipeline is a local event-driven photogrammetry and detection system composed of five services:
@@ -30,10 +38,12 @@ The runtime data path is:
    transaction.
 3. The API outbox dispatcher publishes the mission to Kafka.
 4. The COLMAP worker downloads the selected dataset into `/work/<drive>/<id>`,
-   reconstructs the scene, uploads durable artifacts below
-   `missions/<id>/`, and publishes `images-ortho`.
-5. The processing worker downloads the orthomosaic, creates overlapping tiles,
-   uploads them to S3, and publishes `image-tiles`.
+   reconstructs the scene and uploads durable artifacts below
+   `missions/<id>/`. An aerial-map mission publishes `images-ortho`; a facade
+   mission ends successfully here with `details.terminal=true` after publishing
+   its local RGB/depth products and audit reports.
+5. For aerial maps only, the processing worker downloads the orthomosaic,
+   creates overlapping tiles, uploads them to S3 and publishes `image-tiles`.
 6. The IA worker downloads each tile, runs YOLO OBB or SAM 3, and publishes
    `tile-detections`.
 7. The processing worker merges overlap duplicates, publishes verified
@@ -98,24 +108,25 @@ Operational notes:
 
 The repository contains a shared Python package under `shared/` that is imported by multiple services.
 
-Current files:
+Key responsibilities are grouped rather than duplicated in workers:
 
-- `shared/config.py`
-- `shared/database.py`
-- `shared/event_contracts.py`
-- `shared/geo_alignment.py`
-- `shared/inbox_outbox.py`
-- `shared/kafka_reliability.py`
-- `shared/pipeline_params.py`
-- `shared/storage.py`
-- `shared/validation.py`
-- `shared/worker_messaging.py`
+- configuration, storage and persistence: `config.py`, `storage.py`,
+  `database.py`;
+- reliable events: `event_contracts.py`, `inbox_outbox.py`,
+  `kafka_reliability.py`, `worker_messaging.py`;
+- product configuration: `pipeline_params.py`, `dronegs_profile.py`,
+  `facade_process.py`, `validation.py`;
+- geometry and controls: `geo_alignment.py`, `projected_crs.py`,
+  `rtk_refinement.py`, `gcp_control.py`, `facade_selection.py`;
+- published assets and provenance: `geospatial_assets.py`,
+  `product_manifest.py`.
 
 Current responsibilities:
 
 - define the Kafka broker and topic names used across services
 - define legacy workspace defaults still used by compatibility helpers
-- define the service completion order used by the dashboard API (`COLMAP`, `TILER`, `IA`)
+- define the map service completion order (`COLMAP`, `TILER`, `IA`); a COLMAP
+  status carrying `details.terminal=true` completes a facade mission
 - define the `modern` and `legacy` COLMAP parameter presets exposed to the dashboard
 - define parameter metadata used by the frontend to render editable controls
 - provide helper functions that merge mission overrides with the selected pipeline preset
@@ -141,10 +152,11 @@ As implemented today:
 - `app4-dashboard/api` imports configuration, pipeline defaults, validation,
   database, storage, reliability, event, and inbox/outbox helpers
 
-DJI metadata, projected-CRS selection, RTK pose-prior injection and the
-immutable DroneGS production profile are centralized respectively in
+DJI metadata, projected-CRS selection, RTK pose-prior injection, the immutable
+DroneGS production profile and the qualified facade process are centralized in
 `shared/dji_metadata.py`, `shared/projected_crs.py`,
-`shared/rtk_refinement.py`, and `shared/dronegs_profile.py`.
+`shared/rtk_refinement.py`, `shared/dronegs_profile.py` and
+`shared/facade_process.py` respectively.
 
 The worker-specific `app2-ia/detection_core.py` and
 `app3-processing/processing_core.py` modules contain reusable detection,
@@ -213,12 +225,14 @@ Primary responsibilities:
 - consume `pipeline-status`
 - buffer recent raw status messages in memory
 - persist mission state and logs in PostgreSQL
-- compute an `overall_status` from the shared service order `COLMAP -> TILER -> IA`
+- compute map completion from `COLMAP -> TILER -> IA` and facade completion
+  from the terminal COLMAP product event
 - replay buffered history to newly connected WebSocket clients
 - expose a summary view of known missions through `GET /status/summary`
 - expose pod health and restart information through `GET /pods`
 - fall back to a static pod list when Kubernetes service-account credentials are unavailable
-- expose shared pipeline presets and parameter metadata through `GET /mission/parameters`
+- expose pipeline defaults, the map/facade process catalog and parameter
+  metadata through `GET /mission/parameters`
 - expose bounded COG map tiles, rerunnable AI campaigns, indexed feature
   search and optimistic manual-vector editing
 - stream raster downloads and generate QGIS-ready GeoPackage/GeoJSON exports;
@@ -266,23 +280,27 @@ mission-state policy. `main.py` is intentionally only the composition root.
 
 ### COLMAP worker (`app1-colmap`)
 
-The COLMAP worker is the photogrammetry and orthomosaic service.
+The COLMAP worker is the photogrammetry and raster-product service.
 
 Its responsibilities are:
 
 - receive raw mission metadata from `vols-bruts`
 - download the selected S3 dataset into the chosen `/work` scratch drive
-- extract EXIF/MRK positions and uncertainties, distinguish ellipsoidal
-  height, and select one audited projected CRS for the complete footprint
-- select the photogrammetry profile: `modern` or `legacy`
+- select the aerial-map or HD-facade product contract, then the compatible
+  photogrammetry profile
+- for maps, extract EXIF/MRK positions and uncertainties, distinguish
+  ellipsoidal height, and select one audited projected CRS for the footprint;
+  for facades, use positions only to propose pairs and recover relative scale
 - run bounded COLMAP feature extraction, matching, global mapping, optional
   RTK pose-prior refinement, and undistortion
-- generate an orthomosaic using 3D Gaussian Splatting
+- generate either a georeferenced orthomosaic/DSM or a local HD-facade
+  orthophoto/depth product using 3D Gaussian Splatting
 - record drone altitude metadata and, when configured, anchor the relative
   height map without changing or inventing its vertical datum
 - upload durable mission artifacts below `missions/<vol_id>/` and clean local
   scratch data
-- publish the orthomosaic event to `images-ortho`
+- publish map products to `images-ortho`, or a terminal COLMAP status carrying
+  `details.process=facade` and `details.terminal=true`
 - publish detailed progress and log events to `pipeline-status`
 - honor cancellation commands from `pipeline-control`
 
@@ -573,6 +591,9 @@ Important details:
   event in the inbox transaction.
 - The WebSocket hub separately keeps the latest 300 messages in memory for
   replay to newly connected clients.
+- A COLMAP success is terminal only when both `details.process="facade"` and
+  `details.terminal=true` are present. A map status cannot shorten the normal
+  `COLMAP -> TILER -> IA` completion contract.
 
 ### `images-ortho`
 
@@ -717,8 +738,15 @@ For `vol_id=mission_001`, the COLMAP worker uses temporary scratch space:
   orthomosaic.tif.cog.json
   orthomosaic.preview.webp
   orthomosaic.height.tif
+  facade_orthophoto.tif
+  facade_orthophoto.height.tif
+  facade_frame.json
+  facade_selection_report.json
   product_manifest.json
 ```
+
+The orthomosaic and facade filenames above are alternatives selected by the
+product contract; one mission does not publish both sets.
 
 After upload, app1 removes this local mission directory. Durable objects use
 the S3 layout:
@@ -728,6 +756,10 @@ datasets/<dataset-name>/...
 missions/mission_001/
   orthomosaic.tif
   orthomosaic.height.tif
+  facade_orthophoto.tif
+  facade_orthophoto.height.tif
+  facade_frame.json
+  facade_selection_report.json
   product_manifest.json
   alignment_transform.json
   rtk_prior_report.json
@@ -756,6 +788,9 @@ missions/mission_001/
       detections.geojson
 ```
 
+Map-only alignment, tile, detection and analysis objects are absent from an HD
+facade prefix. The facade raster/report entries are absent from a map prefix.
+
 Important mission artifacts include:
 
 - `geo_data.txt`: image-to-projected-coordinate reference file used for alignment
@@ -768,6 +803,10 @@ Important mission artifacts include:
 - `gaussian-checkpoints/`: recoverable in-progress training state
 - `orthomosaic.tif`: tiled COG RGB with internal overview levels
 - `orthomosaic.height.tif`: companion tiled COG height map (DSM)
+- `facade_orthophoto.tif` and `facade_orthophoto.height.tif`: CRS-free local
+  RGB/depth COGs for the HD-facade product
+- `facade_frame.json` and `facade_selection_report.json`: local-frame and
+  source-image-selection audit reports
 - `product_manifest.json`: hash-linked sparse/RTK/GCP/DroneGS/render/COG/DSM
   provenance and effective training/qualification identities
 - `*.cog.json`: native/WGS84 bounds, zoom range and raster metadata
@@ -796,26 +835,29 @@ sequenceDiagram
     C->>K: publish pipeline-status PREPARING
     C->>C: extract GPS, choose profile
     C->>C: COLMAP SfM + undistortion
-    C->>C: train Gaussian Splatting model + build orthomosaic
+    C->>C: train qualified DroneGS model + render selected product
     C->>S3: upload mission artifacts
-    C->>K: publish images-ortho
-    P->>K: consume images-ortho
-    P->>S3: download orthomosaic
-    P->>P: open GeoTIFF and compute overlapping tile grid
-    loop for each tile
-        P->>S3: upload tile
-        P->>K: publish image-tiles
-        IA->>K: consume image-tiles
-        IA->>S3: download tile
-        IA->>IA: run YOLO OBB or SAM 3
-        IA->>K: publish tile-detections
+    alt Aerial map
+        C->>K: publish images-ortho
+        P->>K: consume images-ortho
+        P->>S3: download orthomosaic
+        P->>P: open GeoTIFF and compute overlapping tile grid
+        loop for each tile
+            P->>S3: upload tile
+            P->>K: publish image-tiles
+            IA->>K: consume image-tiles
+            IA->>S3: download tile
+            IA->>IA: run YOLO OBB or SAM 3
+            IA->>K: publish tile-detections
+        end
+        P->>K: consume tile-detections
+        P->>P: aggregate and deduplicate detections
+        P->>DB: optionally replace indexed campaign features
+        P->>S3: upload verified detections.geojson
+        P->>K: publish pipeline-status DONE
+    else HD facade
+        C->>K: publish terminal COLMAP status
     end
-    P->>K: consume tile-detections
-    P->>P: aggregate all detections
-    P->>P: deduplicate and project vector geometries
-    P->>DB: optionally replace indexed campaign features
-    P->>S3: upload verified detections.geojson
-    P->>K: publish pipeline-status DONE
     K->>API: pipeline-status stream
     API->>DB: inbox + mission state + log
     API->>UI: WebSocket status updates
@@ -831,9 +873,12 @@ stateDiagram-v2
     Submitted --> PreparingWorkspace: vols-bruts consumed
     PreparingWorkspace --> ExtractingGPS
     ExtractingGPS --> SparseReconstruction
-    SparseReconstruction --> GeoAlignment
+    SparseReconstruction --> GeoAlignment: aerial map
+    SparseReconstruction --> LocalFacadeFrame: HD facade
     GeoAlignment --> OrthoConstruction
-    OrthoConstruction --> Tiling
+    LocalFacadeFrame --> OrthoConstruction
+    OrthoConstruction --> Completed: HD facade
+    OrthoConstruction --> Tiling: aerial map
     Tiling --> Detecting
     Detecting --> Aggregating
     Aggregating --> Annotating
@@ -843,6 +888,7 @@ stateDiagram-v2
     ExtractingGPS --> Failed
     SparseReconstruction --> Failed
     GeoAlignment --> Failed
+    LocalFacadeFrame --> Failed
     OrthoConstruction --> Failed
     Tiling --> Failed
     Detecting --> Failed
@@ -853,6 +899,7 @@ stateDiagram-v2
     ExtractingGPS --> Cancelled: pipeline-control cancel
     SparseReconstruction --> Cancelled: pipeline-control cancel
     GeoAlignment --> Cancelled: pipeline-control cancel
+    LocalFacadeFrame --> Cancelled: pipeline-control cancel
     OrthoConstruction --> Cancelled: pipeline-control cancel
 ```
 
@@ -912,6 +959,19 @@ Characteristics:
 - Gaussian Splatting orthomosaic enabled (default)
 
 This is the default and the main intended runtime path.
+
+Facade jobs use the separate generic `FACADE_HD_V1` coverage-first recipe,
+qualified on the Cahors reference campaign. Every unique input image is
+retained by default; `SIMPLE_RADIAL` keeps
+the solve compatible with Caspar, and the bounded graph uses 48 maximum / 16
+minimum spatial neighbours plus six temporal neighbours. GPS proposes pairs
+only; RTK, gravity, GCP fitting and CRS alignment remain disabled. The profile
+uses 4200 px extraction/undistortion, 16,384 SIFT features/matched features, a
+four-hour mapping budget, then 30,000 DroneGS iterations at up to 4096 px with
+a two-million-Gaussian cap. The worker, API and dashboard all read this recipe
+from `shared/facade_process.py`. Its held-out product gates are 18 dB PSNR and
+0.25 SSIM; the final Cahors detail-free run reached 21.616 dB / 0.564 while
+reducing aggregate loss from 0.4272 to 0.1588 in 11,370 seconds.
 
 Two measured modern presets deliberately optimize different objectives:
 
@@ -1079,8 +1139,10 @@ stateDiagram-v2
     Calibrating --> Mapping
     Mapping --> Undistort
     Undistort --> GaussianSplatting
-    GaussianSplatting --> PublishOrtho
-    PublishOrtho --> Completed
+    GaussianSplatting --> PublishMap: aerial map
+    GaussianSplatting --> PublishFacade: HD facade
+    PublishMap --> Completed: images-ortho hand-off
+    PublishFacade --> Completed: terminal COLMAP status
 
     Preparing --> Cancelled
     CopyingImages --> Cancelled
@@ -1091,6 +1153,8 @@ stateDiagram-v2
     Mapping --> Cancelled
     Undistort --> Cancelled
     GaussianSplatting --> Cancelled
+    PublishMap --> Cancelled
+    PublishFacade --> Cancelled
 
     Preparing --> Error
     GPS --> Error
@@ -1099,6 +1163,8 @@ stateDiagram-v2
     Mapping --> Error
     Undistort --> Error
     GaussianSplatting --> Error
+    PublishMap --> Error
+    PublishFacade --> Error
 ```
 
 ## Orthomosaic construction
@@ -1312,15 +1378,21 @@ flowchart TD
   A[dense/sparse + undistorted images available] --> C0[Extract EXIF GPS altitudes from images]
   C0 --> C[Train 3DGS model from images + sparse reconstruction]
   C --> C1[DroneGS production V1 training via contract-v1 subprocess]
-  C1 --> C2{Geo-alignment method}
+  C1 --> P{Product contract}
+  P -->|Aerial map| C2{Geo-alignment method}
   C2 -->|Sim3| D1[Apply Sim3 rotation+scale to model positions & quaternions]
   C2 -->|PCA| D2[Compute R_geo from PCA, keep model in COLMAP frame]
-  D1 --> D[Multi-stage filtering: max-scale → spatial → opacity → needle → SOR → CC → Z-floater]
+  D1 --> D[Map-specific multi-stage Gaussian filtering]
   D2 --> D
-  D --> E[Render RGB + height via CuPy with R_geo and compensated 0.03 px² Mip filter]
-  E --> E1[Normalize depth by opacity and mark uncovered pixels nodata]
+  D --> E[Render aerial RGB + height via CuPy]
+  E --> E1[Normalize height by opacity and mark uncovered pixels nodata]
   E1 --> E2[Apply Sim3 Z translation or GPS/EXIF vertical origin]
-  E2 --> H[Write GeoTIFF + height GeoTIFF]
+  E2 --> H[Write projected orthomosaic + DSM COGs]
+  P -->|HD facade| F1[Estimate local wall frame from optimized cameras and sparse plane]
+  F1 --> F2[Recover relative/manual scale and select texture cameras]
+  F2 --> F3[Filter seed/depth outliers in the local wall frame]
+  F3 --> F4[Render local RGB + signed depth via CuPy]
+  F4 --> F5[Write CRS-free facade COGs + frame/selection reports]
 ```
 
 ### Gaussian Splatting ortho rerun readiness
@@ -1332,11 +1404,16 @@ App1 does not treat the dense workspace as reusable unless:
 
 ### Reconstruction tunables exposed in the dashboard UI
 
-The **Reconstruction** phase exposes the complete fast-alignment contract
-instead of hiding it behind fixed worker constants:
+The **Reconstruction** phase first exposes **Cartographie aérienne** and
+**Façade HD** as distinct processes. Switching process starts from the
+selected pipeline defaults and overlays the backend-owned process profile, so
+map values cannot leak into a facade configuration (or the reverse). The same
+phase then exposes the complete alignment contract:
 
 | Group | Principal controls |
 | --- | --- |
+| Product | explicit aerial-map or vertical-facade process selection |
+| Facade | image selection/exclusion ranges, yaw/pass filters, local scale, texture incidence, seed quality and facade canary gates |
 | Features | extractor, maximum resolution, feature cap, SIFT first octave and CPU threads |
 | Matching | brute-force/LightGlue choice, optional guided pass, GPS/spatial/sequential graph, neighbor and distance bounds |
 | Mapping | camera model, GLOMAP/Caspar/Ceres engine, deterministic seed, BA/track limits, strict retriangulation, registration gate and timeout |
@@ -1451,7 +1528,11 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 
 ### Orthomosaic coordinate transform diagram
 
-This diagram shows the exact coordinate-space transitions used by the Gaussian Splatting orthomosaic builder and later reused by app2 and app3.
+This map-only diagram shows the exact coordinate-space transitions used by the
+Gaussian Splatting orthomosaic builder and later reused by app2 and app3. The
+HD-facade coordinate path is the local-frame branch in the preceding diagram
+and is specified fully in
+[`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md).
 
 ```mermaid
 flowchart LR
@@ -1608,6 +1689,9 @@ This avoids a race where detections come back before the aggregator knows how ma
 
 ### Processing worker state diagram
 
+This state machine applies only to aerial maps. HD-facade missions never emit
+`images-ortho` and therefore never enter app3.
+
 ```mermaid
 stateDiagram-v2
     [*] --> Waiting
@@ -1687,6 +1771,9 @@ Rendering characteristics:
 - labels prefer positions that stay within image bounds
 
 ### Processing event sequence
+
+This sequence is the aerial-map continuation of the product branch shown in
+the end-to-end diagram; it is intentionally absent for HD facades.
 
 ```mermaid
 sequenceDiagram

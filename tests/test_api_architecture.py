@@ -11,6 +11,7 @@ image_preview = importlib.import_module("app4-dashboard.api.image_preview")
 main = importlib.import_module("app4-dashboard.api.main")
 messaging = importlib.import_module("app4-dashboard.api.messaging")
 mission_state = importlib.import_module("app4-dashboard.api.mission_state")
+map_support = importlib.import_module("app4-dashboard.api.map_support")
 
 
 class FakeProducer:
@@ -112,6 +113,12 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert mission_state.compute_overall_status({}) == "idle"
     assert (
         mission_state.compute_overall_status(
+            {"COLMAP": {"status": "success"}}
+        )
+        == "processing"
+    )
+    assert (
+        mission_state.compute_overall_status(
             {
                 "COLMAP": {"status": "success"},
                 "TILER": {"status": "success"},
@@ -123,11 +130,39 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert (
         mission_state.compute_overall_status(
             {
+                "COLMAP": {
+                    "status": "success",
+                    "details": {
+                        "process": "map",
+                        "terminal": True,
+                    },
+                }
+            }
+        )
+        == "processing"
+    )
+    assert (
+        mission_state.compute_overall_status(
+            {
                 "COLMAP": {"status": "success"},
                 "IA": {"status": "error"},
             }
         )
         == "error"
+    )
+    assert (
+        mission_state.compute_overall_status(
+            {
+                "COLMAP": {
+                    "status": "success",
+                    "details": {
+                        "process": "facade",
+                        "terminal": True,
+                    },
+                }
+            }
+        )
+        == "success"
     )
 
     mission = SimpleNamespace(
@@ -185,3 +220,31 @@ def test_messaging_gateway_adds_contract_metadata():
     assert published["schema_version"] == 1
     assert published["event_type"] == "mission"
     assert published["correlation_id"] == "mission-1"
+
+
+def test_stored_feature_serialization_has_one_canonical_shape():
+    feature = SimpleNamespace(
+        feature_id="feature-1",
+        properties={"source": "forged", "custom": 7},
+        source="manual",
+        name="Inspection",
+        description=None,
+        color="#123456",
+        tags=["façade"],
+        class_name=None,
+        confidence=None,
+        version=2,
+        created_by="operator",
+        updated_at=None,
+    )
+
+    result = map_support.stored_map_feature_geojson(
+        feature,
+        '{"type":"Point","coordinates":[1,2]}',
+        "run-1",
+    )
+
+    assert result["geometry"]["coordinates"] == [1, 2]
+    assert result["properties"]["source"] == "manual"
+    assert result["properties"]["run_id"] == "run-1"
+    assert result["properties"]["custom"] == 7

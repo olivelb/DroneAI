@@ -1,6 +1,11 @@
 from typing import Any
 
 from shared.dronegs_profile import DRONEGS_PRODUCTION_DEFAULTS
+from shared.facade_process import (
+    FACADE_DRONEGS_PROFILE_ID,
+    FACADE_PARAMETER_DEFAULTS,
+    FACADE_QUALIFICATION_POLICY_ID,
+)
 
 SAM3_BACKEND_ALIASES = {
     "sam",
@@ -13,13 +18,7 @@ SAM3_BACKEND_ALIASES = {
 
 
 def normalize_ai_backend(value: str | None) -> str:
-    normalized = (
-        str(value or "yolo")
-        .strip()
-        .lower()
-        .replace("_", "-")
-        .replace(" ", "-")
-    )
+    normalized = str(value or "yolo").strip().lower().replace("_", "-").replace(" ", "-")
     return "sam3" if normalized in SAM3_BACKEND_ALIASES else "yolo"
 
 
@@ -46,148 +45,225 @@ def normalize_matcher_type(value: Any) -> str:
         return "LIGHTGLUE"
     return "STANDARD"
 
+
+_BASE_PIPELINE_DEFAULTS: dict[str, Any] = {
+    "orthophoto_mode": "map",
+    **FACADE_PARAMETER_DEFAULTS,
+    "projected_crs_mode": "auto-local",
+    "projected_crs": "",
+    "feature_type": "SIFT",
+    "feature_max_image_size": "4000",
+    "feature_num_threads": "-1",
+    "feature_max_num_features": "8192",
+    "feature_max_num_matches": "32768",
+    "sift_first_octave": "-1",
+    "matcher_type": "STANDARD",
+    "guided_matching": False,
+    "matching_strategy": "spatial",
+    "camera_model": "OPENCV",
+    "alignment_engine": "ceres",
+    "mapper_cmd": "mapper",
+    "use_view_graph_calibrator": False,
+    "read_orientation": False,
+    "imu_gravity_enabled": False,
+    "gps_pair_max_neighbors": "32",
+    "gps_pair_min_neighbors": "8",
+    "gps_pair_temporal_neighbors": "6",
+    "gps_pair_max_distance_m": "0",
+    "global_mapper_max_tracks": "2000000",
+    "global_mapper_ba_iterations": "2",
+    "global_mapper_skip_retriangulation": False,
+    "global_mapper_ceres_iterations": "50",
+    "global_mapper_random_seed": "42",
+    "global_mapper_ba_min_track_length": "3",
+    "global_mapper_tri_complete_max_reproj_error": "15.0",
+    "global_mapper_tri_merge_max_reproj_error": "15.0",
+    "global_mapper_tri_min_angle": "1.0",
+    "minimum_registration_ratio": "0.97",
+    "maximum_mean_reprojection_error_px": "2.0",
+    "minimum_median_track_length": "3.0",
+    "mapping_timeout_seconds": "3600",
+    "rtk_refinement_enabled": False,
+    "rtk_refinement_timeout_seconds": "900",
+    "rtk_refinement_iterations": "25",
+    "rtk_refinement_loss_scale": "7.82",
+    "rtk_minimum_point_ratio": "0.90",
+    "rtk_maximum_reprojection_degradation_px": "0.10",
+    "rtk_maximum_track_length_loss_ratio": "0.25",
+    "rtk_maximum_focal_length_change_ratio": "0.02",
+    "gcp_adjustment_enabled": False,
+    "gcp_horizontal_accuracy_m": "0.02",
+    "gcp_vertical_accuracy_m": "0.03",
+    "gcp_image_accuracy_px": "1.0",
+    "gcp_robust_loss_scale": "3.0",
+    "gcp_require_checkpoints": False,
+    "gcp_min_checkpoint_count": "1",
+    "gcp_max_checkpoint_horizontal_rmse_m": "0.10",
+    "gcp_max_checkpoint_vertical_rmse_m": "0.20",
+    "gcp_max_checkpoint_normalized_error_sigma": "5.0",
+    "gcp_min_adjustment_baseline_m": "5.0",
+    "alignment_max_error": "10.0",
+    "mvs_max_image_size": "4000",
+    "mvs_num_threads": "12",
+    "ortho_mesh_resolution": "0.02",
+    **DRONEGS_PRODUCTION_DEFAULTS,
+    "gs_ortho_mip_filter_variance": "0.03",
+    "gs_ortho_mip_filter_compensation": True,
+    "gs_filter_enabled": True,
+    "gs_filter_max_scale": "1.0",
+    "gs_filter_dist": "1.0",
+    "gs_filter_opacity": "0.005",
+    "gs_filter_needle": "0.0",
+    "gs_filter_sor": False,
+    "gs_filter_cc": False,
+    "gs_filter_z_floater": False,
+    "gs_filter_sor_sigma": "4.0",
+}
+
+# A new parameter is added once to the base contract. Product/profile-specific
+# differences remain explicit below, which prevents the dashboard, worker and
+# local runners from drifting as the contract grows.
 PIPELINE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "legacy": {
-        "projected_crs_mode": "auto-local",
-        "projected_crs": "",
-        "feature_type": "SIFT",
-        "feature_max_image_size": "4000",
-        "feature_num_threads": "-1",
-        "feature_max_num_features": "8192",
-        "sift_first_octave": "-1",
-        "matcher_type": "STANDARD",
-        "guided_matching": False,
-        "matching_strategy": "spatial",
-        "camera_model": "OPENCV",
-        "alignment_engine": "ceres",
-        "mapper_cmd": "mapper",
-        "use_view_graph_calibrator": False,
-        "read_orientation": False,
-        "imu_gravity_enabled": False,
-        "gps_pair_max_neighbors": "32",
-        "gps_pair_min_neighbors": "8",
-        "gps_pair_temporal_neighbors": "6",
-        "gps_pair_max_distance_m": "0",
-        "global_mapper_max_tracks": "2000000",
-        "global_mapper_ba_iterations": "2",
-        "global_mapper_skip_retriangulation": False,
-        "global_mapper_ceres_iterations": "50",
-        "global_mapper_random_seed": "42",
-        "global_mapper_ba_min_track_length": "3",
-        "global_mapper_tri_complete_max_reproj_error": "15.0",
-        "global_mapper_tri_merge_max_reproj_error": "15.0",
-        "global_mapper_tri_min_angle": "1.0",
-        "minimum_registration_ratio": "0.97",
-        "maximum_mean_reprojection_error_px": "2.0",
-        "minimum_median_track_length": "3.0",
-        "mapping_timeout_seconds": "3600",
-        "rtk_refinement_enabled": False,
-        "rtk_refinement_timeout_seconds": "900",
-        "rtk_refinement_iterations": "25",
-        "rtk_refinement_loss_scale": "7.82",
-        "rtk_minimum_point_ratio": "0.90",
-        "rtk_maximum_reprojection_degradation_px": "0.10",
-        "rtk_maximum_track_length_loss_ratio": "0.25",
-        "rtk_maximum_focal_length_change_ratio": "0.02",
-        "gcp_adjustment_enabled": False,
-        "gcp_horizontal_accuracy_m": "0.02",
-        "gcp_vertical_accuracy_m": "0.03",
-        "gcp_image_accuracy_px": "1.0",
-        "gcp_robust_loss_scale": "3.0",
-        "gcp_require_checkpoints": False,
-        "gcp_min_checkpoint_count": "1",
-        "gcp_max_checkpoint_horizontal_rmse_m": "0.10",
-        "gcp_max_checkpoint_vertical_rmse_m": "0.20",
-        "gcp_max_checkpoint_normalized_error_sigma": "5.0",
-        "gcp_min_adjustment_baseline_m": "5.0",
-        "alignment_max_error": "10.0",
-        "mvs_max_image_size": "4000",
-        "ortho_mesh_resolution": "0.02",
-        **DRONEGS_PRODUCTION_DEFAULTS,
-        "gs_ortho_mip_filter_variance": "0.03",
-        "gs_ortho_mip_filter_compensation": True,
-        "gs_filter_enabled": True,
-        "gs_filter_max_scale": "1.0",
-        "gs_filter_dist": "1.0",
-        "gs_filter_opacity": "0.005",
-        "gs_filter_needle": "0.0",
-        "gs_filter_sor": False,
-        "gs_filter_cc": False,
-        "gs_filter_z_floater": False,
-        "gs_filter_sor_sigma": "4.0",
-    },
+    "legacy": dict(_BASE_PIPELINE_DEFAULTS),
     "modern": {
-        "projected_crs_mode": "auto-local",
-        "projected_crs": "",
-        "feature_type": "SIFT",
+        **_BASE_PIPELINE_DEFAULTS,
         "feature_max_image_size": "2400",
-        "feature_num_threads": "-1",
         "feature_max_num_features": "4096",
-        "sift_first_octave": "-1",
-        "matcher_type": "STANDARD",
-        "guided_matching": False,
         "matching_strategy": "gps_pairs",
         "camera_model": "SIMPLE_RADIAL",
         "alignment_engine": "auto",
         "mapper_cmd": "global_mapper",
         "use_view_graph_calibrator": True,
-        "read_orientation": False,
-        "imu_gravity_enabled": False,
-        "gps_pair_max_neighbors": "32",
-        "gps_pair_min_neighbors": "8",
-        "gps_pair_temporal_neighbors": "6",
-        "gps_pair_max_distance_m": "0",
-        "global_mapper_max_tracks": "2000000",
-        "global_mapper_ba_iterations": "2",
-        "global_mapper_skip_retriangulation": False,
-        "global_mapper_ceres_iterations": "50",
-        "global_mapper_random_seed": "42",
-        "global_mapper_ba_min_track_length": "3",
-        "global_mapper_tri_complete_max_reproj_error": "15.0",
-        "global_mapper_tri_merge_max_reproj_error": "15.0",
-        "global_mapper_tri_min_angle": "1.0",
-        "minimum_registration_ratio": "0.97",
-        "maximum_mean_reprojection_error_px": "2.0",
-        "minimum_median_track_length": "3.0",
         "mapping_timeout_seconds": "2400",
         "rtk_refinement_enabled": True,
-        "rtk_refinement_timeout_seconds": "900",
-        "rtk_refinement_iterations": "25",
-        "rtk_refinement_loss_scale": "7.82",
-        "rtk_minimum_point_ratio": "0.90",
-        "rtk_maximum_reprojection_degradation_px": "0.10",
-        "rtk_maximum_track_length_loss_ratio": "0.25",
-        "rtk_maximum_focal_length_change_ratio": "0.02",
-        "gcp_adjustment_enabled": False,
-        "gcp_horizontal_accuracy_m": "0.02",
-        "gcp_vertical_accuracy_m": "0.03",
-        "gcp_image_accuracy_px": "1.0",
-        "gcp_robust_loss_scale": "3.0",
-        "gcp_require_checkpoints": False,
-        "gcp_min_checkpoint_count": "1",
-        "gcp_max_checkpoint_horizontal_rmse_m": "0.10",
-        "gcp_max_checkpoint_vertical_rmse_m": "0.20",
-        "gcp_max_checkpoint_normalized_error_sigma": "5.0",
-        "gcp_min_adjustment_baseline_m": "5.0",
-        "alignment_max_error": "10.0",
         "mvs_max_image_size": "2400",
-        "ortho_mesh_resolution": "0.02",
-        **DRONEGS_PRODUCTION_DEFAULTS,
-        "gs_ortho_mip_filter_variance": "0.03",
-        "gs_ortho_mip_filter_compensation": True,
-        "gs_filter_enabled": True,
-        "gs_filter_max_scale": "1.0",
-        "gs_filter_dist": "1.0",
-        "gs_filter_opacity": "0.005",
-        "gs_filter_needle": "0.0",
-        "gs_filter_sor": False,
-        "gs_filter_cc": False,
-        "gs_filter_z_floater": False,
-        "gs_filter_sor_sigma": "4.0",
     },
 }
 
 PARAMETER_METADATA: dict[str, dict[str, Any]] = {
+    "orthophoto_mode": {
+        "label": "Orthophoto Type",
+        "description": "map produces a georeferenced aerial map; facade produces a vertical orthophoto in a local frame without CRS.",
+        "type": "select",
+        "group": "Product",
+        "options": ["map", "facade"],
+    },
+    "facade_selection_mode": {
+        "label": "Facade Image Selection",
+        "description": "all keeps every unique image for complete SfM coverage; auto is an optional attitude/pass filter for noisy datasets.",
+        "type": "select",
+        "group": "Facade",
+        "options": ["auto", "all"],
+    },
+    "facade_excluded_image_ranges": {
+        "label": "Excluded Facade Image Ranges",
+        "description": "Optional inclusive basename ranges (START..END;START..END) for coherent detail sequences that should not drive the sparse solve.",
+        "type": "text",
+        "group": "Facade",
+    },
+    "facade_max_abs_pitch_deg": {
+        "label": "Maximum Absolute Gimbal Pitch",
+        "description": "Largest angle from horizontal retained by automatic facade selection.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0,
+        "max": 89,
+        "step": 1,
+    },
+    "facade_min_pass_images": {
+        "label": "Minimum Images per Pass",
+        "description": "Shorter attitude runs are treated as detail/manual shots and excluded.",
+        "type": "int",
+        "group": "Facade",
+        "min": 3,
+        "max": 1000,
+        "step": 1,
+    },
+    "facade_target_yaw_deg": {
+        "label": "Target Facade Gimbal Yaw",
+        "description": "Optional DJI gimbal yaw in degrees; leave blank for an articulated facade or set it to isolate one wall.",
+        "type": "text",
+        "group": "Facade",
+    },
+    "facade_yaw_tolerance_deg": {
+        "label": "Facade Yaw Tolerance",
+        "description": "Maximum circular yaw difference around the target; 35 degrees retains useful oblique views.",
+        "type": "float",
+        "group": "Facade",
+        "min": 1,
+        "max": 180,
+        "step": 1,
+    },
+    "facade_scale_mode": {
+        "label": "Facade Scale",
+        "description": "GPS baseline uses only relative distances; manual uses a surveyed scale; model-units is unscaled.",
+        "type": "select",
+        "group": "Facade",
+        "options": ["gps-baseline", "manual", "model-units"],
+    },
+    "facade_meters_per_model_unit": {
+        "label": "Manual Metres per Model Unit",
+        "description": "Used only when facade scale is manual.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0.000001,
+        "max": 1000000,
+        "step": 0.000001,
+    },
+    "facade_texture_max_incidence_deg": {
+        "label": "Maximum Texture Incidence",
+        "description": "Registered oblique views still constrain geometry, but only cameras within this angle train facade texture when enough remain.",
+        "type": "float",
+        "group": "Facade",
+        "min": 5,
+        "max": 89,
+        "step": 1,
+    },
+    "facade_depth_iqr_multiplier": {
+        "label": "Facade Depth Window (IQR)",
+        "description": "Rejects Gaussian islands far behind or in front of the architectural elevation; zero disables it.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0,
+        "max": 10,
+        "step": 0.25,
+    },
+    "facade_seed_max_reprojection_error": {
+        "label": "Facade Seed Reprojection Error",
+        "description": "Maximum COLMAP point error admitted to the Gaussian seed; 2 px favors complete thin borders.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0.1,
+        "max": 10,
+        "step": 0.1,
+    },
+    "facade_seed_min_track_length": {
+        "label": "Facade Seed Minimum Views",
+        "description": "Minimum number of registered images observing a Gaussian seed point; two preserves facade margins.",
+        "type": "int",
+        "group": "Facade",
+        "min": 2,
+        "max": 20,
+        "step": 1,
+    },
+    "facade_canary_min_psnr": {
+        "label": "Minimum Facade Canary PSNR",
+        "description": "Held-out acceptance threshold calibrated for close-range, multi-scale facade imagery.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0,
+        "max": 100,
+        "step": 0.1,
+    },
+    "facade_canary_min_ssim": {
+        "label": "Minimum Facade Canary SSIM",
+        "description": "Held-out structural-similarity threshold for facade training.",
+        "type": "float",
+        "group": "Facade",
+        "min": 0,
+        "max": 1,
+        "step": 0.01,
+    },
     "projected_crs_mode": {
         "label": "Projected CRS Policy",
         "description": (
@@ -233,14 +309,25 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "feature_max_num_features": {
         "label": "Maximum Features per Image",
         "description": (
-            "4096 is the planimetric survey default; 2048 reduces extraction "
-            "and matching time in the fast profile."
+            "4096 is the planimetric survey default; 2048 reduces extraction and matching time in the fast profile."
         ),
         "type": "int",
         "group": "Features",
         "min": 256,
         "max": 65536,
         "step": 256,
+    },
+    "feature_max_num_matches": {
+        "label": "Maximum Matched Features per Image",
+        "description": (
+            "Caps the quadratic GPU matcher problem without discarding the "
+            "extra extracted features; the 8 GB facade preset uses 16384."
+        ),
+        "type": "int",
+        "group": "Matching",
+        "min": 1024,
+        "max": 32768,
+        "step": 1024,
     },
     "sift_first_octave": {
         "label": "SIFT First Octave",
@@ -286,12 +373,17 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "alignment_engine": {
         "label": "Alignment Engine",
-        "description": "auto runs GLOMAP first and uses the remaining time budget for a compatible fallback.",
+        "description": "auto uses Caspar first for facades and GLOMAP first for maps, then spends the remaining time budget on a compatible fallback.",
         "type": "select",
         "group": "Mapping",
         "options": ["auto", "glomap", "caspar", "ceres"],
     },
-    "mapper_cmd": {"label": "Mapper Command", "type": "select", "group": "Mapping", "options": ["mapper", "global_mapper"]},
+    "mapper_cmd": {
+        "label": "Mapper Command",
+        "type": "select",
+        "group": "Mapping",
+        "options": ["mapper", "global_mapper"],
+    },
     "use_view_graph_calibrator": {
         "label": "Use View Graph Calibrator",
         "description": "Calibrates relative geometry before global mapping; recommended for GLOMAP.",
@@ -366,8 +458,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "global_mapper_ba_iterations": {
         "label": "Global BA Passes",
         "description": (
-            "Two passes belong to the Helenenschacht planimetric profile; "
-            "one pass is the conservative fast profile."
+            "Two passes belong to the Helenenschacht planimetric profile; one pass is the conservative fast profile."
         ),
         "type": "int",
         "group": "Mapping",
@@ -450,10 +541,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "maximum_mean_reprojection_error_px": {
         "label": "Maximum Mean Reprojection Error (px)",
-        "description": (
-            "Rejects a visually unstable sparse model even when enough "
-            "cameras were registered."
-        ),
+        "description": ("Rejects a visually unstable sparse model even when enough cameras were registered."),
         "type": "float",
         "group": "Mapping",
         "min": 0.25,
@@ -463,8 +551,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "minimum_median_track_length": {
         "label": "Minimum Median Track Length",
         "description": (
-            "Requires sparse points to be observed by enough cameras; "
-            "short tracks are fragile for DroneGS."
+            "Requires sparse points to be observed by enough cameras; short tracks are fragile for DroneGS."
         ),
         "type": "float",
         "group": "Mapping",
@@ -679,15 +766,31 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "max": 100,
         "step": 0.5,
     },
-    "mvs_max_image_size": {"label": "Undistort Max Image Size", "type": "int", "group": "Undistortion", "min": 256, "max": 12000, "step": 64},
+    "mvs_max_image_size": {
+        "label": "Undistort Max Image Size",
+        "type": "int",
+        "group": "Undistortion",
+        "min": 256,
+        "max": 12000,
+        "step": 64,
+    },
+    "mvs_num_threads": {
+        "label": "Undistortion Threads",
+        "description": "Bounds concurrent high-resolution image warps to prevent WSL or container memory failures.",
+        "type": "int",
+        "group": "Undistortion",
+        "min": 1,
+        "max": 64,
+        "step": 1,
+    },
     "ortho_mesh_resolution": {
         "label": "Orthomosaic Resolution (m/px)",
         "description": "Requested ground pixel size for the rendered orthomosaic.",
         "type": "float",
         "group": "Orthomosaic",
-        "min": 0.005,
+        "min": 0.001,
         "max": 1,
-        "step": 0.005,
+        "step": 0.001,
     },
     "gs_backend": {
         "label": "Training Backend",
@@ -704,7 +807,11 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         ),
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["DRONEGS_PRODUCTION_PROFILE_V1", "custom"],
+        "options": [
+            "DRONEGS_PRODUCTION_PROFILE_V1",
+            FACADE_DRONEGS_PROFILE_ID,
+            "custom",
+        ],
     },
     "gs_qualification_policy": {
         "label": "Qualification Policy",
@@ -714,7 +821,11 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         ),
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["DRONEGS_QUALIFICATION_POLICY_V1", "custom"],
+        "options": [
+            "DRONEGS_QUALIFICATION_POLICY_V1",
+            FACADE_QUALIFICATION_POLICY_ID,
+            "custom",
+        ],
     },
     "gs_iterations": {
         "label": "Training Iterations",
@@ -798,8 +909,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     "gs_optimizer_profile": {
         "label": "Optimizer Profile",
         "description": (
-            "reference-absolute is the optimizer measured by the accepted "
-            "Albagnac dev.45 production benchmark."
+            "reference-absolute is the optimizer measured by the accepted Albagnac dev.45 production benchmark."
         ),
         "type": "select",
         "group": "Orthomosaic",

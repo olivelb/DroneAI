@@ -32,9 +32,9 @@ from processing_core import (  # noqa: E402
     detections_to_geojson,
     geolocate_detection,
     render_annotated_orthomosaic,
-    write_json,
     write_orthomosaic_tiles,
 )
+from shared.json_io import atomic_write_json as write_json  # noqa: E402
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 

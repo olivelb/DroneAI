@@ -13,10 +13,13 @@ Pipeline:
   5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
   6. Write GeoTIFF
 """
+
 import json
 import os
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -25,6 +28,7 @@ from shared.dronegs_profile import (
     DRONEGS_QUALIFICATION_POLICY_ID,
     effective_raster_profile,
 )
+from shared.facade_process import FACADE_PARAMETER_DEFAULTS
 
 from .colmap_loader import (
     load_colmap_reconstruction,
@@ -50,7 +54,13 @@ from gaussian_training.manifest_contract import (
 )
 from .partition import partition_scene
 from .geo_writer import write_geotiff
-from .exif_altitude import extract_exif_altitudes, compute_colmap_scale
+from .exif_altitude import (
+    extract_exif_altitudes,
+    compute_colmap_scale,
+    compute_colmap_scale_geodesic,
+    compute_projected_geo_origin,
+)
+from .height_reference import georeference_height_map, georeference_raster_origin
 
 
 def _report(vol_id, step, progress, msg, report_fn):
@@ -58,6 +68,35 @@ def _report(vol_id, step, progress, msg, report_fn):
         report_fn(vol_id, step, progress, log=msg)
     else:
         print(f"[{step} {progress}%] {msg}")
+
+
+def _facade_metadata_image_dirs(dense_path: str) -> list[str]:
+    """Return likely image directories, preferring untouched source JPEGs.
+
+    COLMAP's undistorter rewrites images under ``dense/images`` and those
+    copies do not reliably retain DJI EXIF/XMP.  The sibling ``images``
+    directory in a normal COLMAP workspace contains the staged originals and
+    is therefore the authoritative source for GPS-baseline scale estimation.
+    """
+
+    dense = Path(dense_path)
+    candidates = [dense.parent / "images", dense / "images"]
+    unique = []
+    for candidate in candidates:
+        value = str(candidate)
+        if candidate.is_dir() and value not in unique:
+            unique.append(value)
+    return unique
+
+
+def _compute_facade_gps_scale(cameras, dense_path: str):
+    """Try source metadata first and fall back only when it is insufficient."""
+
+    for images_dir in _facade_metadata_image_dirs(dense_path):
+        scale, source = compute_colmap_scale_geodesic(cameras, images_dir)
+        if source != "model-units":
+            return scale, source, images_dir
+    return 1.0, "model-units", os.path.join(dense_path, "images")
 
 
 def _reusable_dronegs_result(
@@ -69,10 +108,7 @@ def _reusable_dronegs_result(
     output = Path(request.output_path)
     manifest_path = output / "trainer_run.json"
     ply_path = output / "point_cloud.ply"
-    if not (
-        manifest_path.is_file()
-        and ply_path.is_file()
-    ):
+    if not (manifest_path.is_file() and ply_path.is_file()):
         return None
     try:
         manifest = load_run_manifest(manifest_path)
@@ -103,17 +139,14 @@ def _reusable_dronegs_result(
         "test_guard_percent": request.dronegs.test_guard_percent,
         "topology_cooldown_iterations": request.dronegs.topology_cooldown,
         "photometric_finish_iterations": request.dronegs.photometric_finish,
-        "photometric_final_mse_percent": (
-            request.dronegs.photometric_mse_percent
-        ),
+        "photometric_final_mse_percent": (request.dronegs.photometric_mse_percent),
     }
     parameters = manifest.get("parameters", {})
     if (
         manifest.get("contract_version") != 1
         or manifest.get("status") != "completed"
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
-        or manifest.get("dataset", {}).get("fingerprint")
-        != request.dataset_fingerprint
+        or manifest.get("dataset", {}).get("fingerprint") != request.dataset_fingerprint
         or any(parameters.get(key) != value for key, value in expected.items())
         or not manifest_matches_ply(manifest, ply_path)
     ):
@@ -121,10 +154,7 @@ def _reusable_dronegs_result(
     canary = evaluate_quality_canary(manifest, request.dronegs)
     write_quality_canary(output, canary)
     if canary["failed_metrics"]:
-        raise RuntimeError(
-            "DroneGS quality canary failed: "
-            + ", ".join(canary["failed_metrics"])
-        )
+        raise RuntimeError("DroneGS quality canary failed: " + ", ".join(canary["failed_metrics"]))
     # The promoted PLY + manifest + canary are the durable result. Keeping the
     # much larger optimizer checkpoint after a successful recovery wastes disk.
     (output / "training.ckpt").unlink(missing_ok=True)
@@ -145,11 +175,7 @@ def _quarantine_incompatible_dronegs_output(
     if not output.is_dir() or not any(output.iterdir()):
         return None
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    quarantine_root = (
-        output.parent.parent
-        / ".incompatible"
-        / output.parent.name
-    )
+    quarantine_root = output.parent.parent / ".incompatible" / output.parent.name
     quarantine_root.mkdir(parents=True, exist_ok=True)
     candidate = quarantine_root / f"{output.name}-{stamp}"
     suffix = 1
@@ -160,10 +186,798 @@ def _quarantine_incompatible_dronegs_output(
     return candidate
 
 
+@dataclass(frozen=True)
+class GaussianOrthoConfig:
+    """Validated inputs shared by the Gaussian orthophoto workflow stages."""
+
+    dense_path: str
+    ortho_file: str
+    utm_crs: str | None
+    vol_id: str
+    transform_file: str | None
+    report_fn: Any
+    resolution: float
+    iterations: int
+    partition_m: int
+    partition_n: int
+    partition_overlap: float
+    sh_degree: int
+    fagk: bool
+    checkpoint_dir: str
+    data_factor: int
+    max_width: int
+    ortho_mip_filter_variance: float
+    ortho_mip_filter_compensation: bool
+    tile_mode: int
+    cap_max: int
+    filter_enabled: bool
+    filter_max_scale: float
+    filter_dist_multiplier: float
+    filter_opacity_threshold: float
+    filter_needle_ratio: float
+    filter_sor: bool
+    filter_sor_sigma: float
+    filter_cc: bool
+    filter_z_floater: bool
+    verbose: bool
+    training_seed: int
+    dronegs_profile_id: str
+    dronegs_qualification_policy_id: str
+    dronegs_optimizer_profile: str
+    dronegs_pruning_policy: str
+    dronegs_raster_profile: str
+    dronegs_sh_degree_interval: int
+    dronegs_topology_cooldown: int
+    dronegs_photometric_finish: int
+    dronegs_photometric_mse_percent: int
+    dronegs_checkpoint_every: int
+    dronegs_test_every: int
+    dronegs_test_split: str
+    dronegs_test_guard_percent: int
+    dronegs_canary_min_psnr: float
+    dronegs_canary_min_ssim: float
+    cancellation_check: Any
+    checkpoint_callback: Any
+    render_mode: str
+    facade_scale_mode: str
+    facade_meters_per_model_unit: float
+    facade_frame_report: str | None
+    facade_texture_max_incidence_deg: float
+    facade_depth_iqr_multiplier: float
+    facade_seed_max_reprojection_error: float
+    facade_seed_min_track_length: int
+
+
+@dataclass
+class GaussianSceneState:
+    train_cameras: list[Any]
+    test_cameras: list[Any]
+    registered_cameras: list[Any]
+    point_cloud: Any
+    transform_data: dict[str, Any] | None
+    mean_exif_alt: float | None
+    colmap_to_meters: float
+    scale_source: str
+    facade_frame: Any
+    texture_camera_count: int
+    texture_filter_applied: bool
+    minimum_sparse_observations: int
+    seed_max_error: float
+    seed_min_track: int
+    gaussian_seed_point_count: int
+    images_dir: str
+    scene: Any
+    cells: list[tuple[Any, Any]]
+    use_partition: bool
+
+
+def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
+    """Load COLMAP data, establish metric scale, and select training views."""
+    seed_max_error = config.facade_seed_max_reprojection_error if config.render_mode == "facade" else 1.0
+    seed_min_track = config.facade_seed_min_track_length if config.render_mode == "facade" else 3
+    _report(
+        config.vol_id,
+        "GAUSS",
+        5,
+        "Loading COLMAP reconstruction…",
+        config.report_fn,
+    )
+    train_cameras, test_cameras, point_cloud, transform_data = load_colmap_reconstruction(
+        config.dense_path,
+        config.transform_file,
+        max_reproj_error=seed_max_error,
+        min_track_length=seed_min_track,
+    )
+    gaussian_seed_point_count = int(len(point_cloud.points))
+    if config.render_mode == "facade" and transform_data:
+        raise ValueError("Facade rendering must not receive a geographic Sim3 transform")
+
+    images_dir = os.path.join(config.dense_path, "images")
+    exif_altitudes = extract_exif_altitudes(images_dir)
+    valid_altitudes = [
+        exif_altitudes[camera.image_name]
+        for camera in train_cameras
+        if exif_altitudes.get(camera.image_name) is not None
+    ]
+    mean_exif_alt = np.mean(valid_altitudes) if valid_altitudes else None
+
+    scale_source = "geographic-sim3"
+    if config.render_mode == "facade":
+        scale_mode = config.facade_scale_mode.strip().lower()
+        if scale_mode == "manual":
+            colmap_to_meters = float(config.facade_meters_per_model_unit)
+            if colmap_to_meters <= 0:
+                raise ValueError("facade_meters_per_model_unit must be positive")
+            scale_source = "manual"
+        elif scale_mode == "model-units":
+            colmap_to_meters = 1.0
+            scale_source = "model-units"
+        elif scale_mode == "gps-baseline":
+            colmap_to_meters, scale_source, scale_images_dir = _compute_facade_gps_scale(
+                train_cameras, config.dense_path
+            )
+            if scale_source != "model-units":
+                scale_source = f"{scale_source}:{Path(scale_images_dir).name}"
+        else:
+            raise ValueError(f"Unsupported facade scale mode: {scale_mode}")
+        _report(
+            config.vol_id,
+            "GAUSS",
+            6,
+            f"Facade scale: 1 model unit = {colmap_to_meters:.6f} m ({scale_source})",
+            config.report_fn,
+        )
+    elif transform_data:
+        colmap_to_meters = float(transform_data.get("scale", 1.0))
+    else:
+        colmap_to_meters = compute_colmap_scale(
+            train_cameras,
+            images_dir,
+            config.utm_crs,
+        )
+        scale_source = "projected-gps-baselines"
+        _report(
+            config.vol_id,
+            "GAUSS",
+            6,
+            f"COLMAP scale: 1 unit = {colmap_to_meters:.2f} m (from GPS)",
+            config.report_fn,
+        )
+
+    registered_cameras = list(train_cameras)
+    facade_frame = None
+    texture_camera_count = len(train_cameras)
+    texture_filter_applied = False
+    minimum_sparse_observations = 20
+    if config.render_mode == "facade":
+        from .facade_frame import estimate_facade_frame
+
+        facade_frame = estimate_facade_frame(
+            point_cloud.points,
+            registered_cameras,
+        )
+        normal = facade_frame.world_to_facade[2]
+        incidence_limit = float(config.facade_texture_max_incidence_deg)
+        texture_cameras = []
+        for camera in registered_cameras:
+            outward_axis = -np.asarray(camera.R, dtype=np.float64)[:, 2]
+            outward_axis /= max(float(np.linalg.norm(outward_axis)), 1e-12)
+            incidence = np.degrees(np.arccos(np.clip(float(outward_axis @ normal), -1.0, 1.0)))
+            if (
+                incidence <= incidence_limit
+                and int(getattr(camera, "sparse_observations", 0)) >= minimum_sparse_observations
+            ):
+                texture_cameras.append(camera)
+        minimum_texture_cameras = max(
+            30,
+            int(np.ceil(len(registered_cameras) * 0.30)),
+        )
+        if len(texture_cameras) >= minimum_texture_cameras:
+            train_cameras = texture_cameras
+            texture_camera_count = len(texture_cameras)
+            texture_filter_applied = True
+        else:
+            _report(
+                config.vol_id,
+                "GAUSS",
+                7,
+                "Facade incidence filter would retain only "
+                f"{len(texture_cameras)}/{len(registered_cameras)} cameras; "
+                "using every registered camera for texture training.",
+                config.report_fn,
+            )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            8,
+            f"Facade texture training views: {texture_camera_count}/"
+            f"{len(registered_cameras)}; requested filter is "
+            f"≤{incidence_limit:.1f}° incidence and at least "
+            f"{minimum_sparse_observations} sparse observations "
+            f"({'applied' if texture_filter_applied else 'not applied'}).",
+            config.report_fn,
+        )
+
+    _report(
+        config.vol_id,
+        "GAUSS",
+        10,
+        f"Loaded {len(train_cameras)} cameras, {point_cloud.points.shape[0]} points",
+        config.report_fn,
+    )
+    scene = build_scene_info(
+        train_cameras,
+        test_cameras,
+        point_cloud,
+        dense_path=config.dense_path,
+    )
+    use_partition = config.partition_m > 1 or config.partition_n > 1
+    if use_partition:
+        _report(
+            config.vol_id,
+            "GAUSS",
+            12,
+            f"Partitioning scene into {config.partition_m}×{config.partition_n} cells…",
+            config.report_fn,
+        )
+        cells = partition_scene(
+            scene,
+            config.partition_m,
+            config.partition_n,
+            config.partition_overlap,
+        )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            15,
+            f"Created {len(cells)} active cells",
+            config.report_fn,
+        )
+    else:
+        cells = [(None, scene)]
+    return GaussianSceneState(
+        train_cameras=train_cameras,
+        test_cameras=test_cameras,
+        registered_cameras=registered_cameras,
+        point_cloud=point_cloud,
+        transform_data=transform_data,
+        mean_exif_alt=mean_exif_alt,
+        colmap_to_meters=colmap_to_meters,
+        scale_source=scale_source,
+        facade_frame=facade_frame,
+        texture_camera_count=texture_camera_count,
+        texture_filter_applied=texture_filter_applied,
+        minimum_sparse_observations=minimum_sparse_observations,
+        seed_max_error=seed_max_error,
+        seed_min_track=seed_min_track,
+        gaussian_seed_point_count=gaussian_seed_point_count,
+        images_dir=images_dir,
+        scene=scene,
+        cells=cells,
+        use_partition=use_partition,
+    )
+
+
+@dataclass
+class GaussianTrainingState:
+    merged_model: Any
+    final_ply: str
+    facade_subset_result: dict[str, Any] | None
+
+
+def _make_training_reporter(
+    pct_start: int,
+    pct_end: int,
+    config: GaussianOrthoConfig,
+):
+    def reporter(iteration: int, loss_value: float, gaussian_count: int) -> None:
+        progress = pct_start + int((pct_end - pct_start) * iteration / max(1, config.iterations))
+        _report(
+            config.vol_id,
+            "GAUSS",
+            progress,
+            f"[MRNF] iter {iteration}: loss={loss_value:.4f}, N={gaussian_count}",
+            config.report_fn,
+        )
+
+    return reporter
+
+
+def train_and_merge_gaussian_models(
+    config: GaussianOrthoConfig,
+    scene_state: GaussianSceneState,
+    *,
+    backend: Any,
+    trainer_binary_sha256: str,
+    model_class: Any,
+    merge_models_fn: Any,
+    cupy_module: Any,
+) -> GaussianTrainingState:
+    """Train/reuse every cell, merge it, and persist the local-frame PLY."""
+    cell_models = []
+    n_cells = len(scene_state.cells)
+    facade_subset_result = None
+    sparse_dir = os.path.join(config.dense_path, "sparse", "0")
+    if not os.path.isdir(sparse_dir):
+        sparse_dir = os.path.join(config.dense_path, "sparse")
+    images_dir_path = os.path.join(config.dense_path, "images")
+
+    for index, (cell_bounds, cell_scene) in enumerate(scene_state.cells):
+        cell_label = f"cell_{index}" if scene_state.use_partition else "full"
+        pct_start = 15 + int(65 * index / n_cells)
+        pct_end = 15 + int(65 * (index + 1) / n_cells)
+        _report(
+            config.vol_id,
+            "GAUSS",
+            pct_start,
+            f"[{backend.name} MRNF] Training {cell_label}: "
+            f"{len(cell_scene.train_cameras)} cameras, "
+            f"{cell_scene.point_cloud.points.shape[0]} points",
+            config.report_fn,
+        )
+        cell_output = os.path.join(config.checkpoint_dir, cell_label)
+
+        if scene_state.use_partition:
+            cell_workspace = os.path.join(
+                config.checkpoint_dir,
+                f"{cell_label}_workspace",
+            )
+            export_colmap_subset(
+                source_sparse_dir=sparse_dir,
+                target_dir=cell_workspace,
+                camera_names=[camera.image_name for camera in cell_scene.train_cameras],
+                images_dir=images_dir_path,
+                max_point_error=1.0,
+                min_track_length=3,
+            )
+            training_data_path = cell_workspace
+        elif config.render_mode == "facade":
+            texture_workspace = os.path.join(
+                config.checkpoint_dir,
+                "facade_texture_workspace",
+            )
+            facade_subset_result = export_colmap_subset(
+                source_sparse_dir=sparse_dir,
+                target_dir=texture_workspace,
+                camera_names=[camera.image_name for camera in cell_scene.train_cameras],
+                images_dir=images_dir_path,
+                max_point_error=scene_state.seed_max_error,
+                min_track_length=scene_state.seed_min_track,
+                max_points=max(1, int(config.cap_max * 0.85)),
+                return_report=True,
+            )
+            if facade_subset_result["coverage_balanced"]:
+                _report(
+                    config.vol_id,
+                    "GAUSS",
+                    pct_start,
+                    "Coverage-balanced facade seed: "
+                    f"{facade_subset_result['points_before_cap']} → "
+                    f"{facade_subset_result['exported_points']} points "
+                    f"(85% of the {config.cap_max} Gaussian GPU cap).",
+                    config.report_fn,
+                )
+            training_data_path = texture_workspace
+        else:
+            training_data_path = config.dense_path
+
+        checkpoint_path = os.path.join(cell_output, "training.ckpt")
+        resume_from = (
+            checkpoint_path
+            if os.path.isfile(checkpoint_path) and not os.path.isfile(os.path.join(cell_output, "trainer_run.json"))
+            else None
+        )
+        if resume_from:
+            _report(
+                config.vol_id,
+                "GAUSS",
+                pct_start,
+                f"[DroneGS] Resuming {cell_label} from its validated checkpoint",
+                config.report_fn,
+            )
+
+        dataset_identity = compute_dataset_identity(training_data_path)
+        training_request = TrainingRequest(
+            data_path=training_data_path,
+            output_path=cell_output,
+            iterations=config.iterations,
+            strategy="mrnf",
+            sh_degree=config.sh_degree,
+            max_cap=config.cap_max,
+            resize_factor=config.data_factor,
+            max_width=config.max_width,
+            tile_mode=config.tile_mode,
+            seed=config.training_seed,
+            dataset_fingerprint=dataset_identity.fingerprint,
+            dronegs=DroneGSTuning(
+                profile_id=config.dronegs_profile_id,
+                qualification_policy_id=config.dronegs_qualification_policy_id,
+                optimizer_profile=config.dronegs_optimizer_profile,
+                pruning_policy=config.dronegs_pruning_policy,
+                raster_profile=config.dronegs_raster_profile,
+                sh_degree_interval=config.dronegs_sh_degree_interval,
+                topology_cooldown=min(
+                    config.dronegs_topology_cooldown,
+                    max(1, config.iterations // 5),
+                ),
+                photometric_finish=min(
+                    config.dronegs_photometric_finish,
+                    max(1, config.iterations // 5),
+                ),
+                photometric_mse_percent=config.dronegs_photometric_mse_percent,
+                checkpoint_every=config.dronegs_checkpoint_every,
+                resume_from=resume_from,
+                test_every=config.dronegs_test_every,
+                test_split=config.dronegs_test_split,
+                test_guard_percent=config.dronegs_test_guard_percent,
+                save_eval_images=config.dronegs_test_every > 0,
+                canary_min_psnr=config.dronegs_canary_min_psnr,
+                canary_min_ssim=config.dronegs_canary_min_ssim,
+            ),
+        )
+        training_result = _reusable_dronegs_result(
+            training_request,
+            trainer_binary_sha256=trainer_binary_sha256,
+        )
+        if training_result is None:
+            if training_request.dronegs.resume_from is None:
+                quarantined = _quarantine_incompatible_dronegs_output(training_request.output_path)
+                if quarantined is not None:
+                    _report(
+                        config.vol_id,
+                        "GAUSS",
+                        pct_start,
+                        "[DroneGS] Incompatible prior output preserved at "
+                        f"{quarantined}; starting a clean training run.",
+                        config.report_fn,
+                    )
+            training_result = backend.train(
+                training_request,
+                report_fn=_make_training_reporter(
+                    pct_start,
+                    pct_end,
+                    config,
+                ),
+                verbose=config.verbose,
+                cancellation_check=config.cancellation_check,
+                checkpoint_fn=config.checkpoint_callback,
+            )
+        else:
+            _report(
+                config.vol_id,
+                "GAUSS",
+                pct_end,
+                f"[DroneGS] Reusing completed, canary-approved {cell_label}",
+                config.report_fn,
+            )
+
+        model = model_class(
+            sh_degree=config.sh_degree,
+            fagk_enabled=config.fagk,
+        )
+        model.load_ply(str(training_result.ply_path))
+        _report(
+            config.vol_id,
+            "GAUSS",
+            pct_end,
+            f"[{backend.name}] Loaded {model.num_gaussians} Gaussians from {training_result.ply_path}",
+            config.report_fn,
+        )
+        cell_models.append((cell_bounds, model))
+
+    if scene_state.use_partition and len(cell_models) > 1:
+        _report(
+            config.vol_id,
+            "GAUSS",
+            82,
+            "Merging cell models…",
+            config.report_fn,
+        )
+        camera_positions = np.stack([camera.T for camera in scene_state.train_cameras])
+        points_xy = np.concatenate([scene_state.point_cloud.points[:, :2], camera_positions[:, :2]])
+        merged_model = merge_models_fn(
+            cell_models,
+            (float(points_xy[:, 0].min()), float(points_xy[:, 0].max())),
+            (float(points_xy[:, 1].min()), float(points_xy[:, 1].max())),
+            config.partition_m,
+            config.partition_n,
+            config.partition_overlap,
+        )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            85,
+            f"Merged model: {merged_model.num_gaussians} Gaussians",
+            config.report_fn,
+        )
+    else:
+        merged_model = cell_models[0][1]
+
+    final_ply = os.path.join(config.checkpoint_dir, "final.ply")
+    os.makedirs(config.checkpoint_dir, exist_ok=True)
+    merged_model.active_sh_degree = config.sh_degree
+    merged_model.save_ply(final_ply)
+    _report(
+        config.vol_id,
+        "GAUSS",
+        88,
+        f"Saved final model: {final_ply}",
+        config.report_fn,
+    )
+    scene_state.cells = []
+    del cell_models
+    import gc
+
+    gc.collect()
+    cupy_module.get_default_memory_pool().free_all_blocks()
+    return GaussianTrainingState(
+        merged_model=merged_model,
+        final_ply=final_ply,
+        facade_subset_result=facade_subset_result,
+    )
+
+
+@dataclass
+class GaussianRenderState:
+    merged_model: Any
+    geo_origin: np.ndarray
+    frame_origin: np.ndarray | None
+    rotation_geo: np.ndarray | None
+    sh_direction_rotation: np.ndarray | None
+    facade_depth_bounds_model: tuple[float, float] | None
+    render_extent: tuple[float, float, float, float, float, float]
+    local_gsd: float
+    resolution_units: str
+
+
+def prepare_gaussian_render_state(
+    config: GaussianOrthoConfig,
+    scene_state: GaussianSceneState,
+    training_state: GaussianTrainingState,
+    *,
+    cupy_module: Any,
+) -> GaussianRenderState:
+    """Align, filter, and bound the trained model for raster rendering."""
+    model = training_state.merged_model
+    cameras = scene_state.registered_cameras
+    geo_origin = np.zeros(3, dtype=np.float64)
+    frame_origin = None
+    rotation_geo = None
+    sh_direction_rotation = None
+
+    if config.render_mode == "facade":
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            "Applying optimized-camera facade frame…",
+            config.report_fn,
+        )
+        rotation_geo = scene_state.facade_frame.world_to_facade.astype(np.float32)
+        frame_origin = scene_state.facade_frame.origin.astype(np.float64)
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            "Facade frame fitted: "
+            f"{scene_state.facade_frame.inlier_ratio:.1%} plane inliers, "
+            "RMSE="
+            f"{scene_state.facade_frame.plane_rmse * scene_state.colmap_to_meters:.3f} m",
+            config.report_fn,
+        )
+    elif scene_state.transform_data:
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            "Applying geo-alignment to Gaussian model…",
+            config.report_fn,
+        )
+        transform = scene_state.transform_data
+        rotation = cupy_module.array(transform["R"], dtype=cupy_module.float32)
+        scale = float(transform["scale"])
+        model._xyz = (scale * (rotation @ model._xyz.T)).T
+        import math as _math
+
+        model._scaling += _math.log(scale)
+        rotation_quaternion = model._matrix_to_quaternion(cupy_module.asnumpy(rotation))
+        model._rotation = model._quaternion_multiply(
+            cupy_module.array(
+                rotation_quaternion,
+                dtype=cupy_module.float32,
+            )[None, :],
+            model._rotation,
+        )
+        sh_direction_rotation = cupy_module.asnumpy(rotation).astype(np.float32).T
+        geo_origin = np.array(transform["t"], dtype=np.float64)
+        geo_camera_positions = apply_sim3_to_points(
+            np.array([camera.T for camera in cameras], dtype=np.float64),
+            transform,
+        )
+    else:
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            "Computing PCA nadir direction…",
+            config.report_fn,
+        )
+        from .pca_alignment import compute_pca_rotation
+
+        camera_positions = np.array(
+            [camera.T for camera in cameras],
+            dtype=np.float64,
+        )
+        rotation_align, angle_deg = compute_pca_rotation(
+            cameras,
+            scene_state.point_cloud.points,
+        )
+        rotation_geo = rotation_align.astype(np.float32)
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            f"PCA nadir direction: {angle_deg:.1f}° from Z (using R_geo for rendering)",
+            config.report_fn,
+        )
+        geo_camera_positions = (rotation_align @ camera_positions.T).T
+        projected_origin = compute_projected_geo_origin(
+            cameras,
+            scene_state.images_dir,
+            config.utm_crs,
+            geo_camera_positions,
+            scene_state.colmap_to_meters,
+            scene_state.mean_exif_alt,
+        )
+        if projected_origin is not None:
+            geo_origin = projected_origin
+            _report(
+                config.vol_id,
+                "GAUSS",
+                89,
+                f"GeoTIFF origin from GPS: E={geo_origin[0]:.2f}, N={geo_origin[1]:.2f}",
+                config.report_fn,
+            )
+
+    raw_camera_positions = np.array(
+        [camera.T for camera in cameras],
+        dtype=np.float64,
+    )
+    if config.render_mode == "facade" or not scene_state.transform_data:
+        local_camera_positions = raw_camera_positions
+    else:
+        local_camera_positions = geo_camera_positions - geo_origin
+
+    if not config.filter_enabled:
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            f"Filtering disabled — keeping all {model.num_gaussians} Gaussians",
+            config.report_fn,
+        )
+    else:
+        from .model_filtering import filter_gaussians
+
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            "Filtering Gaussians…",
+            config.report_fn,
+        )
+        filter_gaussians(
+            model,
+            local_camera_positions,
+            max_scale=config.filter_max_scale,
+            dist_multiplier=config.filter_dist_multiplier,
+            opacity_threshold=config.filter_opacity_threshold,
+            needle_ratio=config.filter_needle_ratio,
+            sor_sigma=config.filter_sor_sigma,
+            sor_enabled=config.filter_sor,
+            cc_enabled=config.filter_cc,
+            z_floater_enabled=config.filter_z_floater,
+            R_geo=rotation_geo,
+            report_fn=lambda message: _report(
+                config.vol_id,
+                "GAUSS",
+                89,
+                message,
+                config.report_fn,
+            ),
+        )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            89,
+            f"After filtering: {model.num_gaussians} Gaussians",
+            config.report_fn,
+        )
+
+    depth_bounds = None
+    if config.render_mode == "facade" and config.facade_depth_iqr_multiplier > 0:
+        local_xyz = (
+            model.positions
+            - cupy_module.array(
+                frame_origin,
+                dtype=cupy_module.float32,
+            )[None, :]
+        )
+        depths = (
+            cupy_module.array(
+                rotation_geo[2],
+                dtype=cupy_module.float32,
+            )
+            @ local_xyz.T
+        )
+        q25 = float(cupy_module.quantile(depths, 0.25))
+        q75 = float(cupy_module.quantile(depths, 0.75))
+        iqr = max(q75 - q25, 1e-6)
+        multiplier = config.facade_depth_iqr_multiplier
+        depth_bounds = (q25 - multiplier * iqr, q75 + multiplier * iqr)
+        before_filter = model.num_gaussians
+        model.filter_by_mask((depths >= depth_bounds[0]) & (depths <= depth_bounds[1]))
+        _report(
+            config.vol_id,
+            "GAUSS",
+            90,
+            f"Facade depth filter ({multiplier:.2f}×IQR): "
+            f"{before_filter} → {model.num_gaussians}; window "
+            f"[{depth_bounds[0] * scene_state.colmap_to_meters:.2f}, "
+            f"{depth_bounds[1] * scene_state.colmap_to_meters:.2f}] m.",
+            config.report_fn,
+        )
+
+    model.save_ply(training_state.final_ply)
+    _report(
+        config.vol_id,
+        "GAUSS",
+        95,
+        f"Saved filtered model: {training_state.final_ply} ({model.num_gaussians} Gaussians)",
+        config.report_fn,
+    )
+    from .ortho_renderer import compute_ortho_extent
+
+    render_extent = compute_ortho_extent(
+        model,
+        pad=(1.0 / scene_state.colmap_to_meters if config.render_mode == "facade" else 2.0),
+        R_geo=rotation_geo,
+        frame_origin=frame_origin,
+        quantile=0.001,
+    )
+    scene_state.point_cloud = None
+    scene_state.scene = None
+    import gc
+
+    gc.collect()
+    cupy_module.get_default_memory_pool().free_all_blocks()
+
+    if config.render_mode == "facade":
+        local_gsd = config.resolution / scene_state.colmap_to_meters
+        resolution_units = "metres" if scene_state.scale_source != "model-units" else "model-units"
+    elif scene_state.transform_data:
+        local_gsd = config.resolution
+        resolution_units = "metres"
+    else:
+        local_gsd = config.resolution / scene_state.colmap_to_meters
+        resolution_units = "metres"
+    return GaussianRenderState(
+        merged_model=model,
+        geo_origin=geo_origin,
+        frame_origin=frame_origin,
+        rotation_geo=rotation_geo,
+        sh_direction_rotation=sh_direction_rotation,
+        facade_depth_bounds_model=depth_bounds,
+        render_extent=render_extent,
+        local_gsd=local_gsd,
+        resolution_units=resolution_units,
+    )
+
+
 def generate_gaussian_orthophoto(
     dense_path: str,
     ortho_file: str,
-    utm_crs: str,
+    utm_crs: str | None,
     vol_id: str = "vol",
     transform_file: str = None,
     report_fn=None,
@@ -196,43 +1010,29 @@ def generate_gaussian_orthophoto(
     training_seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed,
     dronegs_profile_id: str = DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
     dronegs_qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID,
-    dronegs_optimizer_profile: str = (
-        DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
-    ),
-    dronegs_pruning_policy: str = (
-        DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy
-    ),
-    dronegs_raster_profile: str = (
-        DRONEGS_PRODUCTION_PROFILE_V1.raster_profile
-    ),
-    dronegs_sh_degree_interval: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
-    ),
-    dronegs_topology_cooldown: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
-    ),
-    dronegs_photometric_finish: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
-    ),
-    dronegs_photometric_mse_percent: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
-    ),
-    dronegs_checkpoint_every: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every
-    ),
+    dronegs_optimizer_profile: str = (DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile),
+    dronegs_pruning_policy: str = (DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy),
+    dronegs_raster_profile: str = (DRONEGS_PRODUCTION_PROFILE_V1.raster_profile),
+    dronegs_sh_degree_interval: int = (DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
+    dronegs_topology_cooldown: int = (DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
+    dronegs_photometric_finish: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
+    dronegs_photometric_mse_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
+    dronegs_checkpoint_every: int = (DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
     dronegs_test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every,
     dronegs_test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split,
-    dronegs_test_guard_percent: int = (
-        DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent
-    ),
-    dronegs_canary_min_psnr: float = (
-        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
-    ),
-    dronegs_canary_min_ssim: float = (
-        DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
-    ),
+    dronegs_test_guard_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
+    dronegs_canary_min_psnr: float = (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
+    dronegs_canary_min_ssim: float = (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
     cancellation_check=None,
     checkpoint_callback=None,
+    render_mode: str = "map",
+    facade_scale_mode: str = FACADE_PARAMETER_DEFAULTS["facade_scale_mode"],
+    facade_meters_per_model_unit: float = float(FACADE_PARAMETER_DEFAULTS["facade_meters_per_model_unit"]),
+    facade_frame_report: str | None = None,
+    facade_texture_max_incidence_deg: float = float(FACADE_PARAMETER_DEFAULTS["facade_texture_max_incidence_deg"]),
+    facade_depth_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_iqr_multiplier"]),
+    facade_seed_max_reprojection_error: float = float(FACADE_PARAMETER_DEFAULTS["facade_seed_max_reprojection_error"]),
+    facade_seed_min_track_length: int = int(FACADE_PARAMETER_DEFAULTS["facade_seed_min_track_length"]),
 ):
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -290,16 +1090,21 @@ def generate_gaussian_orthophoto(
 
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
+
     gc.collect()
     cp.get_default_memory_pool().free_all_blocks()
     try:
         free_bytes, total_bytes = cp.cuda.Device(0).mem_info
-        vram_total = total_bytes / (1024 ** 3)
-        vram_free = free_bytes / (1024 ** 3)
+        vram_total = total_bytes / (1024**3)
+        vram_free = free_bytes / (1024**3)
         dev_name = cp.cuda.runtime.getDeviceProperties(0)["name"]
-        _report(vol_id, "GAUSS", 0,
-                f"Starting Gaussian Splatting on {dev_name} "
-                f"({vram_free:.1f}/{vram_total:.1f} GB free)", report_fn)
+        _report(
+            vol_id,
+            "GAUSS",
+            0,
+            f"Starting Gaussian Splatting on {dev_name} ({vram_free:.1f}/{vram_total:.1f} GB free)",
+            report_fn,
+        )
     except Exception:
         _report(vol_id, "GAUSS", 0, "Starting Gaussian Splatting", report_fn)
 
@@ -308,387 +1113,123 @@ def generate_gaussian_orthophoto(
     backend = resolve_training_backend(trainer_backend)
     trainer_binary_sha256 = backend.binary_sha256()
 
-    # --- 1. Load COLMAP reconstruction ---
-    _report(vol_id, "GAUSS", 5, "Loading COLMAP reconstruction…", report_fn)
+    render_mode = str(render_mode).strip().lower()
+    if render_mode not in {"map", "facade"}:
+        raise ValueError(f"Unsupported orthophoto render mode: {render_mode}")
 
-    train_cameras, test_cameras, point_cloud, transform_data = load_colmap_reconstruction(
-        dense_path, transform_file,
+    config = GaussianOrthoConfig(
+        dense_path=dense_path,
+        ortho_file=ortho_file,
+        utm_crs=utm_crs,
+        vol_id=vol_id,
+        transform_file=transform_file,
+        report_fn=report_fn,
+        resolution=resolution,
+        iterations=iterations,
+        partition_m=partition_m,
+        partition_n=partition_n,
+        partition_overlap=partition_overlap,
+        sh_degree=sh_degree,
+        fagk=fagk,
+        checkpoint_dir=checkpoint_dir,
+        data_factor=data_factor,
+        max_width=max_width,
+        ortho_mip_filter_variance=ortho_mip_filter_variance,
+        ortho_mip_filter_compensation=ortho_mip_filter_compensation,
+        tile_mode=tile_mode,
+        cap_max=cap_max,
+        filter_enabled=filter_enabled,
+        filter_max_scale=filter_max_scale,
+        filter_dist_multiplier=filter_dist_multiplier,
+        filter_opacity_threshold=filter_opacity_threshold,
+        filter_needle_ratio=filter_needle_ratio,
+        filter_sor=filter_sor,
+        filter_sor_sigma=filter_sor_sigma,
+        filter_cc=filter_cc,
+        filter_z_floater=filter_z_floater,
+        verbose=verbose,
+        training_seed=training_seed,
+        dronegs_profile_id=dronegs_profile_id,
+        dronegs_qualification_policy_id=dronegs_qualification_policy_id,
+        dronegs_optimizer_profile=dronegs_optimizer_profile,
+        dronegs_pruning_policy=dronegs_pruning_policy,
+        dronegs_raster_profile=dronegs_raster_profile,
+        dronegs_sh_degree_interval=dronegs_sh_degree_interval,
+        dronegs_topology_cooldown=dronegs_topology_cooldown,
+        dronegs_photometric_finish=dronegs_photometric_finish,
+        dronegs_photometric_mse_percent=dronegs_photometric_mse_percent,
+        dronegs_checkpoint_every=dronegs_checkpoint_every,
+        dronegs_test_every=dronegs_test_every,
+        dronegs_test_split=dronegs_test_split,
+        dronegs_test_guard_percent=dronegs_test_guard_percent,
+        dronegs_canary_min_psnr=dronegs_canary_min_psnr,
+        dronegs_canary_min_ssim=dronegs_canary_min_ssim,
+        cancellation_check=cancellation_check,
+        checkpoint_callback=checkpoint_callback,
+        render_mode=render_mode,
+        facade_scale_mode=facade_scale_mode,
+        facade_meters_per_model_unit=facade_meters_per_model_unit,
+        facade_frame_report=facade_frame_report,
+        facade_texture_max_incidence_deg=facade_texture_max_incidence_deg,
+        facade_depth_iqr_multiplier=facade_depth_iqr_multiplier,
+        facade_seed_max_reprojection_error=facade_seed_max_reprojection_error,
+        facade_seed_min_track_length=facade_seed_min_track_length,
     )
-
-    # --- 1b. Extract EXIF altitudes ---
-    images_dir = os.path.join(dense_path, "images")
-    exif_altitudes = extract_exif_altitudes(images_dir)
-    # Map to cameras by image_name
-    cam_alts = [exif_altitudes.get(cam.image_name, None) for cam in train_cameras]
-    # Use mean of available altitudes
-    valid_alts = [a for a in cam_alts if a is not None]
-    mean_exif_alt = np.mean(valid_alts) if valid_alts else None
-
-    # --- 1c. Compute COLMAP→metric scale factor from GPS ---
-    # With a Sim3 transform the model is already metric after alignment.
-    # Without one (PCA-only path), COLMAP units are arbitrary — we derive the
-    # metres-per-unit ratio from GPS so the user can specify GSD in real metres.
-    if transform_data:
-        colmap_to_meters = float(transform_data.get("scale", 1.0))
-    else:
-        colmap_to_meters = compute_colmap_scale(train_cameras, images_dir, utm_crs)
-        _report(vol_id, "GAUSS", 6,
-                f"COLMAP scale: 1 unit = {colmap_to_meters:.2f} m (from GPS)",
-                report_fn)
-
-    # NOTE: We do NOT apply Sim3 before training. Training stays in COLMAP
-    # local coordinates for float32 numerical stability.
-    # Sim3 is applied AFTER training to transform the Gaussian model to
-    # geo-aligned coordinates for the orthophoto rendering.
-
-    _report(vol_id, "GAUSS", 10,
-            f"Loaded {len(train_cameras)} cameras, {point_cloud.points.shape[0]} points",
-            report_fn)
-
-    scene = build_scene_info(train_cameras, test_cameras, point_cloud,
-                             dense_path=dense_path)
-
-    # --- 2. Partition ---
-    use_partition = partition_m > 1 or partition_n > 1
-    if use_partition:
-        _report(vol_id, "GAUSS", 12,
-                f"Partitioning scene into {partition_m}×{partition_n} cells…", report_fn)
-        cells = partition_scene(scene, partition_m, partition_n, partition_overlap)
-        _report(vol_id, "GAUSS", 15,
-                f"Created {len(cells)} active cells", report_fn)
-    else:
-        cells = [(None, scene)]
+    scene_state = prepare_gaussian_scene(config)
+    registered_cameras = scene_state.registered_cameras
+    transform_data = scene_state.transform_data
+    mean_exif_alt = scene_state.mean_exif_alt
+    colmap_to_meters = scene_state.colmap_to_meters
+    scale_source = scene_state.scale_source
+    facade_frame = scene_state.facade_frame
+    texture_camera_count = scene_state.texture_camera_count
+    texture_filter_applied = scene_state.texture_filter_applied
+    minimum_sparse_observations = scene_state.minimum_sparse_observations
+    seed_max_error = scene_state.seed_max_error
+    seed_min_track = scene_state.seed_min_track
+    gaussian_seed_point_count = scene_state.gaussian_seed_point_count
 
     # --- 3. Train per cell through the stable backend boundary ---
-    cell_models = []
-    n_cells = len(cells)
-
-    for i, (cell_bounds, cell_scene) in enumerate(cells):
-        cell_label = f"cell_{i}" if use_partition else "full"
-        pct_start = 15 + int(65 * i / n_cells)
-        pct_end = 15 + int(65 * (i + 1) / n_cells)
-
-        _report(vol_id, "GAUSS", pct_start,
-                f"[{backend.name} MRNF] Training {cell_label}: "
-                f"{len(cell_scene.train_cameras)} cameras, "
-                f"{cell_scene.point_cloud.points.shape[0]} points",
-                report_fn)
-
-        # Prepare per-cell COLMAP data for the selected trainer.
-        cell_output = os.path.join(checkpoint_dir, cell_label)
-        sparse_dir = os.path.join(dense_path, "sparse", "0")
-        if not os.path.isdir(sparse_dir):
-            sparse_dir = os.path.join(dense_path, "sparse")
-        images_dir_path = os.path.join(dense_path, "images")
-
-        if use_partition:
-            # Export filtered COLMAP subset for this cell
-            cell_workspace = os.path.join(checkpoint_dir, f"{cell_label}_workspace")
-            camera_names = [c.image_name for c in cell_scene.train_cameras]
-            export_colmap_subset(
-                source_sparse_dir=sparse_dir,
-                target_dir=cell_workspace,
-                camera_names=camera_names,
-                images_dir=images_dir_path,
-            )
-            training_data_path = cell_workspace
-        else:
-            training_data_path = dense_path
-
-        checkpoint_path = os.path.join(cell_output, "training.ckpt")
-        resume_from = (
-            checkpoint_path
-            if os.path.isfile(checkpoint_path)
-            and not os.path.isfile(os.path.join(cell_output, "trainer_run.json"))
-            else None
-        )
-        if resume_from:
-            _report(
-                vol_id,
-                "GAUSS",
-                pct_start,
-                f"[DroneGS] Resuming {cell_label} from its validated checkpoint",
-                report_fn,
-            )
-
-        dataset_identity = compute_dataset_identity(training_data_path)
-        training_request = TrainingRequest(
-            data_path=training_data_path,
-            output_path=cell_output,
-            iterations=iterations,
-            strategy="mrnf",
-            sh_degree=sh_degree,
-            max_cap=cap_max,
-            resize_factor=data_factor,
-            max_width=max_width,
-            tile_mode=tile_mode,
-            # The validated production profile is deterministic across full
-            # and partitioned runs. Cell identity already lives in its
-            # dataset fingerprint/output path; changing the seed silently
-            # violates the DroneGS V1 request contract.
-            seed=training_seed,
-            dataset_fingerprint=dataset_identity.fingerprint,
-            dronegs=DroneGSTuning(
-                profile_id=dronegs_profile_id,
-                qualification_policy_id=dronegs_qualification_policy_id,
-                optimizer_profile=dronegs_optimizer_profile,
-                pruning_policy=dronegs_pruning_policy,
-                raster_profile=dronegs_raster_profile,
-                sh_degree_interval=dronegs_sh_degree_interval,
-                topology_cooldown=min(
-                    dronegs_topology_cooldown,
-                    max(1, iterations // 5),
-                ),
-                photometric_finish=min(
-                    dronegs_photometric_finish,
-                    max(1, iterations // 5),
-                ),
-                photometric_mse_percent=dronegs_photometric_mse_percent,
-                checkpoint_every=dronegs_checkpoint_every,
-                resume_from=resume_from,
-                test_every=dronegs_test_every,
-                test_split=dronegs_test_split,
-                test_guard_percent=dronegs_test_guard_percent,
-                save_eval_images=dronegs_test_every > 0,
-                canary_min_psnr=dronegs_canary_min_psnr,
-                canary_min_ssim=dronegs_canary_min_ssim,
-            ),
-        )
-
-        def make_training_reporter(pct_s, pct_e, vid, rfn, total):
-            def reporter(it, loss_val, n_gauss):
-                pct = pct_s + int((pct_e - pct_s) * it / max(1, total))
-                _report(vid, "GAUSS", pct,
-                        f"[MRNF] iter {it}: loss={loss_val:.4f}, N={n_gauss}", rfn)
-            return reporter
-
-        training_result = _reusable_dronegs_result(
-            training_request,
-            trainer_binary_sha256=trainer_binary_sha256,
-        )
-        if training_result is None:
-            if training_request.dronegs.resume_from is None:
-                quarantined = _quarantine_incompatible_dronegs_output(
-                    training_request.output_path
-                )
-                if quarantined is not None:
-                    _report(
-                        vol_id,
-                        "GAUSS",
-                        pct_start,
-                        (
-                            "[DroneGS] Incompatible prior output preserved at "
-                            f"{quarantined}; starting a clean training run."
-                        ),
-                        report_fn,
-                    )
-            training_result = backend.train(
-                training_request,
-                report_fn=make_training_reporter(
-                    pct_start, pct_end, vol_id, report_fn, iterations,
-                ),
-                verbose=verbose,
-                cancellation_check=cancellation_check,
-                checkpoint_fn=checkpoint_callback,
-            )
-        else:
-            _report(
-                vol_id,
-                "GAUSS",
-                pct_end,
-                f"[DroneGS] Reusing completed, canary-approved {cell_label}",
-                report_fn,
-            )
-        ply_path = str(training_result.ply_path)
-
-        # Load the exported PLY into our GaussianModel
-        model = GaussianModel(sh_degree=sh_degree, fagk_enabled=fagk)
-        model.load_ply(ply_path)
-        _report(vol_id, "GAUSS", pct_end,
-                f"[{backend.name}] Loaded {model.num_gaussians} Gaussians from {ply_path}",
-                report_fn)
-
-        cell_models.append((cell_bounds, model))
-
-    # --- 4. Merge ---
-    if use_partition and len(cell_models) > 1:
-        _report(vol_id, "GAUSS", 82, "Merging cell models…", report_fn)
-        cam_pos = np.stack([c.T for c in train_cameras])
-        pts_xy = np.concatenate([point_cloud.points[:, :2], cam_pos[:, :2]])
-        x_range = (float(pts_xy[:, 0].min()), float(pts_xy[:, 0].max()))
-        y_range = (float(pts_xy[:, 1].min()), float(pts_xy[:, 1].max()))
-
-        merged_model = merge_models(
-            cell_models, x_range, y_range,
-            partition_m, partition_n, partition_overlap,
-        )
-        _report(vol_id, "GAUSS", 85,
-                f"Merged model: {merged_model.num_gaussians} Gaussians", report_fn)
-    else:
-        merged_model = cell_models[0][1]
-
-    # Save final checkpoint (in local COLMAP coordinates)
-    final_ply = os.path.join(checkpoint_dir, "final.ply")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    # Ensure active_sh_degree is set correctly (train() sets it, but merging
-    # or loading from PLY can reset it to 0).
-    merged_model.active_sh_degree = sh_degree
-    merged_model.save_ply(final_ply)
-    _report(vol_id, "GAUSS", 88, f"Saved final model: {final_ply}", report_fn)
-
-    # --- Free training data before rendering (keep point_cloud for extent) ---
-    # Save cameras for potential PCA auto-alignment (lightweight list of R, T)
-    _all_cameras = train_cameras
-    del cells, cell_models
-    import gc
-    gc.collect()
-    cp.get_default_memory_pool().free_all_blocks()
-
-    # --- 5. Geo-alignment ---
-    # IMPORTANT: We split the Sim3 into rotation+scale (applied to the model)
-    # and translation (kept separate as float64).  Applying the full UTM
-    # translation (~10^6) to float32 Gaussian positions causes catastrophic
-    # precision loss.  E.g. Y ≈ 4,702,500 → float32 ULP = 0.5 m = 25 px
-    # banding at GSD = 0.02 m.  Instead the model stays centred near zero
-    # and the translation is folded into the ortho camera and GeoTIFF origin.
-    #
-    # For the PCA path (no Sim3 transform), we NO LONGER rotate the model.
-    # Rotating positions+quaternions without rotating SH coefficients causes
-    # a colour mismatch when rendering from nadir.  Instead the model stays
-    # in the original COLMAP coordinate frame and R_geo is passed to the
-    # orthographic renderer to orient the virtual nadir camera correctly.
-    geo_origin = np.zeros(3, dtype=np.float64)   # will be added to GeoTIFF
-    R_geo = None  # rotation COLMAP→geo for renderer (PCA path only)
-    sh_direction_rotation = None
-    if transform_data:
-        _report(vol_id, "GAUSS", 89, "Applying geo-alignment to Gaussian model…", report_fn)
-        # Apply only scale + rotation to the model (keeps coords near 0)
-        R = cp.array(transform_data["R"], dtype=cp.float32)
-        s = float(transform_data["scale"])
-        t_f64 = np.array(transform_data["t"], dtype=np.float64)
-
-        import math as _math
-        merged_model._xyz = (s * (R @ merged_model._xyz.T)).T
-        merged_model._scaling += _math.log(s)
-        R_quat = merged_model._matrix_to_quaternion(cp.asnumpy(R))
-        R_quat_cp = cp.array(R_quat, dtype=cp.float32)
-        merged_model._rotation = merged_model._quaternion_multiply(
-            R_quat_cp[None, :], merged_model._rotation,
-        )
-        # Geometry now lives in the geographic frame, but SH coefficients
-        # were learned in the original COLMAP frame. Convert the geographic
-        # view direction back with Rᵀ before evaluating SH.
-        sh_direction_rotation = cp.asnumpy(R).astype(np.float32).T
-        geo_origin = t_f64           # stored as float64, used for GeoTIFF only
-
-        # Keep transformed camera positions for spatial filtering
-        geo_cam_positions = apply_sim3_to_points(
-            np.array([c.T for c in _all_cameras], dtype=np.float64), transform_data)
-    else:
-        # --- PCA path: compute R_geo for renderer (DON'T rotate the model!) ---
-        # The model stays in COLMAP frame.  R_geo tells the ortho renderer
-        # which direction is "down" without breaking SH evaluation.
-        _report(vol_id, "GAUSS", 89, "Computing PCA nadir direction…", report_fn)
-        from .pca_alignment import compute_pca_rotation
-
-        cam_positions = np.array([c.T for c in _all_cameras], dtype=np.float64)
-        R_align, angle_deg = compute_pca_rotation(_all_cameras, point_cloud.points)
-        R_geo = R_align.astype(np.float32)
-        _report(vol_id, "GAUSS", 89,
-                f"PCA nadir direction: {angle_deg:.1f}° from Z (using R_geo for rendering)",
-                report_fn)
-
-        # Camera positions in geo-aligned frame (for GeoTIFF origin computation)
-        geo_cam_positions = (R_align @ cam_positions.T).T
-
-        # Compute geo_origin for GeoTIFF
-        from .exif_altitude import extract_exif_gps
-        from pyproj import Transformer as _Transformer
-        _gps = extract_exif_gps(images_dir)
-        _t_proj = _Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
-        _utm_pts = []
-        for cam in _all_cameras:
-            g = _gps.get(cam.image_name)
-            if g is not None:
-                e, n = _t_proj.transform(g[1], g[0])
-                _utm_pts.append([e, n, mean_exif_alt or 0.0])
-        if _utm_pts:
-            _gps_centroid = np.mean(_utm_pts, axis=0).astype(np.float64)
-            _model_centroid = geo_cam_positions.mean(axis=0) * colmap_to_meters
-            geo_origin = _gps_centroid - _model_centroid
-            _report(vol_id, "GAUSS", 89,
-                    f"GeoTIFF origin from GPS: E={geo_origin[0]:.2f}, N={geo_origin[1]:.2f}",
-                    report_fn)
-        del _gps, _utm_pts
-    del point_cloud
-
-    # Camera positions in the same coordinate frame as the model.
-    # Sim3 path: geo_cam = s*R@cam + t (full UTM), model = s*R@cam → subtract t.
-    # PCA path:  model is in COLMAP frame → use raw COLMAP camera positions.
-    # geo_origin is only used for the GeoTIFF mapping, NOT for spatial filtering.
-    if transform_data:
-        local_cam_positions = geo_cam_positions - geo_origin
-    else:
-        local_cam_positions = np.array([c.T for c in _all_cameras], dtype=np.float64)
-
-    # --- 5b–e. Filter outlier Gaussians ---
-    if not filter_enabled:
-        _report(vol_id, "GAUSS", 89, f"Filtering disabled — keeping all {merged_model.num_gaussians} Gaussians", report_fn)
-    else:
-        from .model_filtering import filter_gaussians
-        _report(vol_id, "GAUSS", 89, "Filtering Gaussians…", report_fn)
-        filter_gaussians(
-            merged_model,
-            local_cam_positions,
-            max_scale=filter_max_scale,
-            dist_multiplier=filter_dist_multiplier,
-            opacity_threshold=filter_opacity_threshold,
-            needle_ratio=filter_needle_ratio,
-            sor_sigma=filter_sor_sigma,
-            sor_enabled=filter_sor,
-            cc_enabled=filter_cc,
-            z_floater_enabled=filter_z_floater,
-            R_geo=R_geo,
-            report_fn=lambda msg: _report(vol_id, "GAUSS", 89, msg, report_fn),
-        )
-        _report(vol_id, "GAUSS", 89, f"After filtering: {merged_model.num_gaussians} Gaussians", report_fn)
-
-    # Re-save final.ply after all filters so the checkpoint is clean.
-    merged_model.save_ply(final_ply)
-    _report(vol_id, "GAUSS", 95,
-            f"Saved filtered model: {final_ply} ({merged_model.num_gaussians} Gaussians)",
-            report_fn)
-    del _all_cameras, scene
-
-    # Define rendering extent in local coordinates.
-    # Use the Gaussian model's own percentile-clipped position bounds rather
-    # than the raw COLMAP point cloud bounds.  The COLMAP cloud often contains
-    # outlier points far from the scene which inflate the Z range: this causes
-    # "sky" Gaussians (large scale, high Z) to enter the near/far frustum and
-    # produce a uniform haze when viewed from the ortho camera.
-    from .ortho_renderer import compute_ortho_extent as _compute_extent
-    model_extent = _compute_extent(merged_model, pad=2.0, R_geo=R_geo)
-    render_extent = model_extent
-
-    gc.collect()
-    cp.get_default_memory_pool().free_all_blocks()
-
-    # --- 6. Render orthophoto ---
-    # Convert metric GSD (metres/pixel) to model-unit GSD for the renderer.
-    # With Sim3: model is metric after scale*R → local_gsd = resolution.
-    # With PCA only: model stays in COLMAP units → divide by scale factor.
-    if transform_data:
-        local_gsd = resolution
-        geo_gsd = resolution
-    else:
-        local_gsd = resolution / colmap_to_meters
-        geo_gsd = resolution  # GeoTIFF pixel size is always in CRS metres
-    _report(vol_id, "GAUSS", 96,
-            f"Rendering orthographic TDOM at {resolution} m/px "
-            f"(local GSD={local_gsd:.6f})…", report_fn)
+    training_state = train_and_merge_gaussian_models(
+        config,
+        scene_state,
+        backend=backend,
+        trainer_binary_sha256=trainer_binary_sha256,
+        model_class=GaussianModel,
+        merge_models_fn=merge_models,
+        cupy_module=cp,
+    )
+    merged_model = training_state.merged_model
+    final_ply = training_state.final_ply
+    facade_subset_result = training_state.facade_subset_result
+    render_state = prepare_gaussian_render_state(
+        config,
+        scene_state,
+        training_state,
+        cupy_module=cp,
+    )
+    merged_model = render_state.merged_model
+    geo_origin = render_state.geo_origin
+    frame_origin = render_state.frame_origin
+    R_geo = render_state.rotation_geo
+    sh_direction_rotation = render_state.sh_direction_rotation
+    facade_depth_bounds_model = render_state.facade_depth_bounds_model
+    render_extent = render_state.render_extent
+    local_gsd = render_state.local_gsd
+    resolution_units = render_state.resolution_units
+    _report(
+        vol_id,
+        "GAUSS",
+        96,
+        f"Rendering orthographic TDOM at {resolution} {resolution_units}/px (local GSD={local_gsd:.6f})…",
+        report_fn,
+    )
     result = render_orthophoto(
-        merged_model, gsd=local_gsd, extent=render_extent,
+        merged_model,
+        gsd=local_gsd,
+        extent=render_extent,
         R_geo=R_geo,
+        frame_origin=frame_origin,
         sh_direction_rotation=sh_direction_rotation,
         mip_filter_variance=ortho_mip_filter_variance,
         mip_filter_compensation=ortho_mip_filter_compensation,
@@ -698,30 +1239,34 @@ def generate_gaussian_orthophoto(
     height = result["height"]
     x_min, x_max, y_min, y_max = result["extent"]
     H, W = rgb.shape[:2]
-    _report(vol_id, "GAUSS", 97,
-            f"Orthophoto rendered: {W}x{H} px at GSD={resolution} m/px", report_fn)
+    _report(vol_id, "GAUSS", 97, f"Orthophoto rendered: {W}x{H} px at GSD={resolution} m/px", report_fn)
 
     # --- 7. Write GeoTIFF ---
     # Translate the local-coordinate extent back to geographic (UTM) coords.
     # With Sim3: model is metric, geo_origin is the Sim3 translation (float64).
     # With PCA: model is in COLMAP units, scale to metres + add GPS-derived origin.
-    if transform_data:
-        geo_x_min = float(np.float64(x_min) + geo_origin[0])
-        geo_y_max = float(np.float64(y_max) + geo_origin[1])
-    else:
-        geo_x_min = float(np.float64(x_min) * colmap_to_meters + geo_origin[0])
-        geo_y_max = float(np.float64(y_max) * colmap_to_meters + geo_origin[1])
+    geo_x_min, geo_y_max = georeference_raster_origin(
+        x_min,
+        y_max,
+        geo_origin=geo_origin,
+        colmap_to_meters=colmap_to_meters,
+        sim3_aligned=bool(transform_data),
+        facade=render_mode == "facade",
+    )
 
     # --- Altitude correction: convert local model Z to the georeferenced datum ---
-    from .height_reference import georeference_height_map
-
-    height, z_offset, vertical_reference = georeference_height_map(
-        height,
-        sim3_aligned=bool(transform_data),
-        geo_origin_z=float(geo_origin[2]),
-        colmap_to_meters=colmap_to_meters,
-        exif_altitude_available=mean_exif_alt is not None,
-    )
+    if render_mode == "facade":
+        height = height * colmap_to_meters
+        z_offset = 0.0
+        vertical_reference = "local-facade-depth"
+    else:
+        height, z_offset, vertical_reference = georeference_height_map(
+            height,
+            sim3_aligned=bool(transform_data),
+            geo_origin_z=float(geo_origin[2]),
+            colmap_to_meters=colmap_to_meters,
+            exif_altitude_available=mean_exif_alt is not None,
+        )
     if vertical_reference == "sim3":
         _report(
             vol_id,
@@ -750,17 +1295,95 @@ def generate_gaussian_orthophoto(
     _report(vol_id, "GAUSS", 98, "Writing GeoTIFF\u2026", report_fn)
 
     height_file = str(Path(ortho_file).with_suffix(".height.tif"))
+    output_crs = None if render_mode == "facade" else utm_crs
     write_geotiff(
         output_path=ortho_file,
         rgb=rgb,
-        x_min=geo_x_min, y_max=geo_y_max, gsd=resolution,
-        crs=utm_crs,
+        x_min=geo_x_min,
+        y_max=geo_y_max,
+        gsd=resolution,
+        crs=output_crs,
         height_map=height,
         height_output_path=height_file,
     )
 
-    _report(vol_id, "GAUSS", 100,
-            f"Done. Orthomosaic: {ortho_file}, Height: {height_file}", report_fn)
+    if render_mode == "facade":
+        report_path = Path(facade_frame_report or str(Path(ortho_file).with_name("facade_frame.json")))
+        frame_payload = {
+            "schema_version": 1,
+            "coordinate_system": "LOCAL_FACADE",
+            "units": "metres" if scale_source != "model-units" else "model-units",
+            "axis_definition": {
+                "x": "horizontal-right",
+                "y": "vertical-up",
+                "z": "outward-toward-cameras",
+            },
+            "scale": {
+                "meters_per_model_unit": colmap_to_meters,
+                "source": scale_source,
+                "uses_absolute_position": False,
+                "uses_rtk_adjustment": False,
+            },
+            "frame": facade_frame.as_dict(),
+            "texture_selection": {
+                "registered_cameras": len(registered_cameras),
+                "training_cameras": texture_camera_count,
+                "maximum_incidence_deg": float(facade_texture_max_incidence_deg),
+                "minimum_sparse_observations": minimum_sparse_observations,
+                "filter_applied": texture_filter_applied,
+            },
+            "gaussian_seed": {
+                "maximum_reprojection_error_px": seed_max_error,
+                "minimum_track_length": seed_min_track,
+                "points_after_loader_filter": gaussian_seed_point_count,
+                "training_workspace_points": (
+                    facade_subset_result["exported_points"]
+                    if facade_subset_result is not None
+                    else gaussian_seed_point_count
+                ),
+                "coverage_balanced_cap_applied": bool(
+                    facade_subset_result and facade_subset_result["coverage_balanced"]
+                ),
+            },
+            "depth_filter": {
+                "iqr_multiplier": float(facade_depth_iqr_multiplier),
+                "bounds_model_units": (
+                    list(facade_depth_bounds_model) if facade_depth_bounds_model is not None else None
+                ),
+                "bounds_metres": (
+                    [
+                        facade_depth_bounds_model[0] * colmap_to_meters,
+                        facade_depth_bounds_model[1] * colmap_to_meters,
+                    ]
+                    if facade_depth_bounds_model is not None
+                    else None
+                ),
+            },
+            "raster": {
+                "width": W,
+                "height": H,
+                "pixel_size": resolution,
+                "pixel_size_units": resolution_units,
+                "extent": [
+                    geo_x_min,
+                    geo_y_max - H * resolution,
+                    geo_x_min + W * resolution,
+                    geo_y_max,
+                ],
+                "crs": None,
+            },
+        }
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = report_path.with_suffix(report_path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(frame_payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary, report_path)
+    else:
+        report_path = None
+
+    _report(vol_id, "GAUSS", 100, f"Done. Orthomosaic: {ortho_file}, Height: {height_file}", report_fn)
 
     return {
         "ortho_file": ortho_file,
@@ -770,14 +1393,32 @@ def generate_gaussian_orthophoto(
         "width": W,
         "height": H,
         "gsd": resolution,
-        "projected_extent": [
+        "gsd_units": resolution_units,
+        "raster_extent": [
             geo_x_min,
             geo_y_max - H * resolution,
             geo_x_min + W * resolution,
             geo_y_max,
         ],
+        "projected_extent": (
+            None
+            if render_mode == "facade"
+            else [
+                geo_x_min,
+                geo_y_max - H * resolution,
+                geo_x_min + W * resolution,
+                geo_y_max,
+            ]
+        ),
         "vertical_reference": vertical_reference,
         "vertical_offset_m": z_offset,
+        "render_mode": render_mode,
+        "coordinate_system": "LOCAL_FACADE" if render_mode == "facade" else utm_crs,
+        "facade_frame_report": str(report_path) if report_path else None,
+        "scale_source": scale_source,
+        "meters_per_model_unit": colmap_to_meters,
+        "registered_cameras": len(registered_cameras),
+        "texture_cameras": texture_camera_count,
         "renderer_contract": "cupy-ortho-v2-sh-frame",
         "cupy_version": cp.__version__,
         "n_gaussians": merged_model.num_gaussians,

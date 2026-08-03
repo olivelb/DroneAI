@@ -13,11 +13,11 @@ from PIL.ExifTags import GPSTAGS
 
 from shared.pipeline_params import (
     merge_mission_pipeline_params,
-    normalize_ai_backend,
     normalize_feature_type,
     normalize_matcher_type,
 )
 from shared.dji_metadata import load_position_overrides
+from shared.checksums import sha256_file
 from shared.projected_crs import select_projected_crs
 
 
@@ -33,9 +33,17 @@ POSITION_SIDECAR_SUFFIXES = {".mrk"}
 # they decide whether a run is accepted, not what target reconstruction is
 # requested.
 COLMAP_CACHE_PARAMETER_KEYS = (
+    "orthophoto_mode",
+    "facade_selection_mode",
+    "facade_excluded_image_ranges",
+    "facade_max_abs_pitch_deg",
+    "facade_min_pass_images",
+    "facade_target_yaw_deg",
+    "facade_yaw_tolerance_deg",
     "feature_type",
     "feature_max_image_size",
     "feature_max_num_features",
+    "feature_max_num_matches",
     "sift_first_octave",
     "matcher_type",
     "guided_matching",
@@ -61,6 +69,7 @@ COLMAP_CACHE_PARAMETER_KEYS = (
     "rtk_refinement_loss_scale",
     "imu_gravity_enabled",
     "mvs_max_image_size",
+    "mvs_num_threads",
 )
 
 
@@ -217,14 +226,7 @@ def save_copy_manifest(image_dir, manifest):
 
 
 def compute_file_sha256(path, chunk_size=1024 * 1024):
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        while True:
-            chunk = handle.read(chunk_size)
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path, chunk_size=chunk_size)
 
 
 def describe_source_file(path, sha256=None):

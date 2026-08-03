@@ -32,8 +32,9 @@ def apply_mission_state(session, payload: dict) -> None:
     mission.service_states = states
     mission.current_step = step
     mission.progress = progress
-    if status in TERMINAL_STATUSES:
-        mission.status = status
+    overall_status = compute_overall_status(states)
+    if overall_status in TERMINAL_STATUSES:
+        mission.status = overall_status
     elif mission.status not in TERMINAL_STATUSES:
         mission.status = "processing"
     mission.updated_at = datetime.now(timezone.utc)
@@ -84,6 +85,16 @@ def compute_overall_status(services: dict) -> str:
     ]
     if "error" in statuses:
         return "error"
+    colmap = services.get("COLMAP")
+    if isinstance(colmap, dict):
+        details = colmap.get("details")
+        if (
+            colmap.get("status") == "success"
+            and isinstance(details, dict)
+            and details.get("process") == "facade"
+            and details.get("terminal") is True
+        ):
+            return "success"
     if all(status == "success" for status in statuses if status) and all(
         service in services for service in SERVICE_ORDER
     ):

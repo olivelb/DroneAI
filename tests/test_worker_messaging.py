@@ -1,7 +1,12 @@
 import json
+from unittest.mock import Mock
 
+from shared.cancellation import AttemptCancellationRegistry
 from shared.pipeline_params import normalize_ai_backend
-from shared.worker_messaging import make_progress_publisher
+from shared.worker_messaging import (
+    make_cancellation_handler,
+    make_progress_publisher,
+)
 
 
 class FakeProducer:
@@ -47,3 +52,28 @@ def test_progress_publisher_builds_the_common_status_contract():
     assert event["progress"] == 50
     assert event["log"] == "halfway"
     assert event["details"] == {"tiles": 4}
+
+
+def test_cancellation_handler_shares_attempt_scoping_across_workers():
+    registry = AttemptCancellationRegistry()
+    logger = Mock()
+    handle = make_cancellation_handler(registry, logger)
+
+    handle({"command": "pause", "vol_id": "mission-1"})
+    handle({"command": "cancel"})
+    handle(
+        {
+            "command": "cancel",
+            "vol_id": "mission-1",
+            "analysis_run_id": "run-2",
+            "attempt": 3,
+        }
+    )
+
+    assert registry.is_cancelled("mission-1", "run-2", 3)
+    assert not registry.is_cancelled("mission-1", "run-2", 2)
+    logger.info.assert_called_once_with(
+        "Cancellation requested for %s analysis=%s",
+        "mission-1",
+        "run-2",
+    )

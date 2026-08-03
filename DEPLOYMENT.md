@@ -258,13 +258,18 @@ script with `--no-build` after a full WSL restart if that address changes.
 1. Open the dashboard URL printed by `deploy.sh`.
 2. Enter a dataset name and select all images for one flight or survey.
 3. Upload and select the resulting dataset folder.
-4. In Reconstruction, choose the modern fast profile and a local work drive.
-5. Review feature resolution, BA passes, retriangulation and projected CRS.
+4. In Reconstruction, choose **Cartographie aérienne** or **Façade HD** under
+   **Processus de production**, then select a work drive.
+5. For a map, review the alignment preset, retriangulation and projected CRS.
+   For a facade, review the exclusion ranges and local scale; the qualified
+   Caspar/DroneGS values are loaded from the API profile.
 6. Select a DroneGS profile and YOLO OBB configuration.
-7. Launch the mission and follow live status through reconstruction,
-   orthomosaic/COG generation, tiling, inference and aggregation.
-8. Open Results to inspect raster tiles, vector detections, measurements,
-   search and manual annotations.
+7. Launch the mission. A map continues through reconstruction, COG generation,
+   tiling, inference and aggregation. A facade ends after its local RGB/depth
+   COGs and audit reports; the dashboard does not wait for TILER or IA.
+8. Open Results to inspect the available raster products. Map missions also
+   expose vector detections, measurements, search and manual annotations;
+   facade rasters remain explicitly labelled as local and CRS-free.
 9. Open Export, download the COG and a GeoPackage using the raster CRS, then
    verify both layers superpose in QGIS. Repeat with WGS84 or a custom
    `EPSG:<code>` when that delivery contract is required.

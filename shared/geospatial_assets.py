@@ -97,8 +97,9 @@ def raster_metadata(
         "crs": dataset.crs.to_string() if dataset.crs else None,
         "bounds": {
             "native": [float(value) for value in dataset.bounds],
-            "wgs84": _wgs84_bounds(dataset),
+            "wgs84": _wgs84_bounds(dataset) if dataset.crs else None,
         },
+        "coordinate_space": "projected" if dataset.crs else "local",
         "width": dataset.width,
         "height": dataset.height,
         "bands": dataset.count,

@@ -5,9 +5,7 @@ Loads a trained Gaussian model checkpoint, computes scene extent,
 and renders the full orthographic TDOM (RGB + optional height map).
 """
 import os
-from pathlib import Path
 
-import cupy as cp
 import numpy as np
 
 from .gaussian_model import GaussianModel

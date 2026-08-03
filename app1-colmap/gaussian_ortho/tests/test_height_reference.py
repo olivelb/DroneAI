@@ -16,6 +16,7 @@ if ROOT not in sys.path:
 from gaussian_ortho.height_reference import (
     depth_buffer_to_height,
     georeference_height_map,
+    georeference_raster_origin,
 )
 
 
@@ -31,6 +32,31 @@ def test_depth_buffer_is_unprojected_and_empty_pixels_are_nodata() -> None:
 def test_invalid_camera_height_is_rejected() -> None:
     with pytest.raises(ValueError, match="camera_z"):
         depth_buffer_to_height(np.ones((1, 1), dtype=np.float32), float("nan"))
+
+
+@pytest.mark.parametrize(
+    ("sim3_aligned", "facade", "expected"),
+    [
+        (True, False, (510.0, 620.0)),
+        (False, False, (520.0, 640.0)),
+        (False, True, (20.0, 40.0)),
+    ],
+)
+def test_raster_origin_follows_coordinate_mode(
+    sim3_aligned: bool,
+    facade: bool,
+    expected: tuple[float, float],
+) -> None:
+    origin = georeference_raster_origin(
+        10.0,
+        20.0,
+        geo_origin=np.array([500.0, 600.0, 700.0]),
+        colmap_to_meters=2.0,
+        sim3_aligned=sim3_aligned,
+        facade=facade,
+    )
+
+    assert origin == expected
 
 
 def test_sim3_translation_is_added_to_local_model_z() -> None:

@@ -61,7 +61,7 @@ docker run --rm \
   --volume "$dataset:/input:ro" \
   --volume "$workspace:/workspace" \
   "$preflight_image" \
-  python /repo/tools/dataset_preflight.py /input \
+  python3 /repo/tools/dataset_preflight.py /input \
   --gps-quality "$gps_quality" \
   --output /workspace/dataset_preflight.json \
   --geojson /workspace/flight_path.geojson \

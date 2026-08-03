@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { deleteMission } from "../lib/api";
 import { useStore } from "../lib/store";
-import { SERVICE_ORDER } from "../lib/types";
+import { serviceOrderFor } from "../lib/types";
 import type { PodState, ServiceName, StatusPayload } from "../lib/types";
 
 const SERVICE_LABELS: Record<ServiceName, string> = {
@@ -137,6 +137,7 @@ export default function StatusSidebar() {
   const sortedMissions = Object.values(missions).sort(
     (left, right) => right.updated_at - left.updated_at,
   );
+  const serviceOrder = serviceOrderFor(activeMission?.services ?? {});
 
   return (
     <div className="space-y-4">
@@ -212,7 +213,7 @@ export default function StatusSidebar() {
           </h3>
         </div>
         <div className="space-y-2">
-          {SERVICE_ORDER.map((service) => (
+          {serviceOrder.map((service) => (
             <ServiceProgress
               key={service}
               name={service}

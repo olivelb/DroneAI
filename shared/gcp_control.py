@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import math
 import os
 import shutil
@@ -16,6 +15,7 @@ import numpy as np
 from pyproj import CRS, Transformer
 
 from shared.geo_alignment import estimate_sim3, estimate_weighted_sim3
+from shared.checksums import sha256_file
 
 
 ADJUSTMENT_ROLES = {"adjustment", "adjust", "control", "gcp"}
@@ -39,12 +39,7 @@ class GcpAccuracy:
     role: str = "adjustment"
 
 
-def file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
+file_sha256 = sha256_file
 
 
 def prepare_gcp_assets(
@@ -224,7 +219,9 @@ def parse_gcp_accuracy_file(path: str | Path) -> dict[str, GcpAccuracy]:
     return result
 
 
-def _image_lookup(reconstruction: Any) -> dict[str, Any]:
+def build_image_lookup(reconstruction: Any) -> dict[str, Any]:
+    """Index unambiguous reconstruction images by full name and basename."""
+
     lookup: dict[str, Any] = {}
     ambiguous: set[str] = set()
     for image in reconstruction.images.values():
@@ -238,11 +235,13 @@ def _image_lookup(reconstruction: Any) -> dict[str, Any]:
     return lookup
 
 
-def _ray_for_observation(
+def observation_ray(
     reconstruction: Any,
     image: Any,
     pixel_xy: tuple[float, float],
 ) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return a normalized world ray and focal length for an image pixel."""
+
     camera = reconstruction.cameras[image.camera_id]
     camera_ray = camera.cam_ray_from_img(np.asarray(pixel_xy, dtype=np.float64))
     if camera_ray is None:
@@ -255,11 +254,13 @@ def _ray_for_observation(
     return origin, direction / np.linalg.norm(direction), focal
 
 
-def _project_point(
+def project_point(
     reconstruction: Any,
     image: Any,
     xyz: np.ndarray,
 ) -> np.ndarray | None:
+    """Project a world point into an image, or return ``None`` when hidden."""
+
     camera = reconstruction.cameras[image.camera_id]
     point_camera = np.asarray(image.cam_from_world() * xyz, dtype=np.float64)
     if point_camera[2] <= 0:
@@ -522,7 +523,7 @@ def build_weighted_gcp_alignment(
             + ", ".join(unknown_accuracy_points)
         )
     reconstruction = pycolmap.Reconstruction(str(model_path))
-    lookup = _image_lookup(reconstruction)
+    lookup = build_image_lookup(reconstruction)
 
     triangulated: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
@@ -541,7 +542,7 @@ def build_weighted_gcp_alignment(
             if image is None:
                 continue
             try:
-                origin, direction, focal = _ray_for_observation(
+                origin, direction, focal = observation_ray(
                     reconstruction, image, observation.pixel_xy
                 )
             except ValueError:
@@ -563,7 +564,7 @@ def build_weighted_gcp_alignment(
         )
         reprojection = []
         for observation, image, _, _, _ in usable:
-            projected = _project_point(reconstruction, image, initial)
+            projected = project_point(reconstruction, image, initial)
             reprojection.append(
                 float("inf")
                 if projected is None
