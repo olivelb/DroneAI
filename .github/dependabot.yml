@@ -36,12 +36,23 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "nvidia/cuda"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: docker
     directory: "/app1-colmap/dronegs"
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "nvidia/cuda"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "python"
+        versions:
+          - ">= 3.13"
 
   - package-ecosystem: docker
     directory: "/app2-ia"
@@ -54,15 +65,27 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "python"
+        versions:
+          - ">= 3.13"
 
   - package-ecosystem: docker
     directory: "/app4-dashboard/api"
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "python"
+        versions:
+          - ">= 3.13"
 
   - package-ecosystem: docker
     directory: "/app4-dashboard/frontend"
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
