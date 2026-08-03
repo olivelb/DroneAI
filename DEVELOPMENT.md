@@ -8,6 +8,7 @@ Kubernetes, or a CUDA GPU.
 ## Supported toolchain
 
 - Python 3.11 or 3.12
+- GNU Make
 - Node.js 20
 - npm with the committed `package-lock.json`
 
@@ -25,12 +26,18 @@ python -m pip install --requirement requirements/dev.txt
 Run the checks:
 
 ```bash
-make compile
-make lint
+make static
 make coverage
 ```
 
-`make check` runs all three. Coverage uses branch measurement across the
+`make static` compiles Python sources, applies the repository and focused
+worker lint rules, runs strict worker type checking, validates the GitHub
+Actions workflows and rejects broken local Markdown links. `make check` runs
+both `make static` and `make coverage`, using the exact static checks enforced
+by CI. The development lock installs the `actionlint` executable through
+`actionlint-py`, with deterministic ShellCheck and Pyflakes integrations.
+
+Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
 50%. That floor is a ratchet, not a completeness claim: new or changed pure
 logic is expected to receive focused unit tests even when subprocess, CUDA or

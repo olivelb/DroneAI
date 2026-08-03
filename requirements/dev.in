@@ -1,13 +1,16 @@
 -r api.in
 -r processing.in
 
-numpy
+actionlint-py
 coverage[toml]
 fiona
 httpx2
 mypy
+numpy
 pip-tools
+pyflakes
 pyproj
 pytest
 ruff
 scipy
+shellcheck-py
