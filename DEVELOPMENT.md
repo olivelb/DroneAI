@@ -82,6 +82,25 @@ pytest -m integration
 `tools/smoke_cupy_ortho.py` is a manual diagnostic script. It requires a CUDA
 GPU and mission-specific reconstruction artifacts and is not part of CI.
 
+CUDA container validation is split deliberately. The hosted
+`cuda-containers.yml` workflow builds the development image, compiles a
+portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
+both production Dockerfiles. It validates Docker recipes and toolchains without
+claiming to exercise a GPU. The scheduled or manually dispatched
+`dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
+development container on a self-hosted runner, then verifies driver injection
+in each production CUDA runtime image. It requires a repository runner labelled
+`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`.
+
+The GPU workflow exposes the available devices with Docker's `--gpus all` but
+does not set a device index or `CUDA_VISIBLE_DEVICES`; CUDA and the NVIDIA
+driver retain device selection. Run the same contracts locally with:
+
+```bash
+scripts/ci/validate_cuda_containers.sh build
+scripts/ci/validate_cuda_containers.sh gpu
+```
+
 The infrastructure-free dataset and sparse reconstruction workflow is
 documented in [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
 
