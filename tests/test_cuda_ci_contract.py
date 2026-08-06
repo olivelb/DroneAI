@@ -20,15 +20,16 @@ def test_hosted_ci_builds_each_cuda_dockerfile_contract() -> None:
     assert "-DDRONEGS_CUDA_ARCHITECTURES=portable" in script
 
 
-def test_portable_cuda_build_only_runs_for_cuda_related_changes() -> None:
+def test_portable_cuda_build_only_runs_for_version_changes_or_manual_dispatch() -> None:
     general_workflow = GENERAL_WORKFLOW.read_text(encoding="utf-8")
     cuda_workflow = CONTAINER_WORKFLOW.read_text(encoding="utf-8")
 
     assert "DroneGS portable CUDA build" not in general_workflow
-    assert "app1-colmap/dronegs/**" in cuda_workflow
-    assert cuda_workflow.count("!app1-colmap/dronegs/**/*.md") == 2
-    assert 'app1-colmap/Dockerfile.base"' in cuda_workflow
-    assert 'app1-colmap/Dockerfile.local-gaussian"' in cuda_workflow
+    assert "run: python3 scripts/ci/select_cuda_builds.py" in cuda_workflow
+    assert cuda_workflow.count("if: needs.version-change.outputs.build_required == 'true'") == 2
+    assert "workflow_dispatch" in cuda_workflow
+    assert "dockerfile: app1-colmap/Dockerfile.base" in cuda_workflow
+    assert "dockerfile: app1-colmap/Dockerfile.local-gaussian" in cuda_workflow
 
 
 def test_gpu_nightly_executes_native_cuda_tests_in_container() -> None:

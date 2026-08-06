@@ -1,27 +1,7 @@
 name: CUDA container validation
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/cuda-containers.yml"
-      - "app1-colmap/Dockerfile.base"
-      - "app1-colmap/Dockerfile.local-gaussian"
-      - "app1-colmap/dronegs/**"
-      - "!app1-colmap/dronegs/**/*.md"
-      - "scripts/ci/validate_cuda_containers.sh"
-      - "scripts/ci/select_cuda_builds.py"
-      - "setup_deps.sh"
   pull_request:
-    paths:
-      - ".github/workflows/cuda-containers.yml"
-      - "app1-colmap/Dockerfile.base"
-      - "app1-colmap/Dockerfile.local-gaussian"
-      - "app1-colmap/dronegs/**"
-      - "!app1-colmap/dronegs/**/*.md"
-      - "scripts/ci/validate_cuda_containers.sh"
-      - "scripts/ci/select_cuda_builds.py"
-      - "setup_deps.sh"
   workflow_dispatch:
 
 permissions:
@@ -125,3 +105,25 @@ jobs:
           path: supply-chain/
           if-no-files-found: warn
           retention-days: 30
+
+  cuda-gate:
+    name: CUDA validation gate
+    needs:
+      - version-change
+      - cuda-container-build
+      - cuda-runtime-supply-chain
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected CUDA job to pass
+        run: |
+          for result in \
+            "${{ needs.version-change.result }}" \
+            "${{ needs.cuda-container-build.result }}" \
+            "${{ needs.cuda-runtime-supply-chain.result }}"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "Selected CUDA job concluded: $result" >&2; exit 1 ;;
+            esac
+          done

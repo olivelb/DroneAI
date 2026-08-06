@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -296,3 +294,35 @@ jobs:
             exit 1
           fi
           grep -Eq '^[[:space:]]+name: drone-ai-storage-production$' /tmp/drone-ai-production.yaml
+
+  ci-gate:
+    name: CI gate
+    needs:
+      - changes
+      - docs
+      - dronegs-core
+      - python
+      - migrations
+      - frontend
+      - container-smoke
+      - helm
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every selected job to pass
+        run: |
+          for result in \
+            "${{ needs.changes.result }}" \
+            "${{ needs.docs.result }}" \
+            "${{ needs.dronegs-core.result }}" \
+            "${{ needs.python.result }}" \
+            "${{ needs.migrations.result }}" \
+            "${{ needs.frontend.result }}" \
+            "${{ needs.container-smoke.result }}" \
+            "${{ needs.helm.result }}"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "Selected CI job concluded: $result" >&2; exit 1 ;;
+            esac
+          done

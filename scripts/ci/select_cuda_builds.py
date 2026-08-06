@@ -42,11 +42,6 @@ def version_change_reason(diff_lines: list[str]) -> str | None:
 def _event_range(event_name: str, event: dict[str, Any]) -> tuple[str, str] | None:
     if event_name == "pull_request":
         return str(event["pull_request"]["base"]["sha"]), str(event["pull_request"]["head"]["sha"])
-    if event_name == "push":
-        before = str(event.get("before", ""))
-        after = str(event.get("after", ""))
-        if before and after and set(before) != {"0"}:
-            return before, after
     return None
 
 
