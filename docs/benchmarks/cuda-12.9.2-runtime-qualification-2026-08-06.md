@@ -8,11 +8,11 @@ test suites and NVIDIA driver injection in both production runtime bases. It is
 not a dataset-quality benchmark, a complete DroneAI deployment test or an
 immutable release attestation.
 
-The run used the audit-hardening working tree based on Git commit
-`c89f31e1cee2d7ea0e2f876d09a40b9f31a5c1d7`. The working tree contained pending
-changes, including the qualification reporting and COLMAP container hardening.
-Consequently, this document is local pre-commit evidence; the self-hosted GPU
-workflow must be rerun after commit to produce release evidence.
+The confirming run used clean Git commit
+`1eeb49ef501482b9e745036a0ef557348c53e922`, which contains the audit-hardening
+changes, qualification reporting and COLMAP container hardening. This ties the
+local physical-GPU result to an immutable source revision. It is still a local
+qualification rather than a retained GitHub Actions artifact.
 
 ## Environment
 
@@ -49,16 +49,20 @@ binaries.
 
 | CTest suite | Result | Time |
 |---|---:|---:|
-| `dronegs_core_tests` | Passed | 0.00 s |
+| `dronegs_core_tests` | Passed | 0.01 s |
 | `dronegs_rasterization_tests` | Passed | 0.00 s |
 | `dronegs_cuda_tests` | Passed | 0.22 s |
-| `dronegs_rasterization_cuda_tests` | Passed | 0.16 s |
-| `dronegs_training_tests` | Passed | 0.22 s |
-| `dronegs_lpips_tool_tests` | Passed | 0.15 s |
+| `dronegs_rasterization_cuda_tests` | Passed | 0.17 s |
+| `dronegs_training_tests` | Passed | 0.21 s |
+| `dronegs_lpips_tool_tests` | Passed | 0.05 s |
 
-CTest reported 100% success: 6 tests passed, 0 failed, with 0.76 seconds of
-test execution time. The complete container build, native execution and
-runtime-smoke command completed in approximately 217 seconds.
+CTest reported 100% success: 6 tests passed, 0 failed, with 0.66 seconds of
+test execution time. With Docker base layers already cached, the complete
+post-commit container build, native execution and runtime-smoke command
+completed in 27.9 seconds.
+
+The 7,564-byte local log contains 156 lines and has SHA-256
+`99b3972e35de6b66772c9a4c01f27cec04c92957861f8c8c2e9bad0fd45b5ea5`.
 
 ## Production runtime driver injection
 
@@ -73,11 +77,10 @@ images:
 ## Conclusion and remaining gate
 
 CUDA 12.9.2 compilation, native GPU execution and production-runtime driver
-injection are compatible with this machine and working tree. This removes the
-specific audit reservation that only CUDA 12.8.1 had documented physical-GPU
-execution.
+injection are compatible with this machine and commit `1eeb49e`. This removes
+the specific audit reservation that only CUDA 12.8.1 had documented
+physical-GPU execution.
 
-Before treating the result as release evidence, commit the changes and run the
-manual or scheduled `dronegs-gpu-nightly.yml` workflow with
-`DRONEGS_GPU_CI=true`. Preserve its commit-scoped `gpu-validation.log` artifact;
-that artifact ties the same checks to an immutable source revision.
+For a centrally retained release artifact, push the qualified commit and run
+the manual or scheduled `dronegs-gpu-nightly.yml` workflow with
+`DRONEGS_GPU_CI=true`. Preserve its commit-scoped `gpu-validation.log` artifact.

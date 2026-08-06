@@ -3,9 +3,10 @@
 ## Scope
 
 This note records the changes and local checks performed in response to the
-2026-08-04 DroneAI audit. The work was based on commit `c89f31e` and remained
-uncommitted when these checks ran. It is review evidence for the working tree,
-not a release announcement or deployment record.
+2026-08-04 DroneAI audit. The focused Python, frontend and documentation checks
+ran before commit; the physical CUDA qualification was then repeated against
+clean commit `1eeb49ef501482b9e745036a0ef557348c53e922`. It is validation
+evidence, not a deployment record.
 
 ## Implemented changes
 
@@ -74,5 +75,5 @@ The physical-GPU environment and individual native results are recorded in
 
 These focused checks do not replace the full `make check`, a complete
 Compose/K3s mission, Helm acceptance, RTK/non-RTK dataset regressions or a
-post-commit GPU workflow artifact. Run the repository release gates after the
-working tree is reviewed and committed.
+centrally retained GPU workflow artifact. Run the remaining repository release
+gates before publication.

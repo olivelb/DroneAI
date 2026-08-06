@@ -152,10 +152,10 @@ All six native DroneGS suites passed and NVIDIA driver injection succeeded in
 both production runtime images. The complete local record and its scope are in
 [`benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md).
 
-That run qualifies the pending audit-hardening working tree based on commit
-`c89f31e`; it is not immutable release evidence. A release candidate must still
-produce a successful, commit-scoped artifact from `dronegs-gpu-nightly.yml`
-after the changes are committed.
+The confirming run qualifies clean commit `1eeb49e`, so the source revision is
+immutable and locally reproducible. A release candidate should still retain a
+successful, commit-scoped artifact from `dronegs-gpu-nightly.yml` after that
+commit is pushed.
 
 ## SAVERES RTK release evidence
 
