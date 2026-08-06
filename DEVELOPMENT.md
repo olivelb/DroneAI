@@ -64,12 +64,12 @@ smallest relevant stage. The COLMAP worker package additionally enforces
 modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 15
 across the complete worker package. Stable contracts, runtime boundaries,
 artifact helpers, mission coordination and every COLMAP stage also pass strict
-mypy checks. The same strict contract now covers the 23 pure/domain modules at
-the root of `shared/`. The three dynamic infrastructure boundaries
-`shared/database.py`, `shared/inbox_outbox.py` and `shared/storage.py` remain
-explicitly excluded pending their dedicated SQLAlchemy/S3 typing migration;
-imports are still skipped so third-party stubs cannot weaken either strict
-contract.
+mypy checks. The same strict contract covers all 26 modules at the root of
+`shared/`, including the SQLAlchemy, transactional inbox/outbox and S3
+boundaries. Those dynamic integrations expose explicit session and S3 client
+contracts while keeping runtime-generated ORM/client behavior behind the
+boundary. Imports are skipped so missing or changing third-party stubs cannot
+weaken either strict contract.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
@@ -89,8 +89,11 @@ GPU and mission-specific reconstruction artifacts and is not part of CI.
 CUDA container validation is split deliberately. The hosted
 `cuda-containers.yml` workflow builds the development image, compiles a
 portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
-both production Dockerfiles. It validates Docker recipes and toolchains without
-claiming to exercise a GPU. On pushes and pull requests, it only runs when a
+both production Dockerfiles. A parallel matrix prepares the pinned external
+COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
+CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
+findings. These hosted jobs validate Docker recipes and toolchains without
+claiming to exercise a GPU. On pushes and pull requests, they only run when a
 DroneGS source, CUDA Dockerfile, or CUDA validation file changes; Markdown
 documentation and unrelated application changes do not trigger a CUDA
 compilation. The
@@ -131,13 +134,15 @@ the Python, frontend and Actions updates to keep review volume bounded. Actions
 using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
 self-hosted GPU runner before enabling the nightly workflow.
 
-The hosted CI builds the dashboard API and processing-worker runtime images,
-then generates a CycloneDX JSON SBOM with Syft and a HIGH/CRITICAL JSON
-vulnerability report with Trivy for each image. Fixable CRITICAL findings fail
-the image job; unfixed findings remain visible in the report without making a
-release impossible. The commit-scoped `supply-chain-<image>-<sha>` artifacts
-are retained for 30 days, including failed jobs. Syft and Trivy container tags
-and multi-architecture digests are pinned in `.github/workflows/ci.yml`.
+The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
+local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
+and a HIGH/CRITICAL JSON vulnerability report with Trivy for each image.
+Fixable CRITICAL findings fail the image job; unfixed findings remain visible
+in the report without making a release impossible. The commit-scoped
+`supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
+failed jobs. Syft and Trivy container tags and multi-architecture digests are
+pinned in `.github/workflows/ci.yml` and
+`.github/workflows/cuda-containers.yml`.
 
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:

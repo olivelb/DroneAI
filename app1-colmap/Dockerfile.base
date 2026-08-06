@@ -157,7 +157,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopenblas0 libatlas3-base \
     libpng16-16t64 libjpeg8 libtiff6 \
     libopenimageio2.4t64 openimageio-tools libopenexr-3-1-30 libsqlite3-0 \
-    libflann1.9 libssl3t64 libxcb-cursor0 libimage-exiftool-perl \
+    libflann1.9 libssl3t64 openssl libxcb-cursor0 libimage-exiftool-perl \
     libgomp1 libopengl0 libglew2.2 \
     && rm -rf /var/lib/apt/lists/*
 

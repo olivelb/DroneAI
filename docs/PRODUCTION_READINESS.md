@@ -146,12 +146,13 @@ The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and
 SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
 
-The current hosted supply-chain gate covers the dashboard API and processing
-worker images built by `.github/workflows/ci.yml`. It emits commit-scoped,
-30-day Syft CycloneDX and Trivy HIGH/CRITICAL evidence and blocks fixable
-CRITICAL findings. CUDA production images continue through their dedicated
-build and real-GPU qualification workflows; extending the same SBOM/scan gate
-to those images is the next coverage increment.
+The hosted supply-chain gates cover the dashboard API and processing worker in
+`.github/workflows/ci.yml`, plus both final CUDA runtimes in
+`.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
+CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable CRITICAL findings.
+The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
+SHA-256-verified sources before building; real-GPU execution remains a distinct
+qualification in `dronegs-gpu-nightly.yml`.
 
 ## CUDA 12.9.2 qualification status
 

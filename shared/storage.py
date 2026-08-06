@@ -9,7 +9,7 @@ import io
 import logging
 import os
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import Any, BinaryIO, Iterable, Optional, Protocol, cast
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -26,6 +26,39 @@ from shared.config import (
 
 logger = logging.getLogger(__name__)
 
+
+class S3Paginator(Protocol):
+    """Minimal paginator contract used by this storage boundary."""
+
+    def paginate(self, **kwargs: Any) -> Iterable[dict[str, Any]]: ...
+
+
+class S3Client(Protocol):
+    """Subset of the dynamic boto3 S3 client consumed by DroneAI."""
+
+    def upload_file(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def download_file(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def get_paginator(self, operation_name: str) -> S3Paginator: ...
+
+    def delete_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def delete_objects(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def generate_presigned_url(self, *args: Any, **kwargs: Any) -> str: ...
+
+    def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def head_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
@@ -36,35 +69,38 @@ S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable Mi
 # Client singleton
 # ---------------------------------------------------------------------------
 
-_client = None
-_public_client = None
+_client: S3Client | None = None
+_public_client: S3Client | None = None
 
 
-def _get_client():
+def _get_client() -> S3Client:
     global _client
     if _client is None:
-        _client = boto3.client(
-            "s3",
-            endpoint_url=S3_ENDPOINT,
-            aws_access_key_id=S3_ACCESS_KEY,
-            aws_secret_access_key=S3_SECRET_KEY,
-            region_name=S3_REGION,
-            config=BotoConfig(
-                signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "standard"},
+        _client = cast(
+            S3Client,
+            boto3.client(
+                "s3",
+                endpoint_url=S3_ENDPOINT,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                region_name=S3_REGION,
+                config=BotoConfig(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 3, "mode": "standard"},
+                ),
             ),
         )
     return _client
 
 
-def reset_client():
+def reset_client() -> None:
     """Reset the cached S3 client (useful for testing)."""
     global _client, _public_client
     _client = None
     _public_client = None
 
 
-def _get_public_client():
+def _get_public_client() -> S3Client:
     """Return a client using the public endpoint for presigned URLs.
 
     Falls back to the internal client when S3_PUBLIC_ENDPOINT is not set.
@@ -73,15 +109,18 @@ def _get_public_client():
     if not S3_PUBLIC_ENDPOINT:
         return _get_client()
     if _public_client is None:
-        _public_client = boto3.client(
-            "s3",
-            endpoint_url=S3_PUBLIC_ENDPOINT,
-            aws_access_key_id=S3_ACCESS_KEY,
-            aws_secret_access_key=S3_SECRET_KEY,
-            region_name=S3_REGION,
-            config=BotoConfig(
-                signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "standard"},
+        _public_client = cast(
+            S3Client,
+            boto3.client(
+                "s3",
+                endpoint_url=S3_PUBLIC_ENDPOINT,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                region_name=S3_REGION,
+                config=BotoConfig(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 3, "mode": "standard"},
+                ),
             ),
         )
     return _public_client
@@ -105,7 +144,7 @@ def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = Non
 
 
 def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
-    return sha256_file(path, chunk_size=chunk_size)
+    return str(sha256_file(path, chunk_size=chunk_size))
 
 
 def upload_verified_file(
@@ -192,7 +231,7 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[s
     root = local_dir.resolve()
     count = 0
     for key in list_objects(s3_prefix, bucket):
-        relative = key[len(s3_prefix):].lstrip("/")
+        relative = key[len(s3_prefix) :].lstrip("/")
         if not relative:
             continue
         local_path = (root / relative).resolve()
@@ -242,7 +281,7 @@ def get_object_size(s3_key: str, bucket: Optional[str] = None) -> int:
     bucket = bucket or S3_BUCKET
     client = _get_client()
     response = client.head_object(Bucket=bucket, Key=s3_key)
-    return response["ContentLength"]
+    return int(response["ContentLength"])
 
 
 def delete_object(s3_key: str, bucket: Optional[str] = None) -> None:
@@ -273,7 +312,10 @@ def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
     return deleted
 
 
-def get_object_stream(s3_key: str, bucket: Optional[str] = None):
+def get_object_stream(
+    s3_key: str,
+    bucket: Optional[str] = None,
+) -> tuple[BinaryIO, int, str]:
     """Return (stream, content_length, content_type) for an S3 object.
 
     The caller is responsible for reading and closing the stream.
@@ -282,9 +324,9 @@ def get_object_stream(s3_key: str, bucket: Optional[str] = None):
     client = _get_client()
     response = client.get_object(Bucket=bucket, Key=s3_key)
     return (
-        response["Body"],
-        response.get("ContentLength", 0),
-        response.get("ContentType", "application/octet-stream"),
+        cast(BinaryIO, response["Body"]),
+        int(response.get("ContentLength", 0)),
+        str(response.get("ContentType", "application/octet-stream")),
     )
 
 

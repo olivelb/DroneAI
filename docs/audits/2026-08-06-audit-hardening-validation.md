@@ -71,6 +71,38 @@ npm run test:e2e
 The physical-GPU environment and individual native results are recorded in
 [`../benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](../benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md).
 
+## Follow-up upgrade validation
+
+The follow-up work based on commit `76c37fd` closed the remaining strict-typing
+gap and extended supply-chain evidence to the final CUDA images:
+
+- strict mypy now passes across all 26 root `shared/` modules, including the
+  SQLAlchemy, inbox/outbox and boto3 boundaries;
+- `cuda-containers.yml` prepares checksum-verified external sources, builds the
+  final COLMAP base and local Gaussian runtimes, and applies the same pinned
+  Syft/Trivy evidence and fixable-CRITICAL gate as the standard service images;
+- the Gaussian runtime explicitly refreshes OpenSSL packages inherited from
+  the NVIDIA base. The first scan found two HIGH records for
+  `CVE-2026-45447`; rebuilding with Ubuntu's fixed OpenSSL packages reduced the
+  HIGH/CRITICAL report to zero.
+
+Local follow-up results:
+
+| Verification | Result |
+|---|---|
+| Complete non-GPU Python suite | 381 passed, 13 deselected |
+| Repository static checks | Passed, including strict mypy on 26 shared modules |
+| Targeted database/storage regressions | 27 passed |
+| Final local Gaussian CUDA image build | Passed |
+| Syft CycloneDX inventory | Passed, 4,941 components |
+| Trivy HIGH/CRITICAL report after OpenSSL refresh | 0 findings |
+| Trivy fixable-CRITICAL gate | Passed |
+
+The full COLMAP base build advanced through the multi-architecture Caspar and
+COLMAP CUDA compilation but exceeded the local command's 20-minute execution
+window before image export. The hosted matrix has a 90-minute timeout and is
+the authoritative completion and scan evidence for that larger image.
+
 ## Remaining release checks
 
 These focused checks do not replace the full `make check`, a complete

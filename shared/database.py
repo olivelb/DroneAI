@@ -11,7 +11,7 @@ Uses SQLAlchemy 2.0 + GeoAlchemy2 for PostGIS geometry support.
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Callable, Iterator, Optional, cast
 from uuid import uuid4
 
 from geoalchemy2 import Geometry
@@ -50,11 +50,11 @@ logger = logging.getLogger(__name__)
 # Engine & session factory (lazy init)
 # ---------------------------------------------------------------------------
 
-_engine = None
-_SessionFactory = None
+_engine: Any = None
+_SessionFactory: Callable[[], Session] | None = None
 
 
-def _get_engine():
+def _get_engine() -> Any:
     global _engine
     if _engine is None:
         _engine = create_engine(
@@ -67,7 +67,7 @@ def _get_engine():
     return _engine
 
 
-def get_session_factory() -> sessionmaker:
+def get_session_factory() -> Callable[[], Session]:
     global _SessionFactory
     if _SessionFactory is None:
         _SessionFactory = sessionmaker(bind=_get_engine(), expire_on_commit=False)
@@ -75,7 +75,7 @@ def get_session_factory() -> sessionmaker:
 
 
 @contextmanager
-def get_session():
+def get_session() -> Iterator[Session]:
     """Context manager yielding a SQLAlchemy session with auto-commit/rollback."""
     factory = get_session_factory()
     session: Session = factory()
@@ -89,7 +89,7 @@ def get_session():
         session.close()
 
 
-def reset_engine():
+def reset_engine() -> None:
     """Dispose of the engine and reset singletons (for testing)."""
     global _engine, _SessionFactory
     if _engine is not None:
@@ -103,7 +103,7 @@ def reset_engine():
 # ---------------------------------------------------------------------------
 
 
-class Base(DeclarativeBase):
+class Base(DeclarativeBase):  # type: ignore[misc]
     pass
 
 
@@ -178,9 +178,7 @@ class Mission(Base):
     tiles_received = Column(Integer, default=0)
     ortho_s3_key = Column(String(1024), nullable=True)
     tiling_metadata = Column(PORTABLE_JSON, nullable=True)
-    aggregation_status = Column(
-        String(32), nullable=False, default="pending"
-    )
+    aggregation_status = Column(String(32), nullable=False, default="pending")
     aggregation_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
@@ -210,7 +208,7 @@ class Mission(Base):
     )
     logs = relationship("MissionLog", back_populates="mission", cascade="all, delete-orphan")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<Mission(vol_id={self.vol_id!r}, status={self.status!r}, step={self.current_step!r})>"
 
 
@@ -257,7 +255,7 @@ class Detection(Base):
     # Relationships
     mission = relationship("Mission", back_populates="detections")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             f"<Detection(vol_id={self.vol_id!r}, tile={self.tile_index}, "
             f"class={self.class_name!r}, conf={self.confidence:.2f})>"
@@ -489,7 +487,7 @@ class MissionLog(Base):
     # Relationships
     mission = relationship("Mission", back_populates="logs")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<MissionLog(vol_id={self.vol_id!r}, service={self.service!r}, step={self.step!r})>"
 
 
@@ -564,9 +562,16 @@ class OutboxEvent(Base):
 # ---------------------------------------------------------------------------
 
 
-def get_or_create_mission(session: Session, vol_id: str, **kwargs) -> Mission:
+def get_or_create_mission(
+    session: Session,
+    vol_id: str,
+    **kwargs: Any,
+) -> Mission:
     """Get an existing mission by vol_id or create a new one."""
-    mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+    mission = cast(
+        Mission | None,
+        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+    )
     if mission is None:
         mission = Mission(vol_id=vol_id, **kwargs)
         session.add(mission)
@@ -585,7 +590,10 @@ def update_mission_progress(
     error_message: Optional[str] = None,
 ) -> Optional[Mission]:
     """Update mission progress and optionally its status."""
-    mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+    mission = cast(
+        Mission | None,
+        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+    )
     if mission is None:
         logger.warning("Mission not found for progress update: %s", vol_id)
         return None
@@ -604,18 +612,12 @@ def update_mission_progress(
 
 def count_received_tiles(session: Session, vol_id: str) -> int:
     """Count durable AI responses, including tiles with no detections."""
-    return (
-        session.query(ProcessedTile)
-        .filter(ProcessedTile.vol_id == vol_id)
-        .count()
-    )
+    return int(session.query(ProcessedTile).filter(ProcessedTile.vol_id == vol_id).count())
 
 
 def get_mission_detections(session: Session, vol_id: str) -> list[Detection]:
     """Get all detections for a mission, ordered by tile index."""
-    return (
-        session.query(Detection)
-        .filter(Detection.vol_id == vol_id)
-        .order_by(Detection.tile_index, Detection.id)
-        .all()
+    return cast(
+        list[Detection],
+        session.query(Detection).filter(Detection.vol_id == vol_id).order_by(Detection.tile_index, Detection.id).all(),
     )
