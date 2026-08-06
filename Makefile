@@ -1,6 +1,7 @@
 PYTHON ?= python3
-PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools scripts/ci/select_ci_jobs.py
-PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools scripts/ci/select_ci_jobs.py
+CI_PYTHON_PATHS := $(wildcard scripts/ci/*.py)
+PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
+PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 SHARED_TYPED_PATHS := $(wildcard shared/*.py)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh

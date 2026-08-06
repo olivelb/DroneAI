@@ -57,6 +57,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
                 "alembic",
                 "tests",
                 "tools",
+                "scripts/ci",
             )
         )
         if is_python or path in {"Makefile", "pyproject.toml"} or _under(path, "requirements"):

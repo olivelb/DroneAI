@@ -105,10 +105,12 @@ both production Dockerfiles. A parallel matrix prepares the pinned external
 COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
 CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
 findings. These hosted jobs validate Docker recipes and toolchains without
-claiming to exercise a GPU. On pushes and pull requests, they only run when a
-DroneGS source, CUDA Dockerfile, or CUDA validation file changes; Markdown
-documentation and unrelated application changes do not trigger a CUDA
-compilation. The
+claiming to exercise a GPU. Pull requests and merges may start the lightweight
+CUDA selector when relevant files change, but do not run either costly build
+job unless the diff changes an authoritative `FROM nvidia/cuda:...` line or
+the pinned `COLMAP_TAG` in `setup_deps.sh`. A manual `workflow_dispatch` is the
+only override for explicitly requested rebuilds after other CUDA, COLMAP,
+Dockerfile or validation changes. The
 scheduled or manually dispatched
 `dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
 development container on a self-hosted runner, then verifies driver injection

@@ -10,6 +10,8 @@ on:
       - "app1-colmap/dronegs/**"
       - "!app1-colmap/dronegs/**/*.md"
       - "scripts/ci/validate_cuda_containers.sh"
+      - "scripts/ci/select_cuda_builds.py"
+      - "setup_deps.sh"
   pull_request:
     paths:
       - ".github/workflows/cuda-containers.yml"
@@ -18,6 +20,8 @@ on:
       - "app1-colmap/dronegs/**"
       - "!app1-colmap/dronegs/**/*.md"
       - "scripts/ci/validate_cuda_containers.sh"
+      - "scripts/ci/select_cuda_builds.py"
+      - "setup_deps.sh"
   workflow_dispatch:
 
 permissions:
@@ -28,8 +32,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  version-change:
+    name: Select CUDA build requirement
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      build_required: ${{ steps.selection.outputs.build_required }}
+      reason: ${{ steps.selection.outputs.reason }}
+    steps:
+      - name: Checkout event history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Detect explicit dispatch or version change
+        id: selection
+        run: python3 scripts/ci/select_cuda_builds.py
+      - name: Report selection
+        run: echo "CUDA build selection=${{ steps.selection.outputs.build_required }} reason=${{ steps.selection.outputs.reason }}"
+
   cuda-container-build:
     name: CUDA Dockerfile build contracts
+    needs: version-change
+    if: needs.version-change.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -39,6 +63,8 @@ jobs:
 
   cuda-runtime-supply-chain:
     name: CUDA runtime SBOM and vulnerability gate
+    needs: version-change
+    if: needs.version-change.outputs.build_required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:

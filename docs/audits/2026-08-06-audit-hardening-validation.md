@@ -127,3 +127,13 @@ CI workflow or scope selector itself changes. Eight focused routing tests and
 the complete local gate passed after this change: 389 tests passed, 13
 GPU/integration tests were deselected, coverage remained 54%, and the locked
 Python environment had no known vulnerabilities.
+
+The CUDA workflow is more restrictive than the general path-scoped CI. Pull
+requests and merges perform only a lightweight diff classification for CUDA
+source, Dockerfile or workflow changes. The 45/90-minute CUDA and COLMAP jobs
+run only after an authoritative NVIDIA CUDA base-image line or the pinned
+`COLMAP_TAG` changes, or after an explicit manual dispatch. Ordinary PR and
+merge activity cannot relaunch those builds. The complete local gate passed
+after adding this policy: 395 tests passed, 13 GPU/integration tests were
+deselected, coverage remained 54%, and no locked Python dependency had a known
+vulnerability.
