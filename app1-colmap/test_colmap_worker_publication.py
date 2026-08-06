@@ -258,3 +258,70 @@ def test_completion_routes_only_aerial_products_to_detection(tmp_path, facade_mo
         publish_next.assert_not_called()
     else:
         publish_next.assert_called_once()
+
+
+def test_workspace_cleanup_reports_verified_success(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "artifact.bin").write_bytes(b"temporary")
+
+    with patch.object(worker_runtime, "report_mission_progress") as progress:
+        cleaned = publication_stage.cleanup_pipeline_workspace(
+            str(workspace),
+            "vol",
+        )
+
+    assert cleaned is True
+    assert not workspace.exists()
+    assert progress.call_args.kwargs["details"]["event"] == "workspace_cleanup_succeeded"
+
+
+def test_workspace_cleanup_failure_is_observable_and_non_fatal(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with (
+        patch.object(
+            publication_stage.shutil,
+            "rmtree",
+            side_effect=PermissionError("workspace busy"),
+        ),
+        patch.object(worker_runtime, "report_mission_progress") as progress,
+    ):
+        cleaned = publication_stage.cleanup_pipeline_workspace(
+            str(workspace),
+            "vol",
+        )
+
+    assert cleaned is False
+    assert workspace.exists()
+    assert progress.call_args.kwargs["details"] == {
+        "event": "workspace_cleanup_failed",
+        "workspace_dir": str(workspace),
+        "final_pass": False,
+        "error": "PermissionError: workspace busy",
+    }
+
+
+def test_final_cleanup_uses_logs_without_overwriting_terminal_status(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    with (
+        patch.object(
+            publication_stage.shutil,
+            "rmtree",
+            side_effect=PermissionError("workspace busy"),
+        ),
+        patch.object(worker_runtime, "report_mission_progress") as progress,
+        patch.object(publication_stage.logger, "warning") as warning,
+    ):
+        cleaned = publication_stage.cleanup_pipeline_workspace(
+            str(workspace),
+            "vol",
+            final_pass=True,
+        )
+
+    assert cleaned is False
+    progress.assert_not_called()
+    warning.assert_called_once()

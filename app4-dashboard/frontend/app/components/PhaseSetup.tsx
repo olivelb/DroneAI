@@ -295,6 +295,7 @@ export default function PhaseSetup() {
                 <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase ${
                   m.overall_status === "success" ? "bg-emerald-50 text-emerald-600"
                   : m.overall_status === "error" ? "bg-red-50 text-red-600"
+                  : m.overall_status === "cancelled" ? "bg-slate-100 text-slate-600"
                   : "bg-blue-50 text-blue-600"
                 }`}>{m.overall_status}</span>
               </button>

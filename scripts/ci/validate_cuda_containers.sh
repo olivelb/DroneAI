@@ -23,6 +23,17 @@ require_command() {
     fi
 }
 
+report_validation_context() {
+    echo "DroneAI commit: $(git -C "${REPOSITORY_ROOT}" rev-parse HEAD)"
+    echo "Docker server: $(docker version --format '{{.Server.Version}}')"
+    echo "CUDA image contracts:"
+    awk '$1 == "FROM" && $2 ~ /^nvidia\/cuda:/ { print "  " $2 }' \
+        "${REPOSITORY_ROOT}/app1-colmap/dronegs/Dockerfile" \
+        "${REPOSITORY_ROOT}/app1-colmap/Dockerfile.base" \
+        "${REPOSITORY_ROOT}/app1-colmap/Dockerfile.local-gaussian" \
+        | sort -u
+}
+
 build_development_image() {
     docker build \
         --file "${REPOSITORY_ROOT}/app1-colmap/dronegs/Dockerfile" \
@@ -109,7 +120,9 @@ main() {
     local mode="${1:-}"
 
     require_command docker
+    require_command git
     trap cleanup EXIT
+    report_validation_context
 
     case "${mode}" in
         build)

@@ -77,3 +77,26 @@ def test_decode_event_rejects_wrong_version_and_missing_fields():
             json.dumps({"vol_id": "mission-1", "detections": []}),
             expected_type="tile_detection",
         )
+
+
+def test_status_events_accept_cancelled_and_reject_unknown_states():
+    event = make_event(
+        "status",
+        {
+            "vol_id": "mission-1",
+            "service": "COLMAP",
+            "step": "CANCELLED",
+            "progress": 0,
+            "status": "cancelled",
+        },
+    )
+
+    assert event["status"] == "cancelled"
+    with pytest.raises(EventValidationError, match="unsupported status"):
+        make_event(
+            "status",
+            {
+                "vol_id": "mission-1",
+                "status": "stopped",
+            },
+        )

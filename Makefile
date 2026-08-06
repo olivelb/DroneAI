@@ -4,7 +4,7 @@ PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/ap
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
-.PHONY: check static compile lint worker-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check
+.PHONY: check static compile lint worker-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
 
 compile:
 	$(PYTHON) -m compileall -q $(PYTHON_PATHS)
@@ -50,5 +50,8 @@ frontend-check:
 	npm run test && \
 	npm run lint && \
 	npm run build
+
+frontend-e2e:
+	cd app4-dashboard/frontend && npm run build && npm run test:e2e
 
 check: static audit coverage

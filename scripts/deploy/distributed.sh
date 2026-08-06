@@ -164,8 +164,9 @@ deploy_distributed() {
         "$DATA_ROOT/kafka-data" \
         "$DATA_ROOT/minio-data" \
         "$DATA_ROOT/model-cache" \
-        "$DATA_ROOT/colmap-work" \
         "$DATA_ROOT/postgres-data"
+    "${SUDO[@]}" chown 10001:10001 "$DATA_ROOT/colmap-work"
+    "${SUDO[@]}" chmod 0770 "$DATA_ROOT/colmap-work"
 
     DASHBOARD_PORT="$(resolve_node_port "$DASHBOARD_PORT" drone-ai/dashboard-frontend-service)"
     API_PORT="$(resolve_node_port "$API_PORT" drone-ai/dashboard-api-service)"

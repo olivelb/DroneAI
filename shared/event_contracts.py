@@ -27,6 +27,7 @@ REQUIRED_FIELDS = {
     "control": ("vol_id", "command"),
     "dead_letter": ("source_topic", "consumer_group", "error"),
 }
+PIPELINE_STATUSES = frozenset({"processing", "success", "error", "cancelled"})
 
 
 class EventValidationError(ValueError):
@@ -103,6 +104,12 @@ def validate_event(
     if missing:
         raise EventValidationError(
             f"{event_type} event missing required fields: {', '.join(missing)}"
+        )
+    if event_type == "status" and event.get("status") not in PIPELINE_STATUSES:
+        allowed = ", ".join(sorted(PIPELINE_STATUSES))
+        raise EventValidationError(
+            f"status event has unsupported status={event.get('status')!r}; "
+            f"expected one of: {allowed}"
         )
     normalized = dict(event)
     normalized["schema_version"] = version

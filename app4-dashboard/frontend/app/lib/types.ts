@@ -1,4 +1,5 @@
 export type ServiceName = "COLMAP" | "TILER" | "IA";
+export type PipelineStatus = "processing" | "success" | "error" | "cancelled";
 export type PipelineName = "modern" | "legacy";
 export type AIBackend = "yolo" | "sam3";
 export type YOLOModelVariant =
@@ -15,7 +16,7 @@ export type StatusPayload = {
   vol_id: string;
   step?: string;
   progress?: number;
-  status?: string;
+  status?: PipelineStatus;
   service?: string;
   log?: string;
   details?: {
@@ -84,7 +85,7 @@ export type WorkspaceMissionState = {
 
 export type ColmapResumeState = {
   available: boolean;
-  state: "running" | "completed" | "resumable" | "checkpointed" | "unavailable";
+  state: "running" | "completed" | "resumable" | "checkpointed" | "cancelled" | "unavailable";
   reason: string;
   downstream_processing: string[];
 };
@@ -204,6 +205,22 @@ export const serviceOrderFor = (
     && services.COLMAP.details.terminal === true
     ? ["COLMAP"]
     : SERVICE_ORDER;
+
+export const overallStatusFor = (
+  services: Record<string, StatusPayload>,
+): PipelineStatus => {
+  const statuses = Object.values(services).map(
+    (service) => service.status ?? "processing",
+  );
+  if (statuses.includes("error")) return "error";
+  if (statuses.includes("cancelled")) return "cancelled";
+  const requiredServices = serviceOrderFor(services);
+  return requiredServices.every(
+    (service) => services[service]?.status === "success",
+  )
+    ? "success"
+    : "processing";
+};
 
 export const AVAILABLE_CLASSES = [
   "person", "bicycle", "car", "motorcycle", "airplane",
