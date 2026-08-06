@@ -42,6 +42,16 @@ audit and coverage suite, using the same commands enforced by CI. The
 development lock installs the `actionlint` executable through `actionlint-py`,
 with deterministic ShellCheck and Pyflakes integrations.
 
+Pull-request CI classifies changed paths before starting expensive jobs. Native
+DroneGS compilation, the dual-version Python suite, PostGIS migration
+round-trips, frontend/Playwright checks, service image builds and Helm renders
+only run when their own runtime or contract changes. Markdown-only pull
+requests run the lightweight link contract. Changes to the CI workflow or its
+scope selector deliberately run every job. Pushes to `main` and manual
+dispatches retain the complete suite, so path filtering cannot replace the
+post-merge integration gate. The selector and its regression tests live in
+`scripts/ci/select_ci_jobs.py` and `tests/test_ci_change_scopes.py`.
+
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
 50%. That floor is a ratchet, not a completeness claim: new or changed pure

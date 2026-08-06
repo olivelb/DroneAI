@@ -14,8 +14,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select required CI scopes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.scopes.outputs.python }}
+      docs: ${{ steps.scopes.outputs.docs }}
+      dronegs: ${{ steps.scopes.outputs.dronegs }}
+      migrations: ${{ steps.scopes.outputs.migrations }}
+      frontend: ${{ steps.scopes.outputs.frontend }}
+      containers: ${{ steps.scopes.outputs.containers }}
+      helm: ${{ steps.scopes.outputs.helm }}
+    steps:
+      - name: Checkout pull-request history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Checkout current revision
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Classify changed paths
+        id: scopes
+        run: python3 scripts/ci/select_ci_jobs.py
+
+  docs:
+    name: Markdown link contracts
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tools/check_markdown_links.py
+
   dronegs-core:
     name: DroneGS native CPU contract tests
+    needs: changes
+    if: needs.changes.outputs.dronegs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -44,6 +81,8 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }} quality and CPU tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -83,6 +122,8 @@ jobs:
 
   migrations:
     name: PostgreSQL/PostGIS migration round-trip
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -117,6 +158,8 @@ jobs:
 
   frontend:
     name: Frontend lint and build
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -151,6 +194,8 @@ jobs:
 
   container-smoke:
     name: Service image import smoke tests
+    needs: changes
+    if: needs.changes.outputs.containers == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -230,6 +275,8 @@ jobs:
 
   helm:
     name: Helm production render
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

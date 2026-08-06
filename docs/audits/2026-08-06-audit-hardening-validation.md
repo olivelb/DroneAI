@@ -118,3 +118,12 @@ The full local `make check` now passes. It does not replace a complete
 Compose/K3s mission, Helm acceptance, RTK/non-RTK dataset regressions or a
 centrally retained GPU workflow artifact. Run those environment-dependent
 release gates before publication.
+
+Pull-request CI is subsequently path-scoped: each long-running job starts only
+for changes to its application, runtime, dependency lock or deployment
+contract. Documentation-only changes receive a dedicated link check. The full
+matrix still runs after merge on `main`, on manual dispatch, and whenever the
+CI workflow or scope selector itself changes. Eight focused routing tests and
+the complete local gate passed after this change: 389 tests passed, 13
+GPU/integration tests were deselected, coverage remained 54%, and the locked
+Python environment had no known vulnerabilities.
