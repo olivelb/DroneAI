@@ -64,8 +64,12 @@ smallest relevant stage. The COLMAP worker package additionally enforces
 modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 15
 across the complete worker package. Stable contracts, runtime boundaries,
 artifact helpers, mission coordination and every COLMAP stage also pass strict
-mypy checks. Imports outside the worker boundary remain skipped so their
-independent typing can progress without weakening the worker contract.
+mypy checks. The same strict contract now covers the 23 pure/domain modules at
+the root of `shared/`. The three dynamic infrastructure boundaries
+`shared/database.py`, `shared/inbox_outbox.py` and `shared/storage.py` remain
+explicitly excluded pending their dedicated SQLAlchemy/S3 typing migration;
+imports are still skipped so third-party stubs cannot weaken either strict
+contract.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
@@ -127,6 +131,14 @@ the Python, frontend and Actions updates to keep review volume bounded. Actions
 using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
 self-hosted GPU runner before enabling the nightly workflow.
 
+The hosted CI builds the dashboard API and processing-worker runtime images,
+then generates a CycloneDX JSON SBOM with Syft and a HIGH/CRITICAL JSON
+vulnerability report with Trivy for each image. Fixable CRITICAL findings fail
+the image job; unfixed findings remain visible in the report without making a
+release impossible. The commit-scoped `supply-chain-<image>-<sha>` artifacts
+are retained for 30 days, including failed jobs. Syft and Trivy container tags
+and multi-architecture digests are pinned in `.github/workflows/ci.yml`.
+
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:
 
@@ -159,10 +171,13 @@ npm run test:e2e
 
 From the repository root, `make frontend-e2e` builds the production Next.js
 application and runs the same Playwright suite. The browser tests mock API
-transport while exercising Chromium against the production build. They cover
-dataset selection and mission launch, operator cancellation, and rendering of
-the terminal `cancelled` state. CI installs Chromium with its Linux system
-dependencies and uploads the Playwright report when the suite fails.
+transport while exercising Chromium against the production build. The six
+journeys cover dataset selection and mission launch, operator cancellation,
+rendering of the terminal `cancelled` state, renewal of an expired browser
+session, WebSocket reconnection with delivery of the recovered live event, and
+projected GeoPackage export from a completed mission. CI installs Chromium with
+its Linux system dependencies and uploads the Playwright report when the suite
+fails.
 
 The lock currently pins Next.js `16.2.12`. Security advisories change over
 time, so verify the current dependency graph locally:

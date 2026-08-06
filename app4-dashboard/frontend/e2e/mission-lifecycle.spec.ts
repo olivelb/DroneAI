@@ -1,13 +1,16 @@
 import { expect, test, type Page } from "@playwright/test";
 
 type ApiOptions = {
-  missionStatus?: "processing" | "cancelled";
+  missionStatus?: "processing" | "cancelled" | "success";
+  sessionAuthenticated?: boolean;
+  onSessionCreate?: (apiKey: string) => void;
   onMissionLaunch?: (payload: Record<string, unknown>) => void;
   onMissionCancel?: (volId: string) => void;
+  onMapExport?: (url: string) => void;
 };
 
-const json = (body: unknown) => ({
-  status: 200,
+const json = (body: unknown, status = 200) => ({
+  status,
   contentType: "application/json",
   body: JSON.stringify(body),
 });
@@ -17,8 +20,22 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
     const request = route.request();
     const url = new URL(request.url());
 
-    if (url.pathname === "/auth/session") {
+    if (url.pathname === "/auth/session" && request.method() === "GET") {
+      if (options.sessionAuthenticated === false) {
+        await route.fulfill(json({ detail: "Session expired" }, 401));
+        return;
+      }
       await route.fulfill(json({ subject: "e2e-operator", role: "operator" }));
+      return;
+    }
+    if (url.pathname === "/auth/session" && request.method() === "POST") {
+      const payload = request.postDataJSON() as { api_key: string };
+      options.onSessionCreate?.(payload.api_key);
+      await route.fulfill(json({ subject: "e2e-operator", role: "operator" }));
+      return;
+    }
+    if (url.pathname === "/auth/session" && request.method() === "DELETE") {
+      await route.fulfill(json({ status: "success" }));
       return;
     }
     if (url.pathname === "/browse") {
@@ -61,6 +78,7 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
     }
     if (url.pathname === "/status/summary") {
       const status = options.missionStatus;
+      const terminalSuccess = status === "success";
       const missions = status
         ? [{
             vol_id: "mission-existing",
@@ -68,10 +86,28 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
               COLMAP: {
                 vol_id: "mission-existing",
                 service: "COLMAP",
-                step: status === "cancelled" ? "CANCELLED" : "MAPPING",
-                progress: status === "cancelled" ? 0 : 42,
+                step: status === "cancelled" ? "CANCELLED" : terminalSuccess ? "DONE" : "MAPPING",
+                progress: terminalSuccess ? 100 : status === "cancelled" ? 0 : 42,
                 status,
               },
+              ...(terminalSuccess
+                ? {
+                    TILER: {
+                      vol_id: "mission-existing",
+                      service: "TILER",
+                      step: "DONE",
+                      progress: 100,
+                      status: "success",
+                    },
+                    IA: {
+                      vol_id: "mission-existing",
+                      service: "IA",
+                      step: "DONE",
+                      progress: 100,
+                      status: "success",
+                    },
+                  }
+                : {}),
             },
             logs: [],
             updated_at: 1_800_000_000,
@@ -82,6 +118,31 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         active_vol_id: missions[0]?.vol_id ?? null,
         missions,
       }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/analyses") {
+      await route.fulfill(json({ runs: [] }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/metadata/ortho") {
+      await route.fulfill(json({
+        bounds: { wgs84: [2.0, 48.0, 2.1, 48.1] },
+        min_zoom: 10,
+        max_zoom: 20,
+        crs: "EPSG:2154",
+      }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/export/vectors") {
+      options.onMapExport?.(url.toString());
+      await route.fulfill({
+        status: 200,
+        contentType: "application/geopackage+sqlite3",
+        headers: {
+          "Content-Disposition": "attachment; filename=mission-existing.gpkg",
+        },
+        body: "e2e-geopackage",
+      });
       return;
     }
     if (url.pathname === "/mission" && request.method() === "POST") {
@@ -136,4 +197,78 @@ test("a cancelled mission is rendered as terminal, not running", async ({ page }
   await page.goto("/");
   await expect(page.getByText("cancelled", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop mission" })).toHaveCount(0);
+});
+
+test("an expired browser session can be renewed with an API credential", async ({ page }) => {
+  let submittedCredential = "";
+  await mockApi(page, {
+    sessionAuthenticated: false,
+    onSessionCreate: (apiKey) => { submittedCredential = apiKey; },
+  });
+
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Operator sign-in" })).toBeVisible();
+  await page.getByLabel("API credential").fill("e2e-operator-key-with-at-least-32-characters");
+  await page.getByRole("button", { name: "Open Mission Studio" }).click();
+
+  await expect(page.getByRole("heading", { name: "DroneAI" })).toBeVisible();
+  expect(submittedCredential).toBe("e2e-operator-key-with-at-least-32-characters");
+});
+
+test("live mission updates recover after a WebSocket disconnect", async ({ page }) => {
+  let connectionCount = 0;
+  await page.routeWebSocket("ws://127.0.0.1:30080/ws/status", (socket) => {
+    connectionCount += 1;
+    if (connectionCount === 1) {
+      setTimeout(() => void socket.close({ code: 1012, reason: "e2e restart" }), 50);
+      return;
+    }
+    setTimeout(() => socket.send(JSON.stringify({
+      vol_id: "mission-websocket",
+      service: "COLMAP",
+      step: "MAPPING",
+      progress: 17,
+      status: "processing",
+      log: "WebSocket reconnect confirmed",
+    })), 50);
+  });
+  await mockApi(page);
+
+  await page.goto("/");
+  await expect.poll(() => connectionCount).toBe(2);
+  await expect(page.getByText("Temps réel")).toBeVisible();
+  await page.getByRole("button", { name: "Ouvrir le suivi de mission" }).click();
+  await expect(page.getByText("WebSocket reconnect confirmed")).toBeVisible();
+});
+
+test("a completed mission exports its vectors as a projected GeoPackage", async ({ page }) => {
+  let exportedUrl = "";
+  await mockApi(page, {
+    missionStatus: "success",
+    onMapExport: (url) => { exportedUrl = url; },
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /5\. Explorer/ }).click();
+  await page.getByRole("button", { name: "Export" }).click();
+  await page.evaluate(() => {
+    Object.defineProperty(window, "showSaveFilePicker", {
+      configurable: true,
+      value: async () => ({
+        createWritable: async () => new WritableStream(),
+      }),
+    });
+    const button = [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((candidate) => candidate.textContent?.includes("Enregistrer la couche"));
+    if (!button) throw new Error("Vector export button was not rendered");
+    button.click();
+  });
+
+  await expect.poll(() => exportedUrl).toBeTruthy();
+  const url = new URL(exportedUrl);
+  expect(Object.fromEntries(url.searchParams)).toMatchObject({
+    format: "gpkg",
+    scope: "all",
+    crs: "raster",
+  });
 });

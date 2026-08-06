@@ -12,9 +12,10 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
+from numpy.typing import NDArray
 import rasterio
 from PIL import Image
 from rasterio.enums import Resampling
@@ -120,11 +121,14 @@ def _display_bands(dataset: rasterio.DatasetReader) -> list[int]:
     return [1]
 
 
-def _to_uint8(data: np.ma.MaskedArray) -> np.ndarray:
-    values = np.ma.asarray(data)
+def _to_uint8(data: np.ma.MaskedArray[Any, Any]) -> NDArray[np.uint8]:
+    values: Any = np.ma.asarray(data)
     if values.dtype == np.uint8:
-        return np.asarray(values.filled(0), dtype=np.uint8)
-    output = np.zeros(values.shape, dtype=np.uint8)
+        return cast(
+            NDArray[np.uint8],
+            np.asarray(values.filled(0), dtype=np.uint8),
+        )
+    output: NDArray[np.uint8] = np.zeros(values.shape, dtype=np.uint8)
     for index in range(values.shape[0]):
         band = values[index]
         compressed = band.compressed()
@@ -144,11 +148,11 @@ def _to_uint8(data: np.ma.MaskedArray) -> np.ndarray:
 
 
 def _rgba_image(
-    data: np.ma.MaskedArray,
+    data: np.ma.MaskedArray[Any, Any],
     *,
     colormap: str = "",
 ) -> Image.Image:
-    values = np.ma.asarray(data)
+    values: Any = np.ma.asarray(data)
     mask = np.ma.getmaskarray(values)
     alpha = np.where(np.all(mask, axis=0), 0, 255).astype(np.uint8)
     normalized = _to_uint8(values)

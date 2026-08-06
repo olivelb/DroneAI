@@ -17,10 +17,10 @@ from shared.kafka_reliability import (
 def make_cancellation_handler(
     registry: Any,
     logger: Any,
-) -> Callable[[dict], None]:
+) -> Callable[[dict[str, Any]], None]:
     """Build the common attempt-scoped cancellation event handler."""
 
-    def handle(data: dict) -> None:
+    def handle(data: dict[str, Any]) -> None:
         if data.get("command") != "cancel":
             return
         vol_id = data.get("vol_id")
@@ -49,7 +49,7 @@ def make_progress_publisher(
         progress: int,
         status: str = "processing",
         log: str | None = None,
-        details: dict | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         event = make_event(
             "status",
@@ -77,9 +77,9 @@ def run_control_consumer(
     consumer_group: str,
     producer: Any,
     dead_letter_topic: str,
-    handler: Callable[[dict], None],
+    handler: Callable[[dict[str, Any]], None],
     logger: Any,
-    consumer_factory: Callable[[dict], Any] = Consumer,
+    consumer_factory: Callable[[dict[str, Any]], Any] = Consumer,
 ) -> None:
     consumer = consumer_factory(
         reliable_consumer_config(

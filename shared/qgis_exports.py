@@ -101,7 +101,7 @@ def _export_geometry_bounds(
 
 def _wkb_geometry(geometry: dict[str, Any]) -> bytes:
     geometry_type = geometry["type"]
-    coordinates = geometry.get("coordinates")
+    coordinates: Any = geometry.get("coordinates")
     type_codes = {
         "Point": 1,
         "LineString": 2,
@@ -249,7 +249,7 @@ def _initialize_geopackage(
         );
         """
     )
-    spatial_references = [
+    spatial_references: list[tuple[str, int, str, int | None, str, str]] = [
         ("Undefined Cartesian", -1, "NONE", -1, "undefined", "undefined"),
         ("Undefined Geographic", 0, "NONE", 0, "undefined", "undefined"),
         ("WGS 84", 4326, "EPSG", 4326, WGS84_WKT, "WGS 84 longitude/latitude"),

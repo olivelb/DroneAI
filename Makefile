@@ -2,6 +2,7 @@ PYTHON ?= python3
 PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
+SHARED_TYPED_PATHS := $(filter-out shared/database.py shared/inbox_outbox.py shared/storage.py,$(wildcard shared/*.py))
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
 .PHONY: check static compile lint worker-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
@@ -19,6 +20,7 @@ worker-lint:
 
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
+	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
 
 scripts-check:
 	shellcheck $(SHELL_SCRIPTS)

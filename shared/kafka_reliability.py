@@ -32,7 +32,7 @@ class RetryPolicy:
     def delay_before(self, attempt: int) -> float:
         return min(
             self.max_delay_seconds,
-            self.base_delay_seconds * (2 ** max(0, attempt - 1)),
+            self.base_delay_seconds * float(2 ** max(0, attempt - 1)),
         )
 
 

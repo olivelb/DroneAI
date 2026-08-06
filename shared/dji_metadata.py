@@ -15,7 +15,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 SEQUENCE_PATTERNS = (
     re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$"),
@@ -202,8 +202,8 @@ def parse_aerial_xmp(path: str | Path) -> dict[str, Any]:
             "longitude": longitude,
             "altitude_m": altitude,
             "horizontal_error_m": max(
-                standard_deviations["north_m"],
-                standard_deviations["east_m"],
+                cast(float, standard_deviations["north_m"]),
+                cast(float, standard_deviations["east_m"]),
             ),
             "position_std_m": standard_deviations,
             # Vendor XMP does not carry an EPSG vertical CRS. Keep the

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from shared.dji_metadata import image_sequence_number, parse_aerial_xmp
 
@@ -31,11 +31,13 @@ def _same_file(first: Path, second: Path) -> bool:
     return digests[0] == digests[1]
 
 
-def deduplicate_identical_basenames(paths: Iterable[Path]) -> tuple[list[Path], list[dict]]:
+def deduplicate_identical_basenames(
+    paths: Iterable[Path],
+) -> tuple[list[Path], list[dict[str, str]]]:
     """Drop byte-identical duplicate names and reject ambiguous collisions."""
 
     unique: dict[str, Path] = {}
-    duplicates: list[dict] = []
+    duplicates: list[dict[str, str]] = []
     for path in sorted(paths):
         previous = unique.get(path.name)
         if previous is None:
@@ -103,7 +105,7 @@ def parse_excluded_basename_ranges(
 def exclude_basename_ranges(
     paths: Iterable[Path],
     ranges: str | Iterable[tuple[str, str]] | None,
-) -> tuple[list[Path], dict]:
+) -> tuple[list[Path], dict[str, Any]]:
     """Exclude inclusive basename ranges and return an auditable report."""
 
     normalized_ranges = parse_excluded_basename_ranges(ranges)
@@ -173,7 +175,7 @@ def select_facade_images(
     target_yaw_deg: float | None = None,
     yaw_tolerance_deg: float = 35.0,
     excluded_basename_ranges: str | Iterable[tuple[str, str]] | None = None,
-) -> tuple[list[Path], dict]:
+) -> tuple[list[Path], dict[str, Any]]:
     """Keep coherent horizontal/oblique passes and reject isolated detail shots.
 
     DJI gimbal pitch is approximately 0 degrees for a horizontal camera and
@@ -228,7 +230,7 @@ def select_facade_images(
         by_folder.setdefault(record.path.parent, []).append(record)
 
     selected: list[Path] = []
-    pass_reports: list[dict] = []
+    pass_reports: list[dict[str, Any]] = []
     rejected_short: list[str] = []
     for folder, folder_records in sorted(by_folder.items(), key=lambda item: str(item[0])):
         folder_records.sort(

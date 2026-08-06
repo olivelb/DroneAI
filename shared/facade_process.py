@@ -52,7 +52,7 @@ FACADE_PROCESS_INVARIANTS = MappingProxyType(
 # Generic HD values qualified on the Cahors reference campaign. Mission-specific
 # detail sequences can be excluded to favour coverage distribution over raw
 # sparse-point density; DroneGS performs the later densification.
-FACADE_PROCESS_OVERRIDES = MappingProxyType(
+FACADE_PROCESS_OVERRIDES: Mapping[str, Any] = MappingProxyType(
     {
         "orthophoto_mode": FACADE_PROCESS_ID,
         **FACADE_PARAMETER_DEFAULTS,

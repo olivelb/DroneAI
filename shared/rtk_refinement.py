@@ -185,7 +185,11 @@ def gimbal_attitude_to_gravity_sensor(
     norm = math.sqrt(sum(value * value for value in gravity))
     if not math.isfinite(norm) or norm < 1.0e-9:
         raise ValueError("invalid gimbal attitude")
-    return tuple(value / norm for value in gravity)
+    return (
+        gravity[0] / norm,
+        gravity[1] / norm,
+        gravity[2] / norm,
+    )
 
 
 def _database_pose_prior_rows(
@@ -256,12 +260,16 @@ def inject_database_gravity_priors(
             (name, prior_id, gravity_for_name(name))
             for name, prior_id in rows
         ]
-        matched_rows = [row for row in matched_rows if row[2] is not None]
-        coverage = len(matched_rows) / len(rows) if rows else 0.0
-        enabled = len(matched_rows) >= 3 and coverage >= minimum_coverage
+        verified_rows = [
+            (name, prior_id, gravity)
+            for name, prior_id, gravity in matched_rows
+            if gravity is not None
+        ]
+        coverage = len(verified_rows) / len(rows) if rows else 0.0
+        enabled = len(verified_rows) >= 3 and coverage >= minimum_coverage
         if enabled:
             with connection:
-                for _, pose_prior_id, gravity in matched_rows:
+                for _, pose_prior_id, gravity in verified_rows:
                     connection.execute(
                         "UPDATE pose_priors SET gravity = ? WHERE pose_prior_id = ?",
                         (struct.pack("<3d", *gravity), pose_prior_id),
@@ -273,7 +281,7 @@ def inject_database_gravity_priors(
         "schema_version": 1,
         "status": "enabled" if enabled else "insufficient-coverage",
         "database_pose_priors": len(rows),
-        "attitude_pose_priors": len(matched_rows),
+        "attitude_pose_priors": len(verified_rows),
         "coverage": coverage,
         "minimum_coverage": minimum_coverage,
         "camera_pairs": sorted(camera_pairs),

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from pyproj import CRS, Transformer
 
 from shared.geo_alignment import estimate_sim3, estimate_weighted_sim3
@@ -132,8 +133,12 @@ def parse_gcp_file(path: str | Path) -> tuple[str, list[GcpObservation]]:
                 f"{source}:{line_number}: expected at least 7 fields, got {len(fields)}"
             )
         try:
-            source_xyz = tuple(float(value) for value in fields[0:3])
-            pixel_xy = tuple(float(value) for value in fields[3:5])
+            source_xyz = (
+                float(fields[0]),
+                float(fields[1]),
+                float(fields[2]),
+            )
+            pixel_xy = (float(fields[3]), float(fields[4]))
         except ValueError as error:
             raise ValueError(f"{source}:{line_number}: invalid numeric field") from error
         observations.append(
@@ -282,9 +287,9 @@ def intersect_rays(
         perpendicular_sigmas = [1.0] * len(origins)
     if len(perpendicular_sigmas) != len(origins):
         raise ValueError("ray standard deviations must match the ray count")
-    normal = np.zeros((3, 3), dtype=np.float64)
-    right_hand_side = np.zeros(3, dtype=np.float64)
-    identity = np.eye(3, dtype=np.float64)
+    normal: NDArray[np.float64] = np.zeros((3, 3), dtype=np.float64)
+    right_hand_side: NDArray[np.float64] = np.zeros(3, dtype=np.float64)
+    identity: NDArray[np.float64] = np.eye(3, dtype=np.float64)
     for origin, direction, sigma in zip(
         origins,
         directions,
@@ -309,14 +314,14 @@ def _robust_observation_mask(residuals: list[float], threshold_px: float) -> lis
     values = np.asarray(residuals, dtype=np.float64)
     finite = np.isfinite(values)
     if int(np.sum(finite)) < 2:
-        return finite.tolist()
+        return [bool(value) for value in finite]
     if int(np.sum(finite)) < 4:
-        return finite.tolist()
+        return [bool(value) for value in finite]
     finite_values = values[finite]
     center = float(np.median(finite_values))
     mad = float(np.median(np.abs(finite_values - center)))
     threshold = max(float(threshold_px), center + 3.0 * 1.4826 * mad)
-    return (finite & (values <= threshold)).tolist()
+    return [bool(value) for value in finite & (values <= threshold)]
 
 
 def _point_accuracy(
@@ -425,6 +430,7 @@ def assess_gcp_alignment_quality(
         )
         verification = "unverified-no-checkpoints"
     else:
+        assert checkpoint_metrics is not None
         add_check(
             "independent_checkpoints",
             checkpoint_count,
