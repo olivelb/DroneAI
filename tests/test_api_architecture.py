@@ -152,6 +152,12 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
     )
     assert (
         mission_state.compute_overall_status(
+            {"COLMAP": {"status": "cancelled"}}
+        )
+        == "cancelled"
+    )
+    assert (
+        mission_state.compute_overall_status(
             {
                 "COLMAP": {
                     "status": "success",
@@ -172,6 +178,14 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
     resume = mission_state.build_colmap_resume_state(mission)
     assert resume["available"] is True
     assert resume["state"] == "resumable"
+
+    cancelled_mission = SimpleNamespace(
+        service_states={"COLMAP": {"status": "cancelled"}},
+        params={"vol_id": "mission-1"},
+    )
+    cancelled_resume = mission_state.build_colmap_resume_state(cancelled_mission)
+    assert cancelled_resume["available"] is True
+    assert cancelled_resume["state"] == "cancelled"
 
 
 def test_image_preview_conversion_is_framework_independent():

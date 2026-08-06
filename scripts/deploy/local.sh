@@ -3,8 +3,8 @@
 deploy_local() {
     info "Deploying the complete local pipeline with Docker Compose"
 
-    mkdir -p "$DATA_ROOT/colmap-work"
-    chmod 0777 "$DATA_ROOT/colmap-work"
+    "${SUDO[@]}" install -d --mode=0770 --owner=10001 --group=10001 \
+        "$DATA_ROOT/colmap-work"
 
     local drives_json work_drive_override
     drives_json="$(discover_work_drives)"

@@ -42,6 +42,18 @@ def test_gpu_nightly_executes_native_cuda_tests_in_container() -> None:
     assert "-DDRONEGS_CUDA_ARCHITECTURES=native" in script
     assert "ctest --test-dir /tmp/dronegs-gpu --output-on-failure" in script
     assert "smoke_runtime_images_on_gpu" in script
+    assert "report_validation_context" in script
+    assert "git -C" in script
+
+
+def test_gpu_nightly_publishes_commit_scoped_qualification_evidence() -> None:
+    workflow = GPU_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "set -o pipefail" in workflow
+    assert "tee gpu-validation.log" in workflow
+    assert "${GITHUB_STEP_SUMMARY}" in workflow
+    assert "dronegs-gpu-validation-${{ github.sha }}" in workflow
+    assert "retention-days: 30" in workflow
 
 
 def test_gpu_contract_leaves_device_selection_to_the_driver() -> None:

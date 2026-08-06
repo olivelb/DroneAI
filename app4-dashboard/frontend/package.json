@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "duplication": "jscpd ../../shared ../../app1-colmap ../../app2-ia ../../app3-processing ../../app4-dashboard/api ../../tools --format python --config ../../.jscpd.json"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
     "sharp": "0.35.3"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

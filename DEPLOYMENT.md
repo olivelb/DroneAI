@@ -71,7 +71,7 @@ systemd=true
 
 Then run `wsl --shutdown` once from Windows and reopen Ubuntu.
 
-The script validates both host `nvidia-smi` and a CUDA 12.8 Docker container
+The script validates both host `nvidia-smi` and a CUDA 12.9.2 Docker container
 before building the large images. In distributed mode it also validates the
 K3s NVIDIA RuntimeClass, installs the NVIDIA device plugin, enables two
 time-sliced allocation slots and checks the allocatable GPU resource.
@@ -183,12 +183,16 @@ by the deployment script.
 
 ## Resource safety and container identities
 
-The API, migration job, processing worker, AI worker and frontend run with
-fixed non-root identities in Kubernetes. Their root filesystems are read-only;
-the chart mounts only the required temporary/cache directories as writable
-volumes. The COLMAP worker remains the explicit exception because existing
-GPU workspaces can be host paths with host-specific ownership. Migrate those
-directories deliberately before applying a non-root UID to COLMAP.
+Every DroneAI application service, including COLMAP, runs with a fixed
+non-root identity in Kubernetes. Root filesystems are read-only and the chart
+mounts only the required temporary, cache and workspace directories as
+writable volumes. Local Compose applies the same non-root, read-only-root,
+capability-drop and no-new-privileges policy to COLMAP and provides `/tmp` as a
+bounded tmpfs. COLMAP uses UID/GID `10001`; deployment tooling creates the
+primary work directory with mode `0770` and that ownership. Administrators
+adding an existing `hostPath` or external disk must make its dedicated
+`.droneai/colmap-work` directory writable by UID/GID `10001` before advertising
+it.
 
 AI campaign finalization rejects pathological aggregate payloads instead of
 allowing an unbounded in-memory allocation. Helm defaults are configurable at
@@ -254,6 +258,10 @@ localhost forwarding does not consistently proxy K3s NodePorts. Rerun the
 script with `--no-build` after a full WSL restart if that address changes.
 
 ## Dashboard end-to-end test
+
+The manual acceptance journey below remains useful with real services and
+datasets. Development and CI additionally run the automated Playwright browser
+journeys documented in [`app4-dashboard/frontend/README.md`](app4-dashboard/frontend/README.md).
 
 1. Open the dashboard URL printed by `deploy.sh`.
 2. Enter a dataset name and select all images for one flight or survey.

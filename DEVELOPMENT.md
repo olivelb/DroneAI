@@ -94,7 +94,12 @@ scheduled or manually dispatched
 `dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
 development container on a self-hosted runner, then verifies driver injection
 in each production CUDA runtime image. It requires a repository runner labelled
-`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`.
+`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`. The
+workflow writes the commit, runner and result to the GitHub job summary and
+retains the complete `gpu-validation.log` as a commit-scoped artifact for 30
+days, including failed attempts. This artifact is the release evidence; a
+successful local run against an uncommitted working tree is useful
+qualification but does not replace the post-commit workflow result.
 
 The GPU workflow exposes the available devices with Docker's `--gpus all` but
 does not set a device index or `CUDA_VISIBLE_DEVICES`; CUDA and the NVIDIA
@@ -104,6 +109,11 @@ driver retain device selection. Run the same contracts locally with:
 scripts/ci/validate_cuda_containers.sh build
 scripts/ci/validate_cuda_containers.sh gpu
 ```
+
+Both modes print the repository commit, Docker server version and CUDA image
+contracts before building. The most recent local CUDA 12.9.2 qualification is
+recorded in
+[`docs/benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](docs/benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md).
 
 The infrastructure-free dataset and sparse reconstruction workflow is
 documented in [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md).
@@ -143,7 +153,16 @@ npm run duplication
 npm run test
 npm run lint
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
+
+From the repository root, `make frontend-e2e` builds the production Next.js
+application and runs the same Playwright suite. The browser tests mock API
+transport while exercising Chromium against the production build. They cover
+dataset selection and mission launch, operator cancellation, and rendering of
+the terminal `cancelled` state. CI installs Chromium with its Linux system
+dependencies and uploads the Playwright report when the suite fails.
 
 The lock currently pins Next.js `16.2.12`. Security advisories change over
 time, so verify the current dependency graph locally:

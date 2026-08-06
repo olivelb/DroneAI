@@ -20,6 +20,11 @@ spec:
         app: colmap
     spec:
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
         seccompProfile:
           type: RuntimeDefault
       {{- with .Values.gpu.runtimeClassName }}
@@ -65,6 +70,7 @@ spec:
       - name: colmap
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.colmapWorker.image "tag" .Values.colmapWorker.tag) }}
@@ -80,6 +86,8 @@ spec:
         - name: DRONEAI_GAUSSIAN_BACKEND
           value: {{ .Values.colmapWorker.gaussianBackend | quote }}
         volumeMounts:
+        - name: tmp
+          mountPath: /tmp
         {{- range $drive := .Values.colmapWorker.workVolume.drives }}
         {{- if or (eq (default "" $drive.type) "emptyDir") (not (empty $drive.hostPath)) (not (empty $drive.existingClaim)) }}
         - name: work-{{ .name }}

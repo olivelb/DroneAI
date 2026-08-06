@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from ..contracts import (
 )
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
+logger = logging.getLogger("app1-colmap")
 
 
 @dataclass(frozen=True)
@@ -473,26 +475,48 @@ def cleanup_pipeline_workspace(
     vol_id: str,
     *,
     final_pass: bool = False,
-) -> None:
+) -> bool:
     if not os.path.isdir(workspace_dir):
-        return
+        return True
     try:
-        shutil.rmtree(workspace_dir, ignore_errors=True)
-        suffix = " (finally)" if final_pass else ""
-        runtime.report_mission_progress(
-            vol_id,
-            "CLEANUP",
-            99,
-            log=f"Local workspace {workspace_dir} cleaned up{suffix}",
-        )
-    except Exception as cleanup_error:
-        if not final_pass:
+        shutil.rmtree(workspace_dir)
+    except OSError as cleanup_error:
+        log_message = f"Warning: workspace cleanup failed for {workspace_dir}: {cleanup_error}"
+        details = {
+            "event": "workspace_cleanup_failed",
+            "workspace_dir": workspace_dir,
+            "final_pass": final_pass,
+            "error": f"{type(cleanup_error).__name__}: {cleanup_error}",
+        }
+        if final_pass:
+            logger.warning(log_message, extra={"cleanup": details})
+        else:
             runtime.report_mission_progress(
                 vol_id,
                 "CLEANUP",
                 99,
-                log=f"Warning: workspace cleanup failed: {cleanup_error}",
+                log=log_message,
+                details=details,
             )
+        return False
+
+    log_message = f"Local workspace {workspace_dir} cleaned up"
+    details = {
+        "event": "workspace_cleanup_succeeded",
+        "workspace_dir": workspace_dir,
+        "final_pass": final_pass,
+    }
+    if final_pass:
+        logger.info(log_message, extra={"cleanup": details})
+    else:
+        runtime.report_mission_progress(
+            vol_id,
+            "CLEANUP",
+            99,
+            log=log_message,
+            details=details,
+        )
+    return True
 
 
 def complete_colmap_pipeline(

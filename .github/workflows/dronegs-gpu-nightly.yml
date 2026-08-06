@@ -20,4 +20,25 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; runner >= 2.327.1
       - name: Run native CUDA suites in the development container
-        run: scripts/ci/validate_cuda_containers.sh gpu
+        run: |
+          set -o pipefail
+          scripts/ci/validate_cuda_containers.sh gpu 2>&1 | tee gpu-validation.log
+      - name: Publish qualification summary
+        if: always()
+        run: |
+          {
+            echo "## DroneGS GPU qualification"
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Runner: \`${RUNNER_NAME}\`"
+            echo "- Workflow result: \`${{ job.status }}\`"
+            echo "- Full native CUDA and driver-injection output: artifact \`dronegs-gpu-validation-${GITHUB_SHA}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Upload GPU qualification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dronegs-gpu-validation-${{ github.sha }}
+          path: gpu-validation.log
+          if-no-files-found: warn
+          retention-days: 30

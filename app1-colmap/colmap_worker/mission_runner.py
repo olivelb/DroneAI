@@ -23,6 +23,7 @@ def run_colmap_pipeline(
     vol_id: str,
     mission_params: dict[str, Any],
 ) -> None:
+    terminal_report: dict[str, Any] | None = None
     try:
         preparation = prepare_colmap_pipeline_run(
             workspace_dir,
@@ -41,7 +42,6 @@ def run_colmap_pipeline(
             workspace_dir,
             vol_id,
         )
-        # --- 7-8. Undistortion and geo-alignment ---
         alignment_state = undistort_and_align_colmap(
             preparation,
             reconstruction,
@@ -50,7 +50,6 @@ def run_colmap_pipeline(
             vol_id,
         )
 
-        # --- 9. Gaussian Splatting product ---
         gaussian_state = run_gaussian_product(
             preparation,
             reconstruction,
@@ -58,7 +57,6 @@ def run_colmap_pipeline(
             workspace_dir,
             vol_id,
         )
-        # --- 10. Verified product publication ---
         publication_state = publish_colmap_products(
             preparation,
             reconstruction,
@@ -79,13 +77,40 @@ def run_colmap_pipeline(
         )
 
     except runtime.PipelineCancelledError as error:
-        runtime.report_mission_progress(vol_id, "CANCELLED", 0, status="error", log=f"🚫 {error!s}")
+        terminal_report = {
+            "step": "CANCELLED",
+            "status": "cancelled",
+            "log": f"🚫 {error!s}",
+            "event": "mission_cancelled",
+        }
     except Exception as error:
-        runtime.report_mission_progress(vol_id, "ERROR", 0, status="error", log=f"CRITICAL ERROR: {error!s}")
+        terminal_report = {
+            "step": "ERROR",
+            "status": "error",
+            "log": f"CRITICAL ERROR: {error!s}",
+            "event": "mission_failed",
+        }
         raise
     finally:
         # Always clean up local workspace to avoid filling the system disk.
-        cleanup_pipeline_workspace(workspace_dir, vol_id, final_pass=True)
+        workspace_cleanup_succeeded = cleanup_pipeline_workspace(
+            workspace_dir,
+            vol_id,
+            final_pass=True,
+        )
+        if terminal_report is not None:
+            runtime.report_mission_progress(
+                vol_id,
+                terminal_report["step"],
+                0,
+                status=terminal_report["status"],
+                log=terminal_report["log"],
+                details={
+                    "event": terminal_report["event"],
+                    "terminal": True,
+                    "workspace_cleanup_succeeded": workspace_cleanup_succeeded,
+                },
+            )
         # Release Python-owned memory after every mission. GPU resources are
         # intentionally left to the runtime and driver lifecycle.
         import gc

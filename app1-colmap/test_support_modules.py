@@ -502,7 +502,7 @@ class TestMainSupport(unittest.TestCase):
         self.assertIsNone(state.alignment_transform_path)
 
     def test_run_colmap_pipeline_cancellation_still_cleans_workspace(self):
-        cleanup = MagicMock()
+        cleanup = MagicMock(return_value=True)
         with (
             patch.object(
                 mission_runner,
@@ -527,8 +527,13 @@ class TestMainSupport(unittest.TestCase):
             "vol-cancelled",
             "CANCELLED",
             0,
-            status="error",
+            status="cancelled",
             log="🚫 cancelled",
+            details={
+                "event": "mission_cancelled",
+                "terminal": True,
+                "workspace_cleanup_succeeded": True,
+            },
         )
         cleanup.assert_called_once_with(
             "/tmp/cancelled-workspace",

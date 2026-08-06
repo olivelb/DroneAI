@@ -6,7 +6,7 @@ import type {
   ParamValue, PipelineName, PodState, StatusPayload, YOLOModelVariant,
   PhaseId,
 } from "./types";
-import { serviceOrderFor } from "./types";
+import { overallStatusFor } from "./types";
 import {
   createSession,
   deleteSession,
@@ -352,9 +352,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
               : existing.logs;
             const mission: MissionSummary = {
               ...existing, services: svc, logs: newLogs, updated_at: Date.now() / 1000,
-              overall_status: d.status === "error" ? "error"
-                : Object.values(svc).length > 0 && serviceOrderFor(svc).every((s) => svc[s]?.status === "success") ? "success"
-                : "processing",
+              overall_status: overallStatusFor(svc),
             };
             const next = { ...prev, [d.vol_id]: mission };
             // Only auto-switch if user hasn't explicitly selected a mission

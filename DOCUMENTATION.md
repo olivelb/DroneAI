@@ -615,6 +615,8 @@ Canonical payload shape:
 Important details:
 
 - `service` can be `COLMAP`, `TILER`, or `IA`.
+- `status` is one of `processing`, `success`, `error`, or `cancelled`; producers
+  and consumers reject other values at the shared event-contract boundary.
 - `step` is service-defined and reused by the dashboard as the public progress vocabulary.
 - The API persists mission state and one `MissionLog` row per unique status
   event in the inbox transaction.
@@ -623,6 +625,9 @@ Important details:
 - A COLMAP success is terminal only when both `details.process="facade"` and
   `details.terminal=true` are present. A map status cannot shorten the normal
   `COLMAP -> TILER -> IA` completion contract.
+- Operator cancellation is a terminal `cancelled` state, distinct from an
+  unexpected `error`. A cancelled COLMAP attempt can be restarted when its
+  saved mission parameters are available.
 
 ### `images-ortho`
 
@@ -960,8 +965,22 @@ Mechanism:
 - on `{"command": "cancel", "vol_id": ...}` it sets `cancel_requested=True` only if the current worker mission matches
 - long-running subprocess loops use non-blocking reads from child stdout and poll the shared flag frequently
 - if cancellation is requested, the subprocess is killed and the worker raises `PipelineCancelledError`
+- the worker attempts final workspace cleanup before publishing the terminal
+  `cancelled` status and records `details.workspace_cleanup_succeeded`
 
-This design avoids waiting indefinitely on silent subprocesses.
+This design avoids waiting indefinitely on silent subprocesses and prevents a
+cleanup progress message from overwriting the terminal mission state.
+
+### Workspace cleanup
+
+Mission workspaces are scratch data and are removed after success, failure or
+cancellation. Cleanup no longer suppresses filesystem errors: it returns a
+verified boolean result and emits a structured `workspace_cleanup_succeeded`
+or `workspace_cleanup_failed` event for non-terminal cleanup passes. During the
+final pass it writes structured worker logs so that the terminal status remains
+the last mission event. A cleanup failure is observable but does not replace an
+already determined mission outcome; operators can remove the reported path
+later.
 
 ### Pipeline profiles
 

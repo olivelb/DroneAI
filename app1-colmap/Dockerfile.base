@@ -137,11 +137,15 @@ FROM nvidia/cuda:12.9.2-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV HOME=/tmp/droneai-home
+ENV XDG_CACHE_HOME=/tmp/droneai-cache
+ENV CUDA_CACHE_PATH=/tmp/cuda-cache
 WORKDIR /app
 
 # Runtime libraries needed by COLMAP, Ceres, and Python packages
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip \
+    python3 python3-pip passwd \
     curl \
     libboost-program-options1.83.0 libboost-filesystem1.83.0 libboost-graph1.83.0 \
     libboost-system1.83.0 libboost-iostreams1.83.0 \
@@ -186,3 +190,12 @@ ENV DRONEGS_BIN="/usr/local/bin/dronegs"
 ENV DRONEAI_GAUSSIAN_BACKEND="dronegs"
 
 RUN test -f /usr/share/common-licenses/GPL-3 && ldconfig
+
+# Fixed runtime identity. Deployment tooling prepares /work volumes for this
+# UID/GID, while caches and temporary files live on the explicit /tmp volume.
+RUN groupadd --gid 10001 droneai \
+    && useradd --uid 10001 --gid 10001 --no-create-home \
+        --home-dir /tmp/droneai-home --shell /usr/sbin/nologin droneai \
+    && install -d --owner=10001 --group=10001 --mode=0770 /work
+
+USER 10001:10001

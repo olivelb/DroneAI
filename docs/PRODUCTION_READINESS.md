@@ -133,7 +133,7 @@ Required on every candidate:
 
 1. Full Python suite in API/CUDA-capable test images.
 2. Native DroneGS CPU and CUDA tests on a real GPU.
-3. Frontend lint, TypeScript and production build.
+3. Frontend unit tests, lint, production build and Playwright mission journeys.
 4. Helm lint with the production overlay.
 5. One complete RTK preparation run and one non-RTK regression scene.
 6. Immutable benchmark bundle with binary/dataset/artifact hashes.
@@ -143,6 +143,19 @@ Required on every candidate:
 The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and
 SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
+
+## CUDA 12.9.2 qualification status
+
+The current CUDA 12.9.2 development and production runtime contracts were
+executed locally on 2026-08-06 with an RTX 4070 Laptop GPU and driver 610.62.
+All six native DroneGS suites passed and NVIDIA driver injection succeeded in
+both production runtime images. The complete local record and its scope are in
+[`benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md).
+
+That run qualifies the pending audit-hardening working tree based on commit
+`c89f31e`; it is not immutable release evidence. A release candidate must still
+produce a successful, commit-scoped artifact from `dronegs-gpu-nightly.yml`
+after the changes are committed.
 
 ## SAVERES RTK release evidence
 

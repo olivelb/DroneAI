@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
 
-TERMINAL_STATUSES = {"success", "error"}
+TERMINAL_STATUSES = {"success", "error", "cancelled"}
 MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
 
 
@@ -41,6 +41,8 @@ def apply_mission_state(session, payload: dict) -> None:
 
     if status == "error" and log_message:
         mission.error_message = log_message
+    elif status == "cancelled":
+        mission.error_message = None
     if details:
         event = details.get("event")
         resume_info = dict(mission.resume_info or {})
@@ -85,6 +87,8 @@ def compute_overall_status(services: dict) -> str:
     ]
     if "error" in statuses:
         return "error"
+    if "cancelled" in statuses:
+        return "cancelled"
     colmap = services.get("COLMAP")
     if isinstance(colmap, dict):
         details = colmap.get("details")
@@ -156,6 +160,18 @@ def build_colmap_resume_state(mission: Mission) -> dict:
                 "COLMAP stopped with an error. A resume action can restart from the last checkpoint."
                 if has_params
                 else "COLMAP errored but no saved mission parameters found."
+            ),
+            "downstream_processing": downstream,
+        }
+    if colmap_status == "cancelled":
+        has_params = mission.params is not None
+        return {
+            "available": has_params,
+            "state": "cancelled" if has_params else "unavailable",
+            "reason": (
+                "COLMAP was cancelled by an operator. The mission can be restarted as a new attempt."
+                if has_params
+                else "COLMAP was cancelled but no saved mission parameters were found."
             ),
             "downstream_processing": downstream,
         }

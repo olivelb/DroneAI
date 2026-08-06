@@ -52,7 +52,15 @@ Open `http://localhost:3000`. The client calls
 npm run test
 npm run lint
 npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
+
+The browser suite mocks API transport while exercising the production Next.js
+application in Chromium. It covers dataset selection and mission launch,
+operator cancellation, and the terminal cancelled state. CI installs Chromium
+with its Linux system dependencies and retains the Playwright report on
+failure.
 
 Use the committed `package-lock.json`; do not replace `npm ci` with an
 unreviewed dependency update.
