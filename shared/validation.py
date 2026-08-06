@@ -170,9 +170,7 @@ def validate_pipeline_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("facade_target_yaw_deg must be between -360 and 360")
 
     if "facade_excluded_image_ranges" in overrides:
-        parse_excluded_basename_ranges(
-            str(overrides["facade_excluded_image_ranges"])
-        )
+        parse_excluded_basename_ranges(str(overrides["facade_excluded_image_ranges"]))
 
     if {
         "gps_pair_min_neighbors",

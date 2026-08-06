@@ -103,9 +103,18 @@ COLMAP CUDA compilation but exceeded the local command's 20-minute execution
 window before image export. The hosted matrix has a 90-minute timeout and is
 the authoritative completion and scan evidence for that larger image.
 
+The next local hardening pass extended the worker-grade Ruff rules to all
+`shared/` modules. Bugbear, simplification, Python upgrade, Ruff-specific and
+async checks now run in `make static`; shared complexity starts at a blocking
+McCabe ceiling of 18 while the worker remains at 15. Intentional scientific
+Unicode in operator-facing validation messages is the only scoped rule
+exception. The complete `make check` gate passed after the migration: 381
+tests passed, 13 GPU/integration tests were deselected, coverage remained 54%,
+and `pip-audit --strict` reported no known vulnerabilities.
+
 ## Remaining release checks
 
-These focused checks do not replace the full `make check`, a complete
+The full local `make check` now passes. It does not replace a complete
 Compose/K3s mission, Helm acceptance, RTK/non-RTK dataset regressions or a
-centrally retained GPU workflow artifact. Run the remaining repository release
-gates before publication.
+centrally retained GPU workflow artifact. Run those environment-dependent
+release gates before publication.

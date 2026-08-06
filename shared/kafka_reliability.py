@@ -6,7 +6,8 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from shared.event_contracts import decode_event, make_event
 
@@ -18,15 +19,11 @@ class RetryPolicy:
     max_delay_seconds: float = 30.0
 
     @classmethod
-    def from_environment(cls) -> "RetryPolicy":
+    def from_environment(cls) -> RetryPolicy:
         return cls(
             max_attempts=max(1, int(os.getenv("KAFKA_RETRY_MAX_ATTEMPTS", "3"))),
-            base_delay_seconds=max(
-                0.0, float(os.getenv("KAFKA_RETRY_BASE_DELAY_SECONDS", "1"))
-            ),
-            max_delay_seconds=max(
-                0.0, float(os.getenv("KAFKA_RETRY_MAX_DELAY_SECONDS", "30"))
-            ),
+            base_delay_seconds=max(0.0, float(os.getenv("KAFKA_RETRY_BASE_DELAY_SECONDS", "1"))),
+            max_delay_seconds=max(0.0, float(os.getenv("KAFKA_RETRY_MAX_DELAY_SECONDS", "30"))),
         )
 
     def delay_before(self, attempt: int) -> float:

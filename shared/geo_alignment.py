@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -117,9 +118,7 @@ def estimate_weighted_sim3(
         scale = float(np.exp(values[3]))
         offset = values[4:7]
         return np.asarray(
-            scale * (rotation @ (source - source_center).T).T
-            + target_center
-            + offset,
+            scale * (rotation @ (source - source_center).T).T + target_center + offset,
             dtype=np.float64,
         )
 
@@ -135,9 +134,7 @@ def estimate_weighted_sim3(
         robust_cost = scale_squared * np.log1p(squared_norm / scale_squared)
         weights = np.ones_like(squared_norm)
         nonzero = squared_norm > np.finfo(np.float64).eps
-        weights[nonzero] = np.sqrt(
-            robust_cost[nonzero] / squared_norm[nonzero]
-        )
+        weights[nonzero] = np.sqrt(robust_cost[nonzero] / squared_norm[nonzero])
         return np.asarray(
             (normalized * weights[:, None]).reshape(-1),
             dtype=np.float64,
@@ -213,16 +210,10 @@ def compute_reconstruction_alignment(
     source = pycolmap.Reconstruction(str(source_model))
     target = pycolmap.Reconstruction(str(target_model))
     source_centers: dict[str, Sequence[float]] = {
-        image.name: tuple(
-            float(value) for value in image.projection_center()
-        )
-        for image in source.images.values()
+        image.name: tuple(float(value) for value in image.projection_center()) for image in source.images.values()
     }
     target_centers: dict[str, Sequence[float]] = {
-        image.name: tuple(
-            float(value) for value in image.projection_center()
-        )
-        for image in target.images.values()
+        image.name: tuple(float(value) for value in image.projection_center()) for image in target.images.values()
     }
     return alignment_from_named_centers(source_centers, target_centers)
 

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from itertools import pairwise
 from pathlib import Path
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from shared.dji_metadata import image_sequence_number, parse_aerial_xmp
 
@@ -44,10 +46,7 @@ def deduplicate_identical_basenames(
             unique[path.name] = path
             continue
         if not _same_file(previous, path):
-            raise ValueError(
-                "Facade input contains different images with the same filename: "
-                f"{previous} and {path}"
-            )
+            raise ValueError(f"Facade input contains different images with the same filename: {previous} and {path}")
         duplicates.append({"kept": str(previous), "discarded": str(path)})
     return list(unique.values()), duplicates
 
@@ -72,9 +71,7 @@ def parse_excluded_basename_ranges(
                 continue
             bounds = [part.strip() for part in entry.split("..", 1)]
             if len(bounds) != 2 or not all(bounds):
-                raise ValueError(
-                    "Facade excluded image ranges must use START..END, separated by semicolons"
-                )
+                raise ValueError("Facade excluded image ranges must use START..END, separated by semicolons")
             entries.append((bounds[0], bounds[1]))
     else:
         entries = [(str(start).strip(), str(end).strip()) for start, end in value]
@@ -83,17 +80,13 @@ def parse_excluded_basename_ranges(
     for start, end in entries:
         for label, name in (("start", start), ("end", end)):
             if not name or Path(name).name != name or "/" in name or "\\" in name:
-                raise ValueError(
-                    f"Facade excluded range {label} must be an image basename: {name!r}"
-                )
+                raise ValueError(f"Facade excluded range {label} must be an image basename: {name!r}")
         if start.casefold() > end.casefold():
-            raise ValueError(
-                f"Facade excluded range start must sort before its end: {start}..{end}"
-            )
+            raise ValueError(f"Facade excluded range start must sort before its end: {start}..{end}")
         normalized.append((start, end))
 
     normalized.sort(key=lambda bounds: (bounds[0].casefold(), bounds[1].casefold()))
-    for previous, current in zip(normalized, normalized[1:]):
+    for previous, current in pairwise(normalized):
         if current[0].casefold() <= previous[1].casefold():
             raise ValueError(
                 "Facade excluded image ranges must not overlap: "
@@ -136,17 +129,14 @@ def exclude_basename_ranges(
 
     empty_ranges = [
         f"{start}..{end}"
-        for (start, end), excluded in zip(normalized_ranges, excluded_by_range)
+        for (start, end), excluded in zip(normalized_ranges, excluded_by_range, strict=True)
         if not excluded
     ]
     if empty_ranges:
-        raise ValueError(
-            "Facade excluded image range matched no input image: "
-            + ", ".join(empty_ranges)
-        )
+        raise ValueError("Facade excluded image range matched no input image: " + ", ".join(empty_ranges))
 
     range_reports = []
-    for (start, end), excluded in zip(normalized_ranges, excluded_by_range):
+    for (start, end), excluded in zip(normalized_ranges, excluded_by_range, strict=True):
         range_reports.append(
             {
                 "start": start,
@@ -156,9 +146,7 @@ def exclude_basename_ranges(
                 "last_excluded": excluded[-1],
             }
         )
-    excluded_basenames = sorted(
-        name for names in excluded_by_range for name in names
-    )
+    excluded_basenames = sorted(name for names in excluded_by_range for name in names)
     return kept, {
         "excluded_image_ranges": range_reports,
         "excluded_image_count": len(excluded_basenames),
@@ -210,9 +198,7 @@ def select_facade_images(
             if yaw is None:
                 rejected_yaw.append(str(path))
                 continue
-            yaw_distance = abs(
-                (float(yaw) - float(target_yaw_deg) + 180.0) % 360.0 - 180.0
-            )
+            yaw_distance = abs((float(yaw) - float(target_yaw_deg) + 180.0) % 360.0 - 180.0)
             if yaw_distance > float(yaw_tolerance_deg):
                 rejected_yaw.append(str(path))
                 continue
@@ -246,9 +232,7 @@ def select_facade_images(
             if current:
                 previous = current[-1]
                 sequence_ok = (
-                    previous.sequence is None
-                    or record.sequence is None
-                    or 0 < record.sequence - previous.sequence <= 3
+                    previous.sequence is None or record.sequence is None or 0 < record.sequence - previous.sequence <= 3
                 )
                 pitch_ok = abs(record.pitch_deg - previous.pitch_deg) <= pitch_continuity_deg
                 contiguous = sequence_ok and pitch_ok

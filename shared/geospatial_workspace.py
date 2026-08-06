@@ -96,9 +96,4 @@ def geometry_bounds(geometry: dict[str, Any]) -> list[float]:
 
 
 def bounds_intersect(first: list[float], second: list[float]) -> bool:
-    return not (
-        first[2] < second[0]
-        or first[0] > second[2]
-        or first[3] < second[1]
-        or first[1] > second[3]
-    )
+    return not (first[2] < second[0] or first[0] > second[2] or first[3] < second[1] or first[1] > second[3])

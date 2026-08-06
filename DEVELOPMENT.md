@@ -60,11 +60,13 @@ complexity budget across every Python service, shared module and local tool. The
 local sparse runner, Gaussian orthophoto generator and production COLMAP worker
 are composed from focused stages with typed, immutable state objects. Keep their
 public entry points limited to stage coordination and add new behavior to the
-smallest relevant stage. The COLMAP worker package additionally enforces
-modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 15
-across the complete worker package. Stable contracts, runtime boundaries,
-artifact helpers, mission coordination and every COLMAP stage also pass strict
-mypy checks. The same strict contract covers all 26 modules at the root of
+smallest relevant stage. The COLMAP worker package additionally enforces modern
+Bugbear/simplification/upgrade/Ruff/async rules and a McCabe ceiling of 15
+across the complete worker package. The same modern rules cover `shared/`, with
+an initial McCabe ceiling of 18; scientific Unicode such as sigma remains
+allowed in operator-facing validation messages. Stable contracts, runtime
+boundaries, artifact helpers, mission coordination and every COLMAP stage also
+pass strict mypy checks. The same strict contract covers all 26 modules at the root of
 `shared/`, including the SQLAlchemy, transactional inbox/outbox and S3
 boundaries. Those dynamic integrations expose explicit session and S3 client
 contracts while keeping runtime-generated ORM/client behavior behind the

@@ -62,10 +62,8 @@ def _native_max_zoom(dataset: rasterio.DatasetReader) -> int:
         densify_pts=21,
     )
     resolution = max(
-        abs(mercator_bounds[2] - mercator_bounds[0])
-        / max(dataset.width, 1),
-        abs(mercator_bounds[3] - mercator_bounds[1])
-        / max(dataset.height, 1),
+        abs(mercator_bounds[2] - mercator_bounds[0]) / max(dataset.width, 1),
+        abs(mercator_bounds[3] - mercator_bounds[1]) / max(dataset.height, 1),
     )
     if not math.isfinite(resolution) or resolution <= 0:
         return 0
@@ -73,13 +71,7 @@ def _native_max_zoom(dataset: rasterio.DatasetReader) -> int:
         0,
         min(
             24,
-            int(
-                math.ceil(
-                    math.log2(
-                        WEB_MERCATOR_INITIAL_RESOLUTION / resolution
-                    )
-                )
-            ),
+            math.ceil(math.log2(WEB_MERCATOR_INITIAL_RESOLUTION / resolution)),
         ),
     )
 
@@ -161,9 +153,7 @@ def _rgba_image(
         red = np.clip(1.5 - np.abs(4 * gray - 3), 0, 1)
         green = np.clip(1.5 - np.abs(4 * gray - 2), 0, 1)
         blue = np.clip(1.5 - np.abs(4 * gray - 1), 0, 1)
-        rgb = (np.stack((red, green, blue), axis=-1) * 255).astype(
-            np.uint8
-        )
+        rgb = (np.stack((red, green, blue), axis=-1) * 255).astype(np.uint8)
     elif normalized.shape[0] >= 3:
         rgb = np.moveaxis(normalized[:3], 0, -1)
     else:
@@ -226,22 +216,14 @@ def convert_to_cog(
         )
         with rasterio.open(temporary) as dataset:
             metadata = raster_metadata(dataset)
-            if (
-                not dataset.profile.get("tiled")
-                or not dataset.overviews(1)
-            ):
-                raise RuntimeError(
-                    f"COG validation failed for {path}: "
-                    "missing tiles/overviews"
-                )
+            if not dataset.profile.get("tiled") or not dataset.overviews(1):
+                raise RuntimeError(f"COG validation failed for {path}: missing tiles/overviews")
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
     os.replace(temporary, path)
     metadata_file = metadata_path(path)
-    metadata_temporary = metadata_file.with_suffix(
-        metadata_file.suffix + ".tmp"
-    )
+    metadata_temporary = metadata_file.with_suffix(metadata_file.suffix + ".tmp")
     metadata_temporary.write_text(
         json.dumps(metadata, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -337,9 +319,7 @@ def pixel_segment_to_wgs84(
     if len(segment) < 3:
         raise ValueError("A polygon needs at least three vertices")
     affine = Affine.from_gdal(*[float(value) for value in geotransform])
-    projected = [
-        affine * (float(point[0]), float(point[1])) for point in segment
-    ]
+    projected = [affine * (float(point[0]), float(point[1])) for point in segment]
     longitudes, latitudes = warp_coordinates(
         source_crs,
         "EPSG:4326",
@@ -370,11 +350,7 @@ def detections_feature_collection(
 
     features: list[dict[str, Any]] = []
     for detection in detections:
-        get = (
-            detection.get
-            if isinstance(detection, dict)
-            else vars(detection).get
-        )
+        get = detection.get if isinstance(detection, dict) else vars(detection).get
         segment = get("segment") or []
         geometry: dict[str, Any] | None = None
         if segment and geotransform and source_crs:

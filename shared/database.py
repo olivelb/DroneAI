@@ -10,8 +10,9 @@ Uses SQLAlchemy 2.0 + GeoAlchemy2 for PostGIS geometry support.
 
 import logging
 from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Callable, Iterator, Optional, cast
+from datetime import datetime, UTC
+from typing import Any, cast
+from collections.abc import Callable, Iterator
 from uuid import uuid4
 
 from geoalchemy2 import Geometry
@@ -117,13 +118,13 @@ class RequiredTimestampMixin:
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 
@@ -182,11 +183,11 @@ class Mission(Base):
     aggregation_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
     updated_at = Column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     # Relationships
@@ -250,7 +251,7 @@ class Detection(Base):
     # Raw polygon vertices (OBB corners as JSON array of [x,y] pairs)
     segment = Column(PORTABLE_JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     # Relationships
     mission = relationship("Mission", back_populates="detections")
@@ -287,7 +288,7 @@ class ProcessedTile(Base):
     received_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
     mission = relationship("Mission", back_populates="processed_tiles")
@@ -346,7 +347,7 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     heartbeat_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
@@ -399,14 +400,14 @@ class AIAnalysisTile(Base):
     queued_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     completed_at = Column(DateTime(timezone=True), nullable=True)
     updated_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     analysis_run = relationship("AIAnalysisRun", back_populates="tiles")
@@ -482,7 +483,7 @@ class MissionLog(Base):
     message = Column(Text, nullable=True)
     details = Column(PORTABLE_JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(UTC))
 
     # Relationships
     mission = relationship("Mission", back_populates="logs")
@@ -518,7 +519,7 @@ class InboxEvent(Base):
     received_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     processed_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -543,7 +544,7 @@ class OutboxEvent(Base):
     available_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     locked_at = Column(DateTime(timezone=True), nullable=True)
     locked_by = Column(String(256), nullable=True)
@@ -551,7 +552,7 @@ class OutboxEvent(Base):
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     published_at = Column(DateTime(timezone=True), nullable=True)
     dead_at = Column(DateTime(timezone=True), nullable=True)
@@ -586,9 +587,9 @@ def update_mission_progress(
     step: str,
     progress: int,
     status: str = "processing",
-    service: Optional[str] = None,
-    error_message: Optional[str] = None,
-) -> Optional[Mission]:
+    service: str | None = None,
+    error_message: str | None = None,
+) -> Mission | None:
     """Update mission progress and optionally its status."""
     mission = cast(
         Mission | None,
@@ -606,7 +607,7 @@ def update_mission_progress(
         states = mission.service_states or {}
         states[service] = {"step": step, "progress": progress, "status": status}
         mission.service_states = states
-    mission.updated_at = datetime.now(timezone.utc)
+    mission.updated_at = datetime.now(UTC)
     return mission
 
 

@@ -5,11 +5,11 @@ All services use this module instead of direct filesystem I/O for
 persistent data (datasets, mission artifacts, tiles, orthomosaics).
 """
 
-import io
 import logging
 import os
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Optional, Protocol, cast
+from typing import Any, BinaryIO, Protocol, cast
+from collections.abc import Iterable
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -131,7 +131,7 @@ def _get_public_client() -> S3Client:
 # ---------------------------------------------------------------------------
 
 
-def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = None) -> str:
+def upload_file(local_path: str | Path, s3_key: str, bucket: str | None = None) -> str:
     """Upload a local file to S3. Returns the s3_key."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -150,7 +150,7 @@ def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
 def upload_verified_file(
     local_path: str | Path,
     s3_key: str,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, int | str]:
     """Upload a required artifact and verify size and SHA-256 with HEAD.
 
@@ -175,7 +175,7 @@ def upload_verified_file(
     remote_size = int(head.get("ContentLength", -1))
     remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
     if remote_size != size or remote_digest != digest:
-        raise IOError(
+        raise OSError(
             f"S3 verification failed for s3://{bucket}/{s3_key}: "
             f"size={remote_size}/{size}, sha256={remote_digest}/{digest}"
         )
@@ -189,7 +189,7 @@ def upload_verified_file(
     return {"key": s3_key, "size": size, "sha256": digest}
 
 
-def download_file(s3_key: str, local_path: str | Path, bucket: Optional[str] = None) -> Path:
+def download_file(s3_key: str, local_path: str | Path, bucket: str | None = None) -> Path:
     """Download a file from S3 to a local path. Creates parent dirs. Returns local Path."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -200,7 +200,7 @@ def download_file(s3_key: str, local_path: str | Path, bucket: Optional[str] = N
     return local_path
 
 
-def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: Optional[str] = None) -> int:
+def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: str | None = None) -> int:
     """Upload all files in a local directory (recursively) to S3 under the given prefix.
 
     Returns the number of files uploaded.
@@ -220,7 +220,7 @@ def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: Optional[str
     return count
 
 
-def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[str] = None) -> int:
+def download_directory(s3_prefix: str, local_dir: str | Path, bucket: str | None = None) -> int:
     """Download all objects under an S3 prefix to a local directory.
 
     Returns the number of files downloaded.
@@ -243,7 +243,7 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[s
     return count
 
 
-def list_objects(s3_prefix: str, bucket: Optional[str] = None, delimiter: str = "") -> list[str]:
+def list_objects(s3_prefix: str, bucket: str | None = None, delimiter: str = "") -> list[str]:
     """List all object keys under a prefix.
 
     If *delimiter* is set (e.g. ``"/"``), returns only the common prefixes
@@ -263,7 +263,7 @@ def list_objects(s3_prefix: str, bucket: Optional[str] = None, delimiter: str = 
     return keys
 
 
-def file_exists(s3_key: str, bucket: Optional[str] = None) -> bool:
+def file_exists(s3_key: str, bucket: str | None = None) -> bool:
     """Check if an object exists in S3."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -276,7 +276,7 @@ def file_exists(s3_key: str, bucket: Optional[str] = None) -> bool:
         raise
 
 
-def get_object_size(s3_key: str, bucket: Optional[str] = None) -> int:
+def get_object_size(s3_key: str, bucket: str | None = None) -> int:
     """Return the size in bytes of an S3 object."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -284,7 +284,7 @@ def get_object_size(s3_key: str, bucket: Optional[str] = None) -> int:
     return int(response["ContentLength"])
 
 
-def delete_object(s3_key: str, bucket: Optional[str] = None) -> None:
+def delete_object(s3_key: str, bucket: str | None = None) -> None:
     """Delete a single object from S3."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -292,7 +292,7 @@ def delete_object(s3_key: str, bucket: Optional[str] = None) -> None:
     logger.debug("Deleted s3://%s/%s", bucket, s3_key)
 
 
-def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
+def delete_prefix(s3_prefix: str, bucket: str | None = None) -> int:
     """Delete all objects under a prefix. Returns count of deleted objects."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -314,7 +314,7 @@ def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
 
 def get_object_stream(
     s3_key: str,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> tuple[BinaryIO, int, str]:
     """Return (stream, content_length, content_type) for an S3 object.
 
@@ -333,7 +333,7 @@ def get_object_stream(
 def get_presigned_url(
     s3_key: str,
     expires: int = 3600,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
     *,
     public: bool = True,
 ) -> str:
@@ -352,17 +352,16 @@ def get_presigned_url(
     return url
 
 
-def put_object(s3_key: str, data: bytes | BinaryIO, bucket: Optional[str] = None) -> str:
+def put_object(s3_key: str, data: bytes | BinaryIO, bucket: str | None = None) -> str:
     """Upload raw bytes or a file-like object to S3. Returns the s3_key."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
-    body = data if isinstance(data, (bytes, bytearray, memoryview, io.IOBase)) else data
-    client.put_object(Bucket=bucket, Key=s3_key, Body=body)
+    client.put_object(Bucket=bucket, Key=s3_key, Body=data)
     logger.debug("Put object s3://%s/%s", bucket, s3_key)
     return s3_key
 
 
-def ensure_bucket(bucket: Optional[str] = None) -> None:
+def ensure_bucket(bucket: str | None = None) -> None:
     """Create the bucket if it doesn't already exist."""
     bucket = bucket or S3_BUCKET
     client = _get_client()

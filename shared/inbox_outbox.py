@@ -11,9 +11,10 @@ import os
 import socket
 import threading
 from contextlib import AbstractContextManager
-from datetime import datetime, timedelta, timezone
-from enum import Enum
-from typing import Any, Callable, cast
+from datetime import datetime, timedelta, UTC
+from enum import StrEnum
+from typing import Any, cast
+from collections.abc import Callable
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -27,13 +28,13 @@ DomainHandler = Callable[[Any, dict[str, Any]], None]
 Publisher = Callable[[str, dict[str, Any], str | None], None]
 
 
-class InboxResult(str, Enum):
+class InboxResult(StrEnum):
     PROCESSED = "processed"
     DUPLICATE = "duplicate"
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def enqueue_outbox(

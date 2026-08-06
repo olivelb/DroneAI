@@ -8,7 +8,7 @@ import sqlite3
 import struct
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
@@ -302,7 +302,7 @@ def write_geopackage(
             )
             """
         )
-        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        now = datetime.now(UTC).isoformat(timespec="seconds")
         connection.execute(
             """
             INSERT INTO gpkg_contents
