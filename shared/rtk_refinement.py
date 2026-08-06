@@ -6,7 +6,8 @@ import struct
 from collections import defaultdict
 from pathlib import Path
 from statistics import mean, median
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from shared.dji_metadata import load_position_overrides, parse_aerial_xmp
 
@@ -44,9 +45,7 @@ def assess_rtk_refinement_quality(
     checks: list[dict[str, Any]] = []
 
     def add(name: str, actual: Any, limit: Any, passed: bool) -> None:
-        checks.append(
-            {"name": name, "actual": actual, "limit": limit, "passed": bool(passed)}
-        )
+        checks.append({"name": name, "actual": actual, "limit": limit, "passed": bool(passed)})
 
     base_registered = int(baseline.get("registered_images") or 0)
     candidate_registered = int(candidate.get("registered_images") or 0)
@@ -74,8 +73,7 @@ def assess_rtk_refinement_quality(
         and candidate_reprojection is not None
         and math.isfinite(float(base_reprojection))
         and math.isfinite(float(candidate_reprojection))
-        and float(candidate_reprojection)
-        <= float(base_reprojection) + maximum_reprojection_degradation_px
+        and float(candidate_reprojection) <= float(base_reprojection) + maximum_reprojection_degradation_px
     )
     add(
         "mean_reprojection_error_px",
@@ -92,11 +90,7 @@ def assess_rtk_refinement_quality(
 
     base_track = baseline.get("median_track_length")
     candidate_track = candidate.get("median_track_length")
-    minimum_track = (
-        float(base_track) * (1.0 - maximum_track_length_loss_ratio)
-        if base_track is not None
-        else None
-    )
+    minimum_track = float(base_track) * (1.0 - maximum_track_length_loss_ratio) if base_track is not None else None
     track_ok = (
         minimum_track is not None
         and candidate_track is not None
@@ -116,9 +110,7 @@ def assess_rtk_refinement_quality(
         focal_change_ratio = None
         focal_ok = True
     else:
-        focal_change_ratio = abs(float(candidate_focal) - float(base_focal)) / max(
-            abs(float(base_focal)), 1.0e-12
-        )
+        focal_change_ratio = abs(float(candidate_focal) - float(base_focal)) / max(abs(float(base_focal)), 1.0e-12)
         focal_ok = focal_change_ratio <= maximum_focal_length_change_ratio
     add(
         "median_focal_length_change_ratio",
@@ -141,11 +133,7 @@ def assess_rtk_refinement_quality(
 
 def load_rtk_records(image_dir: str | Path) -> list[dict[str, Any]]:
     root = Path(image_dir)
-    image_paths = sorted(
-        path
-        for path in root.rglob("*")
-        if path.suffix.lower() in {".jpg", ".jpeg", ".png"}
-    )
+    image_paths = sorted(path for path in root.rglob("*") if path.suffix.lower() in {".jpg", ".jpeg", ".png"})
     overrides = load_position_overrides(root, image_paths)
     records = []
     for path in image_paths:
@@ -185,7 +173,11 @@ def gimbal_attitude_to_gravity_sensor(
     norm = math.sqrt(sum(value * value for value in gravity))
     if not math.isfinite(norm) or norm < 1.0e-9:
         raise ValueError("invalid gimbal attitude")
-    return tuple(value / norm for value in gravity)
+    return (
+        gravity[0] / norm,
+        gravity[1] / norm,
+        gravity[2] / norm,
+    )
 
 
 def _database_pose_prior_rows(
@@ -217,9 +209,7 @@ def inject_database_gravity_priors(
     if not 0 < minimum_coverage <= 1:
         raise ValueError("minimum_coverage must be in (0, 1]")
     candidates: dict[str, tuple[float, float, float]] = {}
-    basename_candidates: dict[
-        str, list[tuple[str, tuple[float, float, float]]]
-    ] = defaultdict(list)
+    basename_candidates: dict[str, list[tuple[str, tuple[float, float, float]]]] = defaultdict(list)
     camera_pairs: set[str] = set()
     for record in records:
         attitude = record.get("gimbal_attitude_deg") or {}
@@ -234,10 +224,7 @@ def inject_database_gravity_priors(
             continue
         candidates[filename] = gravity
         basename_candidates[Path(filename).name].append((filename, gravity))
-        camera_pairs.add(
-            f"{record.get('camera_make') or 'unknown'} / "
-            f"{record.get('camera_model') or 'unknown'}"
-        )
+        camera_pairs.add(f"{record.get('camera_make') or 'unknown'} / {record.get('camera_model') or 'unknown'}")
 
     connection = sqlite3.connect(database_path)
     try:
@@ -252,16 +239,13 @@ def inject_database_gravity_priors(
                 return basename_matches[0][1]
             return None
 
-        matched_rows = [
-            (name, prior_id, gravity_for_name(name))
-            for name, prior_id in rows
-        ]
-        matched_rows = [row for row in matched_rows if row[2] is not None]
-        coverage = len(matched_rows) / len(rows) if rows else 0.0
-        enabled = len(matched_rows) >= 3 and coverage >= minimum_coverage
+        matched_rows = [(name, prior_id, gravity_for_name(name)) for name, prior_id in rows]
+        verified_rows = [(name, prior_id, gravity) for name, prior_id, gravity in matched_rows if gravity is not None]
+        coverage = len(verified_rows) / len(rows) if rows else 0.0
+        enabled = len(verified_rows) >= 3 and coverage >= minimum_coverage
         if enabled:
             with connection:
-                for _, pose_prior_id, gravity in matched_rows:
+                for _, pose_prior_id, gravity in verified_rows:
                     connection.execute(
                         "UPDATE pose_priors SET gravity = ? WHERE pose_prior_id = ?",
                         (struct.pack("<3d", *gravity), pose_prior_id),
@@ -273,13 +257,11 @@ def inject_database_gravity_priors(
         "schema_version": 1,
         "status": "enabled" if enabled else "insufficient-coverage",
         "database_pose_priors": len(rows),
-        "attitude_pose_priors": len(matched_rows),
+        "attitude_pose_priors": len(verified_rows),
         "coverage": coverage,
         "minimum_coverage": minimum_coverage,
         "camera_pairs": sorted(camera_pairs),
-        "ambiguous_basenames": sorted(
-            name for name, matches in basename_candidates.items() if len(matches) > 1
-        ),
+        "ambiguous_basenames": sorted(name for name, matches in basename_candidates.items() if len(matches) > 1),
         "convention": "COLMAP camera XYZ: right, down, forward",
         "use_in_global_rotation_averaging": enabled,
     }
@@ -323,9 +305,7 @@ def inject_database_pose_priors(
     connection = sqlite3.connect(database_path)
     try:
         rows = _database_pose_prior_rows(connection)
-        matched_names = sum(
-            1 for image_name, _ in rows if image_name in precise_records
-        )
+        matched_names = sum(1 for image_name, _ in rows if image_name in precise_records)
         minimum_matched = max(3, math.ceil(len(rows) * minimum_coverage))
         if matched_names < minimum_matched:
             raise RuntimeError(
@@ -378,12 +358,7 @@ def inject_database_pose_priors(
 
     return {
         "schema_version": 1,
-        "sources": sorted(
-            {
-                str(gps.get("source"))
-                for gps in precise_records.values()
-            }
-        ),
+        "sources": sorted({str(gps.get("source")) for gps in precise_records.values()}),
         "coordinate_system": "WGS84",
         "covariance_coordinate_system": "local_cartesian_enu",
         "available_records": len(precise_records),

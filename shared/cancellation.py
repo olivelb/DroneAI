@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Hashable
+from collections.abc import Hashable
 
 
 class AttemptCancellationRegistry:

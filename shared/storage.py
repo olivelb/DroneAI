@@ -5,11 +5,11 @@ All services use this module instead of direct filesystem I/O for
 persistent data (datasets, mission artifacts, tiles, orthomosaics).
 """
 
-import io
 import logging
 import os
 from pathlib import Path
-from typing import BinaryIO, Optional
+from typing import Any, BinaryIO, Protocol, cast
+from collections.abc import Iterable
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -26,6 +26,39 @@ from shared.config import (
 
 logger = logging.getLogger(__name__)
 
+
+class S3Paginator(Protocol):
+    """Minimal paginator contract used by this storage boundary."""
+
+    def paginate(self, **kwargs: Any) -> Iterable[dict[str, Any]]: ...
+
+
+class S3Client(Protocol):
+    """Subset of the dynamic boto3 S3 client consumed by DroneAI."""
+
+    def upload_file(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def download_file(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def head_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def get_paginator(self, operation_name: str) -> S3Paginator: ...
+
+    def delete_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def delete_objects(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def generate_presigned_url(self, *args: Any, **kwargs: Any) -> str: ...
+
+    def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def head_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
+
+
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
@@ -36,35 +69,38 @@ S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable Mi
 # Client singleton
 # ---------------------------------------------------------------------------
 
-_client = None
-_public_client = None
+_client: S3Client | None = None
+_public_client: S3Client | None = None
 
 
-def _get_client():
+def _get_client() -> S3Client:
     global _client
     if _client is None:
-        _client = boto3.client(
-            "s3",
-            endpoint_url=S3_ENDPOINT,
-            aws_access_key_id=S3_ACCESS_KEY,
-            aws_secret_access_key=S3_SECRET_KEY,
-            region_name=S3_REGION,
-            config=BotoConfig(
-                signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "standard"},
+        _client = cast(
+            S3Client,
+            boto3.client(
+                "s3",
+                endpoint_url=S3_ENDPOINT,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                region_name=S3_REGION,
+                config=BotoConfig(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 3, "mode": "standard"},
+                ),
             ),
         )
     return _client
 
 
-def reset_client():
+def reset_client() -> None:
     """Reset the cached S3 client (useful for testing)."""
     global _client, _public_client
     _client = None
     _public_client = None
 
 
-def _get_public_client():
+def _get_public_client() -> S3Client:
     """Return a client using the public endpoint for presigned URLs.
 
     Falls back to the internal client when S3_PUBLIC_ENDPOINT is not set.
@@ -73,15 +109,18 @@ def _get_public_client():
     if not S3_PUBLIC_ENDPOINT:
         return _get_client()
     if _public_client is None:
-        _public_client = boto3.client(
-            "s3",
-            endpoint_url=S3_PUBLIC_ENDPOINT,
-            aws_access_key_id=S3_ACCESS_KEY,
-            aws_secret_access_key=S3_SECRET_KEY,
-            region_name=S3_REGION,
-            config=BotoConfig(
-                signature_version="s3v4",
-                retries={"max_attempts": 3, "mode": "standard"},
+        _public_client = cast(
+            S3Client,
+            boto3.client(
+                "s3",
+                endpoint_url=S3_PUBLIC_ENDPOINT,
+                aws_access_key_id=S3_ACCESS_KEY,
+                aws_secret_access_key=S3_SECRET_KEY,
+                region_name=S3_REGION,
+                config=BotoConfig(
+                    signature_version="s3v4",
+                    retries={"max_attempts": 3, "mode": "standard"},
+                ),
             ),
         )
     return _public_client
@@ -92,7 +131,7 @@ def _get_public_client():
 # ---------------------------------------------------------------------------
 
 
-def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = None) -> str:
+def upload_file(local_path: str | Path, s3_key: str, bucket: str | None = None) -> str:
     """Upload a local file to S3. Returns the s3_key."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -105,13 +144,13 @@ def upload_file(local_path: str | Path, s3_key: str, bucket: Optional[str] = Non
 
 
 def _sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
-    return sha256_file(path, chunk_size=chunk_size)
+    return str(sha256_file(path, chunk_size=chunk_size))
 
 
 def upload_verified_file(
     local_path: str | Path,
     s3_key: str,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
 ) -> dict[str, int | str]:
     """Upload a required artifact and verify size and SHA-256 with HEAD.
 
@@ -136,7 +175,7 @@ def upload_verified_file(
     remote_size = int(head.get("ContentLength", -1))
     remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
     if remote_size != size or remote_digest != digest:
-        raise IOError(
+        raise OSError(
             f"S3 verification failed for s3://{bucket}/{s3_key}: "
             f"size={remote_size}/{size}, sha256={remote_digest}/{digest}"
         )
@@ -150,7 +189,7 @@ def upload_verified_file(
     return {"key": s3_key, "size": size, "sha256": digest}
 
 
-def download_file(s3_key: str, local_path: str | Path, bucket: Optional[str] = None) -> Path:
+def download_file(s3_key: str, local_path: str | Path, bucket: str | None = None) -> Path:
     """Download a file from S3 to a local path. Creates parent dirs. Returns local Path."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -161,7 +200,7 @@ def download_file(s3_key: str, local_path: str | Path, bucket: Optional[str] = N
     return local_path
 
 
-def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: Optional[str] = None) -> int:
+def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: str | None = None) -> int:
     """Upload all files in a local directory (recursively) to S3 under the given prefix.
 
     Returns the number of files uploaded.
@@ -181,7 +220,7 @@ def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: Optional[str
     return count
 
 
-def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[str] = None) -> int:
+def download_directory(s3_prefix: str, local_dir: str | Path, bucket: str | None = None) -> int:
     """Download all objects under an S3 prefix to a local directory.
 
     Returns the number of files downloaded.
@@ -192,7 +231,7 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[s
     root = local_dir.resolve()
     count = 0
     for key in list_objects(s3_prefix, bucket):
-        relative = key[len(s3_prefix):].lstrip("/")
+        relative = key[len(s3_prefix) :].lstrip("/")
         if not relative:
             continue
         local_path = (root / relative).resolve()
@@ -204,7 +243,7 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: Optional[s
     return count
 
 
-def list_objects(s3_prefix: str, bucket: Optional[str] = None, delimiter: str = "") -> list[str]:
+def list_objects(s3_prefix: str, bucket: str | None = None, delimiter: str = "") -> list[str]:
     """List all object keys under a prefix.
 
     If *delimiter* is set (e.g. ``"/"``), returns only the common prefixes
@@ -224,7 +263,7 @@ def list_objects(s3_prefix: str, bucket: Optional[str] = None, delimiter: str = 
     return keys
 
 
-def file_exists(s3_key: str, bucket: Optional[str] = None) -> bool:
+def file_exists(s3_key: str, bucket: str | None = None) -> bool:
     """Check if an object exists in S3."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -237,15 +276,15 @@ def file_exists(s3_key: str, bucket: Optional[str] = None) -> bool:
         raise
 
 
-def get_object_size(s3_key: str, bucket: Optional[str] = None) -> int:
+def get_object_size(s3_key: str, bucket: str | None = None) -> int:
     """Return the size in bytes of an S3 object."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
     response = client.head_object(Bucket=bucket, Key=s3_key)
-    return response["ContentLength"]
+    return int(response["ContentLength"])
 
 
-def delete_object(s3_key: str, bucket: Optional[str] = None) -> None:
+def delete_object(s3_key: str, bucket: str | None = None) -> None:
     """Delete a single object from S3."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -253,7 +292,7 @@ def delete_object(s3_key: str, bucket: Optional[str] = None) -> None:
     logger.debug("Deleted s3://%s/%s", bucket, s3_key)
 
 
-def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
+def delete_prefix(s3_prefix: str, bucket: str | None = None) -> int:
     """Delete all objects under a prefix. Returns count of deleted objects."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -273,7 +312,10 @@ def delete_prefix(s3_prefix: str, bucket: Optional[str] = None) -> int:
     return deleted
 
 
-def get_object_stream(s3_key: str, bucket: Optional[str] = None):
+def get_object_stream(
+    s3_key: str,
+    bucket: str | None = None,
+) -> tuple[BinaryIO, int, str]:
     """Return (stream, content_length, content_type) for an S3 object.
 
     The caller is responsible for reading and closing the stream.
@@ -282,16 +324,16 @@ def get_object_stream(s3_key: str, bucket: Optional[str] = None):
     client = _get_client()
     response = client.get_object(Bucket=bucket, Key=s3_key)
     return (
-        response["Body"],
-        response.get("ContentLength", 0),
-        response.get("ContentType", "application/octet-stream"),
+        cast(BinaryIO, response["Body"]),
+        int(response.get("ContentLength", 0)),
+        str(response.get("ContentType", "application/octet-stream")),
     )
 
 
 def get_presigned_url(
     s3_key: str,
     expires: int = 3600,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
     *,
     public: bool = True,
 ) -> str:
@@ -310,17 +352,16 @@ def get_presigned_url(
     return url
 
 
-def put_object(s3_key: str, data: bytes | BinaryIO, bucket: Optional[str] = None) -> str:
+def put_object(s3_key: str, data: bytes | BinaryIO, bucket: str | None = None) -> str:
     """Upload raw bytes or a file-like object to S3. Returns the s3_key."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
-    body = data if isinstance(data, (bytes, bytearray, memoryview, io.IOBase)) else data
-    client.put_object(Bucket=bucket, Key=s3_key, Body=body)
+    client.put_object(Bucket=bucket, Key=s3_key, Body=data)
     logger.debug("Put object s3://%s/%s", bucket, s3_key)
     return s3_key
 
 
-def ensure_bucket(bucket: Optional[str] = None) -> None:
+def ensure_bucket(bucket: str | None = None) -> None:
     """Create the bucket if it doesn't already exist."""
     bucket = bucket or S3_BUCKET
     client = _get_client()

@@ -14,8 +14,45 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select required CI scopes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      python: ${{ steps.scopes.outputs.python }}
+      docs: ${{ steps.scopes.outputs.docs }}
+      dronegs: ${{ steps.scopes.outputs.dronegs }}
+      migrations: ${{ steps.scopes.outputs.migrations }}
+      frontend: ${{ steps.scopes.outputs.frontend }}
+      containers: ${{ steps.scopes.outputs.containers }}
+      helm: ${{ steps.scopes.outputs.helm }}
+    steps:
+      - name: Checkout pull-request history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Checkout current revision
+        if: github.event_name != 'pull_request'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Classify changed paths
+        id: scopes
+        run: python3 scripts/ci/select_ci_jobs.py
+
+  docs:
+    name: Markdown link contracts
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python3 tools/check_markdown_links.py
+
   dronegs-core:
     name: DroneGS native CPU contract tests
+    needs: changes
+    if: needs.changes.outputs.dronegs == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     container:
@@ -44,6 +81,8 @@ jobs:
 
   python:
     name: Python ${{ matrix.python-version }} quality and CPU tests
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -83,6 +122,8 @@ jobs:
 
   migrations:
     name: PostgreSQL/PostGIS migration round-trip
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -117,6 +158,8 @@ jobs:
 
   frontend:
     name: Frontend lint and build
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -151,6 +194,8 @@ jobs:
 
   container-smoke:
     name: Service image import smoke tests
+    needs: changes
+    if: needs.changes.outputs.containers == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -158,6 +203,7 @@ jobs:
       matrix:
         include:
           - image: droneai-api:ci
+            artifact: dashboard-api
             dockerfile: app4-dashboard/api/Dockerfile
             command: >-
               import importlib, os;
@@ -165,6 +211,7 @@ jobs:
               app = importlib.import_module('app4-dashboard.api.main').app;
               assert len(app.openapi()['paths']) >= 25
           - image: drone-processing:ci
+            artifact: processing-worker
             dockerfile: app3-processing/Dockerfile
             command: >-
               import os, sys;
@@ -187,9 +234,49 @@ jobs:
           --entrypoint python3
           "${{ matrix.image }}"
           -c "${{ matrix.command }}"
+      - name: Generate CycloneDX image SBOM
+        run: |
+          mkdir -p supply-chain
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/supply-chain:/output" \
+            anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 \
+            "docker:${{ matrix.image }}" \
+            --output "cyclonedx-json=/output/${{ matrix.artifact }}.cdx.json"
+      - name: Record HIGH and CRITICAL image vulnerabilities
+        run: |
+          mkdir -p .trivy-cache
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/.trivy-cache:/root/.cache" \
+            --volume "$PWD/supply-chain:/output" \
+            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c \
+            image --image-src docker --scanners vuln --ignore-unfixed \
+            --severity HIGH,CRITICAL --format json \
+            --output "/output/${{ matrix.artifact }}.trivy.json" \
+            "${{ matrix.image }}"
+      - name: Reject fixed CRITICAL image vulnerabilities
+        run: >-
+          docker run --rm
+          --volume /var/run/docker.sock:/var/run/docker.sock
+          --volume "$PWD/.trivy-cache:/root/.cache"
+          aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+          image --image-src docker --scanners vuln --ignore-unfixed
+          --severity CRITICAL --exit-code 1
+          "${{ matrix.image }}"
+      - name: Upload image supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain-${{ matrix.artifact }}-${{ github.sha }}
+          path: supply-chain/
+          if-no-files-found: warn
+          retention-days: 30
 
   helm:
     name: Helm production render
+    needs: changes
+    if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

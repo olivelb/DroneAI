@@ -8,7 +8,8 @@ process overlays this profile without preventing explicit quality overrides.
 from __future__ import annotations
 
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
+from collections.abc import Mapping
 
 from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 
@@ -52,7 +53,7 @@ FACADE_PROCESS_INVARIANTS = MappingProxyType(
 # Generic HD values qualified on the Cahors reference campaign. Mission-specific
 # detail sequences can be excluded to favour coverage distribution over raw
 # sparse-point density; DroneGS performs the later densification.
-FACADE_PROCESS_OVERRIDES = MappingProxyType(
+FACADE_PROCESS_OVERRIDES: Mapping[str, Any] = MappingProxyType(
     {
         "orthophoto_mode": FACADE_PROCESS_ID,
         **FACADE_PARAMETER_DEFAULTS,
@@ -103,9 +104,7 @@ FACADE_DRONEGS_IDENTITY_PARAMETERS = MappingProxyType(
         "sh_degree_interval": DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval,
         "topology_cooldown": DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown,
         "photometric_finish": DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish,
-        "photometric_mse_percent": (
-            DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
-        ),
+        "photometric_mse_percent": (DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
         "checkpoint_every": DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every,
         "test_every": DRONEGS_PRODUCTION_PROFILE_V1.test_every,
         "test_split": DRONEGS_PRODUCTION_PROFILE_V1.test_split,
@@ -115,12 +114,8 @@ FACADE_DRONEGS_IDENTITY_PARAMETERS = MappingProxyType(
 
 FACADE_QUALIFICATION_THRESHOLDS = MappingProxyType(
     {
-        "canary_min_psnr": float(
-            FACADE_PROCESS_OVERRIDES["facade_canary_min_psnr"]
-        ),
-        "canary_min_ssim": float(
-            FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]
-        ),
+        "canary_min_psnr": float(FACADE_PROCESS_OVERRIDES["facade_canary_min_psnr"]),
+        "canary_min_ssim": float(FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]),
     }
 )
 
@@ -162,9 +157,7 @@ def apply_facade_process_profile(
             params[name] = value
 
     params.update(FACADE_PROCESS_INVARIANTS)
-    params["minimum_registration_ratio"] = str(
-        min(float(params.get("minimum_registration_ratio", 0.97)), 0.90)
-    )
+    params["minimum_registration_ratio"] = str(min(float(params.get("minimum_registration_ratio", 0.97)), 0.90))
     return True
 
 

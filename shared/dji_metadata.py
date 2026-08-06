@@ -13,9 +13,10 @@ import os
 import math
 import re
 import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, cast
+from collections.abc import Iterable
 
 SEQUENCE_PATTERNS = (
     re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$"),
@@ -159,10 +160,7 @@ def parse_aerial_xmp(path: str | Path) -> dict[str, Any]:
         "east_m": _optional_float(properties, "RtkStdLon"),
         "vertical_m": _optional_float(properties, "RtkStdHgt"),
     }
-    covariance_complete = all(
-        value is not None and value > 0
-        for value in standard_deviations.values()
-    )
+    covariance_complete = all(value is not None and value > 0 for value in standard_deviations.values())
     rtk_valid = (
         rtk_status == "fixed"
         and covariance_complete
@@ -175,10 +173,7 @@ def parse_aerial_xmp(path: str | Path) -> dict[str, Any]:
         "provider": "autel_dji_xmp",
         "camera_make": clean_metadata_text(properties.get("Make")),
         "camera_model": clean_metadata_text(properties.get("Model")),
-        "captured_at": clean_metadata_text(
-            properties.get("DateTimeOriginal")
-            or properties.get("CreateDate")
-        ),
+        "captured_at": clean_metadata_text(properties.get("DateTimeOriginal") or properties.get("CreateDate")),
         "calibrated_focal_length_px": _optional_float(
             properties,
             "CalibratedFocalLength",
@@ -202,8 +197,8 @@ def parse_aerial_xmp(path: str | Path) -> dict[str, Any]:
             "longitude": longitude,
             "altitude_m": altitude,
             "horizontal_error_m": max(
-                standard_deviations["north_m"],
-                standard_deviations["east_m"],
+                cast(float, standard_deviations["north_m"]),
+                cast(float, standard_deviations["east_m"]),
             ),
             "position_std_m": standard_deviations,
             # Vendor XMP does not carry an EPSG vertical CRS. Keep the
@@ -262,19 +257,11 @@ def parse_dji_mrk_file(path: str | Path) -> dict[int, dict[str, Any]]:
 
             standard_deviations = None
             ellipsoid_index = next(
-                (
-                    index
-                    for index, field in enumerate(fields)
-                    if field.strip().endswith(",Ellh")
-                ),
+                (index for index, field in enumerate(fields) if field.strip().endswith(",Ellh")),
                 None,
             )
             if ellipsoid_index is not None and ellipsoid_index + 1 < len(fields):
-                candidates = [
-                    item.strip()
-                    for item in fields[ellipsoid_index + 1].split(",")
-                    if item.strip()
-                ]
+                candidates = [item.strip() for item in fields[ellipsoid_index + 1].split(",") if item.strip()]
                 if len(candidates) >= 3:
                     try:
                         standard_deviations = {
@@ -306,18 +293,12 @@ def parse_dji_mrk_file(path: str | Path) -> dict[int, dict[str, Any]]:
                 "gps_seconds_of_week": gps_seconds_of_week,
                 "rtk_flag": clean_metadata_text(
                     next(
-                        (
-                            field[: -len(",Q")].strip()
-                            for field in fields
-                            if field.strip().endswith(",Q")
-                        ),
+                        (field[: -len(",Q")].strip() for field in fields if field.strip().endswith(",Q")),
                         None,
                     )
                 ),
             }
-            marks[sequence]["rtk_status"] = classify_rtk_flag(
-                marks[sequence]["rtk_flag"]
-            )
+            marks[sequence]["rtk_status"] = classify_rtk_flag(marks[sequence]["rtk_flag"])
             marks[sequence]["rtk_valid"] = (
                 marks[sequence]["rtk_status"] == "fixed"
                 and ellipsoid_height is not None
@@ -332,14 +313,10 @@ def _horizontal_distance_m(first: dict[str, Any], second: dict[str, Any]) -> flo
     latitude_a = math.radians(float(first["latitude"]))
     latitude_b = math.radians(float(second["latitude"]))
     delta_latitude = latitude_b - latitude_a
-    delta_longitude = math.radians(
-        float(second["longitude"]) - float(first["longitude"])
-    )
+    delta_longitude = math.radians(float(second["longitude"]) - float(first["longitude"]))
     haversine = (
         math.sin(delta_latitude / 2.0) ** 2
-        + math.cos(latitude_a)
-        * math.cos(latitude_b)
-        * math.sin(delta_longitude / 2.0) ** 2
+        + math.cos(latitude_a) * math.cos(latitude_b) * math.sin(delta_longitude / 2.0) ** 2
     )
     return 2.0 * radius_m * math.asin(min(1.0, math.sqrt(haversine)))
 
@@ -377,31 +354,18 @@ def _validate_mrk_xmp_position(
         "vertical_limit_m": vertical_limit,
     }
     capture_time = _read_exif_capture_datetime(image_path)
-    if (
-        capture_time is not None
-        and mrk.get("gps_week") is not None
-        and mrk.get("gps_seconds_of_week") is not None
-    ):
+    if capture_time is not None and mrk.get("gps_week") is not None and mrk.get("gps_seconds_of_week") is not None:
         # GPS time is ahead of UTC by 18 seconds for contemporary DJI/Autel
         # datasets (2017 onward). EXIF commonly stores local wall time without
         # an offset, so evaluate legal whole-hour UTC offsets and retain the
         # unique closest interpretation.
-        gps_utc = (
-            datetime(1980, 1, 6, tzinfo=timezone.utc)
-            + timedelta(
-                weeks=int(mrk["gps_week"]),
-                seconds=float(mrk["gps_seconds_of_week"]) - 18.0,
-            )
+        gps_utc = datetime(1980, 1, 6, tzinfo=UTC) + timedelta(
+            weeks=int(mrk["gps_week"]),
+            seconds=float(mrk["gps_seconds_of_week"]) - 18.0,
         )
         candidates = [
             (
-                abs(
-                    (
-                        capture_time.replace(tzinfo=timezone.utc)
-                        - timedelta(hours=offset)
-                        - gps_utc
-                    ).total_seconds()
-                ),
+                abs((capture_time.replace(tzinfo=UTC) - timedelta(hours=offset) - gps_utc).total_seconds()),
                 offset,
             )
             for offset in range(-14, 15)
@@ -410,8 +374,7 @@ def _validate_mrk_xmp_position(
         timestamp_limit = 5.0
         if timestamp_delta > timestamp_limit:
             raise ValueError(
-                f"MRK/EXIF timestamp mismatch for {image_path.name}: "
-                f"minimum delta={timestamp_delta:.3f} s"
+                f"MRK/EXIF timestamp mismatch for {image_path.name}: minimum delta={timestamp_delta:.3f} s"
             )
         validation.update(
             {
@@ -471,28 +434,18 @@ def load_dji_mrk_overrides(
                 (sidecar.parent.resolve(), sequence),
                 [],
             )
-            candidates = (
-                local_candidates
-                if local_candidates
-                else images_by_sequence.get(sequence, [])
-            )
+            candidates = local_candidates if local_candidates else images_by_sequence.get(sequence, [])
             if not candidates:
                 continue
             if len(candidates) != 1:
-                names = ", ".join(
-                    path.relative_to(root).as_posix()
-                    for path in candidates
-                )
+                names = ", ".join(path.relative_to(root).as_posix() for path in candidates)
                 raise ValueError(
-                    f"Ambiguous MRK sequence {sequence} from "
-                    f"{sidecar.relative_to(root).as_posix()}: {names}"
+                    f"Ambiguous MRK sequence {sequence} from {sidecar.relative_to(root).as_posix()}: {names}"
                 )
             image_path = candidates[0]
             xmp_gps = parse_xmp_rtk(image_path)
             if xmp_gps is not None:
-                gps["association_validation"] = _validate_mrk_xmp_position(
-                    image_path, gps, xmp_gps
-                )
+                gps["association_validation"] = _validate_mrk_xmp_position(image_path, gps, xmp_gps)
             else:
                 gps["association_validation"] = {
                     "method": "sequence-only",
@@ -519,10 +472,6 @@ def load_position_overrides(
 
     root = Path(dataset).resolve()
     paths = [Path(path).resolve() for path in image_paths]
-    overrides = {
-        path.relative_to(root).as_posix(): gps
-        for path in paths
-        if (gps := parse_xmp_rtk(path)) is not None
-    }
+    overrides = {path.relative_to(root).as_posix(): gps for path in paths if (gps := parse_xmp_rtk(path)) is not None}
     overrides.update(load_dji_mrk_overrides(root, paths))
     return overrides

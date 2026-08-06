@@ -42,6 +42,16 @@ audit and coverage suite, using the same commands enforced by CI. The
 development lock installs the `actionlint` executable through `actionlint-py`,
 with deterministic ShellCheck and Pyflakes integrations.
 
+Pull-request CI classifies changed paths before starting expensive jobs. Native
+DroneGS compilation, the dual-version Python suite, PostGIS migration
+round-trips, frontend/Playwright checks, service image builds and Helm renders
+only run when their own runtime or contract changes. Markdown-only pull
+requests run the lightweight link contract. Changes to the CI workflow or its
+scope selector deliberately run every job. Pushes to `main` and manual
+dispatches retain the complete suite, so path filtering cannot replace the
+post-merge integration gate. The selector and its regression tests live in
+`scripts/ci/select_ci_jobs.py` and `tests/test_ci_change_scopes.py`.
+
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
 50%. That floor is a ratchet, not a completeness claim: new or changed pure
@@ -60,12 +70,18 @@ complexity budget across every Python service, shared module and local tool. The
 local sparse runner, Gaussian orthophoto generator and production COLMAP worker
 are composed from focused stages with typed, immutable state objects. Keep their
 public entry points limited to stage coordination and add new behavior to the
-smallest relevant stage. The COLMAP worker package additionally enforces
-modern Bugbear/simplification/upgrade/async rules and a McCabe ceiling of 15
-across the complete worker package. Stable contracts, runtime boundaries,
-artifact helpers, mission coordination and every COLMAP stage also pass strict
-mypy checks. Imports outside the worker boundary remain skipped so their
-independent typing can progress without weakening the worker contract.
+smallest relevant stage. The COLMAP worker package additionally enforces modern
+Bugbear/simplification/upgrade/Ruff/async rules and a McCabe ceiling of 15
+across the complete worker package. The same modern rules cover `shared/`, with
+an initial McCabe ceiling of 18; scientific Unicode such as sigma remains
+allowed in operator-facing validation messages. Stable contracts, runtime
+boundaries, artifact helpers, mission coordination and every COLMAP stage also
+pass strict mypy checks. The same strict contract covers all 26 modules at the root of
+`shared/`, including the SQLAlchemy, transactional inbox/outbox and S3
+boundaries. Those dynamic integrations expose explicit session and S3 client
+contracts while keeping runtime-generated ORM/client behavior behind the
+boundary. Imports are skipped so missing or changing third-party stubs cannot
+weaken either strict contract.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
@@ -85,11 +101,16 @@ GPU and mission-specific reconstruction artifacts and is not part of CI.
 CUDA container validation is split deliberately. The hosted
 `cuda-containers.yml` workflow builds the development image, compiles a
 portable DroneGS binary inside it, and builds the `dronegs-builder` stages from
-both production Dockerfiles. It validates Docker recipes and toolchains without
-claiming to exercise a GPU. On pushes and pull requests, it only runs when a
-DroneGS source, CUDA Dockerfile, or CUDA validation file changes; Markdown
-documentation and unrelated application changes do not trigger a CUDA
-compilation. The
+both production Dockerfiles. A parallel matrix prepares the pinned external
+COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
+CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
+findings. These hosted jobs validate Docker recipes and toolchains without
+claiming to exercise a GPU. Pull requests and merges may start the lightweight
+CUDA selector when relevant files change, but do not run either costly build
+job unless the diff changes an authoritative `FROM nvidia/cuda:...` line or
+the pinned `COLMAP_TAG` in `setup_deps.sh`. A manual `workflow_dispatch` is the
+only override for explicitly requested rebuilds after other CUDA, COLMAP,
+Dockerfile or validation changes. The
 scheduled or manually dispatched
 `dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
 development container on a self-hosted runner, then verifies driver injection
@@ -127,6 +148,16 @@ the Python, frontend and Actions updates to keep review volume bounded. Actions
 using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
 self-hosted GPU runner before enabling the nightly workflow.
 
+The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
+local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
+and a HIGH/CRITICAL JSON vulnerability report with Trivy for each image.
+Fixable CRITICAL findings fail the image job; unfixed findings remain visible
+in the report without making a release impossible. The commit-scoped
+`supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
+failed jobs. Syft and Trivy container tags and multi-architecture digests are
+pinned in `.github/workflows/ci.yml` and
+`.github/workflows/cuda-containers.yml`.
+
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:
 
@@ -159,10 +190,13 @@ npm run test:e2e
 
 From the repository root, `make frontend-e2e` builds the production Next.js
 application and runs the same Playwright suite. The browser tests mock API
-transport while exercising Chromium against the production build. They cover
-dataset selection and mission launch, operator cancellation, and rendering of
-the terminal `cancelled` state. CI installs Chromium with its Linux system
-dependencies and uploads the Playwright report when the suite fails.
+transport while exercising Chromium against the production build. The six
+journeys cover dataset selection and mission launch, operator cancellation,
+rendering of the terminal `cancelled` state, renewal of an expired browser
+session, WebSocket reconnection with delivery of the recovered live event, and
+projected GeoPackage export from a completed mission. CI installs Chromium with
+its Linux system dependencies and uploads the Playwright report when the suite
+fails.
 
 The lock currently pins Next.js `16.2.12`. Security advisories change over
 time, so verify the current dependency graph locally:

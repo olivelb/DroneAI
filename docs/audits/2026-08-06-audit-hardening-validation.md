@@ -71,9 +71,69 @@ npm run test:e2e
 The physical-GPU environment and individual native results are recorded in
 [`../benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](../benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md).
 
+## Follow-up upgrade validation
+
+The follow-up work based on commit `76c37fd` closed the remaining strict-typing
+gap and extended supply-chain evidence to the final CUDA images:
+
+- strict mypy now passes across all 26 root `shared/` modules, including the
+  SQLAlchemy, inbox/outbox and boto3 boundaries;
+- `cuda-containers.yml` prepares checksum-verified external sources, builds the
+  final COLMAP base and local Gaussian runtimes, and applies the same pinned
+  Syft/Trivy evidence and fixable-CRITICAL gate as the standard service images;
+- the Gaussian runtime explicitly refreshes OpenSSL packages inherited from
+  the NVIDIA base. The first scan found two HIGH records for
+  `CVE-2026-45447`; rebuilding with Ubuntu's fixed OpenSSL packages reduced the
+  HIGH/CRITICAL report to zero.
+
+Local follow-up results:
+
+| Verification | Result |
+|---|---|
+| Complete non-GPU Python suite | 381 passed, 13 deselected |
+| Repository static checks | Passed, including strict mypy on 26 shared modules |
+| Targeted database/storage regressions | 27 passed |
+| Final local Gaussian CUDA image build | Passed |
+| Syft CycloneDX inventory | Passed, 4,941 components |
+| Trivy HIGH/CRITICAL report after OpenSSL refresh | 0 findings |
+| Trivy fixable-CRITICAL gate | Passed |
+
+The full COLMAP base build advanced through the multi-architecture Caspar and
+COLMAP CUDA compilation but exceeded the local command's 20-minute execution
+window before image export. The hosted matrix has a 90-minute timeout and is
+the authoritative completion and scan evidence for that larger image.
+
+The next local hardening pass extended the worker-grade Ruff rules to all
+`shared/` modules. Bugbear, simplification, Python upgrade, Ruff-specific and
+async checks now run in `make static`; shared complexity starts at a blocking
+McCabe ceiling of 18 while the worker remains at 15. Intentional scientific
+Unicode in operator-facing validation messages is the only scoped rule
+exception. The complete `make check` gate passed after the migration: 381
+tests passed, 13 GPU/integration tests were deselected, coverage remained 54%,
+and `pip-audit --strict` reported no known vulnerabilities.
+
 ## Remaining release checks
 
-These focused checks do not replace the full `make check`, a complete
+The full local `make check` now passes. It does not replace a complete
 Compose/K3s mission, Helm acceptance, RTK/non-RTK dataset regressions or a
-centrally retained GPU workflow artifact. Run the remaining repository release
-gates before publication.
+centrally retained GPU workflow artifact. Run those environment-dependent
+release gates before publication.
+
+Pull-request CI is subsequently path-scoped: each long-running job starts only
+for changes to its application, runtime, dependency lock or deployment
+contract. Documentation-only changes receive a dedicated link check. The full
+matrix still runs after merge on `main`, on manual dispatch, and whenever the
+CI workflow or scope selector itself changes. Eight focused routing tests and
+the complete local gate passed after this change: 389 tests passed, 13
+GPU/integration tests were deselected, coverage remained 54%, and the locked
+Python environment had no known vulnerabilities.
+
+The CUDA workflow is more restrictive than the general path-scoped CI. Pull
+requests and merges perform only a lightweight diff classification for CUDA
+source, Dockerfile or workflow changes. The 45/90-minute CUDA and COLMAP jobs
+run only after an authoritative NVIDIA CUDA base-image line or the pinned
+`COLMAP_TAG` changes, or after an explicit manual dispatch. Ordinary PR and
+merge activity cannot relaunch those builds. The complete local gate passed
+after adding this policy: 395 tests passed, 13 GPU/integration tests were
+deselected, coverage remained 54%, and no locked Python dependency had a known
+vulnerability.

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 from pyproj import CRS, Transformer
 
 from shared.geo_alignment import estimate_sim3, estimate_weighted_sim3
@@ -57,15 +58,9 @@ def prepare_gcp_assets(
     workspace = Path(workspace_root) / "gcp"
 
     def unique_named(filename: str) -> Path | None:
-        matches = sorted(
-            path
-            for path in dataset.rglob("*")
-            if path.is_file() and path.name.lower() == filename
-        )
+        matches = sorted(path for path in dataset.rglob("*") if path.is_file() and path.name.lower() == filename)
         if len(matches) > 1:
-            relative = ", ".join(
-                path.relative_to(dataset).as_posix() for path in matches
-            )
+            relative = ", ".join(path.relative_to(dataset).as_posix() for path in matches)
             raise ValueError(f"multiple {filename} files found: {relative}")
         return matches[0] if matches else None
 
@@ -97,16 +92,8 @@ def prepare_gcp_assets(
     if workspace.exists() and not any(workspace.iterdir()):
         workspace.rmdir()
     return {
-        "gcp_path": (
-            str(destinations["gcp_path"])
-            if destinations["gcp_path"].is_file()
-            else None
-        ),
-        "accuracy_path": (
-            str(destinations["accuracy_path"])
-            if destinations["accuracy_path"].is_file()
-            else None
-        ),
+        "gcp_path": (str(destinations["gcp_path"]) if destinations["gcp_path"].is_file() else None),
+        "accuracy_path": (str(destinations["accuracy_path"]) if destinations["accuracy_path"].is_file() else None),
         "changed": changed,
     }
 
@@ -128,12 +115,14 @@ def parse_gcp_file(path: str | Path) -> tuple[str, list[GcpObservation]]:
     for line_number, line in enumerate(lines[1:], start=2):
         fields = line.split()
         if len(fields) < 7:
-            raise ValueError(
-                f"{source}:{line_number}: expected at least 7 fields, got {len(fields)}"
-            )
+            raise ValueError(f"{source}:{line_number}: expected at least 7 fields, got {len(fields)}")
         try:
-            source_xyz = tuple(float(value) for value in fields[0:3])
-            pixel_xy = tuple(float(value) for value in fields[3:5])
+            source_xyz = (
+                float(fields[0]),
+                float(fields[1]),
+                float(fields[2]),
+            )
+            pixel_xy = (float(fields[3]), float(fields[4]))
         except ValueError as error:
             raise ValueError(f"{source}:{line_number}: invalid numeric field") from error
         observations.append(
@@ -189,9 +178,7 @@ def parse_gcp_accuracy_file(path: str | Path) -> dict[str, GcpAccuracy]:
         }
         missing = required - set(reader.fieldnames or [])
         if missing:
-            raise ValueError(
-                f"{source}: missing GCP accuracy columns: {', '.join(sorted(missing))}"
-            )
+            raise ValueError(f"{source}: missing GCP accuracy columns: {', '.join(sorted(missing))}")
         result: dict[str, GcpAccuracy] = {}
         for line_number, row in enumerate(reader, start=2):
             point_id = str(row.get("point_id") or "").strip()
@@ -282,9 +269,9 @@ def intersect_rays(
         perpendicular_sigmas = [1.0] * len(origins)
     if len(perpendicular_sigmas) != len(origins):
         raise ValueError("ray standard deviations must match the ray count")
-    normal = np.zeros((3, 3), dtype=np.float64)
-    right_hand_side = np.zeros(3, dtype=np.float64)
-    identity = np.eye(3, dtype=np.float64)
+    normal: NDArray[np.float64] = np.zeros((3, 3), dtype=np.float64)
+    right_hand_side: NDArray[np.float64] = np.zeros(3, dtype=np.float64)
+    identity: NDArray[np.float64] = np.eye(3, dtype=np.float64)
     for origin, direction, sigma in zip(
         origins,
         directions,
@@ -309,14 +296,14 @@ def _robust_observation_mask(residuals: list[float], threshold_px: float) -> lis
     values = np.asarray(residuals, dtype=np.float64)
     finite = np.isfinite(values)
     if int(np.sum(finite)) < 2:
-        return finite.tolist()
+        return [bool(value) for value in finite]
     if int(np.sum(finite)) < 4:
-        return finite.tolist()
+        return [bool(value) for value in finite]
     finite_values = values[finite]
     center = float(np.median(finite_values))
     mad = float(np.median(np.abs(finite_values - center)))
     threshold = max(float(threshold_px), center + 3.0 * 1.4826 * mad)
-    return (finite & (values <= threshold)).tolist()
+    return [bool(value) for value in finite & (values <= threshold)]
 
 
 def _point_accuracy(
@@ -334,15 +321,9 @@ def _gcp_role_metrics(
     selected = [point for point in point_reports if point["role"] == role]
     if not selected:
         return None
-    horizontal = np.asarray(
-        [point["horizontal_error_m"] for point in selected], dtype=np.float64
-    )
-    vertical = np.asarray(
-        [point["vertical_error_m"] for point in selected], dtype=np.float64
-    )
-    euclidean = np.asarray(
-        [point["euclidean_error_m"] for point in selected], dtype=np.float64
-    )
+    horizontal = np.asarray([point["horizontal_error_m"] for point in selected], dtype=np.float64)
+    vertical = np.asarray([point["vertical_error_m"] for point in selected], dtype=np.float64)
+    euclidean = np.asarray([point["euclidean_error_m"] for point in selected], dtype=np.float64)
     normalized = np.asarray(
         [point["normalized_error_norm_sigma"] for point in selected],
         dtype=np.float64,
@@ -391,23 +372,17 @@ def assess_gcp_alignment_quality(
     adjustment = [point for point in points if point.get("role") == "adjustment"]
     checkpoint_metrics = _gcp_role_metrics(points, "checkpoint")
     adjustment_metrics = _gcp_role_metrics(points, "adjustment")
-    surveyed_xy = np.asarray(
-        [point["surveyed_xyz"][:2] for point in adjustment], dtype=np.float64
-    )
+    surveyed_xy = np.asarray([point["surveyed_xyz"][:2] for point in adjustment], dtype=np.float64)
     if len(surveyed_xy) >= 2:
         deltas = surveyed_xy[:, None, :] - surveyed_xy[None, :, :]
-        adjustment_baseline = float(
-            np.max(np.linalg.norm(deltas, axis=2))
-        )
+        adjustment_baseline = float(np.max(np.linalg.norm(deltas, axis=2)))
     else:
         adjustment_baseline = 0.0
 
     checks: list[dict[str, Any]] = []
 
     def add_check(name: str, actual: Any, limit: Any, passed: bool) -> None:
-        checks.append(
-            {"name": name, "actual": actual, "limit": limit, "passed": passed}
-        )
+        checks.append({"name": name, "actual": actual, "limit": limit, "passed": passed})
 
     add_check(
         "adjustment_baseline_m",
@@ -425,6 +400,7 @@ def assess_gcp_alignment_quality(
         )
         verification = "unverified-no-checkpoints"
     else:
+        assert checkpoint_metrics is not None
         add_check(
             "independent_checkpoints",
             checkpoint_count,
@@ -435,22 +411,19 @@ def assess_gcp_alignment_quality(
             "checkpoint_horizontal_rmse_m",
             checkpoint_metrics["horizontal_rmse_m"],
             {"maximum": float(maximum_checkpoint_horizontal_rmse_m)},
-            checkpoint_metrics["horizontal_rmse_m"]
-            <= float(maximum_checkpoint_horizontal_rmse_m),
+            checkpoint_metrics["horizontal_rmse_m"] <= float(maximum_checkpoint_horizontal_rmse_m),
         )
         add_check(
             "checkpoint_vertical_rmse_m",
             checkpoint_metrics["vertical_rmse_m"],
             {"maximum": float(maximum_checkpoint_vertical_rmse_m)},
-            checkpoint_metrics["vertical_rmse_m"]
-            <= float(maximum_checkpoint_vertical_rmse_m),
+            checkpoint_metrics["vertical_rmse_m"] <= float(maximum_checkpoint_vertical_rmse_m),
         )
         add_check(
             "checkpoint_normalized_error_sigma",
             checkpoint_metrics["maximum_normalized_error_sigma"],
             {"maximum": float(maximum_checkpoint_normalized_error_sigma)},
-            checkpoint_metrics["maximum_normalized_error_sigma"]
-            <= float(maximum_checkpoint_normalized_error_sigma),
+            checkpoint_metrics["maximum_normalized_error_sigma"] <= float(maximum_checkpoint_normalized_error_sigma),
         )
         verification = "independently-verified"
 
@@ -458,13 +431,7 @@ def assess_gcp_alignment_quality(
     return {
         "schema_version": 1,
         "accepted": accepted,
-        "status": (
-            "rejected"
-            if not accepted
-            else "accepted-verified"
-            if checkpoint_count
-            else "accepted-unverified"
-        ),
+        "status": ("rejected" if not accepted else "accepted-verified" if checkpoint_count else "accepted-unverified"),
         "verification": verification,
         "adjustment_metrics": adjustment_metrics,
         "checkpoint_metrics": checkpoint_metrics,
@@ -500,27 +467,18 @@ def build_weighted_gcp_alignment(
         raise ValueError("GCP destination CRS must be projected")
     transformer = Transformer.from_crs(source_crs, destination, always_xy=True)
     default_accuracy = GcpAccuracy(
-        horizontal_m=_positive_accuracy(
-            default_horizontal_accuracy_m, "default horizontal GCP accuracy"
-        ),
-        vertical_m=_positive_accuracy(
-            default_vertical_accuracy_m, "default vertical GCP accuracy"
-        ),
-        image_px=_positive_accuracy(
-            default_image_accuracy_px, "default image annotation accuracy"
-        ),
+        horizontal_m=_positive_accuracy(default_horizontal_accuracy_m, "default horizontal GCP accuracy"),
+        vertical_m=_positive_accuracy(default_vertical_accuracy_m, "default vertical GCP accuracy"),
+        image_px=_positive_accuracy(default_image_accuracy_px, "default image annotation accuracy"),
     )
-    configured = (
-        parse_gcp_accuracy_file(accuracy_path) if accuracy_path is not None else {}
-    )
+    configured = parse_gcp_accuracy_file(accuracy_path) if accuracy_path is not None else {}
     grouped: dict[str, list[GcpObservation]] = defaultdict(list)
     for observation in observations:
         grouped[observation.point_id].append(observation)
     unknown_accuracy_points = sorted(set(configured) - set(grouped))
     if unknown_accuracy_points:
         raise ValueError(
-            "gcp_accuracy.csv contains point IDs absent from gcp_list.txt: "
-            + ", ".join(unknown_accuracy_points)
+            "gcp_accuracy.csv contains point IDs absent from gcp_list.txt: " + ", ".join(unknown_accuracy_points)
         )
     reconstruction = pycolmap.Reconstruction(str(model_path))
     lookup = build_image_lookup(reconstruction)
@@ -542,9 +500,7 @@ def build_weighted_gcp_alignment(
             if image is None:
                 continue
             try:
-                origin, direction, focal = observation_ray(
-                    reconstruction, image, observation.pixel_xy
-                )
+                origin, direction, focal = observation_ray(reconstruction, image, observation.pixel_xy)
             except ValueError:
                 continue
             usable.append((observation, image, origin, direction, focal))
@@ -568,11 +524,7 @@ def build_weighted_gcp_alignment(
             reprojection.append(
                 float("inf")
                 if projected is None
-                else float(
-                    np.linalg.norm(
-                        projected - np.asarray(observation.pixel_xy, dtype=np.float64)
-                    )
-                )
+                else float(np.linalg.norm(projected - np.asarray(observation.pixel_xy, dtype=np.float64)))
             )
         mask = _robust_observation_mask(reprojection, 3.0 * accuracy.image_px)
         inliers = [item for item, keep in zip(usable, mask, strict=True) if keep]
@@ -588,17 +540,14 @@ def build_weighted_gcp_alignment(
             continue
         ranges = [max(float(np.linalg.norm(initial - item[2])), 1.0e-6) for item in inliers]
         ray_sigmas = [
-            max(distance * accuracy.image_px / item[4], 1.0e-6)
-            for item, distance in zip(inliers, ranges, strict=True)
+            max(distance * accuracy.image_px / item[4], 1.0e-6) for item, distance in zip(inliers, ranges, strict=True)
         ]
         estimated, covariance, condition = intersect_rays(
             [item[2] for item in inliers],
             [item[3] for item in inliers],
             ray_sigmas,
         )
-        surveyed = np.asarray(
-            transformer.transform(*surveyed_source), dtype=np.float64
-        )
+        surveyed = np.asarray(transformer.transform(*surveyed_source), dtype=np.float64)
         triangulated.append(
             {
                 "point_id": point_id,
@@ -621,8 +570,7 @@ def build_weighted_gcp_alignment(
     adjustment = [point for point in triangulated if point["role"] == "adjustment"]
     if len(adjustment) < 3:
         raise ValueError(
-            f"GCP adjustment requires at least three triangulated adjustment points; "
-            f"got {len(adjustment)}"
+            f"GCP adjustment requires at least three triangulated adjustment points; got {len(adjustment)}"
         )
     source_points = np.asarray([point["source_xyz"] for point in adjustment])
     target_points = np.asarray([point["surveyed_xyz"] for point in adjustment])
@@ -637,18 +585,10 @@ def build_weighted_gcp_alignment(
         for point in adjustment:
             survey_variance = np.square(point["survey_accuracy_xyz_m"])
             triangulation_covariance = (
-                current_scale
-                * current_scale
-                * current_rotation
-                @ point["source_covariance"]
-                @ current_rotation.T
+                current_scale * current_scale * current_rotation @ point["source_covariance"] @ current_rotation.T
             )
-            triangulation_variance = np.maximum(
-                np.diag(triangulation_covariance), 0.0
-            )
-            effective_sigmas.append(
-                np.sqrt(survey_variance + triangulation_variance)
-            )
+            triangulation_variance = np.maximum(np.diag(triangulation_covariance), 0.0)
+            effective_sigmas.append(np.sqrt(survey_variance + triangulation_variance))
         transform = estimate_weighted_sim3(
             source_points,
             target_points,
@@ -662,20 +602,9 @@ def build_weighted_gcp_alignment(
     for point in triangulated:
         predicted = scale * rotation @ point["source_xyz"] + translation
         delta = predicted - point["surveyed_xyz"]
-        triangulation_covariance = (
-            scale
-            * scale
-            * rotation
-            @ point["source_covariance"]
-            @ rotation.T
-        )
-        triangulation_std = np.sqrt(
-            np.maximum(np.diag(triangulation_covariance), 0.0)
-        )
-        effective_std = np.sqrt(
-            np.square(point["survey_accuracy_xyz_m"])
-            + np.square(triangulation_std)
-        )
+        triangulation_covariance = scale * scale * rotation @ point["source_covariance"] @ rotation.T
+        triangulation_std = np.sqrt(np.maximum(np.diag(triangulation_covariance), 0.0))
+        effective_std = np.sqrt(np.square(point["survey_accuracy_xyz_m"]) + np.square(triangulation_std))
         normalized_delta = delta / effective_std
         point_reports.append(
             {
@@ -691,9 +620,7 @@ def build_weighted_gcp_alignment(
                 "triangulation_std_xyz_m": triangulation_std.tolist(),
                 "effective_std_xyz_m": effective_std.tolist(),
                 "normalized_error_xyz_sigma": normalized_delta.tolist(),
-                "normalized_error_norm_sigma": float(
-                    np.linalg.norm(normalized_delta)
-                ),
+                "normalized_error_norm_sigma": float(np.linalg.norm(normalized_delta)),
                 "image_accuracy_px": point["image_accuracy_px"],
                 "annotated_observations": point["annotated_observations"],
                 "usable_observations": point["usable_observations"],
@@ -705,11 +632,7 @@ def build_weighted_gcp_alignment(
         {
             "source": "covariance_weighted_gcp",
             "adjustment_point_ids": [point["point_id"] for point in adjustment],
-            "checkpoint_point_ids": [
-                point["point_id"]
-                for point in triangulated
-                if point["role"] == "checkpoint"
-            ],
+            "checkpoint_point_ids": [point["point_id"] for point in triangulated if point["role"] == "checkpoint"],
             "covariance_iterations": covariance_iterations,
         }
     )
@@ -718,18 +641,12 @@ def build_weighted_gcp_alignment(
         "model_path": str(Path(model_path).resolve()),
         "gcp_path": str(Path(gcp_path).resolve()),
         "gcp_sha256": file_sha256(gcp_path),
-        "accuracy_path": (
-            str(Path(accuracy_path).resolve()) if accuracy_path is not None else None
-        ),
-        "accuracy_sha256": (
-            file_sha256(accuracy_path) if accuracy_path is not None else None
-        ),
+        "accuracy_path": (str(Path(accuracy_path).resolve()) if accuracy_path is not None else None),
+        "accuracy_sha256": (file_sha256(accuracy_path) if accuracy_path is not None else None),
         "source_crs": CRS.from_user_input(source_crs).to_string(),
         "destination_crs": destination.to_string(),
         "adjustment_points": len(adjustment),
-        "checkpoint_points": sum(
-            point["role"] == "checkpoint" for point in triangulated
-        ),
+        "checkpoint_points": sum(point["role"] == "checkpoint" for point in triangulated),
         "rejected_points": rejected,
         "transform": transform,
         "points": point_reports,
@@ -744,15 +661,9 @@ def build_weighted_gcp_alignment(
         report,
         require_checkpoints=require_checkpoints,
         minimum_checkpoint_count=minimum_checkpoint_count,
-        maximum_checkpoint_horizontal_rmse_m=(
-            maximum_checkpoint_horizontal_rmse_m
-        ),
-        maximum_checkpoint_vertical_rmse_m=(
-            maximum_checkpoint_vertical_rmse_m
-        ),
-        maximum_checkpoint_normalized_error_sigma=(
-            maximum_checkpoint_normalized_error_sigma
-        ),
+        maximum_checkpoint_horizontal_rmse_m=(maximum_checkpoint_horizontal_rmse_m),
+        maximum_checkpoint_vertical_rmse_m=(maximum_checkpoint_vertical_rmse_m),
+        maximum_checkpoint_normalized_error_sigma=(maximum_checkpoint_normalized_error_sigma),
         minimum_adjustment_baseline_m=minimum_adjustment_baseline_m,
     )
     return transform, report

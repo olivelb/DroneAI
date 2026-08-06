@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import asdict, dataclass
 from statistics import mean
-from typing import Iterable
+from collections.abc import Iterable
 
 EPSG_RE = re.compile(r"^EPSG:(\d{4,6})$", re.IGNORECASE)
 PROJECTED_CRS_POLICIES = ("auto-local", "france-cc", "utm", "custom")
@@ -76,12 +76,7 @@ def _point_in_polygon(longitude: float, latitude: float, polygon: tuple[tuple[fl
     previous_x, previous_y = polygon[-1]
     for current_x, current_y in polygon:
         if (current_y > latitude) != (previous_y > latitude):
-            crossing_x = (
-                (previous_x - current_x)
-                * (latitude - current_y)
-                / (previous_y - current_y)
-                + current_x
-            )
+            crossing_x = (previous_x - current_x) * (latitude - current_y) / (previous_y - current_y) + current_x
             if longitude < crossing_x:
                 inside = not inside
         previous_x, previous_y = current_x, current_y
@@ -122,9 +117,7 @@ def select_projected_crs(
     coordinates = _coordinates(values)
     normalized_policy = str(policy or "auto-local").strip().lower()
     if normalized_policy not in PROJECTED_CRS_POLICIES:
-        raise ValueError(
-            f"projected_crs_mode must be one of: {', '.join(PROJECTED_CRS_POLICIES)}"
-        )
+        raise ValueError(f"projected_crs_mode must be one of: {', '.join(PROJECTED_CRS_POLICIES)}")
 
     if normalized_policy == "custom":
         crs = normalize_epsg(custom_crs)
@@ -137,10 +130,7 @@ def select_projected_crs(
 
     centroid_latitude = mean(latitude for latitude, _ in coordinates)
     centroid_longitude = mean(longitude for _, longitude in coordinates)
-    all_in_france = all(
-        is_metropolitan_france(latitude, longitude)
-        for latitude, longitude in coordinates
-    )
+    all_in_france = all(is_metropolitan_france(latitude, longitude) for latitude, longitude in coordinates)
 
     if normalized_policy == "france-cc" and not all_in_france:
         raise ValueError(

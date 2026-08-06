@@ -57,9 +57,7 @@ class DroneGSProductionProfile:
             "gs_sh_degree_interval": str(self.sh_degree_interval),
             "gs_topology_cooldown": str(self.topology_cooldown),
             "gs_photometric_finish": str(self.photometric_finish),
-            "gs_photometric_mse_percent": str(
-                self.photometric_mse_percent
-            ),
+            "gs_photometric_mse_percent": str(self.photometric_mse_percent),
             "gs_checkpoint_every": str(self.checkpoint_every),
             "gs_test_every": str(self.test_every),
             "gs_test_split": self.test_split,
@@ -85,9 +83,7 @@ class DroneGSProductionProfile:
 
 
 DRONEGS_PRODUCTION_PROFILE_V1 = DroneGSProductionProfile()
-DRONEGS_PRODUCTION_DEFAULTS = MappingProxyType(
-    DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults()
-)
+DRONEGS_PRODUCTION_DEFAULTS = MappingProxyType(DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults())
 
 
 def effective_raster_profile(
@@ -98,8 +94,4 @@ def effective_raster_profile(
 
     if requested in {"bounded", "fastgs"}:
         return requested
-    return (
-        "fastgs"
-        if optimizer_profile == "dev38-staged-rotation008-absgrad050-fastgs"
-        else "bounded"
-    )
+    return "fastgs" if optimizer_profile == "dev38-staged-rotation008-absgrad050-fastgs" else "bounded"

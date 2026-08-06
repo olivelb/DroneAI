@@ -134,15 +134,25 @@ Required on every candidate:
 1. Full Python suite in API/CUDA-capable test images.
 2. Native DroneGS CPU and CUDA tests on a real GPU.
 3. Frontend unit tests, lint, production build and Playwright mission journeys.
-4. Helm lint with the production overlay.
-5. One complete RTK preparation run and one non-RTK regression scene.
-6. Immutable benchmark bundle with binary/dataset/artifact hashes.
-7. Facade regression: inclusive exclusion audit, sparse-distribution metrics,
+4. CycloneDX SBOM and Trivy report for each CI-built runtime image, with no
+   fixable CRITICAL vulnerability.
+5. Helm lint with the production overlay.
+6. One complete RTK preparation run and one non-RTK regression scene.
+7. Immutable benchmark bundle with binary/dataset/artifact hashes.
+8. Facade regression: inclusive exclusion audit, sparse-distribution metrics,
    local CRS-free raster metadata and terminal dashboard status.
 
 The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and
 SAVERES repetitions before creating `DRONEGS_PRODUCTION_PROFILE_V2`.
+
+The hosted supply-chain gates cover the dashboard API and processing worker in
+`.github/workflows/ci.yml`, plus both final CUDA runtimes in
+`.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
+CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable CRITICAL findings.
+The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
+SHA-256-verified sources before building; real-GPU execution remains a distinct
+qualification in `dronegs-gpu-nightly.yml`.
 
 ## CUDA 12.9.2 qualification status
 

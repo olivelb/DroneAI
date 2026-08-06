@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+from collections.abc import Iterable
 
 from shared.checksums import sha256_file
 
@@ -43,9 +44,7 @@ def build_product_manifest(
         name: describe_file(sparse_root / name, role=f"sparse-{name}")
         for name in ("cameras.bin", "images.bin", "points3D.bin")
     }
-    product_files = {
-        name: describe_file(path, role=name) for name, path in products.items()
-    }
+    product_files = {name: describe_file(path, role=name) for name, path in products.items()}
     report_files = {
         name: describe_file(path, role=name)
         for name, path in reports.items()
@@ -60,13 +59,12 @@ def build_product_manifest(
         for path in sorted(Path(path) for path in qualification_manifests)
     ]
     components = {
-        name: describe_file(path, role=f"software-{name}")
-        for name, path in (software_components or {}).items()
+        name: describe_file(path, role=f"software-{name}") for name, path in (software_components or {}).items()
     }
     return {
         "schema_version": 1,
         "mission_id": str(mission_id),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "software": {
             "git_revision": git_revision,
             "manifest_contract": "droneai-product-manifest-v1",

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
+from collections.abc import Mapping, Sequence
 
 import numpy as np
+from numpy.typing import NDArray
 
 
 def estimate_sim3(
@@ -38,7 +40,7 @@ def estimate_sim3(
 
     covariance = target_centered.T @ source_centered / source.shape[0]
     left, singular_values, right_t = np.linalg.svd(covariance)
-    reflection = np.eye(3, dtype=np.float64)
+    reflection: NDArray[np.float64] = np.eye(3, dtype=np.float64)
     if np.linalg.det(left) * np.linalg.det(right_t) < 0:
         reflection[-1, -1] = -1
     rotation = left @ reflection @ right_t
@@ -108,17 +110,19 @@ def estimate_weighted_sim3(
         ]
     )
 
-    def predict(values: np.ndarray) -> np.ndarray:
-        rotation = Rotation.from_rotvec(values[:3]).as_matrix()
+    def predict(values: NDArray[np.float64]) -> NDArray[np.float64]:
+        rotation = np.asarray(
+            Rotation.from_rotvec(values[:3]).as_matrix(),
+            dtype=np.float64,
+        )
         scale = float(np.exp(values[3]))
         offset = values[4:7]
-        return (
-            scale * (rotation @ (source - source_center).T).T
-            + target_center
-            + offset
+        return np.asarray(
+            scale * (rotation @ (source - source_center).T).T + target_center + offset,
+            dtype=np.float64,
         )
 
-    def residuals(values: np.ndarray) -> np.ndarray:
+    def residuals(values: NDArray[np.float64]) -> NDArray[np.float64]:
         normalized = (predict(values) - target) / sigma
         squared_norm = np.sum(normalized * normalized, axis=1)
         scale_squared = float(robust_loss_scale) ** 2
@@ -130,10 +134,11 @@ def estimate_weighted_sim3(
         robust_cost = scale_squared * np.log1p(squared_norm / scale_squared)
         weights = np.ones_like(squared_norm)
         nonzero = squared_norm > np.finfo(np.float64).eps
-        weights[nonzero] = np.sqrt(
-            robust_cost[nonzero] / squared_norm[nonzero]
+        weights[nonzero] = np.sqrt(robust_cost[nonzero] / squared_norm[nonzero])
+        return np.asarray(
+            (normalized * weights[:, None]).reshape(-1),
+            dtype=np.float64,
         )
-        return (normalized * weights[:, None]).reshape(-1)
 
     result = least_squares(
         residuals,
@@ -147,7 +152,10 @@ def estimate_weighted_sim3(
     if not result.success or not np.isfinite(result.x).all():
         raise RuntimeError(f"weighted similarity optimization failed: {result.message}")
 
-    rotation = Rotation.from_rotvec(result.x[:3]).as_matrix()
+    rotation = np.asarray(
+        Rotation.from_rotvec(result.x[:3]).as_matrix(),
+        dtype=np.float64,
+    )
     scale = float(np.exp(result.x[3]))
     centered_offset = result.x[4:7]
     translation = target_center + centered_offset - scale * rotation @ source_center
@@ -201,13 +209,11 @@ def compute_reconstruction_alignment(
 
     source = pycolmap.Reconstruction(str(source_model))
     target = pycolmap.Reconstruction(str(target_model))
-    source_centers = {
-        image.name: np.asarray(image.projection_center(), dtype=np.float64)
-        for image in source.images.values()
+    source_centers: dict[str, Sequence[float]] = {
+        image.name: tuple(float(value) for value in image.projection_center()) for image in source.images.values()
     }
-    target_centers = {
-        image.name: np.asarray(image.projection_center(), dtype=np.float64)
-        for image in target.images.values()
+    target_centers: dict[str, Sequence[float]] = {
+        image.name: tuple(float(value) for value in image.projection_center()) for image in target.images.values()
     }
     return alignment_from_named_centers(source_centers, target_centers)
 

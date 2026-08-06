@@ -11,9 +11,10 @@ import os
 import socket
 import threading
 from contextlib import AbstractContextManager
-from datetime import datetime, timedelta, timezone
-from enum import Enum
-from typing import Any, Callable
+from datetime import datetime, timedelta, UTC
+from enum import StrEnum
+from typing import Any, cast
+from collections.abc import Callable
 
 from sqlalchemy import and_, or_
 from sqlalchemy.exc import IntegrityError
@@ -22,18 +23,18 @@ from shared.database import InboxEvent, OutboxEvent
 from shared.event_contracts import validate_event
 from shared.kafka_reliability import RetryPolicy, message_location
 
-SessionScope = Callable[[], AbstractContextManager]
+SessionScope = Callable[[], AbstractContextManager[Any]]
 DomainHandler = Callable[[Any, dict[str, Any]], None]
 Publisher = Callable[[str, dict[str, Any], str | None], None]
 
 
-class InboxResult(str, Enum):
+class InboxResult(StrEnum):
     PROCESSED = "processed"
     DUPLICATE = "duplicate"
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def enqueue_outbox(
@@ -46,13 +47,9 @@ def enqueue_outbox(
 ) -> OutboxEvent:
     normalized = validate_event(event)
     current_time = now or utc_now()
-    existing = (
-        session.query(OutboxEvent)
-        .filter(OutboxEvent.event_id == normalized["event_id"])
-        .first()
-    )
+    existing = session.query(OutboxEvent).filter(OutboxEvent.event_id == normalized["event_id"]).first()
     if existing is not None:
-        return existing
+        return cast(OutboxEvent, existing)
     record = OutboxEvent(
         event_id=normalized["event_id"],
         event_type=normalized["event_type"],
@@ -214,14 +211,8 @@ def dispatch_outbox_batch(
 ) -> dict[str, int]:
     policy = retry_policy or RetryPolicy.from_environment()
     current_time = now or utc_now()
-    configured_lease = (
-        lease_seconds
-        if lease_seconds is not None
-        else int(os.getenv("OUTBOX_LEASE_SECONDS", "300"))
-    )
-    lease_cutoff = current_time - timedelta(
-        seconds=max(30, configured_lease)
-    )
+    configured_lease = lease_seconds if lease_seconds is not None else int(os.getenv("OUTBOX_LEASE_SECONDS", "300"))
+    lease_cutoff = current_time - timedelta(seconds=max(30, configured_lease))
     results = {"selected": 0, "published": 0, "failed": 0, "dead": 0}
     claimed: list[dict[str, Any]] = []
 
@@ -274,16 +265,8 @@ def dispatch_outbox_batch(
             publication_error = error
 
         with session_scope() as session:
-            record = (
-                session.query(OutboxEvent)
-                .filter(OutboxEvent.id == item["id"])
-                .with_for_update()
-                .one()
-            )
-            if (
-                record.status != "publishing"
-                or record.locked_by != worker_id
-            ):
+            record = session.query(OutboxEvent).filter(OutboxEvent.id == item["id"]).with_for_update().one()
+            if record.status != "publishing" or record.locked_by != worker_id:
                 continue
             if publication_error is None:
                 record.attempts += 1
@@ -295,10 +278,7 @@ def dispatch_outbox_batch(
                 results["published"] += 1
             else:
                 record.attempts += 1
-                record.last_error = (
-                    f"{type(publication_error).__name__}: "
-                    f"{publication_error}"
-                )
+                record.last_error = f"{type(publication_error).__name__}: {publication_error}"
                 if record.attempts >= policy.max_attempts:
                     record.status = "dead"
                     record.dead_at = current_time
@@ -306,9 +286,7 @@ def dispatch_outbox_batch(
                 else:
                     record.status = "failed"
                     delay = policy.delay_before(record.attempts)
-                    record.available_at = current_time + timedelta(
-                        seconds=delay
-                    )
+                    record.available_at = current_time + timedelta(seconds=delay)
                     results["failed"] += 1
                 record.locked_at = None
                 record.locked_by = None
