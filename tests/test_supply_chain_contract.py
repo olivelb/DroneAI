@@ -6,6 +6,24 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CUDA_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
 
 
+def _trigger_block(workflow_path: Path) -> str:
+    workflow = workflow_path.read_text(encoding="utf-8")
+    return workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+
+
+def test_pr_workflows_do_not_repeat_checks_after_merge() -> None:
+    for workflow_path in (CI_WORKFLOW, CUDA_WORKFLOW):
+        triggers = _trigger_block(workflow_path)
+        assert "\n  push:" not in triggers
+        assert "  pull_request:" in triggers
+        assert "  workflow_dispatch:" in triggers
+
+    assert "\n    name: CI gate\n" in CI_WORKFLOW.read_text(encoding="utf-8")
+    cuda_workflow = CUDA_WORKFLOW.read_text(encoding="utf-8")
+    assert "\n    name: CUDA validation gate\n" in cuda_workflow
+    assert "\n    paths:\n" not in _trigger_block(CUDA_WORKFLOW)
+
+
 def test_runtime_images_publish_pinned_sbom_and_vulnerability_evidence() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
@@ -31,7 +49,6 @@ def test_cuda_runtime_images_use_the_same_supply_chain_gate() -> None:
     workflow = CUDA_WORKFLOW.read_text(encoding="utf-8")
 
     assert "run: python3 scripts/ci/select_cuda_builds.py" in workflow
-    assert '"scripts/ci/select_cuda_builds.py"' in workflow
     assert workflow.count("if: needs.version-change.outputs.build_required == 'true'") == 2
     assert "dockerfile: app1-colmap/Dockerfile.base" in workflow
     assert "dockerfile: app1-colmap/Dockerfile.local-gaussian" in workflow

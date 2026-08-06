@@ -122,18 +122,18 @@ release gates before publication.
 Pull-request CI is subsequently path-scoped: each long-running job starts only
 for changes to its application, runtime, dependency lock or deployment
 contract. Documentation-only changes receive a dedicated link check. The full
-matrix still runs after merge on `main`, on manual dispatch, and whenever the
-CI workflow or scope selector itself changes. Eight focused routing tests and
-the complete local gate passed after this change: 389 tests passed, 13
-GPU/integration tests were deselected, coverage remained 54%, and the locked
-Python environment had no known vulnerabilities.
+matrix remains available by manual dispatch and runs on a PR whenever the CI
+workflow or scope selector itself changes. A merge to protected `main` does not
+repeat already successful PR checks. An always-present aggregate gate converts
+the conditional job results into one stable required status.
 
 The CUDA workflow is more restrictive than the general path-scoped CI. Pull
-requests and merges perform only a lightweight diff classification for CUDA
-source, Dockerfile or workflow changes. The 45/90-minute CUDA and COLMAP jobs
-run only after an authoritative NVIDIA CUDA base-image line or the pinned
-`COLMAP_TAG` changes, or after an explicit manual dispatch. Ordinary PR and
-merge activity cannot relaunch those builds. The complete local gate passed
-after adding this policy: 395 tests passed, 13 GPU/integration tests were
-deselected, coverage remained 54%, and no locked Python dependency had a known
-vulnerability.
+requests perform only a lightweight diff classification for CUDA source,
+Dockerfile or workflow changes. The 45/90-minute CUDA and COLMAP jobs run only
+after an authoritative NVIDIA CUDA base-image line or the pinned `COLMAP_TAG`
+changes, or after an explicit manual dispatch. A merge does not trigger the
+workflow at all. A lightweight CUDA gate is still reported on every PR, which
+allows branch protection to require the selector outcome while costly builds
+remain skipped. The final local gate passed with 396 tests, 13 GPU/integration
+tests deselected, 54% coverage and no known vulnerability in the locked Python
+environment.

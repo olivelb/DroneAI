@@ -47,10 +47,14 @@ DroneGS compilation, the dual-version Python suite, PostGIS migration
 round-trips, frontend/Playwright checks, service image builds and Helm renders
 only run when their own runtime or contract changes. Markdown-only pull
 requests run the lightweight link contract. Changes to the CI workflow or its
-scope selector deliberately run every job. Pushes to `main` and manual
-dispatches retain the complete suite, so path filtering cannot replace the
-post-merge integration gate. The selector and its regression tests live in
-`scripts/ci/select_ci_jobs.py` and `tests/test_ci_change_scopes.py`.
+scope selector deliberately run every PR job. Merges do not start another CI
+run: protected `main` accepts changes through a previously validated PR.
+Manual dispatch retains the complete suite for release qualification or an
+explicit recheck. The selector and its regression tests live in
+`scripts/ci/select_ci_jobs.py` and `tests/test_ci_change_scopes.py`. The always
+present `CI gate` accepts successful or intentionally skipped scoped jobs and
+fails for any failed or cancelled selected job; branch protection requires
+this aggregate check instead of every conditional matrix entry.
 
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
@@ -105,12 +109,15 @@ both production Dockerfiles. A parallel matrix prepares the pinned external
 COLMAP dependencies, builds both final CUDA runtime images, emits their Syft
 CycloneDX and Trivy HIGH/CRITICAL evidence, and rejects fixable CRITICAL
 findings. These hosted jobs validate Docker recipes and toolchains without
-claiming to exercise a GPU. Pull requests and merges may start the lightweight
-CUDA selector when relevant files change, but do not run either costly build
-job unless the diff changes an authoritative `FROM nvidia/cuda:...` line or
-the pinned `COLMAP_TAG` in `setup_deps.sh`. A manual `workflow_dispatch` is the
-only override for explicitly requested rebuilds after other CUDA, COLMAP,
-Dockerfile or validation changes. The
+claiming to exercise a GPU. Pull requests may start the lightweight CUDA
+selector when relevant files change, but do not run either costly build job
+unless the diff changes an authoritative `FROM nvidia/cuda:...` line or the
+pinned `COLMAP_TAG` in `setup_deps.sh`. Merges do not start a second workflow.
+A manual `workflow_dispatch` is the only override for explicitly requested
+rebuilds after other CUDA, COLMAP, Dockerfile or validation changes. The
+lightweight selector and always-present `CUDA validation gate` run on every PR
+so branch protection can enforce the decision without requiring a costly
+build. The
 scheduled or manually dispatched
 `dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
 development container on a self-hosted runner, then verifies driver injection
