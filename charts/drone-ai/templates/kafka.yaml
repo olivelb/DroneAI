@@ -65,6 +65,11 @@ spec:
       labels:
         app: kafka
     spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -101,6 +106,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/kafka/data
+          subPath: kafka
         readinessProbe:
           tcpSocket:
             port: 9092

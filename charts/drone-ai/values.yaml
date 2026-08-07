@@ -6,6 +6,7 @@
 
 global:
   namespace: drone-ai
+  createNamespace: true
   imageRegistry: ""          # empty = local images (docker save → k3s ctr import)
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
@@ -20,6 +21,16 @@ kafka:
   broker: ""
   image: apache/kafka:3.7.0
   clusterId: "droneai-local-cluster-001"
+  # Created idempotently after each Helm install/upgrade so consumers never
+  # start against missing application topics.
+  topics:
+    - vols-bruts
+    - images-ortho
+    - pipeline-status
+    - pipeline-control
+    - image-tiles
+    - tile-detections
+    - pipeline-dead-letter
   persistence:
     enabled: true
     hostPath: ""
@@ -55,6 +66,10 @@ postgres:
   database: droneai
   user: droneai
   password: droneai-local
+  # Cloud deployments should reference a pre-created Secret. The inline
+  # password remains only for local development compatibility.
+  existingSecret: ""
+  passwordSecretKey: password
 
 # --------------------------------------------------------------------------
 # Storage / Database connection strings (consumed by all services)
