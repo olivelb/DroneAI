@@ -13,7 +13,7 @@ CI.
 | Region | `GRA11` | Existing quota: 34 vCPU, 44 GB RAM, 8 instances, 1+ gateway and load balancer capacity. |
 | Kubernetes | OVHcloud MKS Free | Managed control plane; upgrade to Standard only for a production SLO/multi-zone requirement. |
 | CPU | One `b3-8`, autoscaling to two | Keeps the initial footprint below the current quota. |
-| GPU | `l4-90` autoscaled pool, zero initial nodes, maximum one | No GPU is billed while desired/current remain zero; quota must be raised before the first node. |
+| GPU | Hybrid: local RTX 4070 worker; OVH `l4-90` pool retained at zero nodes | Keeps the live platform inside the 44 GB RAM quota and incurs no OVH GPU compute charge. |
 | COLMAP memory | 16 GiB request, 32 GiB limit | Replaces the historical 80 GiB request; local qualification succeeded on a 32 GB host with 8 GB VRAM. |
 | Kafka | One persistent in-cluster broker, 20 GiB | Realistic enough for integration, not highly available and not production-grade. |
 | Database | In-cluster PostgreSQL 16 + PostGIS 3.5, 20 GiB | Low-cost first deployment; single-node and explicitly not production-grade. |
@@ -512,7 +512,58 @@ user tables. The certificate remained Ready, and both public HTTPS endpoints
 returned `200` with successful certificate verification. No CUDA, COLMAP or GPU
 build/test was run.
 
-## 9. Enable and qualify the GPU pool
+## 9. Hybrid GPU qualification inside the 44 GB quota
+
+The first full cloud mission was qualified on 7 August 2026 without requesting
+a quota increase. Kubernetes kept the single OVH `b3-8` CPU node for the API,
+Kafka, PostgreSQL and processing worker. COLMAP/DroneGS and IA ran temporarily
+on the development laptop's RTX 4070 Laptop GPU through authenticated local
+workers connected to the OVH Kafka and S3 services. The OVH `l4-90` pool
+remained at minimum/desired `0`, so this test allocated no cloud GPU and added
+no OVH GPU compute charge.
+
+The immutable cloud images were:
+
+- API: `d58d09537da5dec4261f9583e4faeff085e935ee`;
+- processing: `2fd13828cba99842f2fdb239f11b160dc861c427`.
+
+Helm release `drone-ai` revision 15 completed successfully. Mission
+`ovh-gajan-e2e-20260807` used dataset `gajan-hybrid-e2e-20260807`, containing
+25 contiguous 12 MP photographs (`DJI_0573.JPG` through `DJI_0597.JPG`). The
+bounded profile used sequential OpenCV matching, a 2,400 px feature size,
+5,000 DroneGS iterations, a 0.25 m orthomosaic and YOLO26l at confidence 0.20.
+
+The real end-to-end result was:
+
+- COLMAP registered 25/25 photographs and reconstructed 7,825 sparse points;
+- alignment error was about 1.047 m mean and 1.080 m median;
+- DroneGS completed 5,000 iterations in the available 8 GB VRAM, producing
+  29,068 Gaussians before filtering and 16,148 after filtering;
+- the final orthomosaic was 438 x 376 pixels at 0.25 m/pixel, with a height map;
+- 73 reconstruction artifacts were persisted to OVH S3;
+- processing produced one tile, IA processed that tile and found zero objects
+  at the requested confidence; a valid empty `detections.geojson` was stored;
+- all Kafka consumer groups reached zero lag and the public mission summary
+  ended at `overall_status: success`, with COLMAP, TILER and IA all successful.
+
+This qualification exposed and fixed seven integration defects: the explicit
+`sm_89` CUDA architecture now propagates to every GPU build stage; synchronous
+Kafka commits use the current `confluent-kafka` API; a new COLMAP consumer
+replays uncommitted work from `earliest`; a valid single-block COG no longer
+requires overviews; S3 response checksum validation is compatible with OVH;
+uppercase OVH cloud regions are normalized for S3 request signatures; and
+successful mission state can no longer regress during durable cleanup.
+The source dataset was never modified. Long CUDA/COLMAP builds were not added
+to ordinary PR or merge CI.
+
+For another temporary hybrid run, expose only the required broker endpoint
+through a local `kubectl port-forward`, inject credentials through ignored
+mode-0600 files/Kubernetes Secrets, and use a unique Kafka consumer group and
+mission ID. Never commit a kubeconfig, S3 key, registry password or port-forward
+endpoint. Stop the local workers and tunnel when terminal state and S3 outputs
+have been verified.
+
+### Optional: move the GPU worker into OVHcloud
 
 The zero-node pool already uses the GRA11 `l4-90` flavor: 22 vCPU, 90 GB RAM
 and one NVIDIA L4 with 24 GB VRAM. The live OVH catalog price checked on
@@ -524,8 +575,12 @@ before scaling because catalog prices can change.
 Current GRA11 quota is 34 vCPU and 44 GB RAM, with the `b3-8` CPU node using
 2 vCPU and 8 GB. The first L4 therefore requires total RAM quota of at least
 98 GB (an increase of 54 GB); current vCPU quota is sufficient for one CPU plus
-one L4 node. Request and confirm the RAM quota increase before changing desired
-capacity. The applied untracked `terraform.tfvars` is equivalent to:
+one L4 node. There is no currently available OVH GPU flavor that fits beside
+the CPU node inside 44 GB: even `t2-45` is a 45 GB instance before the existing
+8 GB node is counted. Keep using the qualified hybrid design to stay at the
+44 GB tier. Request and confirm the RAM quota increase only when a persistent
+OVH-hosted GPU worker is actually required. The applied untracked
+`terraform.tfvars` is equivalent to:
 
 ```hcl
 enable_gpu_pool = true

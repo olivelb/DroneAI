@@ -14,6 +14,7 @@ def test_s3_client_uses_compatible_optional_response_checksums(monkeypatch):
         return client
 
     monkeypatch.setattr(storage.boto3, "client", fake_client)
+    monkeypatch.setattr(storage, "S3_REGION", "GRA")
     storage.reset_client()
     try:
         assert storage._get_client() is client
@@ -21,6 +22,7 @@ def test_s3_client_uses_compatible_optional_response_checksums(monkeypatch):
         storage.reset_client()
 
     assert captured["config"].response_checksum_validation == "when_required"
+    assert captured["region_name"] == "gra"
 
 
 def test_download_directory_rejects_object_key_traversal(
