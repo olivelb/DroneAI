@@ -1,0 +1,64 @@
+# Pinned for DroneAI preproduction on OVHcloud MKS Kubernetes 1.35.
+deployment:
+  replicas: 1
+
+ingressClass:
+  enabled: true
+  isDefaultClass: false
+  name: traefik
+
+providers:
+  kubernetesCRD:
+    enabled: false
+  kubernetesIngress:
+    enabled: true
+    ingressClass: traefik
+    publishedService:
+      enabled: true
+  kubernetesGateway:
+    enabled: false
+
+api:
+  dashboard: false
+
+ingressRoute:
+  dashboard:
+    enabled: false
+
+service:
+  annotations:
+    loadbalancer.ovhcloud.com/class: octavia
+    loadbalancer.ovhcloud.com/flavor: small
+  spec:
+    type: LoadBalancer
+
+ports:
+  web:
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+  websecure:
+    http:
+      tls:
+        enabled: true
+
+log:
+  level: INFO
+
+accessLog:
+  enabled: true
+  format: json
+  fields:
+    headers:
+      defaultMode: drop
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi

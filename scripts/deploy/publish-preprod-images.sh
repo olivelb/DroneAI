@@ -5,10 +5,14 @@ usage() {
     cat <<'EOF'
 Usage: publish-preprod-images.sh REGISTRY/PROJECT GIT_SHA
 
-Build and push DroneAI service images with one immutable Git commit tag.
-The registry project must already exist and `docker login REGISTRY` must have
-succeeded. A missing local drone-colmap-base:latest triggers the long CUDA and
-COLMAP base build; set REBUILD_COLMAP_BASE=1 to rebuild it explicitly.
+Build and push the CPU DroneAI service images with one immutable Git commit
+tag. The registry project must already exist and `docker login REGISTRY` must
+have succeeded.
+
+GPU images are excluded by default. Set INCLUDE_GPU_IMAGES=1 only for an
+explicit GPU deployment. The existing local drone-colmap-base:latest is then
+reused; a missing base is an error. Set both INCLUDE_GPU_IMAGES=1 and
+REBUILD_COLMAP_BASE=1 to explicitly authorize the long CUDA/COLMAP base build.
 EOF
 }
 
@@ -29,17 +33,31 @@ docker info >/dev/null 2>&1 || { printf 'The Docker daemon is unavailable.\n' >&
 cd "$REPO_ROOT"
 export DOCKER_BUILDKIT=1
 
-if [[ "${REBUILD_COLMAP_BASE:-0}" == "1" ]] \
-    || ! docker image inspect drone-colmap-base:latest >/dev/null 2>&1; then
-    printf 'Building the CUDA/COLMAP base image (long operation)...\n'
-    docker build \
-        --network=host \
-        --progress=plain \
-        --tag drone-colmap-base:latest \
-        --file app1-colmap/Dockerfile.base \
-        .
-else
-    printf 'Reusing local drone-colmap-base:latest.\n'
+readonly INCLUDE_GPU_IMAGES="${INCLUDE_GPU_IMAGES:-0}"
+readonly REBUILD_COLMAP_BASE="${REBUILD_COLMAP_BASE:-0}"
+
+if [[ "$REBUILD_COLMAP_BASE" == "1" && "$INCLUDE_GPU_IMAGES" != "1" ]]; then
+    printf 'REBUILD_COLMAP_BASE=1 requires INCLUDE_GPU_IMAGES=1.\n' >&2
+    exit 2
+fi
+
+if [[ "$INCLUDE_GPU_IMAGES" == "1" ]]; then
+    if [[ "$REBUILD_COLMAP_BASE" == "1" ]]; then
+        printf 'Explicitly building the CUDA/COLMAP base image (long operation)...\n'
+        docker build \
+            --network=host \
+            --progress=plain \
+            --tag drone-colmap-base:latest \
+            --file app1-colmap/Dockerfile.base \
+            .
+    elif docker image inspect drone-colmap-base:latest >/dev/null 2>&1; then
+        printf 'Reusing local drone-colmap-base:latest.\n'
+    else
+        printf '%s\n' \
+            'GPU publication refused: drone-colmap-base:latest is missing.' \
+            'Set REBUILD_COLMAP_BASE=1 only when the long CUDA/COLMAP build is explicitly required.' >&2
+        exit 1
+    fi
 fi
 
 declare -A DOCKERFILES=(
@@ -50,13 +68,17 @@ declare -A DOCKERFILES=(
     [drone-dashboard-frontend]=app4-dashboard/frontend/Dockerfile
 )
 
-for image in \
-    drone-colmap \
-    drone-ia \
-    drone-processing \
-    drone-dashboard-api \
+images=(
+    drone-processing
+    drone-dashboard-api
     drone-dashboard-frontend
-do
+)
+
+if [[ "$INCLUDE_GPU_IMAGES" == "1" ]]; then
+    images=(drone-colmap drone-ia "${images[@]}")
+fi
+
+for image in "${images[@]}"; do
     reference="$REGISTRY_PROJECT/$image:$IMAGE_TAG"
     docker build \
         --network=host \
@@ -67,4 +89,4 @@ do
     docker push "$reference"
 done
 
-printf 'Published all service images with immutable tag %s.\n' "$IMAGE_TAG"
+printf 'Published %s service images with immutable tag %s.\n' "${#images[@]}" "$IMAGE_TAG"

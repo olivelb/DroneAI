@@ -16,7 +16,7 @@ CI.
 | GPU | Pool disabled, zero initial nodes | Select a real GRA11 flavor and request quota before enabling it. |
 | COLMAP memory | 16 GiB request, 32 GiB limit | Replaces the historical 80 GiB request; local qualification succeeded on a 32 GB host with 8 GB VRAM. |
 | Kafka | One persistent in-cluster broker, 20 GiB | Realistic enough for integration, not highly available and not production-grade. |
-| Database | Managed PostgreSQL with PostGIS | Created deliberately in Manager after the gateway egress IP is known. |
+| Database | In-cluster PostgreSQL 16 + PostGIS 3.5, 20 GiB | Low-cost first deployment; single-node and explicitly not production-grade. |
 | Objects | Encrypted, versioned OVH S3 bucket | Terraform prevents accidental deletion. |
 | Terraform state | Separate encrypted, versioned OVH S3 bucket | Dedicated S3 user, least-privilege object policy and native `.tflock` locking. |
 | Images | OVH Harbor/MPR, Git SHA tags | `latest` is forbidden for preproduction service images. |
@@ -182,14 +182,28 @@ The repository and CI never execute these commands automatically.
 
 ### Harbor registry
 
-In OVH Manager, open the new Managed Private Registry, generate identification
-details, open the Harbor UI and create a private project named `droneai`.
-Create separate credentials for image publishing and a read-only robot account
-for Kubernetes.
+Terraform creates a temporary `droneai-bootstrap` registry account. Read its
+sensitive password locally, open the Harbor UI and create a private project
+named `droneai`. Create separate credentials for image publishing and a
+read-only robot account for Kubernetes. Do not use the bootstrap account in a
+workload.
+
+The idempotent bootstrap script creates the private project and a project-level
+pull-only robot, verifies its registry access, and writes its password directly
+to the `drone-ai-registry` Kubernetes Secret without printing it:
+
+```bash
+export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
+export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
+scripts/deploy/bootstrap-harbor-preprod.sh
+```
 
 ```bash
 REGISTRY_HOST="$(terraform output -raw registry_host)"
-docker login "$REGISTRY_HOST"
+REGISTRY_LOGIN="$(terraform output -raw registry_bootstrap_login)"
+REGISTRY_PASSWORD="$(terraform output -raw registry_bootstrap_password)"
+printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+  --username "$REGISTRY_LOGIN" --password-stdin
 kubectl create namespace drone-ai-preprod --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n drone-ai-preprod create secret docker-registry drone-ai-registry \
   --docker-server="$REGISTRY_HOST" \
@@ -197,20 +211,42 @@ kubectl -n drone-ai-preprod create secret docker-registry drone-ai-registry \
   --docker-password='<pull-robot-secret>'
 ```
 
+The manual `kubectl create secret` command is only a recovery procedure when
+rotating an existing robot; it is not needed after the bootstrap script.
+
 ### Object Storage
 
-In `Public Cloud > Object Storage > S3 users`, create a dedicated DroneAI S3
-user and grant it only read/write access to the bucket returned by
-`terraform output -raw object_storage_bucket`. Record the access and secret
-keys in a password manager. Do not put them in Terraform variables.
+Terraform creates a dedicated application S3 user and grants it bucket
+inspection plus object read/write/delete access only within the bucket returned
+by `terraform output -raw object_storage_bucket`. Store the two sensitive
+outputs in a local mode-0600 file or password manager; do not put them in
+Terraform variables or Kubernetes values files.
+
+Qualify the scoped credentials with a temporary object that is automatically
+deleted after the test:
+
+```bash
+export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
+scripts/deploy/test-ovh-s3-assets.sh
+```
 
 ### PostgreSQL/PostGIS
 
-In `Public Cloud > Databases`, create PostgreSQL 17 in `GRA` with the smallest
-Essential flavor that meets the current offer, deletion protection enabled and
-at least 20 GB storage. Create database `droneai` and application user
-`droneai_app`. Allow only the `/32` public egress IP reported by
-`terraform output -json gateway_public_ips`.
+PostgreSQL is a cost gate and must not be provisioned implicitly. As verified
+on 7 August 2026, the smallest managed PostgreSQL offer is Essential DB1-4 with
+40 GB, at approximately `0.0814 EUR excl. tax/hour` or `59.42 EUR excl.
+tax/month`. If selected, create PostgreSQL 17 in `GRA` with deletion protection,
+database `droneai` and application user `droneai_app`. Allow only the `/32`
+public egress IP reported by `terraform output -json gateway_public_ips`.
+
+For the first change-heavy cloud test, the lower-cost alternative is the
+in-chart PostGIS instance on a 20 GB `csi-cinder-high-speed-gen2` PVC. Together
+with Kafka's 20 GB PVC, both volumes cost approximately `3.83 EUR excl.
+tax/month` at `0.000131 EUR/GB/hour`. This alternative is single-node and must
+be migrated to managed PostgreSQL before production or any availability/SLA
+qualification. Current prices must be rechecked on the
+[OVHcloud Public Cloud price page](https://www.ovhcloud.com/fr/public-cloud/prices/)
+before ordering.
 
 Connect using the TLS URI supplied by OVHcloud and initialize PostGIS:
 
@@ -223,35 +259,57 @@ Keep the final percent-encoded application URI in the password manager. The
 Alembic migration Job will create/upgrade DroneAI tables during the Helm
 installation.
 
+### Managed-service bootstrap result (7 August 2026)
+
+Terraform applied four non-billable access resources with no update or
+deletion: one Harbor bootstrap user, one S3 application user, its credential
+and its bucket-only policy. The S3 qualification successfully wrote, read and
+deleted a temporary object. Harbor contains the private `droneai` project and
+a verified project-level pull-only robot whose secret is stored only in the
+`drone-ai-registry` Kubernetes Secret.
+
+The CPU-only publication produced these immutable artifacts for commit
+`6b5a17d8261618980697514cf716214d45edac85`:
+
+- `drone-processing`: `sha256:5749dea2160171891d887e2c1702a6d2780b3a66a35fbdaf0c00a8ef9ac5faca`;
+- `drone-dashboard-api`: `sha256:08a5a588cd85410ebe06673a67f2bcaddfa5e2ce56a9cfbff4adc399935f344b`;
+- `drone-dashboard-frontend`: `sha256:86608159b360a2a8f7b0c4af0a7f572d35314b76b6c488569dda0c1bc21e9152`.
+
+No IA, COLMAP or CUDA image was built or pushed.
+
 ## 5. Install cluster add-ons
 
-Install pinned releases, then wait for readiness:
+`ingress-nginx` reached end of life in March 2026 and is intentionally not used.
+Install the pinned, maintained Traefik and cert-manager releases, then wait for
+readiness. The Traefik values explicitly request an OVHcloud Octavia `small`
+Load Balancer and do not expose the dashboard:
 
 ```bash
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo add jetstack https://charts.jetstack.io
+helm repo add traefik https://traefik.github.io/charts
 helm repo update
 
-helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
-  --version 4.15.1 \
-  --namespace ingress-nginx --create-namespace \
-  --set controller.service.type=LoadBalancer \
+helm upgrade --install traefik traefik/traefik \
+  --version 41.1.1 \
+  --namespace traefik --create-namespace \
+  --values infra/kubernetes/ovh-preprod/traefik-values.yaml \
   --wait --timeout 10m
 
-helm upgrade --install cert-manager jetstack/cert-manager \
-  --version v1.21.0 \
+helm upgrade --install cert-manager \
+  oci://quay.io/jetstack/charts/cert-manager \
+  --version v1.21.1 \
   --namespace cert-manager --create-namespace \
-  --set crds.enabled=true \
+  --values infra/kubernetes/ovh-preprod/cert-manager-values.yaml \
   --wait --timeout 10m
 
-cp infra/kubernetes/ovh-preprod/cluster-issuer.yaml.example /tmp/cluster-issuer.yaml
-# Replace REPLACE_ACME_EMAIL with a monitored mailbox before applying.
-kubectl apply -f /tmp/cluster-issuer.yaml
-kubectl -n ingress-nginx get service ingress-nginx-controller
+kubectl apply -f infra/kubernetes/ovh-preprod/cluster-issuer.yaml.example
+kubectl -n traefik get service traefik
 ```
 
-Record the ingress service external IP. In the OVH DNS zone for `olembo.fr`,
-add two `A` records with TTL 300 during preproduction:
+The selected chart versions are Traefik `41.1.1` / proxy `3.7.9` and
+cert-manager `1.21.1`; both declare compatibility with Kubernetes 1.35. Record
+the Traefik service external IP. In the OVH DNS zone for `olembo.fr`,
+add two `A` records. Prefer TTL 300 for frequently changed preproduction
+records; the initial deployment used the zone default TTL of 3600 seconds:
 
 - `droneai-preprod` to that external IP;
 - `api-droneai-preprod` to that external IP.
@@ -264,17 +322,49 @@ dig +short droneai-preprod.olembo.fr A
 dig +short api-droneai-preprod.olembo.fr A
 ```
 
+### First live deployment snapshot (7 August 2026)
+
+The first OVHcloud deployment produced the following verified state:
+
+- Traefik Helm chart `41.1.1`, proxy `3.7.9`, one ready replica and no restart;
+- OVHcloud Octavia `small` Load Balancer at `91.134.64.82` on ports 80/443;
+- cert-manager `1.21.1` ready and `letsencrypt-prod` registered with
+  `admin@olembo.fr`;
+- authoritative and public DNS for both preproduction hostnames resolving to
+  `91.134.64.82` with TTL 3600;
+- HTTP returning `308 Permanent Redirect` to HTTPS for both hostnames;
+- HTTPS returning Traefik `404` until the DroneAI chart creates its Ingress
+  routes. This is expected and confirms that DNS, the Load Balancer and
+  Traefik are reachable before the application deployment.
+
+No apex, `www`, MX, SPF, DKIM or other mail record was changed.
+
 ## 6. Publish immutable images
 
-Use the exact commit that will be deployed. This is the only step that can
-perform the long CUDA/COLMAP base build, and only when the local base is absent
-or `REBUILD_COLMAP_BASE=1` is explicitly set:
+Use the exact commit that will be deployed. The default command publishes only
+the three CPU control-plane images and never builds or publishes CUDA/GPU
+images:
 
 ```bash
 GIT_SHA="$(git rev-parse HEAD)"
 REGISTRY_PROJECT="<registry-host>/droneai"
 scripts/deploy/publish-preprod-images.sh "$REGISTRY_PROJECT" "$GIT_SHA"
 ```
+
+On the configured OVHcloud workstation, the wrapper retrieves the Harbor
+bootstrap account from protected Terraform state, forces CPU-only publication
+and logs out even when a build fails:
+
+```bash
+export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
+scripts/deploy/publish-ovh-preprod-cpu.sh
+```
+
+GPU publication requires `INCLUDE_GPU_IMAGES=1`. It reuses an existing local
+`drone-colmap-base:latest` and fails if that base is absent. The long base build
+is possible only when both `INCLUDE_GPU_IMAGES=1` and
+`REBUILD_COLMAP_BASE=1` are explicitly set. A normal PR, merge, documentation,
+Terraform, Helm or CPU application change must never set those flags.
 
 CI does not build COLMAP/CUDA for Terraform, documentation or Helm-only changes.
 
@@ -302,6 +392,15 @@ kubectl -n drone-ai-preprod create secret generic hf-token \
   --from-literal=HF_TOKEN='<HUGGINGFACE_TOKEN>'
 ```
 
+For the in-cluster PostgreSQL preproduction option, create or reconcile the
+external Secrets without printing their values:
+
+```bash
+export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
+export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
+scripts/deploy/bootstrap-ovh-preprod-secrets.sh
+```
+
 ## 8. Deploy the CPU control plane first
 
 Copy the tracked overlay to the ignored local file and replace the three
@@ -327,7 +426,47 @@ kubectl -n drone-ai-preprod rollout status deployment/dashboard-frontend --timeo
 curl --fail https://api-droneai-preprod.olembo.fr/
 ```
 
+The configured OVHcloud workstation can perform the same CPU-only deployment
+without generating a local values file. The wrapper resolves only non-secret
+Terraform outputs, reconciles Kubernetes Secrets separately and uses Helm
+`--atomic --wait --wait-for-jobs`:
+
+```bash
+export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
+export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
+scripts/deploy/deploy-ovh-preprod-cpu.sh
+```
+
 At this stage Kafka, processing, API and frontend run; GPU workers are absent.
+
+### First CPU control-plane deployment result (7 August 2026)
+
+Helm release `drone-ai` revision 3 was deployed successfully in namespace
+`drone-ai-preprod`. PostgreSQL, Kafka, processing, dashboard API and frontend
+were all Ready with zero restart; the Alembic Job completed migrations `0001`
+through `0005`. PostGIS reported version 3.5. The PostgreSQL 20 GiB PVC uses
+`csi-cinder-high-speed-gen2`; the Kafka 20 GiB PVC uses
+`csi-cinder-high-speed`.
+
+The Apache Kafka container runs as UID/GID 1000 with `fsGroup: 1000`. Its data
+mount uses the `kafka` subdirectory so the broker does not treat the ext4
+`lost+found` directory as a Kafka log. A post-install/post-upgrade Helm hook
+idempotently creates all seven application topics before acceptance checks.
+
+The certificate `drone-ai-preprod-tls` is Ready for both hostnames and expires
+on 5 November 2026. Both HTTPS endpoints returned `200`; plain HTTP redirected
+to HTTPS. Authentication created and read back an HTTPS session for
+`preprod-admin` with the `admin` role. A temporary object written from the API
+pod was read back byte-for-byte and deleted from OVH S3.
+
+Kafka was qualified beyond a TCP probe: both API and processing pods listed all
+application topics; a temporary message was written, the broker Deployment was
+restarted, and the message was read back from the same PVC before its temporary
+topic was deleted. All application pods returned Ready with zero restart after
+the test. At steady state before this controlled restart, the only node used
+approximately 138 millicores and 2 GiB of memory (34% of allocatable memory),
+leaving enough headroom for this CPU preproduction control plane. No GPU,
+CUDA, IA or COLMAP build/test was run during this deployment.
 
 ## 9. Enable and qualify the GPU pool
 

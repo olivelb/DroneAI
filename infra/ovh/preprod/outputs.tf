@@ -30,8 +30,24 @@ output "registry_project_prefix" {
   )}/droneai/"
 }
 
+output "registry_bootstrap_login" {
+  description = "Temporary administrative login used to initialize the Harbor project."
+  value       = ovh_cloud_project_containerregistry_user.bootstrap.user
+}
+
+output "registry_bootstrap_password" {
+  description = "Temporary Harbor bootstrap password; store it locally and never commit it."
+  value       = ovh_cloud_project_containerregistry_user.bootstrap.password
+  sensitive   = true
+}
+
 output "object_storage_endpoint" {
-  description = "HTTPS S3 virtual host reported by OVHcloud."
+  description = "Regional S3 API endpoint used by boto3 clients."
+  value       = "https://s3.${lower(var.object_storage_region)}.io.cloud.ovh.net"
+}
+
+output "object_storage_virtual_host" {
+  description = "Bucket-specific HTTPS virtual host reported by OVHcloud."
   value = startswith(ovh_cloud_project_storage.assets.virtual_host, "http") ? (
     ovh_cloud_project_storage.assets.virtual_host
   ) : "https://${ovh_cloud_project_storage.assets.virtual_host}"
@@ -39,6 +55,18 @@ output "object_storage_endpoint" {
 
 output "object_storage_bucket" {
   value = ovh_cloud_project_storage.assets.name
+}
+
+output "object_storage_access_key_id" {
+  description = "Dedicated application S3 access key; store it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.assets.access_key_id
+  sensitive   = true
+}
+
+output "object_storage_secret_access_key" {
+  description = "Dedicated application S3 secret; store it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.assets.secret_access_key
+  sensitive   = true
 }
 
 output "terraform_state_bucket" {

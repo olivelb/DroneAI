@@ -81,7 +81,14 @@ spec:
         - name: POSTGRES_USER
           value: {{ .Values.postgres.user | quote }}
         - name: POSTGRES_PASSWORD
+          {{- if .Values.postgres.existingSecret }}
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.postgres.existingSecret | quote }}
+              key: {{ .Values.postgres.passwordSecretKey | quote }}
+          {{- else }}
           value: {{ .Values.postgres.password | quote }}
+          {{- end }}
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
         volumeMounts:
