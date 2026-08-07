@@ -524,10 +524,10 @@ no OVH GPU compute charge.
 
 The immutable cloud images were:
 
-- API: `d58d09537da5dec4261f9583e4faeff085e935ee`;
+- API: `d7a4fa64ebb00605313bc0de816b6ddcf3c0f5f2`;
 - processing: `2fd13828cba99842f2fdb239f11b160dc861c427`.
 
-Helm release `drone-ai` revision 15 completed successfully. Mission
+Helm release `drone-ai` revision 18 completed successfully. Mission
 `ovh-gajan-e2e-20260807` used dataset `gajan-hybrid-e2e-20260807`, containing
 25 contiguous 12 MP photographs (`DJI_0573.JPG` through `DJI_0597.JPG`). The
 bounded profile used sequential OpenCV matching, a 2,400 px feature size,
@@ -540,7 +540,8 @@ The real end-to-end result was:
 - DroneGS completed 5,000 iterations in the available 8 GB VRAM, producing
   29,068 Gaussians before filtering and 16,148 after filtering;
 - the final orthomosaic was 438 x 376 pixels at 0.25 m/pixel, with a height map;
-- 73 reconstruction artifacts were persisted to OVH S3;
+- 72 final mission objects (205,975,146 bytes) were retained in OVH S3 after
+  durable recovery cleanup, including both COGs, previews and provenance;
 - processing produced one tile, IA processed that tile and found zero objects
   at the requested confidence; a valid empty `detections.geojson` was stored;
 - all Kafka consumer groups reached zero lag and the public mission summary
@@ -555,7 +556,8 @@ uppercase OVH cloud regions are normalized for S3 request signatures; height
 COG NoData values produce strict JSON while legacy sidecars remain readable;
 and successful mission state can no longer regress during durable cleanup.
 The source dataset was never modified. Long CUDA/COLMAP builds were not added
-to ordinary PR or merge CI.
+to ordinary PR or merge CI. The final non-CUDA suite passed 419 tests with 13
+CuPy-only tests skipped, and Ruff passed across the repository.
 
 For another temporary hybrid run, expose only the required broker endpoint
 through a local `kubectl port-forward`, inject credentials through ignored
