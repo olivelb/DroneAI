@@ -27,6 +27,12 @@ variable "environment" {
   default     = "preprod"
 }
 
+variable "deep_sleep" {
+  description = "Suspend price-bearing preproduction compute, registry and gateway resources while retaining MKS, networking metadata and protected S3 data."
+  type        = bool
+  default     = false
+}
+
 variable "private_network_cidr" {
   description = "Private subnet CIDR. Do not use OVH MKS-reserved 10.2.0.0/16 or 10.3.0.0/16."
   type        = string

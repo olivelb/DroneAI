@@ -22,6 +22,12 @@ It creates:
 - a second encrypted, versioned bucket dedicated to Terraform state, with a
   separate S3 account restricted to the state and lock objects.
 
+Setting `deep_sleep = true` retains the free MKS control plane, private network,
+protected S3 buckets and their scoped identities while scaling the CPU pool to
+zero and removing the hourly billed Gateway and Managed Private Registry. The
+Kubernetes LoadBalancer and dynamically provisioned PVCs must be removed using
+the ordered runbook before applying that Terraform plan.
+
 Authentication is read only from `OVH_*` environment variables. Terraform
 state contains the MKS client key, Harbor password and S3 credentials and must
 be treated as a secret. The complete, ordered runbook, including the two-phase

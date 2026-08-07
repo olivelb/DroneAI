@@ -1,6 +1,7 @@
 project_id            = "fe7dc1254a9847849e0d29b01fe39b22"
 region                = "GRA11"
 object_storage_region = "GRA"
+deep_sleep           = false
 object_storage_bucket  = "droneai-preprod-fe7dc125"
 backup_storage_bucket  = "droneai-preprod-backups-fe7dc125"
 terraform_state_bucket = "droneai-preprod-tfstate-fe7dc125"

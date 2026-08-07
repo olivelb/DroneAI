@@ -26,6 +26,8 @@ resource "ovh_cloud_project_network_private_subnet" "preprod" {
 }
 
 resource "ovh_cloud_project_gateway" "preprod" {
+  count = var.deep_sleep ? 0 : 1
+
   service_name = var.project_id
   name         = "${local.name}-gateway"
   model        = "s"
@@ -56,8 +58,8 @@ resource "ovh_cloud_project_kube_nodepool" "cpu" {
   kube_id        = ovh_cloud_project_kube.preprod.id
   name           = "cpu-workers"
   flavor_name    = var.cpu_flavor
-  desired_nodes  = var.cpu_desired_nodes
-  min_nodes      = 1
+  desired_nodes  = var.deep_sleep ? 0 : var.cpu_desired_nodes
+  min_nodes      = var.deep_sleep ? 0 : 1
   max_nodes      = 2
   autoscale      = true
   monthly_billed = false
@@ -119,6 +121,8 @@ data "ovh_cloud_project_capabilities_containerregistry_filter" "preprod" {
 }
 
 resource "ovh_cloud_project_containerregistry" "preprod" {
+  count = var.deep_sleep ? 0 : 1
+
   service_name = var.project_id
   name         = "${local.name}-registry"
   region       = data.ovh_cloud_project_capabilities_containerregistry_filter.preprod.region

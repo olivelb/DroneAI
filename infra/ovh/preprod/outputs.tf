@@ -5,14 +5,14 @@ output "cluster_id" {
 
 output "gateway_public_ips" {
   description = "Stable egress IP information, useful for managed-service allowlists."
-  value       = ovh_cloud_project_gateway.preprod.external_information
+  value       = try(ovh_cloud_project_gateway.preprod[0].external_information, null)
 }
 
 output "registry_host" {
   description = "Managed Private Registry hostname for docker login."
-  value = trimsuffix(
+  value = var.deep_sleep ? null : trimsuffix(
     trimprefix(
-      trimprefix(ovh_cloud_project_containerregistry.preprod.url, "https://"),
+      trimprefix(ovh_cloud_project_containerregistry.preprod[0].url, "https://"),
       "http://",
     ),
     "/",
@@ -21,9 +21,9 @@ output "registry_host" {
 
 output "registry_project_prefix" {
   description = "Immutable image prefix to use as global.imageRegistry."
-  value = "${trimsuffix(
+  value = var.deep_sleep ? null : "${trimsuffix(
     trimprefix(
-      trimprefix(ovh_cloud_project_containerregistry.preprod.url, "https://"),
+      trimprefix(ovh_cloud_project_containerregistry.preprod[0].url, "https://"),
       "http://",
     ),
     "/",
@@ -32,12 +32,12 @@ output "registry_project_prefix" {
 
 output "registry_bootstrap_login" {
   description = "Temporary administrative login used to initialize the Harbor project."
-  value       = ovh_cloud_project_containerregistry_user.bootstrap.user
+  value       = try(ovh_cloud_project_containerregistry_user.bootstrap[0].user, null)
 }
 
 output "registry_bootstrap_password" {
   description = "Temporary Harbor bootstrap password; store it locally and never commit it."
-  value       = ovh_cloud_project_containerregistry_user.bootstrap.password
+  value       = try(ovh_cloud_project_containerregistry_user.bootstrap[0].password, null)
   sensitive   = true
 }
 

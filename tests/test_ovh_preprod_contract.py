@@ -23,6 +23,10 @@ def test_terraform_defaults_are_cost_bounded_and_non_destructive() -> None:
     assert "count = var.enable_gpu_pool ? 1 : 0" in main
     assert re.search(r"desired_nodes\s*=\s*0", main)
     assert 'default     = false' in variables
+    assert 'variable "deep_sleep"' in variables
+    assert main.count("count = var.deep_sleep ? 0 : 1") == 2
+    assert "desired_nodes  = var.deep_sleep ? 0 : var.cpu_desired_nodes" in main
+    assert "min_nodes      = var.deep_sleep ? 0 : 1" in main
     assert "prevent_destroy = true" in main
     assert 'sse_algorithm = "AES256"' in main
     assert 'status = "enabled"' in main
@@ -182,6 +186,16 @@ def test_ovh_dns_upsert_is_bounded_to_explicit_a_records() -> None:
     assert 'fieldType=A&subDomain=${subdomain}' in script
     assert '{fieldType:"A",subDomain:$subdomain,target:$target,ttl:300}' in script
     assert "record_count} -gt 1" in script
+    assert '/domain/zone/${zone}/refresh' in script
+
+
+def test_ovh_dns_delete_requires_exact_record_and_target() -> None:
+    script = _read(ROOT / "scripts" / "deploy" / "delete-ovh-dns-a.sh")
+
+    assert 'fieldType=A&subDomain=${subdomain}' in script
+    assert "record_count} -gt 1" in script
+    assert 'current_target} != "${expected_target}' in script
+    assert 'api_call DELETE "/domain/zone/${zone}/record/${record_id}"' in script
     assert '/domain/zone/${zone}/refresh' in script
 
 

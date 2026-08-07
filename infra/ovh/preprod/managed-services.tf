@@ -1,6 +1,8 @@
 resource "ovh_cloud_project_containerregistry_user" "bootstrap" {
+  count = var.deep_sleep ? 0 : 1
+
   service_name = var.project_id
-  registry_id  = ovh_cloud_project_containerregistry.preprod.id
+  registry_id  = ovh_cloud_project_containerregistry.preprod[0].id
   email        = "admin@olembo.fr"
   login        = "droneai-bootstrap"
 }
