@@ -626,7 +626,82 @@ test and one small end-to-end mission. Do not rerun the long COLMAP/CUDA build
 suite unless the cloud GPU architecture, CUDA/COLMAP versions or CTests differ
 from the already qualified build.
 
-## 10. Acceptance and rollback
+## 10. Deep sleep and recovery
+
+Deep sleep retains the free MKS control plane, the private network, all three
+protected S3 buckets and their scoped identities. It removes the CPU nodes,
+Managed Private Registry, Gateway, public Load Balancer/Floating IP and the two
+billable PVC-backed volumes. Never remove the Terraform state bucket or its S3
+identity.
+
+Before entering deep sleep, create a fresh PostgreSQL backup and run the real
+restore test. The delete helper refuses to touch a DNS record unless exactly
+one A record exists and it still targets the expected Load Balancer IP:
+
+```bash
+export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
+kubectl -n drone-ai-preprod create job --from=cronjob/postgres-backup \
+  postgres-backup-deep-sleep-YYYYMMDD
+kubectl -n drone-ai-preprod wait --for=condition=complete \
+  job/postgres-backup-deep-sleep-YYYYMMDD --timeout=15m
+helm test drone-ai --namespace drone-ai-preprod \
+  --filter name=postgres-backup-restore-test --logs --timeout 15m
+
+set -a
+source "$HOME/.config/droneai/ovh.env"
+set +a
+scripts/deploy/delete-ovh-dns-a.sh --check olembo.fr 91.134.64.82 \
+  droneai-preprod api-droneai-preprod
+scripts/deploy/delete-ovh-dns-a.sh olembo.fr 91.134.64.82 \
+  droneai-preprod api-droneai-preprod
+
+kubectl -n drone-ai-preprod scale deployment --all --replicas=0
+kubectl -n drone-ai-preprod wait --for=delete pod \
+  -l app=postgres --timeout=5m
+kubectl -n drone-ai-preprod delete pvc kafka-pvc postgres-pvc
+kubectl -n traefik delete service traefik
+```
+
+Set `deep_sleep = true` only in the ignored local `terraform.tfvars`, create a
+saved authenticated plan and require exactly zero additions, one in-place CPU
+pool update and three deletions: the Registry, its bootstrap user and the
+Gateway. No MKS, network, bucket or S3 identity may be deleted. Apply only that
+reviewed plan and verify that Kubernetes reports zero nodes and OVHcloud no
+longer reports the Registry, Gateway, Load Balancer, Floating IP or volumes.
+
+To wake the platform, set `deep_sleep = false` and apply the reviewed reverse
+Terraform plan. Recreate the Harbor project and pull secret, publish immutable
+CPU images, run the normal Helm deployment wrapper, reinstall/upgrade Traefik
+to recreate its `LoadBalancer` Service, and upsert both DNS records to the new
+external IP. Restore PostgreSQL from the current daily S3 slot before running
+acceptance tests. The Kafka topic hook recreates all seven topics; Kafka data
+is intentionally not restored.
+
+### First deep-sleep result (7 August 2026)
+
+Before shutdown, job `postgres-backup-deep-sleep-20260807-r1` uploaded and
+verified `postgres/daily-5.dump` at 150,462 bytes. The independent Helm restore
+test succeeded with 47 user tables. Both preproduction A records still pointed
+to `91.134.64.82` and were removed in the OVHcloud Manager; no apex, `www`, MX,
+SPF, DKIM or other mail record was changed. The scoped Public Cloud API token
+correctly rejected DNS access, so it was not broadened for this one operation.
+
+All five application Deployments were scaled to zero. The Kafka and PostgreSQL
+PVCs and their dynamically provisioned 20 GiB volumes were deleted, followed
+by the Traefik `LoadBalancer` Service. The reviewed Terraform plan SHA-256 was
+`a6fb6fd01399065db06cbc36ac82157a2adde4a88f4f90c0a8894f97d468174a` and
+contained exactly zero additions, one in-place CPU pool update and three
+deletions. Applying it removed the Gateway, Registry bootstrap user and SMALL
+Registry, and set the CPU pool minimum/desired size to zero.
+
+Final verification reported zero Kubernetes nodes, PVCs, PVs and LoadBalancer
+Services; all application Deployments were `0/0`. The OVHcloud API reported
+zero GRA11 instances, volumes and Load Balancers. Terraform state still
+contains the MKS cluster, zero-node CPU and GPU pools, private network/subnet,
+all three protected S3 buckets and their scoped identities, but no Registry or
+Gateway. A final authenticated Terraform plan returned `No changes`.
+
+## 11. Acceptance and rollback
 
 Acceptance requires healthy TLS, successful authentication, a completed
 Alembic migration, S3 upload/readback, Kafka persistence after broker restart,
