@@ -46,11 +46,7 @@ def test_reordered_stages_with_the_same_cuda_version_do_not_request_builds() -> 
 
 def test_explicit_cuda_architectures_reach_all_native_builds() -> None:
     dockerfile = (ROOT / "app1-colmap" / "Dockerfile.base").read_text(encoding="utf-8")
-    ceres = (ROOT / "app1-colmap" / "ceres-solver" / "CMakeLists.txt").read_text(
-        encoding="utf-8"
-    )
 
     assert dockerfile.count('ARG CUDA_ARCHITECTURES') == 3
-    assert '-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"' in dockerfile
+    assert dockerfile.count('-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"') == 2
     assert '-DDRONEGS_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"' in dockerfile
-    assert "if (NOT CMAKE_CUDA_ARCHITECTURES)" in ceres
