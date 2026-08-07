@@ -37,9 +37,18 @@ def test_chart_change_only_runs_helm_job() -> None:
     assert _enabled("charts/drone-ai/templates/colmap-worker.yaml") == {"helm"}
 
 
+def test_ovh_terraform_change_only_runs_infrastructure_validation() -> None:
+    assert _enabled("infra/ovh/preprod/main.tf") == {"infra"}
+    assert _enabled("scripts/deploy/publish-preprod-images.sh") == {"infra"}
+
+
 def test_docker_context_change_only_runs_service_image_jobs() -> None:
     assert _enabled(".dockerignore") == {"containers"}
 
 
-def test_ci_control_change_runs_every_scope() -> None:
-    assert _enabled(".github/workflows/ci.yml") == set(SCOPES)
+def test_ci_control_change_runs_all_lightweight_scopes_without_cuda() -> None:
+    assert _enabled(".github/workflows/ci.yml") == set(SCOPES) - {"dronegs"}
+    assert "dronegs" in _enabled(
+        ".github/workflows/ci.yml",
+        "app1-colmap/dronegs/src/trainer.cpp",
+    )

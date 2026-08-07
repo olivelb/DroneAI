@@ -29,6 +29,24 @@ __pycache__/
 *.pyc
 venv/
 .venv/
+
+# Terraform/OpenTofu working data and local credentials. Only reviewed example
+# variable files belong in Git.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfplan
+*.tfbackend
+crash.log
+crash.*.log
+!*.tfvars.example
+!*.tfbackend.example
+
+# Kubernetes credentials and locally rendered Secret manifests.
+kubeconfig*
+*.secret.yaml
+charts/drone-ai/values-*.local.yaml
 .train-venv/
 test_venv/
 ortho_test_venv/

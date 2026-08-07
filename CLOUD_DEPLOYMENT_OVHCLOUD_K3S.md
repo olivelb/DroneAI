@@ -1,5 +1,12 @@
 # DroneAI Cloud Deployment Guide
 
+> [!IMPORTANT]
+> This self-managed K3s guide is retained as a generic/legacy alternative. The
+> current OVHcloud target uses managed MKS and is documented in
+> [`docs/OVHCLOUD_PREPROD.md`](docs/OVHCLOUD_PREPROD.md). Its measured COLMAP
+> preproduction envelope is 16 GiB requested / 32 GiB limited, not the older
+> 80 GiB sizing below.
+
 Deploy the DroneAI pipeline on a cloud K3s cluster with GPU support.
 
 The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that works both locally and in the cloud. Local mode uses `hostPath` PVs and Docker-imported images. Cloud mode uses a `storageClass` for dynamic provisioning and a container registry for images. The same chart serves both — you override values with a `values-cloud.yaml` file.

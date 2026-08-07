@@ -1,3 +1,4 @@
+{{- if .Values.iaWorker.enabled }}
 {{- if .Values.iaWorker.modelCache.hostPath }}
 # --- PersistentVolume for model cache (hostPath — local only) ---
 apiVersion: v1
@@ -143,3 +144,4 @@ spec:
           claimName: model-cache-pvc
       - name: tmp
         emptyDir: {}
+{{- end }}

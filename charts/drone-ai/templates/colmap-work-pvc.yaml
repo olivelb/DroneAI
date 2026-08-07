@@ -1,0 +1,19 @@
+{{- if and .Values.colmapWorker.enabled .Values.colmapWorker.workVolume.persistentClaim.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.colmapWorker.workVolume.persistentClaim.name }}
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: colmap
+spec:
+  {{- with .Values.colmapWorker.workVolume.persistentClaim.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.colmapWorker.workVolume.persistentClaim.size }}
+{{- end }}

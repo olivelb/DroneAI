@@ -24,6 +24,7 @@ jobs:
       frontend: ${{ steps.scopes.outputs.frontend }}
       containers: ${{ steps.scopes.outputs.containers }}
       helm: ${{ steps.scopes.outputs.helm }}
+      infra: ${{ steps.scopes.outputs.infra }}
     steps:
       - name: Checkout pull-request history
         if: github.event_name == 'pull_request'
@@ -287,6 +288,11 @@ jobs:
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-production.example.yaml
           > /tmp/drone-ai-production.yaml
+      - name: Render OVHcloud preproduction values
+        run: >-
+          helm template drone-ai charts/drone-ai
+          --values charts/drone-ai/values-ovh-preprod.example.yaml
+          > /tmp/drone-ai-ovh-preprod.yaml
       - name: Verify production storage Secret references
         run: |
           if grep -Eq '^[[:space:]]+name: drone-ai-storage$' /tmp/drone-ai-production.yaml; then
@@ -294,6 +300,37 @@ jobs:
             exit 1
           fi
           grep -Eq '^[[:space:]]+name: drone-ai-storage-production$' /tmp/drone-ai-production.yaml
+      - name: Verify preproduction cost and image guards
+        run: |
+          if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then
+            echo "GPU workers must remain opt-in in the preproduction overlay" >&2
+            exit 1
+          fi
+          if grep -Eq '^[[:space:]]+image: .+:latest$' /tmp/drone-ai-ovh-preprod.yaml; then
+            echo "Mutable service image tag found in the preproduction render" >&2
+            exit 1
+          fi
+          grep -Eq 'drone-ai-storage-preprod' /tmp/drone-ai-ovh-preprod.yaml
+
+  infra:
+    name: OVHcloud Terraform static validation
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.14.6
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infra/ovh
+      - name: Initialize providers without a backend
+        run: terraform -chdir=infra/ovh/preprod init -backend=false -input=false
+      - name: Validate OVHcloud configuration without credentials
+        run: terraform -chdir=infra/ovh/preprod validate
+      - name: Check cloud deployment script
+        run: shellcheck scripts/deploy/publish-preprod-images.sh
 
   ci-gate:
     name: CI gate
@@ -306,6 +343,7 @@ jobs:
       - frontend
       - container-smoke
       - helm
+      - infra
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -320,7 +358,8 @@ jobs:
             "${{ needs.migrations.result }}" \
             "${{ needs.frontend.result }}" \
             "${{ needs.container-smoke.result }}" \
-            "${{ needs.helm.result }}"; do
+            "${{ needs.helm.result }}" \
+            "${{ needs.infra.result }}"; do
             case "$result" in
               success|skipped) ;;
               *) echo "Selected CI job concluded: $result" >&2; exit 1 ;;

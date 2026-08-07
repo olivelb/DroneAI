@@ -20,6 +20,7 @@ SCOPES: Final = (
     "frontend",
     "containers",
     "helm",
+    "infra",
 )
 CONTROL_PATHS: Final = {
     ".github/workflows/ci.yml",
@@ -41,9 +42,14 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         if normalized_path.startswith("./"):
             normalized_path = normalized_path[2:]
         normalized.add(normalized_path)
-    selected = {scope: False for scope in SCOPES}
-    if normalized & CONTROL_PATHS:
-        return {scope: True for scope in SCOPES}
+    control_changed = bool(normalized & CONTROL_PATHS)
+    # Exercise every lightweight CI contract when the dispatcher changes, but
+    # never turn a CI-only edit into a native CUDA/DroneGS build. A real
+    # DroneGS path in the same diff is still classified by the loop below.
+    selected = {
+        scope: control_changed and scope != "dronegs"
+        for scope in SCOPES
+    }
 
     for path in normalized:
         is_python = path.endswith(".py") and any(
@@ -99,6 +105,10 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["containers"] = True
         if _under(path, "charts/drone-ai"):
             selected["helm"] = True
+        if _under(path, "infra/ovh"):
+            selected["infra"] = True
+        if path == "scripts/deploy/publish-preprod-images.sh":
+            selected["infra"] = True
 
     return selected
 
