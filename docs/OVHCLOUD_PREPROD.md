@@ -546,13 +546,14 @@ The real end-to-end result was:
 - all Kafka consumer groups reached zero lag and the public mission summary
   ended at `overall_status: success`, with COLMAP, TILER and IA all successful.
 
-This qualification exposed and fixed seven integration defects: the explicit
+This qualification exposed and fixed eight integration defects: the explicit
 `sm_89` CUDA architecture now propagates to every GPU build stage; synchronous
 Kafka commits use the current `confluent-kafka` API; a new COLMAP consumer
 replays uncommitted work from `earliest`; a valid single-block COG no longer
 requires overviews; S3 response checksum validation is compatible with OVH;
-uppercase OVH cloud regions are normalized for S3 request signatures; and
-successful mission state can no longer regress during durable cleanup.
+uppercase OVH cloud regions are normalized for S3 request signatures; height
+COG NoData values produce strict JSON while legacy sidecars remain readable;
+and successful mission state can no longer regress during durable cleanup.
 The source dataset was never modified. Long CUDA/COLMAP builds were not added
 to ordinary PR or merge CI.
 

@@ -83,6 +83,11 @@ def raster_metadata(
 ) -> dict[str, Any]:
     overviews = dataset.overviews(1) if dataset.count else []
     max_zoom = _native_max_zoom(dataset)
+    nodata = dataset.nodata
+    if isinstance(nodata, (float, np.floating)) and not math.isfinite(
+        float(nodata)
+    ):
+        nodata = None
     return {
         "schema_version": 1,
         "format": "COG",
@@ -97,7 +102,7 @@ def raster_metadata(
         "height": dataset.height,
         "bands": dataset.count,
         "dtypes": list(dataset.dtypes),
-        "nodata": dataset.nodata,
+        "nodata": nodata,
         "tiled": bool(dataset.profile.get("tiled")),
         "block_shapes": [list(shape) for shape in dataset.block_shapes],
         "overviews": list(overviews),
@@ -231,7 +236,7 @@ def convert_to_cog(
     metadata_file = metadata_path(path)
     metadata_temporary = metadata_file.with_suffix(metadata_file.suffix + ".tmp")
     metadata_temporary.write_text(
-        json.dumps(metadata, indent=2, sort_keys=True),
+        json.dumps(metadata, indent=2, sort_keys=True, allow_nan=False),
         encoding="utf-8",
     )
     os.replace(metadata_temporary, metadata_file)

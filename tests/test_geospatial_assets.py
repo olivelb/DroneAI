@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import numpy as np
@@ -75,6 +76,31 @@ def test_convert_to_cog_accepts_single_tile_raster_without_overviews(tmp_path):
     assert metadata["overviews"] == []
     assert metadata_path(raster).is_file()
     assert preview_path(raster).is_file()
+
+
+def test_float_cog_metadata_is_strict_json_when_nodata_is_nan(tmp_path):
+    raster = tmp_path / "height.tif"
+    data = np.zeros((1, 64, 64), dtype=np.float32)
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        width=64,
+        height=64,
+        count=1,
+        dtype="float32",
+        nodata=np.nan,
+        crs="EPSG:3857",
+        transform=from_bounds(-10, -10, 10, 10, 64, 64),
+    ) as destination:
+        destination.write(data)
+
+    metadata = convert_to_cog(raster)
+    metadata_text = metadata_path(raster).read_text(encoding="utf-8")
+
+    assert metadata["nodata"] is None
+    assert "NaN" not in metadata_text
+    assert json.loads(metadata_text)["nodata"] is None
 
 
 def test_render_cog_tile_reads_a_bounded_web_mercator_tile(tmp_path):
