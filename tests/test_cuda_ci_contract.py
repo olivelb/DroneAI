@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GENERAL_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CONTAINER_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
-GPU_WORKFLOW = ROOT / ".github" / "workflows" / "dronegs-gpu-nightly.yml"
+GPU_WORKFLOW = ROOT / ".github" / "workflows" / "dronegs-gpu-qualification.yml"
 VALIDATION_SCRIPT = ROOT / "scripts" / "ci" / "validate_cuda_containers.sh"
 
 
@@ -32,11 +32,16 @@ def test_portable_cuda_build_only_runs_for_version_changes_or_manual_dispatch() 
     assert "dockerfile: app1-colmap/Dockerfile.local-gaussian" in cuda_workflow
 
 
-def test_gpu_nightly_executes_native_cuda_tests_in_container() -> None:
+def test_gpu_qualification_executes_native_cuda_tests_in_container() -> None:
     workflow = GPU_WORKFLOW.read_text(encoding="utf-8")
     script = VALIDATION_SCRIPT.read_text(encoding="utf-8")
 
     assert "vars.DRONEGS_GPU_CI == 'true'" in workflow
+    assert "schedule:" not in workflow
+    assert "pull_request:" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "scripts/ci/select_gpu_validation.py" in workflow
+    assert "needs.changes.outputs.gpu_required == 'true'" in workflow
     assert "runs-on: [self-hosted, linux, x64, gpu, cuda]" in workflow
     assert "scripts/ci/validate_cuda_containers.sh gpu" in workflow
     assert "docker run --rm --gpus all" in script
@@ -47,7 +52,7 @@ def test_gpu_nightly_executes_native_cuda_tests_in_container() -> None:
     assert "git -C" in script
 
 
-def test_gpu_nightly_publishes_commit_scoped_qualification_evidence() -> None:
+def test_gpu_qualification_publishes_commit_scoped_evidence() -> None:
     workflow = GPU_WORKFLOW.read_text(encoding="utf-8")
 
     assert "set -o pipefail" in workflow

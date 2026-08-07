@@ -151,8 +151,12 @@ The hosted supply-chain gates cover the dashboard API and processing worker in
 `.github/workflows/cuda-containers.yml`. They emit commit-scoped, 30-day Syft
 CycloneDX and Trivy HIGH/CRITICAL evidence and block fixable CRITICAL findings.
 The CUDA workflow prepares every external COLMAP/ONNX dependency from pinned,
-SHA-256-verified sources before building; real-GPU execution remains a distinct
-qualification in `dronegs-gpu-nightly.yml`.
+SHA-256-verified sources before building; real-GPU execution remains a distinct,
+change-gated qualification in `dronegs-gpu-qualification.yml`. It has no schedule:
+the self-hosted GPU job runs on pull requests only for CUDA version, GPU
+architecture, CUDA source/interface, CTest or validation-harness changes, or
+after an explicit manual dispatch. Ordinary pull requests and merges do not
+reserve the GPU runner.
 
 ## CUDA 12.9.2 qualification status
 
@@ -164,8 +168,9 @@ both production runtime images. The complete local record and its scope are in
 
 The confirming run qualifies clean commit `1eeb49e`, so the source revision is
 immutable and locally reproducible. A release candidate should still retain a
-successful, commit-scoped artifact from `dronegs-gpu-nightly.yml` after that
-commit is pushed.
+successful, commit-scoped artifact from `dronegs-gpu-qualification.yml` after that
+commit is pushed, using an explicit manual dispatch when the release commit has
+no qualifying GPU/CUDA or CTest diff.
 
 ## SAVERES RTK release evidence
 

@@ -1,20 +1,42 @@
-name: DroneGS GPU nightly
+name: DroneGS GPU qualification
 
 on:
-  schedule:
-    - cron: "17 2 * * *"
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dronegs-gpu-nightly
+  group: dronegs-gpu-qualification-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Select GPU qualification requirement
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      gpu_required: ${{ steps.selection.outputs.gpu_required }}
+      reason: ${{ steps.selection.outputs.reason }}
+    steps:
+      - name: Checkout event history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; runner >= 2.327.1
+        with:
+          fetch-depth: 0
+      - name: Detect explicit dispatch or GPU-relevant change
+        id: selection
+        run: python3 scripts/ci/select_gpu_validation.py
+      - name: Report selection
+        run: echo "GPU qualification=${{ steps.selection.outputs.gpu_required }} reason=${{ steps.selection.outputs.reason }}"
+
   cuda-tests:
-    if: vars.DRONEGS_GPU_CI == 'true'
+    needs: changes
+    if: >-
+      needs.changes.outputs.gpu_required == 'true' &&
+      vars.DRONEGS_GPU_CI == 'true' &&
+      (github.event_name != 'pull_request' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, linux, x64, gpu, cuda]
     timeout-minutes: 60
     steps:

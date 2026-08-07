@@ -82,5 +82,8 @@ the specific audit reservation that only CUDA 12.8.1 had documented
 physical-GPU execution.
 
 For a centrally retained release artifact, push the qualified commit and run
-the manual or scheduled `dronegs-gpu-nightly.yml` workflow with
-`DRONEGS_GPU_CI=true`. Preserve its commit-scoped `gpu-validation.log` artifact.
+the change-gated or manual `dronegs-gpu-qualification.yml` workflow with
+`DRONEGS_GPU_CI=true`. It has no nightly schedule: qualifying pull-request
+changes are limited to CUDA versions, GPU architectures, CUDA sources and
+interfaces, CTest sources/definitions and the GPU validation harness. Preserve
+its commit-scoped `gpu-validation.log` artifact.
