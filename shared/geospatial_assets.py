@@ -216,7 +216,13 @@ def convert_to_cog(
         )
         with rasterio.open(temporary) as dataset:
             metadata = raster_metadata(dataset)
-            if not dataset.profile.get("tiled") or not dataset.overviews(1):
+            block_height, block_width = dataset.block_shapes[0]
+            overview_required = (
+                dataset.width > block_width or dataset.height > block_height
+            )
+            if not dataset.profile.get("tiled") or (
+                overview_required and not dataset.overviews(1)
+            ):
                 raise RuntimeError(f"COG validation failed for {path}: missing tiles/overviews")
     except Exception:
         temporary.unlink(missing_ok=True)

@@ -1,9 +1,11 @@
+ARG CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real;90-real;100-real;120"
+
 # ============================================================
 # Stage 1: Build COLMAP + Ceres from source (devel image)
 # ============================================================
 FROM nvidia/cuda:12.9.2-devel-ubuntu24.04 AS builder
 
-ARG CUDA_ARCHITECTURES="75-real;80-real;86-real;89-real;90-real;100-real;120"
+ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -112,6 +114,7 @@ RUN pip3 install --no-cache-dir --break-system-packages \
 # ============================================================
 FROM nvidia/cuda:12.9.2-devel-ubuntu24.04 AS dronegs-builder
 
+ARG CUDA_ARCHITECTURES
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /build/dronegs
 
@@ -126,7 +129,7 @@ RUN rm -rf build \
     && cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DDRONEGS_BUILD_TESTS=OFF \
-        -DDRONEGS_CUDA_ARCHITECTURES=portable \
+        -DDRONEGS_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
     && cmake --build build --target dronegs \
     && test -x build/dronegs
 

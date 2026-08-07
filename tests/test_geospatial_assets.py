@@ -50,6 +50,33 @@ def test_convert_to_cog_creates_tiles_overviews_metadata_and_preview(tmp_path):
         assert max(image.size) <= 512
 
 
+def test_convert_to_cog_accepts_single_tile_raster_without_overviews(tmp_path):
+    raster = tmp_path / "small-orthomosaic.tif"
+    data = np.zeros((3, 352, 500), dtype=np.uint8)
+    with rasterio.open(
+        raster,
+        "w",
+        driver="GTiff",
+        width=500,
+        height=352,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:3857",
+        transform=from_bounds(-100, -100, 100, 100, 500, 352),
+    ) as destination:
+        destination.write(data)
+
+    metadata = convert_to_cog(raster, block_size=512)
+
+    with rasterio.open(raster) as source:
+        assert source.profile["tiled"]
+        assert source.block_shapes == [(512, 512)] * 3
+        assert source.overviews(1) == []
+    assert metadata["overviews"] == []
+    assert metadata_path(raster).is_file()
+    assert preview_path(raster).is_file()
+
+
 def test_render_cog_tile_reads_a_bounded_web_mercator_tile(tmp_path):
     raster = tmp_path / "orthomosaic.tif"
     _write_test_raster(raster)

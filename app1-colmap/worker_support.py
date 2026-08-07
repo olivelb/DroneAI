@@ -224,7 +224,7 @@ def create_consumer(kafka_broker, topic_in):
         reliable_consumer_config(
             kafka_broker,
             "colmap-workers-v4",
-            offset_reset="latest",
+            offset_reset="earliest",
             **{"max.poll.interval.ms": 86400000},
         )
     )

@@ -87,6 +87,7 @@ def _get_client() -> S3Client:
                 config=BotoConfig(
                     signature_version="s3v4",
                     retries={"max_attempts": 3, "mode": "standard"},
+                    response_checksum_validation="when_required",
                 ),
             ),
         )
@@ -120,6 +121,7 @@ def _get_public_client() -> S3Client:
                 config=BotoConfig(
                     signature_version="s3v4",
                     retries={"max_attempts": 3, "mode": "standard"},
+                    response_checksum_validation="when_required",
                 ),
             ),
         )

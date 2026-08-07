@@ -52,7 +52,7 @@ def reliable_consumer_config(
 
 
 def commit_message(consumer: Any, message: Any) -> None:
-    consumer.commit(message=message, synchronous=True)
+    consumer.commit(message=message, asynchronous=False)
 
 
 def publish_json(
