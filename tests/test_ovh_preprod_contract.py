@@ -28,6 +28,29 @@ def test_terraform_defaults_are_cost_bounded_and_non_destructive() -> None:
     assert 'status = "enabled"' in main
 
 
+def test_terraform_remote_state_bootstrap_is_encrypted_locked_and_least_privilege() -> None:
+    state = _read(TERRAFORM / "state-bootstrap.tf")
+    outputs = _read(TERRAFORM / "outputs.tf")
+    backend = _read(TERRAFORM / "backend-preprod.s3.tfbackend.example")
+    lock_test = _read(ROOT / "scripts" / "deploy" / "test-terraform-backend-lock.sh")
+
+    assert 'resource "ovh_cloud_project_storage" "terraform_state"' in state
+    assert 'sse_algorithm = "AES256"' in state
+    assert 'status = "enabled"' in state
+    assert "prevent_destroy = true" in state
+    assert 'resource "ovh_cloud_project_user_s3_policy" "terraform_state"' in state
+    assert 'Sid      = "ReadWriteStateWithoutDelete"' in state
+    assert 'Sid      = "ManageStateLock"' in state
+    assert state.count('"s3:DeleteObject"') == 1
+    assert 'key          = "preprod/terraform.tfstate"' in backend
+    assert 'region       = "gra"' in backend
+    assert "use_lockfile = true" in backend
+    assert "encrypt      = true" in backend
+    assert outputs.count("sensitive   = true") >= 3
+    assert "-lock-timeout=0s" in lock_test
+    assert "Error acquiring the state lock" in lock_test
+
+
 def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> None:
     values = _read(CHART / "values-ovh-preprod.example.yaml")
 

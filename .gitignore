@@ -37,9 +37,11 @@ venv/
 *.tfstate.*
 *.tfvars
 *.tfplan
+*.tfbackend
 crash.log
 crash.*.log
 !*.tfvars.example
+!*.tfbackend.example
 
 # Kubernetes credentials and locally rendered Secret manifests.
 kubeconfig*

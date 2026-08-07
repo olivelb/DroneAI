@@ -18,6 +18,7 @@ CI.
 | Kafka | One persistent in-cluster broker, 20 GiB | Realistic enough for integration, not highly available and not production-grade. |
 | Database | Managed PostgreSQL with PostGIS | Created deliberately in Manager after the gateway egress IP is known. |
 | Objects | Encrypted, versioned OVH S3 bucket | Terraform prevents accidental deletion. |
+| Terraform state | Separate encrypted, versioned OVH S3 bucket | Dedicated S3 user, least-privilege object policy and native `.tflock` locking. |
 | Images | OVH Harbor/MPR, Git SHA tags | `latest` is forbidden for preproduction service images. |
 | DNS | `droneai-preprod.olembo.fr` and `api-droneai-preprod.olembo.fr` | Do not alter apex, `www`, MX, SPF or DKIM records. |
 
@@ -43,32 +44,132 @@ For a first deployment, restrict the token to `GET`, `POST`, `PUT` and `DELETE`
 under `/cloud/project/fe7dc1254a9847849e0d29b01fe39b22/*`. Tighten it later
 once the exact resource operations have been observed.
 
-Terraform state includes a Kubernetes client private key. Store the working
-copy on an encrypted disk with user-only permissions and back it up securely.
+Terraform state includes a Kubernetes client private key and, during backend
+bootstrap, the dedicated S3 secret. Store the local bootstrap copy on an
+encrypted disk with user-only permissions. Never commit a state, plan,
+`.tfbackend` file or backend credential file.
 
-## 2. Validate and review the Terraform plan
+## 2. Bootstrap and secure Terraform state
 
-From the repository root:
+Remote state was established on 7 August 2026 in two deliberately separate
+operations. The first operation created the backend resources while the
+existing state remained local:
+
+- bucket `droneai-preprod-tfstate-fe7dc125`, AES-256 server-side encrypted,
+  versioned and protected by `prevent_destroy`;
+- a dedicated OVHcloud S3 user and credentials;
+- an S3 user policy limited to this bucket, with `GetObject`/`PutObject` on
+  `preprod/terraform.tfstate` and `GetObject`/`PutObject`/`DeleteObject` only on
+  `preprod/terraform.tfstate.tflock`.
+
+The state object itself has no `DeleteObject` permission. Bucket versioning is
+the recovery mechanism for an accidental overwrite. Object Lock is not enabled
+because Terraform must be able to delete its short-lived lock object.
+
+The one-time bootstrap was validated with the backend disabled:
 
 ```bash
 cd infra/ovh/preprod
-cp terraform.tfvars.example terraform.tfvars
-terraform init
+test -f terraform.tfvars || cp terraform.tfvars.example terraform.tfvars
+terraform init -backend=false
 terraform fmt -check
 terraform validate
-terraform plan -out=preprod.tfplan
-terraform show preprod.tfplan
+terraform plan -out=state-bootstrap.tfplan
+terraform show state-bootstrap.tfplan
+sha256sum state-bootstrap.tfplan
 ```
 
-This plan must show no GPU pool. Confirm every price-bearing resource in the
-OVHcloud calculator/Manager before continuing: one `b3-8`, gateway `s`, MPR
-SMALL, one Object Storage bucket and the load balancer later created by the
-ingress controller.
+The reviewed bootstrap plan showed exactly four additions and no change or
+deletion: state bucket, S3 user, credential and user policy. Its SHA-256 was
+`2bffda59836bacf2a5a4d6f8e77cb0240d80c707a308f5c5f622fd5368a25b7d`.
+The bucket has no fixed monthly resource fee; only stored bytes and S3
+operations are billed. The user, credential and policy are not compute
+resources.
 
 Only after review and explicit approval:
 
 ```bash
-terraform apply preprod.tfplan
+terraform apply state-bootstrap.tfplan
+cd ../../..
+TERRAFORM_BIN=/home/olivier/.cache/codex/terraform-1.14.6/terraform \
+  scripts/deploy/export-terraform-backend-env.sh
+chmod 0600 ~/.config/droneai/terraform-backend.env
+cp infra/ovh/preprod/backend-preprod.s3.tfbackend.example \
+  infra/ovh/preprod/backend-preprod.s3.tfbackend
+```
+
+The export helper does not print either key. The ignored environment file is
+the only place from which `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` should
+be loaded. The otherwise empty S3 backend block is tracked in `backend.tf`; it
+was added only after the one-time bootstrap apply:
+
+```hcl
+terraform {
+  backend "s3" {}
+}
+```
+
+Then migrate and verify the state:
+
+```bash
+cd infra/ovh/preprod
+set -a
+source ~/.config/droneai/terraform-backend.env
+set +a
+terraform init -migrate-state -backend-config=backend-preprod.s3.tfbackend
+terraform state pull | sha256sum
+terraform plan -detailed-exitcode
+cd ../../..
+TERRAFORM_BIN=/home/olivier/.cache/codex/terraform-1.14.6/terraform \
+  scripts/deploy/test-terraform-backend-lock.sh
+```
+
+The migration, remote `state pull`, empty plan (exit code `0`) and concurrent
+lock rejection all passed on 7 August 2026. The lock test starts two read-only
+plans and succeeds only when S3 rejects the contender with `Error acquiring the
+state lock`.
+
+Terraform left a sensitive `0644` migration backup in the working tree. It was
+copied and verified before removal. Two recovery copies are retained outside
+the repository as `~/.config/droneai/terraform-preprod-bootstrap.tfstate.backup`
+and `~/.config/droneai/terraform-preprod-migration.tfstate.backup`, both mode
+`0600`. Keep them until remote-state recovery has been rehearsed; never remove
+a local state merely because `terraform init` returned successfully.
+
+HashiCorp supports S3 lock files from Terraform 1.10 onward. The backend example
+sets `use_lockfile = true`, uses the OVHcloud regional S3 endpoint, and obtains
+all credentials from environment variables rather than backend arguments. OVH
+uses `GRA` in its Public Cloud API but requires lowercase `gra` in the S3
+signature region.
+
+For normal use from a fresh checkout after the completed migration:
+
+```bash
+set -a
+source ~/.config/droneai/ovh.env
+source ~/.config/droneai/terraform-backend.env
+set +a
+export GODEBUG=http2client=0
+terraform -chdir=infra/ovh/preprod init \
+  -backend-config=backend-preprod.s3.tfbackend.example
+terraform -chdir=infra/ovh/preprod plan -detailed-exitcode
+```
+
+`GODEBUG=http2client=0` is a local WSL transport workaround: on the tested
+machine, the OVH provider intermittently returned TLS `EOF`/`record overflow`
+with HTTP/2 while the same API endpoint remained reachable with `curl`.
+
+## 3. Review the platform and export kubeconfig
+
+For a new environment, the initial platform plan must show no GPU pool. Confirm
+every price-bearing resource in the OVHcloud calculator/Manager before applying:
+one `b3-8`, gateway `s`, MPR SMALL, application Object Storage bucket and the
+load balancer later created by the ingress controller.
+
+After an explicitly approved platform apply:
+
+```bash
+cd infra/ovh/preprod
 umask 077
 terraform output -raw kubeconfig > kubeconfig-preprod.yaml
 export KUBECONFIG="$PWD/kubeconfig-preprod.yaml"
@@ -77,7 +178,7 @@ kubectl get nodes
 
 The repository and CI never execute these commands automatically.
 
-## 3. Finish the managed services
+## 4. Finish the managed services
 
 ### Harbor registry
 
@@ -122,7 +223,7 @@ Keep the final percent-encoded application URI in the password manager. The
 Alembic migration Job will create/upgrade DroneAI tables during the Helm
 installation.
 
-## 4. Install cluster add-ons
+## 5. Install cluster add-ons
 
 Install pinned releases, then wait for readiness:
 
@@ -163,7 +264,7 @@ dig +short droneai-preprod.olembo.fr A
 dig +short api-droneai-preprod.olembo.fr A
 ```
 
-## 5. Publish immutable images
+## 6. Publish immutable images
 
 Use the exact commit that will be deployed. This is the only step that can
 perform the long CUDA/COLMAP base build, and only when the local base is absent
@@ -177,7 +278,7 @@ scripts/deploy/publish-preprod-images.sh "$REGISTRY_PROJECT" "$GIT_SHA"
 
 CI does not build COLMAP/CUDA for Terraform, documentation or Helm-only changes.
 
-## 6. Create Kubernetes Secrets
+## 7. Create Kubernetes Secrets
 
 Create them directly from your password manager or an external-secrets system.
 For the first test, the required keys and names are:
@@ -201,7 +302,7 @@ kubectl -n drone-ai-preprod create secret generic hf-token \
   --from-literal=HF_TOKEN='<HUGGINGFACE_TOKEN>'
 ```
 
-## 7. Deploy the CPU control plane first
+## 8. Deploy the CPU control plane first
 
 Copy the tracked overlay to the ignored local file and replace the three
 placeholders: registry URL, S3 endpoint and Git SHA. Do not add credentials.
@@ -228,7 +329,7 @@ curl --fail https://api-droneai-preprod.olembo.fr/
 
 At this stage Kafka, processing, API and frontend run; GPU workers are absent.
 
-## 8. Enable and qualify the GPU pool
+## 9. Enable and qualify the GPU pool
 
 First select an available GRA11 GPU flavor in Manager. Add its vCPU and RAM to
 the CPU pool maximum and request only the missing quota. Then edit the untracked
@@ -272,7 +373,7 @@ test and one small end-to-end mission. Do not rerun the long COLMAP/CUDA build
 suite unless the cloud GPU architecture, CUDA/COLMAP versions or CTests differ
 from the already qualified build.
 
-## 9. Acceptance and rollback
+## 10. Acceptance and rollback
 
 Acceptance requires healthy TLS, successful authentication, a completed
 Alembic migration, S3 upload/readback, Kafka persistence after broker restart,
@@ -298,4 +399,6 @@ terraform show destroy.tfplan
 # terraform apply destroy.tfplan  # only after explicit approval
 ```
 
-Deleting the retained bucket is a separate, deliberate OVHcloud operation.
+The Terraform state bucket is never part of ordinary teardown. Deleting either
+retained bucket is a separate, deliberate OVHcloud operation after its contents
+and recovery requirements have been reviewed.

@@ -12,11 +12,15 @@ It creates:
 - an optional GPU pool that starts at zero and is disabled by default;
 - a SMALL Managed Private Registry in `GRA`;
 - an encrypted, versioned Object Storage bucket protected by
-  `prevent_destroy`.
+  `prevent_destroy`;
+- a second encrypted, versioned bucket dedicated to Terraform state, with a
+  separate S3 account restricted to the state and lock objects.
 
 Authentication is read only from `OVH_*` environment variables. Terraform
-state contains the MKS client key and must be treated as a secret. The complete,
-ordered runbook is in [`../../../docs/OVHCLOUD_PREPROD.md`](../../../docs/OVHCLOUD_PREPROD.md).
+state contains the MKS client key and S3 credentials and must be treated as a
+secret. The complete, ordered runbook, including the two-phase remote-state
+migration, is in
+[`../../../docs/OVHCLOUD_PREPROD.md`](../../../docs/OVHCLOUD_PREPROD.md).
 
 Static validation, which creates no OVHcloud resource:
 
@@ -27,6 +31,12 @@ terraform fmt -check
 terraform validate
 ```
 
+For an authenticated plan against the deployed environment, source the local
+OVH and backend credential files and initialize with
+`backend-preprod.s3.tfbackend.example`. The backend credentials are never
+passed through command-line arguments.
+
 Do not run `terraform apply` until the plan, GPU flavor, quota and expected
-hourly cost have been reviewed. The data bucket cannot be destroyed by a normal
-Terraform destroy operation.
+hourly cost have been reviewed. The data and state buckets cannot be destroyed
+by a normal Terraform destroy operation. Remote S3 state and native lock-file
+contention were verified on 7 August 2026.

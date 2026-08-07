@@ -41,6 +41,28 @@ output "object_storage_bucket" {
   value = ovh_cloud_project_storage.assets.name
 }
 
+output "terraform_state_bucket" {
+  description = "Dedicated encrypted and versioned S3 backend bucket."
+  value       = ovh_cloud_project_storage.terraform_state.name
+}
+
+output "terraform_state_endpoint" {
+  description = "Regional S3 endpoint used by the Terraform backend."
+  value       = "https://s3.${lower(var.object_storage_region)}.io.cloud.ovh.net"
+}
+
+output "terraform_backend_access_key_id" {
+  description = "Dedicated S3 backend access key; export it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.terraform_state.access_key_id
+  sensitive   = true
+}
+
+output "terraform_backend_secret_access_key" {
+  description = "Dedicated S3 backend secret; export it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.terraform_state.secret_access_key
+  sensitive   = true
+}
+
 # Sensitive because the provider stores client certificates and a private key
 # inside the kubeconfig. Write it only to a chmod 0600 file.
 output "kubeconfig" {

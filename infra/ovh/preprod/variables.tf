@@ -105,3 +105,14 @@ variable "object_storage_bucket" {
     error_message = "Use a 3-63 character, lower-case S3-compatible bucket name."
   }
 }
+
+variable "terraform_state_bucket" {
+  description = "Globally unique encrypted and versioned S3 bucket used only by the Terraform backend."
+  type        = string
+  default     = "droneai-preprod-tfstate-fe7dc125"
+
+  validation {
+    condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.terraform_state_bucket))
+    error_message = "Use a 3-63 character, lower-case S3-compatible bucket name."
+  }
+}
