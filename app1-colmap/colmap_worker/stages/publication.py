@@ -572,6 +572,7 @@ def complete_colmap_pipeline(
                 vol_id,
                 "CLEANUP",
                 100,
+                status="success",
                 log=("Durable DroneGS recovery state retired after PLY/manifest/canary promotion."),
             )
         except Exception as retirement_error:
@@ -579,5 +580,6 @@ def complete_colmap_pipeline(
                 vol_id,
                 "CLEANUP",
                 100,
+                status="success",
                 log=(f"Completed artifacts are promoted; recovery state was retained: {retirement_error}"),
             )

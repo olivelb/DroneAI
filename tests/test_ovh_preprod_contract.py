@@ -64,6 +64,17 @@ def test_managed_service_bootstrap_accounts_are_scoped_and_sensitive() -> None:
     assert 'output "registry_bootstrap_password"' in outputs
     assert 'output "object_storage_access_key_id"' in outputs
     assert 'output "object_storage_secret_access_key"' in outputs
+    assert 'resource "ovh_cloud_project_user" "backups"' in services
+    assert 'resource "ovh_cloud_project_user_s3_credential" "backups"' in services
+    assert 'resource "ovh_cloud_project_user_s3_policy" "backups"' in services
+    assert 'arn:aws:s3:::${ovh_cloud_project_storage.backups.name}/postgres/*' in services
+    backup_policy = services.split(
+        'resource "ovh_cloud_project_user_s3_policy" "backups"', 1
+    )[1]
+    assert '"s3:GetObject", "s3:PutObject"' in backup_policy
+    assert "s3:DeleteObject" not in backup_policy
+    assert 'output "backup_storage_access_key_id"' in outputs
+    assert 'output "backup_storage_secret_access_key"' in outputs
     assert outputs.count("sensitive   = true") >= 6
     assert 'output "object_storage_endpoint"' in outputs
     assert 'https://s3.${lower(var.object_storage_region)}.io.cloud.ovh.net' in outputs
@@ -86,6 +97,10 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     assert "existingSecret: drone-ai-postgres" in values
     assert "passwordSecretKey: password" in values
     assert "password: \"\"" in values
+    assert "backup:\n    enabled: true" in values
+    assert "existingSecret: drone-ai-backup-preprod" in values
+    assert "s3Bucket: droneai-preprod-backups-fe7dc125" in values
+    assert "amazon/aws-cli:2.31.25@sha256:" in _read(CHART / "values.yaml")
     assert values.count("@sha256:") >= 2
     assert "processingWorker:\n  tag: \"REPLACE_GIT_SHA\"\n  resources:" in values
     assert "limits:\n      memory: 4Gi\n    requests:\n      memory: 2Gi" in values
@@ -106,6 +121,27 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     assert "if .Values.postgres.existingSecret" in postgres
     assert "secretKeyRef:" in postgres
     assert ".Values.postgres.passwordSecretKey" in postgres
+
+    backup = _read(CHART / "templates" / "postgres-backup.yaml")
+    restore_test = _read(CHART / "templates" / "tests" / "postgres-backup-test.yaml")
+    assert "kind: CronJob" in backup
+    assert "concurrencyPolicy: Forbid" in backup
+    assert "automountServiceAccountToken: false" in backup
+    assert "pg_dump --dbname=\"${DATABASE_URL}\" --format=custom" in backup
+    assert "--sse AES256" in backup
+    assert "s3api get-object" in backup
+    assert 'AWS_RESPONSE_CHECKSUM_VALIDATION' in backup
+    assert 'remote_checksum="$(sha256sum /backup/remote.dump' in backup
+    assert '"helm.sh/hook": test' in restore_test
+    assert '"helm.sh/hook-delete-policy": before-hook-creation' in restore_test
+    assert "kind: Pod" in restore_test
+    assert "initContainers:" in restore_test
+    assert "s3api get-object" in restore_test
+    assert "pg_restore --list" in restore_test
+    assert '"${pg_bin}/initdb"' in restore_test
+    assert '"${pg_bin}/pg_restore" --host=/tmp --dbname=restore_test' in restore_test
+    assert "table_count" in restore_test
+    assert "runAsUser: 999" in restore_test
 
 
 def test_gpu_workers_are_opt_in_and_external_kafka_is_supported() -> None:
@@ -196,11 +232,18 @@ def test_cpu_deployment_bootstraps_external_secrets_and_is_atomic() -> None:
     assert "drone-ai-postgres" in secrets
     assert "drone-ai-storage-preprod" in secrets
     assert "drone-ai-api-auth" in secrets
+    assert "drone-ai-backup-preprod" in secrets
+    assert "backup_storage_access_key_id" in secrets
+    assert "backup_storage_secret_access_key" in secrets
     assert "unset api_key" in secrets
     assert "set -x" not in secrets
     assert "bootstrap-ovh-preprod-secrets.sh" in deploy
     assert "--atomic --wait --wait-for-jobs --timeout 15m" in deploy
     assert "--dry-run=server --hide-secret" in deploy
-    assert "processingWorker.tag=${git_sha}" in deploy
+    assert "Reusing deployed CPU image tag" in deploy
+    assert "IMAGE_TAG must be a 7-40 character" in deploy
+    assert "processingWorker.tag=${image_tag}" in deploy
+    assert "postgres.backup.s3Endpoint=${s3_endpoint}" in deploy
+    assert "postgres.backup.s3Bucket=${backup_bucket}" in deploy
     assert "colmapWorker.tag" not in deploy
     assert "iaWorker.tag" not in deploy

@@ -30,8 +30,8 @@ class FakeConsumer:
     def __init__(self):
         self.commits = []
 
-    def commit(self, *, message, synchronous):
-        self.commits.append((message, synchronous))
+    def commit(self, *, message, asynchronous):
+        self.commits.append((message, asynchronous))
 
 
 class FakeProducer:
@@ -99,6 +99,7 @@ def test_process_message_retries_then_commits_after_success():
     assert calls == [(7, 0), (7, 1), (7, 2)]
     assert sleeps == [0.25, 0.5]
     assert len(consumer.commits) == 1
+    assert consumer.commits[0][1] is False
     assert producer.messages == []
 
 
@@ -120,6 +121,7 @@ def test_process_message_dead_letters_poison_event_then_commits():
 
     assert result is False
     assert len(consumer.commits) == 1
+    assert consumer.commits[0][1] is False
     topic, key, dead_letter = producer.messages[0]
     assert topic == "pipeline-dead-letter"
     assert key == dead_letter["correlation_id"]

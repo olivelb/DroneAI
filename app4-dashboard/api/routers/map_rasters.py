@@ -44,7 +44,12 @@ def raster_layer_metadata(vol_id: str, layer: str):
                 detail="Invalid COG metadata sidecar",
             )
         try:
-            payload = json.loads(stream.read())
+            # Older height-map sidecars may contain the non-standard JSON
+            # token NaN for their IEEE floating-point NoData value.
+            payload = json.loads(
+                stream.read(),
+                parse_constant=lambda _constant: None,
+            )
         finally:
             stream.close()
         payload["s3_key"] = key

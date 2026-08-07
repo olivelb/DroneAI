@@ -9,12 +9,16 @@ It creates:
 - a `GRA11` private network, subnet and small managed gateway;
 - a free-plan OVHcloud Managed Kubernetes Service cluster;
 - one autoscaled `b3-8` CPU pool, limited to two nodes;
-- an optional GPU pool that starts at zero and is disabled by default;
+- an optional autoscaled GPU pool that starts at zero and is disabled by
+  default (`l4-90`, maximum one, in the applied preproduction configuration);
 - a SMALL Managed Private Registry in `GRA`;
 - a bootstrap Harbor account used to create the private `droneai` project;
 - an encrypted, versioned Object Storage bucket protected by
   `prevent_destroy`;
 - a dedicated application S3 account restricted to that assets bucket;
+- a separate encrypted PostgreSQL backup bucket protected by `prevent_destroy`,
+  with a dedicated account limited to `GetObject`/`PutObject` under
+  `postgres/*` and no object deletion permission;
 - a second encrypted, versioned bucket dedicated to Terraform state, with a
   separate S3 account restricted to the state and lock objects.
 
@@ -42,3 +46,10 @@ Do not run `terraform apply` until the plan, GPU flavor, quota and expected
 hourly cost have been reviewed. The data and state buckets cannot be destroyed
 by a normal Terraform destroy operation. Remote S3 state and native lock-file
 contention were verified on 7 August 2026.
+
+The applied preproduction environment additionally has the zero-node `l4-90`
+pool and the backup bucket enabled. The GPU pool cannot create its first node
+until GRA11 RAM quota is raised from 44 GB to at least 98 GB. A zero-node pool
+has no GPU compute charge. PostgreSQL backup storage is bounded by seven daily
+object keys; the Kubernetes CronJob and real disposable restore test are
+defined in the DroneAI Helm chart.

@@ -83,10 +83,13 @@ def _get_client() -> S3Client:
                 endpoint_url=S3_ENDPOINT,
                 aws_access_key_id=S3_ACCESS_KEY,
                 aws_secret_access_key=S3_SECRET_KEY,
-                region_name=S3_REGION,
+                # OVH exposes uppercase region codes through its cloud API,
+                # while its S3 signature scope requires a lowercase region.
+                region_name=S3_REGION.lower(),
                 config=BotoConfig(
                     signature_version="s3v4",
                     retries={"max_attempts": 3, "mode": "standard"},
+                    response_checksum_validation="when_required",
                 ),
             ),
         )
@@ -116,10 +119,11 @@ def _get_public_client() -> S3Client:
                 endpoint_url=S3_PUBLIC_ENDPOINT,
                 aws_access_key_id=S3_ACCESS_KEY,
                 aws_secret_access_key=S3_SECRET_KEY,
-                region_name=S3_REGION,
+                region_name=S3_REGION.lower(),
                 config=BotoConfig(
                     signature_version="s3v4",
                     retries={"max_attempts": 3, "mode": "standard"},
+                    response_checksum_validation="when_required",
                 ),
             ),
         )

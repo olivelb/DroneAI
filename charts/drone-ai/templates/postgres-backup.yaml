@@ -1,0 +1,161 @@
+{{- if and .Values.postgres.enabled .Values.postgres.backup.enabled }}
+{{- $slots := int .Values.postgres.backup.slots }}
+{{- if or (lt $slots 1) (gt $slots 7) }}
+{{- fail "postgres.backup.slots must be between 1 and 7" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: postgres-backup
+spec:
+  schedule: {{ .Values.postgres.backup.schedule | quote }}
+  timeZone: {{ .Values.postgres.backup.timeZone | quote }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: postgres-backup
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          {{- with .Values.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: pg-dump
+              image: {{ .Values.postgres.image }}
+              imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  umask 077
+                  day="$(date -u +%u)"
+                  slot="$(( (day - 1) % BACKUP_SLOTS + 1 ))"
+                  timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                  key="${BACKUP_PREFIX}/daily-${slot}.dump"
+                  pg_dump --dbname="${DATABASE_URL}" --format=custom --compress=6 \
+                    --no-owner --no-acl --file=/backup/database.dump
+                  sha256sum /backup/database.dump | cut -d' ' -f1 > /backup/checksum
+                  printf '%s' "${key}" > /backup/key
+                  printf '%s' "${timestamp}" > /backup/timestamp
+                  touch /backup/ready
+              env:
+                - name: DATABASE_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ include "drone-ai.storageSecretName" . }}
+                      key: {{ .Values.storage.databaseUrlSecretKey }}
+                - name: BACKUP_PREFIX
+                  value: {{ .Values.postgres.backup.prefix | quote }}
+                - name: BACKUP_SLOTS
+                  value: {{ .Values.postgres.backup.slots | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 512Mi
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+            - name: s3-upload
+              image: {{ .Values.postgres.backup.awsCliImage }}
+              imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  until [ -f /backup/ready ]; do sleep 1; done
+                  key="$(cat /backup/key)"
+                  checksum="$(cat /backup/checksum)"
+                  timestamp="$(cat /backup/timestamp)"
+                  size="$(wc -c < /backup/database.dump | tr -d ' ')"
+                  aws --endpoint-url "${S3_ENDPOINT}" s3 cp /backup/database.dump \
+                    "s3://${S3_BUCKET}/${key}" --only-show-errors --sse AES256 \
+                    --metadata "sha256=${checksum},created-at=${timestamp}"
+                  aws --endpoint-url "${S3_ENDPOINT}" s3api get-object \
+                    --bucket "${S3_BUCKET}" --key "${key}" \
+                    /backup/remote.dump >/dev/null
+                  remote_size="$(wc -c < /backup/remote.dump | tr -d ' ')"
+                  remote_checksum="$(sha256sum /backup/remote.dump | cut -d' ' -f1)"
+                  test "${remote_size}" = "${size}"
+                  test "${remote_checksum}" = "${checksum}"
+                  printf 'PostgreSQL backup uploaded and verified: s3://%s/%s (%s bytes)\n' \
+                    "${S3_BUCKET}" "${key}" "${size}"
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: AWS_PAGER
+                  value: ""
+                - name: AWS_EC2_METADATA_DISABLED
+                  value: "true"
+                - name: AWS_REQUEST_CHECKSUM_CALCULATION
+                  value: when_required
+                - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+                  value: when_required
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.postgres.backup.existingSecret | quote }}
+                      key: {{ .Values.postgres.backup.accessKeySecretKey | quote }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.postgres.backup.existingSecret | quote }}
+                      key: {{ .Values.postgres.backup.secretKeySecretKey | quote }}
+                - name: AWS_DEFAULT_REGION
+                  value: {{ .Values.postgres.backup.s3Region | quote }}
+                - name: S3_ENDPOINT
+                  value: {{ .Values.postgres.backup.s3Endpoint | quote }}
+                - name: S3_BUCKET
+                  value: {{ .Values.postgres.backup.s3Bucket | quote }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              emptyDir:
+                sizeLimit: 5Gi
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi
+{{- end }}

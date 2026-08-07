@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.ci.select_cuda_builds import version_change_reason
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_cuda_base_tag_change_requests_expensive_builds() -> None:
@@ -37,3 +42,11 @@ def test_reordered_stages_with_the_same_cuda_version_do_not_request_builds() -> 
         )
         is None
     )
+
+
+def test_explicit_cuda_architectures_reach_all_native_builds() -> None:
+    dockerfile = (ROOT / "app1-colmap" / "Dockerfile.base").read_text(encoding="utf-8")
+
+    assert dockerfile.count('ARG CUDA_ARCHITECTURES') == 3
+    assert dockerfile.count('-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"') == 2
+    assert '-DDRONEGS_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}"' in dockerfile

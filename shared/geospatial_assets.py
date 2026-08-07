@@ -83,6 +83,11 @@ def raster_metadata(
 ) -> dict[str, Any]:
     overviews = dataset.overviews(1) if dataset.count else []
     max_zoom = _native_max_zoom(dataset)
+    nodata = dataset.nodata
+    if isinstance(nodata, (float, np.floating)) and not math.isfinite(
+        float(nodata)
+    ):
+        nodata = None
     return {
         "schema_version": 1,
         "format": "COG",
@@ -97,7 +102,7 @@ def raster_metadata(
         "height": dataset.height,
         "bands": dataset.count,
         "dtypes": list(dataset.dtypes),
-        "nodata": dataset.nodata,
+        "nodata": nodata,
         "tiled": bool(dataset.profile.get("tiled")),
         "block_shapes": [list(shape) for shape in dataset.block_shapes],
         "overviews": list(overviews),
@@ -216,7 +221,13 @@ def convert_to_cog(
         )
         with rasterio.open(temporary) as dataset:
             metadata = raster_metadata(dataset)
-            if not dataset.profile.get("tiled") or not dataset.overviews(1):
+            block_height, block_width = dataset.block_shapes[0]
+            overview_required = (
+                dataset.width > block_width or dataset.height > block_height
+            )
+            if not dataset.profile.get("tiled") or (
+                overview_required and not dataset.overviews(1)
+            ):
                 raise RuntimeError(f"COG validation failed for {path}: missing tiles/overviews")
     except Exception:
         temporary.unlink(missing_ok=True)
@@ -225,7 +236,7 @@ def convert_to_cog(
     metadata_file = metadata_path(path)
     metadata_temporary = metadata_file.with_suffix(metadata_file.suffix + ".tmp")
     metadata_temporary.write_text(
-        json.dumps(metadata, indent=2, sort_keys=True),
+        json.dumps(metadata, indent=2, sort_keys=True, allow_nan=False),
         encoding="utf-8",
     )
     os.replace(metadata_temporary, metadata_file)

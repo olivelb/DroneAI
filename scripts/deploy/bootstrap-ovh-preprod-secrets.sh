@@ -16,6 +16,8 @@ test -r "${kubeconfig}"
 
 s3_access_key="$("${terraform_bin}" -chdir="${terraform_dir}" output -raw object_storage_access_key_id)"
 s3_secret_key="$("${terraform_bin}" -chdir="${terraform_dir}" output -raw object_storage_secret_access_key)"
+backup_access_key="$("${terraform_bin}" -chdir="${terraform_dir}" output -raw backup_storage_access_key_id)"
+backup_secret_key="$("${terraform_bin}" -chdir="${terraform_dir}" output -raw backup_storage_secret_access_key)"
 
 export KUBECONFIG="${kubeconfig}"
 kubectl create namespace "${namespace}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
@@ -37,6 +39,11 @@ kubectl -n "${namespace}" create secret generic drone-ai-storage-preprod \
   --from-literal="database-url=${database_url}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
+kubectl -n "${namespace}" create secret generic drone-ai-backup-preprod \
+  --from-literal="s3-access-key=${backup_access_key}" \
+  --from-literal="s3-secret-key=${backup_secret_key}" \
+  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+
 if ! kubectl -n "${namespace}" get secret drone-ai-api-auth >/dev/null 2>&1; then
   api_key="$(openssl rand -hex 32)"
   session_secret="$(openssl rand -hex 32)"
@@ -47,5 +54,6 @@ if ! kubectl -n "${namespace}" get secret drone-ai-api-auth >/dev/null 2>&1; the
     --from-literal="session-secret=${session_secret}" >/dev/null
 fi
 
-unset api_key api_keys_json database_url postgres_password s3_access_key s3_secret_key session_secret
-printf 'PostgreSQL, S3 and API Secrets are ready in namespace %s.\n' "${namespace}"
+unset api_key api_keys_json backup_access_key backup_secret_key database_url \
+  postgres_password s3_access_key s3_secret_key session_secret
+printf 'PostgreSQL, application S3, backup S3 and API Secrets are ready in namespace %s.\n' "${namespace}"

@@ -188,6 +188,46 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert cancelled_resume["state"] == "cancelled"
 
 
+def test_terminal_success_clears_an_earlier_transient_error(monkeypatch):
+    mission = SimpleNamespace(
+        id=1,
+        service_states={
+            "COLMAP": {"status": "success"},
+            "TILER": {"status": "success"},
+            "IA": {"status": "error"},
+        },
+        status="error",
+        current_step="ERROR",
+        progress=0,
+        error_message="temporary S3 failure",
+        resume_info=None,
+        updated_at=None,
+    )
+    added = []
+    session = SimpleNamespace(add=added.append)
+    monkeypatch.setattr(
+        mission_state,
+        "get_or_create_mission",
+        lambda _session, _vol_id: mission,
+    )
+
+    mission_state.apply_mission_state(
+        session,
+        {
+            "vol_id": "mission-1",
+            "service": "IA",
+            "status": "success",
+            "step": "DONE",
+            "progress": 100,
+        },
+    )
+
+    assert mission.status == "success"
+    assert mission.error_message is None
+    assert mission.current_step == "DONE"
+    assert added
+
+
 def test_image_preview_conversion_is_framework_independent():
     source = Image.new("I;16", (16, 8))
     pixels = [index * 16 for index in range(16 * 8)]

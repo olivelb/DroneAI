@@ -41,6 +41,8 @@ def apply_mission_state(session, payload: dict) -> None:
 
     if status == "error" and log_message:
         mission.error_message = log_message
+    elif overall_status == "success":
+        mission.error_message = None
     elif status == "cancelled":
         mission.error_message = None
     if details:

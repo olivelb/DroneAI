@@ -61,6 +61,18 @@ def session_context(session):
 
 
 class TestWorkerSupport(unittest.TestCase):
+    def test_colmap_consumer_replays_uncommitted_initial_work(self):
+        consumer = MagicMock()
+        with patch.object(worker_support, "Consumer", return_value=consumer) as factory:
+            result = worker_support.create_consumer("kafka:9092", "vols-bruts")
+
+        self.assertIs(result, consumer)
+        config = factory.call_args.args[0]
+        self.assertEqual(config["auto.offset.reset"], "earliest")
+        self.assertFalse(config["enable.auto.commit"])
+        self.assertFalse(config["enable.auto.offset.store"])
+        consumer.subscribe.assert_called_once_with(["vols-bruts"])
+
     def test_worker_cancellation_state_lifecycle(self):
         state = worker_support.WorkerCancellationState()
 

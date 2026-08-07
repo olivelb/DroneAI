@@ -145,3 +145,22 @@ resource "ovh_cloud_project_storage" "assets" {
     prevent_destroy = true
   }
 }
+
+# A separate, unversioned bucket keeps seven rotating PostgreSQL dump slots
+# bounded while isolating backup credentials from application assets. The
+# unique daily keys are overwritten in place by the Kubernetes CronJob.
+resource "ovh_cloud_project_storage" "backups" {
+  service_name = var.project_id
+  region_name  = var.object_storage_region
+  name         = var.backup_storage_bucket
+  hide_objects = true
+
+  encryption = {
+    sse_algorithm = "AES256"
+  }
+  tags = merge(local.tags, { component = "postgres-backups" })
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
