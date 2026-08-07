@@ -70,6 +70,19 @@ postgres:
   # password remains only for local development compatibility.
   existingSecret: ""
   passwordSecretKey: password
+  backup:
+    enabled: false
+    schedule: "17 2 * * *"
+    timeZone: Etc/UTC
+    prefix: postgres
+    slots: 7
+    existingSecret: ""
+    accessKeySecretKey: s3-access-key
+    secretKeySecretKey: s3-secret-key
+    s3Endpoint: ""
+    s3Bucket: ""
+    s3Region: us-east-1
+    awsCliImage: amazon/aws-cli:2.31.25@sha256:805953a28509a1445f9ef486ad64018c53dc0d960f63e113c2973f3f7613278c
 
 # --------------------------------------------------------------------------
 # Storage / Database connection strings (consumed by all services)

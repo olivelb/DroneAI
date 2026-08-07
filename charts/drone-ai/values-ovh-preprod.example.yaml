@@ -32,6 +32,16 @@ postgres:
     hostPath: ""
     storageClass: csi-cinder-high-speed-gen2
     size: 20Gi
+  backup:
+    enabled: true
+    schedule: "17 2 * * *"
+    timeZone: Etc/UTC
+    prefix: postgres
+    slots: 7
+    existingSecret: drone-ai-backup-preprod
+    s3Endpoint: "REPLACE_S3_ENDPOINT_URL"
+    s3Bucket: droneai-preprod-backups-fe7dc125
+    s3Region: GRA
 
 storage:
   existingSecret: drone-ai-storage-preprod

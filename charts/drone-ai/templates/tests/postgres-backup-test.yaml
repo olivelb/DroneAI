@@ -1,0 +1,130 @@
+{{- if and .Values.postgres.enabled .Values.postgres.backup.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres-backup-restore-test
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: postgres-backup-restore-test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  activeDeadlineSeconds: 600
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  {{- with .Values.global.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  initContainers:
+        - name: s3-download
+          image: {{ .Values.postgres.backup.awsCliImage }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              day="$(date -u +%u)"
+              slot="$(( (day - 1) % BACKUP_SLOTS + 1 ))"
+              key="${BACKUP_PREFIX}/daily-${slot}.dump"
+              aws --endpoint-url "${S3_ENDPOINT}" s3api get-object \
+                --bucket "${S3_BUCKET}" --key "${key}" \
+                /backup/database.dump >/dev/null
+          env:
+            - name: HOME
+              value: /tmp
+            - name: AWS_PAGER
+              value: ""
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+            - name: AWS_REQUEST_CHECKSUM_CALCULATION
+              value: when_required
+            - name: AWS_RESPONSE_CHECKSUM_VALIDATION
+              value: when_required
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.backup.existingSecret | quote }}
+                  key: {{ .Values.postgres.backup.accessKeySecretKey | quote }}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.backup.existingSecret | quote }}
+                  key: {{ .Values.postgres.backup.secretKeySecretKey | quote }}
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.postgres.backup.s3Region | quote }}
+            - name: S3_ENDPOINT
+              value: {{ .Values.postgres.backup.s3Endpoint | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.postgres.backup.s3Bucket | quote }}
+            - name: BACKUP_PREFIX
+              value: {{ .Values.postgres.backup.prefix | quote }}
+            - name: BACKUP_SLOTS
+              value: {{ .Values.postgres.backup.slots | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: backup
+              mountPath: /backup
+            - name: tmp
+              mountPath: /tmp
+  containers:
+        - name: pg-restore-verify
+          image: {{ .Values.postgres.image }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              test -s /backup/database.dump
+              pg_restore --list /backup/database.dump >/dev/null
+              pg_bin="$(pg_config --bindir)"
+              "${pg_bin}/initdb" --pgdata=/backup/restore-db --auth=trust --no-locale >/dev/null
+              "${pg_bin}/pg_ctl" --pgdata=/backup/restore-db \
+                --options="-k /tmp -h ''" --wait start >/dev/null
+              trap '"${pg_bin}/pg_ctl" --pgdata=/backup/restore-db --mode=fast stop >/dev/null' EXIT
+              "${pg_bin}/createdb" --host=/tmp restore_test
+              "${pg_bin}/pg_restore" --host=/tmp --dbname=restore_test \
+                --no-owner --no-acl /backup/database.dump
+              table_count="$("${pg_bin}/psql" --host=/tmp --dbname=restore_test \
+                --tuples-only --no-align \
+                --command="SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema');")"
+              test "${table_count}" -gt 0
+              printf 'Latest PostgreSQL backup restored successfully (%s user tables).\n' \
+                "${table_count}"
+          securityContext:
+            runAsUser: 999
+            runAsGroup: 999
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: backup
+              mountPath: /backup
+            - name: tmp
+              mountPath: /tmp
+  volumes:
+    - name: backup
+      emptyDir:
+        sizeLimit: 5Gi
+    - name: tmp
+      emptyDir:
+        sizeLimit: 256Mi
+{{- end }}

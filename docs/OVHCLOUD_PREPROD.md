@@ -13,11 +13,12 @@ CI.
 | Region | `GRA11` | Existing quota: 34 vCPU, 44 GB RAM, 8 instances, 1+ gateway and load balancer capacity. |
 | Kubernetes | OVHcloud MKS Free | Managed control plane; upgrade to Standard only for a production SLO/multi-zone requirement. |
 | CPU | One `b3-8`, autoscaling to two | Keeps the initial footprint below the current quota. |
-| GPU | Pool disabled, zero initial nodes | Select a real GRA11 flavor and request quota before enabling it. |
+| GPU | `l4-90` autoscaled pool, zero initial nodes, maximum one | No GPU is billed while desired/current remain zero; quota must be raised before the first node. |
 | COLMAP memory | 16 GiB request, 32 GiB limit | Replaces the historical 80 GiB request; local qualification succeeded on a 32 GB host with 8 GB VRAM. |
 | Kafka | One persistent in-cluster broker, 20 GiB | Realistic enough for integration, not highly available and not production-grade. |
 | Database | In-cluster PostgreSQL 16 + PostGIS 3.5, 20 GiB | Low-cost first deployment; single-node and explicitly not production-grade. |
 | Objects | Encrypted, versioned OVH S3 bucket | Terraform prevents accidental deletion. |
+| Backups | Separate encrypted OVH S3 bucket, seven daily PostgreSQL slots | Dedicated read/write credentials cannot delete objects; Terraform prevents bucket deletion. |
 | Terraform state | Separate encrypted, versioned OVH S3 bucket | Dedicated S3 user, least-privilege object policy and native `.tflock` locking. |
 | Images | OVH Harbor/MPR, Git SHA tags | `latest` is forbidden for preproduction service images. |
 | DNS | `droneai-preprod.olembo.fr` and `api-droneai-preprod.olembo.fr` | Do not alter apex, `www`, MX, SPF or DKIM records. |
@@ -230,6 +231,26 @@ export TERRAFORM_BIN="$HOME/.cache/codex/terraform-1.14.6/terraform"
 scripts/deploy/test-ovh-s3-assets.sh
 ```
 
+PostgreSQL backups use a separate bucket and identity. The backup policy is
+limited to `GetObject` and `PutObject` below `postgres/*`; it deliberately has
+no `DeleteObject` permission. The bucket is AES-256 encrypted, is not versioned
+and is protected by `prevent_destroy`. Seven deterministic daily keys bound
+storage growth while retaining one week:
+
+```text
+postgres/daily-1.dump
+...
+postgres/daily-7.dump
+```
+
+The `postgres-backup` CronJob runs at `02:17 Etc/UTC`, uploads a PostgreSQL
+custom-format dump with SSE-OMK, downloads it again and compares byte count and
+SHA-256 before succeeding. Its credentials are stored only in the
+`drone-ai-backup-preprod` Secret. The Helm test independently downloads the
+current slot and performs a real restore into an isolated, disposable
+PostgreSQL/PostGIS instance inside the test pod; it never restores into the
+active database.
+
 ### PostgreSQL/PostGIS
 
 PostgreSQL is a cost gate and must not be provisioned implicitly. As verified
@@ -437,6 +458,12 @@ export KUBECONFIG="$HOME/.config/droneai/kubeconfig-preprod.yaml"
 scripts/deploy/deploy-ovh-preprod-cpu.sh
 ```
 
+For an existing release, the wrapper reuses the common Git-SHA tag currently
+deployed by the CPU workloads. This permits Helm/Terraform-only updates without
+attempting to pull an unpublished image for the documentation commit. Set
+`IMAGE_TAG=<published-git-sha>` explicitly to deploy a new application image;
+the wrapper refuses mixed live tags and non-SHA values.
+
 At this stage Kafka, processing, API and frontend run; GPU workers are absent.
 
 ### First CPU control-plane deployment result (7 August 2026)
@@ -468,20 +495,49 @@ approximately 138 millicores and 2 GiB of memory (34% of allocatable memory),
 leaving enough headroom for this CPU preproduction control plane. No GPU,
 CUDA, IA or COLMAP build/test was run during this deployment.
 
+### Backup and zero-node GPU preparation result (7 August 2026)
+
+Terraform added the encrypted backup bucket, its dedicated user, credential
+and prefix-scoped policy, plus an autoscaled `l4-90` GPU pool configured with
+minimum/desired `0` and maximum `1`. The final authenticated Terraform plan
+returned exit code `0` with **No changes**. Kubernetes reports one ready
+`b3-8` CPU node and no GPU node, so the GPU pool currently has no hourly GPU
+compute charge.
+
+Helm release `drone-ai` revision 13 is deployed and its test suite is
+`Succeeded`. The first manual backup uploaded and read back
+`postgres/daily-5.dump` (48,076 bytes). The independent restore test then
+restored the archive into a disposable local PostGIS instance and found 47
+user tables. The certificate remained Ready, and both public HTTPS endpoints
+returned `200` with successful certificate verification. No CUDA, COLMAP or GPU
+build/test was run.
+
 ## 9. Enable and qualify the GPU pool
 
-First select an available GRA11 GPU flavor in Manager. Add its vCPU and RAM to
-the CPU pool maximum and request only the missing quota. Then edit the untracked
-`terraform.tfvars`:
+The zero-node pool already uses the GRA11 `l4-90` flavor: 22 vCPU, 90 GB RAM
+and one NVIDIA L4 with 24 GB VRAM. The live OVH catalog price checked on
+7 August 2026 was EUR 0.75 excl. tax/hour when a node exists. This L4 is the
+correct target for the existing `sm_89` portable CUDA build. Recheck the
+[OVHcloud Public Cloud price page](https://www.ovhcloud.com/fr/public-cloud/prices/)
+before scaling because catalog prices can change.
+
+Current GRA11 quota is 34 vCPU and 44 GB RAM, with the `b3-8` CPU node using
+2 vCPU and 8 GB. The first L4 therefore requires total RAM quota of at least
+98 GB (an increase of 54 GB); current vCPU quota is sufficient for one CPU plus
+one L4 node. Request and confirm the RAM quota increase before changing desired
+capacity. The applied untracked `terraform.tfvars` is equivalent to:
 
 ```hcl
 enable_gpu_pool = true
-gpu_flavor      = "<confirmed-GRA11-flavor>"
+gpu_flavor      = "l4-90"
 gpu_max_nodes   = 1
 ```
 
-Run a new `terraform plan`, review price/quota, and apply it explicitly. Confirm
-that MKS exposes the GPU before changing Helm values:
+After quota approval, scale the pool to one node through the reviewed
+Terraform configuration or MKS autoscaling workflow. Follow OVHcloud's
+[GPU workload guide](https://help.ovhcloud.com/csm/en-gb-public-cloud-kubernetes-deploy-gpu-application?id=kb_article_view&sysparm_article=KB0049707)
+to install the NVIDIA runtime/operator required by the selected Kubernetes
+version. Confirm that MKS exposes the GPU before changing Helm values:
 
 ```bash
 kubectl get nodes -L droneai.io/pool,droneai.io/gpu

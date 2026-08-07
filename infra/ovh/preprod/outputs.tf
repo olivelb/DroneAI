@@ -69,6 +69,23 @@ output "object_storage_secret_access_key" {
   sensitive   = true
 }
 
+output "backup_storage_bucket" {
+  description = "Dedicated encrypted bucket for rotating PostgreSQL dumps."
+  value       = ovh_cloud_project_storage.backups.name
+}
+
+output "backup_storage_access_key_id" {
+  description = "Dedicated backup writer access key; store it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.backups.access_key_id
+  sensitive   = true
+}
+
+output "backup_storage_secret_access_key" {
+  description = "Dedicated backup writer secret; store it locally and never commit it."
+  value       = ovh_cloud_project_user_s3_credential.backups.secret_access_key
+  sensitive   = true
+}
+
 output "terraform_state_bucket" {
   description = "Dedicated encrypted and versioned S3 backend bucket."
   value       = ovh_cloud_project_storage.terraform_state.name
