@@ -15,6 +15,9 @@ global:
 # --------------------------------------------------------------------------
 kafka:
   enabled: true
+  # Empty selects the in-chart Service. Set a host:port here when migrating to
+  # an external Kafka service.
+  broker: ""
   image: apache/kafka:3.7.0
   clusterId: "droneai-local-cluster-001"
   persistence:
@@ -75,6 +78,7 @@ storage:
 # COLMAP Worker
 # --------------------------------------------------------------------------
 colmapWorker:
+  enabled: true
   image: drone-colmap
   tag: latest
   gaussianBackend: dronegs
@@ -86,6 +90,11 @@ colmapWorker:
       memory: "80Gi"
   workVolume:
     sizeLimit: 100Gi
+    persistentClaim:
+      enabled: false
+      name: drone-ai-colmap-work
+      storageClass: ""
+      size: 100Gi
     # Available work drives mounted into the pod.
     # The user picks one per-mission from the dashboard UI.
     # Supported sources:
@@ -102,6 +111,7 @@ colmapWorker:
 # IA Worker
 # --------------------------------------------------------------------------
 iaWorker:
+  enabled: true
   image: drone-ia
   tag: latest
   resources:

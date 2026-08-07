@@ -1,0 +1,119 @@
+# OVHcloud preproduction overlay. Replace every REPLACE_* value before install.
+# GPU workers remain disabled until a GPU flavor/quota has been confirmed and
+# the corresponding Terraform node pool exists.
+global:
+  namespace: drone-ai-preprod
+  imageRegistry: "REPLACE_REGISTRY_URL/droneai/"
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets:
+    - name: drone-ai-registry
+
+kafka:
+  enabled: true
+  broker: ""
+  persistence:
+    enabled: true
+    hostPath: ""
+    storageClass: csi-cinder-high-speed
+    size: 20Gi
+
+minio:
+  enabled: false
+
+postgres:
+  enabled: false
+
+storage:
+  existingSecret: drone-ai-storage-preprod
+  accessKeySecretKey: s3-access-key
+  secretKeySecretKey: s3-secret-key
+  databaseUrlSecretKey: database-url
+  s3Endpoint: "REPLACE_S3_ENDPOINT_URL"
+  s3PublicEndpoint: "REPLACE_S3_ENDPOINT_URL"
+  s3Bucket: droneai-preprod-fe7dc125
+  s3AccessKey: ""
+  s3SecretKey: ""
+  s3Region: GRA
+  databaseUrl: ""
+
+colmapWorker:
+  enabled: false
+  tag: "REPLACE_GIT_SHA"
+  resources:
+    limits:
+      nvidia.com/gpu: "1"
+      memory: 32Gi
+    requests:
+      memory: 16Gi
+  workVolume:
+    persistentClaim:
+      enabled: true
+      name: drone-ai-colmap-work
+      storageClass: csi-cinder-high-speed
+      size: 100Gi
+    drives:
+      - name: cloud-workspace
+        existingClaim: drone-ai-colmap-work
+        label: "OVHcloud persistent workspace"
+    default: cloud-workspace
+
+iaWorker:
+  enabled: false
+  tag: "REPLACE_GIT_SHA"
+  modelCache:
+    hostPath: ""
+    storageClass: csi-cinder-high-speed
+    size: 30Gi
+
+processingWorker:
+  tag: "REPLACE_GIT_SHA"
+
+dashboardApi:
+  tag: "REPLACE_GIT_SHA"
+  environment: staging
+  service:
+    type: ClusterIP
+  cors:
+    origins: "https://droneai-preprod.olembo.fr"
+  auth:
+    disabled: false
+    existingSecret: drone-ai-api-auth
+    secretKey: api-keys.json
+    sessionSecretKey: session-secret
+
+dashboardFrontend:
+  tag: "REPLACE_GIT_SHA"
+  apiUrl: "https://api-droneai-preprod.olembo.fr"
+  service:
+    type: ClusterIP
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  hosts:
+    - host: droneai-preprod.olembo.fr
+      paths:
+        - path: /
+          service: dashboard-frontend
+    - host: api-droneai-preprod.olembo.fr
+      paths:
+        - path: /
+          service: dashboard-api
+  tls:
+    - secretName: drone-ai-preprod-tls
+      hosts:
+        - droneai-preprod.olembo.fr
+        - api-droneai-preprod.olembo.fr
+
+gpu:
+  runtimeClassName: nvidia
+  nodeSelector:
+    droneai.io/gpu: nvidia
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Equal
+      value: present
+      effect: NoSchedule

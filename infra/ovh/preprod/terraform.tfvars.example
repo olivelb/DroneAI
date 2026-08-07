@@ -1,0 +1,9 @@
+project_id            = "fe7dc1254a9847849e0d29b01fe39b22"
+region                = "GRA11"
+object_storage_region = "GRA"
+object_storage_bucket = "droneai-preprod-fe7dc125"
+
+# Cost guard: leave false until an available GPU flavor and the associated
+# vCPU/RAM quota have been confirmed in GRA11.
+enable_gpu_pool = false
+# gpu_flavor    = "<confirmed-ovh-gpu-flavor>"

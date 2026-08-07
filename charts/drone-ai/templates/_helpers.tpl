@@ -39,7 +39,7 @@ Common environment variables injected into all worker pods
 */}}
 {{- define "drone-ai.commonEnv" -}}
 - name: KAFKA_BROKER
-  value: "my-kafka.{{ .Values.global.namespace }}.svc.cluster.local:9092"
+  value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" .Values.global.namespace) .Values.kafka.broker | quote }}
 - name: S3_ENDPOINT
   value: {{ .Values.storage.s3Endpoint | quote }}
 - name: S3_BUCKET
