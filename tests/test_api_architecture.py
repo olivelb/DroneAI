@@ -292,6 +292,15 @@ def test_terminal_success_clears_an_earlier_transient_error(monkeypatch):
     assert added
 
 
+@pytest.mark.parametrize("vol_id", [None, 42, ""])
+def test_mission_state_rejects_invalid_event_identifier(vol_id):
+    with pytest.raises(ValueError, match="status event has no vol_id"):
+        mission_state.apply_mission_state(
+            SimpleNamespace(),
+            {"vol_id": vol_id},
+        )
+
+
 def test_image_preview_conversion_is_framework_independent():
     source = Image.new("I;16", (16, 8))
     pixels = [index * 16 for index in range(16 * 8)]
@@ -366,3 +375,18 @@ def test_stored_feature_serialization_has_one_canonical_shape():
     assert result["properties"]["source"] == "manual"
     assert result["properties"]["run_id"] == "run-1"
     assert result["properties"]["custom"] == 7
+
+
+def test_stored_vector_payload_must_be_a_json_object(monkeypatch):
+    stream = io.BytesIO(b"[]")
+    monkeypatch.setattr(
+        map_support.storage,
+        "get_object_stream",
+        lambda _key: (stream, 2, "application/json"),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        map_support.load_json_object("missions/mission-1/vectors.json")
+
+    assert error.value.status_code == 422
+    assert stream.closed

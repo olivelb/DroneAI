@@ -47,7 +47,7 @@ class AnalysisCreate(BaseModel):
         return classes
 
     @model_validator(mode="after")
-    def validate_yolo_classes(self):
+    def validate_yolo_classes(self) -> AnalysisCreate:
         if self.backend == "yolo":
             validate_aerial_class_names(self.classes)
         return self
@@ -88,15 +88,18 @@ class MapFeatureUpdate(BaseModel):
 
     @field_validator("geometry")
     @classmethod
-    def valid_geometry(cls, value: dict[str, Any] | None):
+    def valid_geometry(
+        cls,
+        value: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
         return validate_geometry(value) if value is not None else value
 
     @field_validator("color")
     @classmethod
-    def valid_color(cls, value: str | None):
+    def valid_color(cls, value: str | None) -> str | None:
         return normalize_color(value) if value is not None else value
 
     @field_validator("tags")
     @classmethod
-    def valid_tags(cls, value: list[str] | None):
+    def valid_tags(cls, value: list[str] | None) -> list[str] | None:
         return normalize_tags(value) if value is not None else value

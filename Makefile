@@ -24,6 +24,13 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/realtime.py \
 	app4-dashboard/api/kubernetes_status.py \
 	app4-dashboard/api/image_preview.py
+API_FRAMEWORK_TYPED_PATHS := \
+	app4-dashboard/api/schemas.py \
+	app4-dashboard/api/map_schemas.py \
+	app4-dashboard/api/rate_limit.py
+API_DOMAIN_TYPED_PATHS := \
+	app4-dashboard/api/mission_state.py \
+	app4-dashboard/api/map_support.py
 SERVICE_CORE_PATHS := $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
@@ -41,7 +48,9 @@ worker-lint:
 	$(PYTHON) -m ruff check --select C90 --config lint.mccabe.max-complexity=15 app1-colmap/colmap_worker
 
 service-core-lint:
-	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC $(SERVICE_CORE_PATHS) $(API_TYPED_PATHS)
+	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC \
+		$(SERVICE_CORE_PATHS) $(API_TYPED_PATHS) \
+		$(API_FRAMEWORK_TYPED_PATHS) $(API_DOMAIN_TYPED_PATHS)
 
 shared-lint:
 	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC --ignore RUF001 shared
@@ -53,6 +62,8 @@ typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP2_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP3_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_TYPED_PATHS)
+	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports $(API_FRAMEWORK_TYPED_PATHS)
+	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_DOMAIN_TYPED_PATHS)
 
 scripts-check:
 	shellcheck $(SHELL_SCRIPTS)
