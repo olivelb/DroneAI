@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol, Self, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -17,6 +17,9 @@ from shared.geospatial_assets import (
 )
 
 from ..map_support import (
+    Bounds,
+    JsonObject,
+    MissionRecord,
     apply_detection_spatial_filter,
     apply_spatial_filter,
     feature_collection,
@@ -30,8 +33,28 @@ from ..map_support import (
 router = APIRouter()
 
 
+class RasterQuery(Protocol):
+    def filter(self, *criteria: Any) -> Self: ...
+
+    def join(self, *targets: Any) -> Self: ...
+
+    def order_by(self, *criteria: Any) -> Self: ...
+
+    def limit(self, value: int) -> Self: ...
+
+    def first(self) -> Any: ...
+
+    def all(self) -> list[Any]: ...
+
+
+class RasterSession(Protocol):
+    def query(self, *entities: Any) -> RasterQuery: ...
+
+    def scalar(self, statement: Any) -> Any: ...
+
+
 @router.get("/{vol_id}/metadata/{layer}")
-def raster_layer_metadata(vol_id: str, layer: str):
+def raster_layer_metadata(vol_id: str, layer: str) -> JsonObject:
     key, _ = mission_key(vol_id, layer)
     require_object(key)
     sidecar_key = f"{key}.cog.json"
@@ -46,9 +69,12 @@ def raster_layer_metadata(vol_id: str, layer: str):
         try:
             # Older height-map sidecars may contain the non-standard JSON
             # token NaN for their IEEE floating-point NoData value.
-            payload = json.loads(
-                stream.read(),
-                parse_constant=lambda _constant: None,
+            payload = cast(
+                JsonObject,
+                json.loads(
+                    stream.read(),
+                    parse_constant=lambda _constant: None,
+                ),
             )
         finally:
             stream.close()
@@ -67,7 +93,13 @@ def raster_layer_metadata(vol_id: str, layer: str):
 
 
 @router.get("/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png")
-def raster_tile(vol_id: str, layer: str, z: int, x: int, y: int):
+def raster_tile(
+    vol_id: str,
+    layer: str,
+    z: int,
+    x: int,
+    y: int,
+) -> StreamingResponse:
     key, default_colormap = mission_key(vol_id, layer)
     require_object(key)
     try:
@@ -95,7 +127,13 @@ def raster_tile(vol_id: str, layer: str, z: int, x: int, y: int):
     )
 
 
-def _legacy_features(session, mission, vol_id, bounds, limit):
+def _legacy_features(
+    session: RasterSession,
+    mission: MissionRecord,
+    vol_id: str,
+    bounds: Bounds | None,
+    limit: int,
+) -> tuple[list[JsonObject], bool]:
     query = session.query(Detection).filter(Detection.vol_id == vol_id)
     query = apply_detection_spatial_filter(query, bounds)
     records = query.order_by(Detection.id).limit(limit + 1).all()
@@ -106,21 +144,21 @@ def _legacy_features(session, mission, vol_id, bounds, limit):
         source_crs=metadata.get("crs"),
         vol_id=vol_id,
     )
-    for feature in payload["features"]:
-        feature["properties"].update(
-            {"source": "legacy", "color": "#f43f5e"}
-        )
-    return payload["features"], len(records) > limit
+    features = cast(list[JsonObject], payload["features"])
+    for feature in features:
+        properties = cast(JsonObject, feature["properties"])
+        properties.update({"source": "legacy", "color": "#f43f5e"})
+    return features, len(records) > limit
 
 
 def _stored_features(
-    session,
-    vol_id,
-    bounds,
-    requested_sources,
-    requested_runs,
-    limit,
-):
+    session: RasterSession,
+    vol_id: str,
+    bounds: Bounds | None,
+    requested_sources: set[str],
+    requested_runs: set[str],
+    limit: int,
+) -> tuple[list[JsonObject], bool]:
     query = session.query(MapFeature).filter(
         MapFeature.vol_id == vol_id,
         MapFeature.source.in_(requested_sources),
@@ -132,7 +170,10 @@ def _stored_features(
             AIAnalysisRun.run_id.in_(requested_runs)
         )
     query = apply_spatial_filter(query, MapFeature.geometry, bounds)
-    records = query.order_by(MapFeature.id).limit(limit + 1).all()
+    records = cast(
+        list[MapFeature],
+        query.order_by(MapFeature.id).limit(limit + 1).all(),
+    )
     return (
         [map_feature_geojson(session, record) for record in records[:limit]],
         len(records) > limit,
@@ -146,7 +187,7 @@ def vector_layer(
     sources: str = Query(default="legacy,manual,ai"),
     run_ids: str | None = Query(default=None),
     limit: int = Query(default=10_000, ge=1, le=50_000),
-):
+) -> JsonObject:
     mission_key(vol_id, "ortho")
     bounds = parse_bbox(bbox)
     requested_sources = {
@@ -158,16 +199,17 @@ def vector_layer(
     features: list[dict[str, Any]] = []
     truncated = False
     with get_session() as session:
-        mission = get_mission(session, vol_id)
+        typed_session = cast(RasterSession, session)
+        mission = get_mission(typed_session, vol_id)
         if "legacy" in requested_sources:
             legacy, truncated = _legacy_features(
-                session, mission, vol_id, bounds, limit
+                typed_session, mission, vol_id, bounds, limit
             )
             features.extend(legacy)
         remaining = max(0, limit - len(features))
         if remaining and requested_sources.intersection({"manual", "ai"}):
             stored, stored_truncated = _stored_features(
-                session,
+                typed_session,
                 vol_id,
                 bounds,
                 requested_sources,

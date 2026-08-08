@@ -112,8 +112,10 @@ query/storage helpers. Explicit protocols and typed dictionaries keep legacy
 SQLAlchemy queries and validated JSON at narrow dynamic boundaries. The first
 strict route-adapter boundary covers browser authentication, dataset browsing
 and batch upload, mission lifecycle/status and administrative outbox recovery.
-Geospatial route adapters remain subsequent increments instead of being hidden
-behind broad ignores.
+The geospatial composition router and its raster metadata, tile and combined
+vector read paths are covered too. Analysis, export and feature-editing route
+adapters remain subsequent increments instead of being hidden behind broad
+ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
