@@ -16,6 +16,7 @@ main = importlib.import_module("app4-dashboard.api.main")
 messaging = importlib.import_module("app4-dashboard.api.messaging")
 mission_state = importlib.import_module("app4-dashboard.api.mission_state")
 map_support = importlib.import_module("app4-dashboard.api.map_support")
+analysis_routes = importlib.import_module("app4-dashboard.api.routers.map_analyses")
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
@@ -135,11 +136,53 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
     assert "already exists" in error.value.detail
 
 
-def test_sync_mission_handlers_are_threadpool_eligible():
+def test_sync_io_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(mission_routes.start_mission)
     assert not inspect.iscoroutinefunction(mission_routes.resume_mission)
     assert not inspect.iscoroutinefunction(mission_routes.cancel_mission)
     assert not inspect.iscoroutinefunction(dataset_routes.upload_dataset_batch)
+    assert not inspect.iscoroutinefunction(analysis_routes.create_analysis)
+    assert not inspect.iscoroutinefunction(analysis_routes.retry_analysis)
+    assert not inspect.iscoroutinefunction(analysis_routes.cancel_analysis)
+    assert not inspect.iscoroutinefunction(analysis_routes.analysis_vectors)
+
+
+def test_object_store_analysis_vectors_apply_bounds_and_limit(monkeypatch):
+    inside = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [0.5, 0.5]},
+        "properties": {},
+    }
+    second_inside = {
+        "type": "Feature",
+        "geometry": {"type": "Point", "coordinates": [0.75, 0.75]},
+        "properties": {},
+    }
+    skipped_tile = SimpleNamespace(
+        result_s3_key="outside.json",
+        bounds_wgs84=[10.0, 10.0, 11.0, 11.0],
+    )
+    selected_tile = SimpleNamespace(
+        result_s3_key="inside.json",
+        bounds_wgs84=[0.0, 0.0, 1.0, 1.0],
+    )
+    loaded = []
+
+    def load_payload(key):
+        loaded.append(key)
+        return {"features": [inside, second_inside]}
+
+    monkeypatch.setattr(analysis_routes, "load_json_object", load_payload)
+
+    features, truncated = analysis_routes._object_store_features(
+        [skipped_tile, selected_tile],
+        (0.0, 0.0, 1.0, 1.0),
+        1,
+    )
+
+    assert features == [inside]
+    assert truncated is True
+    assert loaded == ["inside.json"]
 
 
 def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
