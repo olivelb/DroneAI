@@ -197,8 +197,10 @@ the real framework types; raster rate limiting, mission state/resume policy
 and geospatial query/storage helpers expose explicit local protocols and typed
 JSON contracts. Browser authentication, dataset browsing and batch upload,
 mission lifecycle/status and administrative outbox recovery are strictly typed
-route adapters; geospatial adapters remain subsequent increments rather than
-being hidden behind broad ignores.
+route adapters. The geospatial composition router and raster metadata, tile and
+combined vector read paths are covered too; analysis, export and feature-editing
+adapters remain subsequent increments rather than being hidden behind broad
+ignores.
 
 Primary endpoints:
 
