@@ -73,6 +73,14 @@ def test_pipeline_overrides_reject_unknown_and_out_of_range_values():
         validate_pipeline_overrides({"not_a_parameter": 1})
     with pytest.raises(ValueError, match="gs_iterations must be >="):
         validate_pipeline_overrides({"gs_iterations": 1})
+    with pytest.raises(ValueError, match="gs_filter_min_retained_ratio must be <="):
+        validate_pipeline_overrides({"gs_filter_min_retained_ratio": 1.1})
+
+
+def test_map_filter_defaults_preserve_gaussian_coverage():
+    params = merge_pipeline_params("modern")
+    assert params["gs_filter_max_scale"] == "5.0"
+    assert params["gs_filter_min_retained_ratio"] == "0.80"
 
 
 def test_pipeline_overrides_validate_non_rtk_alignment_tolerance():

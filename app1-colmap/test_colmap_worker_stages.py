@@ -136,7 +136,17 @@ class TestColmapStageHelpers(unittest.TestCase):
 
         self.assertEqual(config.profile_id, DRONEGS_PRODUCTION_PROFILE_V1.profile_id)
         self.assertEqual(config.qualification_policy_id, DRONEGS_QUALIFICATION_POLICY_ID)
+        self.assertEqual(config.filter_max_scale, 5.0)
+        self.assertEqual(config.filter_min_retained_ratio, 0.80)
         self.assertEqual(warnings, ())
+
+        facade_config, _ = dronegs_config.resolve_dronegs_config(
+            params,
+            facade_mode=True,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        self.assertEqual(facade_config.filter_max_scale, 1.0)
+        self.assertEqual(facade_config.filter_min_retained_ratio, 0.0)
 
         overridden, warnings = dronegs_config.resolve_dronegs_config(
             {**params, "gs_iterations": "123"},

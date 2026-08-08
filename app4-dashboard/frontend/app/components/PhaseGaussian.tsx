@@ -75,6 +75,7 @@ const PARAMETER_GROUPS = [
     keys: [
       "gs_filter_enabled",
       "gs_filter_max_scale",
+      "gs_filter_min_retained_ratio",
       "gs_filter_dist",
       "gs_filter_opacity",
       "gs_filter_needle",

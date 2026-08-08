@@ -222,6 +222,7 @@ def run_gaussian_product(
             cap_max=gs_config.cap_max,
             filter_enabled=gs_config.filter_enabled,
             filter_max_scale=gs_config.filter_max_scale,
+            filter_min_retained_ratio=gs_config.filter_min_retained_ratio,
             filter_dist_multiplier=gs_config.filter_dist,
             filter_opacity_threshold=gs_config.filter_opacity,
             filter_needle_ratio=gs_config.filter_needle,

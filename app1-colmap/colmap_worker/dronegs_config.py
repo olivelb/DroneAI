@@ -48,6 +48,7 @@ class DroneGsRunConfig:
     mip_filter_compensation: bool
     filter_enabled: bool
     filter_max_scale: float
+    filter_min_retained_ratio: float
     filter_dist: float
     filter_opacity: float
     filter_needle: float
@@ -155,7 +156,17 @@ def resolve_dronegs_config(
         mip_filter_variance=float(params.get("gs_ortho_mip_filter_variance", 0.03)),
         mip_filter_compensation=bool(params.get("gs_ortho_mip_filter_compensation", True)),
         filter_enabled=bool(params.get("gs_filter_enabled", True)),
-        filter_max_scale=float(params.get("gs_filter_max_scale", 1.0)),
+        filter_max_scale=float(
+            params.get(
+                "facade_filter_max_scale" if facade_mode else "gs_filter_max_scale",
+                1.0 if facade_mode else 5.0,
+            )
+        ),
+        filter_min_retained_ratio=(
+            0.0
+            if facade_mode
+            else float(params.get("gs_filter_min_retained_ratio", 0.80))
+        ),
         filter_dist=float(params.get("gs_filter_dist", 1.0)),
         filter_opacity=float(params.get("gs_filter_opacity", 0.005)),
         filter_needle=float(params.get("gs_filter_needle", 0.0)),

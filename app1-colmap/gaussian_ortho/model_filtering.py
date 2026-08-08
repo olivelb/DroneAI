@@ -20,12 +20,17 @@ def filter_gaussians(
     sor_enabled: bool = False,
     cc_enabled: bool = False,
     z_floater_enabled: bool = False,
+    minimum_retained_ratio: float = 0.0,
     R_geo: np.ndarray = None,
     report_fn=None,
 ):
     """Apply the full filtering pipeline to a GaussianModel (in-place)."""
+    from .filter_quality import require_minimum_filter_retention
+
     from scipy.spatial import cKDTree
     from scipy.spatial.distance import pdist
+
+    initial_count = model.num_gaussians
 
     def _log(msg):
         if report_fn:
@@ -133,5 +138,15 @@ def filter_gaussians(
         if model.num_gaussians < n_b:
             _log(f"Z-floater filter: {n_b} → {model.num_gaussians} "
                  f"(Z outside [{z_lo:.2f}, {z_hi:.2f}])")
+
+    retained_ratio = require_minimum_filter_retention(
+        initial_count,
+        model.num_gaussians,
+        minimum_retained_ratio,
+    )
+    _log(
+        "Filter retention: "
+        f"{model.num_gaussians}/{initial_count} ({retained_ratio:.1%})"
+    )
 
     return model
