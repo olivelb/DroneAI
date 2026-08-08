@@ -150,18 +150,21 @@ services:
           sleep 2
         done
         mc mb --ignore-existing droneai/drone-ai
-        cat > /tmp/cors.json <<'EOF'
-        {
-          "CORSRules": [{
-            "AllowedOrigins": ["http://localhost:3000", "http://127.0.0.1:3000"],
-            "AllowedMethods": ["PUT", "GET", "HEAD"],
-            "AllowedHeaders": ["*"],
-            "ExposeHeaders": ["ETag"],
-            "MaxAgeSeconds": 3600
-          }]
-        }
+        cat > /tmp/cors.xml <<'EOF'
+        <CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+          <CORSRule>
+            <AllowedOrigin>http://localhost:3000</AllowedOrigin>
+            <AllowedOrigin>http://127.0.0.1:3000</AllowedOrigin>
+            <AllowedMethod>PUT</AllowedMethod>
+            <AllowedMethod>GET</AllowedMethod>
+            <AllowedMethod>HEAD</AllowedMethod>
+            <AllowedHeader>*</AllowedHeader>
+            <ExposeHeader>ETag</ExposeHeader>
+            <MaxAgeSeconds>3600</MaxAgeSeconds>
+          </CORSRule>
+        </CORSConfiguration>
         EOF
-        mc cors set droneai/drone-ai /tmp/cors.json
+        mc cors set droneai/drone-ai /tmp/cors.xml
 
   db-migrate:
     image: drone-dashboard-api:latest

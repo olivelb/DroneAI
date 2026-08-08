@@ -27,6 +27,7 @@ def test_production_overlay_requires_immutable_application_images() -> None:
 def test_browser_upload_cors_exposes_multipart_etag() -> None:
     defaults = _read(CHART / "values.yaml")
     minio = _read(CHART / "templates" / "minio.yaml")
+    compose = _read(ROOT / "compose.local.yaml")
     external_script = _read(
         ROOT / "scripts" / "deploy" / "configure-s3-upload-cors.sh"
     )
@@ -36,6 +37,9 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
         assert "PUT" in source
         assert "ETag" in source
         assert "AllowedOrigin" in source
+    assert "<CORSConfiguration" in compose
+    assert "mc cors set droneai/drone-ai /tmp/cors.xml" in compose
+    assert "/tmp/cors.json" not in compose
 
 
 def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
