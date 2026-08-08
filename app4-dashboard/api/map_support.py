@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Protocol, Self, TypeVar, cast
+from typing import Any, Protocol, Self, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -36,9 +36,6 @@ class SessionProtocol(Protocol):
 
 class FilterQueryProtocol(Protocol):
     def filter(self, *criteria: Any) -> Self: ...
-
-
-FilterQueryT = TypeVar("FilterQueryT", bound=FilterQueryProtocol)
 
 
 class MissionRecord(Protocol):
@@ -195,7 +192,7 @@ def feature_collection(
     }
 
 
-def apply_spatial_filter(
+def apply_spatial_filter[FilterQueryT: FilterQueryProtocol](
     query: FilterQueryT,
     geometry_column: Any,
     bounds: Bounds | None,
@@ -211,7 +208,7 @@ def apply_spatial_filter(
     )
 
 
-def apply_detection_spatial_filter(
+def apply_detection_spatial_filter[FilterQueryT: FilterQueryProtocol](
     query: FilterQueryT,
     bounds: Bounds | None,
 ) -> FilterQueryT:

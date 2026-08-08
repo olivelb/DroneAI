@@ -47,9 +47,9 @@ fi
 "${PYTHON_BIN}" -c '
 import sys
 
-if not ((3, 11) <= sys.version_info[:2] < (3, 13)):
+if not ((3, 12) <= sys.version_info[:2] < (3, 13)):
     raise SystemExit(
-        f"DroneAI requires Python 3.11 or 3.12, found {sys.version.split()[0]}"
+        f"DroneAI requires Python 3.12, found {sys.version.split()[0]}"
     )
 '
 

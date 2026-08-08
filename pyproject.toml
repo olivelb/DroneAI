@@ -2,7 +2,7 @@
 name = "droneai"
 version = "0.1.0"
 description = "Exploratory aerial imagery processing pipeline"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.12,<3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["app1-colmap", "tests"]
@@ -41,7 +41,7 @@ exclude_also = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 extend-exclude = [
     "app1-colmap/patches",

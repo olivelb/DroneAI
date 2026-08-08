@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Annotated
+from typing import Annotated, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
@@ -17,8 +17,23 @@ class SessionRequest(BaseModel):
     api_key: str = Field(min_length=32, max_length=4096)
 
 
+class SessionResponse(TypedDict):
+    subject: str
+    role: str
+    expires_in_seconds: int
+
+
+class PrincipalResponse(TypedDict):
+    subject: str
+    role: str
+
+
+class StatusResponse(TypedDict):
+    status: str
+
+
 @router.post("/session")
-def create_session(payload: SessionRequest, response: Response):
+def create_session(payload: SessionRequest, response: Response) -> SessionResponse:
     principal = security.authenticate_api_key(payload.api_key)
     if principal is None:
         raise HTTPException(
@@ -51,7 +66,7 @@ def read_session(
         security.Principal,
         Depends(security.require_authenticated),
     ],
-):
+) -> PrincipalResponse:
     return {
         "subject": principal.subject,
         "role": principal.role,
@@ -59,7 +74,7 @@ def read_session(
 
 
 @router.delete("/session")
-def delete_session(response: Response):
+def delete_session(response: Response) -> StatusResponse:
     response.delete_cookie(
         key=security.SESSION_COOKIE_NAME,
         path="/",

@@ -7,7 +7,7 @@ Kubernetes, or a CUDA GPU.
 
 ## Supported toolchain
 
-- Python 3.11 or 3.12
+- Python 3.12
 - GNU Make
 - Node.js 20
 - npm with the committed `package-lock.json`
@@ -25,6 +25,9 @@ The bootstrap is idempotent. It installs missing native development tools on
 APT-based systems, creates or refreshes `.venv` from the committed development
 lock and runs the shared static checks. Set `PYTHON_BIN` to select a supported
 Python interpreter explicitly.
+
+The development lock pins `pip` 26.1.2 so the pinned `pip-tools` compiler can
+regenerate every lock from its committed input file with an audited toolchain.
 
 Run the checks:
 
@@ -106,8 +109,10 @@ and WebSocket fan-out, Kubernetes status records and image preview helpers.
 It also checks mission and map Pydantic schemas with their real framework
 types, raster rate limiting, mission state/resume policy and geospatial
 query/storage helpers. Explicit protocols and typed dictionaries keep legacy
-SQLAlchemy queries and validated JSON at narrow dynamic boundaries. Route
-adapters remain the next API typing increment instead of being hidden behind
+SQLAlchemy queries and validated JSON at narrow dynamic boundaries. The first
+strict route-adapter increment covers browser authentication, mission
+lifecycle/status and administrative outbox recovery. Dataset and geospatial
+route adapters remain subsequent increments instead of being hidden behind
 broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.

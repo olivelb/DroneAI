@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
+
 from scripts.ci.select_ci_jobs import SCOPES, classify_paths
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _enabled(*paths: str) -> set[str]:
@@ -52,3 +57,20 @@ def test_ci_control_change_runs_all_lightweight_scopes_without_cuda() -> None:
         ".github/workflows/ci.yml",
         "app1-colmap/dronegs/src/trainer.cpp",
     )
+
+
+def test_python_baseline_is_312_across_tooling_and_ci() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert project["project"]["requires-python"] == ">=3.12,<3.13"
+    assert project["tool"]["ruff"]["target-version"] == "py312"
+
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    bootstrap = (ROOT / "scripts" / "bootstrap-dev.sh").read_text(encoding="utf-8")
+    assert "3.11" not in workflow
+    assert 'python-version: "3.12"' in workflow
+    assert "(3, 12)" in bootstrap
+    assert "3.11" not in bootstrap
+
+    for lock_name in ("api.txt", "processing.txt", "dev.txt", "colmap.txt"):
+        lock_header = (ROOT / "requirements" / lock_name).read_text(encoding="utf-8")[:160]
+        assert "pip-compile with Python 3.12" in lock_header
