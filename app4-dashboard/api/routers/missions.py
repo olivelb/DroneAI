@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
@@ -15,13 +16,16 @@ from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.validation import configured_work_drives
 
-from ..kubernetes_status import get_pod_states
+from ..kubernetes_status import KubernetesStatus, get_pod_states
 from ..messaging import (
     build_cancel_event,
     build_new_mission_event,
     build_resume_event,
 )
 from ..mission_state import (
+    MissionStateResult,
+    ResumeResponse,
+    StatusSummary,
     get_mission_state,
     get_status_summary,
     prepare_resume_in_session,
@@ -39,8 +43,50 @@ router = APIRouter(
 )
 
 
+class MissionMutationRecord(Protocol):
+    retry_count: int | None
+    status: str
+    current_step: str | None
+    error_message: str | None
+
+
+class CommandResponse(TypedDict):
+    status: str
+    message: str
+
+
+class DeleteMissionResponse(CommandResponse):
+    s3_objects_deleted: int
+    db_deleted: bool
+
+
+class StartMissionResponse(TypedDict):
+    status: str
+    vol_id: str
+
+
+class MissionParametersResponse(TypedDict):
+    pipelines: dict[str, dict[str, Any]]
+    processes: list[dict[str, Any]]
+    metadata: dict[str, dict[str, Any]]
+    work_drives: list[dict[str, str]]
+    work_drive_default: str
+
+
+def _find_mission(
+    session: Any,
+    vol_id: str,
+    *,
+    for_update: bool = False,
+) -> MissionMutationRecord | None:
+    query = session.query(Mission).filter(Mission.vol_id == vol_id)
+    if for_update:
+        query = query.with_for_update()
+    return cast(MissionMutationRecord | None, query.first())
+
+
 @router.get("/status/summary")
-def status_summary():
+def status_summary() -> StatusSummary:
     try:
         return get_status_summary()
     except Exception as error:
@@ -51,7 +97,7 @@ def status_summary():
 
 
 @router.get("/mission/state")
-def mission_state(vol_id: str):
+def mission_state(vol_id: str) -> MissionStateResult:
     try:
         return get_mission_state(vol_id)
     except Exception as error:
@@ -65,9 +111,9 @@ def mission_state(vol_id: str):
     "/mission/cancel",
     dependencies=[Depends(require_operator)],
 )
-def cancel_mission(vol_id: str):
+def cancel_mission(vol_id: str) -> CommandResponse:
     with get_session() as session:
-        mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
+        mission = _find_mission(session, vol_id, for_update=True)
         if mission is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -92,10 +138,10 @@ def cancel_mission(vol_id: str):
     "/mission/{vol_id}",
     dependencies=[Depends(require_admin)],
 )
-def delete_mission(vol_id: str):
+def delete_mission(vol_id: str) -> DeleteMissionResponse:
     mission_exists = False
     with get_session() as session:
-        mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
+        mission = _find_mission(session, vol_id, for_update=True)
         if mission is not None:
             mission_exists = True
             mission.status = "deleting"
@@ -108,7 +154,7 @@ def delete_mission(vol_id: str):
     except Exception as error:
         if mission_exists:
             with get_session() as session:
-                mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
+                mission = _find_mission(session, vol_id, for_update=True)
                 if mission is not None:
                     mission.status = "deletion_failed"
                     mission.current_step = "DELETION_FAILED"
@@ -120,7 +166,7 @@ def delete_mission(vol_id: str):
 
     try:
         with get_session() as session:
-            mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+            mission = _find_mission(session, vol_id)
             if mission:
                 session.delete(mission)
     except Exception as error:
@@ -140,7 +186,7 @@ def delete_mission(vol_id: str):
     "/mission/resume",
     dependencies=[Depends(require_operator)],
 )
-def resume_mission(vol_id: str):
+def resume_mission(vol_id: str) -> ResumeResponse:
     try:
         with get_session() as session:
             payload, response = prepare_resume_in_session(session, vol_id)
@@ -170,12 +216,12 @@ def resume_mission(vol_id: str):
 
 
 @router.get("/pods")
-def pod_statuses():
+def pod_statuses() -> KubernetesStatus:
     return get_pod_states()
 
 
 @router.get("/mission/parameters")
-def mission_parameters():
+def mission_parameters() -> MissionParametersResponse:
     work_drives = configured_work_drives()
     configured_names = {drive["name"] for drive in work_drives}
     work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
@@ -194,7 +240,7 @@ def mission_parameters():
     "/mission",
     dependencies=[Depends(require_operator)],
 )
-def start_mission(params: MissionParams):
+def start_mission(params: MissionParams) -> StartMissionResponse:
     payload = params.model_dump()
     try:
         with get_session() as session:

@@ -195,7 +195,9 @@ consumer and WebSocket hub, Kubernetes status records and infrastructure-free
 image preview helpers. Mission and map Pydantic schemas are checked against
 the real framework types; raster rate limiting, mission state/resume policy
 and geospatial query/storage helpers expose explicit local protocols and typed
-JSON contracts. Route adapters remain the next increment rather than being
+JSON contracts. Browser authentication, mission lifecycle/status and
+administrative outbox recovery are the first strictly typed route adapters;
+dataset and geospatial adapters remain subsequent increments rather than being
 hidden behind broad ignores.
 
 Primary endpoints:

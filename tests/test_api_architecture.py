@@ -3,6 +3,7 @@ import inspect
 import io
 import json
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,7 @@ mission_state = importlib.import_module("app4-dashboard.api.mission_state")
 map_support = importlib.import_module("app4-dashboard.api.map_support")
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
+operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
 
 
 class FakeProducer:
@@ -138,6 +140,61 @@ def test_sync_mission_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(mission_routes.resume_mission)
     assert not inspect.iscoroutinefunction(mission_routes.cancel_mission)
     assert not inspect.iscoroutinefunction(dataset_routes.upload_dataset_batch)
+
+
+def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
+    record = SimpleNamespace(
+        id=17,
+        event_id="event-17",
+        event_type="mission",
+        topic="vols-bruts",
+        attempts=5,
+        last_error="broker unavailable",
+        status="dead",
+        available_at=None,
+        dead_at=datetime(2026, 8, 8, tzinfo=UTC),
+        locked_at=datetime(2026, 8, 8, tzinfo=UTC),
+        locked_by="worker-1",
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _value):
+            return self
+
+        def all(self):
+            return [record]
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return record
+
+    session = SimpleNamespace(query=lambda _model: Query())
+
+    @contextmanager
+    def session_scope():
+        yield session
+
+    monkeypatch.setattr(operation_routes, "get_session", session_scope)
+
+    dead_events = operation_routes.list_dead_outbox_events(limit=10)
+    response = operation_routes.replay_dead_outbox_event(record.id)
+
+    assert dead_events[0]["event_id"] == "event-17"
+    assert response == {"status": "queued", "id": 17}
+    assert record.status == "pending"
+    assert record.attempts == 0
+    assert record.available_at.tzinfo is UTC
+    assert record.dead_at is None
+    assert record.locked_at is None
+    assert record.locked_by is None
 
 
 def test_frontend_uses_the_server_validated_batch_upload():

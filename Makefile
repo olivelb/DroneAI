@@ -31,6 +31,10 @@ API_FRAMEWORK_TYPED_PATHS := \
 API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/mission_state.py \
 	app4-dashboard/api/map_support.py
+API_ROUTE_TYPED_PATHS := \
+	app4-dashboard/api/routers/auth.py \
+	app4-dashboard/api/routers/missions.py \
+	app4-dashboard/api/routers/operations.py
 SERVICE_CORE_PATHS := $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
@@ -50,7 +54,8 @@ worker-lint:
 service-core-lint:
 	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC \
 		$(SERVICE_CORE_PATHS) $(API_TYPED_PATHS) \
-		$(API_FRAMEWORK_TYPED_PATHS) $(API_DOMAIN_TYPED_PATHS)
+		$(API_FRAMEWORK_TYPED_PATHS) $(API_DOMAIN_TYPED_PATHS) \
+		$(API_ROUTE_TYPED_PATHS)
 
 shared-lint:
 	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC --ignore RUF001 shared
@@ -64,6 +69,7 @@ typecheck:
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports $(API_FRAMEWORK_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_DOMAIN_TYPED_PATHS)
+	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=silent $(API_ROUTE_TYPED_PATHS)
 
 scripts-check:
 	shellcheck $(SHELL_SCRIPTS)

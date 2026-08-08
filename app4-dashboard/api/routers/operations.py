@@ -1,6 +1,7 @@
 """Administrative reliability controls."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -15,17 +16,49 @@ router = APIRouter(
 )
 
 
+class OutboxMutationRecord(Protocol):
+    id: int
+    event_id: str
+    event_type: str
+    topic: str
+    attempts: int
+    last_error: str | None
+    status: str
+    available_at: datetime
+    dead_at: datetime | None
+    locked_at: datetime | None
+    locked_by: str | None
+
+
+class DeadOutboxEvent(TypedDict):
+    id: int
+    event_id: str
+    event_type: str
+    topic: str
+    attempts: int
+    last_error: str | None
+    dead_at: datetime | None
+
+
+class ReplayResponse(TypedDict):
+    status: str
+    id: int
+
+
 @router.get("/outbox/dead")
 def list_dead_outbox_events(
     limit: int = Query(default=100, ge=1, le=1000),
-):
+) -> list[DeadOutboxEvent]:
     with get_session() as session:
-        records = (
-            session.query(OutboxEvent)
-            .filter(OutboxEvent.status == "dead")
-            .order_by(OutboxEvent.dead_at.desc(), OutboxEvent.id.desc())
-            .limit(limit)
-            .all()
+        records = cast(
+            list[OutboxMutationRecord],
+            (
+                session.query(OutboxEvent)
+                .filter(OutboxEvent.status == "dead")
+                .order_by(OutboxEvent.dead_at.desc(), OutboxEvent.id.desc())
+                .limit(limit)
+                .all()
+            ),
         )
         return [
             {
@@ -42,13 +75,11 @@ def list_dead_outbox_events(
 
 
 @router.post("/outbox/{record_id}/replay")
-def replay_dead_outbox_event(record_id: int):
+def replay_dead_outbox_event(record_id: int) -> ReplayResponse:
     with get_session() as session:
-        record = (
-            session.query(OutboxEvent)
-            .filter(OutboxEvent.id == record_id)
-            .with_for_update()
-            .first()
+        record = cast(
+            OutboxMutationRecord | None,
+            (session.query(OutboxEvent).filter(OutboxEvent.id == record_id).with_for_update().first()),
         )
         if record is None:
             raise HTTPException(
@@ -62,7 +93,7 @@ def replay_dead_outbox_event(record_id: int):
             )
         record.status = "pending"
         record.attempts = 0
-        record.available_at = datetime.now(timezone.utc)
+        record.available_at = datetime.now(UTC)
         record.dead_at = None
         record.locked_at = None
         record.locked_by = None
