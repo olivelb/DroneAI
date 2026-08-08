@@ -4,13 +4,38 @@ Gaussian model spatial filtering (CuPy).
 Removes outlier Gaussians after training: out-of-bounds, transparent,
 needle-shaped, SOR isolated, disconnected components, and Z-floaters.
 """
+from collections.abc import Callable
+from typing import Any, Protocol
+
 import cupy as cp
 import numpy as np
+from numpy.typing import NDArray
 
 
-def filter_gaussians(
-    model,
-    cam_positions: np.ndarray,
+class GaussianFilterModel(Protocol):
+    """Minimal model contract; CUDA array dynamism is isolated at this edge."""
+
+    _scaling: Any
+    _xyz: Any
+
+    @property
+    def num_gaussians(self) -> int: ...
+
+    @property
+    def positions(self) -> Any: ...
+
+    @property
+    def scales(self) -> Any: ...
+
+    @property
+    def opacity(self) -> Any: ...
+
+    def filter_by_mask(self, mask: Any) -> None: ...
+
+
+def filter_gaussians[ModelT: GaussianFilterModel](
+    model: ModelT,
+    cam_positions: NDArray[np.floating[Any]],
     *,
     max_scale: float = 1.0,
     dist_multiplier: float = 1.0,
@@ -21,9 +46,9 @@ def filter_gaussians(
     cc_enabled: bool = False,
     z_floater_enabled: bool = False,
     minimum_retained_ratio: float = 0.0,
-    R_geo: np.ndarray = None,
-    report_fn=None,
-):
+    R_geo: NDArray[np.floating[Any]] | None = None,
+    report_fn: Callable[[str], None] | None = None,
+) -> ModelT:
     """Apply the full filtering pipeline to a GaussianModel (in-place)."""
     from .filter_quality import require_minimum_filter_retention
 
@@ -32,7 +57,7 @@ def filter_gaussians(
 
     initial_count = model.num_gaussians
 
-    def _log(msg):
+    def _log(msg: str) -> None:
         if report_fn:
             report_fn(msg)
         else:
@@ -105,7 +130,7 @@ def filter_gaussians(
         N_cc = len(xyz_np)
         tree = cKDTree(xyz_np)
         _, idx_k = tree.query(xyz_np, k=k_cc + 1)
-        rows = np.repeat(np.arange(N_cc), k_cc)
+        rows: NDArray[np.int_] = np.repeat(np.arange(N_cc), k_cc)
         cols = idx_k[:, 1:].ravel()
         adj = csr_matrix(
             (np.ones(len(rows), dtype=np.float32), (rows, cols)),

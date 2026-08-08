@@ -6,7 +6,13 @@ PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/ap
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/coverage_quality.py \
-	app1-colmap/gaussian_ortho/filter_quality.py
+	app1-colmap/gaussian_ortho/filter_quality.py \
+	app1-colmap/gaussian_ortho/geo_writer.py \
+	app1-colmap/gaussian_ortho/height_reference.py \
+	app1-colmap/gaussian_ortho/model_filtering.py \
+	app1-colmap/gaussian_ortho/partition.py \
+	app1-colmap/gaussian_ortho/pca_alignment.py \
+	app1-colmap/gaussian_ortho/scene_info.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \

@@ -15,7 +15,7 @@ implementation batches, not a claim that every roadmap item is complete.
 | Fresh E2E after the 5 m Gaussian default | Confirmed outstanding by the existing Example Quarry report. | Deferred to an explicit BIGZEN release qualification. |
 | Browser-to-S3 multipart upload | Confirmed architectural improvement over the former 50 GiB FastAPI multipart boundary. | Implemented in the second batch. |
 | Spatial Gaussian coverage gate | Confirmed. Primitive retention alone cannot prove footprint coverage. | Implemented as `GAUSSIAN_MAP_COVERAGE_V1`; fresh GPU calibration remains a release task. |
-| Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Started with the CPU-visible coverage and filter-policy modules under strict mypy. |
+| Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Eight CPU-visible modules now run under strict mypy, including an explicit CUDA model-filter boundary. |
 | Pre-approved hashes for dynamic YOLO variants | Confirmed absent; runtime hashes provide provenance but not prior approval. | Separate model-registry batch. |
 | Kafka tile-result payload references | Confirmed useful for bounding segmentation messages. | Requires a versioned event/storage migration. |
 | Coverage floor above 50% | Confirmed. The full non-GPU/non-integration suite measured 60% branch coverage after both batches. | Raised from 50% to 55% in this batch. |
@@ -69,7 +69,7 @@ Validation completed on Ubuntu WSL2 with Python 3.12:
 
 - focused distributed-worker, durable-aggregation, direct-upload, Helm and
   spatial-coverage contract tests passed;
-- the full non-GPU/non-integration suite passed: 533 selected tests, with 13
+- the full non-GPU/non-integration suite passed: 534 selected tests, with 13
   explicitly deselected;
 - branch coverage measured 60%, allowing the enforced floor to move from 50%
   to 55% with five points of headroom;
@@ -129,10 +129,14 @@ report for every aerial product. Facade output remains outside this map-only
 contract.
 
 Unit tests cover complete, sparse, locally punctured and collinear-camera
-footprints. The coverage and existing filter-policy modules are now part of the
-strict-mypy and service-core Ruff ratchets. A fresh Example Quarry GPU E2E is
-still required to calibrate these conservative defaults against a complete
-post-change product; routine PR CI must not run that long qualification.
+footprints. Coverage, filter policy, model filtering, GeoTIFF writing, height
+referencing, partitioning, PCA alignment and scene assembly are now part of the
+strict-mypy and service-core Ruff ratchets. The model-filtering protocol keeps
+dynamic CuPy arrays isolated at the CUDA boundary while statically checking the
+model lifecycle, camera arrays, callbacks and return identity. A fresh Example
+Quarry GPU E2E is still required to calibrate the conservative coverage defaults
+against a complete post-change product; routine PR CI must not run that long
+qualification.
 
 ## Deferred roadmap
 

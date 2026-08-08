@@ -5,8 +5,10 @@ Matches the existing ortho_dsm.py output format: LZW-compressed GeoTIFF
 with UTM CRS, using rasterio + from_origin transform.
 """
 import os
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
 
 
 def _geotiff_creation_options(*, photometric: str | None = None) -> dict[str, str]:
@@ -20,11 +22,16 @@ def _geotiff_creation_options(*, photometric: str | None = None) -> dict[str, st
     return options
 
 
-def write_geotiff(output_path: str, rgb: np.ndarray,
-                  x_min: float, y_max: float, gsd: float,
-                  crs: str = "EPSG:32631",
-                  height_map: np.ndarray = None,
-                  height_output_path: str = None):
+def write_geotiff(
+    output_path: str,
+    rgb: NDArray[np.uint8],
+    x_min: float,
+    y_max: float,
+    gsd: float,
+    crs: str = "EPSG:32631",
+    height_map: NDArray[np.floating[Any]] | None = None,
+    height_output_path: str | None = None,
+) -> None:
     """
     Write an orthophoto RGB array to a GeoTIFF file.
 
