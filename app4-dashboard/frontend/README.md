@@ -77,8 +77,9 @@ docker build \
   .
 ```
 
-The image runs `npm run start` on container port `3000`. The local Helm values
-publish it on NodePort `30000`.
+The image launches the Next.js server directly with Node.js on container port
+`3000`; npm/npx and their unused dependency tree are removed from the runtime
+stage. The local Helm values publish it on NodePort `30000`.
 
 ## Runtime API origin and authentication
 
@@ -95,6 +96,11 @@ validates it and returns a bounded HttpOnly, Secure, SameSite=Lax cookie used
 for both credentialed CORS requests and WebSocket authentication. The key is
 never compiled into the frontend, written to local/session storage, stored in
 the signed cookie or added to the WebSocket URL. Sign-out clears the cookie.
+
+Session lifecycle is isolated in `app/lib/auth.tsx` behind `AuthProvider` and
+`useAuth`. The mission store consumes only the resulting authentication status
+to start or stop protected polling and WebSocket work; it no longer owns API
+credentials, login errors or session renewal state.
 
 See the repository-level [`README.md`](../../README.md) for the full stack and
 [`DEVELOPMENT.md`](../../DEVELOPMENT.md) for the supported Node/npm workflow.
