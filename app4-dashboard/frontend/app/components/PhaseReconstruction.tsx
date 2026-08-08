@@ -2,6 +2,7 @@
 
 import React from "react";
 import { Cpu, Gauge, HardDrive, ShieldCheck, Zap } from "lucide-react";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
@@ -230,9 +231,10 @@ const ALIGNMENT_PRESETS = [
 export default function PhaseReconstruction() {
   const {
     pipeline, setPipeline, parameterSchema,
-    parameterValues, updateParameter, setParameterValues, activeMission,
+    parameterValues, updateParameter, setParameterValues,
     workDrive, setWorkDrive,
   } = useStore();
+  const { activeMission } = useMissionRuntime();
 
   const metadata = parameterSchema?.metadata ?? {};
   const processes = parameterSchema?.processes ?? [];

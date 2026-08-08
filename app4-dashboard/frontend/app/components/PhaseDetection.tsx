@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 import StageHeader from "./StageHeader";
 import {
@@ -31,8 +32,8 @@ export default function PhaseDetection() {
     setSelectedClasses,
     tileSize,
     setTileSize,
-    activeMission,
   } = useStore();
+  const { activeMission } = useMissionRuntime();
 
   const tilerService = activeMission?.services?.TILER;
   const iaService = activeMission?.services?.IA;

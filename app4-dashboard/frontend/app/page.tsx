@@ -22,6 +22,10 @@ import PhaseSetup from "./components/PhaseSetup";
 import ResultsViewer from "./components/ResultsViewer";
 import StatusSidebar from "./components/StatusSidebar";
 import { AuthProvider, useAuth } from "./lib/auth";
+import {
+  MissionRuntimeProvider,
+  useMissionRuntime,
+} from "./lib/mission-runtime";
 import { StoreProvider, useStore } from "./lib/store";
 import type { PhaseId } from "./lib/types";
 
@@ -88,12 +92,11 @@ function DashboardInner() {
   const {
     activePhase,
     setActivePhase,
-    activeMission,
     selectedPath,
-    wsConnected,
     parameterValues,
   } = useStore();
   const { authPrincipal, logout } = useAuth();
+  const { activeMission, wsConnected } = useMissionRuntime();
   const [monitorOpen, setMonitorOpen] = useState(false);
 
   useEffect(() => {
@@ -340,11 +343,13 @@ function DashboardInner() {
 export default function Dashboard() {
   return (
     <AuthProvider>
-      <StoreProvider>
-        <AuthGate>
-          <DashboardInner />
-        </AuthGate>
-      </StoreProvider>
+      <MissionRuntimeProvider>
+        <StoreProvider>
+          <AuthGate>
+            <DashboardInner />
+          </AuthGate>
+        </StoreProvider>
+      </MissionRuntimeProvider>
     </AuthProvider>
   );
 }
