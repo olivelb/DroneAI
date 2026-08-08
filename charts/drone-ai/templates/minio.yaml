@@ -88,6 +88,10 @@ spec:
           value: {{ .Values.minio.accessKey | quote }}
         - name: MINIO_ROOT_PASSWORD
           value: {{ .Values.minio.secretKey | quote }}
+        # MinIO Community supports global CORS configuration. External S3
+        # providers keep their separate bucket-level configuration.
+        - name: MINIO_API_CORS_ALLOW_ORIGIN
+          value: {{ join "," .Values.minio.browserUploadCors.allowedOrigins | quote }}
         volumeMounts:
         - name: data
           mountPath: /data
@@ -203,21 +207,5 @@ spec:
             sleep 2
           done
           mc mb --ignore-existing myminio/{{ .Values.minio.bucket }}
-          cat > /tmp/cors.xml <<'EOF'
-          <CORSConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-            <CORSRule>
-          {{- range .Values.minio.browserUploadCors.allowedOrigins }}
-              <AllowedOrigin>{{ . }}</AllowedOrigin>
-          {{- end }}
-              <AllowedMethod>PUT</AllowedMethod>
-              <AllowedMethod>GET</AllowedMethod>
-              <AllowedMethod>HEAD</AllowedMethod>
-              <AllowedHeader>*</AllowedHeader>
-              <ExposeHeader>ETag</ExposeHeader>
-              <MaxAgeSeconds>3600</MaxAgeSeconds>
-            </CORSRule>
-          </CORSConfiguration>
-          EOF
-          mc cors set myminio/{{ .Values.minio.bucket }} /tmp/cors.xml
           echo "Bucket '{{ .Values.minio.bucket }}' ready."
 {{- end }}

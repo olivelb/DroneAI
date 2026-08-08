@@ -33,13 +33,15 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
     )
 
     assert "browserUploadCors:" in defaults
-    for source in (minio, external_script):
-        assert "PUT" in source
-        assert "ETag" in source
-        assert "AllowedOrigin" in source
-    assert "<CORSConfiguration" in compose
-    assert "mc cors set droneai/drone-ai /tmp/cors.xml" in compose
-    assert "/tmp/cors.json" not in compose
+    assert "MINIO_API_CORS_ALLOW_ORIGIN" in minio
+    assert 'join \",\" .Values.minio.browserUploadCors.allowedOrigins' in minio
+    assert "mc cors set" not in minio
+    assert "MINIO_API_CORS_ALLOW_ORIGIN" in compose
+    assert "http://localhost:3000,http://127.0.0.1:3000" in compose
+    assert "mc cors set" not in compose
+    assert "PUT" in external_script
+    assert "ETag" in external_script
+    assert "AllowedOrigin" in external_script
 
 
 def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
