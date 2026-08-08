@@ -64,6 +64,7 @@ class S3Client(Protocol):
 # ---------------------------------------------------------------------------
 
 S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable MinIO URL
+S3_DELETE_MAX_ATTEMPTS = max(1, int(os.getenv("S3_DELETE_MAX_ATTEMPTS", "3")))
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -296,24 +297,77 @@ def delete_object(s3_key: str, bucket: str | None = None) -> None:
     logger.debug("Deleted s3://%s/%s", bucket, s3_key)
 
 
+def _delete_object_batch(
+    client: S3Client,
+    bucket: str,
+    keys: list[str],
+) -> list[dict[str, Any]]:
+    response = client.delete_objects(
+        Bucket=bucket,
+        Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+    )
+    errors = response.get("Errors") or []
+    if not isinstance(errors, list):
+        raise RuntimeError("S3 DeleteObjects returned a malformed Errors field")
+    return [error for error in errors if isinstance(error, dict)]
+
+
+def _delete_error_keys(
+    errors: list[dict[str, Any]],
+    requested_keys: set[str],
+) -> set[str]:
+    failed = {str(error.get("Key")) for error in errors if error.get("Key") in requested_keys}
+    if len(failed) != len(errors):
+        raise RuntimeError("S3 DeleteObjects returned an error without a matching object key")
+    return failed
+
+
 def delete_prefix(s3_prefix: str, bucket: str | None = None) -> int:
-    """Delete all objects under a prefix. Returns count of deleted objects."""
+    """Delete and reconcile all objects under a prefix."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
-    keys = list_objects(s3_prefix, bucket)
-    if not keys:
+    pending = sorted(set(list_objects(s3_prefix, bucket)))
+    if not pending:
         return 0
-    # Delete in batches of 1000 (S3 limit)
-    deleted = 0
-    for i in range(0, len(keys), 1000):
-        batch = keys[i : i + 1000]
-        client.delete_objects(
-            Bucket=bucket,
-            Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+
+    targeted = set(pending)
+    last_errors: list[dict[str, Any]] = []
+    for attempt in range(1, S3_DELETE_MAX_ATTEMPTS + 1):
+        failed: set[str] = set()
+        last_errors = []
+        for index in range(0, len(pending), 1000):
+            batch = pending[index : index + 1000]
+            errors = _delete_object_batch(client, bucket, batch)
+            last_errors.extend(errors)
+            failed.update(_delete_error_keys(errors, set(batch)))
+
+        remaining = set(list_objects(s3_prefix, bucket))
+        targeted.update(remaining)
+        pending = sorted(failed | remaining)
+        if not pending:
+            deleted = len(targeted)
+            logger.info(
+                "Deleted %d objects under s3://%s/%s",
+                deleted,
+                bucket,
+                s3_prefix,
+            )
+            return deleted
+        logger.warning(
+            "S3 prefix deletion attempt %d/%d left %d objects under s3://%s/%s",
+            attempt,
+            S3_DELETE_MAX_ATTEMPTS,
+            len(pending),
+            bucket,
+            s3_prefix,
         )
-        deleted += len(batch)
-    logger.info("Deleted %d objects under s3://%s/%s", deleted, bucket, s3_prefix)
-    return deleted
+
+    error_summary = ", ".join(f"{error.get('Key', '?')} ({error.get('Code', 'unknown')})" for error in last_errors[:5])
+    detail = f"; last errors: {error_summary}" if error_summary else ""
+    raise RuntimeError(
+        f"Failed to delete {len(pending)} objects under s3://{bucket}/{s3_prefix} "
+        f"after {S3_DELETE_MAX_ATTEMPTS} attempts{detail}"
+    )
 
 
 def get_object_stream(

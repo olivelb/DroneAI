@@ -133,6 +133,9 @@ Current responsibilities:
 - provide helper functions that merge mission overrides with the selected pipeline preset
 - persist missions, logs, and detections through SQLAlchemy
 - expose S3-compatible storage helpers used with MinIO
+- reconcile prefix deletions after every S3 `DeleteObjects` call and retry
+  per-object failures up to `S3_DELETE_MAX_ATTEMPTS` (default: `3`), raising
+  an error instead of reporting a partial deletion as successful
 - validate mission identifiers and contained filesystem paths
 - compute and serialize the Sim3 transform between raw and aligned COLMAP models
 - validate and enrich versioned Kafka events

@@ -32,9 +32,7 @@ def test_download_directory_rejects_object_key_traversal(
     monkeypatch.setattr(
         storage,
         "list_objects",
-        lambda _prefix, _bucket=None: [
-            "missions/mission-1/../../outside.txt"
-        ],
+        lambda _prefix, _bucket=None: ["missions/mission-1/../../outside.txt"],
     )
 
     with pytest.raises(ValueError, match="Unsafe S3 object key"):
@@ -54,16 +52,12 @@ def test_download_directory_keeps_valid_keys_below_destination(
     monkeypatch.setattr(
         storage,
         "list_objects",
-        lambda _prefix, _bucket=None: [
-            "missions/mission-1/tiles/0.jpg"
-        ],
+        lambda _prefix, _bucket=None: ["missions/mission-1/tiles/0.jpg"],
     )
     monkeypatch.setattr(
         storage,
         "download_file",
-        lambda key, path, _bucket=None: downloaded.append(
-            (key, Path(path))
-        ),
+        lambda key, path, _bucket=None: downloaded.append((key, Path(path))),
     )
 
     destination = tmp_path / "destination"
@@ -111,3 +105,93 @@ def test_verified_upload_checks_size_and_sha256(tmp_path, monkeypatch):
 
     assert result["size"] == artifact.stat().st_size
     assert result["sha256"] == client.metadata["sha256"]
+
+
+class _DeleteClient:
+    def __init__(self, responses):
+        self.responses = iter(responses)
+        self.deleted_batches = []
+
+    def delete_objects(self, **kwargs):
+        self.deleted_batches.append([entry["Key"] for entry in kwargs["Delete"]["Objects"]])
+        return next(self.responses)
+
+
+def test_delete_prefix_retries_partial_object_errors(monkeypatch):
+    client = _DeleteClient(
+        [
+            {
+                "Errors": [
+                    {
+                        "Key": "missions/mission-1/b.tif",
+                        "Code": "InternalError",
+                    }
+                ]
+            },
+            {},
+        ]
+    )
+    listings = iter(
+        [
+            ["missions/mission-1/a.tif", "missions/mission-1/b.tif"],
+            ["missions/mission-1/b.tif"],
+            [],
+        ]
+    )
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "list_objects", lambda *_args: next(listings))
+
+    deleted = storage.delete_prefix("missions/mission-1/")
+
+    assert deleted == 2
+    assert client.deleted_batches == [
+        ["missions/mission-1/a.tif", "missions/mission-1/b.tif"],
+        ["missions/mission-1/b.tif"],
+    ]
+
+
+def test_delete_prefix_retries_objects_found_during_reconciliation(monkeypatch):
+    client = _DeleteClient([{}, {}])
+    listings = iter(
+        [
+            ["datasets/site/a.jpg"],
+            ["datasets/site/a.jpg"],
+            [],
+        ]
+    )
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "list_objects", lambda *_args: next(listings))
+
+    assert storage.delete_prefix("datasets/site/") == 1
+    assert client.deleted_batches == [
+        ["datasets/site/a.jpg"],
+        ["datasets/site/a.jpg"],
+    ]
+
+
+def test_delete_prefix_raises_after_bounded_partial_failures(monkeypatch):
+    error_response = {
+        "Errors": [
+            {
+                "Key": "missions/mission-1/a.tif",
+                "Code": "AccessDenied",
+            }
+        ]
+    }
+    client = _DeleteClient([error_response, error_response, error_response])
+    listings = iter(
+        [
+            ["missions/mission-1/a.tif"],
+            ["missions/mission-1/a.tif"],
+            ["missions/mission-1/a.tif"],
+            ["missions/mission-1/a.tif"],
+        ]
+    )
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "list_objects", lambda *_args: next(listings))
+    monkeypatch.setattr(storage, "S3_DELETE_MAX_ATTEMPTS", 3)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts.*AccessDenied"):
+        storage.delete_prefix("missions/mission-1/")
+
+    assert len(client.deleted_batches) == 3
