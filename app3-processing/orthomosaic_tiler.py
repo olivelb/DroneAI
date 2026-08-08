@@ -6,14 +6,17 @@ different worker replica can safely resume an interrupted analysis.
 """
 
 import json
+import logging
 import os
 import shutil
 from datetime import datetime, UTC
 from itertools import product
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import numpy as np
 import rasterio
+from numpy.typing import NDArray
 from processing_core import build_tile_starts
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
@@ -31,18 +34,63 @@ from shared.event_contracts import deterministic_event_id, make_event
 from shared.pipeline_params import normalize_ai_backend
 
 
+JsonObject = dict[str, Any]
+
+
+class KafkaProducer(Protocol):
+    """Subset of the Kafka producer used by the tiling service."""
+
+    def produce(self, topic: str, *, key: str, value: str) -> None: ...
+
+    def flush(self) -> int: ...
+
+
+class CancellationCheck(Protocol):
+    def __call__(
+        self,
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+    ) -> bool: ...
+
+
+class ProgressReporter(Protocol):
+    def __call__(
+        self,
+        vol_id: str,
+        step: str,
+        progress: int,
+        *,
+        status: str = "processing",
+        log: str | None = None,
+    ) -> None: ...
+
+
+class RasterSource(Protocol):
+    width: int
+    height: int
+    count: int
+    transform: Any
+    crs: Any
+    meta: dict[str, Any]
+
+    def read(self, *, window: Window) -> NDArray[Any]: ...
+
+    def window_transform(self, window: Window) -> Any: ...
+
+
 class OrthomosaicTiler:
     """Create JPEG inference tiles and publish their durable work journal."""
 
     def __init__(
         self,
         *,
-        producer,
-        tile_topic,
-        is_cancelled,
-        report_progress,
-        logger,
-    ):
+        producer: KafkaProducer,
+        tile_topic: str,
+        is_cancelled: CancellationCheck,
+        report_progress: ProgressReporter,
+        logger: logging.Logger,
+    ) -> None:
         self.producer = producer
         self.tile_topic = tile_topic
         self.is_cancelled = is_cancelled
@@ -50,11 +98,11 @@ class OrthomosaicTiler:
         self.logger = logger
 
     @staticmethod
-    def _workspace(vol_id, analysis_run_id):
+    def _workspace(vol_id: str, analysis_run_id: str | None) -> Path:
         workspace_id = analysis_run_id or "pipeline"
         return Path("/tmp/processing") / vol_id / workspace_id
 
-    def _cleanup_tiles(self, tiles_dir):
+    def _cleanup_tiles(self, tiles_dir: Path) -> None:
         for tile_path in tiles_dir.glob("tile_*.jpg"):
             try:
                 tile_path.unlink()
@@ -65,7 +113,7 @@ class OrthomosaicTiler:
                     error,
                 )
 
-    def _download(self, ortho_s3_key, local_ortho, vol_id):
+    def _download(self, ortho_s3_key: str, local_ortho: Path, vol_id: str) -> None:
         try:
             storage.download_file(ortho_s3_key, local_ortho)
         except Exception as error:
@@ -79,7 +127,7 @@ class OrthomosaicTiler:
             raise
 
     @staticmethod
-    def _build_plan(src, tile_size):
+    def _build_plan(src: RasterSource, tile_size: int) -> JsonObject:
         overlap = max(
             0,
             min(
@@ -89,7 +137,7 @@ class OrthomosaicTiler:
         )
         x_starts = build_tile_starts(src.width, tile_size, overlap)
         y_starts = build_tile_starts(src.height, tile_size, overlap)
-        return {
+        plan: JsonObject = {
             "transform": list(src.transform.to_gdal()) if src.transform else None,
             "crs": src.crs.to_string() if src.crs else "unknown",
             "width": src.width,
@@ -100,20 +148,21 @@ class OrthomosaicTiler:
             "y_starts": y_starts,
             "total_tiles": len(x_starts) * len(y_starts),
         }
+        return plan
 
     @staticmethod
-    def _public_metadata(plan):
+    def _public_metadata(plan: JsonObject) -> JsonObject:
         return {key: value for key, value in plan.items() if key not in {"x_starts", "y_starts", "total_tiles"}}
 
     def _persist_plan(
         self,
         *,
-        vol_id,
-        ortho_s3_key,
-        analysis_run_id,
-        analysis_attempt,
-        plan,
-    ):
+        vol_id: str,
+        ortho_s3_key: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        plan: JsonObject,
+    ) -> bool:
         with get_session() as session:
             mission = get_or_create_mission(session, vol_id)
             metadata = self._public_metadata(plan)
@@ -151,7 +200,7 @@ class OrthomosaicTiler:
             return True
 
     @staticmethod
-    def _write_jpeg(src, window, tile_path):
+    def _write_jpeg(src: RasterSource, window: Window, tile_path: Path) -> None:
         tile_data = src.read(window=window)
         if src.count > 3:
             tile_data = tile_data[:3, :, :]
@@ -172,31 +221,24 @@ class OrthomosaicTiler:
             destination.write(tile_data)
 
     @staticmethod
-    def _wgs84_bounds(src, window):
+    def _wgs84_bounds(src: RasterSource, window: Window) -> list[float] | None:
         if not src.crs:
             return None
         native_bounds = rasterio.windows.bounds(window, src.transform)
-        return list(
-            transform_bounds(
-                src.crs,
-                "EPSG:4326",
-                *native_bounds,
-                densify_pts=5,
-            )
-        )
+        return [float(value) for value in transform_bounds(src.crs, "EPSG:4326", *native_bounds, densify_pts=5)]
 
     @staticmethod
     def _journal_analysis_tile(
         *,
-        analysis_run_id,
-        analysis_attempt,
-        tile_index,
-        tile_s3_key,
-        x,
-        y,
-        window,
-        bounds,
-    ):
+        analysis_run_id: str,
+        analysis_attempt: int,
+        tile_index: int,
+        tile_s3_key: str,
+        x: int,
+        y: int,
+        window: Window,
+        bounds: list[float] | None,
+    ) -> bool:
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == analysis_run_id).with_for_update().one()
             if run.status == "cancelled" or int(run.retry_count or 0) != int(analysis_attempt):
@@ -235,17 +277,17 @@ class OrthomosaicTiler:
     @staticmethod
     def _tile_event(
         *,
-        vol_id,
-        analysis_run_id,
-        analysis_attempt,
-        tile_index,
-        tile_s3_key,
-        x,
-        y,
-        plan,
-        options,
-    ):
-        payload = {
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        tile_index: int,
+        tile_s3_key: str,
+        x: int,
+        y: int,
+        plan: JsonObject,
+        options: JsonObject,
+    ) -> JsonObject:
+        payload: JsonObject = {
             "vol_id": vol_id,
             "tile_index": tile_index,
             "tile_s3_key": tile_s3_key,
@@ -257,35 +299,38 @@ class OrthomosaicTiler:
             "analysis_run_id": analysis_run_id,
             **options,
         }
-        return make_event(
-            "image_tile",
-            payload,
-            event_id=deterministic_event_id(
+        return cast(
+            JsonObject,
+            make_event(
                 "image_tile",
-                vol_id,
-                analysis_run_id or "pipeline",
-                tile_index,
-                analysis_attempt,
+                payload,
+                event_id=deterministic_event_id(
+                    "image_tile",
+                    vol_id,
+                    analysis_run_id or "pipeline",
+                    tile_index,
+                    analysis_attempt,
+                ),
+                correlation_id=analysis_run_id or vol_id,
+                attempt=analysis_attempt,
             ),
-            correlation_id=analysis_run_id or vol_id,
-            attempt=analysis_attempt,
         )
 
     def _create_tile(
         self,
         *,
-        src,
-        tiles_dir,
-        tiles_s3_prefix,
-        vol_id,
-        analysis_run_id,
-        analysis_attempt,
-        tile_index,
-        x,
-        y,
-        plan,
-        options,
-    ):
+        src: RasterSource,
+        tiles_dir: Path,
+        tiles_s3_prefix: str,
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        tile_index: int,
+        x: int,
+        y: int,
+        plan: JsonObject,
+        options: JsonObject,
+    ) -> bool:
         window = Window(
             x,
             y,
@@ -332,11 +377,11 @@ class OrthomosaicTiler:
 
     @staticmethod
     def _complete_database_state(
-        vol_id,
-        analysis_run_id,
-        analysis_attempt,
-        tile_count,
-    ):
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        tile_count: int,
+    ) -> bool:
         with get_session() as session:
             if analysis_run_id:
                 run = (
@@ -361,11 +406,11 @@ class OrthomosaicTiler:
 
     def _mark_failed(
         self,
-        vol_id,
-        analysis_run_id,
-        analysis_attempt,
-        error,
-    ):
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        error: Exception,
+    ) -> None:
         self.logger.exception("Failed to tile orthomosaic for %s", vol_id)
         message = f"Failed to tile orthomosaic: {error}"
         self.report_progress(
@@ -388,16 +433,16 @@ class OrthomosaicTiler:
     def _publish_tiles(
         self,
         *,
-        local_ortho,
-        tiles_dir,
-        tiles_s3_prefix,
-        ortho_s3_key,
-        vol_id,
-        analysis_run_id,
-        analysis_attempt,
-        tile_size,
-        options,
-    ):
+        local_ortho: Path,
+        tiles_dir: Path,
+        tiles_s3_prefix: str,
+        ortho_s3_key: str,
+        vol_id: str,
+        analysis_run_id: str | None,
+        analysis_attempt: int,
+        tile_size: int,
+        options: JsonObject,
+    ) -> int | None:
         with rasterio.open(local_ortho) as src:
             plan = self._build_plan(src, tile_size)
             if not self._persist_plan(
@@ -453,18 +498,18 @@ class OrthomosaicTiler:
 
     def slice(
         self,
-        ortho_s3_key,
-        vol_id,
+        ortho_s3_key: str,
+        vol_id: str,
         *,
-        tile_size=1024,
-        classes=None,
-        ai_confidence=0.3,
-        ai_backend="yolo",
-        ai_model_variant="yolo26l",
-        sam_prompt="car",
-        analysis_run_id=None,
-        analysis_attempt=0,
-    ):
+        tile_size: int = 1024,
+        classes: list[str] | None = None,
+        ai_confidence: float = 0.3,
+        ai_backend: str = "yolo",
+        ai_model_variant: str = "yolo26l",
+        sam_prompt: str = "car",
+        analysis_run_id: str | None = None,
+        analysis_attempt: int = 0,
+    ) -> None:
         """Tile one orthomosaic and publish inference work."""
 
         workspace = self._workspace(vol_id, analysis_run_id)
@@ -477,7 +522,7 @@ class OrthomosaicTiler:
             tiles_s3_prefix = (
                 f"missions/{vol_id}/analyses/{analysis_run_id}/tiles" if analysis_run_id else f"missions/{vol_id}/tiles"
             )
-            options = {
+            options: JsonObject = {
                 "ai_backend": normalize_ai_backend(ai_backend),
                 "ai_model_variant": ai_model_variant,
                 "sam_prompt": sam_prompt,
