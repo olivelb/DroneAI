@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -54,7 +56,7 @@ class MissionParams(BaseModel):
         return validate_class_names(values)
 
     @model_validator(mode="after")
-    def validate_yolo_classes(self):
+    def validate_yolo_classes(self) -> MissionParams:
         if self.ai_backend == "yolo":
             validate_aerial_class_names(self.classes)
         return self

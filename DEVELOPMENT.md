@@ -100,11 +100,15 @@ The app3 entrypoint is likewise limited to Kafka lifecycle composition;
 `processing_dispatcher.py` routes validated events while
 `legacy_aggregation.py` isolates the initial mission compatibility path and
 its durable recovery.
-The first dashboard API strict-typing ratchet covers the package boundary,
+The dashboard API strict-typing ratchet covers the package boundary,
 RBAC/session security, Kafka/outbox publication, transactional status inbox
 and WebSocket fan-out, Kubernetes status records and image preview helpers.
-Pydantic schemas, domain services and route adapters remain the next API
-typing increments instead of being hidden behind broad ignores.
+It also checks mission and map Pydantic schemas with their real framework
+types, raster rate limiting, mission state/resume policy and geospatial
+query/storage helpers. Explicit protocols and typed dictionaries keep legacy
+SQLAlchemy queries and validated JSON at narrow dynamic boundaries. Route
+adapters remain the next API typing increment instead of being hidden behind
+broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache

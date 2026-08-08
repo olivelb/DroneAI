@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any, NotRequired, Protocol, TypedDict, cast
 
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
@@ -13,21 +15,110 @@ TERMINAL_STATUSES = {"success", "error", "cancelled"}
 MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
 
 
-def apply_mission_state(session, payload: dict) -> None:
+JsonObject = dict[str, Any]
+
+
+class QueryProtocol(Protocol):
+    """Minimal legacy SQLAlchemy query surface used by this service."""
+
+    def filter(self, *criteria: Any) -> QueryProtocol: ...
+
+    def order_by(self, *criteria: Any) -> QueryProtocol: ...
+
+    def limit(self, value: int) -> QueryProtocol: ...
+
+    def first(self) -> Any: ...
+
+    def all(self) -> list[Any]: ...
+
+
+class SessionProtocol(Protocol):
+    """Transaction boundary required by the mission state service."""
+
+    def add(self, instance: Any) -> None: ...
+
+    def query(self, *entities: Any) -> QueryProtocol: ...
+
+
+class MissionRecord(Protocol):
+    id: int
+    vol_id: str
+    status: str
+    current_step: str | None
+    progress: int
+    retry_count: int | None
+    service_states: JsonObject | None
+    resume_info: JsonObject | None
+    params: JsonObject | None
+    error_message: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
+class ColmapResumeState(TypedDict):
+    available: bool
+    state: str
+    reason: str
+    downstream_processing: list[str]
+
+
+class WorkspaceState(TypedDict):
+    vol_id: str
+    status: str
+    step: str | None
+    progress: int
+    updated_at: str | None
+    started_at: str | None
+    last_log: str | None
+    resume_info: JsonObject | None
+    mission: JsonObject | None
+    current_command: JsonObject | None
+    copy_progress: JsonObject | None
+
+
+class SerializedMission(TypedDict):
+    vol_id: str
+    workspace_dir: str
+    workspace_state: WorkspaceState
+    colmap_resume: ColmapResumeState
+    services: JsonObject
+    logs: list[JsonObject]
+    updated_at: float
+    overall_status: str
+
+
+class StatusSummary(TypedDict):
+    active_vol_id: str | None
+    missions: list[SerializedMission]
+
+
+class MissionStateResult(TypedDict):
+    vol_id: str
+    workspace_state: WorkspaceState | None
+
+
+class ResumeResponse(TypedDict):
+    status: str
+    message: str
+    colmap_resume: NotRequired[ColmapResumeState]
+
+
+def apply_mission_state(session: SessionProtocol, payload: JsonObject) -> None:
     """Apply one validated status event to an existing DB transaction."""
     vol_id = payload.get("vol_id")
-    if not vol_id:
+    if not isinstance(vol_id, str) or not vol_id:
         raise ValueError("status event has no vol_id")
 
-    service = payload.get("service") or "UNKNOWN"
-    step = payload.get("step")
-    progress = payload.get("progress", 0)
-    status = payload.get("status", "processing")
-    log_message = payload.get("log")
-    details = payload.get("details")
+    service = str(payload.get("service") or "UNKNOWN")
+    step = cast(str | None, payload.get("step"))
+    progress = cast(int, payload.get("progress", 0))
+    event_status = str(payload.get("status", "processing"))
+    log_message = cast(str | None, payload.get("log"))
+    raw_details = payload.get("details")
+    details = cast(JsonObject, raw_details) if isinstance(raw_details, dict) else None
 
-    mission = get_or_create_mission(session, vol_id)
-    states = dict(mission.service_states or {})
+    mission = cast(MissionRecord, get_or_create_mission(session, vol_id))
+    states: JsonObject = dict(mission.service_states or {})
     states[service] = payload
     mission.service_states = states
     mission.current_step = step
@@ -37,13 +128,11 @@ def apply_mission_state(session, payload: dict) -> None:
         mission.status = overall_status
     elif mission.status not in TERMINAL_STATUSES:
         mission.status = "processing"
-    mission.updated_at = datetime.now(timezone.utc)
+    mission.updated_at = datetime.now(UTC)
 
-    if status == "error" and log_message:
+    if event_status == "error" and log_message:
         mission.error_message = log_message
-    elif overall_status == "success":
-        mission.error_message = None
-    elif status == "cancelled":
+    elif overall_status == "success" or event_status == "cancelled":
         mission.error_message = None
     if details:
         event = details.get("event")
@@ -65,7 +154,7 @@ def apply_mission_state(session, payload: dict) -> None:
             vol_id=vol_id,
             service=service,
             step=step,
-            status=status,
+            status=event_status,
             progress=progress,
             message=log_message,
             details=details,
@@ -73,20 +162,23 @@ def apply_mission_state(session, payload: dict) -> None:
     )
 
 
-def update_mission_state(payload: dict) -> None:
+def update_mission_state(payload: JsonObject) -> None:
     """Persist one status event using its own transaction."""
 
     with get_session() as session:
         apply_mission_state(session, payload)
 
 
-def compute_overall_status(services: dict) -> str:
+def compute_overall_status(services: Mapping[str, object]) -> str:
     if not services:
         return "idle"
-    statuses = [
-        payload.get("status", "processing") if isinstance(payload, dict) else "processing"
-        for payload in services.values()
-    ]
+    statuses: list[str] = []
+    for payload in services.values():
+        if not isinstance(payload, dict):
+            statuses.append("processing")
+            continue
+        raw_status = payload.get("status", "processing")
+        statuses.append(raw_status if isinstance(raw_status, str) else "processing")
     if "error" in statuses:
         return "error"
     if "cancelled" in statuses:
@@ -108,14 +200,14 @@ def compute_overall_status(services: dict) -> str:
     return "processing"
 
 
-def is_mission_stale(mission: Mission) -> bool:
+def is_mission_stale(mission: MissionRecord) -> bool:
     if mission.updated_at is None:
         return False
-    elapsed = (datetime.now(timezone.utc) - mission.updated_at).total_seconds()
+    elapsed = (datetime.now(UTC) - mission.updated_at).total_seconds()
     return elapsed > MISSION_PROCESSING_STALE_SECONDS
 
 
-def build_colmap_resume_state(mission: Mission) -> dict:
+def build_colmap_resume_state(mission: MissionRecord) -> ColmapResumeState:
     services = mission.service_states or {}
     colmap_service = services.get("COLMAP", {})
     colmap_status = colmap_service.get("status") if isinstance(colmap_service, dict) else None
@@ -185,7 +277,7 @@ def build_colmap_resume_state(mission: Mission) -> dict:
     }
 
 
-def serialize_mission(mission: Mission) -> dict:
+def serialize_mission(mission: MissionRecord) -> SerializedMission:
     services = mission.service_states or {}
     overall = compute_overall_status(services)
     if mission.status in TERMINAL_STATUSES:
@@ -194,7 +286,9 @@ def serialize_mission(mission: Mission) -> dict:
         overall = "error"
 
     resume_info = mission.resume_info or {}
-    workspace_state = {
+    current_command = resume_info.get("last_command_event")
+    copy_progress = resume_info.get("copy_progress")
+    workspace_state: WorkspaceState = {
         "vol_id": mission.vol_id,
         "status": mission.status,
         "step": mission.current_step,
@@ -204,8 +298,8 @@ def serialize_mission(mission: Mission) -> dict:
         "last_log": mission.error_message,
         "resume_info": mission.resume_info,
         "mission": mission.params,
-        "current_command": resume_info.get("last_command_event"),
-        "copy_progress": resume_info.get("copy_progress"),
+        "current_command": (cast(JsonObject, current_command) if isinstance(current_command, dict) else None),
+        "copy_progress": (cast(JsonObject, copy_progress) if isinstance(copy_progress, dict) else None),
     }
     return {
         "vol_id": mission.vol_id,
@@ -219,9 +313,12 @@ def serialize_mission(mission: Mission) -> dict:
     }
 
 
-def get_status_summary() -> dict:
+def get_status_summary() -> StatusSummary:
     with get_session() as session:
-        missions = session.query(Mission).order_by(Mission.updated_at.desc()).limit(50).all()
+        missions = cast(
+            list[MissionRecord],
+            session.query(Mission).order_by(Mission.updated_at.desc()).limit(50).all(),
+        )
         serialized = [serialize_mission(mission) for mission in missions]
     serialized.sort(key=lambda item: item["updated_at"], reverse=True)
     active = next(
@@ -234,9 +331,12 @@ def get_status_summary() -> dict:
     }
 
 
-def get_mission_state(vol_id: str) -> dict:
+def get_mission_state(vol_id: str) -> MissionStateResult:
     with get_session() as session:
-        mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+        mission = cast(
+            MissionRecord | None,
+            session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+        )
         if mission is None:
             return {"vol_id": vol_id, "workspace_state": None}
         return {
@@ -245,8 +345,14 @@ def get_mission_state(vol_id: str) -> dict:
         }
 
 
-def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
-    mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+def prepare_resume_in_session(
+    session: SessionProtocol,
+    vol_id: str,
+) -> tuple[JsonObject | None, ResumeResponse]:
+    mission = cast(
+        MissionRecord | None,
+        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+    )
     if mission is None:
         return None, {
             "status": "error",
@@ -273,8 +379,8 @@ def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
     mission.status = "processing"
     mission.current_step = "RESUMING"
     mission.error_message = None
-    mission.updated_at = datetime.now(timezone.utc)
-    response = {
+    mission.updated_at = datetime.now(UTC)
+    response: ResumeResponse = {
         "status": "success",
         "message": f"Resume command queued for {vol_id}.",
         "colmap_resume": resume_state,
@@ -282,7 +388,7 @@ def prepare_resume_in_session(session, vol_id: str) -> tuple[dict | None, dict]:
     return payload, response
 
 
-def prepare_resume(vol_id: str) -> tuple[dict | None, dict]:
+def prepare_resume(vol_id: str) -> tuple[JsonObject | None, ResumeResponse]:
     """Compatibility wrapper using its own transaction."""
 
     with get_session() as session:

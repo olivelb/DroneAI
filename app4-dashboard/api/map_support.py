@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Protocol, Self, TypeVar, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
@@ -13,11 +13,37 @@ from shared import storage
 from shared.database import AIAnalysisRun, Detection, MapFeature, Mission
 
 VOL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
-RASTER_LAYERS = {
+RASTER_LAYERS: dict[str, tuple[str, str]] = {
     "ortho": ("orthomosaic.tif", ""),
     "depth": ("orthomosaic.height.tif", "depth"),
 }
 MAX_VECTOR_OBJECT_BYTES = 20_000_000
+Bounds = tuple[float, float, float, float]
+JsonObject = dict[str, Any]
+
+
+class QueryProtocol(Protocol):
+    def filter(self, *criteria: Any) -> Self: ...
+
+    def first(self) -> Any: ...
+
+
+class SessionProtocol(Protocol):
+    def query(self, *entities: Any) -> QueryProtocol: ...
+
+    def scalar(self, statement: Any) -> Any: ...
+
+
+class FilterQueryProtocol(Protocol):
+    def filter(self, *criteria: Any) -> Self: ...
+
+
+FilterQueryT = TypeVar("FilterQueryT", bound=FilterQueryProtocol)
+
+
+class MissionRecord(Protocol):
+    id: int
+    tiling_metadata: JsonObject | None
 
 
 def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
@@ -44,7 +70,7 @@ def require_object(key: str) -> None:
         )
 
 
-def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
+def parse_bbox(value: str | None) -> Bounds | None:
     if not value:
         return None
     try:
@@ -70,8 +96,11 @@ def parse_bbox(value: str | None) -> tuple[float, float, float, float] | None:
     return bounds
 
 
-def get_mission(session, vol_id: str) -> Mission:
-    mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+def get_mission(session: SessionProtocol, vol_id: str) -> MissionRecord:
+    mission = cast(
+        MissionRecord | None,
+        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+    )
     if mission is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -140,13 +169,22 @@ def stored_map_feature_geojson(
     }
 
 
-def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
-    geometry_json = session.scalar(select(func.ST_AsGeoJSON(MapFeature.geometry)).where(MapFeature.id == feature.id))
+def map_feature_geojson(
+    session: SessionProtocol,
+    feature: MapFeature,
+) -> dict[str, Any]:
+    geometry_json = cast(
+        str,
+        session.scalar(select(func.ST_AsGeoJSON(MapFeature.geometry)).where(MapFeature.id == feature.id)),
+    )
     run_id = feature.analysis_run.run_id if feature.analysis_run is not None else None
     return stored_map_feature_geojson(feature, geometry_json, run_id)
 
 
-def feature_collection(features: list[dict[str, Any]], **properties):
+def feature_collection(
+    features: list[dict[str, Any]],
+    **properties: Any,
+) -> dict[str, Any]:
     return {
         "type": "FeatureCollection",
         "features": features,
@@ -157,7 +195,11 @@ def feature_collection(features: list[dict[str, Any]], **properties):
     }
 
 
-def apply_spatial_filter(query, geometry_column, bounds):
+def apply_spatial_filter(
+    query: FilterQueryT,
+    geometry_column: Any,
+    bounds: Bounds | None,
+) -> FilterQueryT:
     if not bounds:
         return query
     west, south, east, north = bounds
@@ -169,7 +211,10 @@ def apply_spatial_filter(query, geometry_column, bounds):
     )
 
 
-def apply_detection_spatial_filter(query, bounds):
+def apply_detection_spatial_filter(
+    query: FilterQueryT,
+    bounds: Bounds | None,
+) -> FilterQueryT:
     """Filter legacy detections stored as geometry or fallback GPS columns."""
 
     if not bounds:
@@ -198,6 +243,12 @@ def load_json_object(key: str) -> dict[str, Any]:
             detail="Vector tile is too large",
         )
     try:
-        return json.loads(stream.read())
+        payload = json.loads(stream.read())
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Stored vector payload must be a JSON object",
+            )
+        return cast(JsonObject, payload)
     finally:
         stream.close()
