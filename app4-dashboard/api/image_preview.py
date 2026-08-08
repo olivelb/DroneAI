@@ -55,11 +55,7 @@ def _normalize_grayscale(image: Image.Image) -> Image.Image:
 
 def _colorize_depth(image: Image.Image) -> Image.Image:
     indexed = _normalized_luminance(image).convert("P")
-    palette = [
-        channel
-        for value in range(256)
-        for channel in _depth_color(value / 255.0)
-    ]
+    palette = [channel for value in range(256) for channel in _depth_color(value / 255.0)]
     indexed.putpalette(palette)
     return indexed.convert("RGB")
 
@@ -73,10 +69,7 @@ def render_preview(
     max_size = min(max(256, max_size), 8192)
     with Image.open(io.BytesIO(raw)) as source:
         if source.width * source.height > MAX_PREVIEW_PIXELS:
-            raise PreviewTooLargeError(
-                "Preview exceeds the "
-                f"{MAX_PREVIEW_PIXELS:,}-pixel safety limit"
-            )
+            raise PreviewTooLargeError(f"Preview exceeds the {MAX_PREVIEW_PIXELS:,}-pixel safety limit")
         image = source.copy()
 
     if colormap == "depth" and image.mode in {"I;16", "I", "F", "L"}:

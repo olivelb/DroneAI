@@ -9,10 +9,10 @@ import threading
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from hmac import new as hmac_new
-from typing import Any
 
 from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
 
@@ -40,7 +40,7 @@ class TokenBucketRateLimiter:
         requests_per_minute: int,
         burst: int,
         max_keys: int = 10_000,
-        clock=time.monotonic,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if requests_per_minute <= 0 or burst <= 0 or max_keys <= 0:
             raise ValueError("rate limit, burst, and max_keys must be positive")
@@ -53,15 +53,11 @@ class TokenBucketRateLimiter:
         self._lock = threading.Lock()
 
     @classmethod
-    def from_environment(cls) -> "TokenBucketRateLimiter":
+    def from_environment(cls) -> TokenBucketRateLimiter:
         return cls(
-            requests_per_minute=int(
-                os.getenv("DRONEAI_TILE_RATE_LIMIT_PER_MINUTE", "600")
-            ),
+            requests_per_minute=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_PER_MINUTE", "600")),
             burst=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_BURST", "120")),
-            max_keys=int(
-                os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000")
-            ),
+            max_keys=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000")),
         )
 
     def consume(self, key: str) -> float | None:
@@ -99,11 +95,7 @@ def is_production() -> bool:
 
 
 def configured_cors_origins() -> list[str]:
-    origins = [
-        value.strip()
-        for value in os.getenv("CORS_ORIGINS", "*").split(",")
-        if value.strip()
-    ]
+    origins = [value.strip() for value in os.getenv("CORS_ORIGINS", "*").split(",") if value.strip()]
     return origins or ["*"]
 
 
@@ -114,25 +106,18 @@ def _configured_keys() -> list[tuple[str, Principal]]:
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as error:
-        raise RuntimeError(
-            "DRONEAI_API_KEYS_JSON must be valid JSON"
-        ) from error
+        raise RuntimeError("DRONEAI_API_KEYS_JSON must be valid JSON") from error
     if not isinstance(payload, list):
         raise RuntimeError("DRONEAI_API_KEYS_JSON must be a JSON array")
-    result = []
+    result: list[tuple[str, Principal]] = []
     for index, item in enumerate(payload):
         if not isinstance(item, dict):
-            raise RuntimeError(
-                f"DRONEAI_API_KEYS_JSON[{index}] must be an object"
-            )
+            raise RuntimeError(f"DRONEAI_API_KEYS_JSON[{index}] must be an object")
         key = str(item.get("key") or "")
         subject = str(item.get("subject") or "")
         role = str(item.get("role") or "")
         if len(key) < 32 or not subject or role not in ROLE_RANK:
-            raise RuntimeError(
-                f"DRONEAI_API_KEYS_JSON[{index}] has an invalid key, "
-                "subject, or role"
-            )
+            raise RuntimeError(f"DRONEAI_API_KEYS_JSON[{index}] has an invalid key, subject, or role")
         result.append((key, Principal(subject=subject, role=role)))
     return result
 
@@ -142,9 +127,7 @@ def authentication_enabled() -> bool:
     if explicit is not None:
         disabled = explicit.strip().lower() in {"1", "true", "yes"}
         if disabled and is_production():
-            raise RuntimeError(
-                "DRONEAI_AUTH_DISABLED cannot be enabled in production"
-            )
+            raise RuntimeError("DRONEAI_AUTH_DISABLED cannot be enabled in production")
         return not disabled
     return is_production() or bool(_configured_keys())
 
@@ -153,24 +136,15 @@ def validate_production_configuration() -> None:
     if not is_production():
         return
     if "*" in configured_cors_origins():
-        raise RuntimeError(
-            "CORS_ORIGINS must list trusted origins in production"
-        )
+        raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
     if not _configured_keys():
-        raise RuntimeError(
-            "DRONEAI_API_KEYS_JSON is required in production"
-        )
+        raise RuntimeError("DRONEAI_API_KEYS_JSON is required in production")
     if len(os.getenv("DRONEAI_SESSION_SECRET", "")) < 32:
-        raise RuntimeError(
-            "DRONEAI_SESSION_SECRET must contain at least 32 characters "
-            "in production"
-        )
+        raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters in production")
     for name in ("S3_ACCESS_KEY", "S3_SECRET_KEY", "DATABASE_URL"):
         value = os.getenv(name, "").strip()
         if not value or value in LOCAL_SECRET_VALUES:
-            raise RuntimeError(
-                f"{name} must be supplied by a production secret"
-            )
+            raise RuntimeError(f"{name} must be supplied by a production secret")
 
 
 def _extract_token(
@@ -200,9 +174,7 @@ def issue_session_token(
 ) -> str:
     secret = os.getenv("DRONEAI_SESSION_SECRET", "")
     if len(secret) < 32:
-        raise RuntimeError(
-            "DRONEAI_SESSION_SECRET must contain at least 32 characters"
-        )
+        raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters")
     payload = {
         "subject": principal.subject,
         "role": principal.role,
@@ -271,7 +243,7 @@ def authenticate_token(token: str | None) -> Principal | None:
     return _authenticate_session_token(token)
 
 
-def require_role(minimum_role: str):
+def require_role(minimum_role: str) -> Callable[..., Principal]:
     if minimum_role not in ROLE_RANK:
         raise ValueError("unknown API role")
 
@@ -319,11 +291,7 @@ def enforce_cookie_csrf(request: Request) -> None:
     if SESSION_COOKIE_NAME not in request.cookies:
         return
     origin = request.headers.get("origin", "").rstrip("/")
-    trusted = {
-        configured.rstrip("/")
-        for configured in configured_cors_origins()
-        if configured != "*"
-    }
+    trusted = {configured.rstrip("/") for configured in configured_cors_origins() if configured != "*"}
     # Development without a configured Origin remains usable; production
     # configuration validation already forbids the wildcard.
     if not is_production() and not trusted:
@@ -346,7 +314,7 @@ async def authorize_websocket(websocket: WebSocket) -> bool:
 
 
 def upload_limits() -> dict[str, int]:
-    values: dict[str, Any] = {
+    values = {
         "max_files": os.getenv("DRONEAI_UPLOAD_MAX_FILES", "2500"),
         "max_file_bytes": os.getenv(
             "DRONEAI_UPLOAD_MAX_FILE_BYTES",
