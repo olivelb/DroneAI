@@ -12,11 +12,15 @@ sys.path.insert(0, str(APP2_ROOT))
 import detection_core  # noqa: E402
 from detection_core import (  # noqa: E402
     REQUESTED_CLASS_MAP,
+    YOLO_MODEL_REGISTRY,
+    ensure_yolo_model_file,
     extract_obb_detections,
     normalize_yolo_model_variant,
     resolve_requested_labels,
     resolve_yolo_model_file,
+    resolve_yolo_model_integrity,
     run_yolo_detection,
+    verify_yolo_model_file,
 )
 
 from shared.validation import SUPPORTED_AERIAL_CLASSES
@@ -26,6 +30,83 @@ def test_model_variant_aliases_are_normalized():
     assert normalize_yolo_model_variant("26-n") == "yolo26n"
     assert normalize_yolo_model_variant("tiny") == "yolo26n"
     assert normalize_yolo_model_variant("unknown") == "yolo26l"
+
+
+def test_supported_yolo_assets_are_release_and_digest_pinned():
+    assert set(YOLO_MODEL_REGISTRY) == {
+        "yolo26l",
+        "yolo26m",
+        "yolo26s",
+        "yolo26n",
+        "yolo11l",
+        "yolo11m",
+        "yolo11s",
+        "yolo11n",
+    }
+    for asset in YOLO_MODEL_REGISTRY.values():
+        assert asset["release"] == "v8.4.0"
+        assert asset["url"].endswith(
+            f"/{asset['release']}/{asset['checkpoint']}"
+        )
+        assert len(asset["sha256"]) == 64
+        int(asset["sha256"], 16)
+
+
+def test_official_model_integrity_comes_from_registry(tmp_path):
+    model_path = tmp_path / "yolo26n-obb.pt"
+
+    repository, revision, expected = resolve_yolo_model_integrity(
+        "yolo26n",
+        model_path,
+    )
+
+    assert repository == "ultralytics/assets"
+    assert revision == "v8.4.0"
+    assert expected == YOLO_MODEL_REGISTRY["yolo26n"]["sha256"]
+
+
+def test_custom_model_requires_an_explicit_expected_hash(tmp_path, monkeypatch):
+    model_path = tmp_path / "quarry-special.pt"
+    monkeypatch.delenv("AERIAL_CUSTOM_MODEL_SHA256", raising=False)
+
+    with pytest.raises(RuntimeError, match="AERIAL_CUSTOM_MODEL_SHA256"):
+        resolve_yolo_model_integrity("yolo26n", model_path)
+
+    expected = hashlib.sha256(b"custom-model").hexdigest()
+    monkeypatch.setenv("AERIAL_CUSTOM_MODEL_SHA256", expected)
+    monkeypatch.setenv("AERIAL_CUSTOM_MODEL_REVISION", "quarry-v1")
+
+    assert resolve_yolo_model_integrity("yolo26n", model_path) == (
+        "custom",
+        "quarry-v1",
+        expected,
+    )
+
+
+def test_checkpoint_hash_is_verified_before_model_loading(tmp_path):
+    model_path = tmp_path / "checkpoint.pt"
+    model_path.write_bytes(b"approved")
+    expected = hashlib.sha256(b"approved").hexdigest()
+
+    assert verify_yolo_model_file(model_path, expected) == expected
+    model_path.write_bytes(b"tampered")
+    with pytest.raises(RuntimeError, match="checksum mismatch"):
+        verify_yolo_model_file(model_path, expected)
+
+
+def test_existing_official_checkpoint_is_checked_by_ensure(tmp_path, monkeypatch):
+    model_path = tmp_path / "yolo26n-obb.pt"
+    model_path.write_bytes(b"test-checkpoint")
+    expected = hashlib.sha256(b"test-checkpoint").hexdigest()
+    asset = {**YOLO_MODEL_REGISTRY["yolo26n"], "sha256": expected}
+    monkeypatch.setitem(YOLO_MODEL_REGISTRY, "yolo26n", asset)
+
+    assert ensure_yolo_model_file(
+        model_path,
+        "yolo26n-obb.pt",
+        "yolo26n",
+    ) == model_path
+    assert detection_core.yolo_model_sha256(model_path) == expected
 
 
 def test_baked_model_is_used_before_populating_the_writable_cache(

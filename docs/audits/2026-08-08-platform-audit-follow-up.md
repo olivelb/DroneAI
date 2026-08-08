@@ -16,7 +16,7 @@ implementation batches, not a claim that every roadmap item is complete.
 | Browser-to-S3 multipart upload | Confirmed architectural improvement over the former 50 GiB FastAPI multipart boundary. | Implemented in the second batch. |
 | Spatial Gaussian coverage gate | Confirmed. Primitive retention alone cannot prove footprint coverage. | Implemented as `GAUSSIAN_MAP_COVERAGE_V1`; fresh GPU calibration remains a release task. |
 | Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Eight CPU-visible modules now run under strict mypy, including an explicit CUDA model-filter boundary. |
-| Pre-approved hashes for dynamic YOLO variants | Confirmed absent; runtime hashes provide provenance but not prior approval. | Separate model-registry batch. |
+| Pre-approved hashes for dynamic YOLO variants | Confirmed absent; runtime hashes provide provenance but not prior approval. | Implemented for all eight supported OBB variants from the pinned upstream release. |
 | Kafka tile-result payload references | Confirmed useful for bounding segmentation messages. | Requires a versioned event/storage migration. |
 | Coverage floor above 50% | Confirmed. The full non-GPU/non-integration suite measured 60% branch coverage after both batches. | Raised from 50% to 55% in this batch. |
 
@@ -69,7 +69,7 @@ Validation completed on Ubuntu WSL2 with Python 3.12:
 
 - focused distributed-worker, durable-aggregation, direct-upload, Helm and
   spatial-coverage contract tests passed;
-- the full non-GPU/non-integration suite passed: 534 selected tests, with 13
+- the full non-GPU/non-integration suite passed: 539 selected tests, with 13
   explicitly deselected;
 - branch coverage measured 60%, allowing the enforced floor to move from 50%
   to 55% with five points of headroom;
@@ -138,13 +138,28 @@ Quarry GPU E2E is still required to calibrate the conservative coverage defaults
 against a complete post-change product; routine PR CI must not run that long
 qualification.
 
+## Pre-approved YOLO checkpoint registry
+
+All eight supported YOLO26/YOLO11 OBB variants now resolve through a typed
+registry containing the upstream repository, release, exact asset URL and
+SHA-256 digest. The values are pinned to the signed Ultralytics assets
+`v8.4.0` release and agree with the digest already used for the baked
+`yolo26l-obb.pt` image asset.
+
+An existing cached checkpoint is verified before Ultralytics or Torch can
+deserialize it. A freshly downloaded mismatch is removed and rejected. A
+runtime release override cannot silently escape the registry; an arbitrary
+`AERIAL_MODEL_FILE` requires an explicit 64-character
+`AERIAL_CUSTOM_MODEL_SHA256` and a non-empty custom revision. The model
+manifest continues to record the observed artifact hash, so prior approval and
+post-run provenance are both retained.
+
 ## Deferred roadmap
 
 The remaining implementation batches should remain independently reviewable:
 
 1. gradual strict typing of the remaining CPU-visible `gaussian_ortho` boundaries;
-2. expected-hash registry for supported dynamic YOLO checkpoints;
-3. S3-referenced, hash-verified tile result events;
-4. asynchronous Kafka delivery acknowledgements;
-5. distributed API rate limiting and WebSocket fan-out before API scale-out;
-6. explicit platform versioning and release policy.
+2. S3-referenced, hash-verified tile result events;
+3. asynchronous Kafka delivery acknowledgements;
+4. distributed API rate limiting and WebSocket fan-out before API scale-out;
+5. explicit platform versioning and release policy.

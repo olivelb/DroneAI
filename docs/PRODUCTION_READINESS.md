@@ -104,6 +104,21 @@ temporarily for compatibility, but Mission Studio no longer uses it.
 Retention and lifecycle rules remain the responsibility of the selected S3
 service and must be configured before public ingestion.
 
+## AI model integrity policy
+
+The supported YOLO26 and YOLO11 OBB variants are allow-listed by repository,
+release, asset URL and SHA-256 in `app2-ia/detection_core.py`. Runtime cache
+files are checked before model deserialization, not merely hashed afterward
+for provenance. The approved release is `ultralytics/assets` `v8.4.0`; changing
+`AERIAL_MODEL_RELEASE` without updating and reviewing the registry fails
+closed.
+
+An operator-provided `AERIAL_MODEL_FILE` whose filename is outside that
+registry must be accompanied by `AERIAL_CUSTOM_MODEL_SHA256` and a non-empty
+`AERIAL_CUSTOM_MODEL_REVISION`. Record those values as reviewed deployment
+configuration. Do not use the custom path as an untracked download escape
+hatch.
+
 ## Geodetic product contract
 
 Horizontal output uses one recorded metric CRS for the entire mission. Small
