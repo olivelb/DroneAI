@@ -92,7 +92,7 @@ jobs:
           cache: pip
           cache-dependency-path: requirements/dev.txt
       - name: Install development dependencies
-        run: python -m pip install --requirement requirements/dev.txt
+        run: python -m pip install --require-hashes --requirement requirements/dev.txt
       - name: Run shared static quality checks
         run: make static PYTHON=python
       - name: Audit locked Python environment
@@ -142,7 +142,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: requirements/dev.txt
-      - run: python -m pip install --requirement requirements/dev.txt
+      - run: python -m pip install --require-hashes --requirement requirements/dev.txt
       - name: Upgrade, downgrade and re-upgrade schema
         run: |
           alembic upgrade head

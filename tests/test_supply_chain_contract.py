@@ -1,9 +1,13 @@
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CUDA_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
+PINNED_PYTHON_BASE = re.compile(
+    r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$",
+)
 
 
 def _trigger_block(workflow_path: Path) -> str:
@@ -79,3 +83,34 @@ def test_cuda_runtimes_refresh_fixable_openssl_packages() -> None:
     ]
 
     assert all("libssl3t64 openssl" in dockerfile for dockerfile in dockerfiles)
+
+
+def test_python_runtime_bases_and_artifacts_are_immutable() -> None:
+    runtime_dockerfiles = [
+        ROOT / "app3-processing" / "Dockerfile",
+        ROOT / "app4-dashboard" / "api" / "Dockerfile",
+    ]
+    for path in runtime_dockerfiles:
+        dockerfile = path.read_text(encoding="utf-8")
+        assert PINNED_PYTHON_BASE.match(dockerfile.splitlines()[0])
+        assert "--require-hashes" in dockerfile
+
+    colmap_dockerfile = (ROOT / "app1-colmap" / "Dockerfile.base").read_text(
+        encoding="utf-8",
+    )
+    assert "--require-hashes" in colmap_dockerfile
+
+
+def test_supported_python_locks_and_installers_require_hashes() -> None:
+    for lock_name in ("api.txt", "processing.txt", "colmap.txt", "dev.txt"):
+        lock = (ROOT / "requirements" / lock_name).read_text(encoding="utf-8")
+        assert "pip-compile" in lock[:300]
+        assert "--generate-hashes" in lock[:300]
+        assert "--hash=sha256:" in lock
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    bootstrap = (ROOT / "scripts" / "bootstrap-dev.sh").read_text(
+        encoding="utf-8",
+    )
+    assert workflow.count("pip install --require-hashes") == 2
+    assert "--require-hashes" in bootstrap

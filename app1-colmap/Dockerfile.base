@@ -107,6 +107,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Python runtime packages, including CuPy for the custom CUDA rasteriser.
 COPY requirements/colmap.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages \
+    --require-hashes \
     --requirement /tmp/requirements.txt
 
 # ============================================================

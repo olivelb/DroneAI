@@ -1,4 +1,4 @@
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
@@ -11,7 +11,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/api.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir --requirement /tmp/requirements.txt
+RUN pip install --no-cache-dir --require-hashes \
+    --requirement /tmp/requirements.txt
 
 RUN groupadd --gid 10001 droneai \
     && useradd --uid 10001 --gid 10001 --create-home droneai
