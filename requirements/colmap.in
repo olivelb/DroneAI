@@ -9,6 +9,7 @@ numpy
 pillow
 plyfile
 psycopg2-binary
+pydantic
 pycolmap==4.1.1
 pyproj
 rasterio

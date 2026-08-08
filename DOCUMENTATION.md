@@ -116,7 +116,7 @@ Key responsibilities are grouped rather than duplicated in workers:
 
 - configuration, storage and persistence: `config.py`, `storage.py`,
   `database.py`;
-- reliable events: `event_contracts.py`, `inbox_outbox.py`,
+- reliable events: `event_schemas.py`, `event_contracts.py`, `inbox_outbox.py`,
   `kafka_reliability.py`, `worker_messaging.py`;
 - product configuration: `pipeline_params.py`, `dronegs_profile.py`,
   `facade_process.py`, `validation.py`;
@@ -464,6 +464,15 @@ deterministic identifiers derived from their mission and logical item. This
 makes duplicates observable. The API inbox/outbox already uses stable event
 IDs for mission, control, and status boundaries; worker hand-offs use the same
 ID discipline but are not yet backed by durable worker outboxes.
+
+Pydantic models in `shared/event_schemas.py` validate the envelope and the
+domain fields of all seven event families: mission, orthomosaic, image tile,
+tile detection, status, control, and dead letter. They reject malformed known
+fields but retain unknown additive fields so producers and consumers can be
+rolled out independently within schema version 1. The discriminated,
+machine-readable contract is committed at
+[`docs/contracts/kafka-events-v1.schema.json`](docs/contracts/kafka-events-v1.schema.json)
+and `make static` rejects schema drift.
 
 ### Delivery and failure semantics
 

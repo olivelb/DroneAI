@@ -4,6 +4,7 @@ confluent-kafka
 geoalchemy2
 huggingface-hub
 psycopg2-binary
+pydantic
 pyproj
 rasterio
 safetensors

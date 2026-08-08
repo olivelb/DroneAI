@@ -1,0 +1,160 @@
+"""Pydantic contracts and JSON Schema generation for Kafka events."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+
+
+JsonObject = dict[str, Any]
+PIPELINE_STATUSES = frozenset({"processing", "success", "error", "cancelled"})
+
+
+class EventEnvelope(BaseModel):
+    """Trace envelope shared by every version-one event."""
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: Literal[1]
+    event_type: str
+    event_id: str = Field(min_length=1, max_length=512)
+    correlation_id: str = Field(min_length=1, max_length=512)
+    causation_id: str | None = Field(default=None, max_length=512)
+    attempt: int = Field(default=0, ge=0, strict=True)
+    emitted_at: datetime
+
+
+class MissionEvent(EventEnvelope):
+    event_type: Literal["mission"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    input_dataset: str | None = Field(default=None, max_length=1024)
+    pipeline: Literal["modern", "legacy"] | None = None
+    tile_size: int | None = Field(default=None, ge=256, le=4096, strict=True)
+    ai_confidence: float | None = Field(default=None, ge=0, le=1)
+    ai_backend: Literal["yolo", "sam3"] | None = None
+    ai_model_variant: str | None = Field(default=None, max_length=128)
+    sam_prompt: str | None = Field(default=None, max_length=256)
+    classes: list[str] | None = Field(default=None, max_length=20)
+    colmap_params: JsonObject | None = None
+    work_drive: str | None = Field(default=None, max_length=256)
+
+
+class InferenceEventEnvelope(EventEnvelope):
+    """Inference settings propagated across the processing and IA stages."""
+
+    analysis_run_id: str | None = Field(default=None, max_length=128)
+    classes: list[str] | None = Field(default=None, max_length=20)
+    ai_confidence: float | None = Field(default=None, ge=0, le=1)
+    ai_backend: Literal["yolo", "sam3"] | None = None
+    ai_model_variant: str | None = Field(default=None, max_length=128)
+    sam_prompt: str | None = Field(default=None, max_length=256)
+
+
+class OrthomosaicEvent(InferenceEventEnvelope):
+    event_type: Literal["orthomosaic"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    ortho_s3_key: str | None = Field(default=None, max_length=2048)
+    ortho_path: str | None = Field(default=None, max_length=2048)
+    tile_size: int | None = Field(default=None, ge=256, le=4096, strict=True)
+
+    @model_validator(mode="after")
+    def require_orthomosaic_location(self) -> OrthomosaicEvent:
+        if not (self.ortho_s3_key or self.ortho_path):
+            raise ValueError("orthomosaic event requires ortho_s3_key or ortho_path")
+        return self
+
+
+class ImageTileEvent(InferenceEventEnvelope):
+    event_type: Literal["image_tile"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    tile_index: int = Field(ge=0, strict=True)
+    tile_s3_key: str | None = Field(default=None, max_length=2048)
+    tile_path: str | None = Field(default=None, max_length=2048)
+    offset_x: int | None = Field(default=None, ge=0, strict=True)
+    offset_y: int | None = Field(default=None, ge=0, strict=True)
+    total_tiles: int | None = Field(default=None, ge=1, strict=True)
+    ortho_transform: list[Any] | None = Field(default=None, min_length=6, max_length=9)
+    ortho_crs: str | None = Field(default=None, max_length=256)
+
+    @model_validator(mode="after")
+    def require_tile_location(self) -> ImageTileEvent:
+        if not (self.tile_s3_key or self.tile_path):
+            raise ValueError("image_tile event requires tile_s3_key or tile_path")
+        return self
+
+
+class TileDetectionEvent(EventEnvelope):
+    event_type: Literal["tile_detection"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    tile_index: int = Field(ge=0, strict=True)
+    detections: list[JsonObject]
+    analysis_run_id: str | None = Field(default=None, max_length=128)
+    model_manifest: JsonObject | None = None
+
+
+class StatusEvent(EventEnvelope):
+    event_type: Literal["status"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    status: Literal["processing", "success", "error", "cancelled"]
+    service: str | None = Field(default=None, max_length=64)
+    step: str | None = Field(default=None, max_length=128)
+    progress: int | None = Field(default=None, ge=0, le=100, strict=True)
+    log: str | None = Field(default=None, max_length=16_384)
+    details: JsonObject | None = None
+
+
+class ControlEvent(EventEnvelope):
+    event_type: Literal["control"]
+    vol_id: str = Field(min_length=1, max_length=256)
+    command: Literal["cancel"]
+    analysis_run_id: str | None = Field(default=None, max_length=128)
+
+
+class DeadLetterEvent(EventEnvelope):
+    event_type: Literal["dead_letter"]
+    source_topic: str = Field(min_length=1, max_length=256)
+    source_partition: int = Field(ge=0, strict=True)
+    source_offset: int = Field(ge=0, strict=True)
+    consumer_group: str = Field(min_length=1, max_length=256)
+    expected_event_type: str = Field(min_length=1, max_length=64)
+    attempts: int = Field(ge=1, strict=True)
+    error: str = Field(min_length=1, max_length=16_384)
+    original_value: str = Field(max_length=2_000_000)
+
+
+KafkaEvent = Annotated[
+    MissionEvent
+    | OrthomosaicEvent
+    | ImageTileEvent
+    | TileDetectionEvent
+    | StatusEvent
+    | ControlEvent
+    | DeadLetterEvent,
+    Field(discriminator="event_type"),
+]
+
+EVENT_MODELS: dict[str, type[EventEnvelope]] = {
+    "mission": MissionEvent,
+    "orthomosaic": OrthomosaicEvent,
+    "image_tile": ImageTileEvent,
+    "tile_detection": TileDetectionEvent,
+    "status": StatusEvent,
+    "control": ControlEvent,
+    "dead_letter": DeadLetterEvent,
+}
+EVENT_TYPES = frozenset(EVENT_MODELS)
+_EVENT_ADAPTER: TypeAdapter[KafkaEvent] = TypeAdapter(KafkaEvent)
+
+
+def kafka_event_json_schema() -> JsonObject:
+    """Return the discriminated JSON Schema for every supported event."""
+
+    schema = _EVENT_ADAPTER.json_schema()
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "urn:droneai:kafka-events:v1",
+        "title": "DroneAI Kafka Event v1",
+        **schema,
+    }
