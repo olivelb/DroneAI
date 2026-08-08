@@ -165,8 +165,12 @@ because their local wall-frame selection has a separate quality contract.
 
 - The required orthomosaic is uploaded with SHA-256 metadata and verified by
   `HEAD` before `DONE` or the downstream event can be published.
-- Every AI tile response has a unique database receipt, including responses
-  with zero detections.
+- Every AI tile response is a versioned S3 object; Kafka carries only its
+  deterministic key, exact size, SHA-256, schema version and detection count.
+- Both aggregation paths verify object integrity, tile identity and model
+  provenance before persistence. Modern receipts retain the object key, hash
+  size and producing attempt, including responses with zero detections, so
+  recovery revalidates the correct inputs before finalization.
 - Aggregation completion is locked in PostgreSQL and stale finalizations are
   recovered after a worker restart.
 - Outbox events enter `dead` after their retry budget; administrators can list
@@ -174,6 +178,11 @@ because their local wall-frame selection has a separate quality contract.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init
   containers prevent database-dependent services from starting on an old
   schema.
+
+For an in-place upgrade from a release that still embeds detections in Kafka,
+pause IA consumption first, apply migration `0010` and roll the processing/API
+consumers, then roll and resume IA. New consumers accept queued inline events;
+old consumers must never receive the new reference-only form.
 
 ## Release gates
 

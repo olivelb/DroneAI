@@ -1034,13 +1034,34 @@
           "title": "Correlation Id",
           "type": "string"
         },
+        "detection_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detection Count"
+        },
         "detections": {
-          "items": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "title": "Detections",
-          "type": "array"
+          "anyOf": [
+            {
+              "items": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Detections"
         },
         "emitted_at": {
           "format": "date-time",
@@ -1071,6 +1092,58 @@
           "default": null,
           "title": "Model Manifest"
         },
+        "result_s3_key": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result S3 Key"
+        },
+        "result_schema_version": {
+          "anyOf": [
+            {
+              "const": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Schema Version"
+        },
+        "result_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Sha256"
+        },
+        "result_size_bytes": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Size Bytes"
+        },
         "schema_version": {
           "const": 1,
           "title": "Schema Version",
@@ -1095,8 +1168,7 @@
         "correlation_id",
         "emitted_at",
         "vol_id",
-        "tile_index",
-        "detections"
+        "tile_index"
       ],
       "title": "TileDetectionEvent",
       "type": "object"

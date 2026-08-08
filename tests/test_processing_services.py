@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import json
 import sys
@@ -12,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 
 from shared.database import AIAnalysisRun, AIAnalysisTile, Mission
 from shared.model_provenance import build_model_manifest
+from shared.tile_results import build_tile_result_artifact
 
 PROCESSING_DIR = Path(__file__).resolve().parents[1] / "app3-processing"
 if str(PROCESSING_DIR) not in sys.path:
@@ -86,6 +88,33 @@ def _model_manifest(artifact_sha256="a" * 64):
         runtime={"device": "cpu"},
         inference={"model_variant": "yolo26l", "confidence": 0.3},
     )
+
+
+def _tile_result(tile_index=0, detections=None):
+    records = detections if detections is not None else []
+    artifact = build_tile_result_artifact(
+        vol_id="mission-1",
+        analysis_run_id="run-1",
+        tile_index=tile_index,
+        attempt=0,
+        model_manifest=_model_manifest(),
+        detections=records,
+    )
+    payload = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
+    reference = {
+        "key": f"tile-{tile_index}.json",
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+        "tile_index": tile_index,
+        "attempt": 0,
+        "detection_count": len(records),
+    }
+    descriptor = {
+        "vol_id": "mission-1",
+        "run_id": "run-1",
+        "model_manifest": _model_manifest(),
+    }
+    return payload, reference, descriptor
 
 
 def test_analysis_json_publication_is_atomic_and_verified(
@@ -205,7 +234,9 @@ def test_analysis_workflow_has_a_bounded_tile_retry_budget():
 def test_analysis_tile_payload_limits_are_enforced(monkeypatch):
     import io
 
-    payload = json.dumps({"raw_detections": [{"class_name": "tree"}] * 3}).encode("utf-8")
+    payload, reference, descriptor = _tile_result(
+        detections=[{"class_name": "tree"}] * 3,
+    )
     monkeypatch.setattr(
         analysis_workflow.storage,
         "get_object_stream",
@@ -214,7 +245,7 @@ def test_analysis_tile_payload_limits_are_enforced(monkeypatch):
 
     workflow = _workflow(maximum_raw_detections=2)
     with pytest.raises(RuntimeError, match="raw detection safety limit"):
-        workflow._load_tile_payloads(["tile-result.json"])
+        workflow._load_tile_payloads([reference], descriptor)
 
 
 def test_analysis_tile_payload_size_is_bounded_before_read(monkeypatch):
@@ -229,26 +260,46 @@ def test_analysis_tile_payload_size_is_bounded_before_read(monkeypatch):
 
     workflow = _workflow(maximum_tile_result_bytes=10)
     with pytest.raises(RuntimeError, match="tile result exceeds"):
-        workflow._load_tile_payloads(["oversized.json"])
+        workflow._load_tile_payloads(
+            [
+                {
+                    "key": "oversized.json",
+                    "sha256": "a" * 64,
+                    "size_bytes": 11,
+                    "tile_index": 0,
+                    "attempt": 0,
+                    "detection_count": 0,
+                }
+            ],
+            _tile_result()[2],
+        )
     assert stream.closed
 
 
 def test_analysis_aggregate_payload_size_is_bounded(monkeypatch):
     import io
 
-    payload = b'{"raw_detections": []}'
+    first_payload, first_reference, descriptor = _tile_result(tile_index=0)
+    second_payload, second_reference, _ = _tile_result(tile_index=1)
+    payloads = {
+        first_reference["key"]: first_payload,
+        second_reference["key"]: second_payload,
+    }
     monkeypatch.setattr(
         analysis_workflow.storage,
         "get_object_stream",
-        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+        lambda key: (io.BytesIO(payloads[key]), len(payloads[key]), "application/json"),
     )
 
     workflow = _workflow(
-        maximum_tile_result_bytes=len(payload),
-        maximum_aggregate_result_bytes=len(payload) + 1,
+        maximum_tile_result_bytes=max(len(first_payload), len(second_payload)),
+        maximum_aggregate_result_bytes=len(first_payload) + len(second_payload) - 1,
     )
     with pytest.raises(RuntimeError, match="aggregate result size limit"):
-        workflow._load_tile_payloads(["one.json", "two.json"])
+        workflow._load_tile_payloads(
+            [first_reference, second_reference],
+            descriptor,
+        )
 
 
 def test_active_finalization_lease_rejects_second_owner(monkeypatch):
@@ -286,6 +337,49 @@ def test_active_finalization_lease_rejects_second_owner(monkeypatch):
         )
 
     assert _workflow(finalization_owner="worker-b")._claim_finalization("run-1") is None
+
+
+def test_finalization_keeps_each_completed_tile_producing_attempt(monkeypatch):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            retry_count=2,
+            total_tiles=1,
+            status="running",
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="completed",
+                tile_s3_key="tile.jpg",
+                result_s3_key="result.json",
+                result_sha256="a" * 64,
+                result_size_bytes=42,
+                result_attempt=0,
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+            )
+        )
+
+    claim = _workflow()._claim_finalization("run-1")
+
+    assert claim is not None
+    _, references = claim
+    assert references[0]["attempt"] == 0
 
 
 def test_recovery_marks_exhausted_tiles_dead(monkeypatch):
@@ -425,7 +519,7 @@ def test_analysis_run_pins_first_model_manifest_and_rejects_mixed_results(
     monkeypatch.setattr(
         workflow,
         "_stage_tile_result",
-        lambda *_args, **_kwargs: ("result.json", 0),
+        lambda *_args, **_kwargs: ("result.json", 0, "a" * 64, 2),
     )
     monkeypatch.setattr(
         workflow,
@@ -452,4 +546,113 @@ def test_analysis_run_pins_first_model_manifest_and_rejects_mixed_results(
                 **event,
                 "model_manifest": _model_manifest("b" * 64),
             }
+        )
+
+
+def test_referenced_tile_result_is_verified_and_journaled(monkeypatch):
+    import io
+
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            backend="yolo",
+            model_manifest=_model_manifest(),
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            total_tiles=2,
+            status="running",
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="queued",
+                tile_s3_key="tile.jpg",
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+            )
+        )
+
+    payload, reference, _ = _tile_result(
+        detections=[{"class_name": "truck", "confidence": 0.9}],
+    )
+    reference["key"] = (
+        "missions/mission-1/ai-tile-results/run-1/attempt_0/tile_0.json"
+    )
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "get_object_stream",
+        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+    )
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "upload_verified_file",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("referenced result was uploaded again")
+        ),
+    )
+
+    _workflow().process_detection(
+        {
+            "vol_id": "mission-1",
+            "analysis_run_id": "run-1",
+            "tile_index": 0,
+            "attempt": 0,
+            "model_manifest": _model_manifest(),
+            "result_s3_key": reference["key"],
+            "result_sha256": reference["sha256"],
+            "result_size_bytes": reference["size_bytes"],
+            "detection_count": reference["detection_count"],
+            "result_schema_version": 1,
+        }
+    )
+
+    with session_scope() as session:
+        receipt = session.query(AIAnalysisTile).one()
+        assert receipt.status == "completed"
+        assert receipt.result_s3_key == reference["key"]
+        assert receipt.result_sha256 == reference["sha256"]
+        assert receipt.result_size_bytes == reference["size_bytes"]
+        assert receipt.result_attempt == 0
+        assert receipt.detection_count == 1
+
+
+def test_referenced_tile_result_rejects_a_tampered_hash(monkeypatch):
+    import io
+
+    payload, reference, _ = _tile_result()
+    reference["key"] = (
+        "missions/mission-1/ai-tile-results/run-1/attempt_0/tile_0.json"
+    )
+    run = SimpleNamespace(model_manifest=_model_manifest())
+    monkeypatch.setattr(
+        analysis_workflow.storage,
+        "get_object_stream",
+        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+    )
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        _workflow()._stage_tile_result(
+            {
+                "vol_id": "mission-1",
+                "analysis_run_id": "run-1",
+                "tile_index": 0,
+                "attempt": 0,
+                "result_s3_key": reference["key"],
+                "result_sha256": "b" * 64,
+                "result_size_bytes": reference["size_bytes"],
+                "detection_count": reference["detection_count"],
+            },
+            run,
         )

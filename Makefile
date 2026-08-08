@@ -13,7 +13,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/partition.py \
 	app1-colmap/gaussian_ortho/pca_alignment.py \
 	app1-colmap/gaussian_ortho/scene_info.py
-SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py
+SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \
 	app2-ia/detection_core.py \

@@ -17,8 +17,8 @@ implementation batches, not a claim that every roadmap item is complete.
 | Spatial Gaussian coverage gate | Confirmed. Primitive retention alone cannot prove footprint coverage. | Implemented as `GAUSSIAN_MAP_COVERAGE_V1`; fresh GPU calibration remains a release task. |
 | Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Eight CPU-visible modules now run under strict mypy, including an explicit CUDA model-filter boundary. |
 | Pre-approved hashes for dynamic YOLO variants | Confirmed absent; runtime hashes provide provenance but not prior approval. | Implemented for all eight supported OBB variants from the pinned upstream release. |
-| Kafka tile-result payload references | Confirmed useful for bounding segmentation messages. | Requires a versioned event/storage migration. |
-| Coverage floor above 50% | Confirmed. The full non-GPU/non-integration suite measured 60% branch coverage after both batches. | Raised from 50% to 55% in this batch. |
+| Kafka tile-result payload references | Confirmed useful for bounding segmentation messages. | Implemented with a versioned, hash-bound S3 artifact and migration `0010`. |
+| Coverage floor above 50% | Confirmed. The full non-GPU/non-integration suite now measures 61% branch coverage. | Raised from 50% to 55% with retained headroom. |
 
 The audit's lower-priority documentation observations were also correct: the
 development guide still referred to a dual-version Python suite after the
@@ -69,10 +69,10 @@ Validation completed on Ubuntu WSL2 with Python 3.12:
 
 - focused distributed-worker, durable-aggregation, direct-upload, Helm and
   spatial-coverage contract tests passed;
-- the full non-GPU/non-integration suite passed: 539 selected tests, with 13
+- the full non-GPU/non-integration suite passed: 552 selected tests, with 13
   explicitly deselected;
-- branch coverage measured 60%, allowing the enforced floor to move from 50%
-  to 55% with five points of headroom;
+- branch coverage measured 61%, retaining six points of headroom above the 55%
+  enforced floor;
 - Ruff, strict mypy domains, ShellCheck, actionlint, Markdown links and event
   schema checks passed;
 - `pip-audit` reported no known vulnerabilities;
@@ -154,12 +154,35 @@ runtime release override cannot silently escape the registry; an arbitrary
 manifest continues to record the observed artifact hash, so prior approval and
 post-run provenance are both retained.
 
+## S3-referenced AI tile results
+
+IA workers no longer place an unbounded segmentation result inside Kafka.
+Each tile is serialized as a versioned JSON artifact under the deterministic
+`missions/<vol>/ai-tile-results/<run-or-pipeline>/attempt_<n>/tile_<n>.json`
+key, uploaded with verification, then represented in Kafka only by its S3 key,
+SHA-256, exact byte size, schema version and detection count. The event remains
+small even when masks or polygons are detailed.
+
+Both the modern analysis workflow and the legacy mission workflow enforce the
+same trust boundary before accepting a result: deterministic key, configured
+size ceiling, exact object length, SHA-256, mission/run/tile/attempt identity,
+model manifest and detection count. Modern tile receipts persist the key, hash,
+size and producing attempt through Alembic migration `0010`, so finalization
+re-verifies the correct inputs after a restart or a partial campaign retry.
+Aggregate byte and detection limits remain in force during finalization.
+
+The schema temporarily continues to accept inline `detections` for a rolling
+upgrade, but an event must contain exactly one complete representation. New IA
+workers publish references only; the compatibility path converts an inline
+result into the same versioned S3 artifact before journaling it. An in-place
+deployment therefore pauses IA, migrates and rolls processing/API consumers,
+then rolls and resumes IA; an old consumer cannot safely read the new form.
+
 ## Deferred roadmap
 
 The remaining implementation batches should remain independently reviewable:
 
 1. gradual strict typing of the remaining CPU-visible `gaussian_ortho` boundaries;
-2. S3-referenced, hash-verified tile result events;
-3. asynchronous Kafka delivery acknowledgements;
-4. distributed API rate limiting and WebSocket fan-out before API scale-out;
-5. explicit platform versioning and release policy.
+2. asynchronous Kafka delivery acknowledgements;
+3. distributed API rate limiting and WebSocket fan-out before API scale-out;
+4. explicit platform versioning and release policy.

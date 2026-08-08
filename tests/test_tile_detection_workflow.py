@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import json
 import sys
@@ -75,6 +76,22 @@ def _workflow(tmp_path, *, producer=None, cancellation=None, progress=None):
     )
 
 
+def _capture_verified_uploads(monkeypatch):
+    uploads = {}
+
+    def upload(local_path, key):
+        payload = Path(local_path).read_bytes()
+        uploads[key] = payload
+        return {
+            "key": key,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    monkeypatch.setattr(tile_workflow.storage, "upload_verified_file", upload)
+    return uploads
+
+
 def test_coordinate_helpers_preserve_global_pixel_geometry():
     assert tile_workflow.translate_segment(
         [[1.0, 2.0], [3.0, 4.0]],
@@ -142,6 +159,7 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         Path(destination).write_bytes(b"jpeg")
 
     monkeypatch.setattr(tile_workflow.storage, "download_file", download)
+    uploads = _capture_verified_uploads(monkeypatch)
     workflow.process_tile(
         {
             "vol_id": "mission-1",
@@ -166,7 +184,17 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         "mission-1:run-1:tile:4",
         "tile_detection",
     )
-    detection = event["detections"][0]
+    assert "detections" not in event
+    assert event["result_schema_version"] == 1
+    assert event["detection_count"] == 1
+    payload = uploads[event["result_s3_key"]]
+    assert event["result_size_bytes"] == len(payload)
+    assert event["result_sha256"] == hashlib.sha256(payload).hexdigest()
+    artifact = json.loads(payload)
+    assert artifact["analysis_run_id"] == "run-1"
+    assert artifact["attempt"] == 2
+    assert artifact["tile_index"] == 4
+    detection = artifact["raw_detections"][0]
     assert detection["global_pixel_x"] == 12.0
     assert detection["global_pixel_y"] == 23.0
     assert detection["segment"] == [
@@ -200,6 +228,7 @@ def test_replicas_publish_results_without_local_terminal_status(
         Path(destination).write_bytes(b"jpeg")
 
     monkeypatch.setattr(tile_workflow.storage, "download_file", download)
+    uploads = _capture_verified_uploads(monkeypatch)
     for tile_index, worker in enumerate((worker_a, worker_b, worker_a, worker_b)):
         worker.process_tile(
             {
@@ -216,6 +245,8 @@ def test_replicas_publish_results_without_local_terminal_status(
         )
 
     assert len(producer.messages) == 4
+    assert len(uploads) == 4
+    assert all("detections" not in event for _, _, event in producer.messages)
     assert progress_a == []
     assert progress_b == []
     assert not list(tmp_path.rglob("*.jpg"))

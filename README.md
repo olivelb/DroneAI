@@ -63,13 +63,16 @@ because enough Gaussian primitives survived filtering.
 The processing worker converts the orthomosaic into overlapping tiles and
 queues them for inference. When detections return, it removes duplicates across
 tile boundaries, creates the final GeoJSON result and can persist indexed
-vectors in PostGIS for spatial search.
+vectors in PostGIS for spatial search. Tile results are read from versioned S3
+artifacts whose exact size, SHA-256, identity and model provenance are verified
+before aggregation.
 
 ### AI inference — `app2-ia`
 
 The AI worker consumes tile jobs and runs either Ultralytics YOLO OBB for
-oriented detections or Meta SAM 3 for segmentation. It sends tile-level
-geometries and confidence data back to the processing worker for aggregation.
+oriented detections or Meta SAM 3 for segmentation. It uploads tile-level
+geometries and confidence data as verified S3 artifacts; Kafka carries bounded
+references rather than embedding potentially large segmentation payloads.
 
 ### Shared services — `shared`
 

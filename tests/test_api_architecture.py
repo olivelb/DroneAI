@@ -286,17 +286,57 @@ def test_object_store_analysis_vectors_apply_bounds_and_limit(monkeypatch):
         loaded.append(key)
         return {"features": [inside, second_inside]}
 
-    monkeypatch.setattr(analysis_routes, "load_json_object", load_payload)
+    monkeypatch.setattr(map_support, "load_json_object", load_payload)
 
     features, truncated = analysis_routes._object_store_features(
         [skipped_tile, selected_tile],
         (0.0, 0.0, 1.0, 1.0),
         1,
+        vol_id="mission-1",
+        tiling_metadata={},
     )
 
     assert features == [inside]
     assert truncated is True
     assert loaded == ["inside.json"]
+
+
+def test_object_store_analysis_vectors_read_versioned_tile_artifacts(monkeypatch):
+    tile = SimpleNamespace(
+        result_s3_key="tile-result.json",
+        bounds_wgs84=None,
+    )
+    monkeypatch.setattr(
+        map_support,
+        "load_json_object",
+        lambda _key: {
+            "schema_version": 1,
+            "raw_detections": [
+                {
+                    "geo_lon": 2.25,
+                    "geo_lat": 48.75,
+                    "class_name": "truck",
+                    "confidence": 0.9,
+                    "tile_index": 4,
+                }
+            ],
+        },
+    )
+
+    features, truncated = analysis_routes._object_store_features(
+        [tile],
+        None,
+        10,
+        vol_id="mission-1",
+        tiling_metadata={},
+    )
+
+    assert truncated is False
+    assert features[0]["geometry"] == {
+        "type": "Point",
+        "coordinates": [2.25, 48.75],
+    }
+    assert features[0]["properties"]["tile_index"] == 4
 
 
 def test_dead_outbox_replay_resets_delivery_state(monkeypatch):

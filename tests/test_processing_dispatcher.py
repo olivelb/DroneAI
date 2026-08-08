@@ -1,4 +1,7 @@
+import hashlib
 import importlib
+import io
+import json
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -6,6 +9,9 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+
+from shared.model_provenance import build_model_manifest
+from shared.tile_results import build_tile_result_artifact
 
 
 PROCESSING_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
@@ -150,6 +156,57 @@ def test_cancelled_orthomosaic_is_ignored_before_tiling():
     )
 
     assert tiler.calls == []
+
+
+def test_legacy_workflow_reads_and_verifies_referenced_tile_result(monkeypatch):
+    manifest = build_model_manifest(
+        backend="yolo",
+        repository="ultralytics/assets",
+        revision="v8.4.0",
+        artifact="yolo26l-obb.pt",
+        artifact_sha256="a" * 64,
+        libraries={"ultralytics": "8.4.0"},
+        runtime={"device": "cpu"},
+        inference={"confidence": 0.3},
+    )
+    artifact = build_tile_result_artifact(
+        vol_id="mission-1",
+        analysis_run_id=None,
+        tile_index=3,
+        attempt=1,
+        model_manifest=manifest,
+        detections=[{"class_name": "truck", "confidence": 0.9}],
+    )
+    payload = json.dumps(artifact, separators=(",", ":")).encode("utf-8")
+    key = "missions/mission-1/ai-tile-results/pipeline/attempt_1/tile_3.json"
+    monkeypatch.setattr(
+        legacy_module.storage,
+        "get_object_stream",
+        lambda _key: (io.BytesIO(payload), len(payload), "application/json"),
+    )
+    workflow = legacy_module.LegacyAggregationWorkflow(
+        report_progress=lambda *_args, **_kwargs: None,
+        report_ia_progress=lambda *_args, **_kwargs: None,
+        logger=importlib.import_module("logging").getLogger("test"),
+    )
+
+    detections = workflow._event_detections(
+        {
+            "vol_id": "mission-1",
+            "tile_index": 3,
+            "attempt": 1,
+            "model_manifest": manifest,
+            "result_s3_key": key,
+            "result_sha256": hashlib.sha256(payload).hexdigest(),
+            "result_size_bytes": len(payload),
+            "detection_count": 1,
+            "result_schema_version": 1,
+        }
+    )
+
+    assert detections == [
+        {"class_name": "truck", "confidence": 0.9, "tile_index": 3}
+    ]
 
 
 def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):

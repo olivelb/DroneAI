@@ -14,9 +14,15 @@ from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import JsonObject, Sam3Backend
 from shared import storage
 from shared.event_contracts import deterministic_event_id, make_event
+from shared.json_io import atomic_write_json
 from shared.kafka_partitioning import tile_work_key
 from shared.kafka_reliability import publish_json
 from shared.pipeline_params import normalize_ai_backend
+from shared.tile_results import (
+    TILE_RESULT_SCHEMA_VERSION,
+    build_tile_result_artifact,
+    tile_result_s3_key,
+)
 
 
 class Producer(Protocol):
@@ -217,16 +223,42 @@ class TileDetectionWorkflow:
         analysis_attempt: int,
         detections: list[DetectionRecord],
         attempt: JsonObject,
+        workspace: Path,
     ) -> None:
         tile_index = int(tile_info["tile_index"])
+        model_manifest = cast(JsonObject, attempt["model_manifest"])
+        artifact = build_tile_result_artifact(
+            vol_id=vol_id,
+            analysis_run_id=analysis_run_id,
+            tile_index=tile_index,
+            attempt=analysis_attempt,
+            model_manifest=model_manifest,
+            detections=detections,
+        )
+        result_key = tile_result_s3_key(
+            vol_id,
+            analysis_run_id,
+            tile_index,
+            analysis_attempt,
+        )
+        local_result = workspace / f"tile_result_{tile_index}.json"
+        atomic_write_json(local_result, artifact)
+        try:
+            uploaded = storage.upload_verified_file(local_result, result_key)
+        finally:
+            local_result.unlink(missing_ok=True)
         tile_result = make_event(
             "tile_detection",
             {
                 "vol_id": vol_id,
                 "tile_index": tile_index,
-                "detections": detections,
                 "analysis_run_id": analysis_run_id,
-                "model_manifest": attempt["model_manifest"],
+                "model_manifest": model_manifest,
+                "result_s3_key": result_key,
+                "result_sha256": uploaded["sha256"],
+                "result_size_bytes": uploaded["size"],
+                "detection_count": len(detections),
+                "result_schema_version": TILE_RESULT_SCHEMA_VERSION,
             },
             event_id=deterministic_event_id(
                 "tile_detection",
@@ -296,6 +328,7 @@ class TileDetectionWorkflow:
                 analysis_attempt=analysis_attempt,
                 detections=detections,
                 attempt=attempt,
+                workspace=workspace,
             )
             self.logger.info(
                 "IA worker published tile %s/%s for %s with %s detections via %s",

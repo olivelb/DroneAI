@@ -13,7 +13,7 @@ import socket
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from geoalchemy2.elements import WKTElement
@@ -28,13 +28,28 @@ from shared.database import (
 )
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.geospatial_assets import detections_feature_collection
+from shared.json_io import atomic_write_json
 from shared.kafka_partitioning import tile_work_key
 from shared.model_provenance import validate_model_manifest
+from shared.tile_results import (
+    build_tile_result_artifact,
+    tile_result_s3_key,
+    validate_tile_result_bytes,
+)
 
 
 DetectionRecord = dict[str, Any]
 JsonObject = dict[str, Any]
 RunDescriptor = dict[str, Any]
+
+
+class TileResultReference(TypedDict):
+    key: str
+    sha256: str
+    size_bytes: int
+    tile_index: int
+    attempt: int
+    detection_count: int
 
 
 class KafkaProducer(Protocol):
@@ -230,9 +245,16 @@ class AnalysisWorkflow:
         self,
         tile_key: str,
         total_payload_bytes: int,
+        expected_size: int,
     ) -> tuple[bytes, int]:
         stream, content_length, _ = storage.get_object_stream(tile_key)
         content_length = int(content_length or 0)
+        if content_length != expected_size:
+            stream.close()
+            raise RuntimeError(
+                f"AI tile result size differs from its reference: "
+                f"{content_length}/{expected_size} bytes for {tile_key}"
+            )
         if content_length > self.maximum_tile_result_bytes:
             stream.close()
             raise RuntimeError(f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {tile_key}")
@@ -251,35 +273,41 @@ class AnalysisWorkflow:
 
     def _load_tile_payloads(
         self,
-        tile_keys: Iterable[str | None],
+        references: Iterable[TileResultReference],
+        descriptor: RunDescriptor,
     ) -> list[DetectionRecord]:
         detections: list[DetectionRecord] = []
         total_payload_bytes = 0
-        for tile_key in tile_keys:
-            if not tile_key:
-                continue
+        model_manifest = cast(JsonObject, descriptor["model_manifest"])
+        for reference in references:
+            tile_key = reference["key"]
             raw_payload, _ = self._read_tile_payload(
                 tile_key,
                 total_payload_bytes,
+                reference["size_bytes"],
             )
             total_payload_bytes += len(raw_payload)
             if total_payload_bytes > self.maximum_aggregate_result_bytes:
                 raise RuntimeError(
                     f"AI analysis exceeds the aggregate result size limit ({self.maximum_aggregate_result_bytes} bytes)"
                 )
-            payload = json.loads(raw_payload)
-            if not isinstance(payload, dict):
-                raise RuntimeError(f"AI tile result must be an object: {tile_key}")
-            tile_detections = payload.get("raw_detections", [])
-            if not isinstance(tile_detections, list):
-                raise RuntimeError(f"AI tile result has invalid raw_detections: {tile_key}")
-            if any(not isinstance(item, dict) for item in tile_detections):
-                raise RuntimeError(f"AI tile result contains a non-object detection: {tile_key}")
+            artifact = validate_tile_result_bytes(
+                raw_payload,
+                expected_sha256=reference["sha256"],
+                expected_size=reference["size_bytes"],
+                vol_id=cast(str, descriptor["vol_id"]),
+                analysis_run_id=cast(str, descriptor["run_id"]),
+                tile_index=reference["tile_index"],
+                attempt=reference["attempt"],
+                detection_count=reference["detection_count"],
+                model_manifest=model_manifest,
+            )
+            tile_detections = artifact.raw_detections
             if len(detections) + len(tile_detections) > self.maximum_raw_detections:
                 raise RuntimeError(
                     f"AI analysis exceeds the raw detection safety limit ({self.maximum_raw_detections})"
                 )
-            detections.extend(cast(list[DetectionRecord], tile_detections))
+            detections.extend(tile_detections)
         return detections
 
     def _replace_persisted_features(
@@ -325,7 +353,7 @@ class AnalysisWorkflow:
     def _claim_finalization(
         self,
         run_id: str,
-    ) -> tuple[RunDescriptor, list[str | None]] | None:
+    ) -> tuple[RunDescriptor, list[TileResultReference]] | None:
         now = datetime.now(UTC)
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().first()
@@ -348,16 +376,36 @@ class AnalysisWorkflow:
             run.finalization_lease_until = now + timedelta(seconds=self.finalization_lease_seconds)
             run.heartbeat_at = now
             descriptor = self._run_descriptor(run)
-            tile_keys = [tile.result_s3_key for tile in tiles]
-            return descriptor, tile_keys
+            references: list[TileResultReference] = []
+            for tile in tiles:
+                if (
+                    tile.result_s3_key is None
+                    or tile.result_sha256 is None
+                    or tile.result_size_bytes is None
+                    or tile.result_attempt is None
+                ):
+                    raise RuntimeError(
+                        f"AI tile {tile.tile_index} is missing result integrity metadata"
+                    )
+                references.append(
+                    {
+                        "key": tile.result_s3_key,
+                        "sha256": tile.result_sha256,
+                        "size_bytes": int(tile.result_size_bytes),
+                        "tile_index": int(tile.tile_index),
+                        "attempt": int(tile.result_attempt),
+                        "detection_count": int(tile.detection_count),
+                    }
+                )
+            return descriptor, references
 
     def finalize(self, run_id: str) -> bool:
         claim = self._claim_finalization(run_id)
         if claim is None:
             return False
-        descriptor, tile_keys = claim
+        descriptor, references = claim
 
-        raw = self._load_tile_payloads(tile_keys)
+        raw = self._load_tile_payloads(references, descriptor)
         unique = self.dedupe(raw)
         if len(unique) > self.maximum_final_detections:
             raise RuntimeError(
@@ -385,7 +433,7 @@ class AnalysisWorkflow:
                 self._replace_persisted_features(session, run, collection)
             run.result_s3_key = result_key
             run.detection_count = len(collection["features"])
-            run.tiles_completed = len(tile_keys)
+            run.tiles_completed = len(references)
             run.status = "completed"
             run.phase = "completed"
             run.progress = 100
@@ -462,25 +510,68 @@ class AnalysisWorkflow:
         self,
         data: JsonObject,
         run: Any,
-    ) -> tuple[str, int]:
-        vol_id = data["vol_id"]
-        run_id = data["analysis_run_id"]
+    ) -> tuple[str, int, str, int]:
+        vol_id = cast(str, data["vol_id"])
+        run_id = cast(str, data["analysis_run_id"])
         tile_index = int(data["tile_index"])
-        detections = data.get("detections") or []
-        collection = self._styled_collection(
-            detections,
+        event_attempt = int(data.get("attempt", 0))
+        model_manifest = cast(JsonObject, run.model_manifest)
+        result_key = tile_result_s3_key(
+            vol_id,
+            run_id,
+            tile_index,
+            event_attempt,
+        )
+        referenced_key = data.get("result_s3_key")
+        if referenced_key is not None:
+            if referenced_key != result_key:
+                raise RuntimeError(
+                    "AI tile result key does not match the deterministic mission/run key"
+                )
+            result_sha256 = cast(str, data["result_sha256"])
+            result_size = int(data["result_size_bytes"])
+            detection_count = int(data["detection_count"])
+            raw_payload, _ = self._read_tile_payload(
+                result_key,
+                0,
+                result_size,
+            )
+            validate_tile_result_bytes(
+                raw_payload,
+                expected_sha256=result_sha256,
+                expected_size=result_size,
+                vol_id=vol_id,
+                analysis_run_id=run_id,
+                tile_index=tile_index,
+                attempt=event_attempt,
+                detection_count=detection_count,
+                model_manifest=model_manifest,
+            )
+            return result_key, detection_count, result_sha256, result_size
+
+        detections = cast(list[DetectionRecord], data.get("detections") or [])
+        artifact = build_tile_result_artifact(
             vol_id=vol_id,
-            run=run,
+            analysis_run_id=run_id,
             tile_index=tile_index,
+            attempt=event_attempt,
+            model_manifest=model_manifest,
+            detections=detections,
         )
-        collection["raw_detections"] = [{**detection, "tile_index": tile_index} for detection in detections]
-        result_key = f"missions/{vol_id}/analyses/{run_id}/results/tile_{tile_index}.geojson"
-        self._write_verified_json(
-            collection,
+        local_path = Path(
+            f"/tmp/processing/{vol_id}/{run_id}/results/tile_{tile_index}.json"
+        )
+        atomic_write_json(local_path, artifact)
+        try:
+            uploaded = storage.upload_verified_file(local_path, result_key)
+        finally:
+            local_path.unlink(missing_ok=True)
+        return (
             result_key,
-            (f"/tmp/processing/{vol_id}/{run_id}/results/tile_{tile_index}.geojson"),
+            len(detections),
+            str(uploaded["sha256"]),
+            int(uploaded["size"]),
         )
-        return result_key, len(detections)
 
     @staticmethod
     def _mark_tile_complete(
@@ -488,6 +579,8 @@ class AnalysisWorkflow:
         tile_index: int,
         result_key: str,
         count: int,
+        result_sha256: str,
+        result_size_bytes: int,
         expected_attempt: int,
     ) -> bool:
         with get_session() as session:
@@ -506,6 +599,9 @@ class AnalysisWorkflow:
             if receipt.status != "completed":
                 receipt.status = "completed"
                 receipt.result_s3_key = result_key
+                receipt.result_sha256 = result_sha256
+                receipt.result_size_bytes = result_size_bytes
+                receipt.result_attempt = expected_attempt
                 receipt.detection_count = count
                 receipt.completed_at = datetime.now(UTC)
             run.tiles_completed = (
@@ -581,12 +677,16 @@ class AnalysisWorkflow:
                 self._mark_finalization_failed(run_id, error)
                 raise
             return
-        result_key, count = self._stage_tile_result(data, run_descriptor)
+        result_key, count, result_sha256, result_size_bytes = (
+            self._stage_tile_result(data, run_descriptor)
+        )
         if not self._mark_tile_complete(
             run_id,
             tile_index,
             result_key,
             count,
+            result_sha256,
+            result_size_bytes,
             event_attempt,
         ):
             return

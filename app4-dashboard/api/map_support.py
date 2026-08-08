@@ -12,6 +12,8 @@ from sqlalchemy import func, or_, select
 
 from shared import storage
 from shared.database import Detection, MapFeature, Mission
+from shared.geospatial_assets import detections_feature_collection
+from shared.geospatial_workspace import bounds_intersect, geometry_bounds
 
 VOL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 RASTER_LAYERS: dict[str, tuple[str, str]] = {
@@ -114,10 +116,16 @@ class AnalysisRunRecord(Protocol):
     ortho_s3_key: str
     result_s3_key: str | None
     model_manifest: JsonObject | None
+    tiling_metadata: JsonObject | None
     heartbeat_at: datetime
     created_at: datetime | None
     updated_at: datetime | None
     completed_at: datetime | None
+
+
+class AnalysisTileRecord(Protocol):
+    result_s3_key: str
+    bounds_wgs84: list[float] | None
 
 
 def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
@@ -326,3 +334,54 @@ def load_json_object(key: str) -> dict[str, Any]:
         return cast(JsonObject, payload)
     finally:
         stream.close()
+
+
+def object_store_analysis_features(
+    tiles: list[AnalysisTileRecord],
+    bounds: Bounds | None,
+    limit: int,
+    *,
+    vol_id: str,
+    tiling_metadata: JsonObject,
+) -> tuple[list[JsonObject], bool]:
+    """Read legacy feature collections or versioned raw tile artifacts."""
+
+    features: list[JsonObject] = []
+    truncated = False
+    for tile in tiles:
+        if (
+            bounds
+            and tile.bounds_wgs84
+            and not bounds_intersect(list(bounds), tile.bounds_wgs84)
+        ):
+            continue
+        payload = load_json_object(tile.result_s3_key)
+        if "raw_detections" in payload:
+            collection = detections_feature_collection(
+                cast(list[JsonObject], payload["raw_detections"]),
+                geotransform=cast(
+                    list[float] | None,
+                    tiling_metadata.get("transform"),
+                ),
+                source_crs=cast(str | None, tiling_metadata.get("crs")),
+                vol_id=vol_id,
+            )
+            stored_features = cast(
+                list[JsonObject],
+                collection["features"],
+            )
+        else:
+            stored_features = cast(list[JsonObject], payload.get("features", []))
+        for feature in stored_features:
+            if bounds and not bounds_intersect(
+                list(bounds),
+                geometry_bounds(cast(JsonObject, feature["geometry"])),
+            ):
+                continue
+            features.append(feature)
+            if len(features) >= limit:
+                truncated = True
+                break
+        if truncated:
+            break
+    return features, truncated

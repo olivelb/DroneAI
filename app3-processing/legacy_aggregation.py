@@ -27,6 +27,8 @@ from shared.geospatial_assets import (
     detections_feature_collection,
     pixel_segment_to_wgs84,
 )
+from shared.model_provenance import validate_model_manifest
+from shared.tile_results import tile_result_s3_key, validate_tile_result_bytes
 
 
 DetectionRecord = dict[str, Any]
@@ -76,10 +78,17 @@ class LegacyAggregationWorkflow:
         report_progress: ProgressReporter,
         report_ia_progress: ProgressReporter,
         logger: logging.Logger,
+        maximum_tile_result_bytes: int | None = None,
     ) -> None:
         self.report_progress = report_progress
         self.report_ia_progress = report_ia_progress
         self.logger = logger
+        self.maximum_tile_result_bytes = max(
+            1,
+            maximum_tile_result_bytes
+            if maximum_tile_result_bytes is not None
+            else int(os.getenv("ANALYSIS_MAX_TILE_RESULT_BYTES", str(10 * 1024 * 1024))),
+        )
 
     @staticmethod
     def _dedupe(detections: list[DetectionRecord]) -> list[DetectionRecord]:
@@ -202,6 +211,59 @@ class LegacyAggregationWorkflow:
             }
         return result
 
+    def _load_referenced_detections(
+        self,
+        data: JsonObject,
+    ) -> list[DetectionRecord]:
+        vol_id = cast(str, data["vol_id"])
+        tile_index = int(data["tile_index"])
+        attempt = int(data.get("attempt", 0))
+        result_key = cast(str, data["result_s3_key"])
+        expected_key = tile_result_s3_key(vol_id, None, tile_index, attempt)
+        if result_key != expected_key:
+            raise RuntimeError(
+                "AI tile result key does not match the deterministic mission key"
+            )
+        expected_size = int(data["result_size_bytes"])
+        if expected_size > self.maximum_tile_result_bytes:
+            raise RuntimeError(
+                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {result_key}"
+            )
+        stream, content_length, _ = storage.get_object_stream(result_key)
+        content_length = int(content_length or 0)
+        if content_length != expected_size:
+            stream.close()
+            raise RuntimeError(
+                f"AI tile result size differs from its reference: "
+                f"{content_length}/{expected_size} bytes for {result_key}"
+            )
+        try:
+            raw_payload = cast(bytes, stream.read(self.maximum_tile_result_bytes + 1))
+        finally:
+            stream.close()
+        if len(raw_payload) > self.maximum_tile_result_bytes:
+            raise RuntimeError(
+                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {result_key}"
+            )
+        manifest = validate_model_manifest(data.get("model_manifest"))
+        artifact = validate_tile_result_bytes(
+            raw_payload,
+            expected_sha256=cast(str, data["result_sha256"]),
+            expected_size=expected_size,
+            vol_id=vol_id,
+            analysis_run_id=None,
+            tile_index=tile_index,
+            attempt=attempt,
+            detection_count=int(data["detection_count"]),
+            model_manifest=manifest,
+        )
+        return cast(list[DetectionRecord], artifact.raw_detections)
+
+    def _event_detections(self, data: JsonObject) -> list[DetectionRecord]:
+        if data.get("result_s3_key") is not None:
+            return self._load_referenced_detections(data)
+        return cast(list[DetectionRecord], data.get("detections") or [])
+
     @staticmethod
     def _mark_failed(vol_id: str) -> None:
         with get_session() as session:
@@ -297,7 +359,7 @@ class LegacyAggregationWorkflow:
             persistence = self._store_tile(
                 vol_id,
                 tile_index,
-                cast(list[DetectionRecord], data.get("detections") or []),
+                self._event_detections(data),
                 int(data.get("attempt", 0)),
             )
         except Exception:
