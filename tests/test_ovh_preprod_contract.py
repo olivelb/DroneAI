@@ -27,6 +27,7 @@ def test_terraform_defaults_are_cost_bounded_and_non_destructive() -> None:
     assert main.count("count = var.deep_sleep ? 0 : 1") == 2
     assert "desired_nodes  = var.deep_sleep ? 0 : var.cpu_desired_nodes" in main
     assert "min_nodes      = var.deep_sleep ? 0 : 1" in main
+    assert main.count("autoscale      = var.deep_sleep ? false : true") == 2
     assert "prevent_destroy = true" in main
     assert 'sse_algorithm = "AES256"' in main
     assert 'status = "enabled"' in main

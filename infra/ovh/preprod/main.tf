@@ -61,7 +61,7 @@ resource "ovh_cloud_project_kube_nodepool" "cpu" {
   desired_nodes  = var.deep_sleep ? 0 : var.cpu_desired_nodes
   min_nodes      = var.deep_sleep ? 0 : 1
   max_nodes      = 2
-  autoscale      = true
+  autoscale      = var.deep_sleep ? false : true
   monthly_billed = false
   anti_affinity  = false
 
@@ -90,7 +90,7 @@ resource "ovh_cloud_project_kube_nodepool" "gpu" {
   desired_nodes  = 0
   min_nodes      = 0
   max_nodes      = var.gpu_max_nodes
-  autoscale      = true
+  autoscale      = var.deep_sleep ? false : true
   monthly_billed = false
   anti_affinity  = false
 
