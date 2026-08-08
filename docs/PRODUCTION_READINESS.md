@@ -175,6 +175,9 @@ because their local wall-frame selection has a separate quality contract.
   recovered after a worker restart.
 - Outbox events enter `dead` after their retry budget; administrators can list
   and explicitly replay them.
+- Kafka publications use per-record delivery callbacks and bounded polling.
+  Consumed offsets and poison-message offsets are committed only after the
+  corresponding output or dead-letter record is confirmed by the broker.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init
   containers prevent database-dependent services from starting on an old
   schema.

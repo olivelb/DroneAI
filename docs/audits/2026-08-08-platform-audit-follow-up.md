@@ -69,7 +69,7 @@ Validation completed on Ubuntu WSL2 with Python 3.12:
 
 - focused distributed-worker, durable-aggregation, direct-upload, Helm and
   spatial-coverage contract tests passed;
-- the full non-GPU/non-integration suite passed: 552 selected tests, with 13
+- the full non-GPU/non-integration suite passed: 554 selected tests, with 13
   explicitly deselected;
 - branch coverage measured 61%, retaining six points of headroom above the 55%
   enforced floor;
@@ -178,11 +178,23 @@ result into the same versioned S3 artifact before journaling it. An in-place
 deployment therefore pauses IA, migrates and rolls processing/API consumers,
 then rolls and resumes IA; an old consumer cannot safely read the new form.
 
+## Callback-confirmed Kafka publication
+
+Single-event publication no longer calls `flush()` and waits for every queued
+producer record. It attaches a delivery callback to the specific event and
+drives callbacks with bounded `poll()` calls until that record is acknowledged,
+rejected or reaches the configurable `KAFKA_DELIVERY_TIMEOUT_SECONDS` deadline.
+
+This preserves the important source-side invariant: `process_message()` commits
+the consumed offset only after its handler's output has been confirmed. The
+dead-letter path uses the same primitive, so a failed or timed-out DLQ delivery
+still leaves the poison source offset uncommitted. Tests cover acknowledgement,
+broker error, timeout and the ordering of DLQ confirmation before source commit.
+
 ## Deferred roadmap
 
 The remaining implementation batches should remain independently reviewable:
 
 1. gradual strict typing of the remaining CPU-visible `gaussian_ortho` boundaries;
-2. asynchronous Kafka delivery acknowledgements;
-3. distributed API rate limiting and WebSocket fan-out before API scale-out;
-4. explicit platform versioning and release policy.
+2. distributed API rate limiting and WebSocket fan-out before API scale-out;
+3. explicit platform versioning and release policy.

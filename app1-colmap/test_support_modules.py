@@ -163,7 +163,12 @@ class TestWorkerSupport(unittest.TestCase):
 
     def test_publish_next_stage_message_uses_current_contract(self):
         producer = MagicMock()
-        producer.flush.return_value = 0
+
+        def confirm_delivery(_timeout):
+            producer.produce.call_args.kwargs["on_delivery"](None, None)
+            return 0
+
+        producer.poll.side_effect = confirm_delivery
 
         worker_support.publish_next_stage_message(
             producer,
@@ -197,7 +202,8 @@ class TestWorkerSupport(unittest.TestCase):
         self.assertEqual(payload["event_type"], "orthomosaic")
         self.assertEqual(payload["correlation_id"], "vol-3")
         self.assertTrue(payload["event_id"].startswith("orthomosaic:"))
-        producer.flush.assert_called_once()
+        producer.poll.assert_called_once()
+        producer.flush.assert_not_called()
 
     def test_mission_state_tracker_loads_database_state(self):
         mission = MagicMock(

@@ -19,8 +19,17 @@ class FakeProducer:
     def __init__(self):
         self.messages = []
 
-    def produce(self, topic, *, key, value):
+    def produce(self, topic, *, key, value, on_delivery=None):
         self.messages.append((topic, key, json.loads(value)))
+        if on_delivery is not None:
+            self.delivery_callback = on_delivery
+
+    def poll(self, _timeout):
+        callback = getattr(self, "delivery_callback", None)
+        if callback is not None:
+            self.delivery_callback = None
+            callback(None, None)
+        return 0
 
     @staticmethod
     def flush():

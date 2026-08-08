@@ -81,11 +81,46 @@ def publish_json(
     payload: dict[str, Any],
     *,
     key: str | None = None,
+    delivery_timeout_seconds: float | None = None,
 ) -> None:
-    producer.produce(topic, key=key, value=json.dumps(payload))
-    pending = producer.flush()
-    if pending:
-        raise RuntimeError(f"Kafka producer still has {pending} undelivered messages")
+    """Publish one event and wait only for its delivery callback.
+
+    Unlike ``flush()``, polling does not drain the producer's entire queue.
+    Callers may therefore share a producer without one publication blocking on
+    unrelated messages, while retaining a synchronous confirmation boundary
+    before a consumed source offset is committed.
+    """
+
+    timeout = max(
+        0.0,
+        delivery_timeout_seconds
+        if delivery_timeout_seconds is not None
+        else float(os.getenv("KAFKA_DELIVERY_TIMEOUT_SECONDS", "30")),
+    )
+    delivered = False
+    delivery_error: Any | None = None
+
+    def on_delivery(error: Any | None, _message: Any) -> None:
+        nonlocal delivered, delivery_error
+        delivery_error = error
+        delivered = True
+
+    producer.produce(
+        topic,
+        key=key,
+        value=json.dumps(payload),
+        on_delivery=on_delivery,
+    )
+    deadline = time.monotonic() + timeout
+    while not delivered:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Kafka delivery confirmation timed out after {timeout:g}s for {topic}"
+            )
+        producer.poll(min(0.1, remaining))
+    if delivery_error is not None:
+        raise RuntimeError(f"Kafka delivery failed for {topic}: {delivery_error}")
 
 
 def message_location(message: Any) -> dict[str, Any]:
