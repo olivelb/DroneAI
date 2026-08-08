@@ -199,8 +199,9 @@ JSON contracts. Browser authentication, dataset browsing and batch upload,
 mission lifecycle/status and administrative outbox recovery are strictly typed
 route adapters. The geospatial composition router, raster metadata, tile and
 combined vector read paths, plus rerunnable analysis lifecycle and result
-publication are covered too. Export and feature-editing adapters remain
-subsequent increments rather than being hidden behind broad ignores.
+publication and QGIS-compatible raster/vector exports are covered too. The
+feature-editing adapter remains the final subsequent increment rather than
+being hidden behind broad ignores.
 
 Primary endpoints:
 
