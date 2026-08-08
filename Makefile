@@ -4,9 +4,14 @@ PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared al
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 SHARED_TYPED_PATHS := $(wildcard shared/*.py)
+SERVICE_CORE_PATHS := \
+	app2-ia/detection_core.py \
+	app3-processing/processing_core.py \
+	app3-processing/orthomosaic_tiler.py \
+	app3-processing/analysis_workflow.py
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
-.PHONY: check static compile lint worker-lint shared-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
+.PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
 
 compile:
 	$(PYTHON) -m compileall -q $(PYTHON_PATHS)
@@ -18,6 +23,9 @@ lint:
 worker-lint:
 	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC $(COLMAP_WORKER_PATHS)
 	$(PYTHON) -m ruff check --select C90 --config lint.mccabe.max-complexity=15 app1-colmap/colmap_worker
+
+service-core-lint:
+	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC $(SERVICE_CORE_PATHS)
 
 shared-lint:
 	$(PYTHON) -m ruff check --select B,SIM,UP,RUF,ASYNC --ignore RUF001 shared
@@ -39,7 +47,7 @@ workflows-check:
 audit:
 	$(PYTHON) -m pip_audit --strict
 
-static: compile lint worker-lint shared-lint typecheck scripts-check docs-check workflows-check
+static: compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check
 
 test:
 	$(PYTHON) -m pytest -m "not gpu and not integration"

@@ -206,7 +206,7 @@ def extract_obb_detections(
     if polygons is None or labels is None or scores is None:
         return detections
 
-    for polygon, label_index, score in zip(polygons, labels, scores):
+    for polygon, label_index, score in zip(polygons, labels, scores, strict=False):
         class_id = int(label_index)
         class_name = names.get(class_id, str(class_id))
         if class_name not in requested or float(score) < min_confidence:

@@ -486,8 +486,8 @@ def render_annotated_orthomosaic(
             cv2.fillPoly(overlay, [local_points], (255, 0, 0))
             cv2.addWeighted(overlay, 0.35, region, 0.65, 0, region)
             cv2.polylines(image, [points], True, (255, 255, 0), 2)
-            center_x = int(round(float(detection["global_pixel_x"])))
-            center_y = int(round(float(detection["global_pixel_y"])))
+            center_x = round(float(detection["global_pixel_x"]))
+            center_y = round(float(detection["global_pixel_y"]))
             cv2.circle(image, (center_x, center_y), 4, (0, 255, 0), -1)
             _draw_label(
                 image,

@@ -78,8 +78,11 @@ smallest relevant stage. The COLMAP worker package additionally enforces modern
 Bugbear/simplification/upgrade/Ruff/async rules and a McCabe ceiling of 15
 across the complete worker package. The same modern rules cover `shared/`, with
 an initial McCabe ceiling of 18; scientific Unicode such as sigma remains
-allowed in operator-facing validation messages. Stable contracts, runtime
-boundaries, artifact helpers, mission coordination and every COLMAP stage also
+allowed in operator-facing validation messages. A progressive service-core
+ratchet requires `app2-ia/detection_core.py`,
+`app3-processing/processing_core.py`, `orthomosaic_tiler.py` and
+`analysis_workflow.py` to pass those modern rules too. Stable contracts,
+runtime boundaries, artifact helpers, mission coordination and every COLMAP stage also
 pass strict mypy checks. The same strict contract covers all 26 modules at the root of
 `shared/`, including the SQLAlchemy, transactional inbox/outbox and S3
 boundaries. Those dynamic integrations expose explicit session and S3 client
