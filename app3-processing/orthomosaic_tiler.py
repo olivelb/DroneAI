@@ -31,6 +31,7 @@ from shared.database import (
     get_session,
 )
 from shared.event_contracts import deterministic_event_id, make_event
+from shared.kafka_partitioning import tile_work_key
 from shared.pipeline_params import normalize_ai_backend
 
 
@@ -370,7 +371,7 @@ class OrthomosaicTiler:
         )
         self.producer.produce(
             self.tile_topic,
-            key=f"{vol_id}_{tile_index}",
+            key=tile_work_key(vol_id, analysis_run_id, tile_index),
             value=json.dumps(event),
         )
         return True

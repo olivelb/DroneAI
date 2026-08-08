@@ -168,17 +168,32 @@ def test_gpu_workers_are_opt_in_and_external_kafka_is_supported() -> None:
     assert "subPath: kafka" in kafka
     assert '"helm.sh/hook": post-install,post-upgrade' in kafka_topics
     assert "--create --if-not-exists" in kafka_topics
+    assert "--alter --topic" in kafka_topics
+    assert "current_partitions < desired_partitions" in kafka_topics
     assert "range .Values.kafka.topics" in kafka_topics
+    topic_values = _read(CHART / "values.yaml")
     for topic in (
         "vols-bruts",
         "images-ortho",
         "pipeline-status",
         "pipeline-control",
-        "image-tiles",
-        "tile-detections",
         "pipeline-dead-letter",
     ):
-        assert f"- {topic}" in _read(CHART / "values.yaml")
+        assert f"- name: {topic}\n      partitions: 1" in topic_values
+    for topic in ("image-tiles", "tile-detections"):
+        assert f"- name: {topic}\n      partitions: 4" in topic_values
+
+
+def test_tile_workers_expose_safe_scale_out_controls() -> None:
+    values = _read(CHART / "values.yaml")
+    ia = _read(CHART / "templates" / "ia-worker.yaml")
+    processing = _read(CHART / "templates" / "processing-worker.yaml")
+
+    assert values.count("replicaCount: 1") >= 2
+    assert "accessMode: ReadWriteOnce" in values
+    assert "replicas: {{ .Values.iaWorker.replicaCount }}" in ia
+    assert ia.count("{{ .Values.iaWorker.modelCache.accessMode }}") == 2
+    assert "replicas: {{ .Values.processingWorker.replicaCount }}" in processing
 
 
 def test_ovh_dns_upsert_is_bounded_to_explicit_a_records() -> None:

@@ -75,6 +75,8 @@ services:
   kafka-init:
     image: apache/kafka:3.7.0
     restart: "no"
+    environment:
+      KAFKA_WORK_TOPIC_PARTITIONS: "${KAFKA_WORK_TOPIC_PARTITIONS:-4}"
     depends_on:
       kafka:
         condition: service_healthy
@@ -82,22 +84,43 @@ services:
       - /bin/sh
       - -ec
       - |
-        for topic in \
-          vols-bruts \
-          images-ortho \
-          pipeline-status \
-          pipeline-control \
-          image-tiles \
-          tile-detections \
-          pipeline-dead-letter
+        for topic_spec in \
+          vols-bruts:1 \
+          images-ortho:1 \
+          pipeline-status:1 \
+          pipeline-control:1 \
+          image-tiles:$${KAFKA_WORK_TOPIC_PARTITIONS} \
+          tile-detections:$${KAFKA_WORK_TOPIC_PARTITIONS} \
+          pipeline-dead-letter:1
         do
+          topic="$${topic_spec%%:*}"
+          desired_partitions="$${topic_spec##*:}"
           /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server kafka:9092 \
             --create \
             --if-not-exists \
-            --partitions 1 \
+            --partitions "$${desired_partitions}" \
             --replication-factor 1 \
             --topic "$$topic"
+          current_partitions="$$(
+            /opt/kafka/bin/kafka-topics.sh \
+              --bootstrap-server kafka:9092 \
+              --describe \
+              --topic "$$topic" | \
+              awk '/PartitionCount:/ { for (field = 1; field <= NF; field++) if ($$field == "PartitionCount:") print $$(field + 1) }' | \
+              head -n 1
+          )"
+          if [ -z "$${current_partitions}" ]; then
+            echo "Unable to determine partition count for $$topic" >&2
+            exit 1
+          fi
+          if [ "$${current_partitions}" -lt "$${desired_partitions}" ]; then
+            /opt/kafka/bin/kafka-topics.sh \
+              --bootstrap-server kafka:9092 \
+              --alter \
+              --topic "$$topic" \
+              --partitions "$${desired_partitions}"
+          fi
         done
 
   minio:

@@ -480,6 +480,38 @@ machine-readable contract is committed at
 [`docs/contracts/kafka-events-v1.schema.json`](docs/contracts/kafka-events-v1.schema.json)
 and `make static` rejects schema drift.
 
+### Partitioning and horizontal workers
+
+The ordered control topics remain single-partition by default. The independent
+work topics are partitioned for horizontal execution:
+
+| Topic | Default partitions | Kafka key and ordering scope |
+| --- | ---: | --- |
+| `vols-bruts`, `images-ortho` | 1 | mission |
+| `pipeline-status`, `pipeline-control` | 1 | mission |
+| `image-tiles`, `tile-detections` | 4 | mission + analysis run + tile |
+| `pipeline-dead-letter` | 1 | source event |
+
+Both tile stages call `shared.kafka_partitioning.tile_work_key()`. Different
+tiles can therefore be assigned to different replicas, while the first
+delivery and every recovery delivery for one logical tile retain the same key.
+The retry `attempt` is deliberately not part of that key so retries keep their
+per-tile ordering.
+
+`kafka.topics` in the Helm values declares each desired partition count. The
+post-install/post-upgrade job creates absent topics and only increases an
+existing count; it never attempts a destructive reduction. Adding Kafka
+partitions can remap a key, so drain `image-tiles` and `tile-detections` before
+raising either count. Compose uses four work partitions by default and accepts
+`KAFKA_WORK_TOPIC_PARTITIONS` for an isolated local deployment.
+
+`iaWorker.replicaCount` and `processingWorker.replicaCount` remain `1` by
+default and can be raised up to the useful work-partition concurrency. An IA
+deployment spread across nodes also needs a model-cache storage class that
+supports `ReadWriteMany`, selected through
+`iaWorker.modelCache.accessMode`; the OVH Cinder preproduction default is
+`ReadWriteOnce` and therefore remains a single-node/single-replica baseline.
+
 ### Delivery and failure semantics
 
 The COLMAP, IA, processing, and dashboard-status consumers disable Kafka
@@ -500,10 +532,9 @@ fails, the source offset remains uncommitted.
 
 These guarantees are **at-least-once**, not exactly-once. A crash between an
 external side effect and the Kafka commit can still replay that side effect.
-Deterministic event IDs and process-local tile deduplication reduce the impact,
-but cross-replica exactly-once processing for worker side effects would require
-extending the inbox/outbox boundary and coordinating database/object-store
-writes.
+Deterministic event IDs and leased durable worker inbox receipts reduce the
+impact, but cross-system exactly-once processing for worker side effects would
+require coordinating database, object-store and Kafka writes.
 
 The contract and retry machinery is covered with broker-free fakes, so its
 state transitions are testable without Kafka, Postgres, MinIO, or Kubernetes.
@@ -783,6 +814,9 @@ Payload shape:
 Important details:
 
 - `tile_s3_key` points to the JPEG uploaded by the processing worker.
+- Kafka uses the stable mission/run/tile key, so different tiles can execute on
+  different IA replicas without allowing retries of one tile to overtake each
+  other under a fixed partition count.
 - Tile output is mission-scoped below `missions/<vol_id>/tiles/`.
 - `offset_x` and `offset_y` anchor the tile within the full orthomosaic.
 - `ai_backend` selects the detector backend in app2.
@@ -803,6 +837,10 @@ Consumed by:
 Semantic meaning:
 
 - detection results for one tile
+
+The result reuses the input tile's stable mission/run/tile partition key. This
+allows multiple processing replicas to journal results concurrently; durable
+tile uniqueness and the aggregation lease remain the correctness boundary.
 
 Payload shape:
 

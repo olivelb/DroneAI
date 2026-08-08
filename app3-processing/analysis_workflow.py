@@ -28,6 +28,7 @@ from shared.database import (
 )
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.geospatial_assets import detections_feature_collection
+from shared.kafka_partitioning import tile_work_key
 from shared.model_provenance import validate_model_manifest
 
 
@@ -740,7 +741,11 @@ class AnalysisWorkflow:
         for event in tile_events:
             self.producer.produce(
                 self.tile_topic,
-                key=f"{event['vol_id']}_{event['tile_index']}",
+                key=tile_work_key(
+                    event["vol_id"],
+                    event.get("analysis_run_id"),
+                    event["tile_index"],
+                ),
                 value=json.dumps(event),
             )
         if (ortho_events or tile_events) and self.producer.flush():

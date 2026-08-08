@@ -27,16 +27,24 @@ kafka:
     leaseSeconds: 300
     busyRetrySeconds: 5
   cancellationPollSeconds: 2
-  # Created idempotently after each Helm install/upgrade so consumers never
-  # start against missing application topics.
+  # Created idempotently after each Helm install/upgrade. Partition counts can
+  # only grow; drain tile work before increasing them because Kafka may remap
+  # existing keys when new partitions are added.
   topics:
-    - vols-bruts
-    - images-ortho
-    - pipeline-status
-    - pipeline-control
-    - image-tiles
-    - tile-detections
-    - pipeline-dead-letter
+    - name: vols-bruts
+      partitions: 1
+    - name: images-ortho
+      partitions: 1
+    - name: pipeline-status
+      partitions: 1
+    - name: pipeline-control
+      partitions: 1
+    - name: image-tiles
+      partitions: 4
+    - name: tile-detections
+      partitions: 4
+    - name: pipeline-dead-letter
+      partitions: 1
   persistence:
     enabled: true
     hostPath: ""
@@ -146,6 +154,7 @@ colmapWorker:
 # --------------------------------------------------------------------------
 iaWorker:
   enabled: true
+  replicaCount: 1
   image: drone-ia
   tag: latest
   resources:
@@ -160,6 +169,9 @@ iaWorker:
     # /opt/modelzoo and is preferred until a cached override exists.
     hostPath: ""
     storageClass: ""
+    # Use ReadWriteMany with a compatible storage class before scaling IA
+    # workers across nodes. The default OVH Cinder volume is single-node.
+    accessMode: ReadWriteOnce
     size: 30Gi
   sam3:
     repository: facebook/sam3
@@ -170,6 +182,7 @@ iaWorker:
 # Processing Worker
 # --------------------------------------------------------------------------
 processingWorker:
+  replicaCount: 1
   image: drone-processing
   tag: latest
   analysis:

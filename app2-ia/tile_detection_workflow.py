@@ -14,6 +14,7 @@ from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import JsonObject, Sam3Backend
 from shared import storage
 from shared.event_contracts import deterministic_event_id, make_event
+from shared.kafka_partitioning import tile_work_key
 from shared.kafka_reliability import publish_json
 from shared.pipeline_params import normalize_ai_backend
 
@@ -259,7 +260,7 @@ class TileDetectionWorkflow:
             self.producer,
             self.output_topic,
             tile_result,
-            key=vol_id,
+            key=tile_work_key(vol_id, analysis_run_id, tile_index),
         )
 
     def _report_tile(

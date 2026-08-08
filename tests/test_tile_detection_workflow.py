@@ -163,7 +163,7 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
     topic, key, event = producer.messages[0]
     assert (topic, key, event["event_type"]) == (
         "tile-detections",
-        "mission-1",
+        "mission-1:run-1:tile:4",
         "tile_detection",
     )
     detection = event["detections"][0]
