@@ -8,6 +8,9 @@ CUDA_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
 PINNED_PYTHON_BASE = re.compile(
     r"^FROM python:3\.12-slim@sha256:[0-9a-f]{64}$",
 )
+PINNED_NODE_BASE = re.compile(
+    r"^FROM node:20-alpine@sha256:[0-9a-f]{64} AS (builder|runner)$",
+)
 
 
 def _trigger_block(workflow_path: Path) -> str:
@@ -114,3 +117,24 @@ def test_supported_python_locks_and_installers_require_hashes() -> None:
     )
     assert workflow.count("pip install --require-hashes") == 2
     assert "--require-hashes" in bootstrap
+
+
+def test_frontend_runtime_has_immutable_supply_chain_evidence() -> None:
+    dockerfile = (ROOT / "app4-dashboard" / "frontend" / "Dockerfile").read_text(
+        encoding="utf-8",
+    )
+    from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+    assert len(from_lines) == 2
+    assert all(PINNED_NODE_BASE.match(line) for line in from_lines)
+    assert "rm -rf /usr/local/lib/node_modules/npm" in dockerfile
+    assert 'CMD ["node", "node_modules/next/dist/bin/next", "start"]' in dockerfile
+
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "frontend_container: ${{ steps.scopes.outputs.frontend_container }}" in workflow
+    assert "if: needs.changes.outputs.frontend_container == 'true'" in workflow
+    assert "--read-only" in workflow
+    assert "npm in runtime" in workflow
+    assert "dashboard-frontend.cdx.json" in workflow
+    assert "dashboard-frontend.trivy.json" in workflow
+    assert "supply-chain-dashboard-frontend-${{ github.sha }}" in workflow
+    assert "${{ needs.frontend-container.result }}" in workflow

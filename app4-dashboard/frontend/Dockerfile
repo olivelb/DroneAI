@@ -1,5 +1,5 @@
 # Stage 1: Build
-FROM node:20-alpine AS builder
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
 
 WORKDIR /app
 
@@ -11,9 +11,14 @@ RUN npm run build
 RUN npm prune --omit=dev && npm cache clean --force
 
 # Stage 2: Run
-FROM node:20-alpine AS runner
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runner
 
 WORKDIR /app
+
+# The production server only needs Node.js. Removing npm/npx reduces the
+# runtime attack surface and avoids shipping their unused dependency tree.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --chown=node:node --from=builder /app/package*.json ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
@@ -27,4 +32,4 @@ EXPOSE 3000
 
 USER node
 
-CMD ["npm", "run", "start"]
+CMD ["node", "node_modules/next/dist/bin/next", "start"]

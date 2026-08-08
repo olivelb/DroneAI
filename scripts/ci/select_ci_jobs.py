@@ -18,6 +18,7 @@ SCOPES: Final = (
     "dronegs",
     "migrations",
     "frontend",
+    "frontend_container",
     "containers",
     "helm",
     "infra",
@@ -85,6 +86,12 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["migrations"] = True
         if _under(path, "app4-dashboard/frontend"):
             selected["frontend"] = True
+        if path == ".dockerignore" or path in {
+            "app4-dashboard/frontend/Dockerfile",
+            "app4-dashboard/frontend/package.json",
+            "app4-dashboard/frontend/package-lock.json",
+        }:
+            selected["frontend_container"] = True
         if (
             _under(path, "shared")
             or _under(path, "app3-processing")
