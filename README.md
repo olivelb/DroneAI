@@ -123,6 +123,7 @@ guides for implementation and operational details:
 | Infrastructure-free workflow | [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) |
 | HD facade process | [`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md) |
 | Development, tests and dependency locks | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
+| Platform versioning and releases | [`docs/RELEASES.md`](docs/RELEASES.md) |
 | Production boundary and release gates | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) |
 | Reconstruction and RTK alignment | [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) |
 | Map workspace, measurements and exports | [`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md) |

@@ -107,6 +107,7 @@ scripts-check:
 docs-check:
 	$(PYTHON) tools/check_markdown_links.py
 	$(PYTHON) tools/export_event_schemas.py --check
+	$(PYTHON) tools/check_platform_version.py
 
 workflows-check:
 	actionlint
