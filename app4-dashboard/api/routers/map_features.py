@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
-from typing import Annotated, Any
+from datetime import UTC, datetime
+from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import Text, func, or_
@@ -20,6 +20,10 @@ from shared.geospatial_workspace import geometry_bounds
 
 from ..map_schemas import MapFeatureCreate, MapFeatureUpdate
 from ..map_support import (
+    Bounds,
+    JsonObject,
+    MissionRecord,
+    RouteSession,
     apply_detection_spatial_filter,
     apply_spatial_filter,
     feature_collection,
@@ -32,14 +36,21 @@ from ..security import Principal, require_operator
 router = APIRouter()
 
 
+class MapFeatureMutationRecord(Protocol):
+    geometry: Any
+    version: int
+    updated_at: datetime
+
+
 @router.post("/{vol_id}/features", status_code=status.HTTP_201_CREATED)
 def create_map_feature(
     vol_id: str,
     request: MapFeatureCreate,
     principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> JsonObject:
     with get_session() as session:
-        mission = get_mission(session, vol_id)
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(typed_session, vol_id)
         feature = MapFeature(
             mission_id=mission.id,
             vol_id=vol_id,
@@ -55,9 +66,9 @@ def create_map_feature(
             properties=request.properties,
             created_by=principal.subject,
         )
-        session.add(feature)
-        session.flush()
-        return map_feature_geojson(session, feature)
+        typed_session.add(feature)
+        typed_session.flush()
+        return map_feature_geojson(typed_session, feature)
 
 
 @router.patch("/{vol_id}/features/{feature_id}")
@@ -66,17 +77,19 @@ def update_map_feature(
     feature_id: str,
     request: MapFeatureUpdate,
     _principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> JsonObject:
     with get_session() as session:
-        feature = (
-            session.query(MapFeature)
+        typed_session = cast(RouteSession, session)
+        feature = cast(
+            MapFeatureMutationRecord | None,
+            typed_session.query(MapFeature)
             .filter(
                 MapFeature.vol_id == vol_id,
                 MapFeature.feature_id == feature_id,
                 MapFeature.source == "manual",
             )
             .with_for_update()
-            .first()
+            .first(),
         )
         if feature is None:
             raise HTTPException(status_code=404, detail="Feature not found")
@@ -102,9 +115,12 @@ def update_map_feature(
                 value.strip() if isinstance(value, str) else value,
             )
         feature.version += 1
-        feature.updated_at = datetime.now(timezone.utc)
-        session.flush()
-        return map_feature_geojson(session, feature)
+        feature.updated_at = datetime.now(UTC)
+        typed_session.flush()
+        return map_feature_geojson(
+            typed_session,
+            cast(MapFeature, feature),
+        )
 
 
 @router.delete(
@@ -115,35 +131,37 @@ def delete_map_feature(
     vol_id: str,
     feature_id: str,
     _principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> Response:
     with get_session() as session:
-        feature = (
-            session.query(MapFeature)
+        typed_session = cast(RouteSession, session)
+        feature = cast(
+            MapFeature | None,
+            typed_session.query(MapFeature)
             .filter(
                 MapFeature.vol_id == vol_id,
                 MapFeature.feature_id == feature_id,
                 MapFeature.source == "manual",
             )
-            .first()
+            .first(),
         )
         if feature is None:
             raise HTTPException(status_code=404, detail="Feature not found")
-        session.delete(feature)
+        typed_session.delete(feature)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _search_map_records(
-    session,
+    session: RouteSession,
     *,
-    vol_id,
-    text,
-    source,
-    run_id,
-    class_name,
-    min_confidence,
-    bounds,
-    limit,
-):
+    vol_id: str,
+    text: str,
+    source: str | None,
+    run_id: str | None,
+    class_name: str | None,
+    min_confidence: float | None,
+    bounds: Bounds | None,
+    limit: int,
+) -> tuple[list[MapFeature], bool]:
     if source == "legacy":
         return [], False
     query = session.query(MapFeature).filter(MapFeature.vol_id == vol_id)
@@ -168,20 +186,23 @@ def _search_map_records(
     if min_confidence is not None:
         query = query.filter(MapFeature.confidence >= min_confidence)
     query = apply_spatial_filter(query, MapFeature.geometry, bounds)
-    records = query.order_by(MapFeature.updated_at.desc()).limit(limit + 1).all()
+    records = cast(
+        list[MapFeature],
+        query.order_by(MapFeature.updated_at.desc()).limit(limit + 1).all(),
+    )
     return records[:limit], len(records) > limit
 
 
 def _search_legacy_records(
-    session,
+    session: RouteSession,
     *,
-    vol_id,
-    text,
-    class_name,
-    min_confidence,
-    bounds,
-    limit,
-):
+    vol_id: str,
+    text: str,
+    class_name: str | None,
+    min_confidence: float | None,
+    bounds: Bounds | None,
+    limit: int,
+) -> tuple[list[Detection], bool]:
     query = session.query(Detection).filter(Detection.vol_id == vol_id)
     if text:
         query = query.filter(Detection.class_name.ilike(f"%{text}%"))
@@ -190,11 +211,18 @@ def _search_legacy_records(
     if min_confidence is not None:
         query = query.filter(Detection.confidence >= min_confidence)
     query = apply_detection_spatial_filter(query, bounds)
-    records = query.order_by(Detection.id.desc()).limit(limit + 1).all()
+    records = cast(
+        list[Detection],
+        query.order_by(Detection.id.desc()).limit(limit + 1).all(),
+    )
     return records[:limit], len(records) > limit
 
 
-def _legacy_geojson(records, mission, vol_id):
+def _legacy_geojson(
+    records: list[Detection],
+    mission: MissionRecord,
+    vol_id: str,
+) -> list[JsonObject]:
     metadata = mission.tiling_metadata or {}
     collection = detections_feature_collection(
         records,
@@ -202,8 +230,9 @@ def _legacy_geojson(records, mission, vol_id):
         source_crs=metadata.get("crs"),
         vol_id=vol_id,
     )
-    for feature in collection["features"]:
-        properties = feature["properties"]
+    features = cast(list[JsonObject], collection["features"])
+    for feature in features:
+        properties = cast(JsonObject, feature["properties"])
         properties.update(
             {
                 "source": "legacy",
@@ -212,13 +241,16 @@ def _legacy_geojson(records, mission, vol_id):
                 "color": "#f43f5e",
             }
         )
-    return collection["features"]
+    return features
 
 
-def _aggregate_bounds(features: list[dict[str, Any]]):
+def _aggregate_bounds(features: list[JsonObject]) -> list[float] | None:
     if not features:
         return None
-    bounds = [geometry_bounds(feature["geometry"]) for feature in features]
+    bounds = [
+        geometry_bounds(cast(JsonObject, feature["geometry"]))
+        for feature in features
+    ]
     return [
         min(item[0] for item in bounds),
         min(item[1] for item in bounds),
@@ -230,21 +262,25 @@ def _aggregate_bounds(features: list[dict[str, Any]]):
 @router.get("/{vol_id}/search")
 def search_map_features(
     vol_id: str,
-    q: str = Query(default="", max_length=160),
-    source: str | None = Query(default=None),
-    run_id: str | None = Query(default=None),
-    class_name: str | None = Query(default=None),
-    min_confidence: float | None = Query(default=None, ge=0, le=1),
-    bbox: str | None = Query(default=None),
-    limit: int = Query(default=200, ge=1, le=1000),
-):
+    q: Annotated[str, Query(max_length=160)] = "",
+    source: Annotated[str | None, Query()] = None,
+    run_id: Annotated[str | None, Query()] = None,
+    class_name: Annotated[str | None, Query()] = None,
+    min_confidence: Annotated[
+        float | None,
+        Query(ge=0, le=1),
+    ] = None,
+    bbox: Annotated[str | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 200,
+) -> JsonObject:
     bounds = parse_bbox(bbox)
     text = q.strip()
-    features: list[dict[str, Any]] = []
+    features: list[JsonObject] = []
     with get_session() as session:
-        mission = get_mission(session, vol_id)
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(typed_session, vol_id)
         records, truncated = _search_map_records(
-            session,
+            typed_session,
             vol_id=vol_id,
             text=text,
             source=source,
@@ -254,11 +290,14 @@ def search_map_features(
             bounds=bounds,
             limit=limit,
         )
-        features.extend(map_feature_geojson(session, item) for item in records)
+        features.extend(
+            map_feature_geojson(typed_session, item)
+            for item in records
+        )
         remaining = max(0, limit - len(features))
         if remaining and source in {None, "", "legacy"} and not run_id:
             legacy, legacy_truncated = _search_legacy_records(
-                session,
+                typed_session,
                 vol_id=vol_id,
                 text=text,
                 class_name=class_name,

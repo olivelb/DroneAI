@@ -200,8 +200,9 @@ mission lifecycle/status and administrative outbox recovery are strictly typed
 route adapters. The geospatial composition router, raster metadata, tile and
 combined vector read paths, plus rerunnable analysis lifecycle and result
 publication and QGIS-compatible raster/vector exports are covered too. The
-feature-editing adapter remains the final subsequent increment rather than
-being hidden behind broad ignores.
+feature-editing adapter completes the strict route boundary, including typed
+search filters and the optimistic-version conflict contract. Every dashboard
+HTTP route module is covered without broad ignores.
 
 Primary endpoints:
 

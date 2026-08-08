@@ -18,6 +18,7 @@ mission_state = importlib.import_module("app4-dashboard.api.mission_state")
 map_support = importlib.import_module("app4-dashboard.api.map_support")
 analysis_routes = importlib.import_module("app4-dashboard.api.routers.map_analyses")
 export_routes = importlib.import_module("app4-dashboard.api.routers.map_exports")
+feature_routes = importlib.import_module("app4-dashboard.api.routers.map_features")
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
@@ -148,6 +149,68 @@ def test_sync_io_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(analysis_routes.analysis_vectors)
     assert not inspect.iscoroutinefunction(export_routes.export_raster)
     assert not inspect.iscoroutinefunction(export_routes.export_vectors)
+    assert not inspect.iscoroutinefunction(feature_routes.create_map_feature)
+    assert not inspect.iscoroutinefunction(feature_routes.update_map_feature)
+    assert not inspect.iscoroutinefunction(feature_routes.delete_map_feature)
+    assert not inspect.iscoroutinefunction(feature_routes.search_map_features)
+
+
+def test_manual_feature_update_rejects_a_stale_version(monkeypatch):
+    feature = SimpleNamespace(version=3)
+
+    class Query:
+        def filter(self, *_criteria):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def first(self):
+            return feature
+
+    session = SimpleNamespace(
+        query=lambda _model: Query(),
+        flush=lambda: pytest.fail("stale updates must not be flushed"),
+    )
+
+    @contextmanager
+    def session_scope():
+        yield session
+
+    monkeypatch.setattr(feature_routes, "get_session", session_scope)
+    request = SimpleNamespace(version=2)
+
+    with pytest.raises(HTTPException) as error:
+        feature_routes.update_map_feature(
+            "mission-1",
+            "feature-1",
+            request,
+            None,
+        )
+
+    assert error.value.status_code == 409
+    assert error.value.detail == {
+        "message": "Feature was changed by another user",
+        "current_version": 3,
+    }
+
+
+def test_map_search_aggregates_feature_bounds():
+    features = [
+        {
+            "geometry": {"type": "Point", "coordinates": [2.0, 5.0]},
+        },
+        {
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [
+                    [[-1.0, 3.0], [4.0, 3.0], [4.0, 8.0], [-1.0, 3.0]],
+                ],
+            },
+        },
+    ]
+
+    assert feature_routes._aggregate_bounds(features) == [-1.0, 3.0, 4.0, 8.0]
 
 
 def test_raster_export_stream_closes_its_object_body():

@@ -117,8 +117,9 @@ read paths, plus rerunnable analysis lifecycle and result publication are
 covered too. Shared route protocols keep SQLAlchemy queries narrow without
 weakening response contracts. Raster and QGIS-compatible vector exports are
 covered as well, including streamed object cleanup. The feature-editing route
-adapter remains the final subsequent increment instead of being hidden behind
-broad ignores.
+adapter now completes the strict route boundary, including typed search filters,
+`FOR UPDATE` mutation records and the optimistic-version `409` invariant. Every
+dashboard HTTP route module is therefore covered without broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
