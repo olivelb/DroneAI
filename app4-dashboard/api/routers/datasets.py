@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, NotRequired, TypedDict
 
 from fastapi import (
     APIRouter,
@@ -46,6 +46,42 @@ DATASET_SUFFIXES = {
     ".txt",
     ".csv",
 }
+
+
+class BrowseItem(TypedDict):
+    name: str
+    path: str
+    is_dir: bool
+    image_count: int
+
+
+class DatasetItem(TypedDict):
+    name: str
+    path: str
+    image_count: int
+
+
+class DatasetDeleteResponse(TypedDict):
+    status: str
+    message: str
+    objects_deleted: int
+
+
+class UploadFileResult(TypedDict):
+    name: str
+    status: str
+    s3_key: NotRequired[str]
+    error: NotRequired[str]
+
+
+class UploadBatchResponse(TypedDict):
+    upload_id: str
+    dataset: str
+    total: int
+    completed: int
+    failed: int
+    status: str
+    files: list[UploadFileResult]
 
 
 def sanitize_dataset_name(value: str, *, replacement: str = "") -> str:
@@ -97,9 +133,9 @@ def validate_uploads(files: list[UploadFile]) -> None:
 
 
 @router.get("/browse")
-def browse_path(prefix: str = "datasets/"):
+def browse_path(prefix: str = "datasets/") -> list[BrowseItem]:
     try:
-        items = []
+        items: list[BrowseItem] = []
         for key in storage.list_objects(prefix, delimiter="/"):
             if key.endswith("/") and key != prefix:
                 items.append(
@@ -135,7 +171,7 @@ def preview_image(
     s3_key: str,
     max_size: int = 4096,
     colormap: str = "",
-):
+) -> StreamingResponse:
     if not storage.file_exists(s3_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -192,9 +228,9 @@ def preview_image(
 
 
 @router.get("/datasets")
-def list_datasets():
+def list_datasets() -> list[DatasetItem]:
     try:
-        results = []
+        results: list[DatasetItem] = []
         for prefix in storage.list_objects("datasets/", delimiter="/"):
             if not prefix.endswith("/"):
                 continue
@@ -219,7 +255,7 @@ def list_datasets():
     "/datasets/{name}",
     dependencies=[Depends(require_admin)],
 )
-def delete_dataset(name: str):
+def delete_dataset(name: str) -> DatasetDeleteResponse:
     safe_name = sanitize_dataset_name(name)
     if not safe_name or safe_name != name.strip():
         raise HTTPException(
@@ -241,7 +277,7 @@ def delete_dataset(name: str):
 
 
 @router.get("/files/{s3_key:path}")
-def get_file(s3_key: str):
+def get_file(s3_key: str) -> RedirectResponse:
     if not storage.file_exists(s3_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -260,7 +296,7 @@ def get_file(s3_key: str):
 def upload_dataset_batch(
     dataset_name: Annotated[str, Query()],
     files: Annotated[list[UploadFile], File()],
-):
+) -> UploadBatchResponse:
     validate_uploads(files)
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:
@@ -268,7 +304,7 @@ def upload_dataset_batch(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid dataset name",
         )
-    result = {
+    result: UploadBatchResponse = {
         "upload_id": uuid.uuid4().hex[:12],
         "dataset": safe_name,
         "total": len(files),

@@ -33,6 +33,7 @@ API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/map_support.py
 API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
+	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/missions.py \
 	app4-dashboard/api/routers/operations.py
 SERVICE_CORE_PATHS := $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)

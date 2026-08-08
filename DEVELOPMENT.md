@@ -110,10 +110,10 @@ It also checks mission and map Pydantic schemas with their real framework
 types, raster rate limiting, mission state/resume policy and geospatial
 query/storage helpers. Explicit protocols and typed dictionaries keep legacy
 SQLAlchemy queries and validated JSON at narrow dynamic boundaries. The first
-strict route-adapter increment covers browser authentication, mission
-lifecycle/status and administrative outbox recovery. Dataset and geospatial
-route adapters remain subsequent increments instead of being hidden behind
-broad ignores.
+strict route-adapter boundary covers browser authentication, dataset browsing
+and batch upload, mission lifecycle/status and administrative outbox recovery.
+Geospatial route adapters remain subsequent increments instead of being hidden
+behind broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
