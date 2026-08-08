@@ -4,6 +4,7 @@ x-common-environment: &common-environment
   KAFKA_BROKER: kafka:9092
   INBOX_LEASE_SECONDS: "300"
   INBOX_BUSY_RETRY_SECONDS: "5"
+  CANCELLATION_POLL_SECONDS: "2"
   S3_ENDPOINT: http://minio:9000
   S3_PUBLIC_ENDPOINT: http://${DRONEAI_ACCESS_HOST:-localhost}:${DRONEAI_MINIO_API_PORT:-30091}
   S3_BUCKET: drone-ai

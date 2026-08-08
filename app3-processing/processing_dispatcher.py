@@ -80,11 +80,12 @@ class ProcessingDispatcher:
         vol_id = cast(str, data["vol_id"])
         analysis_run_id = cast(str | None, data.get("analysis_run_id"))
         analysis_attempt = int(data.get("attempt", 0))
-        self.cancellation_registry.clear(
+        if self.cancellation_registry.is_cancelled(
             vol_id,
             analysis_run_id,
             analysis_attempt,
-        )
+        ):
+            return
         self.tiler.slice(
             str(data.get("ortho_s3_key") or data.get("ortho_path") or ""),
             vol_id,

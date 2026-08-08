@@ -10,6 +10,10 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from PIL import Image
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from shared.database import Mission, OutboxEvent
 
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
 main = importlib.import_module("app4-dashboard.api.main")
@@ -136,6 +140,40 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
 
     assert error.value.status_code == 409
     assert "already exists" in error.value.detail
+
+
+def test_cancel_mission_persists_state_and_outbox_atomically(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Mission.__table__.create(engine)
+    OutboxEvent.__table__.create(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def session_scope():
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    with session_scope() as session:
+        session.add(Mission(vol_id="mission-1", status="processing", retry_count=2))
+    monkeypatch.setattr(mission_routes, "get_session", session_scope)
+
+    response = mission_routes.cancel_mission("mission-1")
+
+    assert response["status"] == "success"
+    with session_scope() as session:
+        mission = session.query(Mission).one()
+        outbox = session.query(OutboxEvent).one()
+        assert mission.status == "cancelled"
+        assert mission.current_step == "CANCELLATION_REQUESTED"
+        assert outbox.event_type == "control"
+        assert outbox.payload["attempt"] == 2
 
 
 def test_sync_io_handlers_are_threadpool_eligible():

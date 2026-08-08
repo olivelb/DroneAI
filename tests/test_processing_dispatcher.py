@@ -63,7 +63,7 @@ def _dispatcher():
     return dispatcher, cancellation, tiler, analysis, legacy
 
 
-def test_orthomosaic_event_clears_attempt_and_routes_all_options():
+def test_orthomosaic_event_checks_attempt_and_routes_all_options():
     dispatcher, cancellation, tiler, analysis, legacy = _dispatcher()
 
     dispatcher.process_event(
@@ -82,7 +82,7 @@ def test_orthomosaic_event_clears_attempt_and_routes_all_options():
         "orthomosaic",
     )
 
-    assert cancellation.cleared == [("mission-1", "run-1", 3)]
+    assert cancellation.cleared == []
     assert tiler.calls == [
         (
             "missions/mission-1/orthomosaic.tif",
@@ -133,6 +133,23 @@ def test_cancelled_detection_is_ignored_and_recovery_calls_both_workflows():
     assert legacy.detections == []
     assert analysis.recoveries == 1
     assert legacy.recoveries == 1
+
+
+def test_cancelled_orthomosaic_is_ignored_before_tiling():
+    dispatcher, cancellation, tiler, _analysis, _legacy = _dispatcher()
+    cancellation.cancelled = True
+
+    dispatcher.process_event(
+        {
+            "vol_id": "mission-1",
+            "ortho_s3_key": "missions/mission-1/orthomosaic.tif",
+            "analysis_run_id": "run-1",
+            "attempt": 2,
+        },
+        "orthomosaic",
+    )
+
+    assert tiler.calls == []
 
 
 def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):

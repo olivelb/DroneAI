@@ -17,7 +17,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
 from sam3_backend import Sam3Backend
-from shared.cancellation import AttemptCancellationRegistry
+from shared.cancellation import DurableCancellationRegistry
 from shared.config import (
     KAFKA_BROKER,
     TOPIC_CONTROL,
@@ -49,7 +49,7 @@ CONSUMER_GROUP = "ia-tile-workers"
 CONTROL_CONSUMER_GROUP = "ia-control-workers"
 
 producer = Producer({"bootstrap.servers": KAFKA_BROKER})
-cancel_manager = AttemptCancellationRegistry()
+cancel_manager = DurableCancellationRegistry()
 progress_publisher = make_progress_publisher(
     producer,
     TOPIC_STATUS,

@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
 
 from shared import storage
+from shared.cancellation import mark_cancellation_requested
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
 from shared.database import Mission, get_session
 from shared.facade_process import product_process_catalog
@@ -119,12 +120,22 @@ def cancel_mission(vol_id: str) -> CommandResponse:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Mission {vol_id} not found",
             )
+        attempt = int(mission.retry_count or 0)
+        if not mark_cancellation_requested(
+            session,
+            vol_id=vol_id,
+            attempt=attempt,
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Mission {vol_id} changed generation before cancellation",
+            )
         enqueue_outbox(
             session,
             topic=TOPIC_CONTROL,
             event=build_cancel_event(
                 vol_id,
-                attempt=int(mission.retry_count or 0),
+                attempt=attempt,
             ),
             key=vol_id,
         )

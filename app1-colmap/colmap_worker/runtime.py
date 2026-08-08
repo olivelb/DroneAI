@@ -6,10 +6,11 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from shared.cancellation import DurableCancellationRegistry
 from worker_support import MissionStateTracker, WorkerCancellationState
 
 logger = logging.getLogger("app1-colmap")
-cancellation_state = WorkerCancellationState()
+cancellation_state = WorkerCancellationState(DurableCancellationRegistry())
 mission_state_tracker = MissionStateTracker()
 
 ProgressReporter = Callable[..., None]
