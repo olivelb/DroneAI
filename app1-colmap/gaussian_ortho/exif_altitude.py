@@ -1,10 +1,24 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Sequence
+from typing import Any, Protocol
+
 import numpy as np
 from PIL import Image as PILImage, UnidentifiedImageError
-from PIL.ExifTags import TAGS, GPSTAGS
+from PIL.ExifTags import GPSTAGS, TAGS
 
 
-def _get_gps_info(filepath):
+type ImageDirectory = str | os.PathLike[str]
+type GpsInfo = dict[str | int, Any]
+
+
+class _CameraPose(Protocol):
+    image_name: str
+    T: np.ndarray
+
+
+def _get_gps_info(filepath: ImageDirectory) -> GpsInfo | None:
     """Extract GPS IFD from a JPEG/TIFF using Pillow. Returns dict or None."""
     try:
         with PILImage.open(filepath) as image:
@@ -13,32 +27,35 @@ def _get_gps_info(filepath):
                 if TAGS.get(tag_id) != "GPSInfo":
                     continue
                 value = exif.get_ifd(tag_id)
-                return {
+                gps_info: GpsInfo = {
                     GPSTAGS.get(gps_tag, gps_tag): gps_value
                     for gps_tag, gps_value in value.items()
                 }
+                return gps_info
     except (AttributeError, OSError, TypeError, UnidentifiedImageError, ValueError):
         return None
     return None
 
 
-def _dms_to_deg(dms):
+def _dms_to_deg(dms: Sequence[Any]) -> float:
     """Convert (degrees, minutes, seconds) tuple to decimal degrees."""
     return float(dms[0]) + float(dms[1]) / 60.0 + float(dms[2]) / 3600.0
 
 
-def _gps_reference(value):
+def _gps_reference(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("ascii", errors="ignore").strip("\x00").upper()
     return str(value or "").upper()
 
 
-def extract_exif_altitudes(images_dir):
+def extract_exif_altitudes(
+    images_dir: ImageDirectory,
+) -> dict[str, float | None]:
     """
     Extract GPS altitude from all images in a directory.
     Returns a dict: {filename: altitude (float or None)}
     """
-    altitudes = {}
+    altitudes: dict[str, float | None] = {}
     for fname in sorted(os.listdir(images_dir)):
         if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
             continue
@@ -54,12 +71,14 @@ def extract_exif_altitudes(images_dir):
     return altitudes
 
 
-def extract_exif_gps(images_dir):
+def extract_exif_gps(
+    images_dir: ImageDirectory,
+) -> dict[str, tuple[float, float] | None]:
     """
     Extract GPS lat/lon from all images in a directory.
     Returns a dict: {filename: (lat_deg, lon_deg) or None}
     """
-    positions = {}
+    positions: dict[str, tuple[float, float] | None] = {}
     for fname in sorted(os.listdir(images_dir)):
         if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
             continue
@@ -77,7 +96,11 @@ def extract_exif_gps(images_dir):
     return positions
 
 
-def compute_colmap_scale(cameras, images_dir, utm_crs):
+def compute_colmap_scale(
+    cameras: Sequence[_CameraPose],
+    images_dir: ImageDirectory,
+    utm_crs: object,
+) -> float:
     """
     Compute the scale factor: how many real-world metres per COLMAP unit.
 
@@ -91,7 +114,7 @@ def compute_colmap_scale(cameras, images_dir, utm_crs):
     transformer = Transformer.from_crs("EPSG:4326", utm_crs, always_xy=True)
 
     # Match cameras to GPS by image_name
-    matched = []
+    matched: list[tuple[np.ndarray, np.ndarray]] = []
     for cam in cameras:
         g = gps.get(cam.image_name)
         if g is not None:
@@ -105,7 +128,7 @@ def compute_colmap_scale(cameras, images_dir, utm_crs):
     rng = np.random.default_rng(42)
     n_pairs = min(1000, len(matched) * (len(matched) - 1) // 2)
     indices = rng.choice(len(matched), size=(n_pairs, 2), replace=True)
-    ratios = []
+    ratios: list[float] = []
     for i, j in indices:
         if i == j:
             continue
@@ -122,13 +145,13 @@ def compute_colmap_scale(cameras, images_dir, utm_crs):
 
 
 def compute_projected_geo_origin(
-    cameras,
-    images_dir,
-    projected_crs,
-    aligned_camera_positions,
-    colmap_to_meters,
-    mean_altitude,
-):
+    cameras: Sequence[_CameraPose],
+    images_dir: ImageDirectory,
+    projected_crs: object,
+    aligned_camera_positions: object,
+    colmap_to_meters: float,
+    mean_altitude: float | None,
+) -> np.ndarray | None:
     """Align a rotated local camera centroid with its projected GPS centroid."""
 
     from pyproj import Transformer
@@ -139,7 +162,7 @@ def compute_projected_geo_origin(
         projected_crs,
         always_xy=True,
     )
-    projected = []
+    projected: list[list[float]] = []
     for camera in cameras:
         position = gps.get(camera.image_name)
         if position is None:
@@ -148,15 +171,19 @@ def compute_projected_geo_origin(
         projected.append([easting, northing, mean_altitude or 0.0])
     if not projected:
         return None
-    gps_centroid = np.mean(projected, axis=0).astype(np.float64)
-    model_centroid = (
+    gps_centroid: np.ndarray = np.mean(projected, axis=0).astype(np.float64)
+    model_centroid: np.ndarray = (
         np.asarray(aligned_camera_positions, dtype=np.float64).mean(axis=0)
         * float(colmap_to_meters)
     )
-    return gps_centroid - model_centroid
+    origin: np.ndarray = gps_centroid - model_centroid
+    return origin
 
 
-def compute_colmap_scale_geodesic(cameras, images_dir):
+def compute_colmap_scale_geodesic(
+    cameras: Sequence[_CameraPose],
+    images_dir: ImageDirectory,
+) -> tuple[float, str]:
     """Estimate metres per COLMAP unit without selecting an output CRS.
 
     GPS is used only for relative 3D camera-baseline lengths (including EXIF
@@ -166,15 +193,18 @@ def compute_colmap_scale_geodesic(cameras, images_dir):
 
     gps = extract_exif_gps(images_dir)
     altitudes = extract_exif_altitudes(images_dir)
-    matched = [
-        (
-            cam.T.astype(np.float64),
-            gps.get(cam.image_name),
-            altitudes.get(cam.image_name),
+    matched: list[tuple[np.ndarray, tuple[float, float], float | None]] = []
+    for camera in cameras:
+        position = gps.get(camera.image_name)
+        if position is None:
+            continue
+        matched.append(
+            (
+                camera.T.astype(np.float64),
+                position,
+                altitudes.get(camera.image_name),
+            )
         )
-        for cam in cameras
-        if gps.get(cam.image_name) is not None
-    ]
     if len(matched) < 10:
         return 1.0, "model-units"
 
@@ -182,7 +212,7 @@ def compute_colmap_scale_geodesic(cameras, images_dir):
     rng = np.random.default_rng(42)
     n_pairs = min(2000, len(matched) * (len(matched) - 1) // 2)
     indices = rng.choice(len(matched), size=(n_pairs, 2), replace=True)
-    ratios = []
+    ratios: list[float] = []
     for i, j in indices:
         if i == j:
             continue
