@@ -238,10 +238,16 @@ in the report without making a release impossible. The commit-scoped
 `supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
 failed jobs. Syft and Trivy container tags and multi-architecture digests are
 pinned in `.github/workflows/ci.yml` and
-`.github/workflows/cuda-containers.yml`. The API and processing images also pin
-the multi-architecture `python:3.12-slim` index digest, so a rebuild cannot
-silently select a different upstream filesystem. Refresh that digest only as
-an explicit, reviewed dependency update.
+`.github/workflows/cuda-containers.yml`. The API and processing images pin the
+multi-architecture `python:3.12-slim` index digest, and both frontend stages
+pin the `node:20-alpine` index digest, so a rebuild cannot silently select a
+different upstream filesystem. Refresh these digests only as explicit,
+reviewed dependency updates.
+
+Frontend source changes retain the regular lint, unit, production-build and
+Playwright path. The separate frontend image/SBOM/Trivy job is intentionally
+selected only when the Dockerfile, npm manifests/lock or global Docker context
+changes; ordinary React or CSS edits do not repeat the container build.
 
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:

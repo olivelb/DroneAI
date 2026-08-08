@@ -20,6 +20,15 @@ def test_frontend_change_only_runs_frontend_job() -> None:
     assert _enabled("app4-dashboard/frontend/src/app/page.tsx") == {"frontend"}
 
 
+def test_frontend_runtime_dependency_changes_run_image_supply_chain() -> None:
+    for path in (
+        "app4-dashboard/frontend/Dockerfile",
+        "app4-dashboard/frontend/package.json",
+        "app4-dashboard/frontend/package-lock.json",
+    ):
+        assert _enabled(path) == {"frontend", "frontend_container"}
+
+
 def test_shared_change_runs_python_and_service_image_jobs() -> None:
     assert _enabled("shared/event_contracts.py") == {"python", "containers"}
 
@@ -48,7 +57,7 @@ def test_ovh_terraform_change_only_runs_infrastructure_validation() -> None:
 
 
 def test_docker_context_change_only_runs_service_image_jobs() -> None:
-    assert _enabled(".dockerignore") == {"containers"}
+    assert _enabled(".dockerignore") == {"containers", "frontend_container"}
 
 
 def test_ci_control_change_runs_all_lightweight_scopes_without_cuda() -> None:

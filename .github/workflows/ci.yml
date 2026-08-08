@@ -22,6 +22,7 @@ jobs:
       dronegs: ${{ steps.scopes.outputs.dronegs }}
       migrations: ${{ steps.scopes.outputs.migrations }}
       frontend: ${{ steps.scopes.outputs.frontend }}
+      frontend_container: ${{ steps.scopes.outputs.frontend_container }}
       containers: ${{ steps.scopes.outputs.containers }}
       helm: ${{ steps.scopes.outputs.helm }}
       infra: ${{ steps.scopes.outputs.infra }}
@@ -185,6 +186,71 @@ jobs:
           path: app4-dashboard/frontend/playwright-report/
           if-no-files-found: ignore
 
+  frontend-container:
+    name: Frontend image supply-chain smoke test
+    needs: changes
+    if: needs.changes.outputs.frontend_container == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build frontend runtime image
+        run: >-
+          docker build
+          --tag drone-dashboard-frontend:ci
+          --file app4-dashboard/frontend/Dockerfile
+          .
+      - name: Verify non-root read-only runtime
+        run: >-
+          docker run --rm
+          --read-only
+          --tmpfs /tmp
+          --tmpfs /app/.next/cache
+          --entrypoint node
+          drone-dashboard-frontend:ci
+          -e "const fs=require('node:fs');
+          if(process.getuid()!==1000)throw new Error('unexpected uid');
+          require('next/package.json');
+          fs.accessSync('/app/.next/BUILD_ID')"
+      - name: Generate frontend CycloneDX image SBOM
+        run: |
+          mkdir -p supply-chain
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/supply-chain:/output" \
+            anchore/syft:v1.50.0@sha256:1288ea4c8b38767b4e620c1e312c8cb26b6e887a99b4f07ab6cd19fc6f225026 \
+            docker:drone-dashboard-frontend:ci \
+            --output cyclonedx-json=/output/dashboard-frontend.cdx.json
+      - name: Record frontend HIGH and CRITICAL vulnerabilities
+        run: |
+          mkdir -p .trivy-cache
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            --volume "$PWD/.trivy-cache:/root/.cache" \
+            --volume "$PWD/supply-chain:/output" \
+            aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c \
+            image --image-src docker --scanners vuln --ignore-unfixed \
+            --severity HIGH,CRITICAL --format json \
+            --output /output/dashboard-frontend.trivy.json \
+            drone-dashboard-frontend:ci
+      - name: Reject fixed frontend CRITICAL vulnerabilities
+        run: >-
+          docker run --rm
+          --volume /var/run/docker.sock:/var/run/docker.sock
+          --volume "$PWD/.trivy-cache:/root/.cache"
+          aquasec/trivy:0.73.0@sha256:7cced7cae583819fc7806d4cbc0dbbc7cad18b99f7d3e235192e6da8c091045c
+          image --image-src docker --scanners vuln --ignore-unfixed
+          --severity CRITICAL --exit-code 1
+          drone-dashboard-frontend:ci
+      - name: Upload frontend supply-chain evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain-dashboard-frontend-${{ github.sha }}
+          path: supply-chain/
+          if-no-files-found: warn
+          retention-days: 30
+
   container-smoke:
     name: Service image import smoke tests
     needs: changes
@@ -335,6 +401,7 @@ jobs:
       - python
       - migrations
       - frontend
+      - frontend-container
       - container-smoke
       - helm
       - infra
@@ -351,6 +418,7 @@ jobs:
             "${{ needs.python.result }}" \
             "${{ needs.migrations.result }}" \
             "${{ needs.frontend.result }}" \
+            "${{ needs.frontend-container.result }}" \
             "${{ needs.container-smoke.result }}" \
             "${{ needs.helm.result }}" \
             "${{ needs.infra.result }}"; do
