@@ -55,6 +55,11 @@ blurred peripheral splats visible at 10 metres and with filtering disabled.
 - The gate complements the DroneGS held-out canary: the canary measures
   view-space appearance before map-space filtering, while retention protects
   the later orthographic product.
+- A subsequent code change adds `GAUSSIAN_MAP_COVERAGE_V1`, which measures
+  finite DSM coverage over the registered-camera footprint and rejects local
+  holes that a primitive-retention ratio cannot see. The historical variants
+  above predate that report, so they are evidence for its design, not a claim
+  that the new gate has passed. A fresh BIGZEN E2E must record that result.
 
 The corrected 2 cm render is 64,112 by 50,994 pixels. Its uncompressed RGB
 payload exceeds the classic TIFF 4 GiB limit, so both RGB and height products

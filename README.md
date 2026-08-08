@@ -54,7 +54,9 @@ carry resume and product state between them; the Kafka entry point only owns
 the worker lifecycle. The pipeline creates either a georeferenced map frame or
 a local facade frame, applies product-specific quality gates and renders RGB
 and height/depth rasters. Only map missions continue to raster processing and
-AI.
+AI. Aerial publication also requires a versioned spatial-coverage report over
+the registered-camera footprint, preventing a sparse DSM from passing solely
+because enough Gaussian primitives survived filtering.
 
 ### Raster processing — `app3-processing`
 

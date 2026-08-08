@@ -163,6 +163,8 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
                          mip_filter_variance=0.03,
                          mip_filter_compensation=True):
     """Render one tile via the custom CUDA ortho rasteriser."""
+    from .height_reference import depth_buffer_to_height, empty_height_map
+
     # --- Per-tile frustum culling (in geo frame) ---
     xyz = model.positions      # (N, 3) COLMAP coords
     if frame_origin is not None:
@@ -183,7 +185,7 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
 
     if indices.size == 0:
         rgb_np = np.full((H, W, 3), 255, dtype=np.uint8)
-        height_np = np.zeros((H, W), dtype=np.float32)
+        height_np = empty_height_map(H, W)
         return rgb_np, height_np
 
     # --- Orthographic camera ---
@@ -237,10 +239,8 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
     img = result["image"]
     img_np = (cp.clip(img, 0, 1).transpose(1, 2, 0).get() * 255).astype(np.uint8)
 
-    height_np = np.zeros((H, W), dtype=np.float32)
+    height_np = empty_height_map(H, W)
     if "depth" in result:
-        from .height_reference import depth_buffer_to_height
-
         depth = result["depth"]
         height_np = depth_buffer_to_height(depth.squeeze(0).get(), z_cam_geo)
 

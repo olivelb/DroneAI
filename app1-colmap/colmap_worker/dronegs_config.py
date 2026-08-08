@@ -16,6 +16,7 @@ from shared.facade_process import (
     FACADE_QUALIFICATION_POLICY_ID,
     FACADE_QUALIFICATION_THRESHOLDS,
 )
+from gaussian_ortho.coverage_quality import SpatialCoveragePolicy
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,13 @@ class DroneGsRunConfig:
     filter_sor_sigma: float
     filter_cc: bool
     filter_z_floater: bool
+    coverage_gate_enabled: bool
+    coverage_grid_size: int
+    coverage_min_valid_ratio: float
+    coverage_cell_threshold: float
+    coverage_min_covered_cells_ratio: float
+    coverage_min_worst_cell_ratio: float
+    coverage_min_camera_cell_ratio: float
 
 
 def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
@@ -112,6 +120,7 @@ def resolve_dronegs_config(
     qualification_policy_id = str(
         params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID)
     )
+    coverage_policy = SpatialCoveragePolicy()
     config = DroneGsRunConfig(
         resolution=float(params.get("ortho_mesh_resolution", 0.02)),
         data_factor=data_factor,
@@ -174,6 +183,44 @@ def resolve_dronegs_config(
         filter_sor_sigma=float(params.get("gs_filter_sor_sigma", 4.0)),
         filter_cc=bool(params.get("gs_filter_cc", False)),
         filter_z_floater=bool(params.get("gs_filter_z_floater", False)),
+        coverage_gate_enabled=(
+            False
+            if facade_mode
+            else bool(params.get("gs_coverage_gate_enabled", True))
+        ),
+        coverage_grid_size=int(
+            params.get("gs_coverage_grid_size", coverage_policy.grid_size)
+        ),
+        coverage_min_valid_ratio=float(
+            params.get(
+                "gs_coverage_min_valid_ratio",
+                coverage_policy.minimum_valid_ratio,
+            )
+        ),
+        coverage_cell_threshold=float(
+            params.get(
+                "gs_coverage_cell_threshold",
+                coverage_policy.cell_coverage_threshold,
+            )
+        ),
+        coverage_min_covered_cells_ratio=float(
+            params.get(
+                "gs_coverage_min_covered_cells_ratio",
+                coverage_policy.minimum_covered_cells_ratio,
+            )
+        ),
+        coverage_min_worst_cell_ratio=float(
+            params.get(
+                "gs_coverage_min_worst_cell_ratio",
+                coverage_policy.minimum_worst_cell_ratio,
+            )
+        ),
+        coverage_min_camera_cell_ratio=float(
+            params.get(
+                "gs_coverage_min_camera_cell_ratio",
+                coverage_policy.minimum_camera_cell_ratio,
+            )
+        ),
     )
 
     warnings: list[str] = []

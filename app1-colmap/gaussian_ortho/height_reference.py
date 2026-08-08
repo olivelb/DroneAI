@@ -7,6 +7,13 @@ import math
 import numpy as np
 
 
+def empty_height_map(height: int, width: int) -> np.ndarray:
+    """Create a DSM tile whose pixels are explicitly marked as nodata."""
+    if height <= 0 or width <= 0:
+        raise ValueError("height-map dimensions must be positive")
+    return np.full((height, width), np.nan, dtype=np.float32)
+
+
 def georeference_raster_origin(
     x_min: float,
     y_max: float,

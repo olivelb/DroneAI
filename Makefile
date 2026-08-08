@@ -4,6 +4,9 @@ CI_PYTHON_PATHS := $(wildcard scripts/ci/*.py)
 PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
+GAUSSIAN_ORTHO_TYPED_PATHS := \
+	app1-colmap/gaussian_ortho/coverage_quality.py \
+	app1-colmap/gaussian_ortho/filter_quality.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \
@@ -43,7 +46,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/maps.py \
 	app4-dashboard/api/routers/missions.py \
 	app4-dashboard/api/routers/operations.py
-SERVICE_CORE_PATHS := $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
+SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
 .PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
@@ -71,6 +74,7 @@ shared-lint:
 
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
+	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(GAUSSIAN_ORTHO_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports $(SHARED_FRAMEWORK_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP2_TYPED_PATHS)

@@ -24,6 +24,8 @@ def _verified_context(tmp_path: Path, *, gcp_enabled: bool = False):
     checkpoint_dir.mkdir(parents=True)
     for artifact in (ortho_file, height_file, final_ply):
         artifact.write_bytes(b"artifact")
+    coverage_report = tmp_path / "gaussian_coverage_report.json"
+    coverage_report.write_text('{"accepted": true}', encoding="utf-8")
     (checkpoint_dir / "trainer_run.json").write_text("{}", encoding="utf-8")
     (checkpoint_dir / "canary_result.json").write_text("{}", encoding="utf-8")
     preparation = SimpleNamespace(
@@ -39,6 +41,7 @@ def _verified_context(tmp_path: Path, *, gcp_enabled: bool = False):
             "height_file": str(height_file),
             "final_ply": str(final_ply),
             "checkpoint_dir": str(tmp_path / "checkpoints"),
+            "gaussian_coverage_report": str(coverage_report),
         },
     )
     return preparation, rtk_state, alignment_state, gaussian_state
@@ -55,6 +58,15 @@ def test_product_verification_accepts_complete_non_gcp_assets(tmp_path):
     assert len(assets.trainer_manifests) == 1
     assert len(assets.qualification_manifests) == 1
     assert convert.call_count == 2
+
+
+def test_aerial_product_requires_spatial_coverage_report(tmp_path):
+    context = _verified_context(tmp_path)
+    context[3].result["gaussian_coverage_report"] = None
+
+    with patch.object(publication_stage, "convert_to_cog"):
+        with pytest.raises(FileNotFoundError, match="spatial coverage report"):
+            publication_stage._verify_product_assets(*context, str(tmp_path))
 
 
 def test_gcp_verification_requires_transform_report_and_sparse_model(tmp_path):

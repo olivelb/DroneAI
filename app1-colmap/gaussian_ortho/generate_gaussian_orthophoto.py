@@ -220,6 +220,13 @@ class GaussianOrthoConfig:
     filter_sor_sigma: float
     filter_cc: bool
     filter_z_floater: bool
+    coverage_gate_enabled: bool
+    coverage_grid_size: int
+    coverage_min_valid_ratio: float
+    coverage_cell_threshold: float
+    coverage_min_covered_cells_ratio: float
+    coverage_min_worst_cell_ratio: float
+    coverage_min_camera_cell_ratio: float
     verbose: bool
     training_seed: int
     dronegs_profile_id: str
@@ -729,6 +736,7 @@ class GaussianRenderState:
     render_extent: tuple[float, float, float, float, float, float]
     local_gsd: float
     resolution_units: str
+    coverage_camera_positions: np.ndarray
 
 
 def prepare_gaussian_render_state(
@@ -848,6 +856,12 @@ def prepare_gaussian_render_state(
         local_camera_positions = raw_camera_positions
     else:
         local_camera_positions = geo_camera_positions - geo_origin
+    if config.render_mode == "facade":
+        coverage_camera_positions = np.empty((0, 3), dtype=np.float64)
+    elif scene_state.transform_data:
+        coverage_camera_positions = geo_camera_positions - geo_origin
+    else:
+        coverage_camera_positions = geo_camera_positions
 
     if not config.filter_enabled:
         _report(
@@ -973,6 +987,7 @@ def prepare_gaussian_render_state(
         render_extent=render_extent,
         local_gsd=local_gsd,
         resolution_units=resolution_units,
+        coverage_camera_positions=coverage_camera_positions,
     )
 
 
@@ -1008,6 +1023,13 @@ def generate_gaussian_orthophoto(
     filter_sor_sigma: float = 4.0,
     filter_cc: bool = False,
     filter_z_floater: bool = False,
+    coverage_gate_enabled: bool = True,
+    coverage_grid_size: int = 16,
+    coverage_min_valid_ratio: float = 0.50,
+    coverage_cell_threshold: float = 0.25,
+    coverage_min_covered_cells_ratio: float = 0.75,
+    coverage_min_worst_cell_ratio: float = 0.01,
+    coverage_min_camera_cell_ratio: float = 0.10,
     verbose: bool = False,
     trainer_backend: str | None = None,
     training_seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed,
@@ -1151,6 +1173,13 @@ def generate_gaussian_orthophoto(
         filter_sor_sigma=filter_sor_sigma,
         filter_cc=filter_cc,
         filter_z_floater=filter_z_floater,
+        coverage_gate_enabled=coverage_gate_enabled,
+        coverage_grid_size=coverage_grid_size,
+        coverage_min_valid_ratio=coverage_min_valid_ratio,
+        coverage_cell_threshold=coverage_cell_threshold,
+        coverage_min_covered_cells_ratio=coverage_min_covered_cells_ratio,
+        coverage_min_worst_cell_ratio=coverage_min_worst_cell_ratio,
+        coverage_min_camera_cell_ratio=coverage_min_camera_cell_ratio,
         verbose=verbose,
         training_seed=training_seed,
         dronegs_profile_id=dronegs_profile_id,
@@ -1221,6 +1250,7 @@ def generate_gaussian_orthophoto(
     render_extent = render_state.render_extent
     local_gsd = render_state.local_gsd
     resolution_units = render_state.resolution_units
+    coverage_camera_positions = render_state.coverage_camera_positions
     _report(
         vol_id,
         "GAUSS",
@@ -1244,6 +1274,62 @@ def generate_gaussian_orthophoto(
     x_min, x_max, y_min, y_max = result["extent"]
     H, W = rgb.shape[:2]
     _report(vol_id, "GAUSS", 97, f"Orthophoto rendered: {W}x{H} px at GSD={resolution} m/px", report_fn)
+
+    coverage_report_path = None
+    coverage_report = None
+    if render_mode == "map":
+        from .coverage_quality import (
+            SpatialCoveragePolicy,
+            evaluate_spatial_coverage,
+        )
+
+        coverage_policy = SpatialCoveragePolicy(
+            grid_size=coverage_grid_size,
+            minimum_valid_ratio=coverage_min_valid_ratio,
+            cell_coverage_threshold=coverage_cell_threshold,
+            minimum_covered_cells_ratio=coverage_min_covered_cells_ratio,
+            minimum_worst_cell_ratio=coverage_min_worst_cell_ratio,
+            minimum_camera_cell_ratio=coverage_min_camera_cell_ratio,
+        )
+        coverage_report = evaluate_spatial_coverage(
+            height,
+            extent=(x_min, x_max, y_min, y_max),
+            camera_positions=coverage_camera_positions,
+            policy=coverage_policy,
+            enforced=coverage_gate_enabled,
+        )
+        coverage_report_path = str(
+            Path(ortho_file).with_name("gaussian_coverage_report.json")
+        )
+        coverage_path = Path(coverage_report_path)
+        coverage_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_coverage_path = coverage_path.with_suffix(".json.tmp")
+        temporary_coverage_path.write_text(
+            json.dumps(coverage_report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_coverage_path, coverage_path)
+        _report(
+            vol_id,
+            "GAUSS",
+            97,
+            "Gaussian spatial coverage: "
+            f"valid={coverage_report['valid_pixel_ratio']:.1%}, "
+            f"covered cells={coverage_report['covered_cells_ratio']:.1%}, "
+            f"worst cell={coverage_report['worst_cell_ratio']:.1%} "
+            f"({coverage_report['status']}).",
+            report_fn,
+        )
+        if coverage_gate_enabled and not coverage_report["accepted"]:
+            failed_checks = ", ".join(
+                check["name"]
+                for check in coverage_report["checks"]
+                if not check["passed"]
+            )
+            raise RuntimeError(
+                "Gaussian spatial coverage gate rejected the product: "
+                f"{failed_checks}. Report: {coverage_report_path}"
+            )
 
     # --- 7. Write GeoTIFF ---
     # Translate the local-coordinate extent back to geographic (UTM) coords.
@@ -1419,6 +1505,8 @@ def generate_gaussian_orthophoto(
         "render_mode": render_mode,
         "coordinate_system": "LOCAL_FACADE" if render_mode == "facade" else utm_crs,
         "facade_frame_report": str(report_path) if report_path else None,
+        "gaussian_coverage_report": coverage_report_path,
+        "gaussian_coverage": coverage_report,
         "scale_source": scale_source,
         "meters_per_model_unit": colmap_to_meters,
         "registered_cameras": len(registered_cameras),

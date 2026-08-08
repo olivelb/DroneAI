@@ -135,6 +135,17 @@ metadata remains `coordinate_space=local`, that the manifest records
 `FACADE_HD_V1`, and that no absolute RTK, GCP or gravity option
 can leak into the facade frame.
 
+Every aerial Gaussian render must also publish
+`gaussian_coverage_report.json` under the versioned
+`GAUSSIAN_MAP_COVERAGE_V1` policy. The gate evaluates finite DSM pixels over a
+16-by-16 registered-camera footprint, including global validity, occupied
+cells, the worst expected cell and camera-cell tenth percentile. Its defaults
+are 50%, 75% of cells above 25%, 1% and 10%, respectively. Failure stops
+GeoTIFF publication unless an operator explicitly disables enforcement; that
+override remains visible as `measured-rejected` in the report and manifest.
+NaN is the only missing-height representation. Facade products are excluded
+because their local wall-frame selection has a separate quality contract.
+
 ## Distributed durability contract
 
 - The required orthomosaic is uploaded with SHA-256 metadata and verified by
@@ -163,6 +174,8 @@ Required on every candidate:
 7. Immutable benchmark bundle with binary/dataset/artifact hashes.
 8. Facade regression: inclusive exclusion audit, sparse-distribution metrics,
    local CRS-free raster metadata and terminal dashboard status.
+9. Aerial Gaussian spatial-coverage report accepted under the policy shipped
+   with the candidate.
 
 The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and
