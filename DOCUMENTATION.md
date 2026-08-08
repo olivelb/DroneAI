@@ -365,14 +365,14 @@ In practice it does the following:
 - publish verified GeoJSON to object storage
 - optionally rebuild the indexed PostGIS feature set transactionally
 
-`main.py` remains the Kafka composition root and dispatcher. Raster mechanics
-live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
-`analysis_workflow.py`. CI applies Ruff cyclomatic-complexity budgets to these
-orchestration modules. The reusable processing modules and complete app2
-worker also pass the modern Bugbear, simplification, upgrade, Ruff-specific
-and async rule set as a progressive quality ratchet. The complete app2 worker
-and the three reusable processing modules additionally pass strict mypy
-checks. Tensor-to-NumPy conversion, raster access, detection
+`main.py` is the Kafka composition root only. Raster mechanics live in
+`orthomosaic_tiler.py`; rerunnable campaign mechanics live in
+`analysis_workflow.py`; `processing_dispatcher.py` routes validated events;
+and `legacy_aggregation.py` owns the initial mission compatibility journal and
+recovery path. CI applies Ruff cyclomatic-complexity budgets to these modules.
+The complete app2 and app3 workers pass the modern Bugbear, simplification,
+upgrade, Ruff-specific and async rule set as a progressive quality ratchet,
+plus strict mypy checks. Tensor-to-NumPy conversion, raster access, detection
 records, tiling plans, durable campaign state and recovery events therefore
 remain typed at the reusable local/Kafka boundary. Small protocols describe
 the Kafka, raster and callback integrations while ORM and validated JSON data

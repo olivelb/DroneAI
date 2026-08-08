@@ -1,0 +1,168 @@
+import importlib
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+
+
+PROCESSING_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
+if str(PROCESSING_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROCESSING_ROOT))
+
+dispatcher_module = importlib.import_module("processing_dispatcher")
+legacy_module = importlib.import_module("legacy_aggregation")
+
+
+class FakeCancellationRegistry:
+    def __init__(self):
+        self.cancelled = False
+        self.cleared = []
+
+    def clear(self, *args):
+        self.cleared.append(args)
+
+    def is_cancelled(self, *_args):
+        return self.cancelled
+
+
+class FakeTiler:
+    def __init__(self):
+        self.calls = []
+
+    def slice(self, ortho_s3_key, vol_id, **kwargs):
+        self.calls.append((ortho_s3_key, vol_id, kwargs))
+
+
+class FakeWorkflow:
+    def __init__(self):
+        self.detections = []
+        self.recoveries = 0
+
+    def process_detection(self, data):
+        self.detections.append(data)
+
+    def recover(self):
+        self.recoveries += 1
+
+
+def _dispatcher():
+    cancellation = FakeCancellationRegistry()
+    tiler = FakeTiler()
+    analysis = FakeWorkflow()
+    legacy = FakeWorkflow()
+    dispatcher = dispatcher_module.ProcessingDispatcher(
+        orthomosaic_topic="orthomosaic",
+        cancellation_registry=cancellation,
+        tiler=tiler,
+        analysis_workflow=analysis,
+        legacy_workflow=legacy,
+    )
+    return dispatcher, cancellation, tiler, analysis, legacy
+
+
+def test_orthomosaic_event_clears_attempt_and_routes_all_options():
+    dispatcher, cancellation, tiler, analysis, legacy = _dispatcher()
+
+    dispatcher.process_event(
+        {
+            "vol_id": "mission-1",
+            "ortho_s3_key": "missions/mission-1/orthomosaic.tif",
+            "analysis_run_id": "run-1",
+            "attempt": 3,
+            "tile_size": 512,
+            "classes": ["truck"],
+            "ai_confidence": 0.42,
+            "ai_backend": "sam3",
+            "ai_model_variant": "yolo26m",
+            "sam_prompt": "lorry",
+        },
+        "orthomosaic",
+    )
+
+    assert cancellation.cleared == [("mission-1", "run-1", 3)]
+    assert tiler.calls == [
+        (
+            "missions/mission-1/orthomosaic.tif",
+            "mission-1",
+            {
+                "tile_size": 512,
+                "classes": ["truck"],
+                "ai_confidence": 0.42,
+                "ai_backend": "sam3",
+                "ai_model_variant": "yolo26m",
+                "sam_prompt": "lorry",
+                "analysis_run_id": "run-1",
+                "analysis_attempt": 3,
+            },
+        )
+    ]
+    assert analysis.detections == []
+    assert legacy.detections == []
+
+
+def test_detection_routes_to_modern_or_legacy_workflow():
+    dispatcher, _cancellation, _tiler, analysis, legacy = _dispatcher()
+    modern = {
+        "vol_id": "mission-1",
+        "tile_index": 1,
+        "analysis_run_id": "run-1",
+    }
+    old = {"vol_id": "mission-1", "tile_index": 2}
+
+    dispatcher.process_event(modern, "tile-detections")
+    dispatcher.process_event(old, "tile-detections")
+
+    assert analysis.detections == [modern]
+    assert legacy.detections == [old]
+
+
+def test_cancelled_detection_is_ignored_and_recovery_calls_both_workflows():
+    dispatcher, cancellation, _tiler, analysis, legacy = _dispatcher()
+    cancellation.cancelled = True
+
+    dispatcher.process_event(
+        {"vol_id": "mission-1", "tile_index": 1, "attempt": 2},
+        "tile-detections",
+    )
+    dispatcher.recover()
+
+    assert analysis.detections == []
+    assert legacy.detections == []
+    assert analysis.recoveries == 1
+    assert legacy.recoveries == 1
+
+
+def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):
+    vol_id = f"test-cleanup-{uuid4().hex}"
+    workspace = Path("/tmp/processing") / vol_id
+
+    @contextmanager
+    def session_scope():
+        yield SimpleNamespace()
+
+    monkeypatch.setattr(legacy_module, "get_session", session_scope)
+    monkeypatch.setattr(
+        legacy_module,
+        "get_mission_detections",
+        lambda _session, _vol_id: [],
+    )
+    monkeypatch.setattr(
+        legacy_module.storage,
+        "upload_verified_file",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("S3 unavailable")),
+    )
+    workflow = legacy_module.LegacyAggregationWorkflow(
+        report_progress=lambda *_args, **_kwargs: None,
+        logger=importlib.import_module("logging").getLogger("test"),
+    )
+
+    with pytest.raises(RuntimeError, match="S3 unavailable"):
+        workflow.generate_vector_results(
+            vol_id,
+            {"ortho_s3_key": None, "tiling_metadata": {}},
+        )
+
+    assert not workspace.exists()
