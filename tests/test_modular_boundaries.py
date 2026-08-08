@@ -91,6 +91,19 @@ def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
     assert "confluent_kafka" not in _source(tile_workflow)
 
 
+def test_long_running_workers_use_the_shared_durable_inbox_boundary():
+    worker_entrypoints = [
+        "app1-colmap/colmap_worker/worker.py",
+        "app2-ia/main.py",
+        "app3-processing/main.py",
+    ]
+
+    for entrypoint in worker_entrypoints:
+        source = _source(entrypoint)
+        assert "make_inbox_work_handler" in source
+        assert "shared.database" not in source
+
+
 def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     composition = "app1-colmap/main.py"
     worker = "app1-colmap/colmap_worker/worker.py"

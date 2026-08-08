@@ -15,6 +15,7 @@ from shared.config import (
     TOPIC_STATUS,
 )
 from shared.kafka_reliability import process_message
+from shared.worker_inbox import make_inbox_work_handler
 from worker_support import (
     build_mission_context,
     control_consumer_loop,
@@ -122,7 +123,12 @@ def worker_main() -> None:
                 consumer_group="colmap-workers-v4",
                 expected_type="mission",
                 dead_letter_topic=TOPIC_DEAD_LETTER,
-                handler=process_mission,
+                handler=make_inbox_work_handler(
+                    consumer_group="colmap-workers-v4",
+                    message=message,
+                    handler=process_mission,
+                    logger=logger,
+                ),
                 logger=logger,
             )
     except KeyboardInterrupt:

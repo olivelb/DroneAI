@@ -21,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from shared.database import InboxEvent, OutboxEvent
 from shared.event_contracts import validate_event
+from shared.inbox_records import build_inbox_record
 from shared.kafka_reliability import RetryPolicy, message_location
 
 SessionScope = Callable[[], AbstractContextManager[Any]]
@@ -85,16 +86,10 @@ def _process_inbox(
     if existing is not None and existing.status == "completed":
         return InboxResult.DUPLICATE
 
-    record = existing or InboxEvent(
+    record = existing or build_inbox_record(
         consumer_group=consumer_group,
-        event_id=normalized["event_id"],
-        event_type=normalized["event_type"],
-        source_topic=source.get("topic"),
-        source_partition=source.get("partition"),
-        source_offset=source.get("offset"),
-        payload=normalized,
-        status="processing",
-        attempts=1,
+        event=normalized,
+        source=source,
     )
     if existing is None:
         session.add(record)

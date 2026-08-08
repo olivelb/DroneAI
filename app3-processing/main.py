@@ -36,6 +36,7 @@ from shared.kafka_reliability import (
     process_message,
     reliable_consumer_config,
 )
+from shared.worker_inbox import make_inbox_work_handler
 from shared.worker_messaging import (
     make_cancellation_handler,
     make_progress_publisher,
@@ -158,7 +159,12 @@ def worker_main() -> None:
                 consumer_group=CONSUMER_GROUP,
                 expected_type=expected_type,
                 dead_letter_topic=TOPIC_DEAD_LETTER,
-                handler=event_handler(topic),
+                handler=make_inbox_work_handler(
+                    consumer_group=CONSUMER_GROUP,
+                    message=message,
+                    handler=event_handler(topic),
+                    logger=logger,
+                ),
                 logger=logger,
             )
     except KeyboardInterrupt:
