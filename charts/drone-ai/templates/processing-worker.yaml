@@ -7,7 +7,7 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: processing
 spec:
-  replicas: 1
+  replicas: {{ .Values.processingWorker.replicaCount }}
   strategy:
     type: Recreate
   selector:

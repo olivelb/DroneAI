@@ -35,9 +35,28 @@ spec:
                 sleep 2
               done
               {{- range .Values.kafka.topics }}
+              {{- if lt (int .partitions) 1 }}
+              {{- fail (printf "kafka topic %s must have at least one partition" .name) }}
+              {{- end }}
+              topic={{ .name | quote }}
+              desired_partitions={{ .partitions | quote }}
               /opt/kafka/bin/kafka-topics.sh --bootstrap-server "${broker}" \
-                --create --if-not-exists --partitions 1 --replication-factor 1 \
-                --topic {{ . | quote }}
+                --create --if-not-exists --partitions "${desired_partitions}" \
+                --replication-factor 1 --topic "${topic}"
+              current_partitions="$(
+                /opt/kafka/bin/kafka-topics.sh --bootstrap-server "${broker}" \
+                  --describe --topic "${topic}" |
+                  awk '/PartitionCount:/ { for (field = 1; field <= NF; field++) if ($field == "PartitionCount:") print $(field + 1) }' |
+                  head -n 1
+              )"
+              if [[ -z "${current_partitions}" ]]; then
+                echo "Unable to determine partition count for ${topic}" >&2
+                exit 1
+              fi
+              if (( current_partitions < desired_partitions )); then
+                /opt/kafka/bin/kafka-topics.sh --bootstrap-server "${broker}" \
+                  --alter --topic "${topic}" --partitions "${desired_partitions}"
+              fi
               {{- end }}
           resources:
             requests:

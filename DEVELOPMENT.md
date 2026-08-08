@@ -146,6 +146,14 @@ python tools/export_event_schemas.py
 `make static` verifies that
 `docs/contracts/kafka-events-v1.schema.json` is current.
 
+Tile work uses `shared.kafka_partitioning.tile_work_key()` at both the
+`image-tiles` and `tile-detections` boundaries. Keep the key stable across
+attempts and distinct across tile indices: retries of one logical tile require
+ordering, while separate tiles must remain available to separate consumer
+replicas. Helm topic definitions may increase partition counts but never
+reduce them. Drain tile topics before an increase because Kafka can remap keys
+when the partition count changes.
+
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
 reuse and bounded fallback, plus mandatory publication assets, GCP provenance,
 best-effort recovery uploads and aerial/facade completion routing.
