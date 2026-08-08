@@ -1,4 +1,5 @@
 import sys
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from detection_core import (  # noqa: E402
     normalize_yolo_model_variant,
     resolve_requested_labels,
     resolve_yolo_model_file,
+    run_yolo_detection,
 )
 
 from shared.validation import SUPPORTED_AERIAL_CLASSES
@@ -123,3 +125,44 @@ def test_obb_extraction_preserves_polygon_and_filters_confidence():
     assert detections[0]["class_name"] == "small vehicle"
     assert detections[0]["center_x"] == 3
     assert detections[0]["center_y"] == 4
+
+
+def test_yolo_result_records_weight_hash_runtime_and_inference_parameters(
+    tmp_path,
+    monkeypatch,
+):
+    weights = tmp_path / "yolo26l-obb.pt"
+    weights.write_bytes(b"verified-weights")
+
+    class FakeModel:
+        @staticmethod
+        def predict(**_kwargs):
+            return []
+
+    monkeypatch.setattr(
+        detection_core,
+        "load_yolo_model",
+        lambda _variant: (
+            FakeModel(),
+            ["small vehicle", "large vehicle"],
+            "yolo26l",
+            "cpu",
+            weights,
+        ),
+    )
+    detection_core._yolo_model_hashes.clear()
+
+    detections, attempt = run_yolo_detection(
+        "tile.jpg",
+        ["car"],
+        0.35,
+        "yolo26l",
+    )
+
+    assert detections == []
+    manifest = attempt["model_manifest"]
+    assert manifest["backend"] == "yolo"
+    assert manifest["identity"]["artifact_sha256"] == hashlib.sha256(b"verified-weights").hexdigest()
+    assert manifest["runtime"] == {"device": "cpu"}
+    assert manifest["inference"]["requested_classes"] == ["car"]
+    assert manifest["inference"]["primary_confidence"] == 0.35

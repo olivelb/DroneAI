@@ -11,10 +11,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from shared.database import AIAnalysisRun, AIAnalysisTile, Mission
+from shared.model_provenance import build_model_manifest
 
-PROCESSING_DIR = (
-    Path(__file__).resolve().parents[1] / "app3-processing"
-)
+PROCESSING_DIR = Path(__file__).resolve().parents[1] / "app3-processing"
 if str(PROCESSING_DIR) not in sys.path:
     sys.path.insert(0, str(PROCESSING_DIR))
 
@@ -76,6 +75,19 @@ def _workflow(**overrides):
     )
 
 
+def _model_manifest(artifact_sha256="a" * 64):
+    return build_model_manifest(
+        backend="yolo",
+        repository="ultralytics/assets",
+        revision="v8.4.0",
+        artifact="yolo26l-obb.pt",
+        artifact_sha256=artifact_sha256,
+        libraries={"ultralytics": "8.4.0"},
+        runtime={"device": "cpu"},
+        inference={"model_variant": "yolo26l", "confidence": 0.3},
+    )
+
+
 def test_analysis_json_publication_is_atomic_and_verified(
     tmp_path,
     monkeypatch,
@@ -94,9 +106,7 @@ def test_analysis_json_publication_is_atomic_and_verified(
         destination,
     )
 
-    assert destination.read_text(encoding="utf-8") == (
-        '{"type":"FeatureCollection","features":[]}'
-    )
+    assert destination.read_text(encoding="utf-8") == ('{"type":"FeatureCollection","features":[]}')
     assert uploads == [
         (
             destination,
@@ -113,9 +123,7 @@ def test_tiling_plan_has_bounded_overlap_and_private_iteration_state(
     source = SimpleNamespace(
         width=2500,
         height=1700,
-        transform=SimpleNamespace(
-            to_gdal=lambda: (0, 1, 0, 0, 0, -1)
-        ),
+        transform=SimpleNamespace(to_gdal=lambda: (0, 1, 0, 0, 0, -1)),
         crs=SimpleNamespace(to_string=lambda: "EPSG:2154"),
     )
 
@@ -126,9 +134,7 @@ def test_tiling_plan_has_bounded_overlap_and_private_iteration_state(
     public = orthomosaic_tiler.OrthomosaicTiler._public_metadata(plan)
 
     assert plan["overlap"] == 512
-    assert plan["total_tiles"] == (
-        len(plan["x_starts"]) * len(plan["y_starts"])
-    )
+    assert plan["total_tiles"] == (len(plan["x_starts"]) * len(plan["y_starts"]))
     assert public["crs"] == "EPSG:2154"
     assert "x_starts" not in public
     assert "y_starts" not in public
@@ -141,9 +147,7 @@ def test_tiler_removes_workspace_after_success(tmp_path, monkeypatch):
         producer=SimpleNamespace(flush=lambda: 0),
         tile_topic="tiles",
         is_cancelled=lambda *_args: False,
-        report_progress=lambda *args, **kwargs: progress.append(
-            (args, kwargs)
-        ),
+        report_progress=lambda *args, **kwargs: progress.append((args, kwargs)),
         logger=SimpleNamespace(
             info=lambda *_args: None,
             warning=lambda *_args: None,
@@ -178,18 +182,9 @@ def test_tiler_removes_workspace_after_success(tmp_path, monkeypatch):
 
 def test_processing_temporary_storage_is_bounded():
     chart = (
-        Path(__file__).resolve().parents[1]
-        / "charts"
-        / "drone-ai"
-        / "templates"
-        / "processing-worker.yaml"
+        Path(__file__).resolve().parents[1] / "charts" / "drone-ai" / "templates" / "processing-worker.yaml"
     ).read_text(encoding="utf-8")
-    values = (
-        Path(__file__).resolve().parents[1]
-        / "charts"
-        / "drone-ai"
-        / "values.yaml"
-    ).read_text(encoding="utf-8")
+    values = (Path(__file__).resolve().parents[1] / "charts" / "drone-ai" / "values.yaml").read_text(encoding="utf-8")
 
     assert "sizeLimit: {{ .Values.processingWorker.temporaryStorage.sizeLimit }}" in chart
     assert 'sizeLimit: "50Gi"' in values
@@ -210,9 +205,7 @@ def test_analysis_workflow_has_a_bounded_tile_retry_budget():
 def test_analysis_tile_payload_limits_are_enforced(monkeypatch):
     import io
 
-    payload = json.dumps(
-        {"raw_detections": [{"class_name": "tree"}] * 3}
-    ).encode("utf-8")
+    payload = json.dumps({"raw_detections": [{"class_name": "tree"}] * 3}).encode("utf-8")
     monkeypatch.setattr(
         analysis_workflow.storage,
         "get_object_stream",
@@ -274,9 +267,7 @@ def test_active_finalization_lease_rejects_second_owner(monkeypatch):
             total_tiles=1,
             status="finalizing",
             finalization_owner="worker-a",
-            finalization_lease_until=(
-                datetime.now(timezone.utc) + timedelta(minutes=5)
-            ),
+            finalization_lease_until=(datetime.now(timezone.utc) + timedelta(minutes=5)),
         )
         session.add(run)
         session.flush()
@@ -294,9 +285,7 @@ def test_active_finalization_lease_rejects_second_owner(monkeypatch):
             )
         )
 
-    assert _workflow(finalization_owner="worker-b")._claim_finalization(
-        "run-1"
-    ) is None
+    assert _workflow(finalization_owner="worker-b")._claim_finalization("run-1") is None
 
 
 def test_recovery_marks_exhausted_tiles_dead(monkeypatch):
@@ -314,9 +303,7 @@ def test_recovery_marks_exhausted_tiles_dead(monkeypatch):
             ortho_s3_key="missions/mission-1/orthomosaic.tif",
             total_tiles=1,
             status="running",
-            heartbeat_at=(
-                datetime.now(timezone.utc) - timedelta(minutes=20)
-            ),
+            heartbeat_at=(datetime.now(timezone.utc) - timedelta(minutes=20)),
         )
         session.add(run)
         session.flush()
@@ -383,9 +370,7 @@ def test_stale_analysis_attempt_cannot_stage_tile_result(monkeypatch):
     monkeypatch.setattr(
         workflow,
         "_stage_tile_result",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("stale result was staged")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("stale result was staged")),
     )
 
     workflow.process_detection(
@@ -400,3 +385,71 @@ def test_stale_analysis_attempt_cannot_stage_tile_result(monkeypatch):
 
     with session_scope() as session:
         assert session.query(AIAnalysisTile).one().status == "queued"
+
+
+def test_analysis_run_pins_first_model_manifest_and_rejects_mixed_results(
+    monkeypatch,
+):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        run = AIAnalysisRun(
+            run_id="run-1",
+            mission_id=mission.id,
+            vol_id=mission.vol_id,
+            name="Analysis",
+            backend="yolo",
+            ortho_s3_key="missions/mission-1/orthomosaic.tif",
+            total_tiles=1,
+            status="running",
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            AIAnalysisTile(
+                analysis_run_id=run.id,
+                tile_index=0,
+                status="queued",
+                tile_s3_key="tile.jpg",
+                offset_x=0,
+                offset_y=0,
+                width=10,
+                height=10,
+            )
+        )
+
+    workflow = _workflow()
+    monkeypatch.setattr(
+        workflow,
+        "_stage_tile_result",
+        lambda *_args, **_kwargs: ("result.json", 0),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_mark_tile_complete",
+        lambda *_args, **_kwargs: False,
+    )
+    event = {
+        "vol_id": "mission-1",
+        "analysis_run_id": "run-1",
+        "tile_index": 0,
+        "attempt": 0,
+        "detections": [],
+        "model_manifest": _model_manifest(),
+    }
+
+    workflow.process_detection(event)
+
+    with session_scope() as session:
+        assert session.query(AIAnalysisRun).one().model_manifest == _model_manifest()
+
+    with pytest.raises(RuntimeError, match="different model provenance"):
+        workflow.process_detection(
+            {
+                **event,
+                "model_manifest": _model_manifest("b" * 64),
+            }
+        )

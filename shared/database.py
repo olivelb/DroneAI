@@ -344,6 +344,7 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     ortho_s3_key = Column(String(1024), nullable=False)
     result_s3_key = Column(String(1024), nullable=True)
     tiling_metadata = Column(PORTABLE_JSON, nullable=True)
+    model_manifest = Column(PORTABLE_JSON, nullable=True)
     heartbeat_at = Column(
         DateTime(timezone=True),
         nullable=False,

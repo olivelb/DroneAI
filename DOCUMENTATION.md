@@ -386,14 +386,24 @@ Its runtime responsibilities are:
 
 - consume tile jobs from `image-tiles`
 - load a local aerial OBB checkpoint, currently `yolo26l-obb.pt` by default, with UI-selectable YOLO11/YOLO26 `l`/`m`/`s`/`n` variants per mission
-- lazily load the gated Hugging Face `facebook/sam3` model when the mission requests the SAM 3 backend and the supplied token has model access
+- lazily load the gated Hugging Face `facebook/sam3` model at the immutable
+  `SAM3_MODEL_REVISION` commit when the mission requests the SAM 3 backend and
+  the supplied token has model access
 - run the selected detector on each tile
 - run prompt-based instance segmentation for SAM 3 tile jobs
 - convert tile-local detections into orthomosaic-global pixel coordinates
 - preserve each oriented detection polygon in the `segment` field expected by app3
 - optionally transform projected coordinates into latitude and longitude
 - publish per-tile detection results to `tile-detections`
+- attach a bounded provenance manifest to every tile result: repository,
+  immutable revision or release, artifact SHA-256, inference parameters,
+  runtime device and library versions
 - publish status and throughput updates to `pipeline-status`
+
+The processing worker records the first manifest in `AIAnalysisRun` and rejects
+subsequent tiles whose manifest differs. The API and final GeoJSON expose this
+record, so a run cannot silently combine results from different weights,
+library versions, parameters or CPU/GPU runtimes.
 
 ## Kafka topics and event contracts
 
@@ -1875,6 +1885,14 @@ Default runtime behavior:
 - mission requests can override the default with `ai_model_variant` such as `yolo26m`, `yolo11s`, or `yolo11n`
 - the worker downloads the checkpoint from `ultralytics/assets` if it is not already present
 - `AERIAL_MODEL_FILE` can override the checkpoint path entirely
+- the selected artifact is hashed once per worker process and the SHA-256 is
+  included in every analysis run manifest
+
+SAM 3 is resolved separately from the YOLO model store. Both model and
+processor calls pass the full 40-character `SAM3_MODEL_REVISION`; the worker
+downloads and hashes `model.safetensors` from that exact revision before
+inference. Updating SAM 3 therefore requires an explicit reviewed values
+change instead of following the mutable Hugging Face `main` branch.
 
 It chooses device:
 
