@@ -7,7 +7,7 @@ Kubernetes, or a CUDA GPU.
 
 ## Supported toolchain
 
-- Python 3.11 or 3.12
+- Python 3.12
 - GNU Make
 - Node.js 20
 - npm with the committed `package-lock.json`
@@ -25,6 +25,9 @@ The bootstrap is idempotent. It installs missing native development tools on
 APT-based systems, creates or refreshes `.venv` from the committed development
 lock and runs the shared static checks. Set `PYTHON_BIN` to select a supported
 Python interpreter explicitly.
+
+The development lock pins `pip` 26.1.2 so the pinned `pip-tools` compiler can
+regenerate every lock from its committed input file with an audited toolchain.
 
 Run the checks:
 

@@ -79,7 +79,7 @@ an old orthomosaic or detection output cannot be silently reused.
 
 ## Prerequisites
 
-- Python 3.11 or 3.12 for the lightweight orchestrator
+- Python 3.12 for the lightweight orchestrator
 - Docker with NVIDIA Container Toolkit for GPU execution
 - `droneai-api:local` for EXIF/dataset preflight
 - `drone-colmap:latest` for reconstruction
