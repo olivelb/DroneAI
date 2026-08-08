@@ -17,6 +17,7 @@ messaging = importlib.import_module("app4-dashboard.api.messaging")
 mission_state = importlib.import_module("app4-dashboard.api.mission_state")
 map_support = importlib.import_module("app4-dashboard.api.map_support")
 analysis_routes = importlib.import_module("app4-dashboard.api.routers.map_analyses")
+export_routes = importlib.import_module("app4-dashboard.api.routers.map_exports")
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
@@ -145,6 +146,17 @@ def test_sync_io_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(analysis_routes.retry_analysis)
     assert not inspect.iscoroutinefunction(analysis_routes.cancel_analysis)
     assert not inspect.iscoroutinefunction(analysis_routes.analysis_vectors)
+    assert not inspect.iscoroutinefunction(export_routes.export_raster)
+    assert not inspect.iscoroutinefunction(export_routes.export_vectors)
+
+
+def test_raster_export_stream_closes_its_object_body():
+    body = io.BytesIO(b"abcdef")
+
+    chunks = list(export_routes._stream_object(body, chunk_size=2))
+
+    assert chunks == [b"ab", b"cd", b"ef"]
+    assert body.closed
 
 
 def test_object_store_analysis_vectors_apply_bounds_and_limit(monkeypatch):

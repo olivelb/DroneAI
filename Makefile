@@ -35,6 +35,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/map_analyses.py \
+	app4-dashboard/api/routers/map_exports.py \
 	app4-dashboard/api/routers/map_rasters.py \
 	app4-dashboard/api/routers/maps.py \
 	app4-dashboard/api/routers/missions.py \

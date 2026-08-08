@@ -6,7 +6,7 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Literal, Protocol, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
@@ -24,6 +24,9 @@ from shared.qgis_crs import (
 from shared.qgis_exports import write_vector_export
 
 from ..map_support import (
+    JsonObject,
+    MissionRecord,
+    RouteSession,
     get_mission,
     mission_key,
     require_object,
@@ -49,7 +52,16 @@ SCOPE_SOURCES = {
 }
 
 
-def _stream_object(body, chunk_size: int = 1024 * 1024):
+class ObjectBody(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+def _stream_object(
+    body: ObjectBody,
+    chunk_size: int = 1024 * 1024,
+) -> Iterator[bytes]:
     try:
         while chunk := body.read(chunk_size):
             yield chunk
@@ -57,9 +69,19 @@ def _stream_object(body, chunk_size: int = 1024 * 1024):
         body.close()
 
 
-def _legacy_features(session, mission, vol_id: str) -> Iterator[dict[str, Any]]:
+def _legacy_features(
+    session: RouteSession,
+    mission: MissionRecord,
+    vol_id: str,
+) -> Iterator[JsonObject]:
     metadata = mission.tiling_metadata or {}
-    records = session.query(Detection).filter(Detection.vol_id == vol_id).order_by(Detection.id).yield_per(1_000)
+    records = cast(
+        Iterator[Detection],
+        session.query(Detection)
+        .filter(Detection.vol_id == vol_id)
+        .order_by(Detection.id)
+        .yield_per(1_000),
+    )
     batch: list[Detection] = []
     for record in records:
         batch.append(record)
@@ -71,14 +93,19 @@ def _legacy_features(session, mission, vol_id: str) -> Iterator[dict[str, Any]]:
         yield from _legacy_batch(batch, metadata, vol_id)
 
 
-def _legacy_batch(records, metadata, vol_id):
+def _legacy_batch(
+    records: list[Detection],
+    metadata: JsonObject,
+    vol_id: str,
+) -> Iterator[JsonObject]:
     collection = detections_feature_collection(
         records,
         geotransform=metadata.get("transform"),
         source_crs=metadata.get("crs"),
         vol_id=vol_id,
     )
-    for feature in collection["features"]:
+    features = cast(list[JsonObject], collection["features"])
+    for feature in features:
         properties = feature.setdefault("properties", {})
         properties.update(
             {
@@ -92,11 +119,11 @@ def _legacy_batch(records, metadata, vol_id):
 
 
 def _stored_features(
-    session,
+    session: RouteSession,
     vol_id: str,
     sources: set[str],
     run_ids: set[str],
-) -> Iterator[dict[str, Any]]:
+) -> Iterator[JsonObject]:
     query = (
         session.query(
             MapFeature,
@@ -116,17 +143,21 @@ def _stored_features(
                 AIAnalysisRun.run_id.in_(run_ids),
             )
         )
-    for feature, geometry_json, run_id in query.order_by(MapFeature.id).yield_per(1_000):
+    rows = cast(
+        Iterator[tuple[MapFeature, str, str | None]],
+        query.order_by(MapFeature.id).yield_per(1_000),
+    )
+    for feature, geometry_json, run_id in rows:
         yield stored_map_feature_geojson(feature, geometry_json, run_id)
 
 
 def _export_features(
-    session,
-    mission,
+    session: RouteSession,
+    mission: MissionRecord,
     vol_id: str,
     scope: VectorScope,
     run_ids: set[str],
-) -> Iterator[dict[str, Any]]:
+) -> Iterator[JsonObject]:
     sources = SCOPE_SOURCES[scope]
     if "legacy" in sources:
         yield from _legacy_features(session, mission, vol_id)
@@ -139,8 +170,8 @@ def _export_features(
 def export_raster(
     vol_id: str,
     layer: str,
-    output_format: RasterFormat = Query(default="cog", alias="format"),
-):
+    output_format: Annotated[RasterFormat, Query(alias="format")] = "cog",
+) -> StreamingResponse:
     key, _ = mission_key(vol_id, layer)
     require_object(key)
     body, content_length, content_type = storage.get_object_stream(key)
@@ -160,11 +191,14 @@ def export_raster(
 @router.get("/{vol_id}/export/vectors")
 def export_vectors(
     vol_id: str,
-    output_format: VectorFormat = Query(default="gpkg", alias="format"),
-    scope: VectorScope = Query(default="all"),
-    run_ids: str | None = Query(default=None),
-    requested_crs: str = Query(default="raster", alias="crs", max_length=32),
-):
+    output_format: Annotated[VectorFormat, Query(alias="format")] = "gpkg",
+    scope: Annotated[VectorScope, Query()] = "all",
+    run_ids: Annotated[str | None, Query()] = None,
+    requested_crs: Annotated[
+        str,
+        Query(alias="crs", max_length=32),
+    ] = "raster",
+) -> FileResponse:
     mission_key(vol_id, "ortho")
     requested_runs = {value.strip() for value in (run_ids or "").split(",") if value.strip()}
     suffix = VECTOR_EXTENSIONS[output_format]
@@ -176,7 +210,8 @@ def export_vectors(
     temporary_path = Path(temporary_name)
     try:
         with get_session() as session:
-            mission = get_mission(session, vol_id)
+            typed_session = cast(RouteSession, session)
+            mission = get_mission(typed_session, vol_id)
             try:
                 resolved_crs = resolve_export_crs(
                     (mission.tiling_metadata or {}).get("crs"),
@@ -192,7 +227,7 @@ def export_vectors(
                 temporary_path,
                 reproject_features(
                     _export_features(
-                        session,
+                        typed_session,
                         mission,
                         vol_id,
                         scope,
@@ -212,7 +247,7 @@ def export_vectors(
     label = "annotations" if scope == "manual" else f"vectors_{scope}"
     crs_slug = resolved_crs.label.lower().replace(":", "")
     filename = f"{vol_id}_{label}_{crs_slug}.{suffix}"
-    headers = {
+    headers: dict[str, str] = {
         "X-Feature-Count": str(count),
         "X-Coordinate-Reference-System": resolved_crs.label,
     }
