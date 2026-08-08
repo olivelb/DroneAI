@@ -47,9 +47,12 @@ metadata:
     {{- include "drone-ai.labels" . | nindent 4 }}
     app: dashboard-api
 spec:
-  replicas: 1
+  replicas: {{ .Values.dashboardApi.replicaCount }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: dashboard-api
@@ -131,10 +134,16 @@ spec:
           value: {{ .Values.dashboardApi.uploads.maxBatchBytes | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_PER_MINUTE
           value: {{ .Values.dashboardApi.tiles.rateLimitPerMinute | quote }}
+        - name: DRONEAI_TILE_RATE_LIMIT_BACKEND
+          value: {{ .Values.dashboardApi.tiles.rateLimitBackend | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_BURST
           value: {{ .Values.dashboardApi.tiles.rateLimitBurst | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS
           value: {{ .Values.dashboardApi.tiles.rateLimitMaxClients | quote }}
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         - name: WORK_DRIVES
           value: {{ include "colmap.workDrivesJson" . | quote }}
         - name: WORK_DRIVE_DEFAULT

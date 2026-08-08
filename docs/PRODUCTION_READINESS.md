@@ -178,6 +178,10 @@ because their local wall-frame selection has a separate quality contract.
 - Kafka publications use per-record delivery callbacks and bounded polling.
   Consumed offsets and poison-message offsets are committed only after the
   corresponding output or dead-letter record is confirmed by the broker.
+- Staging and production use PostgreSQL-backed raster token buckets shared by
+  every API replica; process-local limiting is rejected in those environments.
+- Each API pod has a distinct status consumer group for local WebSocket fan-out,
+  while the shared status inbox applies the database transition only once.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init
   containers prevent database-dependent services from starting on an old
   schema.

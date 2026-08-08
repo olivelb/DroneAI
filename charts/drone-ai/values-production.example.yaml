@@ -35,6 +35,7 @@ colmapWorker:
     default: cloud-workspace
 
 dashboardApi:
+  replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: production
   service:

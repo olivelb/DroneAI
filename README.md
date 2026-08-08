@@ -44,7 +44,9 @@ The Next.js frontend uploads datasets directly to S3 through short-lived
 multipart URLs, then lets operators configure and launch missions, follow
 progress, inspect map layers and export results. Its FastAPI backend validates
 and journals upload sessions, stores mission state, publishes work to Kafka and
-serves datasets and results from S3-compatible storage and PostGIS.
+serves datasets and results from S3-compatible storage and PostGIS. Production
+API replicas share raster rate-limit state in PostgreSQL and each receive the
+status stream needed for their own WebSocket clients.
 
 ### Reconstruction and raster products — `app1-colmap`
 

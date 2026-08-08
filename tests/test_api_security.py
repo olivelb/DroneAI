@@ -222,6 +222,23 @@ def test_tile_rate_limiter_bounds_tracked_clients():
     assert len(limiter._buckets) == 2
 
 
+def test_production_rejects_process_local_tile_rate_limiting(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_TILE_RATE_LIMIT_BACKEND", "local")
+
+    with pytest.raises(RuntimeError, match="database-backed"):
+        security.build_tile_rate_limiter()
+
+
+def test_production_auto_selects_database_tile_rate_limiting(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "staging")
+    monkeypatch.setenv("DRONEAI_TILE_RATE_LIMIT_BACKEND", "auto")
+
+    limiter = security.build_tile_rate_limiter()
+
+    assert isinstance(limiter, security.DatabaseTokenBucketRateLimiter)
+
+
 def test_raster_tile_middleware_returns_retry_after(monkeypatch):
     limiter = security.TokenBucketRateLimiter(
         requests_per_minute=1,

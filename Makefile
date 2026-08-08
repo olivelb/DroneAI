@@ -30,14 +30,14 @@ APP3_TYPED_PATHS := \
 API_TYPED_PATHS := \
 	app4-dashboard/api/__init__.py \
 	app4-dashboard/api/security.py \
+	app4-dashboard/api/rate_limit.py \
 	app4-dashboard/api/messaging.py \
 	app4-dashboard/api/realtime.py \
 	app4-dashboard/api/kubernetes_status.py \
 	app4-dashboard/api/image_preview.py
 API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/schemas.py \
-	app4-dashboard/api/map_schemas.py \
-	app4-dashboard/api/rate_limit.py
+	app4-dashboard/api/map_schemas.py
 API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/dataset_uploads.py \
 	app4-dashboard/api/mission_state.py \

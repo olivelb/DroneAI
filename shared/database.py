@@ -756,6 +756,16 @@ class OutboxEvent(Base):
     dead_at = Column(DateTime(timezone=True), nullable=True)
 
 
+class APIRateLimitBucket(Base):
+    """Shared token-bucket state for horizontally scaled API replicas."""
+
+    __tablename__ = "api_rate_limit_buckets"
+
+    key_hash = Column(String(64), primary_key=True)
+    tokens = Column(Float, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, index=True)
+
+
 # ---------------------------------------------------------------------------
 # Helper queries
 # ---------------------------------------------------------------------------

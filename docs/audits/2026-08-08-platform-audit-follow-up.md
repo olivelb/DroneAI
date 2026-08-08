@@ -69,7 +69,7 @@ Validation completed on Ubuntu WSL2 with Python 3.12:
 
 - focused distributed-worker, durable-aggregation, direct-upload, Helm and
   spatial-coverage contract tests passed;
-- the full non-GPU/non-integration suite passed: 554 selected tests, with 13
+- the full non-GPU/non-integration suite passed: 561 selected tests, with 13
   explicitly deselected;
 - branch coverage measured 61%, retaining six points of headroom above the 55%
   enforced floor;
@@ -191,10 +191,30 @@ dead-letter path uses the same primitive, so a failed or timed-out DLQ delivery
 still leaves the poison source offset uncommitted. Tests cover acknowledgement,
 broker error, timeout and the ordering of DLQ confirmation before source commit.
 
+## Horizontally scalable dashboard API
+
+The production dashboard API can now run multiple replicas without multiplying
+the raster-tile allowance or splitting WebSocket status delivery. A
+transactional PostgreSQL token bucket stores only SHA-256 client identifiers,
+locks one bucket row per request and bounds retained clients. Development keeps
+the lightweight in-process implementation; staging and production select the
+database backend automatically and refuse an explicit local override. The
+blocking database operation is dispatched through Starlette's thread pool.
+
+Every API pod now consumes the status topic through its own stable Kafka group,
+derived from the Kubernetes pod name, so every pod receives every status event
+for its locally connected WebSockets. A separate shared inbox group still
+applies each mission-state mutation exactly once. Duplicate state receipts are
+therefore fanned out locally instead of being discarded, and the source offset
+is committed only after local broadcast completes.
+
+Migration `0011` creates the shared buckets. The generic production overlay
+runs two API replicas with a zero-unavailable rolling update; the cost-focused
+OVH preproduction overlay continues to inherit one replica.
+
 ## Deferred roadmap
 
 The remaining implementation batches should remain independently reviewable:
 
 1. gradual strict typing of the remaining CPU-visible `gaussian_ortho` boundaries;
-2. distributed API rate limiting and WebSocket fan-out before API scale-out;
-3. explicit platform versioning and release policy.
+2. explicit platform versioning and release policy.

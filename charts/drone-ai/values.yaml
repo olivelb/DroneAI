@@ -215,6 +215,7 @@ processingWorker:
 # Dashboard API
 # --------------------------------------------------------------------------
 dashboardApi:
+  replicaCount: 1
   image: drone-dashboard-api
   tag: latest
   resources:
@@ -241,6 +242,8 @@ dashboardApi:
     maxFileBytes: "2147483648"
     maxBatchBytes: "53687091200"
   tiles:
+    # auto selects PostgreSQL in staging/production and local memory in dev.
+    rateLimitBackend: auto
     rateLimitPerMinute: "600"
     rateLimitBurst: "120"
     rateLimitMaxClients: "10000"

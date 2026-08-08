@@ -36,3 +36,17 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
         assert "PUT" in source
         assert "ETag" in source
         assert "AllowedOrigin" in source
+
+
+def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
+    defaults = _read(CHART / "values.yaml")
+    production = _read(CHART / "values-production.example.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+
+    assert "replicaCount: 1" in defaults
+    assert "rateLimitBackend: auto" in defaults
+    assert "replicaCount: 2" in production
+    assert "replicas: {{ .Values.dashboardApi.replicaCount }}" in deployment
+    assert "type: RollingUpdate" in deployment
+    assert "DRONEAI_TILE_RATE_LIMIT_BACKEND" in deployment
+    assert "fieldPath: metadata.name" in deployment
