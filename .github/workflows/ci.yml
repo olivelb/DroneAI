@@ -210,6 +210,7 @@ jobs:
           drone-dashboard-frontend:ci
           -e "const fs=require('node:fs');
           if(process.getuid()!==1000)throw new Error('unexpected uid');
+          if(fs.existsSync('/usr/local/lib/node_modules/npm'))throw new Error('npm in runtime');
           require('next/package.json');
           fs.accessSync('/app/.next/BUILD_ID')"
       - name: Generate frontend CycloneDX image SBOM

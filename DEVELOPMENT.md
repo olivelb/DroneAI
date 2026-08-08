@@ -242,7 +242,9 @@ pinned in `.github/workflows/ci.yml` and
 multi-architecture `python:3.12-slim` index digest, and both frontend stages
 pin the `node:20-alpine` index digest, so a rebuild cannot silently select a
 different upstream filesystem. Refresh these digests only as explicit,
-reviewed dependency updates.
+reviewed dependency updates. The frontend runtime stage also removes npm/npx:
+the production Next.js server only needs Node.js, so package-manager tooling
+and its unused dependency tree are not shipped in the deployable image.
 
 Frontend source changes retain the regular lint, unit, production-build and
 Playwright path. The separate frontend image/SBOM/Trivy job is intentionally

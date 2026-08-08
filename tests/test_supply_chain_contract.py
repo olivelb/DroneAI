@@ -126,11 +126,14 @@ def test_frontend_runtime_has_immutable_supply_chain_evidence() -> None:
     from_lines = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
     assert len(from_lines) == 2
     assert all(PINNED_NODE_BASE.match(line) for line in from_lines)
+    assert "rm -rf /usr/local/lib/node_modules/npm" in dockerfile
+    assert 'CMD ["node", "node_modules/next/dist/bin/next", "start"]' in dockerfile
 
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "frontend_container: ${{ steps.scopes.outputs.frontend_container }}" in workflow
     assert "if: needs.changes.outputs.frontend_container == 'true'" in workflow
     assert "--read-only" in workflow
+    assert "npm in runtime" in workflow
     assert "dashboard-frontend.cdx.json" in workflow
     assert "dashboard-frontend.trivy.json" in workflow
     assert "supply-chain-dashboard-frontend-${{ github.sha }}" in workflow
