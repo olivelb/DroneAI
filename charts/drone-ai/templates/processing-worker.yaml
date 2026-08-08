@@ -85,4 +85,5 @@ spec:
           {{- toYaml .Values.processingWorker.resources | nindent 10 }}
       volumes:
       - name: tmp
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: {{ .Values.processingWorker.temporaryStorage.sizeLimit }}

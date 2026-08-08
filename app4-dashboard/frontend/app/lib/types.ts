@@ -223,8 +223,8 @@ export const overallStatusFor = (
 };
 
 export const AVAILABLE_CLASSES = [
-  "person", "bicycle", "car", "motorcycle", "airplane",
-  "bus", "train", "truck", "boat",
+  "bicycle", "car", "motorcycle", "airplane",
+  "bus", "truck", "boat",
 ];
 
 export const AVAILABLE_AI_BACKENDS: Array<{ value: AIBackend; label: string; description: string }> = [

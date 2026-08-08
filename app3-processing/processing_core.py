@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -11,7 +12,6 @@ import rasterio
 from affine import Affine
 from pyproj import Transformer
 from rasterio.windows import Window
-
 
 
 def build_tile_starts(full_size: int, tile_size: int, overlap: int) -> list[int]:
@@ -222,6 +222,66 @@ def are_duplicate_detections(
     return bbox_iou(candidate["_bbox"], kept["_bbox"]) >= iou_threshold
 
 
+class _DetectionGrid:
+    """Index kept detections by class and bounding-box grid cells."""
+
+    _MAX_CELLS_PER_DETECTION = 4096
+
+    def __init__(self, cell_size: float):
+        self._cell_size = max(float(cell_size), 1.0)
+        self._entries: list[dict] = []
+        self._cells: dict[tuple[str, int, int], list[int]] = {}
+        self._global_indices: list[int] = []
+
+    def _cell_bounds(
+        self,
+        bbox: tuple[float, float, float, float],
+    ) -> tuple[int, int, int, int] | None:
+        if not all(math.isfinite(value) for value in bbox):
+            return None
+        min_x, min_y, max_x, max_y = bbox
+        min_cell_x = math.floor(min_x / self._cell_size)
+        min_cell_y = math.floor(min_y / self._cell_size)
+        max_cell_x = math.floor(max_x / self._cell_size)
+        max_cell_y = math.floor(max_y / self._cell_size)
+        cell_count = (max_cell_x - min_cell_x + 1) * (max_cell_y - min_cell_y + 1)
+        if cell_count > self._MAX_CELLS_PER_DETECTION:
+            return None
+        return min_cell_x, min_cell_y, max_cell_x, max_cell_y
+
+    @staticmethod
+    def _class_key(detection: dict) -> str:
+        return str(detection.get("class_name"))
+
+    def add(self, detection: dict) -> None:
+        index = len(self._entries)
+        self._entries.append(detection)
+        bounds = self._cell_bounds(detection["_bbox"])
+        if bounds is None:
+            self._global_indices.append(index)
+            return
+        min_x, min_y, max_x, max_y = bounds
+        class_key = self._class_key(detection)
+        for cell_x in range(min_x, max_x + 1):
+            for cell_y in range(min_y, max_y + 1):
+                self._cells.setdefault(
+                    (class_key, cell_x, cell_y),
+                    [],
+                ).append(index)
+
+    def candidates(self, detection: dict) -> list[dict]:
+        bounds = self._cell_bounds(detection["_bbox"])
+        if bounds is None:
+            return self._entries
+        indices = set(self._global_indices)
+        min_x, min_y, max_x, max_y = bounds
+        class_key = self._class_key(detection)
+        for cell_x in range(min_x, max_x + 1):
+            for cell_y in range(min_y, max_y + 1):
+                indices.update(self._cells.get((class_key, cell_x, cell_y), ()))
+        return [self._entries[index] for index in sorted(indices)]
+
+
 def dedupe_mission_detections(
     detections: Iterable[dict],
     center_threshold: float = 40.0,
@@ -240,6 +300,7 @@ def dedupe_mission_detections(
         prepared.append(enriched)
 
     kept = []
+    spatial_index = _DetectionGrid(center_threshold)
     for detection in sorted(
         prepared,
         key=lambda item: (
@@ -258,11 +319,11 @@ def dedupe_mission_detections(
                 center_threshold,
                 iou_threshold,
             )
-            for existing in kept
-            if "_bbox" in existing
+            for existing in spatial_index.candidates(detection)
         ):
             continue
         kept.append(detection)
+        spatial_index.add(detection)
 
     deduped = []
     for detection in kept:
@@ -425,8 +486,8 @@ def render_annotated_orthomosaic(
             cv2.fillPoly(overlay, [local_points], (255, 0, 0))
             cv2.addWeighted(overlay, 0.35, region, 0.65, 0, region)
             cv2.polylines(image, [points], True, (255, 255, 0), 2)
-            center_x = int(round(float(detection["global_pixel_x"])))
-            center_y = int(round(float(detection["global_pixel_y"])))
+            center_x = round(float(detection["global_pixel_x"]))
+            center_y = round(float(detection["global_pixel_y"]))
             cv2.circle(image, (center_x, center_y), 4, (0, 255, 0), -1)
             _draw_label(
                 image,

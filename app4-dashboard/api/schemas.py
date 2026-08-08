@@ -1,8 +1,9 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.validation import (
+    validate_aerial_class_names,
     validate_class_names,
     validate_dataset_prefix,
     validate_mission_id,
@@ -51,6 +52,12 @@ class MissionParams(BaseModel):
     @classmethod
     def validate_classes(cls, values: list[str]) -> list[str]:
         return validate_class_names(values)
+
+    @model_validator(mode="after")
+    def validate_yolo_classes(self):
+        if self.ai_backend == "yolo":
+            validate_aerial_class_names(self.classes)
+        return self
 
     @field_validator("colmap_params")
     @classmethod

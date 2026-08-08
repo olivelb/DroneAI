@@ -133,6 +133,9 @@ Current responsibilities:
 - provide helper functions that merge mission overrides with the selected pipeline preset
 - persist missions, logs, and detections through SQLAlchemy
 - expose S3-compatible storage helpers used with MinIO
+- reconcile prefix deletions after every S3 `DeleteObjects` call and retry
+  per-object failures up to `S3_DELETE_MAX_ATTEMPTS` (default: `3`), raising
+  an error instead of reporting a partial deletion as successful
 - validate mission identifiers and contained filesystem paths
 - compute and serialize the Sim3 transform between raw and aligned COLMAP models
 - validate and enrich versioned Kafka events
@@ -198,7 +201,7 @@ Primary endpoints:
 - `GET /mission/parameters`
 - `POST /mission/resume`
 - `DELETE /mission/{vol_id}`
-- `POST /datasets/upload-file`
+- `POST /datasets/upload` (server-validated multi-file batch)
 - `GET /preview/{s3_key}`
 - `GET /maps/{vol_id}/metadata/{layer}`
 - `GET /maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png`
@@ -363,7 +366,10 @@ In practice it does the following:
 `main.py` remains the Kafka composition root and dispatcher. Raster mechanics
 live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
 `analysis_workflow.py`. CI applies Ruff cyclomatic-complexity budgets to these
-orchestration modules and architecture tests cap the composition roots and
+orchestration modules. The reusable processing modules and
+`app2-ia/detection_core.py` also pass the modern Bugbear, simplification,
+upgrade, Ruff-specific and async rule set as a progressive quality ratchet.
+Architecture tests cap the composition roots and
 dashboard containers so responsibilities cannot silently collapse back into
 monoliths.
 - publish verified GeoJSON to object storage
@@ -550,6 +556,9 @@ Notes:
 - `work_drive` must be one of the drives advertised by
   `GET /mission/parameters`.
 - `pipeline` selects the parameter profile.
+- YOLO accepts only `airplane`, `bicycle`, `boat`, `bus`, `car`, `motorcycle`,
+  and `truck`; unsupported classes are rejected instead of silently selecting
+  vehicle labels. SAM3 prompts remain free-form.
 - The common schema-version/event-ID envelope surrounds these domain fields.
 
 ### `pipeline-control`

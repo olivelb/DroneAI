@@ -24,9 +24,12 @@ It creates:
 
 Setting `deep_sleep = true` retains the free MKS control plane, private network,
 protected S3 buckets and their scoped identities while scaling the CPU pool to
-zero and removing the hourly billed Gateway and Managed Private Registry. The
-Kubernetes LoadBalancer and dynamically provisioned PVCs must be removed using
-the ordered runbook before applying that Terraform plan.
+zero, disabling autoscaling on both node pools, and removing the hourly billed
+Gateway and Managed Private Registry. Disabling autoscaling is required because
+pending auxiliary workloads can otherwise recreate a CPU node after the first
+scale-to-zero operation. The Kubernetes LoadBalancer and dynamically
+provisioned PVCs must be removed using the ordered runbook before applying that
+Terraform plan.
 
 Authentication is read only from `OVH_*` environment variables. Terraform
 state contains the MKS client key, Harbor password and S3 credentials and must

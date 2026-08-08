@@ -149,6 +149,9 @@ iaWorker:
     requests:
       memory: "2Gi"
   modelCache:
+    # The same PVC stores Hugging Face assets and writable YOLO variants.
+    # The image-baked, checksum-verified default remains under
+    # /opt/modelzoo and is preferred until a cached override exists.
     hostPath: ""
     storageClass: ""
     size: 30Gi
@@ -166,6 +169,10 @@ processingWorker:
     maximumAggregateResultBytes: "268435456"
     maximumRawDetections: "100000"
     maximumFinalDetections: "50000"
+  # Bounds orthomosaic and JPEG tile workspaces even if process cleanup is
+  # interrupted by a container or node failure.
+  temporaryStorage:
+    sizeLimit: "50Gi"
   resources:
     limits:
       memory: "16Gi"

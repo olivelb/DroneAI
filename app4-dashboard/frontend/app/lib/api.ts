@@ -107,33 +107,42 @@ export const uploadDataset = async (
   onProgress?: (p: { total: number; completed: number; failed: number }) => void,
 ) => {
   const total = files.length;
-  let completed = 0;
-  let failed = 0;
-  const results: Array<{ name: string; status: string; s3_key?: string; error?: string }> = [];
-
-  for (let i = 0; i < files.length; i++) {
-    const formData = new FormData();
-    formData.append("file", files[i]);
-    try {
-      const res = await fetch(
-        `${getApiBaseUrl()}/datasets/upload-file?dataset_name=${encodeURIComponent(datasetName)}`,
-        { method: "POST", body: formData, credentials: apiCredentials() },
-      );
-      const r = await res.json();
-      if (r.status === "ok") {
-        completed++;
-      } else {
-        failed++;
-      }
-      results.push(r);
-    } catch {
-      failed++;
-      results.push({ name: files[i].name, status: "error", error: "network error" });
-    }
-    onProgress?.({ total, completed, failed });
+  const formData = new FormData();
+  for (let index = 0; index < files.length; index++) {
+    formData.append("files", files[index]);
   }
+  onProgress?.({ total, completed: 0, failed: 0 });
 
-  return { total, completed, failed, status: failed === 0 ? "done" : "partial", files: results };
+  try {
+    const response = await fetch(
+      `${getApiBaseUrl()}/datasets/upload?dataset_name=${encodeURIComponent(datasetName)}`,
+      { method: "POST", body: formData, credentials: apiCredentials() },
+    );
+    const result = await response.json();
+    if (!response.ok) {
+      const detail = typeof result?.detail === "string" ? result.detail : "Upload rejected";
+      throw new Error(detail);
+    }
+    const completed = Number(result.completed ?? 0);
+    const failed = Number(result.failed ?? 0);
+    onProgress?.({ total, completed, failed });
+    return result;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "network error";
+    const results = Array.from(files, (file) => ({
+      name: file.name,
+      status: "error",
+      error: message,
+    }));
+    onProgress?.({ total, completed: 0, failed: total });
+    return {
+      total,
+      completed: 0,
+      failed: total,
+      status: "partial",
+      files: results,
+    };
+  }
 };
 
 const encodeS3Key = (s3Key: string) => s3Key.split("/").map(encodeURIComponent).join("/");

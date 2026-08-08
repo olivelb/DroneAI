@@ -701,6 +701,21 @@ contains the MKS cluster, zero-node CPU and GPU pools, private network/subnet,
 all three protected S3 buckets and their scoped identities, but no Registry or
 Gateway. A final authenticated Terraform plan returned `No changes`.
 
+On 8 August 2026, a follow-up audit found that the CPU pool autoscaler had
+recreated one `b3-8` node even though its configured minimum and desired sizes
+were zero. Pending Traefik and cert-manager workloads remained eligible to
+trigger scale-up. Deep-sleep mode therefore also disables autoscaling on both
+node pools; a live authenticated plan and OVHcloud/Kubernetes inventory must
+confirm zero instances and zero nodes after every shutdown.
+
+The corrective plan SHA-256 was
+`cfabd4d6917a0aad1d35044c9321eed44ee981ab82cab41ef66a9b0b11bcfc8c` and
+contained zero additions, two in-place node-pool updates and zero deletions.
+After it completed, the OVHcloud API reported zero instances, volumes and
+GRA11 Load Balancers; Kubernetes reported zero nodes, PVs, PVCs and
+LoadBalancer Services. A final authenticated Terraform plan returned
+`No changes`.
+
 ## 11. Acceptance and rollback
 
 Acceptance requires healthy TLS, successful authentication, a completed

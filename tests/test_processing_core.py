@@ -9,6 +9,7 @@ from rasterio.transform import from_origin
 APP3_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
 sys.path.insert(0, str(APP3_ROOT))
 
+import processing_core  # noqa: E402
 from processing_core import (  # noqa: E402
     build_tile_starts,
     dedupe_mission_detections,
@@ -71,6 +72,45 @@ def test_overlapping_detections_are_deduplicated():
 
     assert len(deduped) == 2
     assert {item["confidence"] for item in deduped} == {0.8, 0.9}
+
+
+def test_spatial_dedupe_avoids_comparing_unrelated_detections(monkeypatch):
+    detections = [_detection(index * 100, index * 100, 0.8) for index in range(500)]
+    comparison_count = 0
+    original = processing_core.are_duplicate_detections
+
+    def counted_comparison(*args, **kwargs):
+        nonlocal comparison_count
+        comparison_count += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        processing_core,
+        "are_duplicate_detections",
+        counted_comparison,
+    )
+
+    deduped = processing_core.dedupe_mission_detections(detections)
+
+    assert len(deduped) == len(detections)
+    assert comparison_count < len(detections)
+
+
+def test_spatial_dedupe_preserves_large_polygon_containment():
+    containing = {
+        **_detection(5000, 5000, 0.9),
+        "segment": [
+            [0, 0],
+            [10000, 0],
+            [10000, 10000],
+            [0, 10000],
+        ],
+    }
+    contained = _detection(9000, 9000, 0.8)
+
+    deduped = dedupe_mission_detections([contained, containing])
+
+    assert deduped == [containing]
 
 
 def test_tiling_geojson_and_render_preserve_geospatial_metadata(tmp_path):

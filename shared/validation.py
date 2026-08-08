@@ -14,6 +14,18 @@ CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
 DATASET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BOOLEAN_STRINGS = {"0", "1", "false", "true", "no", "yes", "off", "on"}
 
+SUPPORTED_AERIAL_CLASSES = frozenset(
+    {
+        "airplane",
+        "bicycle",
+        "boat",
+        "bus",
+        "car",
+        "motorcycle",
+        "truck",
+    }
+)
+
 
 def validate_mission_id(value: str) -> str:
     normalized = str(value or "").strip()
@@ -114,6 +126,15 @@ def validate_class_names(values: list[str]) -> list[str]:
         raise ValueError("at least one class is required")
     if len(normalized) > 20:
         raise ValueError("at most 20 classes are allowed")
+    return normalized
+
+
+def validate_aerial_class_names(values: list[str]) -> list[str]:
+    normalized = validate_class_names(values)
+    unsupported = sorted({value for value in normalized if value.lower() not in SUPPORTED_AERIAL_CLASSES})
+    if unsupported:
+        supported = ", ".join(sorted(SUPPORTED_AERIAL_CLASSES))
+        raise ValueError(f"unsupported YOLO aerial classes: {', '.join(unsupported)}; supported classes: {supported}")
     return normalized
 
 

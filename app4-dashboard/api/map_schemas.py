@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from shared.validation import validate_aerial_class_names
 
 from shared.geospatial_workspace import (
     normalize_color,
@@ -43,6 +45,12 @@ class AnalysisCreate(BaseModel):
         if not classes:
             raise ValueError("at least one class is required")
         return classes
+
+    @model_validator(mode="after")
+    def validate_yolo_classes(self):
+        if self.backend == "yolo":
+            validate_aerial_class_names(self.classes)
+        return self
 
 
 class MapFeatureCreate(BaseModel):

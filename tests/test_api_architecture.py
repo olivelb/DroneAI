@@ -2,9 +2,12 @@ import importlib
 import inspect
 import io
 import json
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from PIL import Image
 
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
@@ -12,6 +15,8 @@ main = importlib.import_module("app4-dashboard.api.main")
 messaging = importlib.import_module("app4-dashboard.api.messaging")
 mission_state = importlib.import_module("app4-dashboard.api.mission_state")
 map_support = importlib.import_module("app4-dashboard.api.map_support")
+mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
+dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 
 
 class FakeProducer:
@@ -43,9 +48,9 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/pods",
         "/datasets",
         "/datasets/upload",
-        "/datasets/upload-file",
         "/browse",
     } <= paths
+    assert "/datasets/upload-file" not in paths
     assert any(path.startswith("/preview/{s3_key}") for path in paths)
     assert any(path.startswith("/files/{s3_key}") for path in paths)
     assert "/maps/{vol_id}/metadata/{layer}" in paths
@@ -68,16 +73,85 @@ def test_importing_the_api_does_not_create_a_kafka_producer():
 
 
 def test_resume_events_are_unique_per_mission_attempt():
-    first = messaging.build_resume_event(
-        {"vol_id": "mission-1", "attempt": 1}
-    )
-    second = messaging.build_resume_event(
-        {"vol_id": "mission-1", "attempt": 2}
-    )
+    first = messaging.build_resume_event({"vol_id": "mission-1", "attempt": 1})
+    second = messaging.build_resume_event({"vol_id": "mission-1", "attempt": 2})
 
     assert first["attempt"] == 1
     assert second["attempt"] == 2
     assert first["event_id"] != second["event_id"]
+
+
+def test_new_mission_event_is_deterministic_for_one_mission_id():
+    payload = {
+        "vol_id": "mission-1",
+        "input_dataset": "datasets/mission-1",
+    }
+
+    first = messaging.build_new_mission_event(payload)
+    second = messaging.build_new_mission_event(payload)
+
+    assert first["event_id"] == second["event_id"]
+
+
+def test_start_mission_rejects_an_existing_id(monkeypatch):
+    existing = SimpleNamespace(vol_id="mission-1")
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return existing
+
+    session = SimpleNamespace(query=lambda _model: Query())
+
+    @contextmanager
+    def session_scope():
+        yield session
+
+    monkeypatch.setattr(mission_routes, "get_session", session_scope)
+    monkeypatch.setattr(
+        mission_routes,
+        "enqueue_outbox",
+        lambda *_args, **_kwargs: pytest.fail("duplicate mission must not enqueue an event"),
+    )
+    params = SimpleNamespace(
+        vol_id="mission-1",
+        pipeline="modern",
+        input_dataset="datasets/mission-1",
+        model_dump=lambda: {
+            "vol_id": "mission-1",
+            "pipeline": "modern",
+            "input_dataset": "datasets/mission-1",
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        mission_routes.start_mission(params)
+
+    assert error.value.status_code == 409
+    assert "already exists" in error.value.detail
+
+
+def test_sync_mission_handlers_are_threadpool_eligible():
+    assert not inspect.iscoroutinefunction(mission_routes.start_mission)
+    assert not inspect.iscoroutinefunction(mission_routes.resume_mission)
+    assert not inspect.iscoroutinefunction(mission_routes.cancel_mission)
+    assert not inspect.iscoroutinefunction(dataset_routes.upload_dataset_batch)
+
+
+def test_frontend_uses_the_server_validated_batch_upload():
+    source = (Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib" / "api.ts").read_text(
+        encoding="utf-8"
+    )
+    upload_source = source.split(
+        "export const uploadDataset = async",
+        1,
+    )[1].split("const encodeS3Key", 1)[0]
+
+    assert "/datasets/upload?" in upload_source
+    assert "/datasets/upload-file" not in upload_source
+    assert 'formData.append("files"' in upload_source
 
 
 def test_prepare_resume_increments_mission_attempt():
@@ -111,12 +185,7 @@ def test_prepare_resume_increments_mission_attempt():
 
 def test_mission_status_policy_is_independent_from_http_and_kafka():
     assert mission_state.compute_overall_status({}) == "idle"
-    assert (
-        mission_state.compute_overall_status(
-            {"COLMAP": {"status": "success"}}
-        )
-        == "processing"
-    )
+    assert mission_state.compute_overall_status({"COLMAP": {"status": "success"}}) == "processing"
     assert (
         mission_state.compute_overall_status(
             {
@@ -150,12 +219,7 @@ def test_mission_status_policy_is_independent_from_http_and_kafka():
         )
         == "error"
     )
-    assert (
-        mission_state.compute_overall_status(
-            {"COLMAP": {"status": "cancelled"}}
-        )
-        == "cancelled"
-    )
+    assert mission_state.compute_overall_status({"COLMAP": {"status": "cancelled"}}) == "cancelled"
     assert (
         mission_state.compute_overall_status(
             {

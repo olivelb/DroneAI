@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from shared import storage
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
-from shared.database import Mission, get_or_create_mission, get_session
+from shared.database import Mission, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
@@ -64,14 +65,9 @@ def mission_state(vol_id: str):
     "/mission/cancel",
     dependencies=[Depends(require_operator)],
 )
-async def cancel_mission(vol_id: str):
+def cancel_mission(vol_id: str):
     with get_session() as session:
-        mission = (
-            session.query(Mission)
-            .filter(Mission.vol_id == vol_id)
-            .with_for_update()
-            .first()
-        )
+        mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
         if mission is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -99,12 +95,7 @@ async def cancel_mission(vol_id: str):
 def delete_mission(vol_id: str):
     mission_exists = False
     with get_session() as session:
-        mission = (
-            session.query(Mission)
-            .filter(Mission.vol_id == vol_id)
-            .with_for_update()
-            .first()
-        )
+        mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
         if mission is not None:
             mission_exists = True
             mission.status = "deleting"
@@ -117,12 +108,7 @@ def delete_mission(vol_id: str):
     except Exception as error:
         if mission_exists:
             with get_session() as session:
-                mission = (
-                    session.query(Mission)
-                    .filter(Mission.vol_id == vol_id)
-                    .with_for_update()
-                    .first()
-                )
+                mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
                 if mission is not None:
                     mission.status = "deletion_failed"
                     mission.current_step = "DELETION_FAILED"
@@ -134,20 +120,13 @@ def delete_mission(vol_id: str):
 
     try:
         with get_session() as session:
-            mission = (
-                session.query(Mission)
-                .filter(Mission.vol_id == vol_id)
-                .first()
-            )
+            mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
             if mission:
                 session.delete(mission)
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(
-                f"S3 cleaned ({deleted_count} objects) but DB delete failed: "
-                f"{error}"
-            ),
+            detail=(f"S3 cleaned ({deleted_count} objects) but DB delete failed: {error}"),
         ) from error
     return {
         "status": "success",
@@ -161,7 +140,7 @@ def delete_mission(vol_id: str):
     "/mission/resume",
     dependencies=[Depends(require_operator)],
 )
-async def resume_mission(vol_id: str):
+def resume_mission(vol_id: str):
     try:
         with get_session() as session:
             payload, response = prepare_resume_in_session(session, vol_id)
@@ -215,25 +194,40 @@ def mission_parameters():
     "/mission",
     dependencies=[Depends(require_operator)],
 )
-async def start_mission(params: MissionParams):
+def start_mission(params: MissionParams):
     payload = params.model_dump()
     try:
         with get_session() as session:
-            get_or_create_mission(
-                session,
-                params.vol_id,
-                status="pending",
-                pipeline=params.pipeline,
-                input_dataset=params.input_dataset,
-                workspace_prefix=f"missions/{params.vol_id}",
-                params=payload,
+            existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
+            if existing is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
+                )
+            session.add(
+                Mission(
+                    vol_id=params.vol_id,
+                    status="pending",
+                    pipeline=params.pipeline,
+                    input_dataset=params.input_dataset,
+                    workspace_prefix=f"missions/{params.vol_id}",
+                    params=payload,
+                )
             )
+            session.flush()
             enqueue_outbox(
                 session,
                 topic=TOPIC_MISSION,
                 event=build_new_mission_event(payload),
                 key=params.vol_id,
             )
+    except HTTPException:
+        raise
+    except IntegrityError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(f"Mission {params.vol_id} already exists; choose a new mission ID or use resume"),
+        ) from error
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

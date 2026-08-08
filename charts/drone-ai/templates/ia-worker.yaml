@@ -131,9 +131,15 @@ spec:
           value: "/cache/huggingface/hub"
         - name: TRANSFORMERS_CACHE
           value: "/cache/huggingface/transformers"
+        - name: AERIAL_MODEL_DIR
+          value: "/cache/modelzoo"
+        - name: AERIAL_BAKED_MODEL_DIR
+          value: "/opt/modelzoo"
         volumeMounts:
         - name: model-cache
           mountPath: /cache/huggingface
+        - name: model-cache
+          mountPath: /cache/modelzoo
         - name: tmp
           mountPath: /tmp
         resources:

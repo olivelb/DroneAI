@@ -19,6 +19,7 @@ from shared.validation import (
 )
 
 MissionParams = importlib.import_module("app4-dashboard.api.schemas").MissionParams
+AnalysisCreate = importlib.import_module("app4-dashboard.api.map_schemas").AnalysisCreate
 
 
 @pytest.mark.parametrize("value", ["../tmp", "/tmp/foo", "foo/bar", "foo\\bar", ".", "", "ab"])
@@ -64,9 +65,7 @@ def test_work_drive_metadata_rejects_unmounted_or_duplicate_entries():
             {"name": "../bad", "label": "Unsafe"},
         ]
     )
-    assert configured_work_drives(raw) == [
-        {"name": "local", "label": "Local", "mount": "/work/local"}
-    ]
+    assert configured_work_drives(raw) == [{"name": "local", "label": "Local", "mount": "/work/local"}]
 
 
 def test_pipeline_overrides_reject_unknown_and_out_of_range_values():
@@ -77,9 +76,7 @@ def test_pipeline_overrides_reject_unknown_and_out_of_range_values():
 
 
 def test_pipeline_overrides_validate_non_rtk_alignment_tolerance():
-    assert validate_pipeline_overrides({"alignment_max_error": 10.0}) == {
-        "alignment_max_error": 10.0
-    }
+    assert validate_pipeline_overrides({"alignment_max_error": 10.0}) == {"alignment_max_error": 10.0}
     with pytest.raises(ValueError, match="alignment_max_error must be >="):
         validate_pipeline_overrides({"alignment_max_error": 0})
 
@@ -157,12 +154,7 @@ def test_fast_alignment_dashboard_parameters_are_validated_and_merged():
         )
     with pytest.raises(ValueError, match="must sort before"):
         validate_pipeline_overrides(
-            {
-                "facade_excluded_image_ranges": (
-                    "DJI_20250324163256_0658_V.JPG.."
-                    "DJI_20250324162114_0307_V.JPG"
-                )
-            }
+            {"facade_excluded_image_ranges": ("DJI_20250324163256_0658_V.JPG..DJI_20250324162114_0307_V.JPG")}
         )
 
 
@@ -203,10 +195,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["gs_tile_mode"] == "4"
     assert params["gs_seed"] == "42"
     assert params["gs_raster_profile"] == "fastgs"
-    assert (
-        params["gs_production_profile"]
-        == "DRONEGS_PRODUCTION_PROFILE_V1"
-    )
+    assert params["gs_production_profile"] == "DRONEGS_PRODUCTION_PROFILE_V1"
     assert params["gs_qualification_policy"] == "DRONEGS_QUALIFICATION_POLICY_V1"
     assert params["gs_pruning_policy"] == "spatial-bounds"
     assert params["gs_topology_cooldown"] == "1000"
@@ -269,9 +258,7 @@ def test_map_profiles_share_one_contract_and_only_explicit_differences():
     }
 
     assert legacy.keys() == modern.keys()
-    assert {
-        key for key in legacy if legacy[key] != modern[key]
-    } == expected_differences
+    assert {key for key in legacy if legacy[key] != modern[key]} == expected_differences
 
 
 def test_mission_schema_rejects_extra_fields_and_invalid_bounds(monkeypatch):
@@ -288,3 +275,35 @@ def test_mission_schema_rejects_extra_fields_and_invalid_bounds(monkeypatch):
         MissionParams(**valid, tile_size=128)
     with pytest.raises(ValueError):
         MissionParams(**valid, epsg="EPSG:4326")
+
+
+def test_yolo_schemas_reject_semantically_unsupported_classes():
+    with pytest.raises(ValueError, match="unsupported YOLO aerial classes: person"):
+        MissionParams(
+            vol_id="mission-001",
+            input_dataset="datasets/banyuls",
+            classes=["person"],
+        )
+
+    with pytest.raises(ValueError, match="unsupported YOLO aerial classes: train"):
+        AnalysisCreate(
+            name="unsupported class",
+            classes=["train"],
+        )
+
+
+def test_sam3_schemas_keep_free_form_semantic_prompts():
+    mission = MissionParams(
+        vol_id="mission-001",
+        input_dataset="datasets/banyuls",
+        ai_backend="sam3",
+        classes=["roof defect"],
+    )
+    analysis = AnalysisCreate(
+        name="prompted segmentation",
+        backend="sam3",
+        classes=["roof defect"],
+    )
+
+    assert mission.classes == ["roof defect"]
+    assert analysis.classes == ["roof defect"]

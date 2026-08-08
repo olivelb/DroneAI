@@ -10,7 +10,7 @@ import json
 import os
 import socket
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from pathlib import Path
 from uuid import uuid4
 
@@ -64,9 +64,7 @@ class AnalysisWorkflow:
             else int(os.getenv("ANALYSIS_FINALIZATION_LEASE_SECONDS", "1800"))
         )
         self.finalization_lease_seconds = max(60, configured_lease)
-        self.finalization_owner = finalization_owner or (
-            f"{socket.gethostname()}:{os.getpid()}:{uuid4()}"
-        )
+        self.finalization_owner = finalization_owner or (f"{socket.gethostname()}:{os.getpid()}:{uuid4()}")
         self.maximum_tile_result_bytes = max(
             1,
             maximum_tile_result_bytes
@@ -159,14 +157,7 @@ class AnalysisWorkflow:
                 srid=4326,
             )
         if geometry_type == "Polygon":
-            rings = [
-                "("
-                + ", ".join(
-                    f"{point[0]} {point[1]}" for point in ring
-                )
-                + ")"
-                for ring in coordinates
-            ]
+            rings = ["(" + ", ".join(f"{point[0]} {point[1]}" for point in ring) + ")" for ring in coordinates]
             return WKTElement(f"POLYGON({', '.join(rings)})", srid=4326)
         raise ValueError(f"Unsupported AI geometry: {geometry_type}")
 
@@ -204,28 +195,18 @@ class AnalysisWorkflow:
         content_length = int(content_length or 0)
         if content_length > self.maximum_tile_result_bytes:
             stream.close()
-            raise RuntimeError(
-                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
-                f"limit: {tile_key}"
-            )
-        if (
-            total_payload_bytes + content_length
-            > self.maximum_aggregate_result_bytes
-        ):
+            raise RuntimeError(f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {tile_key}")
+        if total_payload_bytes + content_length > self.maximum_aggregate_result_bytes:
             stream.close()
             raise RuntimeError(
-                "AI analysis exceeds the aggregate result size limit "
-                f"({self.maximum_aggregate_result_bytes} bytes)"
+                f"AI analysis exceeds the aggregate result size limit ({self.maximum_aggregate_result_bytes} bytes)"
             )
         try:
             raw_payload = stream.read(self.maximum_tile_result_bytes + 1)
         finally:
             stream.close()
         if len(raw_payload) > self.maximum_tile_result_bytes:
-            raise RuntimeError(
-                f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte "
-                f"limit: {tile_key}"
-            )
+            raise RuntimeError(f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {tile_key}")
         return raw_payload, content_length
 
     def _load_tile_payloads(self, tile_keys):
@@ -241,36 +222,25 @@ class AnalysisWorkflow:
             total_payload_bytes += len(raw_payload)
             if total_payload_bytes > self.maximum_aggregate_result_bytes:
                 raise RuntimeError(
-                    "AI analysis exceeds the aggregate result size limit "
-                    f"({self.maximum_aggregate_result_bytes} bytes)"
+                    f"AI analysis exceeds the aggregate result size limit ({self.maximum_aggregate_result_bytes} bytes)"
                 )
             payload = json.loads(raw_payload)
             if not isinstance(payload, dict):
                 raise RuntimeError(f"AI tile result must be an object: {tile_key}")
             tile_detections = payload.get("raw_detections", [])
             if not isinstance(tile_detections, list):
-                raise RuntimeError(
-                    f"AI tile result has invalid raw_detections: {tile_key}"
-                )
+                raise RuntimeError(f"AI tile result has invalid raw_detections: {tile_key}")
             if any(not isinstance(item, dict) for item in tile_detections):
+                raise RuntimeError(f"AI tile result contains a non-object detection: {tile_key}")
+            if len(detections) + len(tile_detections) > self.maximum_raw_detections:
                 raise RuntimeError(
-                    f"AI tile result contains a non-object detection: {tile_key}"
-                )
-            if (
-                len(detections) + len(tile_detections)
-                > self.maximum_raw_detections
-            ):
-                raise RuntimeError(
-                    "AI analysis exceeds the raw detection safety limit "
-                    f"({self.maximum_raw_detections})"
+                    f"AI analysis exceeds the raw detection safety limit ({self.maximum_raw_detections})"
                 )
             detections.extend(tile_detections)
         return detections
 
     def _replace_persisted_features(self, session, run, collection):
-        session.query(MapFeature).filter(
-            MapFeature.analysis_run_id == run.id
-        ).delete(synchronize_session=False)
+        session.query(MapFeature).filter(MapFeature.analysis_run_id == run.id).delete(synchronize_session=False)
         for feature in collection["features"]:
             properties = feature.get("properties") or {}
             session.add(
@@ -301,23 +271,14 @@ class AnalysisWorkflow:
         if lease_until is None:
             return False
         if lease_until.tzinfo is None:
-            lease_until = lease_until.replace(tzinfo=timezone.utc)
+            lease_until = lease_until.replace(tzinfo=UTC)
         return lease_until > now
 
     def _claim_finalization(self, run_id):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         with get_session() as session:
-            run = (
-                session.query(AIAnalysisRun)
-                .filter(AIAnalysisRun.run_id == run_id)
-                .with_for_update()
-                .first()
-            )
-            if (
-                run is None
-                or run.status in {"cancelled", "completed"}
-                or self._lease_is_active(run, now)
-            ):
+            run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().first()
+            if run is None or run.status in {"cancelled", "completed"} or self._lease_is_active(run, now):
                 return None
             tiles = (
                 session.query(AIAnalysisTile)
@@ -333,9 +294,7 @@ class AnalysisWorkflow:
             run.status = "finalizing"
             run.phase = "deduplicating"
             run.finalization_owner = self.finalization_owner
-            run.finalization_lease_until = now + timedelta(
-                seconds=self.finalization_lease_seconds
-            )
+            run.finalization_lease_until = now + timedelta(seconds=self.finalization_lease_seconds)
             run.heartbeat_at = now
             descriptor = self._run_descriptor(run)
             tile_keys = [tile.result_s3_key for tile in tiles]
@@ -351,34 +310,22 @@ class AnalysisWorkflow:
         unique = self.dedupe(raw)
         if len(unique) > self.maximum_final_detections:
             raise RuntimeError(
-                "AI analysis exceeds the final detection safety limit "
-                f"({self.maximum_final_detections})"
+                f"AI analysis exceeds the final detection safety limit ({self.maximum_final_detections})"
             )
         collection = self._styled_collection(
             unique,
             vol_id=descriptor["vol_id"],
             run=self._descriptor_proxy(descriptor),
         )
-        result_key = (
-            f"missions/{descriptor['vol_id']}/analyses/"
-            f"{descriptor['run_id']}/detections.geojson"
-        )
+        result_key = f"missions/{descriptor['vol_id']}/analyses/{descriptor['run_id']}/detections.geojson"
         self._write_verified_json(
             collection,
             result_key,
-            (
-                f"/tmp/processing/{descriptor['vol_id']}/"
-                f"{descriptor['run_id']}/detections.geojson"
-            ),
+            (f"/tmp/processing/{descriptor['vol_id']}/{descriptor['run_id']}/detections.geojson"),
         )
 
         with get_session() as session:
-            run = (
-                session.query(AIAnalysisRun)
-                .filter(AIAnalysisRun.run_id == run_id)
-                .with_for_update()
-                .one()
-            )
+            run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().one()
             if run.status == "cancelled":
                 return False
             if run.finalization_owner != self.finalization_owner:
@@ -391,8 +338,8 @@ class AnalysisWorkflow:
             run.status = "completed"
             run.phase = "completed"
             run.progress = 100
-            run.completed_at = datetime.now(timezone.utc)
-            run.heartbeat_at = datetime.now(timezone.utc)
+            run.completed_at = datetime.now(UTC)
+            run.heartbeat_at = datetime.now(UTC)
             run.error_message = None
             run.finalization_owner = None
             run.finalization_lease_until = None
@@ -421,9 +368,7 @@ class AnalysisWorkflow:
             .first()
         )
         if receipt is None:
-            raise RuntimeError(
-                f"Missing analysis tile journal: {run_id}/{tile_index}"
-            )
+            raise RuntimeError(f"Missing analysis tile journal: {run_id}/{tile_index}")
         return run, receipt
 
     @staticmethod
@@ -444,13 +389,13 @@ class AnalysisWorkflow:
             or completed < run.total_tiles
             or AnalysisWorkflow._lease_is_active(
                 run,
-                datetime.now(timezone.utc),
+                datetime.now(UTC),
             )
         ):
             return False
         run.status = "finalizing"
         run.phase = "recovery_finalizing"
-        run.heartbeat_at = datetime.now(timezone.utc)
+        run.heartbeat_at = datetime.now(UTC)
         return True
 
     def _stage_tile_result(self, data, run):
@@ -464,21 +409,12 @@ class AnalysisWorkflow:
             run=run,
             tile_index=tile_index,
         )
-        collection["raw_detections"] = [
-            {**detection, "tile_index": tile_index}
-            for detection in detections
-        ]
-        result_key = (
-            f"missions/{vol_id}/analyses/{run_id}/results/"
-            f"tile_{tile_index}.geojson"
-        )
+        collection["raw_detections"] = [{**detection, "tile_index": tile_index} for detection in detections]
+        result_key = f"missions/{vol_id}/analyses/{run_id}/results/tile_{tile_index}.geojson"
         self._write_verified_json(
             collection,
             result_key,
-            (
-                f"/tmp/processing/{vol_id}/{run_id}/results/"
-                f"tile_{tile_index}.geojson"
-            ),
+            (f"/tmp/processing/{vol_id}/{run_id}/results/tile_{tile_index}.geojson"),
         )
         return result_key, len(detections)
 
@@ -491,12 +427,7 @@ class AnalysisWorkflow:
         expected_attempt,
     ):
         with get_session() as session:
-            run = (
-                session.query(AIAnalysisRun)
-                .filter(AIAnalysisRun.run_id == run_id)
-                .with_for_update()
-                .one()
-            )
+            run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().one()
             receipt = (
                 session.query(AIAnalysisTile)
                 .filter(
@@ -506,16 +437,13 @@ class AnalysisWorkflow:
                 .with_for_update()
                 .one()
             )
-            if (
-                run.status == "cancelled"
-                or int(run.retry_count or 0) != int(expected_attempt)
-            ):
+            if run.status == "cancelled" or int(run.retry_count or 0) != int(expected_attempt):
                 return False
             if receipt.status != "completed":
                 receipt.status = "completed"
                 receipt.result_s3_key = result_key
                 receipt.detection_count = count
-                receipt.completed_at = datetime.now(timezone.utc)
+                receipt.completed_at = datetime.now(UTC)
             run.tiles_completed = (
                 session.query(AIAnalysisTile)
                 .filter(
@@ -540,7 +468,7 @@ class AnalysisWorkflow:
             )
             run.status = "running"
             run.phase = "detecting"
-            run.heartbeat_at = datetime.now(timezone.utc)
+            run.heartbeat_at = datetime.now(UTC)
             if run.total_tiles and run.tiles_completed >= run.total_tiles:
                 run.status = "finalizing"
                 run.phase = "deduplicating"
@@ -549,12 +477,7 @@ class AnalysisWorkflow:
 
     def _mark_finalization_failed(self, run_id, error):
         with get_session() as session:
-            run = (
-                session.query(AIAnalysisRun)
-                .filter(AIAnalysisRun.run_id == run_id)
-                .with_for_update()
-                .first()
-            )
+            run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().first()
             if run is not None and run.finalization_owner in {
                 None,
                 self.finalization_owner,
@@ -562,7 +485,7 @@ class AnalysisWorkflow:
                 run.status = "failed"
                 run.phase = "finalization_failed"
                 run.error_message = str(error)
-                run.heartbeat_at = datetime.now(timezone.utc)
+                run.heartbeat_at = datetime.now(UTC)
                 run.finalization_owner = None
                 run.finalization_lease_until = None
 
@@ -571,24 +494,15 @@ class AnalysisWorkflow:
         run_id = data["analysis_run_id"]
         tile_index = int(data["tile_index"])
         with get_session() as session:
-            run, receipt = self._get_tile_context(
-                session, vol_id, run_id, tile_index
-            )
+            run, receipt = self._get_tile_context(session, vol_id, run_id, tile_index)
             event_attempt = int(data.get("attempt", 0))
-            if (
-                run.status == "cancelled"
-                or int(run.retry_count or 0) != event_attempt
-            ):
+            if run.status == "cancelled" or int(run.retry_count or 0) != event_attempt:
                 return
-            resume_finalization = self._resume_finalization_if_ready(
-                session, run, receipt
-            )
+            resume_finalization = self._resume_finalization_if_ready(session, run, receipt)
             if receipt.status == "completed" and not resume_finalization:
                 return
             if not resume_finalization:
-                run_descriptor = self._descriptor_proxy(
-                    self._run_descriptor(run)
-                )
+                run_descriptor = self._descriptor_proxy(self._run_descriptor(run))
         if resume_finalization:
             try:
                 self.finalize(run_id)
@@ -669,7 +583,7 @@ class AnalysisWorkflow:
         )
 
     def _plan_recovery(self):
-        stale_before = datetime.now(timezone.utc) - timedelta(minutes=10)
+        stale_before = datetime.now(UTC) - timedelta(minutes=10)
         ready_run_ids = []
         tile_events = []
         ortho_events = []
@@ -701,9 +615,7 @@ class AnalysisWorkflow:
                     .order_by(AIAnalysisTile.tile_index)
                     .all()
                 )
-                completed = sum(
-                    tile.status == "completed" for tile in tiles
-                )
+                completed = sum(tile.status == "completed" for tile in tiles)
                 if run.total_tiles and completed >= run.total_tiles:
                     run.status = "finalizing"
                     run.phase = "recovery_finalizing"
@@ -712,26 +624,14 @@ class AnalysisWorkflow:
                     run.retry_count += 1
                     run.status = "queued"
                     run.phase = "recovery_retiling"
-                    ortho_events.append(
-                        self._orthomosaic_recovery_event(run)
-                    )
+                    ortho_events.append(self._orthomosaic_recovery_event(run))
                 else:
-                    incomplete_tiles = [
-                        item for item in tiles
-                        if item.status != "completed"
-                    ]
-                    exhausted_tiles = [
-                        item
-                        for item in incomplete_tiles
-                        if item.attempts >= self.maximum_tile_attempts
-                    ]
+                    incomplete_tiles = [item for item in tiles if item.status != "completed"]
+                    exhausted_tiles = [item for item in incomplete_tiles if item.attempts >= self.maximum_tile_attempts]
                     if exhausted_tiles:
                         for tile in exhausted_tiles:
                             tile.status = "dead"
-                            tile.last_error = (
-                                "Maximum AI tile attempts exhausted "
-                                f"({self.maximum_tile_attempts})"
-                            )
+                            tile.last_error = f"Maximum AI tile attempts exhausted ({self.maximum_tile_attempts})"
                         run.status = "failed"
                         run.phase = "tile_attempts_exhausted"
                         run.error_message = (
@@ -739,18 +639,16 @@ class AnalysisWorkflow:
                             f"the {self.maximum_tile_attempts}-attempt budget; "
                             "manual retry is required"
                         )
-                        run.heartbeat_at = datetime.now(timezone.utc)
+                        run.heartbeat_at = datetime.now(UTC)
                         continue
                     for tile in incomplete_tiles[:100]:
                         tile.attempts += 1
                         tile.status = "queued"
                         tile.last_error = None
-                        tile_events.append(
-                            self._tile_recovery_event(run, tile)
-                        )
+                        tile_events.append(self._tile_recovery_event(run, tile))
                     run.status = "running"
                     run.phase = "recovery_detecting"
-                run.heartbeat_at = datetime.now(timezone.utc)
+                run.heartbeat_at = datetime.now(UTC)
         return ready_run_ids, ortho_events, tile_events
 
     def recover(self):
@@ -773,7 +671,5 @@ class AnalysisWorkflow:
             try:
                 self.finalize(run_id)
             except Exception as error:
-                self.logger.exception(
-                    "Failed to recover AI analysis %s", run_id
-                )
+                self.logger.exception("Failed to recover AI analysis %s", run_id)
                 self._mark_finalization_failed(run_id, error)

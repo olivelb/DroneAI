@@ -254,37 +254,10 @@ def get_file(s3_key: str):
 
 
 @router.post(
-    "/datasets/upload-file",
-    dependencies=[Depends(require_operator)],
-)
-async def upload_single_file(
-    dataset_name: Annotated[str, Query()],
-    file: Annotated[UploadFile, File()],
-):
-    validate_uploads([file])
-    safe_name = sanitize_dataset_name(dataset_name, replacement="_")
-    if not safe_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid dataset name",
-        )
-    filename = Path(file.filename or "file").name
-    s3_key = f"datasets/{safe_name}/{filename}"
-    try:
-        storage.put_object(s3_key, file.file)
-        return {"name": filename, "s3_key": s3_key, "status": "ok"}
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Upload failed for {filename}: {error}",
-        ) from error
-
-
-@router.post(
     "/datasets/upload",
     dependencies=[Depends(require_operator)],
 )
-async def upload_dataset_batch(
+def upload_dataset_batch(
     dataset_name: Annotated[str, Query()],
     files: Annotated[list[UploadFile], File()],
 ):
