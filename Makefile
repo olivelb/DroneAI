@@ -5,14 +5,19 @@ PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared al
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 SHARED_TYPED_PATHS := $(wildcard shared/*.py)
-SERVICE_CORE_PATHS := \
+APP2_TYPED_PATHS := \
 	app2-ia/detection_core.py \
 	app2-ia/sam3_backend.py \
 	app2-ia/tile_detection_workflow.py \
-	app2-ia/main.py \
+	app2-ia/main.py
+APP3_TYPED_PATHS := \
 	app3-processing/processing_core.py \
 	app3-processing/orthomosaic_tiler.py \
-	app3-processing/analysis_workflow.py
+	app3-processing/analysis_workflow.py \
+	app3-processing/legacy_aggregation.py \
+	app3-processing/processing_dispatcher.py \
+	app3-processing/main.py
+SERVICE_CORE_PATHS := $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
 .PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
@@ -38,7 +43,8 @@ shared-lint:
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
-	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SERVICE_CORE_PATHS)
+	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP2_TYPED_PATHS)
+	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP3_TYPED_PATHS)
 
 scripts-check:
 	shellcheck $(SHELL_SCRIPTS)

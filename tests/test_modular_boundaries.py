@@ -40,14 +40,25 @@ def test_processing_worker_delegates_long_running_workflows():
     main_source = _source("app3-processing/main.py")
     workflow_source = _source("app3-processing/analysis_workflow.py")
     tiler_source = _source("app3-processing/orthomosaic_tiler.py")
+    dispatcher_source = _source("app3-processing/processing_dispatcher.py")
+    legacy_source = _source("app3-processing/legacy_aggregation.py")
 
-    assert _line_count("app3-processing/main.py") < 650
+    assert _line_count("app3-processing/main.py") < 200
     assert "AnalysisWorkflow(" in main_source
     assert "OrthomosaicTiler(" in main_source
+    assert "ProcessingDispatcher(" in main_source
+    assert "LegacyAggregationWorkflow(" in main_source
     assert "def recover_analysis_runs" not in main_source
     assert "def slice_orthomosaic" not in main_source
+    assert "geoalchemy2" not in main_source
+    assert "shared.database" not in main_source
+    assert "import cv2" not in main_source
     assert "import main" not in workflow_source
     assert "import main" not in tiler_source
+    assert "import main" not in dispatcher_source
+    assert "import main" not in legacy_source
+    assert "confluent_kafka" not in dispatcher_source
+    assert "confluent_kafka" not in legacy_source
 
     workflow_tree = ast.parse(workflow_source)
     write_calls = [
