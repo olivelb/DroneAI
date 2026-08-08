@@ -2,14 +2,18 @@
 3D Gaussian Model (CuPy — inference only).
 
 Each Gaussian is parametrised by:
-  - position μ (3D mean)
+  - position (3D mean)
   - covariance via rotation quaternion (4) + log-scale (3)
-  - opacity α (logit-space)
+  - opacity (logit-space)
   - colour via spherical harmonics (SH) coefficients
   - [FAGK] optional SH coefficients for view-dependent opacity
 
 Based on Kerbl et al. 2023 (3DGS) with FAGK from Tortho-Gaussian.
 """
+from __future__ import annotations
+
+from typing import Any
+
 import cupy as cp
 import numpy as np
 
@@ -46,7 +50,7 @@ class GaussianModel:
 
     @property
     def num_gaussians(self) -> int:
-        return self._xyz.shape[0]
+        return int(self._xyz.shape[0])
 
     @property
     def positions(self) -> cp.ndarray:
@@ -73,7 +77,7 @@ class GaussianModel:
     #  Filtering
     # ------------------------------------------------------------------
 
-    def filter_by_mask(self, mask):
+    def filter_by_mask(self, mask: cp.ndarray) -> None:
         """Keep only Gaussians where *mask* is True (in-place)."""
         self._xyz = self._xyz[mask]
         self._features_dc = self._features_dc[mask]
@@ -88,7 +92,7 @@ class GaussianModel:
     #  Serialisation (PLY)
     # ------------------------------------------------------------------
 
-    def load_ply(self, path: str):
+    def load_ply(self, path: str) -> None:
         """Load Gaussian parameters from a PLY file onto GPU."""
         from plyfile import PlyData
 
@@ -134,7 +138,7 @@ class GaussianModel:
         else:
             self._opacity_sh = cp.empty((n, 0), dtype=cp.float32)
 
-    def save_ply(self, path: str):
+    def save_ply(self, path: str) -> None:
         """Save Gaussian parameters to a PLY file."""
         from plyfile import PlyData, PlyElement
 
@@ -159,7 +163,7 @@ class GaussianModel:
             attrs += [(f'opacity_sh_{i}', 'f4') for i in range(opa_sh.shape[1])]
 
         dtype = np.dtype(attrs)
-        elements = np.empty(n, dtype=dtype)
+        elements: np.ndarray = np.empty(n, dtype=dtype)
         elements['x'] = xyz[:, 0]
         elements['y'] = xyz[:, 1]
         elements['z'] = xyz[:, 2]
@@ -184,42 +188,43 @@ class GaussianModel:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _matrix_to_quaternion(R) -> np.ndarray:
-        """3×3 rotation matrix → (4,) numpy quaternion (w, x, y, z).
+    def _matrix_to_quaternion(rotation: object) -> np.ndarray:
+        """3x3 rotation matrix to (4,) numpy quaternion (w, x, y, z).
 
         Works on numpy arrays (CPU); call with ``cp.asnumpy(R_gpu)``
         if the matrix is on GPU.
         """
-        R = np.asarray(R, dtype=np.float64)
-        trace = R[0, 0] + R[1, 1] + R[2, 2]
+        matrix: np.ndarray = np.asarray(rotation, dtype=np.float64)
+        trace = matrix[0, 0] + matrix[1, 1] + matrix[2, 2]
         if trace > 0:
             s = 0.5 / np.sqrt(trace + 1.0)
             w = 0.25 / s
-            x = (R[2, 1] - R[1, 2]) * s
-            y = (R[0, 2] - R[2, 0]) * s
-            z = (R[1, 0] - R[0, 1]) * s
-        elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-            s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-            w = (R[2, 1] - R[1, 2]) / s
+            x = (matrix[2, 1] - matrix[1, 2]) * s
+            y = (matrix[0, 2] - matrix[2, 0]) * s
+            z = (matrix[1, 0] - matrix[0, 1]) * s
+        elif matrix[0, 0] > matrix[1, 1] and matrix[0, 0] > matrix[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])
+            w = (matrix[2, 1] - matrix[1, 2]) / s
             x = 0.25 * s
-            y = (R[0, 1] + R[1, 0]) / s
-            z = (R[0, 2] + R[2, 0]) / s
-        elif R[1, 1] > R[2, 2]:
-            s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-            w = (R[0, 2] - R[2, 0]) / s
-            x = (R[0, 1] + R[1, 0]) / s
+            y = (matrix[0, 1] + matrix[1, 0]) / s
+            z = (matrix[0, 2] + matrix[2, 0]) / s
+        elif matrix[1, 1] > matrix[2, 2]:
+            s = 2.0 * np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])
+            w = (matrix[0, 2] - matrix[2, 0]) / s
+            x = (matrix[0, 1] + matrix[1, 0]) / s
             y = 0.25 * s
-            z = (R[1, 2] + R[2, 1]) / s
+            z = (matrix[1, 2] + matrix[2, 1]) / s
         else:
-            s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-            w = (R[1, 0] - R[0, 1]) / s
-            x = (R[0, 2] + R[2, 0]) / s
-            y = (R[1, 2] + R[2, 1]) / s
+            s = 2.0 * np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])
+            w = (matrix[1, 0] - matrix[0, 1]) / s
+            x = (matrix[0, 2] + matrix[2, 0]) / s
+            y = (matrix[1, 2] + matrix[2, 1]) / s
             z = 0.25 * s
-        return np.array([w, x, y, z], dtype=np.float32)
+        quaternion: np.ndarray = np.array([w, x, y, z], dtype=np.float32)
+        return quaternion
 
     @staticmethod
-    def _quaternion_multiply(q1, q2):
+    def _quaternion_multiply(q1: Any, q2: Any) -> Any:
         """Hamilton product.  Broadcasts over leading dimensions.
 
         Accepts both CuPy and numpy arrays.

@@ -11,12 +11,15 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/exif_altitude.py \
 	app1-colmap/gaussian_ortho/facade_frame.py \
 	app1-colmap/gaussian_ortho/filter_quality.py \
+	app1-colmap/gaussian_ortho/gaussian_model.py \
 	app1-colmap/gaussian_ortho/geo_writer.py \
 	app1-colmap/gaussian_ortho/height_reference.py \
 	app1-colmap/gaussian_ortho/merge.py \
 	app1-colmap/gaussian_ortho/model_filtering.py \
+	app1-colmap/gaussian_ortho/ortho_renderer.py \
 	app1-colmap/gaussian_ortho/partition.py \
 	app1-colmap/gaussian_ortho/pca_alignment.py \
+	app1-colmap/gaussian_ortho/rasterizer.py \
 	app1-colmap/gaussian_ortho/scene_info.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))

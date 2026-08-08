@@ -4,13 +4,21 @@ Rasteriser wrapper for 3D Gaussian Splatting (CuPy backend).
 Uses the custom CUDA rasteriser (cuda_rasterizer.py) for orthographic
 rendering.  No PyTorch or gsplat dependency.
 """
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TypedDict
 
 import cupy as cp
 import numpy as np
 
 from .gaussian_model import GaussianModel
 from .cuda_rasterizer import rasterize_ortho as _cuda_rasterize_ortho
+
+
+class RasterResult(TypedDict):
+    image: cp.ndarray
+    depth: cp.ndarray
 
 
 # ---------------------------------------------------------------------------
@@ -27,15 +35,15 @@ class RasterSettings:
     cy: float
     znear: float = 0.01
     zfar: float = 1000.0
-    bg_color: tuple = (0.0, 0.0, 0.0)
+    bg_color: tuple[float, float, float] = (0.0, 0.0, 0.0)
     scaling_modifier: float = 1.0
     mip_filter_variance: float = 0.03
     mip_filter_compensation: bool = True
-    viewmatrix: np.ndarray = None      # 4×4 world-to-camera (numpy float32)
+    viewmatrix: np.ndarray | None = None  # 4x4 world-to-camera (numpy float32)
     # Optional world-direction transform used only for SH evaluation. A
     # Sim(3) may rotate Gaussian geometry after training, while the learned SH
     # coefficients remain expressed in the original training frame.
-    sh_direction_rotation: np.ndarray = None
+    sh_direction_rotation: np.ndarray | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -43,26 +51,33 @@ class RasterSettings:
 # ---------------------------------------------------------------------------
 
 def make_view_matrix(R_c2w: np.ndarray, T_world: np.ndarray) -> np.ndarray:
-    """Build a 4×4 world-to-camera matrix from camera-to-world R and world T."""
+    """Build a 4x4 world-to-camera matrix from camera-to-world R and world T."""
     R_w2c = R_c2w.T
     t_w2c = -R_w2c @ T_world
-    M = np.eye(4, dtype=np.float32)
-    M[:3, :3] = R_w2c
-    M[:3, 3] = t_w2c
-    return M
+    matrix: np.ndarray = np.eye(4, dtype=np.float32)
+    matrix[:3, :3] = R_w2c
+    matrix[:3, 3] = t_w2c
+    return matrix
 
 
-def make_ortho_proj(left, right, bottom, top, znear, zfar) -> np.ndarray:
-    """Build a 4×4 orthographic projection matrix."""
-    P = np.zeros((4, 4), dtype=np.float32)
-    P[0, 0] = 2.0 / (right - left)
-    P[1, 1] = 2.0 / (top - bottom)
-    P[2, 2] = -2.0 / (zfar - znear)
-    P[0, 3] = -(right + left) / (right - left)
-    P[1, 3] = -(top + bottom) / (top - bottom)
-    P[2, 3] = -(zfar + znear) / (zfar - znear)
-    P[3, 3] = 1.0
-    return P
+def make_ortho_proj(
+    left: float,
+    right: float,
+    bottom: float,
+    top: float,
+    znear: float,
+    zfar: float,
+) -> np.ndarray:
+    """Build a 4x4 orthographic projection matrix."""
+    projection: np.ndarray = np.zeros((4, 4), dtype=np.float32)
+    projection[0, 0] = 2.0 / (right - left)
+    projection[1, 1] = 2.0 / (top - bottom)
+    projection[2, 2] = -2.0 / (zfar - znear)
+    projection[0, 3] = -(right + left) / (right - left)
+    projection[1, 3] = -(top + bottom) / (top - bottom)
+    projection[2, 3] = -(zfar + znear) / (zfar - znear)
+    projection[3, 3] = 1.0
+    return projection
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +85,7 @@ def make_ortho_proj(left, right, bottom, top, znear, zfar) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def render_ortho(model: GaussianModel, settings: RasterSettings,
-                 indices: cp.ndarray = None):
+                 indices: cp.ndarray | None = None) -> RasterResult:
     """
     Render an orthographic image from the Gaussian model (inference only).
 
@@ -95,6 +110,8 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         opacities = opacities[indices]
         sh_coeffs = sh_coeffs[indices]
 
+    if settings.viewmatrix is None:
+        raise ValueError("RasterSettings.viewmatrix is required")
     viewmat = cp.array(settings.viewmatrix, dtype=cp.float32)
 
     rgb, depth = _cuda_rasterize_ortho(
@@ -110,7 +127,7 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
     )
 
     # Return in (C, H, W) layout for compatibility with callers
-    image = rgb.transpose(2, 0, 1)       # (H, W, 3) → (3, H, W)
-    depth_out = depth[None, :, :]         # (H, W)   → (1, H, W)
+    image: cp.ndarray = rgb.transpose(2, 0, 1)  # (H, W, 3) -> (3, H, W)
+    depth_out: cp.ndarray = depth[None, :, :]  # (H, W) -> (1, H, W)
 
     return {"image": image, "depth": depth_out}

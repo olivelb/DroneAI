@@ -15,7 +15,7 @@ implementation batches, not a claim that every roadmap item is complete.
 | Fresh E2E after the 5 m Gaussian default | Confirmed outstanding by the existing Example Quarry report. | Deferred to an explicit BIGZEN release qualification. |
 | Browser-to-S3 multipart upload | Confirmed architectural improvement over the former 50 GiB FastAPI multipart boundary. | Implemented in the second batch. |
 | Spatial Gaussian coverage gate | Confirmed. Primitive retention alone cannot prove footprint coverage. | Implemented as `GAUSSIAN_MAP_COVERAGE_V1`; fresh GPU calibration remains a release task. |
-| Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Thirteen CPU-visible modules now run under strict mypy, including explicit COLMAP binary, EXIF/GPS and CUDA model-filter boundaries. |
+| Strict typing for `gaussian_ortho` | Confirmed absent from the current mypy ratchet. | Sixteen modules now run under strict mypy, including explicit COLMAP binary, EXIF/GPS, Gaussian-model and orthophoto-renderer boundaries. |
 | Pre-approved hashes for dynamic YOLO variants | Confirmed absent; runtime hashes provide provenance but not prior approval. | Implemented for all eight supported OBB variants from the pinned upstream release. |
 | Kafka tile-result payload references | Confirmed useful for bounding segmentation messages. | Implemented with a versioned, hash-bound S3 artifact and migration `0010`. |
 | Coverage floor above 50% | Confirmed. The full non-GPU/non-integration suite now measures 61% branch coverage. | Raised from 50% to 55% with retained headroom. |

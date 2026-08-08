@@ -9,7 +9,10 @@ Implements the orthogonal splatting from Tortho-Gaussian (Eq. 8-10):
   - Virtual camera looking straight down (-Z in geo-aligned coordinates)
   - Rendering at a specified Ground Sample Distance (GSD)
 """
+from __future__ import annotations
+
 import math
+from typing import TypedDict
 
 import cupy as cp
 import numpy as np
@@ -18,10 +21,20 @@ from .gaussian_model import GaussianModel
 from .rasterizer import RasterSettings, render_ortho, make_view_matrix
 
 
+type OrthoExtent = tuple[float, float, float, float, float, float]
+
+
+class OrthophotoResult(TypedDict):
+    rgb: np.ndarray
+    height: np.ndarray
+    extent: tuple[float, float, float, float]
+    gsd: float
+
+
 def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
-                         R_geo: np.ndarray = None,
-                         frame_origin: np.ndarray = None,
-                         quantile: float = 0.001):
+                         R_geo: np.ndarray | None = None,
+                         frame_origin: np.ndarray | None = None,
+                         quantile: float = 0.001) -> OrthoExtent:
     """
     Compute the X-Y bounding box of the Gaussian scene.
 
@@ -51,12 +64,13 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
 
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
-                      extent: tuple = None, chunk_size: int = 0,
-                      device=None, R_geo: np.ndarray = None,
-                      frame_origin: np.ndarray = None,
-                      sh_direction_rotation: np.ndarray = None,
+                      extent: OrthoExtent | None = None, chunk_size: int = 0,
+                      device: object | None = None,
+                      R_geo: np.ndarray | None = None,
+                      frame_origin: np.ndarray | None = None,
+                      sh_direction_rotation: np.ndarray | None = None,
                       mip_filter_variance: float = 0.03,
-                      mip_filter_compensation: bool = True):
+                      mip_filter_compensation: bool = True) -> OrthophotoResult:
     """
     Render an orthographic TDOM from a trained Gaussian model.
 
@@ -83,8 +97,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     else:
         x_min, x_max, y_min, y_max, z_min, z_max = extent
 
-    W = int(math.ceil((x_max - x_min) / gsd))
-    H = int(math.ceil((y_max - y_min) / gsd))
+    W = math.ceil((x_max - x_min) / gsd)
+    H = math.ceil((y_max - y_min) / gsd)
 
     if W <= 0 or H <= 0:
         raise ValueError(f"Invalid ortho dimensions: {W}x{H} from extent "
@@ -94,7 +108,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     if chunk_size <= 0:
         chunk_size = 2048
         try:
-            free_bytes, total_bytes = cp.cuda.Device(0).mem_info
+            free_bytes, _total_bytes = cp.cuda.Device(0).mem_info
             free_mb = free_bytes / (1024 ** 2)
             available = max(free_mb - 200, 100)
             max_pixels = int(available * 1024 ** 2 / 20)
@@ -105,7 +119,7 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
             chunk_size = 1024
 
     # Single tile or chunked
-    if W <= chunk_size and H <= chunk_size:
+    if chunk_size >= max(W, H):
         rgb, height = _render_single_tile(
             model, x_min, x_max, y_min, y_max, z_min, z_max, W, H,
             R_geo=R_geo, frame_origin=frame_origin,
@@ -156,12 +170,22 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     }
 
 
-def _render_single_tile(model, x_min, x_max, y_min, y_max,
-                         z_min, z_max, W, H, R_geo=None,
-                         frame_origin=None,
-                         sh_direction_rotation=None,
-                         mip_filter_variance=0.03,
-                         mip_filter_compensation=True):
+def _render_single_tile(
+    model: GaussianModel,
+    x_min: float,
+    x_max: float,
+    y_min: float,
+    y_max: float,
+    z_min: float,
+    z_max: float,
+    width: int,
+    height: int,
+    R_geo: np.ndarray | None = None,
+    frame_origin: np.ndarray | None = None,
+    sh_direction_rotation: np.ndarray | None = None,
+    mip_filter_variance: float = 0.03,
+    mip_filter_compensation: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
     """Render one tile via the custom CUDA ortho rasteriser."""
     from .height_reference import depth_buffer_to_height, empty_height_map
 
@@ -184,8 +208,8 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
     indices = cp.nonzero(mask)[0]
 
     if indices.size == 0:
-        rgb_np = np.full((H, W, 3), 255, dtype=np.uint8)
-        height_np = empty_height_map(H, W)
+        rgb_np: np.ndarray = np.full((height, width, 3), 255, dtype=np.uint8)
+        height_np: np.ndarray = empty_height_map(height, width)
         return rgb_np, height_np
 
     # --- Orthographic camera ---
@@ -201,7 +225,7 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
     z_cam_geo = z_max + 10.0
 
     if R_geo is not None:
-        R_inv = R_geo.T.astype(np.float64)
+        R_inv: np.ndarray = R_geo.T.astype(np.float64)
         R_c2w = (R_inv @ R_c2w_geo).astype(np.float32)
         T_world = R_inv @ np.array(
             [cx_geo, cy_geo, z_cam_geo], dtype=np.float64
@@ -217,15 +241,15 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
 
     tile_w = x_max - x_min
     tile_h = y_max - y_min
-    fx = W / tile_w if tile_w > 0 else 1.0
-    fy = H / tile_h if tile_h > 0 else 1.0
+    fx = width / tile_w if tile_w > 0 else 1.0
+    fy = height / tile_h if tile_h > 0 else 1.0
 
     znear = 0.01
     zfar = scene_height + 20.0
 
     settings = RasterSettings(
-        image_width=W, image_height=H,
-        fx=fx, fy=fy, cx=W / 2.0, cy=H / 2.0,
+        image_width=width, image_height=height,
+        fx=fx, fy=fy, cx=width / 2.0, cy=height / 2.0,
         znear=znear, zfar=zfar,
         bg_color=(1.0, 1.0, 1.0),
         mip_filter_variance=mip_filter_variance,
@@ -237,12 +261,12 @@ def _render_single_tile(model, x_min, x_max, y_min, y_max,
     result = render_ortho(model, settings, indices=indices)
 
     img = result["image"]
-    img_np = (cp.clip(img, 0, 1).transpose(1, 2, 0).get() * 255).astype(np.uint8)
+    img_np: np.ndarray = (
+        cp.clip(img, 0, 1).transpose(1, 2, 0).get() * 255
+    ).astype(np.uint8)
 
-    height_np = empty_height_map(H, W)
-    if "depth" in result:
-        depth = result["depth"]
-        height_np = depth_buffer_to_height(depth.squeeze(0).get(), z_cam_geo)
+    depth = result["depth"]
+    height_np = depth_buffer_to_height(depth.squeeze(0).get(), z_cam_geo)
 
     del result
     return img_np, height_np
