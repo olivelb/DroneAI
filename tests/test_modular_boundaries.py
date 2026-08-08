@@ -61,6 +61,25 @@ def test_processing_worker_delegates_long_running_workflows():
     assert all(len(call.args) == 3 for call in write_calls)
 
 
+def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
+    composition = "app2-ia/main.py"
+    sam_backend = "app2-ia/sam3_backend.py"
+    tile_workflow = "app2-ia/tile_detection_workflow.py"
+    source = _source(composition)
+
+    assert _line_count(composition) < 180
+    assert "TileDetectionWorkflow(" in source
+    assert "Sam3Backend(" in source
+    assert "def run_sam3_detection" not in source
+    assert "def transform_detection_coordinates" not in source
+    assert "import cv2" not in source
+    assert "import torch" not in source
+    assert "import main" not in _source(sam_backend)
+    assert "import main" not in _source(tile_workflow)
+    assert "confluent_kafka" not in _source(sam_backend)
+    assert "confluent_kafka" not in _source(tile_workflow)
+
+
 def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     composition = "app1-colmap/main.py"
     worker = "app1-colmap/colmap_worker/worker.py"
