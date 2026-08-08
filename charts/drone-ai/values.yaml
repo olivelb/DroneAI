@@ -155,6 +155,10 @@ iaWorker:
     hostPath: ""
     storageClass: ""
     size: 30Gi
+  sam3:
+    repository: facebook/sam3
+    # Immutable Hugging Face commit; updates must be explicit and reviewed.
+    revision: 3c879f39826c281e95690f02c7821c4de09afae7
 
 # --------------------------------------------------------------------------
 # Processing Worker

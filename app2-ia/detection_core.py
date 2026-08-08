@@ -15,6 +15,11 @@ from typing import Any
 
 import numpy as np
 
+from shared.model_provenance import (
+    build_model_manifest,
+    installed_versions,
+    sha256_file,
+)
 from shared.validation import validate_aerial_class_names
 
 
@@ -64,6 +69,7 @@ REQUESTED_CLASS_MAP = {
 }
 
 _yolo_models: dict[str, tuple[Any, list[str]]] = {}
+_yolo_model_hashes: dict[str, str] = {}
 
 
 def normalize_yolo_model_variant(value: str | None) -> str:
@@ -117,9 +123,16 @@ def ensure_yolo_model_file(model_path: Path, checkpoint_name: str) -> Path:
     return model_path
 
 
+def yolo_model_sha256(model_path: Path) -> str:
+    cache_key = str(model_path.resolve())
+    if cache_key not in _yolo_model_hashes:
+        _yolo_model_hashes[cache_key] = sha256_file(model_path)
+    return _yolo_model_hashes[cache_key]
+
+
 def load_yolo_model(
     requested_variant: str | None = None,
-) -> tuple[Any, list[str], str, str | int]:
+) -> tuple[Any, list[str], str, str | int, Path]:
     import torch
     from ultralytics import YOLO
 
@@ -129,7 +142,7 @@ def load_yolo_model(
     device: str | int = 0 if torch.cuda.is_available() else "cpu"
     if cached_model is not None:
         model, available_labels = cached_model
-        return model, available_labels, selected_variant, device
+        return model, available_labels, selected_variant, device, model_file_path
 
     model_file_path = ensure_yolo_model_file(model_file_path, model_file_name)
     logger.info(
@@ -144,7 +157,7 @@ def load_yolo_model(
     if not available_labels:
         raise RuntimeError(f"YOLO model did not expose class names: {model_file_path}")
     _yolo_models[cache_key] = (model, available_labels)
-    return model, available_labels, selected_variant, device
+    return model, available_labels, selected_variant, device, model_file_path
 
 
 def to_numpy(value: Any) -> np.ndarray | None:
@@ -233,7 +246,7 @@ def run_yolo_detection(
     requested_conf: float,
     requested_model_variant: str | None = None,
 ) -> tuple[list[dict], dict]:
-    model, available_labels, selected_variant, device = load_yolo_model(requested_model_variant)
+    model, available_labels, selected_variant, device, model_path = load_yolo_model(requested_model_variant)
     requested_labels = resolve_requested_labels(
         requested_classes,
         available_labels,
@@ -276,5 +289,22 @@ def run_yolo_detection(
         "label": f"{best_attempt['label']} model={selected_variant}",
         "model_variant": selected_variant,
         "requested_labels": requested_labels,
+        "model_manifest": build_model_manifest(
+            backend="yolo",
+            repository="ultralytics/assets",
+            revision=YOLO_MODEL_RELEASE,
+            artifact=model_path.name,
+            artifact_sha256=yolo_model_sha256(model_path),
+            libraries=installed_versions("ultralytics", "torch"),
+            runtime={"device": str(device)},
+            inference={
+                "model_variant": selected_variant,
+                "image_size": YOLO_MODEL_IMAGE_SIZE,
+                "requested_classes": requested_classes,
+                "resolved_labels": requested_labels,
+                "primary_confidence": requested_conf,
+                "fallback_confidence": fallback_conf,
+            },
+        ),
     }
     return best_detections, best_attempt

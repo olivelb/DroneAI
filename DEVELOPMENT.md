@@ -94,6 +94,9 @@ from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
 reuse and bounded fallback, plus mandatory publication assets, GCP provenance,
 best-effort recovery uploads and aerial/facade completion routing.
+AI model-provenance tests additionally require immutable SAM 3 revisions,
+streaming artifact hashes, bounded Kafka manifests and rejection of mixed-model
+tile results within one durable analysis run.
 
 GPU and external-service tests are excluded from the default test command:
 
@@ -101,6 +104,11 @@ GPU and external-service tests are excluded from the default test command:
 pytest -m gpu
 pytest -m integration
 ```
+
+Frontend dependency installation is pinned by `packageManager` to npm 10.8.2.
+Use `corepack npm` (the Makefile default) so local Node/npm upgrades cannot
+rewrite a lockfile topology that differs from GitHub Actions; the frontend CI
+uses the same Corepack-resolved package manager.
 
 `tools/smoke_cupy_ortho.py` is a manual diagnostic script. It requires a CUDA
 GPU and mission-specific reconstruction artifacts and is not part of CI.

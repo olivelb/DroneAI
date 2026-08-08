@@ -413,6 +413,11 @@ kubectl -n drone-ai-preprod create secret generic hf-token \
   --from-literal=HF_TOKEN='<HUGGINGFACE_TOKEN>'
 ```
 
+The Helm defaults pin `facebook/sam3` to a full Hugging Face commit in
+`iaWorker.sam3.revision`. Keep that revision immutable in environment overlays;
+upgrading it is a reviewed model change and creates a different provenance
+manifest in analysis results.
+
 For the in-cluster PostgreSQL preproduction option, create or reconcile the
 external Secrets without printing their values:
 

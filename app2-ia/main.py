@@ -2,13 +2,14 @@ import logging
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import cv2
 import numpy as np
-import threading
 import torch
 from confluent_kafka import Consumer, Producer
+from huggingface_hub import hf_hub_download
 from PIL import Image
 from pyproj import Transformer
 from transformers import Sam3Model, Sam3Processor
@@ -32,6 +33,12 @@ from shared.kafka_reliability import (
     publish_json,
     reliable_consumer_config,
 )
+from shared.model_provenance import (
+    build_model_manifest,
+    immutable_revision,
+    installed_versions,
+    sha256_file,
+)
 from shared.pipeline_params import normalize_ai_backend as normalize_backend_name
 from shared.worker_messaging import (
     make_cancellation_handler,
@@ -52,6 +59,7 @@ logging.basicConfig(
 logger = logging.getLogger("app2-ia")
 
 SAM3_MODEL_ID = os.getenv("SAM3_MODEL_ID", "facebook/sam3")
+SAM3_MODEL_REVISION = immutable_revision(os.getenv("SAM3_MODEL_REVISION", "3c879f39826c281e95690f02c7821c4de09afae7"))
 SAM3_DEFAULT_PROMPT = os.getenv("SAM3_DEFAULT_PROMPT", "car")
 SAM3_MASK_THRESHOLD = float(os.getenv("SAM3_MASK_THRESHOLD", "0.5"))
 
@@ -60,16 +68,34 @@ sam3_autocast_dtype = torch.bfloat16 if device_type == "cuda" else torch.float32
 
 _sam3_model = None
 _sam3_processor = None
+_sam3_artifact_sha256: str | None = None
 
 
 def load_sam3_model() -> tuple[Sam3Model, Sam3Processor]:
-    global _sam3_model, _sam3_processor
+    global _sam3_artifact_sha256, _sam3_model, _sam3_processor
     if _sam3_model is not None and _sam3_processor is not None:
         return _sam3_model, _sam3_processor
 
-    logger.info("Loading SAM3 model=%s device=%s", SAM3_MODEL_ID, device_type)
-    _sam3_model = Sam3Model.from_pretrained(SAM3_MODEL_ID).to(device_type)
-    _sam3_processor = Sam3Processor.from_pretrained(SAM3_MODEL_ID)
+    logger.info(
+        "Loading SAM3 model=%s revision=%s device=%s",
+        SAM3_MODEL_ID,
+        SAM3_MODEL_REVISION,
+        device_type,
+    )
+    artifact_path = hf_hub_download(
+        repo_id=SAM3_MODEL_ID,
+        filename="model.safetensors",
+        revision=SAM3_MODEL_REVISION,
+    )
+    _sam3_artifact_sha256 = sha256_file(artifact_path)
+    _sam3_model = Sam3Model.from_pretrained(
+        SAM3_MODEL_ID,
+        revision=SAM3_MODEL_REVISION,
+    ).to(device_type)
+    _sam3_processor = Sam3Processor.from_pretrained(
+        SAM3_MODEL_ID,
+        revision=SAM3_MODEL_REVISION,
+    )
     return _sam3_model, _sam3_processor
 
 
@@ -110,6 +136,7 @@ def contour_to_polygon(mask: np.ndarray, fallback_box: list[list[float]]) -> tup
 
 def run_sam3_detection(tile_path: str, prompt: str, requested_conf: float) -> tuple[list[dict], dict]:
     model, processor = load_sam3_model()
+    assert _sam3_artifact_sha256 is not None
     image = Image.open(tile_path).convert("RGB")
     inputs = processor(images=image, text=prompt, return_tensors="pt").to(device_type)
 
@@ -127,8 +154,28 @@ def run_sam3_detection(tile_path: str, prompt: str, requested_conf: float) -> tu
     masks = result.get("masks")
     boxes = result.get("boxes")
     scores = result.get("scores")
+    attempt = {
+        "label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}",
+        "model_manifest": build_model_manifest(
+            backend="sam3",
+            repository=SAM3_MODEL_ID,
+            revision=SAM3_MODEL_REVISION,
+            artifact="model.safetensors",
+            artifact_sha256=_sam3_artifact_sha256,
+            libraries=installed_versions("transformers", "torch"),
+            runtime={
+                "device": device_type,
+                "autocast_dtype": str(sam3_autocast_dtype),
+            },
+            inference={
+                "prompt": prompt,
+                "confidence": requested_conf,
+                "mask_threshold": SAM3_MASK_THRESHOLD,
+            },
+        ),
+    }
     if masks is None or boxes is None or scores is None or len(scores) == 0:
-        return [], {"label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}"}
+        return [], attempt
 
     detections = []
     for mask, box, score in zip(masks, boxes, scores):
@@ -146,7 +193,8 @@ def run_sam3_detection(tile_path: str, prompt: str, requested_conf: float) -> tu
             }
         )
 
-    return detections, {"label": f"SAM3 prompt='{prompt}' conf={requested_conf:.2f}"}
+    return detections, attempt
+
 
 CONSUMER_GROUP = "ia-tile-workers"
 
@@ -162,7 +210,8 @@ def create_work_consumer():
     work_consumer.subscribe([TOPIC_IN])
     return work_consumer
 
-producer = Producer({'bootstrap.servers': KAFKA_BROKER})
+
+producer = Producer({"bootstrap.servers": KAFKA_BROKER})
 progress_publisher = make_progress_publisher(
     producer,
     TOPIC_STATUS,
@@ -172,6 +221,7 @@ mission_stats = {}
 
 
 cancel_manager = AttemptCancellationRegistry()
+
 
 def control_consumer_thread():
     run_control_consumer(
@@ -184,7 +234,10 @@ def control_consumer_thread():
         logger=logger,
     )
 
-def transform_detection_coordinates(ortho_transform, transformer, gx: float, gy: float) -> tuple[float | None, float | None]:
+
+def transform_detection_coordinates(
+    ortho_transform, transformer, gx: float, gy: float
+) -> tuple[float | None, float | None]:
     if not ortho_transform or transformer is None:
         return None, None
     c, a, b, f, d, e = ortho_transform
@@ -195,10 +248,8 @@ def transform_detection_coordinates(ortho_transform, transformer, gx: float, gy:
 
 
 def translate_segment(segment: list[list[float]], offset_x: float, offset_y: float) -> list[list[float]]:
-    return [
-        [float(point[0] + offset_x), float(point[1] + offset_y)]
-        for point in segment
-    ]
+    return [[float(point[0] + offset_x), float(point[1] + offset_y)] for point in segment]
+
 
 def report_progress(vol_id: str, step: str, progress: int, status: str = "processing", log: str | None = None) -> None:
     if log:
@@ -211,6 +262,7 @@ def report_progress(vol_id: str, step: str, progress: int, status: str = "proces
         log=log,
     )
 
+
 def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
     backend = normalize_backend_name(tile_info.get("ai_backend"))
     requested_conf = float(tile_info.get("ai_confidence", 0.3))
@@ -219,21 +271,22 @@ def run_detection(tile_path: str, tile_info: dict) -> tuple[list[dict], dict]:
         return run_sam3_detection(tile_path, resolve_sam3_prompt(tile_info), requested_conf)
     return run_yolo_detection(tile_path, requested_classes, requested_conf, tile_info.get("ai_model_variant"))
 
+
 def process_tile(tile_info):
-    vol_id = tile_info['vol_id']
+    vol_id = tile_info["vol_id"]
     analysis_run_id = tile_info.get("analysis_run_id")
     analysis_attempt = int(tile_info.get("attempt", 0))
     stats_key = (analysis_run_id or vol_id, analysis_attempt)
-    total_tiles = int(tile_info.get('total_tiles', 0) or 0)
+    total_tiles = int(tile_info.get("total_tiles", 0) or 0)
 
-    tile_s3_key = tile_info.get('tile_s3_key') or tile_info.get('tile_path', '')
+    tile_s3_key = tile_info.get("tile_s3_key") or tile_info.get("tile_path", "")
     local_tile_dir = f"/tmp/ia_tiles/{vol_id}/{analysis_run_id or 'pipeline'}"
     os.makedirs(local_tile_dir, exist_ok=True)
-    tile_filename = tile_s3_key.split('/')[-1] if '/' in tile_s3_key else tile_s3_key
+    tile_filename = tile_s3_key.split("/")[-1] if "/" in tile_s3_key else tile_s3_key
     tile_path = os.path.join(local_tile_dir, tile_filename)
 
-    offset_x = tile_info['offset_x']
-    offset_y = tile_info['offset_y']
+    offset_x = tile_info["offset_x"]
+    offset_y = tile_info["offset_y"]
 
     if cancel_manager.is_cancelled(
         vol_id,
@@ -245,13 +298,15 @@ def process_tile(tile_info):
         mission_stats.pop(stats_key, None)
         return
 
-    ortho_transform = tile_info.get('ortho_transform')
-    ortho_crs = tile_info.get('ortho_crs')
+    ortho_transform = tile_info.get("ortho_transform")
+    ortho_crs = tile_info.get("ortho_crs")
 
     try:
         storage.download_file(tile_s3_key, tile_path)
     except Exception as dl_err:
-        report_progress(vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}")
+        report_progress(
+            vol_id, "ERROR", 0, status="error", log=f"Failed to download tile from S3: {tile_s3_key} — {dl_err}"
+        )
         raise
 
     stats = mission_stats.setdefault(
@@ -281,28 +336,31 @@ def process_tile(tile_info):
             try:
                 geo_lon, geo_lat = transform_detection_coordinates(ortho_transform, proj_transformer, gx, gy)
             except Exception as error:
-                logger.debug("Failed to geolocate detection for %s tile %s: %s", vol_id, tile_info['tile_index'], error)
+                logger.debug("Failed to geolocate detection for %s tile %s: %s", vol_id, tile_info["tile_index"], error)
 
         global_segment = translate_segment(detection["polygon"], offset_x, offset_y)
-        detections.append({
-            "vol_id": vol_id,
-            "global_pixel_x": float(gx),
-            "global_pixel_y": float(gy),
-            "geo_lon": geo_lon,
-            "geo_lat": geo_lat,
-            "confidence": round(float(detection["confidence"]), 2),
-            "class_id": int(detection["class_id"]),
-            "class_name": detection["class_name"],
-            "segment": global_segment,
-        })
+        detections.append(
+            {
+                "vol_id": vol_id,
+                "global_pixel_x": float(gx),
+                "global_pixel_y": float(gy),
+                "geo_lon": geo_lon,
+                "geo_lat": geo_lat,
+                "confidence": round(float(detection["confidence"]), 2),
+                "class_id": int(detection["class_id"]),
+                "class_name": detection["class_name"],
+                "segment": global_segment,
+            }
+        )
 
     tile_result = make_event(
         "tile_detection",
         {
             "vol_id": vol_id,
-            "tile_index": tile_info['tile_index'],
+            "tile_index": tile_info["tile_index"],
             "detections": detections,
             "analysis_run_id": analysis_run_id,
+            "model_manifest": attempt["model_manifest"],
         },
         event_id=deterministic_event_id(
             "tile_detection",
@@ -322,9 +380,19 @@ def process_tile(tile_info):
     total = stats.get("total_tiles") or stats["processed"]
     progress = min(99, int((stats["processed"] / max(total, 1)) * 100))
     if detections:
-        report_progress(vol_id, "DETECTING", progress, log=f"Tile {tile_info['tile_index']} produced {len(detections)} detections via {attempt['label']}")
+        report_progress(
+            vol_id,
+            "DETECTING",
+            progress,
+            log=f"Tile {tile_info['tile_index']} produced {len(detections)} detections via {attempt['label']}",
+        )
     elif stats["processed"] == 1 or stats["processed"] % 10 == 0:
-        report_progress(vol_id, "DETECTING", progress, log=f"Processed {stats['processed']}/{total} tiles, detections={stats['detections']} ({attempt['label']})")
+        report_progress(
+            vol_id,
+            "DETECTING",
+            progress,
+            log=f"Processed {stats['processed']}/{total} tiles, detections={stats['detections']} ({attempt['label']})",
+        )
 
     if total_tiles and stats["processed"] >= total_tiles:
         summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
@@ -334,6 +402,7 @@ def process_tile(tile_info):
         if os.path.isdir(local_tile_dir):
             shutil.rmtree(local_tile_dir, ignore_errors=True)
         import gc
+
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

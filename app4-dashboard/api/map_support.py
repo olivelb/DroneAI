@@ -104,6 +104,7 @@ def serialize_run(run: AIAnalysisRun) -> dict[str, Any]:
         "retry_count": run.retry_count,
         "error_message": run.error_message,
         "result_s3_key": run.result_s3_key,
+        "model_manifest": run.model_manifest,
         "created_at": run.created_at.isoformat() if run.created_at else None,
         "updated_at": run.updated_at.isoformat() if run.updated_at else None,
         "completed_at": run.completed_at.isoformat() if run.completed_at else None,
@@ -134,24 +135,14 @@ def stored_map_feature_geojson(
             "confidence": feature.confidence,
             "version": feature.version,
             "created_by": feature.created_by,
-            "updated_at": (
-                feature.updated_at.isoformat() if feature.updated_at else None
-            ),
+            "updated_at": (feature.updated_at.isoformat() if feature.updated_at else None),
         },
     }
 
 
 def map_feature_geojson(session, feature: MapFeature) -> dict[str, Any]:
-    geometry_json = session.scalar(
-        select(func.ST_AsGeoJSON(MapFeature.geometry)).where(
-            MapFeature.id == feature.id
-        )
-    )
-    run_id = (
-        feature.analysis_run.run_id
-        if feature.analysis_run is not None
-        else None
-    )
+    geometry_json = session.scalar(select(func.ST_AsGeoJSON(MapFeature.geometry)).where(MapFeature.id == feature.id))
+    run_id = feature.analysis_run.run_id if feature.analysis_run is not None else None
     return stored_map_feature_geojson(feature, geometry_json, run_id)
 
 

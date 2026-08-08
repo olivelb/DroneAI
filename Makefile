@@ -1,4 +1,5 @@
 PYTHON ?= python3
+NPM ?= corepack npm
 CI_PYTHON_PATHS := $(wildcard scripts/ci/*.py)
 PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
@@ -59,14 +60,14 @@ coverage:
 
 frontend-check:
 	cd app4-dashboard/frontend && \
-	npm ci && \
-	npm audit --omit=dev --audit-level=high && \
-	npm run duplication && \
-	npm run test && \
-	npm run lint && \
-	npm run build
+	$(NPM) ci && \
+	$(NPM) audit --omit=dev --audit-level=high && \
+	$(NPM) run duplication && \
+	$(NPM) run test && \
+	$(NPM) run lint && \
+	$(NPM) run build
 
 frontend-e2e:
-	cd app4-dashboard/frontend && npm run build && npm run test:e2e
+	cd app4-dashboard/frontend && $(NPM) run build && $(NPM) run test:e2e
 
 check: static audit coverage

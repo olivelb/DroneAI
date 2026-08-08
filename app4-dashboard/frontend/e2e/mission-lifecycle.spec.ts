@@ -249,6 +249,7 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
   });
 
   await page.goto("/");
+  await expect(page.getByText("success", { exact: true }).first()).toBeVisible();
   await page.getByRole("button", { name: /5\. Explorer/ }).click();
   await page.getByRole("button", { name: "Export" }).click();
   await page.evaluate(() => {

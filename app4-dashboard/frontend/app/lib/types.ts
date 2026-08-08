@@ -144,6 +144,19 @@ export type AnalysisRun = {
   retry_count: number;
   error_message?: string | null;
   result_s3_key?: string | null;
+  model_manifest?: {
+    schema: string;
+    backend: AIBackend;
+    identity: {
+      repository: string;
+      revision: string;
+      artifact: string;
+      artifact_sha256: string;
+    };
+    libraries: Record<string, string>;
+    runtime: Record<string, unknown>;
+    inference: Record<string, unknown>;
+  } | null;
   created_at?: string | null;
   updated_at?: string | null;
 };

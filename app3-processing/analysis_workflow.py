@@ -26,6 +26,7 @@ from shared.database import (
 )
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.geospatial_assets import detections_feature_collection
+from shared.model_provenance import validate_model_manifest
 
 
 class AnalysisWorkflow:
@@ -131,6 +132,7 @@ class AnalysisWorkflow:
                 "run_id": run.run_id,
                 "name": run.name,
                 "color": run.color,
+                "model_manifest": run.model_manifest,
             }
         )
         return collection
@@ -173,6 +175,7 @@ class AnalysisWorkflow:
             "color": run.color,
             "tags": run.tags or [],
             "tiling_metadata": run.tiling_metadata or {},
+            "model_manifest": run.model_manifest,
         }
 
     @staticmethod
@@ -187,6 +190,7 @@ class AnalysisWorkflow:
                 "color": descriptor["color"],
                 "tags": descriptor["tags"],
                 "tiling_metadata": descriptor["tiling_metadata"],
+                "model_manifest": descriptor["model_manifest"],
             },
         )()
 
@@ -498,6 +502,13 @@ class AnalysisWorkflow:
             event_attempt = int(data.get("attempt", 0))
             if run.status == "cancelled" or int(run.retry_count or 0) != event_attempt:
                 return
+            manifest = validate_model_manifest(data.get("model_manifest"))
+            if manifest["backend"] != run.backend:
+                raise RuntimeError("AI result model provenance backend does not match the analysis run")
+            if run.model_manifest is None:
+                run.model_manifest = manifest
+            elif run.model_manifest != manifest:
+                raise RuntimeError("AI analysis received results from different model provenance")
             resume_finalization = self._resume_finalization_if_ready(session, run, receipt)
             if receipt.status == "completed" and not resume_finalization:
                 return

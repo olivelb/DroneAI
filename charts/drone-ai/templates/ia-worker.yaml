@@ -135,6 +135,10 @@ spec:
           value: "/cache/modelzoo"
         - name: AERIAL_BAKED_MODEL_DIR
           value: "/opt/modelzoo"
+        - name: SAM3_MODEL_ID
+          value: {{ .Values.iaWorker.sam3.repository | quote }}
+        - name: SAM3_MODEL_REVISION
+          value: {{ .Values.iaWorker.sam3.revision | quote }}
         volumeMounts:
         - name: model-cache
           mountPath: /cache/huggingface
