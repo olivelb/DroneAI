@@ -3,17 +3,21 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 APP2_ROOT = Path(__file__).resolve().parents[1] / "app2-ia"
 sys.path.insert(0, str(APP2_ROOT))
 
 import detection_core  # noqa: E402
 from detection_core import (  # noqa: E402
+    REQUESTED_CLASS_MAP,
     extract_obb_detections,
     normalize_yolo_model_variant,
     resolve_requested_labels,
     resolve_yolo_model_file,
 )
+
+from shared.validation import SUPPORTED_AERIAL_CLASSES
 
 
 def test_model_variant_aliases_are_normalized():
@@ -70,6 +74,26 @@ def test_car_request_maps_to_aerial_vehicle_labels():
         ["car"],
         ["small-vehicle", "large_vehicle"],
     ) == ["small-vehicle", "large_vehicle"]
+
+
+def test_api_and_worker_share_the_same_supported_class_contract():
+    assert set(REQUESTED_CLASS_MAP) == SUPPORTED_AERIAL_CLASSES
+
+
+def test_unsupported_request_is_rejected_instead_of_using_vehicle_labels():
+    with pytest.raises(ValueError, match="unsupported YOLO aerial classes: person"):
+        resolve_requested_labels(
+            ["person"],
+            ["small vehicle", "large vehicle"],
+        )
+
+
+def test_missing_requested_model_label_is_rejected():
+    with pytest.raises(RuntimeError, match="does not expose labels"):
+        resolve_requested_labels(
+            ["boat"],
+            ["small vehicle", "large vehicle"],
+        )
 
 
 def test_obb_extraction_preserves_polygon_and_filters_confidence():

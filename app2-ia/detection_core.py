@@ -15,13 +15,13 @@ from typing import Any
 
 import numpy as np
 
+from shared.validation import validate_aerial_class_names
+
 
 logger = logging.getLogger("app2-ia.detection-core")
 
 YOLO_MODEL_ASSETS_DIR = Path(os.getenv("AERIAL_MODEL_DIR", "/opt/modelzoo"))
-YOLO_BAKED_MODEL_DIR = Path(
-    os.getenv("AERIAL_BAKED_MODEL_DIR", "/opt/modelzoo")
-)
+YOLO_BAKED_MODEL_DIR = Path(os.getenv("AERIAL_BAKED_MODEL_DIR", "/opt/modelzoo"))
 YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
 YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
 
@@ -63,18 +63,12 @@ REQUESTED_CLASS_MAP = {
     "boat": {"ship"},
 }
 
-DEFAULT_AERIAL_CLASSES = {"small vehicle", "large vehicle"}
-
 _yolo_models: dict[str, tuple[Any, list[str]]] = {}
 
 
 def normalize_yolo_model_variant(value: str | None) -> str:
     normalized = (
-        str(value or os.getenv("AERIAL_MODEL_VARIANT", "best"))
-        .strip()
-        .lower()
-        .replace("_", "")
-        .replace("-", "")
+        str(value or os.getenv("AERIAL_MODEL_VARIANT", "best")).strip().lower().replace("_", "").replace("-", "")
     )
     if normalized in YOLO_MODEL_VARIANTS:
         return normalized
@@ -95,11 +89,7 @@ def resolve_yolo_model_file(
     else:
         cache_path = YOLO_MODEL_ASSETS_DIR / checkpoint_name
         baked_path = YOLO_BAKED_MODEL_DIR / checkpoint_name
-        model_path = (
-            baked_path
-            if baked_path.exists() and not cache_path.exists()
-            else cache_path
-        )
+        model_path = baked_path if baked_path.exists() and not cache_path.exists() else cache_path
     return variant_name, model_path, checkpoint_name
 
 
@@ -133,9 +123,7 @@ def load_yolo_model(
     import torch
     from ultralytics import YOLO
 
-    selected_variant, model_file_path, model_file_name = resolve_yolo_model_file(
-        requested_variant
-    )
+    selected_variant, model_file_path, model_file_name = resolve_yolo_model_file(requested_variant)
     cache_key = str(model_file_path.resolve())
     cached_model = _yolo_models.get(cache_key)
     device: str | int = 0 if torch.cuda.is_available() else "cpu"
@@ -182,39 +170,19 @@ def resolve_requested_labels(
     available_labels: list[str],
 ) -> list[str]:
     def normalize_label(label: str) -> str:
-        return " ".join(
-            str(label).strip().lower().replace("-", " ").replace("_", " ").split()
-        )
+        return " ".join(str(label).strip().lower().replace("-", " ").replace("_", " ").split())
 
+    validated_classes = validate_aerial_class_names(requested_classes or ["car"])
     resolved: set[str] = set()
-    unsupported = []
-    for requested in requested_classes or []:
-        mapped = REQUESTED_CLASS_MAP.get(str(requested).strip().lower())
-        if mapped:
-            resolved.update(mapped)
-        else:
-            unsupported.append(requested)
+    for requested in validated_classes:
+        resolved.update(REQUESTED_CLASS_MAP[requested.strip().lower()])
 
-    if unsupported:
-        logger.info(
-            "Requested classes %s are unsupported by the aerial detector; "
-            "using aerial vehicle labels instead.",
-            unsupported,
+    filtered = [label for label in available_labels if normalize_label(label) in resolved]
+    if not filtered:
+        raise RuntimeError(
+            f"The selected YOLO model does not expose labels for the requested classes: {', '.join(validated_classes)}"
         )
-
-    if not resolved:
-        resolved = set(DEFAULT_AERIAL_CLASSES)
-
-    filtered = [
-        label
-        for label in available_labels
-        if normalize_label(label) in resolved
-    ]
-    return filtered or [
-        label
-        for label in available_labels
-        if normalize_label(label) in DEFAULT_AERIAL_CLASSES
-    ]
+    return filtered
 
 
 def extract_obb_detections(
@@ -243,10 +211,7 @@ def extract_obb_detections(
         class_name = names.get(class_id, str(class_id))
         if class_name not in requested or float(score) < min_confidence:
             continue
-        polygon_points = [
-            [float(x), float(y)]
-            for x, y in np.asarray(polygon).reshape(-1, 2)
-        ]
+        polygon_points = [[float(x), float(y)] for x, y in np.asarray(polygon).reshape(-1, 2)]
         center_x, center_y = polygon_center(polygon_points)
         detections.append(
             {
@@ -268,9 +233,7 @@ def run_yolo_detection(
     requested_conf: float,
     requested_model_variant: str | None = None,
 ) -> tuple[list[dict], dict]:
-    model, available_labels, selected_variant, device = load_yolo_model(
-        requested_model_variant
-    )
+    model, available_labels, selected_variant, device = load_yolo_model(requested_model_variant)
     requested_labels = resolve_requested_labels(
         requested_classes,
         available_labels,

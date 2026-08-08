@@ -550,6 +550,9 @@ Notes:
 - `work_drive` must be one of the drives advertised by
   `GET /mission/parameters`.
 - `pipeline` selects the parameter profile.
+- YOLO accepts only `airplane`, `bicycle`, `boat`, `bus`, `car`, `motorcycle`,
+  and `truck`; unsupported classes are rejected instead of silently selecting
+  vehicle labels. SAM3 prompts remain free-form.
 - The common schema-version/event-ID envelope surrounds these domain fields.
 
 ### `pipeline-control`
