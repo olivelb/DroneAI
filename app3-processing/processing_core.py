@@ -5,13 +5,30 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any, Protocol, cast
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 import rasterio
 from affine import Affine
 from pyproj import Transformer
 from rasterio.windows import Window
+
+
+DetectionRecord = dict[str, Any]
+JsonObject = dict[str, Any]
+
+
+class RasterTileReader(Protocol):
+    count: int
+
+    def read(
+        self,
+        indexes: list[int],
+        *,
+        window: Window,
+    ) -> NDArray[Any]: ...
 
 
 def build_tile_starts(full_size: int, tile_size: int, overlap: int) -> list[int]:
@@ -35,7 +52,7 @@ def build_tile_starts(full_size: int, tile_size: int, overlap: int) -> list[int]
     return starts
 
 
-def _read_rgb_tile(src, window: Window) -> np.ndarray:
+def _read_rgb_tile(src: RasterTileReader, window: Window) -> NDArray[Any]:
     indexes = list(range(1, min(src.count, 3) + 1))
     tile_data = src.read(indexes, window=window)
     if tile_data.shape[0] == 1:
@@ -45,10 +62,10 @@ def _read_rgb_tile(src, window: Window) -> np.ndarray:
     tile_rgb = tile_data[:3].transpose(1, 2, 0)
     if tile_rgb.dtype != np.uint8:
         tile_rgb = np.clip(tile_rgb, 0, 255).astype(np.uint8)
-    return tile_rgb
+    return cast(NDArray[Any], tile_rgb)
 
 
-def _write_jpeg_tile(tile_path: Path, tile_rgb: np.ndarray) -> None:
+def _write_jpeg_tile(tile_path: Path, tile_rgb: NDArray[Any]) -> None:
     written = cv2.imwrite(
         str(tile_path),
         cv2.cvtColor(tile_rgb, cv2.COLOR_RGB2BGR),
@@ -64,13 +81,13 @@ def write_orthomosaic_tiles(
     tile_size: int,
     overlap: int,
     max_tiles: int | None = None,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[JsonObject], JsonObject]:
     """Write overlapping RGB JPEG tiles and return their pixel offsets."""
 
     if max_tiles is not None and max_tiles <= 0:
         raise ValueError("max_tiles must be positive when provided")
     tiles_dir.mkdir(parents=True, exist_ok=True)
-    records: list[dict] = []
+    records: list[JsonObject] = []
 
     with rasterio.open(ortho_path) as src:
         if src.count < 1:
@@ -195,8 +212,8 @@ def bbox_iou(
 
 
 def are_duplicate_detections(
-    candidate: dict,
-    kept: dict,
+    candidate: DetectionRecord,
+    kept: DetectionRecord,
     center_threshold: float,
     iou_threshold: float,
 ) -> bool:
@@ -229,7 +246,7 @@ class _DetectionGrid:
 
     def __init__(self, cell_size: float):
         self._cell_size = max(float(cell_size), 1.0)
-        self._entries: list[dict] = []
+        self._entries: list[DetectionRecord] = []
         self._cells: dict[tuple[str, int, int], list[int]] = {}
         self._global_indices: list[int] = []
 
@@ -250,10 +267,10 @@ class _DetectionGrid:
         return min_cell_x, min_cell_y, max_cell_x, max_cell_y
 
     @staticmethod
-    def _class_key(detection: dict) -> str:
+    def _class_key(detection: DetectionRecord) -> str:
         return str(detection.get("class_name"))
 
-    def add(self, detection: dict) -> None:
+    def add(self, detection: DetectionRecord) -> None:
         index = len(self._entries)
         self._entries.append(detection)
         bounds = self._cell_bounds(detection["_bbox"])
@@ -269,7 +286,7 @@ class _DetectionGrid:
                     [],
                 ).append(index)
 
-    def candidates(self, detection: dict) -> list[dict]:
+    def candidates(self, detection: DetectionRecord) -> list[DetectionRecord]:
         bounds = self._cell_bounds(detection["_bbox"])
         if bounds is None:
             return self._entries
@@ -283,11 +300,11 @@ class _DetectionGrid:
 
 
 def dedupe_mission_detections(
-    detections: Iterable[dict],
+    detections: Iterable[DetectionRecord],
     center_threshold: float = 40.0,
     iou_threshold: float = 0.05,
-) -> list[dict]:
-    prepared = []
+) -> list[DetectionRecord]:
+    prepared: list[DetectionRecord] = []
     for detection in detections:
         segment = detection.get("segment") or []
         if len(segment) < 3:
@@ -299,7 +316,7 @@ def dedupe_mission_detections(
         enriched["_segment"] = segment
         prepared.append(enriched)
 
-    kept = []
+    kept: list[DetectionRecord] = []
     spatial_index = _DetectionGrid(center_threshold)
     for detection in sorted(
         prepared,
@@ -325,7 +342,7 @@ def dedupe_mission_detections(
         kept.append(detection)
         spatial_index.add(detection)
 
-    deduped = []
+    deduped: list[DetectionRecord] = []
     for detection in kept:
         cleaned = dict(detection)
         for private_key in ("_area", "_bbox", "_segment"):
@@ -344,10 +361,10 @@ def pixel_to_projected(
 
 
 def geolocate_detection(
-    detection: dict,
+    detection: DetectionRecord,
     transform: Affine,
     transformer: Transformer,
-) -> dict:
+) -> DetectionRecord:
     result = dict(detection)
     projected_x, projected_y = pixel_to_projected(
         transform,
@@ -365,17 +382,17 @@ def geolocate_detection(
 
 
 def detections_to_geojson(
-    detections: Iterable[dict],
+    detections: Iterable[DetectionRecord],
     transform: Affine,
     crs: str,
-) -> dict:
+) -> JsonObject:
     transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-    features = []
+    features: list[JsonObject] = []
     for index, detection in enumerate(detections):
         segment = detection.get("segment") or []
         if len(segment) < 3:
             continue
-        geographic_polygon = []
+        geographic_polygon: list[list[float]] = []
         for pixel_x, pixel_y in segment:
             projected_x, projected_y = pixel_to_projected(
                 transform,
@@ -409,7 +426,7 @@ def detections_to_geojson(
 
 
 def _draw_label(
-    image: np.ndarray,
+    image: NDArray[Any],
     anchor_x: int,
     anchor_y: int,
     lines: list[str],
@@ -454,8 +471,8 @@ def _draw_label(
 def render_annotated_orthomosaic(
     source_path: Path,
     output_path: Path,
-    detections: Iterable[dict],
-) -> dict:
+    detections: Iterable[DetectionRecord],
+) -> JsonObject:
     detections = list(detections)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(source_path) as src:

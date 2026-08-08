@@ -7,11 +7,13 @@ Kafka worker only dispatches events and injects its producer/topics.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import socket
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from geoalchemy2.elements import WKTElement
@@ -29,17 +31,30 @@ from shared.geospatial_assets import detections_feature_collection
 from shared.model_provenance import validate_model_manifest
 
 
+DetectionRecord = dict[str, Any]
+JsonObject = dict[str, Any]
+RunDescriptor = dict[str, Any]
+
+
+class KafkaProducer(Protocol):
+    """Subset of the Kafka producer used by analysis recovery."""
+
+    def produce(self, topic: str, *, key: str, value: str) -> None: ...
+
+    def flush(self) -> int: ...
+
+
 class AnalysisWorkflow:
     """Idempotent campaign service used by the processing worker."""
 
     def __init__(
         self,
         *,
-        producer,
+        producer: KafkaProducer,
         orthomosaic_topic: str,
         tile_topic: str,
-        dedupe: Callable[[list[dict]], list[dict]],
-        logger,
+        dedupe: Callable[[list[DetectionRecord]], list[DetectionRecord]],
+        logger: logging.Logger,
         maximum_tile_attempts: int | None = None,
         finalization_lease_seconds: int | None = None,
         finalization_owner: str | None = None,
@@ -47,7 +62,7 @@ class AnalysisWorkflow:
         maximum_aggregate_result_bytes: int | None = None,
         maximum_raw_detections: int | None = None,
         maximum_final_detections: int | None = None,
-    ):
+    ) -> None:
         self.producer = producer
         self.orthomosaic_topic = orthomosaic_topic
         self.tile_topic = tile_topic
@@ -102,19 +117,28 @@ class AnalysisWorkflow:
         )
 
     @staticmethod
-    def _styled_collection(detections, *, vol_id, run, tile_index=None):
-        records = []
+    def _styled_collection(
+        detections: Iterable[DetectionRecord],
+        *,
+        vol_id: str,
+        run: Any,
+        tile_index: int | None = None,
+    ) -> JsonObject:
+        records: list[DetectionRecord] = []
         for detection in detections:
             record = dict(detection)
             if tile_index is not None:
                 record["tile_index"] = tile_index
             records.append(record)
         metadata = run.tiling_metadata or {}
-        collection = detections_feature_collection(
-            records,
-            geotransform=metadata.get("transform"),
-            source_crs=metadata.get("crs"),
-            vol_id=vol_id,
+        collection = cast(
+            JsonObject,
+            detections_feature_collection(
+                records,
+                geotransform=metadata.get("transform"),
+                source_crs=metadata.get("crs"),
+                vol_id=vol_id,
+            ),
         )
         for feature in collection["features"]:
             feature["properties"].update(
@@ -138,7 +162,11 @@ class AnalysisWorkflow:
         return collection
 
     @staticmethod
-    def _write_verified_json(payload, key, local_path):
+    def _write_verified_json(
+        payload: JsonObject,
+        key: str,
+        local_path: str | Path,
+    ) -> None:
         path = Path(local_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
@@ -150,22 +178,24 @@ class AnalysisWorkflow:
         storage.upload_verified_file(path, key)
 
     @staticmethod
-    def _feature_wkt(geometry):
+    def _feature_wkt(geometry: JsonObject) -> WKTElement:
         geometry_type = geometry.get("type")
         coordinates = geometry.get("coordinates")
         if geometry_type == "Point":
+            point = cast(list[float], coordinates)
             return WKTElement(
-                f"POINT({coordinates[0]} {coordinates[1]})",
+                f"POINT({point[0]} {point[1]})",
                 srid=4326,
             )
         if geometry_type == "Polygon":
-            rings = ["(" + ", ".join(f"{point[0]} {point[1]}" for point in ring) + ")" for ring in coordinates]
+            polygon = cast(list[list[list[float]]], coordinates)
+            rings = ["(" + ", ".join(f"{point[0]} {point[1]}" for point in ring) + ")" for ring in polygon]
             return WKTElement(f"POLYGON({', '.join(rings)})", srid=4326)
         raise ValueError(f"Unsupported AI geometry: {geometry_type}")
 
     @staticmethod
-    def _run_descriptor(run):
-        return {
+    def _run_descriptor(run: Any) -> RunDescriptor:
+        descriptor: RunDescriptor = {
             "id": run.id,
             "run_id": run.run_id,
             "vol_id": run.vol_id,
@@ -177,9 +207,10 @@ class AnalysisWorkflow:
             "tiling_metadata": run.tiling_metadata or {},
             "model_manifest": run.model_manifest,
         }
+        return descriptor
 
     @staticmethod
-    def _descriptor_proxy(descriptor):
+    def _descriptor_proxy(descriptor: RunDescriptor) -> Any:
         return type(
             "AnalysisDescriptor",
             (),
@@ -194,7 +225,11 @@ class AnalysisWorkflow:
             },
         )()
 
-    def _read_tile_payload(self, tile_key, total_payload_bytes):
+    def _read_tile_payload(
+        self,
+        tile_key: str,
+        total_payload_bytes: int,
+    ) -> tuple[bytes, int]:
         stream, content_length, _ = storage.get_object_stream(tile_key)
         content_length = int(content_length or 0)
         if content_length > self.maximum_tile_result_bytes:
@@ -211,10 +246,13 @@ class AnalysisWorkflow:
             stream.close()
         if len(raw_payload) > self.maximum_tile_result_bytes:
             raise RuntimeError(f"AI tile result exceeds the {self.maximum_tile_result_bytes}-byte limit: {tile_key}")
-        return raw_payload, content_length
+        return cast(bytes, raw_payload), content_length
 
-    def _load_tile_payloads(self, tile_keys):
-        detections = []
+    def _load_tile_payloads(
+        self,
+        tile_keys: Iterable[str | None],
+    ) -> list[DetectionRecord]:
+        detections: list[DetectionRecord] = []
         total_payload_bytes = 0
         for tile_key in tile_keys:
             if not tile_key:
@@ -240,10 +278,15 @@ class AnalysisWorkflow:
                 raise RuntimeError(
                     f"AI analysis exceeds the raw detection safety limit ({self.maximum_raw_detections})"
                 )
-            detections.extend(tile_detections)
+            detections.extend(cast(list[DetectionRecord], tile_detections))
         return detections
 
-    def _replace_persisted_features(self, session, run, collection):
+    def _replace_persisted_features(
+        self,
+        session: Any,
+        run: Any,
+        collection: JsonObject,
+    ) -> None:
         session.query(MapFeature).filter(MapFeature.analysis_run_id == run.id).delete(synchronize_session=False)
         for feature in collection["features"]:
             properties = feature.get("properties") or {}
@@ -270,15 +313,18 @@ class AnalysisWorkflow:
             )
 
     @staticmethod
-    def _lease_is_active(run, now):
-        lease_until = run.finalization_lease_until
+    def _lease_is_active(run: Any, now: datetime) -> bool:
+        lease_until: datetime | None = run.finalization_lease_until
         if lease_until is None:
             return False
         if lease_until.tzinfo is None:
             lease_until = lease_until.replace(tzinfo=UTC)
         return lease_until > now
 
-    def _claim_finalization(self, run_id):
+    def _claim_finalization(
+        self,
+        run_id: str,
+    ) -> tuple[RunDescriptor, list[str | None]] | None:
         now = datetime.now(UTC)
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().first()
@@ -304,7 +350,7 @@ class AnalysisWorkflow:
             tile_keys = [tile.result_s3_key for tile in tiles]
             return descriptor, tile_keys
 
-    def finalize(self, run_id):
+    def finalize(self, run_id: str) -> bool:
         claim = self._claim_finalization(run_id)
         if claim is None:
             return False
@@ -350,7 +396,12 @@ class AnalysisWorkflow:
         return True
 
     @staticmethod
-    def _get_tile_context(session, vol_id, run_id, tile_index):
+    def _get_tile_context(
+        session: Any,
+        vol_id: str,
+        run_id: str,
+        tile_index: int,
+    ) -> tuple[Any, Any]:
         run = (
             session.query(AIAnalysisRun)
             .filter(
@@ -376,7 +427,11 @@ class AnalysisWorkflow:
         return run, receipt
 
     @staticmethod
-    def _resume_finalization_if_ready(session, run, receipt):
+    def _resume_finalization_if_ready(
+        session: Any,
+        run: Any,
+        receipt: Any,
+    ) -> bool:
         if receipt.status != "completed":
             return False
         completed = (
@@ -402,7 +457,11 @@ class AnalysisWorkflow:
         run.heartbeat_at = datetime.now(UTC)
         return True
 
-    def _stage_tile_result(self, data, run):
+    def _stage_tile_result(
+        self,
+        data: JsonObject,
+        run: Any,
+    ) -> tuple[str, int]:
         vol_id = data["vol_id"]
         run_id = data["analysis_run_id"]
         tile_index = int(data["tile_index"])
@@ -424,12 +483,12 @@ class AnalysisWorkflow:
 
     @staticmethod
     def _mark_tile_complete(
-        run_id,
-        tile_index,
-        result_key,
-        count,
-        expected_attempt,
-    ):
+        run_id: str,
+        tile_index: int,
+        result_key: str,
+        count: int,
+        expected_attempt: int,
+    ) -> bool:
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().one()
             receipt = (
@@ -479,7 +538,7 @@ class AnalysisWorkflow:
                 return True
             return False
 
-    def _mark_finalization_failed(self, run_id, error):
+    def _mark_finalization_failed(self, run_id: str, error: Exception) -> None:
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().first()
             if run is not None and run.finalization_owner in {
@@ -493,9 +552,9 @@ class AnalysisWorkflow:
                 run.finalization_owner = None
                 run.finalization_lease_until = None
 
-    def process_detection(self, data):
-        vol_id = data["vol_id"]
-        run_id = data["analysis_run_id"]
+    def process_detection(self, data: JsonObject) -> None:
+        vol_id = cast(str, data["vol_id"])
+        run_id = cast(str, data["analysis_run_id"])
         tile_index = int(data["tile_index"])
         with get_session() as session:
             run, receipt = self._get_tile_context(session, vol_id, run_id, tile_index)
@@ -537,67 +596,75 @@ class AnalysisWorkflow:
             raise
 
     @staticmethod
-    def _orthomosaic_recovery_event(run):
-        return make_event(
-            "orthomosaic",
-            {
-                "vol_id": run.vol_id,
-                "ortho_s3_key": run.ortho_s3_key,
-                "analysis_run_id": run.run_id,
-                "classes": run.classes or [],
-                "ai_confidence": run.confidence,
-                "ai_backend": run.backend,
-                "ai_model_variant": run.model_variant,
-                "sam_prompt": run.prompt,
-                "tile_size": run.tile_size,
-            },
-            event_id=deterministic_event_id(
+    def _orthomosaic_recovery_event(run: Any) -> JsonObject:
+        return cast(
+            JsonObject,
+            make_event(
                 "orthomosaic",
-                run.vol_id,
-                run.run_id,
-                run.retry_count,
+                {
+                    "vol_id": run.vol_id,
+                    "ortho_s3_key": run.ortho_s3_key,
+                    "analysis_run_id": run.run_id,
+                    "classes": run.classes or [],
+                    "ai_confidence": run.confidence,
+                    "ai_backend": run.backend,
+                    "ai_model_variant": run.model_variant,
+                    "sam_prompt": run.prompt,
+                    "tile_size": run.tile_size,
+                },
+                event_id=deterministic_event_id(
+                    "orthomosaic",
+                    run.vol_id,
+                    run.run_id,
+                    run.retry_count,
+                ),
+                correlation_id=run.run_id,
+                attempt=run.retry_count,
             ),
-            correlation_id=run.run_id,
-            attempt=run.retry_count,
         )
 
     @staticmethod
-    def _tile_recovery_event(run, tile):
+    def _tile_recovery_event(run: Any, tile: Any) -> JsonObject:
         metadata = run.tiling_metadata or {}
-        return make_event(
-            "image_tile",
-            {
-                "vol_id": run.vol_id,
-                "analysis_run_id": run.run_id,
-                "tile_index": tile.tile_index,
-                "tile_s3_key": tile.tile_s3_key,
-                "offset_x": tile.offset_x,
-                "offset_y": tile.offset_y,
-                "ai_backend": run.backend,
-                "ai_model_variant": run.model_variant,
-                "sam_prompt": run.prompt,
-                "classes": run.classes or [],
-                "ai_confidence": run.confidence,
-                "total_tiles": run.total_tiles,
-                "ortho_transform": metadata.get("transform"),
-                "ortho_crs": metadata.get("crs"),
-            },
-            event_id=deterministic_event_id(
+        return cast(
+            JsonObject,
+            make_event(
                 "image_tile",
-                run.vol_id,
-                run.run_id,
-                tile.tile_index,
-                run.retry_count,
+                {
+                    "vol_id": run.vol_id,
+                    "analysis_run_id": run.run_id,
+                    "tile_index": tile.tile_index,
+                    "tile_s3_key": tile.tile_s3_key,
+                    "offset_x": tile.offset_x,
+                    "offset_y": tile.offset_y,
+                    "ai_backend": run.backend,
+                    "ai_model_variant": run.model_variant,
+                    "sam_prompt": run.prompt,
+                    "classes": run.classes or [],
+                    "ai_confidence": run.confidence,
+                    "total_tiles": run.total_tiles,
+                    "ortho_transform": metadata.get("transform"),
+                    "ortho_crs": metadata.get("crs"),
+                },
+                event_id=deterministic_event_id(
+                    "image_tile",
+                    run.vol_id,
+                    run.run_id,
+                    tile.tile_index,
+                    run.retry_count,
+                ),
+                correlation_id=run.run_id,
+                attempt=run.retry_count,
             ),
-            correlation_id=run.run_id,
-            attempt=run.retry_count,
         )
 
-    def _plan_recovery(self):
+    def _plan_recovery(
+        self,
+    ) -> tuple[list[str], list[JsonObject], list[JsonObject]]:
         stale_before = datetime.now(UTC) - timedelta(minutes=10)
-        ready_run_ids = []
-        tile_events = []
-        ortho_events = []
+        ready_run_ids: list[str] = []
+        tile_events: list[JsonObject] = []
+        ortho_events: list[JsonObject] = []
         with get_session() as session:
             runs = (
                 session.query(AIAnalysisRun)
@@ -662,7 +729,7 @@ class AnalysisWorkflow:
                 run.heartbeat_at = datetime.now(UTC)
         return ready_run_ids, ortho_events, tile_events
 
-    def recover(self):
+    def recover(self) -> None:
         ready_run_ids, ortho_events, tile_events = self._plan_recovery()
         for event in ortho_events:
             self.producer.produce(

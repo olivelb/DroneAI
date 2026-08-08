@@ -369,9 +369,12 @@ live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
 orchestration modules. The reusable processing modules and
 `app2-ia/detection_core.py` also pass the modern Bugbear, simplification,
 upgrade, Ruff-specific and async rule set as a progressive quality ratchet.
-The detector core additionally passes strict mypy checks, so tensor-to-NumPy
-conversion, detection records and inference-attempt metadata remain typed at
-the reusable local/Kafka boundary.
+The detector core and the three reusable processing modules additionally pass
+strict mypy checks. Tensor-to-NumPy conversion, raster access, detection
+records, tiling plans, durable campaign state and recovery events therefore
+remain typed at the reusable local/Kafka boundary. Small protocols describe
+the Kafka, raster and callback integrations while ORM and validated JSON data
+stay isolated at explicit dynamic boundaries.
 Architecture tests cap the composition roots and
 dashboard containers so responsibilities cannot silently collapse back into
 monoliths.
