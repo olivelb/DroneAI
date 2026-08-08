@@ -177,3 +177,23 @@ def test_results_workspace_is_split_into_focused_components():
     assert _line_count(viewer) < 550
     assert all(_line_count(component) < 300 for component in components)
     assert all(Path(component).stem in workspace_source for component in components)
+
+
+def test_frontend_authentication_has_an_independent_provider_boundary():
+    auth = "app4-dashboard/frontend/app/lib/auth.tsx"
+    store = "app4-dashboard/frontend/app/lib/store.tsx"
+    page = "app4-dashboard/frontend/app/page.tsx"
+    auth_source = _source(auth)
+    store_source = _source(store)
+    page_source = _source(page)
+
+    assert _line_count(auth) < 130
+    assert _line_count(store) < 330
+    assert "createSession" in auth_source
+    assert "deleteSession" in auth_source
+    assert "fetchSession" in auth_source
+    assert "createSession" not in store_source
+    assert "deleteSession" not in store_source
+    assert "fetchSession" not in store_source
+    assert "const { authStatus } = useAuth()" in store_source
+    assert "<AuthProvider>" in page_source

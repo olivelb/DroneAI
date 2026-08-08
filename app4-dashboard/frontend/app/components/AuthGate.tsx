@@ -3,14 +3,14 @@
 import React, { useState } from "react";
 import { Boxes, KeyRound, LoaderCircle, ShieldCheck } from "lucide-react";
 import { getApiBaseUrl } from "../lib/api";
-import { useStore } from "../lib/store";
+import { useAuth } from "../lib/auth";
 
 export default function AuthGate({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const { authStatus, authPrincipal, authError, login } = useStore();
+  const { authStatus, authPrincipal, authError, login } = useAuth();
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
