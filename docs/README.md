@@ -13,6 +13,7 @@ implemented system as it exists now.
 | OVHcloud MKS realistic preproduction | [`OVHCLOUD_PREPROD.md`](OVHCLOUD_PREPROD.md) |
 | Local workflow | [`../LOCAL_PIPELINE.md`](../LOCAL_PIPELINE.md) |
 | Development, tests and dependency management | [`../DEVELOPMENT.md`](../DEVELOPMENT.md) |
+| Platform versioning and release procedure | [`RELEASES.md`](RELEASES.md) |
 | HD facade workflow | [`FACADE_ORTHOPHOTO.md`](FACADE_ORTHOPHOTO.md) |
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |

@@ -1,7 +1,8 @@
 # Development guide
 
-DroneAI is an exploratory pipeline. Its distributed path has at-least-once
-delivery primitives but is not an exactly-once or high-availability system.
+DroneAI is a preproduction geospatial engineering platform. Its distributed
+path has at-least-once delivery primitives but is not an exactly-once or
+high-availability system.
 The lightweight checks in this guide do not require Kafka, S3, Postgres,
 Kubernetes, or a CUDA GPU.
 
@@ -61,7 +62,7 @@ this aggregate check instead of every conditional matrix entry.
 
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
-50%. That floor is a ratchet, not a completeness claim: new or changed pure
+55%. That floor is a ratchet, not a completeness claim: new or changed pure
 logic is expected to receive focused unit tests even when subprocess, CUDA or
 external-service boundaries require integration tests.
 

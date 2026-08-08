@@ -212,9 +212,23 @@ Migration `0011` creates the shared buckets. The generic production overlay
 runs two API replicas with a zero-unavailable rolling update; the cost-focused
 OVH preproduction overlay continues to inherit one replica.
 
-## Deferred roadmap
+## Platform version and release contract
 
-The remaining implementation batches should remain independently reviewable:
+DroneAI now has a canonical root `VERSION` synchronized with Python metadata,
+the frontend package and lockfile, and Helm `version`/`appVersion`. Platform
+tags use `vMAJOR.MINOR.PATCH`; the independent native DroneGS lifecycle keeps
+its existing `dronegs-vMAJOR.MINOR.PATCH` namespace.
 
-1. gradual strict typing of the remaining CPU-visible `gaussian_ortho` boundaries;
-2. explicit platform versioning and release policy.
+The version contract is checked locally and in pull-request CI. A lightweight
+tag workflow rejects a platform tag that disagrees with the reviewed
+manifests, without rebuilding COLMAP/CUDA or running GPU qualification merely
+because a version tag was created. Production identity remains the exact Git
+commit and immutable OCI digest; the human-readable version does not weaken
+that supply-chain boundary. The release and rollback procedure is documented
+in `docs/RELEASES.md`.
+
+## Remaining release qualification
+
+The audit implementation roadmap is complete. A fresh Example Quarry GPU E2E
+from ingestion through AI remains deliberately outstanding release evidence;
+it is an explicit BIGZEN qualification task rather than a routine PR gate.

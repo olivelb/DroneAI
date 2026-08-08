@@ -1,0 +1,21 @@
+name: Platform release contract
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  version-contract:
+    name: Validate platform tag and manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate synchronized version and tag
+        run: python tools/check_platform_version.py --tag "$GITHUB_REF_NAME"
