@@ -12,6 +12,7 @@ import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
 import { PresetButton } from "./PresetButton";
 import StageHeader from "./StageHeader";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 
 const PARAMETER_GROUPS = [
@@ -216,8 +217,8 @@ export default function PhaseGaussian() {
     parameterValues,
     updateParameter,
     setParameterValues,
-    activeMission,
   } = useStore();
+  const { activeMission } = useMissionRuntime();
 
   const metadata = parameterSchema?.metadata ?? {};
   const updateDroneGSParameter = (key: string, value: string | boolean) => {

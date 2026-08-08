@@ -10,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { deleteMission } from "../lib/api";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 import { serviceOrderFor } from "../lib/types";
 import type { PodState, ServiceName, StatusPayload } from "../lib/types";
@@ -107,10 +108,9 @@ export default function StatusSidebar() {
     logs,
     setLogs,
     wsConnected,
-    pods,
-    podsError,
     refreshSummary,
-  } = useStore();
+  } = useMissionRuntime();
+  const { pods, podsError } = useStore();
   const logRef = useRef<HTMLDivElement>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);

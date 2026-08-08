@@ -20,7 +20,7 @@ import {
   searchMapFeatures,
   updateMapFeature,
 } from "../lib/api";
-import { useStore } from "../lib/store";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import type { AnalysisCreate, AnalysisRun } from "../lib/types";
 import type { MapTool } from "./GeospatialMap";
 import {
@@ -60,7 +60,7 @@ const isTypingTarget = (target: EventTarget | null) =>
     target.isContentEditable);
 
 export default function ResultsViewer() {
-  const { activeMission, missions } = useStore();
+  const { activeMission, missions } = useMissionRuntime();
   const sortedMissions = useMemo(
     () =>
       Object.values(missions).sort(

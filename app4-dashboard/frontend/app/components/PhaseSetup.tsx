@@ -9,6 +9,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi } from "../lib/api";
 import StageHeader from "./StageHeader";
@@ -16,10 +17,11 @@ import StageHeader from "./StageHeader";
 export default function PhaseSetup() {
   const {
     currentPath, items, selectedPath, browse, setSelectedPath,
-    volId, setVolId, missions, activeMissionId, setActiveMissionId,
+    volId, setVolId,
     uploadDatasetName, setUploadDatasetName, uploadFiles, setUploadFiles,
     uploadProgress, setUploadProgress, isUploading, setIsUploading,
   } = useStore();
+  const { missions, activeMissionId, setActiveMissionId } = useMissionRuntime();
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);

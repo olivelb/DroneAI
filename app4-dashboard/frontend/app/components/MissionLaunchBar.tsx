@@ -3,6 +3,7 @@
 import React from "react";
 import { CircleStop, Play, Radio, Route } from "lucide-react";
 import { postCancel, postMission } from "../lib/api";
+import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 
 export default function MissionLaunchBar() {
@@ -11,9 +12,6 @@ export default function MissionLaunchBar() {
     selectedPath,
     pipeline,
     parameterValues,
-    setLogs,
-    activeMission,
-    setActiveMissionId,
     aiConfidence,
     aiBackend,
     aiModelVariant,
@@ -22,6 +20,7 @@ export default function MissionLaunchBar() {
     tileSize,
     workDrive,
   } = useStore();
+  const { setLogs, activeMission, setActiveMissionId } = useMissionRuntime();
 
   const isRunning = activeMission?.overall_status === "processing";
   const canLaunch = Boolean(selectedPath && volId.trim()) && !isRunning;

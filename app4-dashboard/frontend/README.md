@@ -98,9 +98,11 @@ never compiled into the frontend, written to local/session storage, stored in
 the signed cookie or added to the WebSocket URL. Sign-out clears the cookie.
 
 Session lifecycle is isolated in `app/lib/auth.tsx` behind `AuthProvider` and
-`useAuth`. The mission store consumes only the resulting authentication status
-to start or stop protected polling and WebSocket work; it no longer owns API
-credentials, login errors or session renewal state.
+`useAuth`; it owns API credentials, login errors and session renewal state.
+`MissionRuntimeProvider` separately owns mission summaries, active selection,
+logs, polling and WebSocket reconnection. The remaining `StoreProvider` keeps
+local dataset, parameter, upload and pod state. Both runtime providers consume
+only the authentication status needed to start or stop protected work.
 
 See the repository-level [`README.md`](../../README.md) for the full stack and
 [`DEVELOPMENT.md`](../../DEVELOPMENT.md) for the supported Node/npm workflow.

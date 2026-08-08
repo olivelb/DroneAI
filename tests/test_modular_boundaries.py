@@ -188,7 +188,7 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     page_source = _source(page)
 
     assert _line_count(auth) < 130
-    assert _line_count(store) < 330
+    assert _line_count(store) < 240
     assert "createSession" in auth_source
     assert "deleteSession" in auth_source
     assert "fetchSession" in auth_source
@@ -197,3 +197,21 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     assert "fetchSession" not in store_source
     assert "const { authStatus } = useAuth()" in store_source
     assert "<AuthProvider>" in page_source
+
+
+def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
+    runtime = "app4-dashboard/frontend/app/lib/mission-runtime.tsx"
+    store = "app4-dashboard/frontend/app/lib/store.tsx"
+    page = "app4-dashboard/frontend/app/page.tsx"
+    runtime_source = _source(runtime)
+    store_source = _source(store)
+    page_source = _source(page)
+
+    assert _line_count(runtime) < 240
+    assert "fetchSummary" in runtime_source
+    assert "new WebSocket" in runtime_source
+    assert "autoSelectMission" in runtime_source
+    assert "fetchSummary" not in store_source
+    assert "new WebSocket" not in store_source
+    assert "MissionSummary" not in store_source
+    assert "<MissionRuntimeProvider>" in page_source
