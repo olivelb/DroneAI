@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
+
+
+class _CameraPose(Protocol):
+    R: np.ndarray
+    T: np.ndarray
 
 
 @dataclass(frozen=True)
@@ -18,7 +25,7 @@ class FacadeFrame:
     p90_view_incidence_deg: float
     orientation_source: str = "optimized-camera-optical-axes"
 
-    def as_dict(self) -> dict:
+    def as_dict(self) -> dict[str, object]:
         return {
             "origin_model_units": self.origin.tolist(),
             "world_to_facade": self.world_to_facade.tolist(),
@@ -40,7 +47,8 @@ def _normalize(vector: np.ndarray) -> np.ndarray:
     norm = float(np.linalg.norm(vector))
     if norm < 1e-12:
         raise ValueError("Cannot normalize a zero-length facade axis")
-    return vector / norm
+    normalized: np.ndarray = vector / norm
+    return normalized
 
 
 def _robust_sparse_plane_normal(
@@ -51,7 +59,8 @@ def _robust_sparse_plane_normal(
 
     working = sample
     center = np.median(working, axis=0)
-    eigenvalues = np.ones(3, dtype=np.float64)
+    eigenvalues: np.ndarray = np.ones(3, dtype=np.float64)
+    eigenvectors: np.ndarray
     normal = reference_normal
     for retained_fraction in (1.0, 0.85, 0.75, 0.65):
         if retained_fraction < 1.0:
@@ -69,7 +78,12 @@ def _robust_sparse_plane_normal(
     return normal, center, planarity_ratio
 
 
-def estimate_facade_frame(points, cameras, *, ransac_iterations: int = 600) -> FacadeFrame:
+def estimate_facade_frame(
+    points: object,
+    cameras: Sequence[_CameraPose],
+    *,
+    ransac_iterations: int = 600,
+) -> FacadeFrame:
     """Orient a facade from optimized optical axes and audit point planarity.
 
     Ornate facades contain arches, columns and deep openings; their largest
@@ -98,16 +112,16 @@ def estimate_facade_frame(points, cameras, *, ransac_iterations: int = 600) -> F
     camera_positions = np.asarray([camera.T for camera in cameras], dtype=np.float64)
     if len(camera_positions) < 2:
         raise ValueError("At least two registered cameras are required for facade alignment")
-    image_up = []
-    outward_axes = []
+    image_up: list[np.ndarray] = []
+    outward_axis_samples: list[np.ndarray] = []
     for camera in cameras:
         rotation = np.asarray(camera.R, dtype=np.float64)
         if rotation.shape == (3, 3):
-            outward_axes.append(_normalize(-rotation[:, 2]))
+            outward_axis_samples.append(_normalize(-rotation[:, 2]))
             image_up.append(_normalize(-rotation[:, 1]))
-    if not outward_axes:
+    if not outward_axis_samples:
         raise ValueError("Registered camera rotations do not define a facade normal")
-    outward_axes = np.stack(outward_axes)
+    outward_axes = np.stack(outward_axis_samples)
     reference_normal = _normalize(np.median(outward_axes, axis=0))
     outward_axes = np.stack(
         [axis if float(axis @ reference_normal) >= 0 else -axis for axis in outward_axes]
@@ -155,7 +169,7 @@ def estimate_facade_frame(points, cameras, *, ransac_iterations: int = 600) -> F
     median_depth = float(np.median(sample @ normal))
     origin += normal * (median_depth - float(origin @ normal))
 
-    projected_ups = []
+    projected_ups: list[np.ndarray] = []
     for raw_up in image_up:
         projected = raw_up.copy()
         projected -= normal * float(projected @ normal)
