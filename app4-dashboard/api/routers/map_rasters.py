@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Protocol, Self, cast
+from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
@@ -20,6 +20,7 @@ from ..map_support import (
     Bounds,
     JsonObject,
     MissionRecord,
+    RouteSession,
     apply_detection_spatial_filter,
     apply_spatial_filter,
     feature_collection,
@@ -31,26 +32,6 @@ from ..map_support import (
 )
 
 router = APIRouter()
-
-
-class RasterQuery(Protocol):
-    def filter(self, *criteria: Any) -> Self: ...
-
-    def join(self, *targets: Any) -> Self: ...
-
-    def order_by(self, *criteria: Any) -> Self: ...
-
-    def limit(self, value: int) -> Self: ...
-
-    def first(self) -> Any: ...
-
-    def all(self) -> list[Any]: ...
-
-
-class RasterSession(Protocol):
-    def query(self, *entities: Any) -> RasterQuery: ...
-
-    def scalar(self, statement: Any) -> Any: ...
 
 
 @router.get("/{vol_id}/metadata/{layer}")
@@ -128,7 +109,7 @@ def raster_tile(
 
 
 def _legacy_features(
-    session: RasterSession,
+    session: RouteSession,
     mission: MissionRecord,
     vol_id: str,
     bounds: Bounds | None,
@@ -152,7 +133,7 @@ def _legacy_features(
 
 
 def _stored_features(
-    session: RasterSession,
+    session: RouteSession,
     vol_id: str,
     bounds: Bounds | None,
     requested_sources: set[str],
@@ -199,7 +180,7 @@ def vector_layer(
     features: list[dict[str, Any]] = []
     truncated = False
     with get_session() as session:
-        typed_session = cast(RasterSession, session)
+        typed_session = cast(RouteSession, session)
         mission = get_mission(typed_session, vol_id)
         if "legacy" in requested_sources:
             legacy, truncated = _legacy_features(

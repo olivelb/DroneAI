@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Annotated
+from datetime import UTC, datetime
+from typing import Annotated, Protocol, TypedDict, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -21,6 +21,10 @@ from shared.inbox_outbox import enqueue_outbox
 
 from ..map_schemas import AnalysisCreate
 from ..map_support import (
+    AnalysisRunRecord,
+    Bounds,
+    JsonObject,
+    RouteSession,
     apply_spatial_filter,
     feature_collection,
     get_mission,
@@ -36,7 +40,16 @@ from ..security import Principal, require_operator
 router = APIRouter()
 
 
-def _analysis_event(run: AIAnalysisRun):
+class AnalysisListResponse(TypedDict):
+    runs: list[JsonObject]
+
+
+class AnalysisTileRecord(Protocol):
+    result_s3_key: str
+    bounds_wgs84: list[float] | None
+
+
+def _analysis_event(run: AnalysisRunRecord) -> JsonObject:
     return {
         "vol_id": run.vol_id,
         "ortho_s3_key": run.ortho_s3_key,
@@ -50,28 +63,36 @@ def _analysis_event(run: AIAnalysisRun):
     }
 
 
-def _get_run(session, vol_id: str, run_id: str, *, lock=False):
+def _get_run(
+    session: RouteSession,
+    vol_id: str,
+    run_id: str,
+    *,
+    lock: bool = False,
+) -> AnalysisRunRecord:
     query = session.query(AIAnalysisRun).filter(
         AIAnalysisRun.vol_id == vol_id,
         AIAnalysisRun.run_id == run_id,
     )
     if lock:
         query = query.with_for_update()
-    run = query.first()
+    run = cast(AnalysisRunRecord | None, query.first())
     if run is None:
         raise HTTPException(status_code=404, detail="Analysis not found")
     return run
 
 
 @router.get("/{vol_id}/analyses")
-def list_analyses(vol_id: str):
+def list_analyses(vol_id: str) -> AnalysisListResponse:
     with get_session() as session:
-        get_mission(session, vol_id)
-        runs = (
-            session.query(AIAnalysisRun)
+        typed_session = cast(RouteSession, session)
+        get_mission(typed_session, vol_id)
+        runs = cast(
+            list[AnalysisRunRecord],
+            typed_session.query(AIAnalysisRun)
             .filter(AIAnalysisRun.vol_id == vol_id)
             .order_by(AIAnalysisRun.created_at.desc())
-            .all()
+            .all(),
         )
         return {"runs": [serialize_run(run) for run in runs]}
 
@@ -84,13 +105,14 @@ def create_analysis(
     vol_id: str,
     request: AnalysisCreate,
     principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> JsonObject:
     key, _ = mission_key(vol_id, "ortho")
     require_object(key)
     run_id = str(uuid4())
     with get_session() as session:
-        mission = get_mission(session, vol_id)
-        run = AIAnalysisRun(
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(typed_session, vol_id)
+        run_model = AIAnalysisRun(
             run_id=run_id,
             mission_id=mission.id,
             vol_id=vol_id,
@@ -108,7 +130,8 @@ def create_analysis(
             ortho_s3_key=key,
             created_by=principal.subject,
         )
-        session.add(run)
+        run = cast(AnalysisRunRecord, run_model)
+        typed_session.add(run_model)
         event = make_event(
             "orthomosaic",
             _analysis_event(run),
@@ -117,8 +140,8 @@ def create_analysis(
             ),
             correlation_id=run_id,
         )
-        enqueue_outbox(session, topic=TOPIC_ORTHO, event=event, key=vol_id)
-        session.flush()
+        enqueue_outbox(typed_session, topic=TOPIC_ORTHO, event=event, key=vol_id)
+        typed_session.flush()
         return serialize_run(run)
 
 
@@ -130,9 +153,10 @@ def retry_analysis(
     vol_id: str,
     run_id: str,
     _principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> JsonObject:
     with get_session() as session:
-        run = _get_run(session, vol_id, run_id, lock=True)
+        typed_session = cast(RouteSession, session)
+        run = _get_run(typed_session, vol_id, run_id, lock=True)
         if run.status != "failed":
             raise HTTPException(
                 status_code=409,
@@ -142,9 +166,9 @@ def retry_analysis(
         run.status = "queued"
         run.phase = "recovery_queued"
         run.error_message = None
-        run.heartbeat_at = datetime.now(timezone.utc)
+        run.heartbeat_at = datetime.now(UTC)
         (
-            session.query(AIAnalysisTile)
+            typed_session.query(AIAnalysisTile)
             .filter(
                 AIAnalysisTile.analysis_run_id == run.id,
                 AIAnalysisTile.status != "completed",
@@ -167,7 +191,7 @@ def retry_analysis(
             correlation_id=run_id,
             attempt=run.retry_count,
         )
-        enqueue_outbox(session, topic=TOPIC_ORTHO, event=event, key=vol_id)
+        enqueue_outbox(typed_session, topic=TOPIC_ORTHO, event=event, key=vol_id)
         return serialize_run(run)
 
 
@@ -179,9 +203,10 @@ def cancel_analysis(
     vol_id: str,
     run_id: str,
     _principal: Annotated[Principal, Depends(require_operator)],
-):
+) -> JsonObject:
     with get_session() as session:
-        run = _get_run(session, vol_id, run_id, lock=True)
+        typed_session = cast(RouteSession, session)
+        run = _get_run(typed_session, vol_id, run_id, lock=True)
         if run.status == "completed":
             raise HTTPException(
                 status_code=409,
@@ -189,7 +214,7 @@ def cancel_analysis(
             )
         run.status = "cancelled"
         run.phase = "cancelled"
-        run.heartbeat_at = datetime.now(timezone.utc)
+        run.heartbeat_at = datetime.now(UTC)
         event = make_event(
             "control",
             {
@@ -203,12 +228,16 @@ def cancel_analysis(
             correlation_id=run_id,
             attempt=run.retry_count,
         )
-        enqueue_outbox(session, topic=TOPIC_CONTROL, event=event, key=vol_id)
+        enqueue_outbox(typed_session, topic=TOPIC_CONTROL, event=event, key=vol_id)
         return serialize_run(run)
 
 
-def _object_store_features(tiles, bounds, limit):
-    features = []
+def _object_store_features(
+    tiles: list[AnalysisTileRecord],
+    bounds: Bounds | None,
+    limit: int,
+) -> tuple[list[JsonObject], bool]:
+    features: list[JsonObject] = []
     truncated = False
     for tile in tiles:
         if (
@@ -218,9 +247,11 @@ def _object_store_features(tiles, bounds, limit):
         ):
             continue
         payload = load_json_object(tile.result_s3_key)
-        for feature in payload.get("features", []):
+        stored_features = cast(list[JsonObject], payload.get("features", []))
+        for feature in stored_features:
             if bounds and not bounds_intersect(
-                list(bounds), geometry_bounds(feature["geometry"])
+                list(bounds),
+                geometry_bounds(cast(JsonObject, feature["geometry"])),
             ):
                 continue
             features.append(feature)
@@ -238,20 +269,24 @@ def analysis_vectors(
     run_id: str,
     bbox: str | None = Query(default=None),
     limit: int = Query(default=10_000, ge=1, le=50_000),
-):
+) -> JsonObject:
     bounds = parse_bbox(bbox)
     with get_session() as session:
-        run = _get_run(session, vol_id, run_id)
+        typed_session = cast(RouteSession, session)
+        run = _get_run(typed_session, vol_id, run_id)
         if run.persist_results:
-            query = session.query(MapFeature).filter(
+            query = typed_session.query(MapFeature).filter(
                 MapFeature.analysis_run_id == run.id
             )
             query = apply_spatial_filter(
                 query, MapFeature.geometry, bounds
             )
-            records = query.order_by(MapFeature.id).limit(limit + 1).all()
+            records = cast(
+                list[MapFeature],
+                query.order_by(MapFeature.id).limit(limit + 1).all(),
+            )
             features = [
-                map_feature_geojson(session, item)
+                map_feature_geojson(typed_session, item)
                 for item in records[:limit]
             ]
             return feature_collection(
@@ -259,15 +294,16 @@ def analysis_vectors(
                 run_id=run_id,
                 truncated=len(records) > limit,
             )
-        tiles = (
-            session.query(AIAnalysisTile)
+        tiles = cast(
+            list[AnalysisTileRecord],
+            typed_session.query(AIAnalysisTile)
             .filter(
                 AIAnalysisTile.analysis_run_id == run.id,
                 AIAnalysisTile.status == "completed",
                 AIAnalysisTile.result_s3_key.isnot(None),
             )
             .order_by(AIAnalysisTile.tile_index)
-            .all()
+            .all(),
         )
         features, truncated = _object_store_features(
             tiles, bounds, limit

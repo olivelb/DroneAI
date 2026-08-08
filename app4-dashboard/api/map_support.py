@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Protocol, Self, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 
 from shared import storage
-from shared.database import AIAnalysisRun, Detection, MapFeature, Mission
+from shared.database import Detection, MapFeature, Mission
 
 VOL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 RASTER_LAYERS: dict[str, tuple[str, str]] = {
@@ -38,9 +39,79 @@ class FilterQueryProtocol(Protocol):
     def filter(self, *criteria: Any) -> Self: ...
 
 
+class RouteQuery(Protocol):
+    """Dynamic SQLAlchemy query operations used by HTTP route adapters."""
+
+    def filter(self, *criteria: Any) -> Self: ...
+
+    def join(self, *targets: Any) -> Self: ...
+
+    def order_by(self, *criteria: Any) -> Self: ...
+
+    def limit(self, value: int) -> Self: ...
+
+    def first(self) -> Any: ...
+
+    def all(self) -> list[Any]: ...
+
+    def with_for_update(self) -> Self: ...
+
+    def update(
+        self,
+        values: dict[Any, Any],
+        *,
+        synchronize_session: bool,
+    ) -> int: ...
+
+
+class RouteSession(Protocol):
+    """Narrow session boundary shared by typed map route adapters."""
+
+    def query(self, *entities: Any) -> RouteQuery: ...
+
+    def scalar(self, statement: Any) -> Any: ...
+
+    def add(self, instance: Any) -> None: ...
+
+    def flush(self) -> None: ...
+
+
 class MissionRecord(Protocol):
     id: int
     tiling_metadata: JsonObject | None
+
+
+class AnalysisRunRecord(Protocol):
+    id: int
+    run_id: str
+    mission_id: int
+    vol_id: str
+    name: str
+    description: str | None
+    color: str
+    tags: list[str]
+    backend: str
+    model_variant: str | None
+    prompt: str | None
+    classes: list[str]
+    confidence: float
+    tile_size: int
+    persist_results: bool
+    status: str
+    phase: str
+    progress: int
+    total_tiles: int
+    tiles_completed: int
+    detection_count: int
+    retry_count: int
+    error_message: str | None
+    ortho_s3_key: str
+    result_s3_key: str | None
+    model_manifest: JsonObject | None
+    heartbeat_at: datetime
+    created_at: datetime | None
+    updated_at: datetime | None
+    completed_at: datetime | None
 
 
 def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
@@ -106,7 +177,7 @@ def get_mission(session: SessionProtocol, vol_id: str) -> MissionRecord:
     return mission
 
 
-def serialize_run(run: AIAnalysisRun) -> dict[str, Any]:
+def serialize_run(run: AnalysisRunRecord) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
         "vol_id": run.vol_id,
