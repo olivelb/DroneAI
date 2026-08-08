@@ -138,6 +138,9 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertEqual(config.qualification_policy_id, DRONEGS_QUALIFICATION_POLICY_ID)
         self.assertEqual(config.filter_max_scale, 5.0)
         self.assertEqual(config.filter_min_retained_ratio, 0.80)
+        self.assertTrue(config.coverage_gate_enabled)
+        self.assertEqual(config.coverage_grid_size, 16)
+        self.assertEqual(config.coverage_min_valid_ratio, 0.50)
         self.assertEqual(warnings, ())
 
         facade_config, _ = dronegs_config.resolve_dronegs_config(
@@ -147,6 +150,7 @@ class TestColmapStageHelpers(unittest.TestCase):
         )
         self.assertEqual(facade_config.filter_max_scale, 1.0)
         self.assertEqual(facade_config.filter_min_retained_ratio, 0.0)
+        self.assertFalse(facade_config.coverage_gate_enabled)
 
         overridden, warnings = dronegs_config.resolve_dronegs_config(
             {**params, "gs_iterations": "123"},

@@ -3,6 +3,7 @@
 global:
   imageRegistry: "registry.example.com/"
   imagePullPolicy: IfNotPresent
+  requireImmutableImages: true
 
 storage:
   existingSecret: drone-ai-storage-production
@@ -25,6 +26,7 @@ postgres:
 # Workspaces shown in the dashboard must correspond to volumes mounted in the
 # COLMAP pod. Create this claim (or use a cloud CSI provisioner) before install.
 colmapWorker:
+  tag: "REPLACE_GIT_SHA"
   workVolume:
     drives:
       - name: cloud-workspace
@@ -33,6 +35,8 @@ colmapWorker:
     default: cloud-workspace
 
 dashboardApi:
+  replicaCount: 2
+  tag: "REPLACE_GIT_SHA"
   environment: production
   service:
     type: ClusterIP
@@ -46,9 +50,16 @@ dashboardApi:
     sessionMaxAgeSeconds: 28800
 
 dashboardFrontend:
+  tag: "REPLACE_GIT_SHA"
   apiUrl: "https://api.droneai.example.com"
   service:
     type: ClusterIP
+
+iaWorker:
+  tag: "REPLACE_GIT_SHA"
+
+processingWorker:
+  tag: "REPLACE_GIT_SHA"
 
 ingress:
   enabled: true

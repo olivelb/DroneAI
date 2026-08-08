@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import socket
 import threading
 from collections import deque
 from contextlib import suppress
@@ -18,7 +20,7 @@ from shared.config import (
     TOPIC_STATUS,
 )
 from shared.database import get_session
-from shared.inbox_outbox import InboxResult, process_inbox_transaction
+from shared.inbox_outbox import process_inbox_transaction
 from shared.kafka_reliability import (
     message_location,
     process_message,
@@ -30,17 +32,30 @@ from .mission_state import apply_mission_state
 
 
 JsonObject = dict[str, Any]
+STATUS_STATE_INBOX_GROUP = "dashboard-api-status-state"
+
+
+def status_consumer_group(instance_id: str | None = None) -> str:
+    """Return a stable group unique to one API pod for broadcast fan-out."""
+
+    identity = (instance_id or socket.gethostname()).strip()
+    if not identity:
+        raise RuntimeError("Dashboard API realtime instance identity is empty")
+    return f"dashboard-api-realtime-{identity}"
 
 
 class StatusHub:
     def __init__(self, history_size: int = 300):
         self.history: deque[str] = deque(maxlen=history_size)
         self.connections: list[WebSocket] = []
+        self._history_lock = threading.Lock()
 
     async def connect(self, websocket: WebSocket) -> None:
         await websocket.accept()
         self.connections.append(websocket)
-        for message in self.history:
+        with self._history_lock:
+            history = list(self.history)
+        for message in history:
             await websocket.send_text(message)
 
     def disconnect(self, websocket: WebSocket) -> None:
@@ -59,7 +74,8 @@ class StatusHub:
 
     def remember(self, event: JsonObject) -> str:
         payload = json.dumps(event)
-        self.history.append(payload)
+        with self._history_lock:
+            self.history.append(payload)
         return payload
 
 
@@ -73,40 +89,34 @@ def handle_status_message(
     message: Any,
     hub: StatusHub,
     loop: asyncio.AbstractEventLoop,
+    consumer_group: str = "dashboard-api-realtime",
 ) -> bool:
-    handled: dict[str, Any] = {}
-
-    def persist(event: JsonObject) -> None:
-        handled["event"] = event
-        handled["inbox_result"] = process_inbox_transaction(
+    def persist_and_broadcast(event: JsonObject) -> None:
+        process_inbox_transaction(
             get_session,
-            consumer_group="dashboard-api",
+            consumer_group=STATUS_STATE_INBOX_GROUP,
             event=event,
             source=message_location(message),
             handler=apply_mission_state,
         )
+        payload = hub.remember(event)
+        print(f"STATUS {payload}")
+        future = asyncio.run_coroutine_threadsafe(
+            hub.broadcast(payload),
+            loop,
+        )
+        future.result(timeout=5)
 
     succeeded = process_message(
         consumer=consumer,
         producer=producer,
         message=message,
-        consumer_group="dashboard-api",
+        consumer_group=consumer_group,
         expected_type="status",
         dead_letter_topic=TOPIC_DEAD_LETTER,
-        handler=persist,
+        handler=persist_and_broadcast,
     )
-    if not succeeded:
-        return False
-    if handled["inbox_result"] == InboxResult.DUPLICATE:
-        return True
-    payload = hub.remember(handled["event"])
-    print(f"STATUS {payload}")
-    future = asyncio.run_coroutine_threadsafe(
-        hub.broadcast(payload),
-        loop,
-    )
-    future.result(timeout=5)
-    return True
+    return bool(succeeded)
 
 
 def consume_status_events(
@@ -117,10 +127,11 @@ def consume_status_events(
     stop_event: threading.Event | None = None,
 ) -> None:
     stop_event = stop_event or threading.Event()
+    consumer_group = status_consumer_group(os.getenv("POD_NAME"))
     status_consumer = consumer or Consumer(
         reliable_consumer_config(
             KAFKA_BROKER,
-            "dashboard-api",
+            consumer_group,
             offset_reset="latest",
         )
     )
@@ -141,6 +152,7 @@ def consume_status_events(
                     message=message,
                     hub=hub,
                     loop=loop,
+                    consumer_group=consumer_group,
                 )
             except Exception as error:
                 print(f"Kafka status consumer loop error: {error}")

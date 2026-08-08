@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Annotated, Protocol, TypedDict, cast
+from typing import Annotated, TypedDict, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -17,21 +17,20 @@ from shared.database import (
     get_session,
 )
 from shared.event_contracts import deterministic_event_id, make_event
-from shared.geospatial_workspace import bounds_intersect, geometry_bounds
 from shared.inbox_outbox import enqueue_outbox
 
 from ..map_schemas import AnalysisCreate
 from ..map_support import (
     AnalysisRunRecord,
-    Bounds,
+    AnalysisTileRecord,
     JsonObject,
     RouteSession,
     apply_spatial_filter,
     feature_collection,
     get_mission,
-    load_json_object,
     map_feature_geojson,
     mission_key,
+    object_store_analysis_features as _object_store_features,
     parse_bbox,
     require_object,
     serialize_run,
@@ -43,11 +42,6 @@ router = APIRouter()
 
 class AnalysisListResponse(TypedDict):
     runs: list[JsonObject]
-
-
-class AnalysisTileRecord(Protocol):
-    result_s3_key: str
-    bounds_wgs84: list[float] | None
 
 
 def _analysis_event(run: AnalysisRunRecord) -> JsonObject:
@@ -240,37 +234,6 @@ def cancel_analysis(
         return serialize_run(run)
 
 
-def _object_store_features(
-    tiles: list[AnalysisTileRecord],
-    bounds: Bounds | None,
-    limit: int,
-) -> tuple[list[JsonObject], bool]:
-    features: list[JsonObject] = []
-    truncated = False
-    for tile in tiles:
-        if (
-            bounds
-            and tile.bounds_wgs84
-            and not bounds_intersect(list(bounds), tile.bounds_wgs84)
-        ):
-            continue
-        payload = load_json_object(tile.result_s3_key)
-        stored_features = cast(list[JsonObject], payload.get("features", []))
-        for feature in stored_features:
-            if bounds and not bounds_intersect(
-                list(bounds),
-                geometry_bounds(cast(JsonObject, feature["geometry"])),
-            ):
-                continue
-            features.append(feature)
-            if len(features) >= limit:
-                truncated = True
-                break
-        if truncated:
-            break
-    return features, truncated
-
-
 @router.get("/{vol_id}/analyses/{run_id}/vectors.geojson")
 def analysis_vectors(
     vol_id: str,
@@ -314,7 +277,11 @@ def analysis_vectors(
             .all(),
         )
         features, truncated = _object_store_features(
-            tiles, bounds, limit
+            tiles,
+            bounds,
+            limit,
+            vol_id=run.vol_id,
+            tiling_metadata=run.tiling_metadata or {},
         )
     return feature_collection(
         features,

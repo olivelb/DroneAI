@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import gc
 import logging
 import shutil
+from contextlib import suppress
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, cast
+from typing import Any, Protocol, cast
 
 from pyproj import Transformer
 
@@ -14,9 +14,15 @@ from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import JsonObject, Sam3Backend
 from shared import storage
 from shared.event_contracts import deterministic_event_id, make_event
+from shared.json_io import atomic_write_json
 from shared.kafka_partitioning import tile_work_key
 from shared.kafka_reliability import publish_json
 from shared.pipeline_params import normalize_ai_backend
+from shared.tile_results import (
+    TILE_RESULT_SCHEMA_VERSION,
+    build_tile_result_artifact,
+    tile_result_s3_key,
+)
 
 
 class Producer(Protocol):
@@ -33,14 +39,6 @@ class CancellationRegistry(Protocol):
         attempt: int = 0,
     ) -> bool: ...
 
-    def clear(
-        self,
-        vol_id: str,
-        run_id: str | None = None,
-        attempt: int = 0,
-    ) -> None: ...
-
-
 class ProgressReporter(Protocol):
     def __call__(
         self,
@@ -50,12 +48,6 @@ class ProgressReporter(Protocol):
         status: str = "processing",
         log: str | None = None,
     ) -> None: ...
-
-
-class MissionStats(TypedDict):
-    processed: int
-    detections: int
-    total_tiles: int
 
 
 def transform_detection_coordinates(
@@ -102,7 +94,6 @@ class TileDetectionWorkflow:
         self.sam3_backend = sam3_backend
         self.logger = logger
         self.workspace_root = workspace_root
-        self.mission_stats: dict[tuple[str, int], MissionStats] = {}
 
     def run_detection(
         self,
@@ -141,7 +132,6 @@ class TileDetectionWorkflow:
         vol_id: str,
         analysis_run_id: str | None,
         analysis_attempt: int,
-        stats_key: tuple[str, int],
         workspace: Path,
     ) -> bool:
         if not self.cancellation_registry.is_cancelled(
@@ -151,7 +141,6 @@ class TileDetectionWorkflow:
         ):
             return False
         shutil.rmtree(workspace, ignore_errors=True)
-        self.mission_stats.pop(stats_key, None)
         return True
 
     def _geolocate(
@@ -234,16 +223,42 @@ class TileDetectionWorkflow:
         analysis_attempt: int,
         detections: list[DetectionRecord],
         attempt: JsonObject,
+        workspace: Path,
     ) -> None:
         tile_index = int(tile_info["tile_index"])
+        model_manifest = cast(JsonObject, attempt["model_manifest"])
+        artifact = build_tile_result_artifact(
+            vol_id=vol_id,
+            analysis_run_id=analysis_run_id,
+            tile_index=tile_index,
+            attempt=analysis_attempt,
+            model_manifest=model_manifest,
+            detections=detections,
+        )
+        result_key = tile_result_s3_key(
+            vol_id,
+            analysis_run_id,
+            tile_index,
+            analysis_attempt,
+        )
+        local_result = workspace / f"tile_result_{tile_index}.json"
+        atomic_write_json(local_result, artifact)
+        try:
+            uploaded = storage.upload_verified_file(local_result, result_key)
+        finally:
+            local_result.unlink(missing_ok=True)
         tile_result = make_event(
             "tile_detection",
             {
                 "vol_id": vol_id,
                 "tile_index": tile_index,
-                "detections": detections,
                 "analysis_run_id": analysis_run_id,
-                "model_manifest": attempt["model_manifest"],
+                "model_manifest": model_manifest,
+                "result_s3_key": result_key,
+                "result_sha256": uploaded["sha256"],
+                "result_size_bytes": uploaded["size"],
+                "detection_count": len(detections),
+                "result_schema_version": TILE_RESULT_SCHEMA_VERSION,
             },
             event_id=deterministic_event_id(
                 "tile_detection",
@@ -263,72 +278,6 @@ class TileDetectionWorkflow:
             key=tile_work_key(vol_id, analysis_run_id, tile_index),
         )
 
-    def _report_tile(
-        self,
-        *,
-        tile_info: JsonObject,
-        vol_id: str,
-        stats: MissionStats,
-        detections: list[DetectionRecord],
-        attempt: JsonObject,
-    ) -> None:
-        total = stats["total_tiles"] or stats["processed"]
-        progress = min(
-            99,
-            int((stats["processed"] / max(total, 1)) * 100),
-        )
-        if detections:
-            self.progress_reporter(
-                vol_id,
-                "DETECTING",
-                progress,
-                log=(f"Tile {tile_info['tile_index']} produced {len(detections)} detections via {attempt['label']}"),
-            )
-        elif stats["processed"] == 1 or stats["processed"] % 10 == 0:
-            self.progress_reporter(
-                vol_id,
-                "DETECTING",
-                progress,
-                log=(
-                    f"Processed {stats['processed']}/{total} tiles, "
-                    f"detections={stats['detections']} ({attempt['label']})"
-                ),
-            )
-
-    def _complete(
-        self,
-        *,
-        vol_id: str,
-        analysis_run_id: str | None,
-        analysis_attempt: int,
-        total_tiles: int,
-        stats_key: tuple[str, int],
-        stats: MissionStats,
-        workspace: Path,
-    ) -> None:
-        if not total_tiles or stats["processed"] < total_tiles:
-            return
-        summary = f"IA finished {stats['processed']} tiles with {stats['detections']} detections"
-        self.progress_reporter(
-            vol_id,
-            "DETECTING",
-            100,
-            status="success",
-            log=summary,
-        )
-        self.mission_stats.pop(stats_key, None)
-        self.cancellation_registry.clear(
-            vol_id,
-            analysis_run_id,
-            analysis_attempt,
-        )
-        shutil.rmtree(workspace, ignore_errors=True)
-        gc.collect()
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
     def process_tile(self, tile_info: JsonObject) -> None:
         vol_id = cast(str, tile_info["vol_id"])
         analysis_run_id = cast(
@@ -336,15 +285,12 @@ class TileDetectionWorkflow:
             tile_info.get("analysis_run_id"),
         )
         analysis_attempt = int(tile_info.get("attempt", 0))
-        stats_key = (analysis_run_id or vol_id, analysis_attempt)
-        total_tiles = int(tile_info.get("total_tiles", 0) or 0)
         workspace = self._workspace(vol_id, analysis_run_id)
         workspace.mkdir(parents=True, exist_ok=True)
         if self._cancelled(
             vol_id=vol_id,
             analysis_run_id=analysis_run_id,
             analysis_attempt=analysis_attempt,
-            stats_key=stats_key,
             workspace=workspace,
         ):
             return
@@ -352,62 +298,47 @@ class TileDetectionWorkflow:
         tile_s3_key = str(tile_info.get("tile_s3_key") or tile_info.get("tile_path") or "")
         tile_path = workspace / Path(tile_s3_key).name
         try:
-            storage.download_file(tile_s3_key, tile_path)
-        except Exception as error:
-            self.progress_reporter(
-                vol_id,
-                "ERROR",
-                0,
-                status="error",
-                log=(f"Failed to download tile from S3: {tile_s3_key} — {error}"),
+            try:
+                storage.download_file(tile_s3_key, tile_path)
+            except Exception as error:
+                self.progress_reporter(
+                    vol_id,
+                    "ERROR",
+                    0,
+                    status="error",
+                    log=(f"Failed to download tile from S3: {tile_s3_key} — {error}"),
+                )
+                raise
+
+            detections_for_tile, attempt = self.run_detection(
+                str(tile_path),
+                tile_info,
             )
-            raise
-
-        stats = self.mission_stats.setdefault(
-            stats_key,
-            {
-                "processed": 0,
-                "detections": 0,
-                "total_tiles": total_tiles,
-            },
-        )
-        if total_tiles:
-            stats["total_tiles"] = total_tiles
-
-        detections_for_tile, attempt = self.run_detection(
-            str(tile_path),
-            tile_info,
-        )
-        detections = self._geolocate(
-            detections_for_tile,
-            tile_info=tile_info,
-            vol_id=vol_id,
-            offset_x=float(tile_info["offset_x"]),
-            offset_y=float(tile_info["offset_y"]),
-        )
-        self._publish_result(
-            tile_info=tile_info,
-            vol_id=vol_id,
-            analysis_run_id=analysis_run_id,
-            analysis_attempt=analysis_attempt,
-            detections=detections,
-            attempt=attempt,
-        )
-        stats["processed"] += 1
-        stats["detections"] += len(detections)
-        self._report_tile(
-            tile_info=tile_info,
-            vol_id=vol_id,
-            stats=stats,
-            detections=detections,
-            attempt=attempt,
-        )
-        self._complete(
-            vol_id=vol_id,
-            analysis_run_id=analysis_run_id,
-            analysis_attempt=analysis_attempt,
-            total_tiles=total_tiles,
-            stats_key=stats_key,
-            stats=stats,
-            workspace=workspace,
-        )
+            detections = self._geolocate(
+                detections_for_tile,
+                tile_info=tile_info,
+                vol_id=vol_id,
+                offset_x=float(tile_info["offset_x"]),
+                offset_y=float(tile_info["offset_y"]),
+            )
+            self._publish_result(
+                tile_info=tile_info,
+                vol_id=vol_id,
+                analysis_run_id=analysis_run_id,
+                analysis_attempt=analysis_attempt,
+                detections=detections,
+                attempt=attempt,
+                workspace=workspace,
+            )
+            self.logger.info(
+                "IA worker published tile %s/%s for %s with %s detections via %s",
+                tile_info["tile_index"],
+                tile_info.get("total_tiles") or "?",
+                vol_id,
+                len(detections),
+                attempt["label"],
+            )
+        finally:
+            tile_path.unlink(missing_ok=True)
+            with suppress(OSError):
+                workspace.rmdir()

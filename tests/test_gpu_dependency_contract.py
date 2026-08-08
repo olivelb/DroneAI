@@ -38,6 +38,11 @@ def test_ia_model_variants_use_a_writable_controlled_cache() -> None:
     chart = (ROOT / "charts" / "drone-ai" / "templates" / "ia-worker.yaml").read_text(encoding="utf-8")
 
     assert "ENV AERIAL_BAKED_MODEL_DIR=/opt/modelzoo" in dockerfile
+    assert "ENV AERIAL_MODEL_RELEASE=v8.4.0" in dockerfile
+    assert (
+        "ENV AERIAL_MODEL_SHA256="
+        "8674b0c24bf68aab5eb45009e0ac3808ce432237edf8cb5c50ae2191cb263a2b"
+    ) in dockerfile
     assert "readOnlyRootFilesystem: true" in chart
     assert "- name: AERIAL_MODEL_DIR" in chart
     assert 'value: "/cache/modelzoo"' in chart

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from numpy.typing import NDArray
 
 from .colmap_loader import CameraInfo, PointCloud
 
@@ -19,14 +20,16 @@ class SceneInfo:
     test_cameras: list[CameraInfo]
     point_cloud: PointCloud
     # NeRF-style normalisation: centre + radius of the camera distribution
-    scene_centre: np.ndarray   # (3,)
+    scene_centre: NDArray[np.float32]   # (3,)
     scene_radius: float
     # Workspace paths
     dense_path: str = ""
     images_dir: str = ""
 
 
-def compute_scene_extent(cameras: list[CameraInfo]) -> tuple[np.ndarray, float]:
+def compute_scene_extent(
+    cameras: list[CameraInfo],
+) -> tuple[NDArray[np.float32], float]:
     """
     Compute the centre and radius of the camera distribution.
 
@@ -43,8 +46,13 @@ def compute_scene_extent(cameras: list[CameraInfo]) -> tuple[np.ndarray, float]:
     return centre.astype(np.float32), max(radius, 1e-3)
 
 
-def build_scene_info(train_cameras, test_cameras, point_cloud,
-                     dense_path="", images_dir="") -> SceneInfo:
+def build_scene_info(
+    train_cameras: list[CameraInfo],
+    test_cameras: list[CameraInfo],
+    point_cloud: PointCloud,
+    dense_path: str = "",
+    images_dir: str = "",
+) -> SceneInfo:
     """Construct a SceneInfo from loader outputs."""
     all_cams = train_cameras + test_cameras
     centre, radius = compute_scene_extent(all_cams)

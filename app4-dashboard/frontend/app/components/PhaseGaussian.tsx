@@ -66,6 +66,13 @@ const PARAMETER_GROUPS = [
       "gs_qualification_policy",
       "gs_canary_min_psnr",
       "gs_canary_min_ssim",
+      "gs_coverage_gate_enabled",
+      "gs_coverage_grid_size",
+      "gs_coverage_min_valid_ratio",
+      "gs_coverage_cell_threshold",
+      "gs_coverage_min_covered_cells_ratio",
+      "gs_coverage_min_worst_cell_ratio",
+      "gs_coverage_min_camera_cell_ratio",
     ],
   },
   {

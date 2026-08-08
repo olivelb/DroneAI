@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
+from numpy.typing import NDArray
+
+
+def empty_height_map(height: int, width: int) -> NDArray[np.float32]:
+    """Create a DSM tile whose pixels are explicitly marked as nodata."""
+    if height <= 0 or width <= 0:
+        raise ValueError("height-map dimensions must be positive")
+    return np.full((height, width), np.nan, dtype=np.float32)
 
 
 def georeference_raster_origin(
@@ -36,7 +45,10 @@ def georeference_raster_origin(
     )
 
 
-def depth_buffer_to_height(depth: np.ndarray, camera_z: float) -> np.ndarray:
+def depth_buffer_to_height(
+    depth: NDArray[np.floating[Any]],
+    camera_z: float,
+) -> NDArray[np.float32]:
     """Convert normalized positive camera depth to world Z.
 
     A zero depth denotes a pixel with no Gaussian coverage and becomes NaN so
@@ -46,9 +58,13 @@ def depth_buffer_to_height(depth: np.ndarray, camera_z: float) -> np.ndarray:
     z_camera = float(camera_z)
     if not math.isfinite(z_camera):
         raise ValueError("camera_z must be finite")
-    depth_array = np.asarray(depth)
+    depth_array = np.asarray(depth, dtype=np.float32)
     valid = np.isfinite(depth_array) & (depth_array > 0.0)
-    height = np.full(depth_array.shape, np.nan, dtype=np.float32)
+    height: NDArray[np.float32] = np.full(
+        depth_array.shape,
+        np.nan,
+        dtype=np.float32,
+    )
     height[valid] = z_camera - depth_array[valid]
     return height
 

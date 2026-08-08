@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from shared.database import get_session
 from shared.inbox_outbox import run_outbox_dispatcher
 
-from . import security
+from . import dataset_uploads, security
 from .messaging import publish_outbox_event
 from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
@@ -46,14 +46,21 @@ async def lifespan(_app: FastAPI):
         },
         daemon=True,
     )
+    upload_cleanup_thread = threading.Thread(
+        target=dataset_uploads.run_upload_cleanup,
+        args=(stop_event,),
+        daemon=True,
+    )
     consumer_thread.start()
     outbox_thread.start()
+    upload_cleanup_thread.start()
     try:
         yield
     finally:
         stop_event.set()
         consumer_thread.join(timeout=2)
         outbox_thread.join(timeout=2)
+        upload_cleanup_thread.join(timeout=2)
 
 
 def create_app() -> FastAPI:

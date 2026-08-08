@@ -230,6 +230,19 @@ def run_gaussian_product(
             filter_sor_sigma=gs_config.filter_sor_sigma,
             filter_cc=gs_config.filter_cc,
             filter_z_floater=gs_config.filter_z_floater,
+            coverage_gate_enabled=gs_config.coverage_gate_enabled,
+            coverage_grid_size=gs_config.coverage_grid_size,
+            coverage_min_valid_ratio=gs_config.coverage_min_valid_ratio,
+            coverage_cell_threshold=gs_config.coverage_cell_threshold,
+            coverage_min_covered_cells_ratio=(
+                gs_config.coverage_min_covered_cells_ratio
+            ),
+            coverage_min_worst_cell_ratio=(
+                gs_config.coverage_min_worst_cell_ratio
+            ),
+            coverage_min_camera_cell_ratio=(
+                gs_config.coverage_min_camera_cell_ratio
+            ),
             checkpoint_dir=durable_checkpoint_dir,
             trainer_backend=gs_config.backend,
             training_seed=gs_config.seed,

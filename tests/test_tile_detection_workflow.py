@@ -1,3 +1,4 @@
+import hashlib
 import importlib
 import json
 import sys
@@ -18,8 +19,17 @@ class FakeProducer:
     def __init__(self):
         self.messages = []
 
-    def produce(self, topic, *, key, value):
+    def produce(self, topic, *, key, value, on_delivery=None):
         self.messages.append((topic, key, json.loads(value)))
+        if on_delivery is not None:
+            self.delivery_callback = on_delivery
+
+    def poll(self, _timeout):
+        callback = getattr(self, "delivery_callback", None)
+        if callback is not None:
+            self.delivery_callback = None
+            callback(None, None)
+        return 0
 
     @staticmethod
     def flush():
@@ -73,6 +83,22 @@ def _workflow(tmp_path, *, producer=None, cancellation=None, progress=None):
         logger=importlib.import_module("logging").getLogger("test"),
         workspace_root=tmp_path,
     )
+
+
+def _capture_verified_uploads(monkeypatch):
+    uploads = {}
+
+    def upload(local_path, key):
+        payload = Path(local_path).read_bytes()
+        uploads[key] = payload
+        return {
+            "key": key,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    monkeypatch.setattr(tile_workflow.storage, "upload_verified_file", upload)
+    return uploads
 
 
 def test_coordinate_helpers_preserve_global_pixel_geometry():
@@ -142,6 +168,7 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         Path(destination).write_bytes(b"jpeg")
 
     monkeypatch.setattr(tile_workflow.storage, "download_file", download)
+    uploads = _capture_verified_uploads(monkeypatch)
     workflow.process_tile(
         {
             "vol_id": "mission-1",
@@ -166,7 +193,17 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         "mission-1:run-1:tile:4",
         "tile_detection",
     )
-    detection = event["detections"][0]
+    assert "detections" not in event
+    assert event["result_schema_version"] == 1
+    assert event["detection_count"] == 1
+    payload = uploads[event["result_s3_key"]]
+    assert event["result_size_bytes"] == len(payload)
+    assert event["result_sha256"] == hashlib.sha256(payload).hexdigest()
+    artifact = json.loads(payload)
+    assert artifact["analysis_run_id"] == "run-1"
+    assert artifact["attempt"] == 2
+    assert artifact["tile_index"] == 4
+    detection = artifact["raw_detections"][0]
     assert detection["global_pixel_x"] == 12.0
     assert detection["global_pixel_y"] == 23.0
     assert detection["segment"] == [
@@ -174,7 +211,54 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         [13.0, 22.0],
         [13.0, 24.0],
     ]
-    assert progress[0][0][1] == "DETECTING"
+    assert progress == []
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_replicas_publish_results_without_local_terminal_status(
+    tmp_path,
+    monkeypatch,
+):
+    progress_a = []
+    progress_b = []
+    producer = FakeProducer()
+    worker_a = _workflow(
+        tmp_path / "a",
+        producer=producer,
+        progress=lambda *args, **kwargs: progress_a.append((args, kwargs)),
+    )
+    worker_b = _workflow(
+        tmp_path / "b",
+        producer=producer,
+        progress=lambda *args, **kwargs: progress_b.append((args, kwargs)),
+    )
+
+    def download(_key, destination):
+        Path(destination).write_bytes(b"jpeg")
+
+    monkeypatch.setattr(tile_workflow.storage, "download_file", download)
+    uploads = _capture_verified_uploads(monkeypatch)
+    for tile_index, worker in enumerate((worker_a, worker_b, worker_a, worker_b)):
+        worker.process_tile(
+            {
+                "vol_id": "mission-shared",
+                "attempt": 0,
+                "tile_index": tile_index,
+                "tile_s3_key": f"missions/mission-shared/tiles/tile_{tile_index}.jpg",
+                "offset_x": 0,
+                "offset_y": 0,
+                "total_tiles": 4,
+                "ai_backend": "sam3",
+                "ai_confidence": 0.4,
+            }
+        )
+
+    assert len(producer.messages) == 4
+    assert len(uploads) == 4
+    assert all("detections" not in event for _, _, event in producer.messages)
+    assert progress_a == []
+    assert progress_b == []
+    assert not list(tmp_path.rglob("*.jpg"))
 
 
 def test_cancelled_tile_is_not_downloaded_or_published(

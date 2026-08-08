@@ -89,9 +89,38 @@ class TileDetectionEvent(EventEnvelope):
     event_type: Literal["tile_detection"]
     vol_id: str = Field(min_length=1, max_length=256)
     tile_index: int = Field(ge=0, strict=True)
-    detections: list[JsonObject]
+    detections: list[JsonObject] | None = None
     analysis_run_id: str | None = Field(default=None, max_length=128)
     model_manifest: JsonObject | None = None
+    result_s3_key: str | None = Field(default=None, max_length=2048)
+    result_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    result_size_bytes: int | None = Field(default=None, ge=1, strict=True)
+    detection_count: int | None = Field(default=None, ge=0, strict=True)
+    result_schema_version: Literal[1] | None = None
+
+    @model_validator(mode="after")
+    def require_inline_or_referenced_result(self) -> TileDetectionEvent:
+        inline = self.detections is not None
+        reference_values = (
+            self.result_s3_key,
+            self.result_sha256,
+            self.result_size_bytes,
+            self.detection_count,
+            self.result_schema_version,
+        )
+        referenced = any(value is not None for value in reference_values)
+        if inline == referenced:
+            raise ValueError(
+                "tile_detection requires exactly one of detections or a result reference"
+            )
+        if referenced and any(value is None for value in reference_values):
+            raise ValueError("tile_detection result reference is incomplete")
+        if referenced and self.model_manifest is None:
+            raise ValueError("tile_detection result reference requires model_manifest")
+        return self
 
 
 class StatusEvent(EventEnvelope):

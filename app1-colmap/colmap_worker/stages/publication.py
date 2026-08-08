@@ -92,7 +92,18 @@ def _verify_product_assets(
         "facade_selection_report": (
             preparation.facade_selection_report_path if preparation.facade_mode else None
         ),
+        "gaussian_coverage_report": (
+            None if preparation.facade_mode else result.get("gaussian_coverage_report")
+        ),
     }
+
+    coverage_report = required_reports["gaussian_coverage_report"]
+    if not preparation.facade_mode and (
+        coverage_report is None or not os.path.isfile(coverage_report)
+    ):
+        raise FileNotFoundError(
+            "Aerial map product is missing its Gaussian spatial coverage report"
+        )
 
     gcp_sparse_files: tuple[str, ...] = ()
     if gcp_enabled:
@@ -164,6 +175,7 @@ def _write_verified_product_manifest(
                 "cupy_version": result["cupy_version"],
                 "mip_filter_variance": result["ortho_mip_filter_variance"],
                 "mip_filter_compensation": result["ortho_mip_filter_compensation"],
+                "spatial_coverage": result.get("gaussian_coverage"),
                 "sh_frame_policy": (
                     "colmap-view-direction-local-facade-v1"
                     if facade_mode
@@ -418,6 +430,7 @@ def publish_colmap_products(
         "gcp_alignment_report": "gcp_alignment_report.json",
         "facade_frame_report": "facade_frame.json",
         "facade_selection_report": "facade_selection_report.json",
+        "gaussian_coverage_report": "gaussian_coverage_report.json",
     }
     for report_name, report_path in assets.required_reports.items():
         if report_path is None or not os.path.isfile(report_path):

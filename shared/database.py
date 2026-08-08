@@ -186,6 +186,18 @@ OUTBOX_EVENT_STATUSES = (
     "failed",
     "dead",
 )
+DATASET_UPLOAD_SESSION_STATUSES = (
+    "uploading",
+    "completed",
+    "aborted",
+    "failed",
+)
+DATASET_UPLOAD_FILE_STATUSES = (
+    "uploading",
+    "completed",
+    "aborted",
+    "failed",
+)
 
 
 def _values_check(column: str, values: tuple[str, ...]) -> str:
@@ -196,6 +208,87 @@ def _values_check(column: str, values: tuple[str, ...]) -> str:
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
+
+class DatasetUploadSession(RequiredTimestampMixin, Base):
+    """Durable ownership and quota boundary for one direct S3 upload batch."""
+
+    __tablename__ = "dataset_upload_sessions"
+    __table_args__ = (
+        Index("ix_dataset_upload_sessions_expiry", "status", "expires_at"),
+        CheckConstraint(
+            _values_check("status", DATASET_UPLOAD_SESSION_STATUSES),
+            name="ck_dataset_upload_sessions_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    dataset_name = Column(String(256), nullable=False, index=True)
+    status = Column(String(32), nullable=False, default="uploading")
+    total_bytes = Column(PORTABLE_BIGINT, nullable=False)
+    file_count = Column(Integer, nullable=False)
+    part_size = Column(Integer, nullable=False)
+    created_by = Column(String(256), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    files = relationship(
+        "DatasetUploadFile",
+        back_populates="upload_session",
+        cascade="all, delete-orphan",
+    )
+
+
+class DatasetUploadFile(RequiredTimestampMixin, Base):
+    """S3 multipart upload state for one file in a dataset session."""
+
+    __tablename__ = "dataset_upload_files"
+    __table_args__ = (
+        UniqueConstraint(
+            "upload_session_id",
+            "filename",
+            name="uq_dataset_upload_file_name",
+        ),
+        CheckConstraint(
+            _values_check("status", DATASET_UPLOAD_FILE_STATUSES),
+            name="ck_dataset_upload_files_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    file_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    upload_session_id = Column(
+        Integer,
+        ForeignKey("dataset_upload_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    filename = Column(String(512), nullable=False)
+    s3_key = Column(String(1024), nullable=False)
+    size_bytes = Column(PORTABLE_BIGINT, nullable=False)
+    content_type = Column(String(256), nullable=False)
+    multipart_upload_id = Column(Text, nullable=False)
+    status = Column(String(32), nullable=False, default="uploading")
+    completed_parts = Column(PORTABLE_JSON, nullable=True)
+    etag = Column(String(256), nullable=True)
+
+    upload_session = relationship(
+        "DatasetUploadSession",
+        back_populates="files",
+    )
 
 
 class Mission(Base):
@@ -470,6 +563,9 @@ class AIAnalysisTile(Base):
     status = Column(String(32), nullable=False, default="queued")
     tile_s3_key = Column(String(1024), nullable=False)
     result_s3_key = Column(String(1024), nullable=True)
+    result_sha256 = Column(String(64), nullable=True)
+    result_size_bytes = Column(BigInteger, nullable=True)
+    result_attempt = Column(Integer, nullable=True)
     offset_x = Column(Integer, nullable=False)
     offset_y = Column(Integer, nullable=False)
     width = Column(Integer, nullable=False)
@@ -658,6 +754,16 @@ class OutboxEvent(Base):
     )
     published_at = Column(DateTime(timezone=True), nullable=True)
     dead_at = Column(DateTime(timezone=True), nullable=True)
+
+
+class APIRateLimitBucket(Base):
+    """Shared token-bucket state for horizontally scaled API replicas."""
+
+    __tablename__ = "api_rate_limit_buckets"
+
+    key_hash = Column(String(64), primary_key=True)
+    tokens = Column(Float, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
 
 # ---------------------------------------------------------------------------

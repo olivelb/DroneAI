@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
+from hmac import compare_digest
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
@@ -31,15 +33,59 @@ YOLO_BAKED_MODEL_DIR = Path(os.getenv("AERIAL_BAKED_MODEL_DIR", "/opt/modelzoo")
 YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
 YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
 
-YOLO_MODEL_VARIANTS = {
-    "yolo26l": {"checkpoint": "yolo26l-obb.pt"},
-    "yolo26m": {"checkpoint": "yolo26m-obb.pt"},
-    "yolo26s": {"checkpoint": "yolo26s-obb.pt"},
-    "yolo26n": {"checkpoint": "yolo26n-obb.pt"},
-    "yolo11l": {"checkpoint": "yolo11l-obb.pt"},
-    "yolo11m": {"checkpoint": "yolo11m-obb.pt"},
-    "yolo11s": {"checkpoint": "yolo11s-obb.pt"},
-    "yolo11n": {"checkpoint": "yolo11n-obb.pt"},
+class YoloModelAsset(TypedDict):
+    checkpoint: str
+    repository: str
+    release: str
+    url: str
+    sha256: str
+
+
+def _official_yolo_asset(checkpoint: str, sha256: str) -> YoloModelAsset:
+    repository = "ultralytics/assets"
+    release = "v8.4.0"
+    return {
+        "checkpoint": checkpoint,
+        "repository": repository,
+        "release": release,
+        "url": f"https://github.com/{repository}/releases/download/{release}/{checkpoint}",
+        "sha256": sha256,
+    }
+
+
+YOLO_MODEL_REGISTRY: dict[str, YoloModelAsset] = {
+    "yolo26l": _official_yolo_asset(
+        "yolo26l-obb.pt",
+        "8674b0c24bf68aab5eb45009e0ac3808ce432237edf8cb5c50ae2191cb263a2b",
+    ),
+    "yolo26m": _official_yolo_asset(
+        "yolo26m-obb.pt",
+        "23e0630f66857cf4b87535f6e705b065f1e8a33603640b8e61ace85b75312903",
+    ),
+    "yolo26s": _official_yolo_asset(
+        "yolo26s-obb.pt",
+        "38dbd72ef6804f9bbbea7ad20f486e6ca6e093c8cd9bc857207a846565bd6e0b",
+    ),
+    "yolo26n": _official_yolo_asset(
+        "yolo26n-obb.pt",
+        "6f51c78197aacda4a33be77294065a9001675fb893f56227a179731b53dbd2b0",
+    ),
+    "yolo11l": _official_yolo_asset(
+        "yolo11l-obb.pt",
+        "92dcf9face59a821cd4ee93828f4c19b51f6dee9b842b23c1dacab7aa89039fc",
+    ),
+    "yolo11m": _official_yolo_asset(
+        "yolo11m-obb.pt",
+        "41832a4349c08190335bbc11a8e64726750702eb49cf09abb262bc394a13498c",
+    ),
+    "yolo11s": _official_yolo_asset(
+        "yolo11s-obb.pt",
+        "43fa63102922e0701501241b307420d24fc55e080816888b18bf8c6f96b1a45a",
+    ),
+    "yolo11n": _official_yolo_asset(
+        "yolo11n-obb.pt",
+        "b62898ebf38940ca4df323863e45ee9d84a1a46d5d11ebdde529fb33aa9f3a32",
+    ),
 }
 
 YOLO_MODEL_ALIASES = {
@@ -83,7 +129,7 @@ def normalize_yolo_model_variant(value: str | None) -> str:
     normalized = (
         str(value or os.getenv("AERIAL_MODEL_VARIANT", "best")).strip().lower().replace("_", "").replace("-", "")
     )
-    if normalized in YOLO_MODEL_VARIANTS:
+    if normalized in YOLO_MODEL_REGISTRY:
         return normalized
     return YOLO_MODEL_ALIASES.get(normalized, "yolo26l")
 
@@ -92,7 +138,7 @@ def resolve_yolo_model_file(
     requested_variant: str | None = None,
 ) -> tuple[str, Path, str]:
     variant_name = normalize_yolo_model_variant(requested_variant)
-    variant = YOLO_MODEL_VARIANTS[variant_name]
+    variant = YOLO_MODEL_REGISTRY[variant_name]
     configured_model = os.getenv("AERIAL_MODEL_FILE", "").strip()
     checkpoint_name = variant["checkpoint"]
     if configured_model:
@@ -106,9 +152,59 @@ def resolve_yolo_model_file(
     return variant_name, model_path, checkpoint_name
 
 
-def ensure_yolo_model_file(model_path: Path, checkpoint_name: str) -> Path:
+def resolve_yolo_model_integrity(
+    selected_variant: str,
+    model_path: Path,
+) -> tuple[str, str, str]:
+    """Return repository, revision and approved digest for one model path."""
+    asset = YOLO_MODEL_REGISTRY[selected_variant]
+    if model_path.name == asset["checkpoint"]:
+        if asset["release"] != YOLO_MODEL_RELEASE:
+            raise RuntimeError(
+                f"unsupported AERIAL_MODEL_RELEASE={YOLO_MODEL_RELEASE!r}; "
+                f"{selected_variant} is approved only for {asset['release']}"
+            )
+        return asset["repository"], asset["release"], asset["sha256"]
+
+    expected = os.getenv("AERIAL_CUSTOM_MODEL_SHA256", "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise RuntimeError(
+            "A custom AERIAL_MODEL_FILE requires a 64-character "
+            "AERIAL_CUSTOM_MODEL_SHA256 allowlist entry"
+        )
+    revision = os.getenv("AERIAL_CUSTOM_MODEL_REVISION", "custom").strip()
+    if not revision:
+        raise RuntimeError("AERIAL_CUSTOM_MODEL_REVISION must not be empty")
+    return "custom", revision, expected
+
+
+def verify_yolo_model_file(model_path: Path, expected_sha256: str) -> str:
+    """Verify a checkpoint before Ultralytics or Torch can deserialize it."""
+    digest = cast(str, sha256_file(model_path))
+    if not compare_digest(digest, expected_sha256):
+        raise RuntimeError(
+            f"YOLO checkpoint checksum mismatch for {model_path}: "
+            f"expected {expected_sha256}, got {digest}"
+        )
+    _yolo_model_hashes[str(model_path.resolve())] = digest
+    return digest
+
+
+def ensure_yolo_model_file(
+    model_path: Path,
+    checkpoint_name: str,
+    selected_variant: str,
+) -> Path:
+    repository, release, expected_sha256 = resolve_yolo_model_integrity(
+        selected_variant,
+        model_path,
+    )
     if model_path.exists():
+        verify_yolo_model_file(model_path, expected_sha256)
         return model_path
+
+    if repository == "custom":
+        raise FileNotFoundError(f"Custom YOLO checkpoint does not exist: {model_path}")
 
     from ultralytics.utils.downloads import attempt_download_asset
 
@@ -121,12 +217,17 @@ def ensure_yolo_model_file(model_path: Path, checkpoint_name: str) -> Path:
     downloaded_path = Path(
         attempt_download_asset(
             model_path,
-            repo="ultralytics/assets",
-            release=YOLO_MODEL_RELEASE,
+            repo=repository,
+            release=release,
         )
     )
     if downloaded_path.resolve() != model_path.resolve():
         shutil.copy2(downloaded_path, model_path)
+    try:
+        verify_yolo_model_file(model_path, expected_sha256)
+    except RuntimeError:
+        model_path.unlink(missing_ok=True)
+        raise
     return model_path
 
 
@@ -151,7 +252,11 @@ def load_yolo_model(
         model, available_labels = cached_model
         return model, available_labels, selected_variant, device, model_file_path
 
-    model_file_path = ensure_yolo_model_file(model_file_path, model_file_name)
+    model_file_path = ensure_yolo_model_file(
+        model_file_path,
+        model_file_name,
+        selected_variant,
+    )
     logger.info(
         "Loading YOLO aerial detector variant=%s checkpoint=%s device=%s imgsz=%s",
         selected_variant,
@@ -291,6 +396,10 @@ def run_yolo_detection(
             best_attempt = attempt
         if detections:
             break
+    repository, revision, _expected_sha256 = resolve_yolo_model_integrity(
+        selected_variant,
+        model_path,
+    )
     attempt_details: dict[str, Any] = {
         **best_attempt,
         "label": f"{best_attempt['label']} model={selected_variant}",
@@ -298,8 +407,8 @@ def run_yolo_detection(
         "requested_labels": requested_labels,
         "model_manifest": build_model_manifest(
             backend="yolo",
-            repository="ultralytics/assets",
-            revision=YOLO_MODEL_RELEASE,
+            repository=repository,
+            revision=revision,
             artifact=model_path.name,
             artifact_sha256=yolo_model_sha256(model_path),
             libraries=installed_versions("ultralytics", "torch"),

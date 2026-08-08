@@ -133,6 +133,13 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       }));
       return;
     }
+    if (url.pathname === "/maps/mission-existing/vectors.geojson") {
+      await route.fulfill(json({
+        type: "FeatureCollection",
+        features: [],
+      }));
+      return;
+    }
     if (url.pathname === "/maps/mission-existing/export/vectors") {
       options.onMapExport?.(url.toString());
       await route.fulfill({
@@ -247,23 +254,24 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
     missionStatus: "success",
     onMapExport: (url) => { exportedUrl = url; },
   });
-
-  await page.goto("/");
-  await expect(page.getByText("success", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: /5\. Explorer/ }).click();
-  await page.getByRole("button", { name: "Export" }).click();
-  await page.evaluate(() => {
+  await page.addInitScript(() => {
     Object.defineProperty(window, "showSaveFilePicker", {
       configurable: true,
       value: async () => ({
         createWritable: async () => new WritableStream(),
       }),
     });
-    const button = [...document.querySelectorAll<HTMLButtonElement>("button")]
-      .find((candidate) => candidate.textContent?.includes("Enregistrer la couche"));
-    if (!button) throw new Error("Vector export button was not rendered");
-    button.click();
   });
+
+  await page.goto("/");
+  await expect(page.getByText("success", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: /5\. Explorer/ }).click();
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  const exportButton = page.getByRole("button", {
+    name: "Enregistrer la couche",
+  });
+  await expect(exportButton).toBeVisible();
+  await exportButton.click();
 
   await expect.poll(() => exportedUrl).toBeTruthy();
   const url = new URL(exportedUrl);

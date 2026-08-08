@@ -5,16 +5,21 @@ from __future__ import annotations
 import json
 import os
 import secrets
-import threading
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
-from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from hmac import new as hmac_new
 
 from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
+
+from shared.database import get_session
+from shared.rate_limiting import (
+    DatabaseTokenBucketRateLimiter,
+    RateLimiter,
+    TokenBucketRateLimiter,
+)
 
 ROLE_RANK = {"viewer": 0, "operator": 1, "admin": 2}
 SESSION_COOKIE_NAME = "droneai_api_key"
@@ -31,67 +36,46 @@ class Principal:
     role: str
 
 
-class TokenBucketRateLimiter:
-    """Small per-process limiter for expensive read endpoints."""
-
-    def __init__(
-        self,
-        *,
-        requests_per_minute: int,
-        burst: int,
-        max_keys: int = 10_000,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        if requests_per_minute <= 0 or burst <= 0 or max_keys <= 0:
-            raise ValueError("rate limit, burst, and max_keys must be positive")
-        self.requests_per_minute = requests_per_minute
-        self.burst = burst
-        self.max_keys = max_keys
-        self._rate_per_second = requests_per_minute / 60.0
-        self._clock = clock
-        self._buckets: OrderedDict[str, tuple[float, float]] = OrderedDict()
-        self._lock = threading.Lock()
-
-    @classmethod
-    def from_environment(cls) -> TokenBucketRateLimiter:
-        return cls(
-            requests_per_minute=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_PER_MINUTE", "600")),
-            burst=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_BURST", "120")),
-            max_keys=int(os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000")),
-        )
-
-    def consume(self, key: str) -> float | None:
-        """Consume one token or return the retry delay in seconds."""
-
-        now = self._clock()
-        with self._lock:
-            previous = self._buckets.pop(key, None)
-            if previous is None:
-                if len(self._buckets) >= self.max_keys:
-                    self._buckets.popitem(last=False)
-                tokens, last_seen = float(self.burst), now
-            else:
-                tokens, last_seen = previous
-            tokens = min(
-                float(self.burst),
-                tokens + max(0.0, now - last_seen) * self._rate_per_second,
-            )
-            if tokens >= 1.0:
-                self._buckets[key] = (tokens - 1.0, now)
-                return None
-            self._buckets[key] = (tokens, now)
-            return (1.0 - tokens) / self._rate_per_second
-
-
-tile_rate_limiter = TokenBucketRateLimiter.from_environment()
-
-
 def deployment_environment() -> str:
     return os.getenv("DRONEAI_ENV", "development").strip().lower()
 
 
 def is_production() -> bool:
     return deployment_environment() in {"production", "staging"}
+
+
+def build_tile_rate_limiter() -> RateLimiter:
+    backend = os.getenv("DRONEAI_TILE_RATE_LIMIT_BACKEND", "").strip().lower()
+    if not backend or backend == "auto":
+        backend = "database" if is_production() else "local"
+    if is_production() and backend == "local":
+        raise RuntimeError(
+            "Production requires the database-backed tile rate limiter"
+        )
+    requests_per_minute = int(
+        os.getenv("DRONEAI_TILE_RATE_LIMIT_PER_MINUTE", "600")
+    )
+    burst = int(os.getenv("DRONEAI_TILE_RATE_LIMIT_BURST", "120"))
+    max_keys = int(os.getenv("DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS", "10000"))
+    if backend == "database":
+        return DatabaseTokenBucketRateLimiter(
+            session_scope=get_session,
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    if backend == "local":
+        return TokenBucketRateLimiter(
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    raise RuntimeError(
+        "DRONEAI_TILE_RATE_LIMIT_BACKEND must be 'database' or 'local'"
+    )
+
+
+tile_rate_limiter = build_tile_rate_limiter()
 
 
 def configured_cors_origins() -> list[str]:

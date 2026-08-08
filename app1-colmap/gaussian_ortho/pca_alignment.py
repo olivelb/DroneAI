@@ -4,10 +4,23 @@ PCA-based geo-alignment for COLMAP reconstructions.
 Computes the rotation from COLMAP coordinates to geo-aligned
 (East, North, Up) frame using PCA of camera positions.
 """
+from collections.abc import Sequence
+from typing import Any, Protocol
+
 import numpy as np
+from numpy.typing import NDArray
 
 
-def compute_pca_rotation(cameras, point_cloud_points: np.ndarray) -> np.ndarray:
+class CameraWithPosition(Protocol):
+    """CPU-visible camera boundary needed by PCA alignment."""
+
+    T: NDArray[np.floating[Any]]
+
+
+def compute_pca_rotation(
+    cameras: Sequence[CameraWithPosition],
+    point_cloud_points: NDArray[np.floating[Any]],
+) -> tuple[NDArray[np.float64], float]:
     """Compute PCA rotation (COLMAP → geo-aligned Z=Up).
 
     Parameters

@@ -40,10 +40,13 @@ Kafka for pipeline events, and PostgreSQL/PostGIS for mission and vector data.
 
 ### Dashboard and API — `app4-dashboard`
 
-The Next.js frontend lets operators upload datasets, configure and launch
-missions, follow progress, inspect map layers and export results. Its FastAPI
-backend validates requests, stores mission state, publishes work to Kafka and
-serves datasets and results from S3-compatible storage and PostGIS.
+The Next.js frontend uploads datasets directly to S3 through short-lived
+multipart URLs, then lets operators configure and launch missions, follow
+progress, inspect map layers and export results. Its FastAPI backend validates
+and journals upload sessions, stores mission state, publishes work to Kafka and
+serves datasets and results from S3-compatible storage and PostGIS. Production
+API replicas share raster rate-limit state in PostgreSQL and each receive the
+status stream needed for their own WebSocket clients.
 
 ### Reconstruction and raster products — `app1-colmap`
 
@@ -53,20 +56,25 @@ carry resume and product state between them; the Kafka entry point only owns
 the worker lifecycle. The pipeline creates either a georeferenced map frame or
 a local facade frame, applies product-specific quality gates and renders RGB
 and height/depth rasters. Only map missions continue to raster processing and
-AI.
+AI. Aerial publication also requires a versioned spatial-coverage report over
+the registered-camera footprint, preventing a sparse DSM from passing solely
+because enough Gaussian primitives survived filtering.
 
 ### Raster processing — `app3-processing`
 
 The processing worker converts the orthomosaic into overlapping tiles and
 queues them for inference. When detections return, it removes duplicates across
 tile boundaries, creates the final GeoJSON result and can persist indexed
-vectors in PostGIS for spatial search.
+vectors in PostGIS for spatial search. Tile results are read from versioned S3
+artifacts whose exact size, SHA-256, identity and model provenance are verified
+before aggregation.
 
 ### AI inference — `app2-ia`
 
 The AI worker consumes tile jobs and runs either Ultralytics YOLO OBB for
-oriented detections or Meta SAM 3 for segmentation. It sends tile-level
-geometries and confidence data back to the processing worker for aggregation.
+oriented detections or Meta SAM 3 for segmentation. It uploads tile-level
+geometries and confidence data as verified S3 artifacts; Kafka carries bounded
+references rather than embedding potentially large segmentation payloads.
 
 ### Shared services — `shared`
 
@@ -137,7 +145,9 @@ provides the benchmark with independent surveyed checkpoints.
 
 ## License
 
-DroneAI source code is licensed under the [MIT License](LICENSE). External
-source trees, container images, model code and model weights retain their own
-licenses; review [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before
-redistribution.
+Original DroneAI code is licensed under the [MIT License](LICENSE). The
+specified DroneGS translation units and the resulting combined native binary
+are GPL-3.0-or-later. External source trees, container images, model code and
+model weights retain their own licenses; review
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
+[`DroneGS GPL register`](docs/dronegs/GPL_COMPONENTS.md) before redistribution.

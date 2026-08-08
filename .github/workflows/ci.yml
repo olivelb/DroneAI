@@ -361,6 +361,13 @@ jobs:
             exit 1
           fi
           grep -Eq '^[[:space:]]+name: drone-ai-storage-production$' /tmp/drone-ai-production.yaml
+      - name: Verify production application images are immutable
+        run: |
+          if grep -Eq '^[[:space:]]+image: .+:latest$' /tmp/drone-ai-production.yaml; then
+            echo "Mutable application image tag found in the production render" >&2
+            exit 1
+          fi
+          test "$(grep -Ec '^[[:space:]]+image: .+:REPLACE_GIT_SHA$' /tmp/drone-ai-production.yaml)" -ge 5
       - name: Verify preproduction cost and image guards
         run: |
           if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then

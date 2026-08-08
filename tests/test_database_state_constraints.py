@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from shared.database import (
     AIAnalysisRun,
     AIAnalysisTile,
+    DatasetUploadFile,
+    DatasetUploadSession,
     InboxEvent,
     MapFeature,
     Mission,
@@ -33,6 +35,8 @@ EXPECTED_CHECKS = {
     MissionLog: {"ck_mission_logs_status"},
     InboxEvent: {"ck_inbox_events_status"},
     OutboxEvent: {"ck_outbox_events_status"},
+    DatasetUploadSession: {"ck_dataset_upload_sessions_status"},
+    DatasetUploadFile: {"ck_dataset_upload_files_status"},
 }
 
 
@@ -63,6 +67,8 @@ def test_sqlite_enforces_core_workflow_state_constraints():
         MissionLog.__table__,
         InboxEvent.__table__,
         OutboxEvent.__table__,
+        DatasetUploadSession.__table__,
+        DatasetUploadFile.__table__,
     ):
         table.create(engine)
 

@@ -5,6 +5,7 @@ import pytest
 from shared.kafka_reliability import (
     MessageDeferredError,
     RetryPolicy,
+    publish_json,
     process_message,
     reliable_consumer_config,
 )
@@ -40,15 +41,22 @@ class FakeConsumer:
 
 
 class FakeProducer:
-    def __init__(self, pending=0):
-        self.pending = pending
+    def __init__(self, delivery_error=None, *, deliver=True):
+        self.delivery_error = delivery_error
+        self.deliver = deliver
         self.messages = []
+        self.callbacks = []
+        self.polls = []
 
-    def produce(self, topic, *, key, value):
+    def produce(self, topic, *, key, value, on_delivery):
         self.messages.append((topic, key, json.loads(value)))
+        self.callbacks.append(on_delivery)
 
-    def flush(self):
-        return self.pending
+    def poll(self, timeout):
+        self.polls.append(timeout)
+        if self.deliver and self.callbacks:
+            self.callbacks.pop(0)(self.delivery_error, None)
+        return 0
 
 
 def tile_message(*, attempt=0):
@@ -75,6 +83,32 @@ def test_consumer_config_disables_automatic_offset_management():
     assert config["enable.auto.commit"] is False
     assert config["enable.auto.offset.store"] is False
     assert config["max.poll.interval.ms"] == 123
+
+
+def test_publish_json_confirms_only_its_delivery_with_poll():
+    producer = FakeProducer()
+
+    publish_json(producer, "tile-detections", {"value": 1}, key="tile-1")
+
+    assert producer.messages == [("tile-detections", "tile-1", {"value": 1})]
+    assert len(producer.polls) == 1
+
+
+def test_publish_json_propagates_delivery_error_and_timeout():
+    with pytest.raises(RuntimeError, match="delivery failed"):
+        publish_json(
+            FakeProducer(delivery_error="broker unavailable"),
+            "tile-detections",
+            {"value": 1},
+        )
+
+    with pytest.raises(TimeoutError, match="confirmation timed out"):
+        publish_json(
+            FakeProducer(deliver=False),
+            "tile-detections",
+            {"value": 1},
+            delivery_timeout_seconds=0,
+        )
 
 
 def test_process_message_retries_then_commits_after_success():
@@ -171,9 +205,9 @@ def test_process_message_defers_without_commit_or_dead_letter():
 
 def test_dead_letter_delivery_failure_leaves_offset_uncommitted():
     consumer = FakeConsumer()
-    producer = FakeProducer(pending=1)
+    producer = FakeProducer(delivery_error="broker unavailable")
 
-    with pytest.raises(RuntimeError, match="undelivered"):
+    with pytest.raises(RuntimeError, match="delivery failed"):
         process_message(
             consumer=consumer,
             producer=producer,

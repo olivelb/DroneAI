@@ -81,6 +81,23 @@ def test_map_filter_defaults_preserve_gaussian_coverage():
     params = merge_pipeline_params("modern")
     assert params["gs_filter_max_scale"] == "5.0"
     assert params["gs_filter_min_retained_ratio"] == "0.80"
+    assert params["gs_coverage_gate_enabled"] is True
+    assert params["gs_coverage_grid_size"] == "16"
+    assert params["gs_coverage_min_valid_ratio"] == "0.50"
+
+
+def test_spatial_coverage_thresholds_are_validated():
+    assert validate_pipeline_overrides(
+        {
+            "gs_coverage_grid_size": 24,
+            "gs_coverage_min_valid_ratio": 0.60,
+        }
+    ) == {
+        "gs_coverage_grid_size": 24,
+        "gs_coverage_min_valid_ratio": 0.60,
+    }
+    with pytest.raises(ValueError, match="gs_coverage_grid_size must be <="):
+        validate_pipeline_overrides({"gs_coverage_grid_size": 65})
 
 
 def test_pipeline_overrides_validate_non_rtk_alignment_tolerance():

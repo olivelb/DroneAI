@@ -72,15 +72,52 @@ Cookie-authenticated mutations also require a configured trusted `Origin`.
 
 ## Upload policy
 
-The API accepts aerial images plus DJI/GNSS sidecars and enforces:
+The browser creates a durable upload session through the API, requests a
+short-lived URL for each S3 multipart part, sends the bytes directly to object
+storage and returns the ETags for server-side completion. The API verifies the
+completed object size and publishes `dataset-manifest.json` only after every
+file is complete. Incomplete sessions expire after 24 hours by default and the
+API cleanup worker aborts their stored multipart parts.
+
+The API accepts aerial images plus DJI/GNSS sidecars and enforces the same
+quotas before issuing any storage URL:
 
 - `DRONEAI_UPLOAD_MAX_FILES` (default 2,500);
 - `DRONEAI_UPLOAD_MAX_FILE_BYTES` (default 2 GiB);
 - `DRONEAI_UPLOAD_MAX_BATCH_BYTES` (default 50 GiB);
 - a fixed extension allow-list.
 
+Operational tuning is available through:
+
+- `DRONEAI_UPLOAD_PART_BYTES` (default 16 MiB, 5–512 MiB);
+- `DRONEAI_UPLOAD_SESSION_SECONDS` (default 24 hours, maximum seven days);
+- `DRONEAI_UPLOAD_PART_URL_SECONDS` (default 15 minutes, maximum one hour);
+- `DRONEAI_UPLOAD_CLEANUP_SECONDS` (default 15 minutes).
+
+The S3 bucket must allow `PUT`, `GET` and `HEAD` from the exact frontend
+origin and expose the `ETag` response header. Local MinIO receives that rule
+automatically. For an external S3-compatible bucket, apply it with
+`scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
+origin. The previous API-proxied `/datasets/upload` endpoint remains available
+temporarily for compatibility, but Mission Studio no longer uses it.
+
 Retention and lifecycle rules remain the responsibility of the selected S3
 service and must be configured before public ingestion.
+
+## AI model integrity policy
+
+The supported YOLO26 and YOLO11 OBB variants are allow-listed by repository,
+release, asset URL and SHA-256 in `app2-ia/detection_core.py`. Runtime cache
+files are checked before model deserialization, not merely hashed afterward
+for provenance. The approved release is `ultralytics/assets` `v8.4.0`; changing
+`AERIAL_MODEL_RELEASE` without updating and reviewing the registry fails
+closed.
+
+An operator-provided `AERIAL_MODEL_FILE` whose filename is outside that
+registry must be accompanied by `AERIAL_CUSTOM_MODEL_SHA256` and a non-empty
+`AERIAL_CUSTOM_MODEL_REVISION`. Record those values as reviewed deployment
+configuration. Do not use the custom path as an untracked download escape
+hatch.
 
 ## Geodetic product contract
 
@@ -113,19 +150,46 @@ metadata remains `coordinate_space=local`, that the manifest records
 `FACADE_HD_V1`, and that no absolute RTK, GCP or gravity option
 can leak into the facade frame.
 
+Every aerial Gaussian render must also publish
+`gaussian_coverage_report.json` under the versioned
+`GAUSSIAN_MAP_COVERAGE_V1` policy. The gate evaluates finite DSM pixels over a
+16-by-16 registered-camera footprint, including global validity, occupied
+cells, the worst expected cell and camera-cell tenth percentile. Its defaults
+are 50%, 75% of cells above 25%, 1% and 10%, respectively. Failure stops
+GeoTIFF publication unless an operator explicitly disables enforcement; that
+override remains visible as `measured-rejected` in the report and manifest.
+NaN is the only missing-height representation. Facade products are excluded
+because their local wall-frame selection has a separate quality contract.
+
 ## Distributed durability contract
 
 - The required orthomosaic is uploaded with SHA-256 metadata and verified by
   `HEAD` before `DONE` or the downstream event can be published.
-- Every AI tile response has a unique database receipt, including responses
-  with zero detections.
+- Every AI tile response is a versioned S3 object; Kafka carries only its
+  deterministic key, exact size, SHA-256, schema version and detection count.
+- Both aggregation paths verify object integrity, tile identity and model
+  provenance before persistence. Modern receipts retain the object key, hash
+  size and producing attempt, including responses with zero detections, so
+  recovery revalidates the correct inputs before finalization.
 - Aggregation completion is locked in PostgreSQL and stale finalizations are
   recovered after a worker restart.
 - Outbox events enter `dead` after their retry budget; administrators can list
   and explicitly replay them.
+- Kafka publications use per-record delivery callbacks and bounded polling.
+  Consumed offsets and poison-message offsets are committed only after the
+  corresponding output or dead-letter record is confirmed by the broker.
+- Staging and production use PostgreSQL-backed raster token buckets shared by
+  every API replica; process-local limiting is rejected in those environments.
+- Each API pod has a distinct status consumer group for local WebSocket fan-out,
+  while the shared status inbox applies the database transition only once.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init
   containers prevent database-dependent services from starting on an old
   schema.
+
+For an in-place upgrade from a release that still embeds detections in Kafka,
+pause IA consumption first, apply migration `0010` and roll the processing/API
+consumers, then roll and resume IA. New consumers accept queued inline events;
+old consumers must never receive the new reference-only form.
 
 ## Release gates
 
@@ -141,6 +205,8 @@ Required on every candidate:
 7. Immutable benchmark bundle with binary/dataset/artifact hashes.
 8. Facade regression: inclusive exclusion audit, sparse-distribution metrics,
    local CRS-free raster metadata and terminal dashboard status.
+9. Aerial Gaussian spatial-coverage report accepted under the policy shipped
+   with the candidate.
 
 The spatial-block implementation is ready, but its production PSNR/SSIM/LPIPS
 thresholds remain a measured gate: use at least five complete ALBAGNAC and

@@ -7,13 +7,14 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from . import security
 
 
-class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):
+class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
     async def dispatch(
         self,
         request: Request,
@@ -29,7 +30,10 @@ class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_key = request.client.host if request.client else "unknown"
-        retry_after = security.tile_rate_limiter.consume(client_key)
+        retry_after = await run_in_threadpool(
+            security.tile_rate_limiter.consume,
+            client_key,
+        )
         if retry_after is not None:
             return JSONResponse(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

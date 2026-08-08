@@ -1,7 +1,7 @@
 """
 VastGaussian-style divide-and-conquer partitioning.
 
-Splits a large scene into an m×n grid of overlapping cells, assigns
+Splits a large scene into an m-by-n grid of overlapping cells, assigns
 cameras via visibility, and creates per-cell SceneInfo objects for
 independent training.
 """
@@ -27,7 +27,7 @@ class CellBounds:
 def compute_partition_grid(scene: SceneInfo, m: int = 2, n: int = 2,
                            overlap: float = 0.20) -> list[CellBounds]:
     """
-    Compute an m×n partition grid over the scene extent.
+    Compute an m-by-n partition grid over the scene extent.
 
     The grid is laid out in the X-Y plane of the geo-aligned coordinate
     system.  Each cell is expanded by *overlap* fraction on each side
@@ -36,9 +36,9 @@ def compute_partition_grid(scene: SceneInfo, m: int = 2, n: int = 2,
     Parameters
     ----------
     scene : SceneInfo
-    m : int  – rows (Y partitions)
-    n : int  – cols (X partitions)
-    overlap : float – fractional overlap on each side (default 20%)
+    m : int - rows (Y partitions)
+    n : int - cols (X partitions)
+    overlap : float - fractional overlap on each side (default 20%)
 
     Returns
     -------
@@ -72,7 +72,9 @@ def compute_partition_grid(scene: SceneInfo, m: int = 2, n: int = 2,
 def _camera_in_cell(cam: CameraInfo, cell: CellBounds) -> bool:
     """Check if camera centre (X-Y) lies within the cell bounds."""
     x, y = cam.T[0], cam.T[1]
-    return cell.x_min <= x <= cell.x_max and cell.y_min <= y <= cell.y_max
+    return bool(
+        cell.x_min <= x <= cell.x_max and cell.y_min <= y <= cell.y_max
+    )
 
 
 def _filter_points_in_cell(pc: PointCloud, cell: CellBounds) -> PointCloud:
@@ -92,7 +94,7 @@ def partition_scene(scene: SceneInfo, m: int = 2, n: int = 2,
                     overlap: float = 0.20, min_cameras: int = 5
                     ) -> list[tuple[CellBounds, SceneInfo]]:
     """
-    Partition a scene into m×n cells.
+    Partition a scene into m-by-n cells.
 
     For each cell:
       1. Select cameras whose centre is within the (padded) cell.
@@ -104,7 +106,7 @@ def partition_scene(scene: SceneInfo, m: int = 2, n: int = 2,
     Returns list of (CellBounds, SceneInfo) pairs.
     """
     cells = compute_partition_grid(scene, m, n, overlap)
-    result = []
+    result: list[tuple[CellBounds, SceneInfo]] = []
 
     for cell in cells:
         cams = [c for c in scene.train_cameras if _camera_in_cell(c, cell)]

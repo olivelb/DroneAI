@@ -19,9 +19,12 @@ from fastapi import (
 from fastapi.responses import RedirectResponse, StreamingResponse
 
 from shared import storage
+from shared.database import get_session
 
+from .. import dataset_uploads
 from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
+    Principal,
     require_admin,
     require_authenticated,
     require_operator,
@@ -34,18 +37,7 @@ router = APIRouter(
 )
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 MAX_INLINE_PREVIEW_BYTES = 64 * 1024 * 1024
-DATASET_SUFFIXES = {
-    *IMAGE_SUFFIXES,
-    ".tif",
-    ".tiff",
-    ".mrk",
-    ".nav",
-    ".obs",
-    ".bin",
-    ".rtk",
-    ".txt",
-    ".csv",
-}
+DATASET_SUFFIXES = dataset_uploads.DATASET_SUFFIXES
 
 
 class BrowseItem(TypedDict):
@@ -337,3 +329,79 @@ def upload_dataset_batch(
             )
     result["status"] = "done" if not result["failed"] else "partial"
     return result
+
+
+@router.post(
+    "/datasets/upload-sessions",
+    status_code=status.HTTP_201_CREATED,
+)
+def create_direct_upload_session(
+    request: dataset_uploads.UploadSessionRequest,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> dataset_uploads.UploadSessionResponse:
+    with get_session() as session:
+        return dataset_uploads.create_upload_session(session, request, principal)
+
+
+@router.post(
+    "/datasets/upload-sessions/{session_id}/files/{file_id}/parts/{part_number}",
+)
+def create_direct_upload_part_url(
+    session_id: str,
+    file_id: str,
+    part_number: int,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> dataset_uploads.UploadPartUrlResponse:
+    with get_session() as session:
+        return dataset_uploads.create_part_url(
+            session,
+            session_id,
+            file_id,
+            part_number,
+            principal,
+        )
+
+
+@router.post(
+    "/datasets/upload-sessions/{session_id}/files/{file_id}/complete",
+)
+def complete_direct_upload_file(
+    session_id: str,
+    file_id: str,
+    request: dataset_uploads.CompleteUploadFileRequest,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> dataset_uploads.UploadFileCompleteResponse:
+    with get_session() as session:
+        return dataset_uploads.complete_upload_file(
+            session,
+            session_id,
+            file_id,
+            request,
+            principal,
+        )
+
+
+@router.post("/datasets/upload-sessions/{session_id}/complete")
+def complete_direct_upload_session(
+    session_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> dataset_uploads.UploadFinalizeResponse:
+    with get_session() as session:
+        return dataset_uploads.finalize_upload_session(
+            session,
+            session_id,
+            principal,
+        )
+
+
+@router.delete("/datasets/upload-sessions/{session_id}")
+def abort_direct_upload_session(
+    session_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> dict[str, str]:
+    with get_session() as session:
+        return dataset_uploads.abort_upload_session(
+            session,
+            session_id,
+            principal,
+        )

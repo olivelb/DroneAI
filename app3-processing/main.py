@@ -59,6 +59,11 @@ progress_publisher = make_progress_publisher(
     TOPIC_STATUS,
     service_name="TILER",
 )
+ia_progress_publisher = make_progress_publisher(
+    producer,
+    TOPIC_STATUS,
+    service_name="IA",
+)
 cancel_manager = DurableCancellationRegistry()
 
 
@@ -70,6 +75,22 @@ def report_progress(
     log: str | None = None,
 ) -> None:
     progress_publisher(
+        vol_id,
+        step,
+        progress,
+        status=status,
+        log=log,
+    )
+
+
+def report_ia_progress(
+    vol_id: str,
+    step: str,
+    progress: int,
+    status: str = "processing",
+    log: str | None = None,
+) -> None:
+    ia_progress_publisher(
         vol_id,
         step,
         progress,
@@ -94,6 +115,7 @@ orthomosaic_tiler = OrthomosaicTiler(
 )
 legacy_workflow = LegacyAggregationWorkflow(
     report_progress=report_progress,
+    report_ia_progress=report_ia_progress,
     logger=logger,
 )
 dispatcher = ProcessingDispatcher(

@@ -15,9 +15,24 @@ if ROOT not in sys.path:
 
 from gaussian_ortho.height_reference import (
     depth_buffer_to_height,
+    empty_height_map,
     georeference_height_map,
     georeference_raster_origin,
 )
+
+
+def test_empty_height_map_is_nodata() -> None:
+    height = empty_height_map(2, 3)
+
+    assert height.shape == (2, 3)
+    assert height.dtype == np.float32
+    assert np.isnan(height).all()
+
+
+@pytest.mark.parametrize(("height", "width"), [(0, 1), (1, 0), (-1, 1)])
+def test_invalid_empty_height_map_shape_is_rejected(height: int, width: int) -> None:
+    with pytest.raises(ValueError, match="dimensions"):
+        empty_height_map(height, width)
 
 
 def test_depth_buffer_is_unprojected_and_empty_pixels_are_nodata() -> None:

@@ -64,6 +64,51 @@ def test_decode_event_upgrades_a_legacy_payload():
     assert event["event_id"].startswith("tile_detection:")
 
 
+def test_tile_detection_accepts_a_complete_object_storage_reference():
+    event = make_event(
+        "tile_detection",
+        {
+            "vol_id": "mission-1",
+            "tile_index": 2,
+            "model_manifest": {"backend": "yolo"},
+            "result_s3_key": "missions/mission-1/ai-tile-results/pipeline/attempt_0/tile_2.json",
+            "result_sha256": "a" * 64,
+            "result_size_bytes": 123,
+            "detection_count": 4,
+            "result_schema_version": 1,
+        },
+    )
+
+    assert event["result_size_bytes"] == 123
+    assert "detections" not in event
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "vol_id": "mission-1",
+            "tile_index": 2,
+            "result_s3_key": "result.json",
+        },
+        {
+            "vol_id": "mission-1",
+            "tile_index": 2,
+            "detections": [],
+            "model_manifest": {"backend": "yolo"},
+            "result_s3_key": "result.json",
+            "result_sha256": "a" * 64,
+            "result_size_bytes": 2,
+            "detection_count": 0,
+            "result_schema_version": 1,
+        },
+    ],
+)
+def test_tile_detection_rejects_incomplete_or_ambiguous_results(payload):
+    with pytest.raises(EventValidationError, match="result reference|exactly one"):
+        make_event("tile_detection", payload)
+
+
 def test_decode_event_rejects_wrong_version_and_missing_fields():
     with pytest.raises(EventValidationError, match="unsupported schema_version"):
         decode_event(
