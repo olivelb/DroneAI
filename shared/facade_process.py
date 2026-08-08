@@ -34,6 +34,7 @@ FACADE_PARAMETER_DEFAULTS = MappingProxyType(
         "facade_depth_iqr_multiplier": "1.0",
         "facade_seed_max_reprojection_error": "2.0",
         "facade_seed_min_track_length": "2",
+        "facade_filter_max_scale": "1.0",
         "facade_canary_min_psnr": "18",
         "facade_canary_min_ssim": "0.25",
     }

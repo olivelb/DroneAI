@@ -9,6 +9,17 @@ import os
 import numpy as np
 
 
+def _geotiff_creation_options(*, photometric: str | None = None) -> dict[str, str]:
+    """Return lossless GTiff options that remain valid past the 4 GiB limit."""
+    options = {
+        "compress": "lzw",
+        "BIGTIFF": "IF_SAFER",
+    }
+    if photometric is not None:
+        options["photometric"] = photometric
+    return options
+
+
 def write_geotiff(output_path: str, rgb: np.ndarray,
                   x_min: float, y_max: float, gsd: float,
                   crs: str = "EPSG:32631",
@@ -49,8 +60,7 @@ def write_geotiff(output_path: str, rgb: np.ndarray,
         output_path, 'w', driver='GTiff',
         height=H, width=W, count=3,
         dtype='uint8', crs=crs, transform=geo_transform,
-        compress='lzw',
-        photometric='rgb',
+        **_geotiff_creation_options(photometric="rgb"),
     ) as dst:
         for band_idx in range(3):
             dst.write(np.ascontiguousarray(rgb[:, :, band_idx]), band_idx + 1)
@@ -85,7 +95,7 @@ def write_geotiff(output_path: str, rgb: np.ndarray,
             height_output_path, 'w', driver='GTiff',
             height=H, width=W, count=1,
             dtype='float32', crs=crs, transform=geo_transform,
-            compress='lzw',
             nodata=np.nan,
+            **_geotiff_creation_options(),
         ) as dst:
             dst.write(height_map.reshape(1, H, W))

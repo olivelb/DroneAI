@@ -25,7 +25,7 @@ from gaussian_ortho.colmap_loader import (
 )
 from gaussian_ortho.scene_info import build_scene_info
 from gaussian_ortho.partition import compute_partition_grid, partition_scene
-from gaussian_ortho.geo_writer import write_geotiff
+from gaussian_ortho.geo_writer import _geotiff_creation_options, write_geotiff
 
 if cp is not None:
     from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
@@ -306,6 +306,13 @@ class TestOrthoRenderer:
 # ---------------------------------------------------------------------------
 
 class TestGeoWriter:
+    def test_bigtiff_is_enabled_for_large_outputs(self):
+        assert _geotiff_creation_options(photometric="rgb") == {
+            "compress": "lzw",
+            "BIGTIFF": "IF_SAFER",
+            "photometric": "rgb",
+        }
+
     def test_write_rgb(self):
         rgb = np.random.randint(0, 255, (100, 200, 3), dtype=np.uint8)
         with tempfile.TemporaryDirectory() as tmpdir:

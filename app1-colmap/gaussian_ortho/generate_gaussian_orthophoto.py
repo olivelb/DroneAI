@@ -212,6 +212,7 @@ class GaussianOrthoConfig:
     cap_max: int
     filter_enabled: bool
     filter_max_scale: float
+    filter_min_retained_ratio: float
     filter_dist_multiplier: float
     filter_opacity_threshold: float
     filter_needle_ratio: float
@@ -870,6 +871,7 @@ def prepare_gaussian_render_state(
             model,
             local_camera_positions,
             max_scale=config.filter_max_scale,
+            minimum_retained_ratio=config.filter_min_retained_ratio,
             dist_multiplier=config.filter_dist_multiplier,
             opacity_threshold=config.filter_opacity_threshold,
             needle_ratio=config.filter_needle_ratio,
@@ -997,7 +999,8 @@ def generate_gaussian_orthophoto(
     tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
     cap_max: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
     filter_enabled: bool = True,
-    filter_max_scale: float = 1.0,
+    filter_max_scale: float = 5.0,
+    filter_min_retained_ratio: float = 0.80,
     filter_dist_multiplier: float = 1.0,
     filter_opacity_threshold: float = 0.005,
     filter_needle_ratio: float = 0.0,
@@ -1140,6 +1143,7 @@ def generate_gaussian_orthophoto(
         cap_max=cap_max,
         filter_enabled=filter_enabled,
         filter_max_scale=filter_max_scale,
+        filter_min_retained_ratio=filter_min_retained_ratio,
         filter_dist_multiplier=filter_dist_multiplier,
         filter_opacity_threshold=filter_opacity_threshold,
         filter_needle_ratio=filter_needle_ratio,

@@ -127,6 +127,7 @@ def test_prepare_gaussian_render_state_preserves_facade_frame_and_extent(
         report_fn=lambda *_args, **_kwargs: None,
         filter_enabled=False,
         filter_max_scale=1.0,
+        filter_min_retained_ratio=0.80,
         filter_dist_multiplier=1.0,
         filter_opacity_threshold=0.005,
         filter_needle_ratio=0.0,

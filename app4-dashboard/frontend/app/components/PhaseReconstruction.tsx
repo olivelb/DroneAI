@@ -22,6 +22,7 @@ const RECONSTRUCTION_PARAMS = [
   "facade_depth_iqr_multiplier",
   "facade_seed_max_reprojection_error",
   "facade_seed_min_track_length",
+  "facade_filter_max_scale",
   "facade_canary_min_psnr",
   "facade_canary_min_ssim",
   "feature_type",
