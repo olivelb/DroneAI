@@ -76,6 +76,10 @@ Named SQL `CHECK` constraints reject impossible mission, aggregation, analysis,
 tile, map-feature, log, inbox and outbox states. Their SQLite regression tests
 run in the default suite, while CI validates migration `0007` through the
 PostgreSQL/PostGIS upgrade/downgrade/re-upgrade job.
+Migration `0008` adds renewable leases to the shared worker inbox; broker-free
+tests cover overlap deferral, heartbeat ownership, stale takeover, failure
+reclaim and duplicate suppression without keeping a database transaction open
+around long GPU, S3 or raster work.
 
 CI also rejects unused imports/locals and any new function above the repository
 complexity budget across every Python service, shared module and local tool. The

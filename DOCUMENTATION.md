@@ -107,6 +107,8 @@ Operational notes:
   aggregation, analysis, tile, map-feature, pipeline-log, inbox and outbox
   states. Existing unexpected values deliberately block the upgrade instead of
   being silently rewritten.
+- Migration `0008` adds renewable inbox leases for long-running worker
+  handlers.
 
 ## Shared Python package
 
@@ -117,7 +119,7 @@ Key responsibilities are grouped rather than duplicated in workers:
 - configuration, storage and persistence: `config.py`, `storage.py`,
   `database.py`;
 - reliable events: `event_schemas.py`, `event_contracts.py`, `inbox_outbox.py`,
-  `kafka_reliability.py`, `worker_messaging.py`;
+  `worker_inbox.py`, `kafka_reliability.py`, `worker_messaging.py`;
 - product configuration: `pipeline_params.py`, `dronegs_profile.py`,
   `facade_process.py`, `validation.py`;
 - geometry and controls: `geo_alignment.py`, `projected_crs.py`,
@@ -501,6 +503,8 @@ writes.
 
 The contract and retry machinery is covered with broker-free fakes, so its
 state transitions are testable without Kafka, Postgres, MinIO, or Kubernetes.
+An event whose durable inbox claim is still active is repositioned at the same
+Kafka offset and retried without commit or dead-letter publication.
 
 ### Transactional inbox/outbox
 
@@ -564,12 +568,24 @@ current Helm hook instead creates missing tables with SQLAlchemy metadata. That
 is sufficient for a new empty database, but it is not a replacement for
 versioned in-place schema migration.
 
-Current boundary: mission/control/status events use the transactional
-inbox/outbox. Heavy worker outputs that cross GPU, S3, and Kafka still use
-deterministic IDs plus manual commits. Extending the outbox to those workers
-requires deciding where their long-running external side effects end and the
-short database transaction begins; holding a database transaction throughout
-COLMAP or inference is explicitly avoided.
+Mission/control/status events use the transactional API inbox/outbox. Migration
+`0008_worker_inbox_leases.py` extends durable inbox deduplication to the COLMAP,
+IA, and processing work consumers without holding a database transaction open
+during COLMAP, inference, raster processing, or S3 I/O:
+
+- a short transaction claims `(consumer_group, event_id)` and records the
+  Kafka location;
+- a background heartbeat renews `locked_at` while the handler runs;
+- success or failure is recorded in another short transaction;
+- a completed receipt suppresses replay, a failed or expired receipt can be
+  reclaimed, and an active receipt defers the Kafka offset without committing
+  or sending it to the DLQ.
+
+`INBOX_LEASE_SECONDS` defaults to `300`; `INBOX_BUSY_RETRY_SECONDS` defaults to
+`5`. Heavy worker publications still use deterministic IDs plus manual Kafka
+commits. They are not globally exactly-once because GPU/S3/Kafka side effects
+cannot share the inbox database transaction; extending the outbox to those
+publications remains a separate boundary decision.
 
 ### `vols-bruts`
 

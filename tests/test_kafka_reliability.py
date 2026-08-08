@@ -3,6 +3,7 @@ import json
 import pytest
 
 from shared.kafka_reliability import (
+    MessageDeferredError,
     RetryPolicy,
     process_message,
     reliable_consumer_config,
@@ -29,9 +30,13 @@ class FakeMessage:
 class FakeConsumer:
     def __init__(self):
         self.commits = []
+        self.seeks = []
 
     def commit(self, *, message, asynchronous):
         self.commits.append((message, asynchronous))
+
+    def seek(self, position):
+        self.seeks.append(position)
 
 
 class FakeProducer:
@@ -130,6 +135,38 @@ def test_process_message_dead_letters_poison_event_then_commits():
     assert dead_letter["source_partition"] == 2
     assert dead_letter["source_offset"] == 42
     assert "RuntimeError: permanent" in dead_letter["error"]
+
+
+def test_process_message_defers_without_commit_or_dead_letter():
+    consumer = FakeConsumer()
+    producer = FakeProducer()
+    sleeps = []
+
+    result = process_message(
+        consumer=consumer,
+        producer=producer,
+        message=tile_message(),
+        consumer_group="ia-workers",
+        expected_type="image_tile",
+        dead_letter_topic="pipeline-dead-letter",
+        handler=lambda _event: (_ for _ in ()).throw(
+            MessageDeferredError("claim is active", retry_after_seconds=0.25)
+        ),
+        retry_policy=RetryPolicy(3, 0, 0),
+        sleep=sleeps.append,
+    )
+
+    assert result is False
+    assert consumer.commits == []
+    assert producer.messages == []
+    assert sleeps == [0.25]
+    assert len(consumer.seeks) == 1
+    position = consumer.seeks[0]
+    assert (position.topic, position.partition, position.offset) == (
+        "image-tiles",
+        2,
+        42,
+    )
 
 
 def test_dead_letter_delivery_failure_leaves_offset_uncommitted():

@@ -178,7 +178,7 @@ ANALYSIS_RUN_PHASES = (
 ANALYSIS_TILE_STATUSES = ("queued", "completed", "dead")
 MAP_FEATURE_SOURCES = ("manual", "ai")
 PIPELINE_LOG_STATUSES = ("processing", "success", "error", "cancelled")
-INBOX_EVENT_STATUSES = ("processing", "completed")
+INBOX_EVENT_STATUSES = ("processing", "completed", "failed")
 OUTBOX_EVENT_STATUSES = (
     "pending",
     "publishing",
@@ -594,6 +594,7 @@ class InboxEvent(Base):
             name="uq_inbox_consumer_event",
         ),
         Index("ix_inbox_source_offset", "source_topic", "source_partition", "source_offset"),
+        Index("ix_inbox_claim", "status", "locked_at"),
         CheckConstraint(
             _values_check("status", INBOX_EVENT_STATUSES),
             name="ck_inbox_events_status",
@@ -617,6 +618,8 @@ class InboxEvent(Base):
         default=lambda: datetime.now(UTC),
     )
     processed_at = Column(DateTime(timezone=True), nullable=True)
+    locked_at = Column(DateTime(timezone=True), nullable=True)
+    locked_by = Column(String(256), nullable=True)
 
 
 class OutboxEvent(Base):
