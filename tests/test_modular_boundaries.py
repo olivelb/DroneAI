@@ -188,7 +188,7 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     page_source = _source(page)
 
     assert _line_count(auth) < 130
-    assert _line_count(store) < 240
+    assert _line_count(store) < 190
     assert "createSession" in auth_source
     assert "deleteSession" in auth_source
     assert "fetchSession" in auth_source
@@ -215,3 +215,22 @@ def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
     assert "new WebSocket" not in store_source
     assert "MissionSummary" not in store_source
     assert "<MissionRuntimeProvider>" in page_source
+
+
+def test_frontend_workspace_cache_is_separate_from_local_editing_state():
+    workspace = "app4-dashboard/frontend/app/lib/workspace-data.tsx"
+    store = "app4-dashboard/frontend/app/lib/store.tsx"
+    page = "app4-dashboard/frontend/app/page.tsx"
+    workspace_source = _source(workspace)
+    store_source = _source(store)
+    page_source = _source(page)
+
+    assert _line_count(workspace) < 110
+    assert "fetchBrowse" in workspace_source
+    assert "fetchPods" in workspace_source
+    assert "fetchBrowse" not in store_source
+    assert "fetchPods" not in store_source
+    assert "DatasetItem" not in store_source
+    assert "PodState" not in store_source
+    assert "selectedPath" in store_source
+    assert "<WorkspaceDataProvider>" in page_source
