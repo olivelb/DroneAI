@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from typing import Any
 
 from confluent_kafka import Producer
@@ -44,11 +43,7 @@ def build_new_mission_event(payload: dict) -> dict:
     return make_event(
         "mission",
         payload,
-        event_id=deterministic_event_id(
-            "mission",
-            vol_id,
-            time.time_ns(),
-        ),
+        event_id=deterministic_event_id("mission", vol_id, "start"),
         correlation_id=vol_id,
         attempt=attempt,
     )

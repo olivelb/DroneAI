@@ -198,7 +198,7 @@ Primary endpoints:
 - `GET /mission/parameters`
 - `POST /mission/resume`
 - `DELETE /mission/{vol_id}`
-- `POST /datasets/upload-file`
+- `POST /datasets/upload` (server-validated multi-file batch)
 - `GET /preview/{s3_key}`
 - `GET /maps/{vol_id}/metadata/{layer}`
 - `GET /maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png`
