@@ -6,6 +6,7 @@ PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/ap
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/coverage_quality.py \
+	app1-colmap/gaussian_ortho/exif_altitude.py \
 	app1-colmap/gaussian_ortho/facade_frame.py \
 	app1-colmap/gaussian_ortho/filter_quality.py \
 	app1-colmap/gaussian_ortho/geo_writer.py \
