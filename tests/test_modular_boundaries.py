@@ -104,6 +104,19 @@ def test_long_running_workers_use_the_shared_durable_inbox_boundary():
         assert "shared.database" not in source
 
 
+def test_every_worker_uses_shared_durable_cancellation():
+    cancellation_roots = [
+        "app1-colmap/colmap_worker/runtime.py",
+        "app2-ia/main.py",
+        "app3-processing/main.py",
+    ]
+
+    assert all(
+        "DurableCancellationRegistry" in _source(module)
+        for module in cancellation_roots
+    )
+
+
 def test_colmap_worker_keeps_a_small_side_effect_free_composition_root():
     composition = "app1-colmap/main.py"
     worker = "app1-colmap/colmap_worker/worker.py"

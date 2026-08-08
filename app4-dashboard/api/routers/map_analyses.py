@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
+from shared.cancellation import mark_cancellation_requested
 from shared.config import TOPIC_CONTROL, TOPIC_ORTHO
 from shared.database import (
     AIAnalysisRun,
@@ -212,9 +213,16 @@ def cancel_analysis(
                 status_code=409,
                 detail="A completed analysis cannot be cancelled",
             )
-        run.status = "cancelled"
-        run.phase = "cancelled"
-        run.heartbeat_at = datetime.now(UTC)
+        if not mark_cancellation_requested(
+            typed_session,
+            vol_id=vol_id,
+            run_id=run_id,
+            attempt=run.retry_count,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Analysis generation changed before cancellation",
+            )
         event = make_event(
             "control",
             {

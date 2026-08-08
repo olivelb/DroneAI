@@ -35,8 +35,7 @@ def control_consumer_thread(producer: object) -> None:
     control_consumer_loop(
         KAFKA_BROKER,
         TOPIC_CONTROL,
-        runtime.cancellation_state.should_cancel,
-        runtime.cancellation_state.on_cancel,
+        runtime.cancellation_state.cancel,
         logger,
         producer,
         TOPIC_DEAD_LETTER,
@@ -62,7 +61,10 @@ def worker_main() -> None:
         mission_context = None
         try:
             mission_context = build_mission_context(mission)
-            runtime.cancellation_state.start_mission(mission_context.vol_id)
+            runtime.cancellation_state.start_mission(
+                mission_context.vol_id,
+                int(mission.get("attempt", 0)),
+            )
             previous_state = runtime.mission_state_tracker.start_mission(mission_context)
 
             log_mission_start(mission_context)

@@ -26,6 +26,7 @@ kafka:
     # Kafka offset until the active claim completes or expires.
     leaseSeconds: 300
     busyRetrySeconds: 5
+  cancellationPollSeconds: 2
   # Created idempotently after each Helm install/upgrade so consumers never
   # start against missing application topics.
   topics:

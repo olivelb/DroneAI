@@ -272,6 +272,14 @@ projected GeoPackage export from a completed mission. CI installs Chromium with
 its Linux system dependencies and uploads the Playwright report when the suite
 fails.
 
+Worker cancellation is durable and generation-aware. The API commits the
+PostgreSQL cancellation state and its outbox command atomically; all worker
+replicas then consult that state even if Kafka delivered the control event to a
+different replica. `CANCELLATION_POLL_SECONDS` controls the rate of negative
+database checks and defaults to `2`. Keep cross-registry propagation, stale
+attempt rejection, and polling-rate tests in `tests/test_cancellation.py` when
+changing this contract.
+
 The lock currently pins Next.js `16.2.12`. Security advisories change over
 time, so verify the current dependency graph locally:
 

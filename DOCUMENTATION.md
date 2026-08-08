@@ -54,11 +54,15 @@ The runtime data path is:
 The control path is:
 
 1. The dashboard asks the API to cancel a mission.
-2. The API durably enqueues a `pipeline-control` outbox event.
+2. The API marks the current mission attempt `cancelled` in PostgreSQL and
+   durably enqueues a `pipeline-control` outbox event in the same transaction.
 3. The dispatcher publishes it to Kafka.
-4. Dedicated control consumers in the COLMAP, IA and processing workers mark
-   the mission as cancelled in process-local state.
-5. Long-running loops check that state at their available cancellation points.
+4. Dedicated control consumers give the matching COLMAP, IA and processing
+   worker replicas an immediate cancellation signal.
+5. Every worker replica also checks the attempt-scoped PostgreSQL state at its
+   available cancellation points, with negative checks rate-limited to two
+   seconds by default. Cancellation therefore converges even when Kafka
+   delivers the control event to a replica that is not running the work.
 
 ## Deployment topology
 
@@ -537,7 +541,8 @@ The first integration boundary covers the dashboard control plane:
   transaction
 - transitioning a mission to resume and enqueuing the resume event share one
   transaction
-- cancellation commands are durably enqueued before the API returns success
+- cancellation state and its command are committed atomically before the API
+  returns success
 - consuming `pipeline-status`, updating mission state, writing the mission log,
   and completing the inbox receipt share one transaction
 
@@ -658,6 +663,11 @@ Expected payload shape:
 Notes:
 
 - Cancellation is cooperative rather than pre-emptive.
+- Cancellation is scoped by `vol_id`, optional analysis `run_id`, and
+  `attempt`; a stale command cannot cancel a later retry.
+- PostgreSQL is the durable cross-replica source of truth. Kafka remains the
+  low-latency notification path and each process retains a positive local
+  cache.
 - Each worker stops at the cancellation checks implemented around its current
   long-running or per-item work.
 
@@ -1023,10 +1033,11 @@ When a mission is received, the worker:
 
 1. reads the JSON mission event
 2. validates `vol_id` and the `datasets/...` S3 prefix
-3. clears the mission cancellation flag
-4. validates the requested work-drive name against `WORK_DRIVES`
-5. resolves the scratch directory below `/work/<drive>/<vol_id>`
-6. falls back to `/work/system/<vol_id>` if the configured drive is not
+3. binds cancellation checks to the mission's current `attempt`
+4. refuses to start work when that attempt is already cancelled durably
+5. validates the requested work-drive name against `WORK_DRIVES`
+6. resolves the scratch directory below `/work/<drive>/<vol_id>`
+7. falls back to `/work/system/<vol_id>` if the configured drive is not
    mounted
 
 The API and frontend exchange S3 prefixes, not host paths. Host paths are an
@@ -1035,13 +1046,21 @@ mounts.
 
 ### Cancellation model
 
-Cancellation is handled by a dedicated Kafka control consumer thread.
+Cancellation combines a dedicated Kafka control consumer thread with durable,
+attempt-scoped PostgreSQL state shared by every worker replica.
 
 Mechanism:
 
 - the control thread subscribes to `pipeline-control`
-- on `{"command": "cancel", "vol_id": ...}` it sets `cancel_requested=True` only if the current worker mission matches
-- long-running subprocess loops use non-blocking reads from child stdout and poll the shared flag frequently
+- on a matching cancel event, it persists the cancellation and updates the
+  process-local positive cache
+- long-running subprocess loops use non-blocking reads from child stdout and
+  query the shared registry frequently
+- absent cancellations are rechecked in PostgreSQL at most once every
+  `CANCELLATION_POLL_SECONDS` (two seconds by default), while Kafka can still
+  make the local signal immediate
+- a retry increments `attempt`; durable state is never cleared in place and a
+  stale cancellation cannot poison the new generation
 - if cancellation is requested, the subprocess is killed and the worker raises `PipelineCancelledError`
 - the worker attempts final workspace cleanup before publishing the terminal
   `cancelled` status and records `details.workspace_cleanup_succeeded`

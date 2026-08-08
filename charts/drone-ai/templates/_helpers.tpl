@@ -44,6 +44,8 @@ Common environment variables injected into all worker pods
   value: {{ .Values.kafka.workerInbox.leaseSeconds | quote }}
 - name: INBOX_BUSY_RETRY_SECONDS
   value: {{ .Values.kafka.workerInbox.busyRetrySeconds | quote }}
+- name: CANCELLATION_POLL_SECONDS
+  value: {{ .Values.kafka.cancellationPollSeconds | quote }}
 - name: S3_ENDPOINT
   value: {{ .Values.storage.s3Endpoint | quote }}
 - name: S3_BUCKET

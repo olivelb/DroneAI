@@ -22,7 +22,7 @@ from analysis_workflow import AnalysisWorkflow
 from legacy_aggregation import LegacyAggregationWorkflow, dedupe_configured
 from orthomosaic_tiler import OrthomosaicTiler
 from processing_dispatcher import ProcessingDispatcher
-from shared.cancellation import AttemptCancellationRegistry
+from shared.cancellation import DurableCancellationRegistry
 from shared.config import (
     KAFKA_BROKER,
     TOPIC_CONTROL,
@@ -59,7 +59,7 @@ progress_publisher = make_progress_publisher(
     TOPIC_STATUS,
     service_name="TILER",
 )
-cancel_manager = AttemptCancellationRegistry()
+cancel_manager = DurableCancellationRegistry()
 
 
 def report_progress(
