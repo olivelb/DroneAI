@@ -35,6 +35,7 @@ shared-lint:
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
+	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app2-ia/detection_core.py
 
 scripts-check:
 	shellcheck $(SHELL_SCRIPTS)

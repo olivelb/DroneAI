@@ -369,6 +369,9 @@ live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
 orchestration modules. The reusable processing modules and
 `app2-ia/detection_core.py` also pass the modern Bugbear, simplification,
 upgrade, Ruff-specific and async rule set as a progressive quality ratchet.
+The detector core additionally passes strict mypy checks, so tensor-to-NumPy
+conversion, detection records and inference-attempt metadata remain typed at
+the reusable local/Kafka boundary.
 Architecture tests cap the composition roots and
 dashboard containers so responsibilities cannot silently collapse back into
 monoliths.
