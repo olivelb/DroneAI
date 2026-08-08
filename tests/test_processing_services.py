@@ -134,6 +134,67 @@ def test_tiling_plan_has_bounded_overlap_and_private_iteration_state(
     assert "y_starts" not in public
 
 
+def test_tiler_removes_workspace_after_success(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    progress = []
+    tiler = orthomosaic_tiler.OrthomosaicTiler(
+        producer=SimpleNamespace(flush=lambda: 0),
+        tile_topic="tiles",
+        is_cancelled=lambda *_args: False,
+        report_progress=lambda *args, **kwargs: progress.append(
+            (args, kwargs)
+        ),
+        logger=SimpleNamespace(
+            info=lambda *_args: None,
+            warning=lambda *_args: None,
+        ),
+    )
+    monkeypatch.setattr(
+        tiler,
+        "_workspace",
+        lambda *_args: workspace,
+    )
+
+    def fake_download(_key, destination, _vol_id):
+        destination.write_bytes(b"orthomosaic")
+
+    monkeypatch.setattr(tiler, "_download", fake_download)
+    monkeypatch.setattr(
+        tiler,
+        "_publish_tiles",
+        lambda **_kwargs: 1,
+    )
+    monkeypatch.setattr(
+        tiler,
+        "_complete_database_state",
+        lambda *_args: True,
+    )
+
+    tiler.slice("orthomosaic.tif", "mission-1")
+
+    assert progress[-1][0][1:] == ("TILING_DONE", 100)
+    assert not workspace.exists()
+
+
+def test_processing_temporary_storage_is_bounded():
+    chart = (
+        Path(__file__).resolve().parents[1]
+        / "charts"
+        / "drone-ai"
+        / "templates"
+        / "processing-worker.yaml"
+    ).read_text(encoding="utf-8")
+    values = (
+        Path(__file__).resolve().parents[1]
+        / "charts"
+        / "drone-ai"
+        / "values.yaml"
+    ).read_text(encoding="utf-8")
+
+    assert "sizeLimit: {{ .Values.processingWorker.temporaryStorage.sizeLimit }}" in chart
+    assert 'sizeLimit: "50Gi"' in values
+
+
 def test_analysis_workflow_has_a_bounded_tile_retry_budget():
     workflow = _workflow()
 

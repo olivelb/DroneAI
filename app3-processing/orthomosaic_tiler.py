@@ -515,21 +515,21 @@ class OrthomosaicTiler:
         tiles_dir = workspace / "tiles"
         tiles_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_tiles(tiles_dir)
-        self._download(ortho_s3_key, local_ortho, vol_id)
-        tiles_s3_prefix = (
-            f"missions/{vol_id}/analyses/{analysis_run_id}/tiles"
-            if analysis_run_id
-            else f"missions/{vol_id}/tiles"
-        )
-        options = {
-            "ai_backend": normalize_ai_backend(ai_backend),
-            "ai_model_variant": ai_model_variant,
-            "sam_prompt": sam_prompt,
-            "classes": classes or ["car"],
-            "ai_confidence": ai_confidence,
-        }
-        self.report_progress(vol_id, "TILING_START", 0)
         try:
+            self._download(ortho_s3_key, local_ortho, vol_id)
+            tiles_s3_prefix = (
+                f"missions/{vol_id}/analyses/{analysis_run_id}/tiles"
+                if analysis_run_id
+                else f"missions/{vol_id}/tiles"
+            )
+            options = {
+                "ai_backend": normalize_ai_backend(ai_backend),
+                "ai_model_variant": ai_model_variant,
+                "sam_prompt": sam_prompt,
+                "classes": classes or ["car"],
+                "ai_confidence": ai_confidence,
+            }
+            self.report_progress(vol_id, "TILING_START", 0)
             tile_count = self._publish_tiles(
                 local_ortho=local_ortho,
                 tiles_dir=tiles_dir,
@@ -542,7 +542,6 @@ class OrthomosaicTiler:
                 options=options,
             )
             if tile_count is None:
-                shutil.rmtree(workspace, ignore_errors=True)
                 return
             if not self._complete_database_state(
                 vol_id,
@@ -550,7 +549,6 @@ class OrthomosaicTiler:
                 analysis_attempt,
                 tile_count,
             ):
-                shutil.rmtree(workspace, ignore_errors=True)
                 return
             if self.producer.flush():
                 raise RuntimeError(
@@ -574,5 +572,6 @@ class OrthomosaicTiler:
                 analysis_attempt,
                 error,
             )
-            shutil.rmtree(workspace, ignore_errors=True)
             raise
+        finally:
+            shutil.rmtree(workspace, ignore_errors=True)

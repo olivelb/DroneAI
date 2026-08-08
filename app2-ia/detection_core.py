@@ -19,6 +19,9 @@ import numpy as np
 logger = logging.getLogger("app2-ia.detection-core")
 
 YOLO_MODEL_ASSETS_DIR = Path(os.getenv("AERIAL_MODEL_DIR", "/opt/modelzoo"))
+YOLO_BAKED_MODEL_DIR = Path(
+    os.getenv("AERIAL_BAKED_MODEL_DIR", "/opt/modelzoo")
+)
 YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
 YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
 
@@ -90,7 +93,13 @@ def resolve_yolo_model_file(
         if model_path.name:
             checkpoint_name = model_path.name
     else:
-        model_path = YOLO_MODEL_ASSETS_DIR / checkpoint_name
+        cache_path = YOLO_MODEL_ASSETS_DIR / checkpoint_name
+        baked_path = YOLO_BAKED_MODEL_DIR / checkpoint_name
+        model_path = (
+            baked_path
+            if baked_path.exists() and not cache_path.exists()
+            else cache_path
+        )
     return variant_name, model_path, checkpoint_name
 
 

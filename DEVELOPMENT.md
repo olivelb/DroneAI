@@ -118,13 +118,14 @@ rebuilds after other CUDA, COLMAP, Dockerfile or validation changes. The
 lightweight selector and always-present `CUDA validation gate` run on every PR
 so branch protection can enforce the decision without requiring a costly
 build. The
-scheduled or manually dispatched
-`dronegs-gpu-nightly.yml` workflow runs every native CUDA test inside the same
+`dronegs-gpu-qualification.yml` workflow runs native CUDA tests only after an
+explicit manual dispatch or a GPU-relevant pull-request change selected by
+`select_gpu_validation.py`; it has no scheduled trigger. It uses the same
 development container on a self-hosted runner, then verifies driver injection
 in each production CUDA runtime image. It requires a repository runner labelled
-`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`. The
-workflow writes the commit, runner and result to the GitHub job summary and
-retains the complete `gpu-validation.log` as a commit-scoped artifact for 30
+`gpu` and `cuda` plus the repository variable `DRONEGS_GPU_CI=true`. The workflow
+writes the commit, runner and result to the GitHub job summary and retains the
+complete `gpu-validation.log` as a commit-scoped artifact for 30
 days, including failed attempts. This artifact is the release evidence; a
 successful local run against an uncommitted working tree is useful
 qualification but does not replace the post-commit workflow result.
