@@ -2,25 +2,16 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useId, useState } from "react";
 import type {
-  AIBackend, DatasetItem, ParameterConfigResponse,
-  ParamValue, PipelineName, PodState, YOLOModelVariant,
+  AIBackend, ParameterConfigResponse,
+  ParamValue, PipelineName, YOLOModelVariant,
   PhaseId,
 } from "./types";
-import {
-  fetchBrowse,
-  fetchParameters,
-  fetchPods,
-} from "./api";
+import { fetchParameters } from "./api";
 import { useAuth } from "./auth";
 
-const DEFAULT_BROWSER_PATH = "datasets/";
-
 type StoreState = {
-  // Dataset browser
-  currentPath: string;
-  items: DatasetItem[];
+  // Mission input selection
   selectedPath: string;
-  browse: (path: string) => void;
   setSelectedPath: (path: string) => void;
 
   // Mission draft
@@ -61,10 +52,6 @@ type StoreState = {
   isUploading: boolean;
   setIsUploading: (u: boolean) => void;
 
-  // Pods
-  pods: PodState[];
-  podsError: string | null;
-
   // Active tab (phase)
   activePhase: PhaseId;
   setActivePhase: (phase: PhaseId) => void;
@@ -82,12 +69,8 @@ export function useStore() {
 export function StoreProvider({ children }: { children: React.ReactNode }) {
   const { authStatus } = useAuth();
   const generatedMissionId = useId().replace(/[^A-Za-z0-9]/g, "") || "new";
-  const [currentPath, setCurrentPath] = useState(DEFAULT_BROWSER_PATH);
-  const [items, setItems] = useState<DatasetItem[]>([]);
   const [selectedPath, setSelectedPath] = useState("");
   const [volId, setVolId] = useState(`mission-${generatedMissionId}`);
-  const [pods, setPods] = useState<PodState[]>([]);
-  const [podsError, setPodsError] = useState<string | null>(null);
   const [activePhase, setActivePhase] = useState<PhaseId>("setup");
 
   const [aiConfidence, setAiConfidence] = useState(0.5);
@@ -106,23 +89,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [uploadFiles, setUploadFiles] = useState<FileList | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ total: number; completed: number; failed: number; status: string } | null>(null);
   const [isUploading, setIsUploading] = useState(false);
-
-  const browse = useCallback(async (path: string) => {
-    try {
-      const data = await fetchBrowse(path);
-      if (!Array.isArray(data)) return;
-      setItems(data as DatasetItem[]);
-      setCurrentPath(path);
-    } catch (e) { console.error("Browse error:", e); }
-  }, []);
-
-  const refreshPodsData = useCallback(async () => {
-    try {
-      const data = await fetchPods();
-      setPods((data.pods ?? []) as PodState[]);
-      setPodsError((data.error as string) ?? null);
-    } catch (e) { setPodsError(String(e)); }
-  }, []);
 
   const loadParameters = useCallback(async () => {
     try {
@@ -178,26 +144,20 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (authStatus !== "authenticated") return;
     const initialLoad = window.setTimeout(() => {
-      void browse(DEFAULT_BROWSER_PATH);
       void loadParameters();
-      void refreshPodsData();
     }, 0);
-    const pi = setInterval(() => void refreshPodsData(), 10000);
     const wi = setInterval(() => void loadParameters(), 15000);
     return () => {
       window.clearTimeout(initialLoad);
-      clearInterval(pi);
       clearInterval(wi);
     };
   }, [
     authStatus,
-    browse,
     loadParameters,
-    refreshPodsData,
   ]);
 
   const value: StoreState = {
-    currentPath, items, selectedPath, browse, setSelectedPath,
+    selectedPath, setSelectedPath,
     volId, setVolId,
     pipeline, setPipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
     workDrive, setWorkDrive,
@@ -205,7 +165,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     samPrompt, setSamPrompt, selectedClasses, setSelectedClasses, tileSize, setTileSize,
     uploadDatasetName, setUploadDatasetName, uploadFiles, setUploadFiles,
     uploadProgress, setUploadProgress, isUploading, setIsUploading,
-    pods, podsError, activePhase, setActivePhase,
+    activePhase, setActivePhase,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

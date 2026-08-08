@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { deleteMission } from "../lib/api";
 import { useMissionRuntime } from "../lib/mission-runtime";
-import { useStore } from "../lib/store";
+import { useWorkspaceData } from "../lib/workspace-data";
 import { serviceOrderFor } from "../lib/types";
 import type { PodState, ServiceName, StatusPayload } from "../lib/types";
 
@@ -110,7 +110,7 @@ export default function StatusSidebar() {
     wsConnected,
     refreshSummary,
   } = useMissionRuntime();
-  const { pods, podsError } = useStore();
+  const { pods, podsError } = useWorkspaceData();
   const logRef = useRef<HTMLDivElement>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);

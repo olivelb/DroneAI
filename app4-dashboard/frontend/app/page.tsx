@@ -28,6 +28,7 @@ import {
 } from "./lib/mission-runtime";
 import { StoreProvider, useStore } from "./lib/store";
 import type { PhaseId } from "./lib/types";
+import { WorkspaceDataProvider } from "./lib/workspace-data";
 
 const PHASES: Array<{
   id: PhaseId;
@@ -343,13 +344,15 @@ function DashboardInner() {
 export default function Dashboard() {
   return (
     <AuthProvider>
-      <MissionRuntimeProvider>
-        <StoreProvider>
-          <AuthGate>
-            <DashboardInner />
-          </AuthGate>
-        </StoreProvider>
-      </MissionRuntimeProvider>
+      <WorkspaceDataProvider>
+        <MissionRuntimeProvider>
+          <StoreProvider>
+            <AuthGate>
+              <DashboardInner />
+            </AuthGate>
+          </StoreProvider>
+        </MissionRuntimeProvider>
+      </WorkspaceDataProvider>
     </AuthProvider>
   );
 }
