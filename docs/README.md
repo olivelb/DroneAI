@@ -38,6 +38,8 @@ the current release status:
   [`benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md)
 - 2026-08-06 audit-hardening changes and focused test results:
   [`audits/2026-08-06-audit-hardening-validation.md`](audits/2026-08-06-audit-hardening-validation.md)
+- 2026-08-08 platform audit verification and first P1 implementation batch:
+  [`audits/2026-08-08-platform-audit-follow-up.md`](audits/2026-08-08-platform-audit-follow-up.md)
 - [`audits/`](audits/) and the date-stamped `AUDIT_*` / `CONTRE_AUDIT_*` reports
 - [`GAJAN_R2S_VALIDATION.md`](GAJAN_R2S_VALIDATION.md)
 - [`dronegs/CHANGELOG.md`](dronegs/CHANGELOG.md)

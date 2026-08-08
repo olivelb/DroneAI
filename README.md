@@ -40,9 +40,10 @@ Kafka for pipeline events, and PostgreSQL/PostGIS for mission and vector data.
 
 ### Dashboard and API — `app4-dashboard`
 
-The Next.js frontend lets operators upload datasets, configure and launch
-missions, follow progress, inspect map layers and export results. Its FastAPI
-backend validates requests, stores mission state, publishes work to Kafka and
+The Next.js frontend uploads datasets directly to S3 through short-lived
+multipart URLs, then lets operators configure and launch missions, follow
+progress, inspect map layers and export results. Its FastAPI backend validates
+and journals upload sessions, stores mission state, publishes work to Kafka and
 serves datasets and results from S3-compatible storage and PostGIS.
 
 ### Reconstruction and raster products — `app1-colmap`
@@ -137,7 +138,9 @@ provides the benchmark with independent surveyed checkpoints.
 
 ## License
 
-DroneAI source code is licensed under the [MIT License](LICENSE). External
-source trees, container images, model code and model weights retain their own
-licenses; review [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) before
-redistribution.
+Original DroneAI code is licensed under the [MIT License](LICENSE). The
+specified DroneGS translation units and the resulting combined native binary
+are GPL-3.0-or-later. External source trees, container images, model code and
+model weights retain their own licenses; review
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and the
+[`DroneGS GPL register`](docs/dronegs/GPL_COMPONENTS.md) before redistribution.

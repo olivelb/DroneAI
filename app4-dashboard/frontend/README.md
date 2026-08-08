@@ -6,7 +6,8 @@ The frontend:
 
 - establishes a role-bearing HttpOnly session from an operator-provided API
   key without storing that key in JavaScript or browser storage;
-- uploads and browses S3-backed datasets through the dashboard API;
+- obtains durable, quota-checked multipart sessions from the API, uploads file
+  parts directly to S3 and finalizes a verified dataset manifest;
 - presents aerial mapping and HD facade as explicit production
   processes; maps use five stages through AI detection, while facades omit
   that stage and terminate after local DroneGS raster production;

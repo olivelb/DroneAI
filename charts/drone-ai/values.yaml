@@ -10,6 +10,9 @@ global:
   imageRegistry: ""          # empty = local images (docker save → k3s ctr import)
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Production overlays enable this guard so mutable application tags cannot
+  # be rendered accidentally. Local/K3s development keeps latest support.
+  requireImmutableImages: false
 
 # --------------------------------------------------------------------------
 # Kafka
@@ -57,6 +60,10 @@ kafka:
 minio:
   enabled: true
   image: minio/minio:latest
+  browserUploadCors:
+    allowedOrigins:
+      - "http://localhost:3000"
+      - "http://127.0.0.1:3000"
   consoleNodePort: 30090
   apiNodePort: 30091
   persistence:
@@ -115,6 +122,8 @@ storage:
   s3SecretKey: "minioadmin"
   s3Region: "us-east-1"
   databaseUrl: "postgresql://droneai:droneai-local@postgres.drone-ai.svc:5432/droneai"
+  # External S3 buckets must expose ETag and allow PUT from the frontend
+  # origin. See scripts/deploy/configure-s3-upload-cors.sh.
 
 # --------------------------------------------------------------------------
 # COLMAP Worker

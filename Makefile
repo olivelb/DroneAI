@@ -30,6 +30,7 @@ API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/map_schemas.py \
 	app4-dashboard/api/rate_limit.py
 API_DOMAIN_TYPED_PATHS := \
+	app4-dashboard/api/dataset_uploads.py \
 	app4-dashboard/api/mission_state.py \
 	app4-dashboard/api/map_support.py
 API_ROUTE_TYPED_PATHS := \

@@ -195,3 +195,58 @@ def test_delete_prefix_raises_after_bounded_partial_failures(monkeypatch):
         storage.delete_prefix("missions/mission-1/")
 
     assert len(client.deleted_batches) == 3
+
+
+class _MultipartClient:
+    def __init__(self):
+        self.completed = None
+        self.aborted = None
+
+    def create_multipart_upload(self, **_kwargs):
+        return {"UploadId": "upload-123"}
+
+    def generate_presigned_url(self, operation, **kwargs):
+        assert operation == "upload_part"
+        assert kwargs["HttpMethod"] == "PUT"
+        return "https://objects.example/upload-part"
+
+    def complete_multipart_upload(self, **kwargs):
+        self.completed = kwargs
+        return {"ETag": '"multipart-etag"'}
+
+    def head_object(self, **_kwargs):
+        return {"ContentLength": 123, "ETag": '"multipart-etag"'}
+
+    def abort_multipart_upload(self, **kwargs):
+        self.aborted = kwargs
+        return {}
+
+
+def test_multipart_upload_helpers_presign_complete_and_abort(monkeypatch):
+    client = _MultipartClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "_get_public_client", lambda: client)
+
+    upload_id = storage.create_multipart_upload("datasets/site/image.jpg")
+    url = storage.get_presigned_upload_part_url(
+        "datasets/site/image.jpg",
+        upload_id,
+        1,
+    )
+    result = storage.complete_multipart_upload(
+        "datasets/site/image.jpg",
+        upload_id,
+        [{"PartNumber": 1, "ETag": '"part-etag"'}],
+    )
+    storage.abort_multipart_upload("datasets/site/other.jpg", "upload-456")
+
+    assert url == "https://objects.example/upload-part"
+    assert result == {
+        "key": "datasets/site/image.jpg",
+        "size": 123,
+        "etag": '"multipart-etag"',
+    }
+    assert client.completed["MultipartUpload"]["Parts"] == [
+        {"PartNumber": 1, "ETag": '"part-etag"'}
+    ]
+    assert client.aborted["UploadId"] == "upload-456"

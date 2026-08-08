@@ -38,6 +38,12 @@ class MissionDescriptor(TypedDict):
     tiling_metadata: JsonObject
 
 
+class TilePersistenceResult(TypedDict):
+    finalize_mission: MissionDescriptor | None
+    tiles_received: int
+    total_tiles: int
+
+
 class ProgressReporter(Protocol):
     def __call__(
         self,
@@ -68,9 +74,11 @@ class LegacyAggregationWorkflow:
         self,
         *,
         report_progress: ProgressReporter,
+        report_ia_progress: ProgressReporter,
         logger: logging.Logger,
     ) -> None:
         self.report_progress = report_progress
+        self.report_ia_progress = report_ia_progress
         self.logger = logger
 
     @staticmethod
@@ -140,7 +148,7 @@ class LegacyAggregationWorkflow:
         tile_index: int,
         detections: list[DetectionRecord],
         expected_attempt: int,
-    ) -> MissionDescriptor | None:
+    ) -> TilePersistenceResult | None:
         finalize_mission: MissionDescriptor | None = None
         with get_session() as session:
             mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
@@ -187,7 +195,12 @@ class LegacyAggregationWorkflow:
                         mission.tiling_metadata or {},
                     ),
                 }
-        return finalize_mission
+            result: TilePersistenceResult = {
+                "finalize_mission": finalize_mission,
+                "tiles_received": int(mission.tiles_received or 0),
+                "total_tiles": int(mission.total_tiles or 0),
+            }
+        return result
 
     @staticmethod
     def _mark_failed(vol_id: str) -> None:
@@ -252,6 +265,18 @@ class LegacyAggregationWorkflow:
                 mission_object.aggregation_status = "completed"
                 mission_object.aggregation_completed_at = datetime.now(UTC)
 
+            summary = (
+                f"IA durably completed all tiles with "
+                f"{len(feature_collection['features'])} vector detections "
+                f"({len(raw_detections)} raw)"
+            )
+            self.report_ia_progress(
+                vol_id,
+                "DETECTING",
+                100,
+                status="success",
+                log=summary,
+            )
             self.report_progress(
                 vol_id,
                 "DONE",
@@ -269,7 +294,7 @@ class LegacyAggregationWorkflow:
         vol_id = cast(str, data["vol_id"])
         tile_index = int(data["tile_index"])
         try:
-            finalize_mission = self._store_tile(
+            persistence = self._store_tile(
                 vol_id,
                 tile_index,
                 cast(list[DetectionRecord], data.get("detections") or []),
@@ -283,13 +308,41 @@ class LegacyAggregationWorkflow:
             )
             raise
 
+        if persistence is None:
+            return
+        tiles_received = persistence["tiles_received"]
+        total_tiles = persistence["total_tiles"]
+        if (
+            tiles_received == 1
+            or tiles_received % 10 == 0
+            or (total_tiles and tiles_received >= total_tiles)
+        ):
+            progress = min(
+                99,
+                int(100 * tiles_received / max(total_tiles, 1)),
+            )
+            self.report_ia_progress(
+                vol_id,
+                "DETECTING",
+                progress,
+                log=f"Durably received {tiles_received}/{total_tiles} IA tile results",
+            )
+
+        finalize_mission = persistence["finalize_mission"]
         if finalize_mission is None:
             return
         self.report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
         try:
             self.generate_vector_results(vol_id, finalize_mission)
-        except Exception:
+        except Exception as error:
             self._mark_failed(vol_id)
+            self.report_ia_progress(
+                vol_id,
+                "ERROR",
+                0,
+                status="error",
+                log=f"IA aggregation failed: {error}",
+            )
             raise
 
     def recover(self) -> None:
@@ -330,9 +383,16 @@ class LegacyAggregationWorkflow:
             try:
                 self.report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
                 self.generate_vector_results(vol_id, descriptor)
-            except Exception:
+            except Exception as error:
                 self.logger.exception(
                     "Failed to recover aggregation for %s",
                     vol_id,
                 )
                 self._mark_failed(vol_id)
+                self.report_ia_progress(
+                    vol_id,
+                    "ERROR",
+                    0,
+                    status="error",
+                    log=f"IA aggregation recovery failed: {error}",
+                )

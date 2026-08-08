@@ -72,12 +72,34 @@ Cookie-authenticated mutations also require a configured trusted `Origin`.
 
 ## Upload policy
 
-The API accepts aerial images plus DJI/GNSS sidecars and enforces:
+The browser creates a durable upload session through the API, requests a
+short-lived URL for each S3 multipart part, sends the bytes directly to object
+storage and returns the ETags for server-side completion. The API verifies the
+completed object size and publishes `dataset-manifest.json` only after every
+file is complete. Incomplete sessions expire after 24 hours by default and the
+API cleanup worker aborts their stored multipart parts.
+
+The API accepts aerial images plus DJI/GNSS sidecars and enforces the same
+quotas before issuing any storage URL:
 
 - `DRONEAI_UPLOAD_MAX_FILES` (default 2,500);
 - `DRONEAI_UPLOAD_MAX_FILE_BYTES` (default 2 GiB);
 - `DRONEAI_UPLOAD_MAX_BATCH_BYTES` (default 50 GiB);
 - a fixed extension allow-list.
+
+Operational tuning is available through:
+
+- `DRONEAI_UPLOAD_PART_BYTES` (default 16 MiB, 5–512 MiB);
+- `DRONEAI_UPLOAD_SESSION_SECONDS` (default 24 hours, maximum seven days);
+- `DRONEAI_UPLOAD_PART_URL_SECONDS` (default 15 minutes, maximum one hour);
+- `DRONEAI_UPLOAD_CLEANUP_SECONDS` (default 15 minutes).
+
+The S3 bucket must allow `PUT`, `GET` and `HEAD` from the exact frontend
+origin and expose the `ETag` response header. Local MinIO receives that rule
+automatically. For an external S3-compatible bucket, apply it with
+`scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
+origin. The previous API-proxied `/datasets/upload` endpoint remains available
+temporarily for compatibility, but Mission Studio no longer uses it.
 
 Retention and lifecycle rules remain the responsibility of the selected S3
 service and must be configured before public ingestion.

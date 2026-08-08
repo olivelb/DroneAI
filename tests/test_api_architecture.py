@@ -57,6 +57,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/pods",
         "/datasets",
         "/datasets/upload",
+        "/datasets/upload-sessions",
         "/browse",
     } <= paths
     assert "/datasets/upload-file" not in paths
@@ -353,7 +354,7 @@ def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
     assert record.locked_by is None
 
 
-def test_frontend_uses_the_server_validated_batch_upload():
+def test_frontend_uses_direct_presigned_multipart_upload():
     source = (Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib" / "api.ts").read_text(
         encoding="utf-8"
     )
@@ -362,9 +363,14 @@ def test_frontend_uses_the_server_validated_batch_upload():
         1,
     )[1].split("const encodeS3Key", 1)[0]
 
-    assert "/datasets/upload?" in upload_source
+    assert '"/datasets/upload-sessions"' in upload_source
+    assert "signed.url" in source
+    assert 'credentials: "omit"' in source
+    assert "/parts/${partNumber}" in source
+    assert "/complete" in upload_source
+    assert "/datasets/upload?" not in upload_source
     assert "/datasets/upload-file" not in upload_source
-    assert 'formData.append("files"' in upload_source
+    assert 'formData.append("files"' not in upload_source
 
 
 def test_prepare_resume_increments_mission_attempt():

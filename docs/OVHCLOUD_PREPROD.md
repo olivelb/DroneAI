@@ -223,6 +223,23 @@ by `terraform output -raw object_storage_bucket`. Store the two sensitive
 outputs in a local mode-0600 file or password manager; do not put them in
 Terraform variables or Kubernetes values files.
 
+Mission Studio sends dataset parts directly to this bucket. Configure its CORS
+rule once after the bucket and scoped credentials exist; the origin must be the
+public frontend origin and `ETag` must be exposed so multipart completion can
+be verified:
+
+```bash
+set -a
+source "$HOME/.config/droneai/ovh-preprod-s3.env"
+set +a
+export DRONEAI_UPLOAD_ALLOWED_ORIGINS="https://droneai.olembo.fr"
+scripts/deploy/configure-s3-upload-cors.sh
+```
+
+The environment file supplies `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`,
+`S3_ACCESS_KEY` and `S3_SECRET_KEY` and stays outside the repository. The
+script uses the S3 API only; it does not write credentials to Terraform state.
+
 Qualify the scoped credentials with a temporary object that is automatically
 deleted after the test:
 

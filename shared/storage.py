@@ -54,6 +54,12 @@ class S3Client(Protocol):
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
+    def create_multipart_upload(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def complete_multipart_upload(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def abort_multipart_upload(self, **kwargs: Any) -> dict[str, Any]: ...
+
     def head_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
@@ -408,6 +414,95 @@ def get_presigned_url(
         ExpiresIn=expires,
     )
     return url
+
+
+def create_multipart_upload(
+    s3_key: str,
+    *,
+    content_type: str = "application/octet-stream",
+    metadata: dict[str, str] | None = None,
+    bucket: str | None = None,
+) -> str:
+    """Create an S3 multipart upload and return its opaque upload ID."""
+
+    bucket = bucket or S3_BUCKET
+    response = _get_client().create_multipart_upload(
+        Bucket=bucket,
+        Key=s3_key,
+        ContentType=content_type,
+        Metadata=metadata or {},
+    )
+    upload_id = str(response.get("UploadId") or "")
+    if not upload_id:
+        raise RuntimeError("S3 CreateMultipartUpload returned no upload ID")
+    return upload_id
+
+
+def get_presigned_upload_part_url(
+    s3_key: str,
+    upload_id: str,
+    part_number: int,
+    *,
+    expires: int = 900,
+    bucket: str | None = None,
+) -> str:
+    """Generate a browser-reachable presigned URL for one upload part."""
+
+    if not 1 <= part_number <= 10_000:
+        raise ValueError("S3 multipart part number must be between 1 and 10000")
+    bucket = bucket or S3_BUCKET
+    return _get_public_client().generate_presigned_url(
+        "upload_part",
+        Params={
+            "Bucket": bucket,
+            "Key": s3_key,
+            "UploadId": upload_id,
+            "PartNumber": part_number,
+        },
+        ExpiresIn=expires,
+        HttpMethod="PUT",
+    )
+
+
+def complete_multipart_upload(
+    s3_key: str,
+    upload_id: str,
+    parts: list[dict[str, int | str]],
+    *,
+    bucket: str | None = None,
+) -> dict[str, int | str]:
+    """Complete a multipart upload and return verified object metadata."""
+
+    if not parts:
+        raise ValueError("At least one multipart upload part is required")
+    ordered = sorted(parts, key=lambda part: int(part["PartNumber"]))
+    response = _get_client().complete_multipart_upload(
+        Bucket=bucket or S3_BUCKET,
+        Key=s3_key,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": ordered},
+    )
+    head = _get_client().head_object(Bucket=bucket or S3_BUCKET, Key=s3_key)
+    return {
+        "key": s3_key,
+        "size": int(head.get("ContentLength", -1)),
+        "etag": str(response.get("ETag") or head.get("ETag") or ""),
+    }
+
+
+def abort_multipart_upload(
+    s3_key: str,
+    upload_id: str,
+    *,
+    bucket: str | None = None,
+) -> None:
+    """Abort an unfinished multipart upload and release its stored parts."""
+
+    _get_client().abort_multipart_upload(
+        Bucket=bucket or S3_BUCKET,
+        Key=s3_key,
+        UploadId=upload_id,
+    )
 
 
 def put_object(s3_key: str, data: bytes | BinaryIO, bucket: str | None = None) -> str:

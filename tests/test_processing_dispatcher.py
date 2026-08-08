@@ -173,6 +173,7 @@ def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):
     )
     workflow = legacy_module.LegacyAggregationWorkflow(
         report_progress=lambda *_args, **_kwargs: None,
+        report_ia_progress=lambda *_args, **_kwargs: None,
         logger=importlib.import_module("logging").getLogger("test"),
     )
 
@@ -183,3 +184,67 @@ def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):
         )
 
     assert not workspace.exists()
+
+
+def test_legacy_completion_publishes_durable_ia_terminal(monkeypatch):
+    vol_id = f"test-terminal-{uuid4().hex}"
+    mission = SimpleNamespace(
+        aggregation_status="finalizing",
+        aggregation_completed_at=None,
+    )
+
+    class Query:
+        def filter(self, *_args):
+            return self
+
+        def with_for_update(self):
+            return self
+
+        def one(self):
+            return mission
+
+    class Session:
+        @staticmethod
+        def query(*_args):
+            return Query()
+
+    @contextmanager
+    def session_scope():
+        yield Session()
+
+    monkeypatch.setattr(legacy_module, "get_session", session_scope)
+    monkeypatch.setattr(
+        legacy_module,
+        "get_mission_detections",
+        lambda _session, _vol_id: [],
+    )
+    monkeypatch.setattr(
+        legacy_module.storage,
+        "upload_verified_file",
+        lambda *_args: None,
+    )
+    tiler_progress = []
+    ia_progress = []
+    workflow = legacy_module.LegacyAggregationWorkflow(
+        report_progress=lambda *args, **kwargs: tiler_progress.append((args, kwargs)),
+        report_ia_progress=lambda *args, **kwargs: ia_progress.append((args, kwargs)),
+        logger=importlib.import_module("logging").getLogger("test"),
+    )
+
+    workflow.generate_vector_results(
+        vol_id,
+        {"ortho_s3_key": None, "tiling_metadata": {}},
+    )
+
+    assert mission.aggregation_status == "completed"
+    assert ia_progress == [
+        (
+            (vol_id, "DETECTING", 100),
+            {
+                "status": "success",
+                "log": "IA durably completed all tiles with 0 vector detections (0 raw)",
+            },
+        )
+    ]
+    assert tiler_progress[0][0] == (vol_id, "DONE", 100)
+    assert tiler_progress[0][1]["status"] == "success"

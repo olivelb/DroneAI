@@ -46,7 +46,7 @@ development lock installs the `actionlint` executable through `actionlint-py`,
 with deterministic ShellCheck and Pyflakes integrations.
 
 Pull-request CI classifies changed paths before starting expensive jobs. Native
-DroneGS compilation, the dual-version Python suite, PostGIS migration
+DroneGS compilation, the Python 3.12 quality and CPU-test suite, PostGIS migration
 round-trips, frontend/Playwright checks, service image builds and Helm renders
 only run when their own runtime or contract changes. Markdown-only pull
 requests run the lightweight link contract. Changes to the CI workflow or its

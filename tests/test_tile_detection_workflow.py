@@ -174,7 +174,51 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
         [13.0, 22.0],
         [13.0, 24.0],
     ]
-    assert progress[0][0][1] == "DETECTING"
+    assert progress == []
+    assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_replicas_publish_results_without_local_terminal_status(
+    tmp_path,
+    monkeypatch,
+):
+    progress_a = []
+    progress_b = []
+    producer = FakeProducer()
+    worker_a = _workflow(
+        tmp_path / "a",
+        producer=producer,
+        progress=lambda *args, **kwargs: progress_a.append((args, kwargs)),
+    )
+    worker_b = _workflow(
+        tmp_path / "b",
+        producer=producer,
+        progress=lambda *args, **kwargs: progress_b.append((args, kwargs)),
+    )
+
+    def download(_key, destination):
+        Path(destination).write_bytes(b"jpeg")
+
+    monkeypatch.setattr(tile_workflow.storage, "download_file", download)
+    for tile_index, worker in enumerate((worker_a, worker_b, worker_a, worker_b)):
+        worker.process_tile(
+            {
+                "vol_id": "mission-shared",
+                "attempt": 0,
+                "tile_index": tile_index,
+                "tile_s3_key": f"missions/mission-shared/tiles/tile_{tile_index}.jpg",
+                "offset_x": 0,
+                "offset_y": 0,
+                "total_tiles": 4,
+                "ai_backend": "sam3",
+                "ai_confidence": 0.4,
+            }
+        )
+
+    assert len(producer.messages) == 4
+    assert progress_a == []
+    assert progress_b == []
+    assert not list(tmp_path.rglob("*.jpg"))
 
 
 def test_cancelled_tile_is_not_downloaded_or_published(

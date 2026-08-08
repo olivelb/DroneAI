@@ -8,14 +8,23 @@ helm.sh/chart: {{ .Chart.Name }}-{{ .Chart.Version }}
 {{- end }}
 
 {{/*
-Full image reference: registry/image:tag
+Full application image reference: registry/image:tag or registry/image@sha256.
+Production overlays may reject the mutable latest fallback while local
+development retains it. A digest embedded in the image value is already an
+immutable full repository reference and therefore ignores tag.
 */}}
 {{- define "drone-ai.image" -}}
 {{- $registry := .root.Values.global.imageRegistry -}}
-{{- if $registry -}}
-{{ $registry }}{{ .image }}:{{ .tag | default "latest" }}
+{{- $tag := .tag | default "latest" -}}
+{{- $hasDigest := contains "@sha256:" .image -}}
+{{- if and .root.Values.global.requireImmutableImages (not $hasDigest) (eq $tag "latest") -}}
+{{- fail (printf "production application image %q must use an immutable tag or @sha256 digest" .image) -}}
+{{- end -}}
+{{- $repository := printf "%s%s" $registry .image -}}
+{{- if $hasDigest -}}
+{{ $repository }}
 {{- else -}}
-{{ .image }}:{{ .tag | default "latest" }}
+{{ $repository }}:{{ $tag }}
 {{- end -}}
 {{- end }}
 
