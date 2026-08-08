@@ -4,6 +4,7 @@ geoalchemy2
 opencv-python-headless
 pillow
 psycopg2-binary
+pydantic
 pyproj
 rasterio
 sqlalchemy

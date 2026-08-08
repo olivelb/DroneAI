@@ -6,6 +6,8 @@
 #
 affine==2.4.0
     # via rasterio
+annotated-types==0.8.0
+    # via pydantic
 attrs==26.1.0
     # via rasterio
 boto3==1.43.54
@@ -49,6 +51,10 @@ pillow==12.3.0
     # via -r requirements/processing.in
 psycopg2-binary==2.9.12
     # via -r requirements/processing.in
+pydantic==2.13.4
+    # via -r requirements/processing.in
+pydantic-core==2.46.4
+    # via pydantic
 pyparsing==3.3.2
     # via rasterio
 pyproj==3.7.2
@@ -66,6 +72,12 @@ sqlalchemy==2.0.51
     #   -r requirements/processing.in
     #   geoalchemy2
 typing-extensions==4.16.0
-    # via sqlalchemy
+    # via
+    #   pydantic
+    #   pydantic-core
+    #   sqlalchemy
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via pydantic
 urllib3==2.7.0
     # via botocore

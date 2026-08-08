@@ -4,7 +4,8 @@ CI_PYTHON_PATHS := $(wildcard scripts/ci/*.py)
 PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared alembic tests tools $(CI_PYTHON_PATHS)
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
-SHARED_TYPED_PATHS := $(wildcard shared/*.py)
+SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py
+SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \
 	app2-ia/detection_core.py \
 	app2-ia/sam3_backend.py \
@@ -70,6 +71,7 @@ shared-lint:
 typecheck:
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip app1-colmap/colmap_worker
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(SHARED_TYPED_PATHS)
+	$(PYTHON) -m mypy --strict --ignore-missing-imports $(SHARED_FRAMEWORK_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP2_TYPED_PATHS)
 	$(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(APP3_TYPED_PATHS)
 	MYPYPATH=app4-dashboard $(PYTHON) -m mypy --strict --ignore-missing-imports --follow-imports=skip $(API_TYPED_PATHS)
@@ -82,6 +84,7 @@ scripts-check:
 
 docs-check:
 	$(PYTHON) tools/check_markdown_links.py
+	$(PYTHON) tools/export_event_schemas.py --check
 
 workflows-check:
 	actionlint

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,10 @@ from shared.event_contracts import (
     deterministic_event_id,
     make_event,
 )
+from shared.event_schemas import EVENT_TYPES, kafka_event_json_schema
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_deterministic_event_id_is_stable_and_namespaced():
@@ -100,3 +105,77 @@ def test_status_events_accept_cancelled_and_reject_unknown_states():
                 "status": "stopped",
             },
         )
+
+
+@pytest.mark.parametrize(
+    ("event_type", "payload", "message"),
+    [
+        (
+            "image_tile",
+            {"vol_id": "mission-1", "tile_index": "2", "tile_s3_key": "tile.jpg"},
+            "tile_index",
+        ),
+        (
+            "image_tile",
+            {"vol_id": "mission-1", "tile_index": 2},
+            "tile_s3_key or tile_path",
+        ),
+        (
+            "tile_detection",
+            {"vol_id": "mission-1", "tile_index": 2, "detections": {}},
+            "detections",
+        ),
+        (
+            "control",
+            {"vol_id": "mission-1", "command": "stop"},
+            "command",
+        ),
+    ],
+)
+def test_event_specific_schemas_reject_invalid_payloads(
+    event_type,
+    payload,
+    message,
+):
+    with pytest.raises(EventValidationError, match=message):
+        make_event(event_type, payload)
+
+
+def test_event_contracts_preserve_forward_compatible_extensions():
+    event = make_event(
+        "mission",
+        {
+            "vol_id": "mission-1",
+            "future_parameter": {"enabled": True},
+        },
+    )
+
+    assert event["future_parameter"] == {"enabled": True}
+
+
+def test_discriminated_json_schema_covers_every_event_type():
+    schema = kafka_event_json_schema()
+    definitions = schema["$defs"]
+
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["$id"] == "urn:droneai:kafka-events:v1"
+    assert len(schema["oneOf"]) == len(EVENT_TYPES)
+    assert {
+        definition["properties"]["event_type"]["const"]
+        for definition in definitions.values()
+        if "event_type" in definition.get("properties", {})
+    } == EVENT_TYPES
+
+
+@pytest.mark.parametrize(
+    "requirements_file",
+    [
+        "requirements/colmap.txt",
+        "requirements/processing.txt",
+        "requirements/ia-extra.txt",
+    ],
+)
+def test_worker_runtime_locks_include_pydantic(requirements_file):
+    lock = (ROOT / requirements_file).read_text(encoding="utf-8")
+
+    assert "pydantic==2.13.4" in lock

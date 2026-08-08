@@ -1,0 +1,1143 @@
+{
+  "$defs": {
+    "ControlEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "analysis_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analysis Run Id"
+        },
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "command": {
+          "const": "cancel",
+          "title": "Command",
+          "type": "string"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "control",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id",
+        "command"
+      ],
+      "title": "ControlEvent",
+      "type": "object"
+    },
+    "DeadLetterEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "attempts": {
+          "minimum": 1,
+          "title": "Attempts",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "consumer_group": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Consumer Group",
+          "type": "string"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "error": {
+          "maxLength": 16384,
+          "minLength": 1,
+          "title": "Error",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "dead_letter",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "expected_event_type": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Expected Event Type",
+          "type": "string"
+        },
+        "original_value": {
+          "maxLength": 2000000,
+          "title": "Original Value",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_offset": {
+          "minimum": 0,
+          "title": "Source Offset",
+          "type": "integer"
+        },
+        "source_partition": {
+          "minimum": 0,
+          "title": "Source Partition",
+          "type": "integer"
+        },
+        "source_topic": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Source Topic",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "source_topic",
+        "source_partition",
+        "source_offset",
+        "consumer_group",
+        "expected_event_type",
+        "attempts",
+        "error",
+        "original_value"
+      ],
+      "title": "DeadLetterEvent",
+      "type": "object"
+    },
+    "ImageTileEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "ai_backend": {
+          "anyOf": [
+            {
+              "enum": [
+                "yolo",
+                "sam3"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Backend"
+        },
+        "ai_confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Confidence"
+        },
+        "ai_model_variant": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Model Variant"
+        },
+        "analysis_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analysis Run Id"
+        },
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "classes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Classes"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "image_tile",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "offset_x": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offset X"
+        },
+        "offset_y": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Offset Y"
+        },
+        "ortho_crs": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ortho Crs"
+        },
+        "ortho_transform": {
+          "anyOf": [
+            {
+              "items": {},
+              "maxItems": 9,
+              "minItems": 6,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ortho Transform"
+        },
+        "sam_prompt": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sam Prompt"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "tile_index": {
+          "minimum": 0,
+          "title": "Tile Index",
+          "type": "integer"
+        },
+        "tile_path": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tile Path"
+        },
+        "tile_s3_key": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tile S3 Key"
+        },
+        "total_tiles": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total Tiles"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id",
+        "tile_index"
+      ],
+      "title": "ImageTileEvent",
+      "type": "object"
+    },
+    "MissionEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "ai_backend": {
+          "anyOf": [
+            {
+              "enum": [
+                "yolo",
+                "sam3"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Backend"
+        },
+        "ai_confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Confidence"
+        },
+        "ai_model_variant": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Model Variant"
+        },
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "classes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Classes"
+        },
+        "colmap_params": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Colmap Params"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "mission",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "input_dataset": {
+          "anyOf": [
+            {
+              "maxLength": 1024,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Input Dataset"
+        },
+        "pipeline": {
+          "anyOf": [
+            {
+              "enum": [
+                "modern",
+                "legacy"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pipeline"
+        },
+        "sam_prompt": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sam Prompt"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "tile_size": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 256,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tile Size"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        },
+        "work_drive": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Work Drive"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id"
+      ],
+      "title": "MissionEvent",
+      "type": "object"
+    },
+    "OrthomosaicEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "ai_backend": {
+          "anyOf": [
+            {
+              "enum": [
+                "yolo",
+                "sam3"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Backend"
+        },
+        "ai_confidence": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Confidence"
+        },
+        "ai_model_variant": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Model Variant"
+        },
+        "analysis_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analysis Run Id"
+        },
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "classes": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 20,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Classes"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "orthomosaic",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "ortho_path": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ortho Path"
+        },
+        "ortho_s3_key": {
+          "anyOf": [
+            {
+              "maxLength": 2048,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ortho S3 Key"
+        },
+        "sam_prompt": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sam Prompt"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "tile_size": {
+          "anyOf": [
+            {
+              "maximum": 4096,
+              "minimum": 256,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tile Size"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id"
+      ],
+      "title": "OrthomosaicEvent",
+      "type": "object"
+    },
+    "StatusEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "status",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "log": {
+          "anyOf": [
+            {
+              "maxLength": 16384,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Log"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Progress"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "service": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Service"
+        },
+        "status": {
+          "enum": [
+            "processing",
+            "success",
+            "error",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "step": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id",
+        "status"
+      ],
+      "title": "StatusEvent",
+      "type": "object"
+    },
+    "TileDetectionEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "analysis_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analysis Run Id"
+        },
+        "attempt": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "causation_id": {
+          "anyOf": [
+            {
+              "maxLength": 512,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Causation Id"
+        },
+        "correlation_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Correlation Id",
+          "type": "string"
+        },
+        "detections": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Detections",
+          "type": "array"
+        },
+        "emitted_at": {
+          "format": "date-time",
+          "title": "Emitted At",
+          "type": "string"
+        },
+        "event_id": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "event_type": {
+          "const": "tile_detection",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "model_manifest": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Manifest"
+        },
+        "schema_version": {
+          "const": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "tile_index": {
+          "minimum": 0,
+          "title": "Tile Index",
+          "type": "integer"
+        },
+        "vol_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Vol Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "event_type",
+        "event_id",
+        "correlation_id",
+        "emitted_at",
+        "vol_id",
+        "tile_index",
+        "detections"
+      ],
+      "title": "TileDetectionEvent",
+      "type": "object"
+    }
+  },
+  "$id": "urn:droneai:kafka-events:v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "discriminator": {
+    "mapping": {
+      "control": "#/$defs/ControlEvent",
+      "dead_letter": "#/$defs/DeadLetterEvent",
+      "image_tile": "#/$defs/ImageTileEvent",
+      "mission": "#/$defs/MissionEvent",
+      "orthomosaic": "#/$defs/OrthomosaicEvent",
+      "status": "#/$defs/StatusEvent",
+      "tile_detection": "#/$defs/TileDetectionEvent"
+    },
+    "propertyName": "event_type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/MissionEvent"
+    },
+    {
+      "$ref": "#/$defs/OrthomosaicEvent"
+    },
+    {
+      "$ref": "#/$defs/ImageTileEvent"
+    },
+    {
+      "$ref": "#/$defs/TileDetectionEvent"
+    },
+    {
+      "$ref": "#/$defs/StatusEvent"
+    },
+    {
+      "$ref": "#/$defs/ControlEvent"
+    },
+    {
+      "$ref": "#/$defs/DeadLetterEvent"
+    }
+  ],
+  "title": "DroneAI Kafka Event v1"
+}

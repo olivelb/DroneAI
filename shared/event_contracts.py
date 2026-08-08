@@ -5,29 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, UTC
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from shared.event_schemas import (
+    EVENT_MODELS,
+    EVENT_TYPES,
+    PIPELINE_STATUSES,
+)
+
 SCHEMA_VERSION = 1
-EVENT_TYPES = {
-    "mission",
-    "orthomosaic",
-    "image_tile",
-    "tile_detection",
-    "status",
-    "control",
-    "dead_letter",
-}
-REQUIRED_FIELDS = {
-    "mission": ("vol_id",),
-    "orthomosaic": ("vol_id",),
-    "image_tile": ("vol_id", "tile_index"),
-    "tile_detection": ("vol_id", "tile_index", "detections"),
-    "status": ("vol_id", "status"),
-    "control": ("vol_id", "command"),
-    "dead_letter": ("source_topic", "consumer_group", "error"),
-}
-PIPELINE_STATUSES = frozenset({"processing", "success", "error", "cancelled"})
 
 
 class EventValidationError(ValueError):
@@ -77,20 +66,13 @@ def validate_event(
     if not isinstance(event, dict):
         raise EventValidationError("event must be a JSON object")
     event_type = event.get("event_type") or expected_type
-    if event_type not in EVENT_TYPES:
+    if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
         raise EventValidationError(f"unknown or missing event_type: {event_type}")
     if expected_type and event_type != expected_type:
         raise EventValidationError(f"expected event_type={expected_type}, got {event_type}")
     version = event.get("schema_version", SCHEMA_VERSION)
     if version != SCHEMA_VERSION:
         raise EventValidationError(f"unsupported schema_version={version}; expected {SCHEMA_VERSION}")
-    missing = [field for field in REQUIRED_FIELDS[event_type] if field not in event or event[field] is None]
-    if event_type == "orthomosaic" and not (event.get("ortho_s3_key") or event.get("ortho_path")):
-        missing.append("ortho_s3_key|ortho_path")
-    if event_type == "image_tile" and not (event.get("tile_s3_key") or event.get("tile_path")):
-        missing.append("tile_s3_key|tile_path")
-    if missing:
-        raise EventValidationError(f"{event_type} event missing required fields: {', '.join(missing)}")
     if event_type == "status" and event.get("status") not in PIPELINE_STATUSES:
         allowed = ", ".join(sorted(PIPELINE_STATUSES))
         raise EventValidationError(
@@ -112,7 +94,16 @@ def validate_event(
     normalized.setdefault("emitted_at", datetime.now(UTC).isoformat())
     if not isinstance(normalized["attempt"], int) or normalized["attempt"] < 0:
         raise EventValidationError("attempt must be a non-negative integer")
-    return normalized
+    try:
+        validated = EVENT_MODELS[event_type].model_validate(normalized)
+    except ValidationError as error:
+        raise EventValidationError(
+            f"invalid {event_type} event: {error}"
+        ) from error
+    return cast(
+        dict[str, Any],
+        validated.model_dump(mode="json", exclude_unset=True),
+    )
 
 
 def decode_event(value: bytes | str, *, expected_type: str) -> dict[str, Any]:

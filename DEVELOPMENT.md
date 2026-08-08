@@ -66,7 +66,8 @@ logic is expected to receive focused unit tests even when subprocess, CUDA or
 external-service boundaries require integration tests.
 
 The tests include architecture checks for the API composition root, public
-route inventory, shared worker messaging, versioned event contracts, retry and
+route inventory, shared worker messaging, versioned Pydantic event contracts,
+the generated discriminated JSON Schema, retry and
 dead-letter behavior, transactional inbox/outbox rollback and retry using
 SQLite, local orchestrator resumability, GeoPackage metadata and WGS84-to-EPSG
 vector reprojection. When Fiona/GDAL is installed, the QGIS export tests also
@@ -126,6 +127,21 @@ adapter now completes the strict route boundary, including typed search filters,
 dashboard HTTP route module is therefore covered without broad ignores.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
+
+Kafka event payloads are defined once in `shared/event_schemas.py`. The seven
+version-one event families (`mission`, `orthomosaic`, `image_tile`,
+`tile_detection`, `status`, `control`, and `dead_letter`) share a trace
+envelope and receive strict field-level validation while allowing additive
+extension fields. Regenerate the machine-readable contract after changing a
+model:
+
+```bash
+python tools/export_event_schemas.py
+```
+
+`make static` verifies that
+`docs/contracts/kafka-events-v1.schema.json` is current.
+
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
 reuse and bounded fallback, plus mandatory publication assets, GCP provenance,
 best-effort recovery uploads and aerial/facade completion routing.
