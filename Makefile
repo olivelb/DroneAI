@@ -11,6 +11,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/exif_altitude.py \
 	app1-colmap/gaussian_ortho/facade_frame.py \
 	app1-colmap/gaussian_ortho/filter_quality.py \
+	app1-colmap/gaussian_ortho/generate_gaussian_orthophoto.py \
 	app1-colmap/gaussian_ortho/gaussian_model.py \
 	app1-colmap/gaussian_ortho/geo_writer.py \
 	app1-colmap/gaussian_ortho/height_reference.py \

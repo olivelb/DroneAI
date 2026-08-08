@@ -9,9 +9,10 @@ import shutil
 import signal
 import subprocess
 import threading
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Protocol
 
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
@@ -353,6 +354,8 @@ class TrainingBackend(Protocol):
     name: str
 
     def is_available(self) -> bool: ...
+
+    def binary_sha256(self) -> str: ...
 
     def train(
         self,

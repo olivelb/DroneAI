@@ -7,19 +7,22 @@ to swap in from the existing pipeline.
 
 Pipeline:
   1. Load COLMAP reconstruction + alignment transform
-  2. Partition scene (VastGaussian, if m×n > 1×1)
+  2. Partition scene (VastGaussian, if m x n > 1 x 1)
   3. Train Gaussian model per cell via the selected headless backend
   4. Merge cell models
   5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
   6. Write GeoTIFF
 """
 
+from __future__ import annotations
+
 import json
 import os
-from datetime import datetime, timezone
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
@@ -46,6 +49,11 @@ from gaussian_training import (
     resolve_training_backend,
     write_quality_canary,
 )
+from gaussian_training.backends import (
+    CancellationCheck,
+    CheckpointCallback,
+    TrainingBackend,
+)
 from gaussian_training.dataset_identity import compute_dataset_identity
 from gaussian_training.manifest_contract import (
     load_run_manifest,
@@ -61,9 +69,39 @@ from .exif_altitude import (
     compute_projected_geo_origin,
 )
 from .height_reference import georeference_height_map, georeference_raster_origin
+from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
+from .partition import CellBounds
+from .scene_info import SceneInfo
+
+if TYPE_CHECKING:
+    from .facade_frame import FacadeFrame
+    from .gaussian_model import GaussianModel
 
 
-def _report(vol_id, step, progress, msg, report_fn):
+class ProgressReport(Protocol):
+    """Callback contract used by the COLMAP worker progress bridge."""
+
+    def __call__(
+        self,
+        vol_id: str,
+        step: str,
+        progress: int,
+        *,
+        log: str,
+    ) -> object: ...
+
+
+type ModelFactory = Callable[..., "GaussianModel"]
+type MergeModels = Callable[..., "GaussianModel"]
+
+
+def _report(
+    vol_id: str,
+    step: str,
+    progress: int,
+    msg: str,
+    report_fn: ProgressReport | None,
+) -> None:
     if report_fn:
         report_fn(vol_id, step, progress, log=msg)
     else:
@@ -89,7 +127,10 @@ def _facade_metadata_image_dirs(dense_path: str) -> list[str]:
     return unique
 
 
-def _compute_facade_gps_scale(cameras, dense_path: str):
+def _compute_facade_gps_scale(
+    cameras: Sequence[CameraInfo],
+    dense_path: str,
+) -> tuple[float, str, str]:
     """Try source metadata first and fall back only when it is insufficient."""
 
     for images_dir in _facade_metadata_image_dirs(dense_path):
@@ -174,7 +215,7 @@ def _quarantine_incompatible_dronegs_output(
     output = Path(output_path)
     if not output.is_dir() or not any(output.iterdir()):
         return None
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     quarantine_root = output.parent.parent / ".incompatible" / output.parent.name
     quarantine_root.mkdir(parents=True, exist_ok=True)
     candidate = quarantine_root / f"{output.name}-{stamp}"
@@ -195,7 +236,7 @@ class GaussianOrthoConfig:
     utm_crs: str | None
     vol_id: str
     transform_file: str | None
-    report_fn: Any
+    report_fn: ProgressReport | None
     resolution: float
     iterations: int
     partition_m: int
@@ -244,8 +285,8 @@ class GaussianOrthoConfig:
     dronegs_test_guard_percent: int
     dronegs_canary_min_psnr: float
     dronegs_canary_min_ssim: float
-    cancellation_check: Any
-    checkpoint_callback: Any
+    cancellation_check: CancellationCheck | None
+    checkpoint_callback: CheckpointCallback | None
     render_mode: str
     facade_scale_mode: str
     facade_meters_per_model_unit: float
@@ -258,15 +299,15 @@ class GaussianOrthoConfig:
 
 @dataclass
 class GaussianSceneState:
-    train_cameras: list[Any]
-    test_cameras: list[Any]
-    registered_cameras: list[Any]
-    point_cloud: Any
-    transform_data: dict[str, Any] | None
+    train_cameras: list[CameraInfo]
+    test_cameras: list[CameraInfo]
+    registered_cameras: list[CameraInfo]
+    point_cloud: PointCloud | None
+    transform_data: Sim3Transform | None
     mean_exif_alt: float | None
     colmap_to_meters: float
     scale_source: str
-    facade_frame: Any
+    facade_frame: FacadeFrame | None
     texture_camera_count: int
     texture_filter_applied: bool
     minimum_sparse_observations: int
@@ -274,8 +315,8 @@ class GaussianSceneState:
     seed_min_track: int
     gaussian_seed_point_count: int
     images_dir: str
-    scene: Any
-    cells: list[tuple[Any, Any]]
+    scene: SceneInfo | None
+    cells: list[tuple[CellBounds | None, SceneInfo]]
     use_partition: bool
 
 
@@ -296,7 +337,7 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         max_reproj_error=seed_max_error,
         min_track_length=seed_min_track,
     )
-    gaussian_seed_point_count = int(len(point_cloud.points))
+    gaussian_seed_point_count = len(point_cloud.points)
     if config.render_mode == "facade" and transform_data:
         raise ValueError("Facade rendering must not receive a geographic Sim3 transform")
 
@@ -307,7 +348,7 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         for camera in train_cameras
         if exif_altitudes.get(camera.image_name) is not None
     ]
-    mean_exif_alt = np.mean(valid_altitudes) if valid_altitudes else None
+    mean_exif_alt = float(np.mean(valid_altitudes)) if valid_altitudes else None
 
     scale_source = "geographic-sim3"
     if config.render_mode == "facade":
@@ -420,20 +461,24 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         dense_path=config.dense_path,
     )
     use_partition = config.partition_m > 1 or config.partition_n > 1
+    cells: list[tuple[CellBounds | None, SceneInfo]]
     if use_partition:
         _report(
             config.vol_id,
             "GAUSS",
             12,
-            f"Partitioning scene into {config.partition_m}×{config.partition_n} cells…",
+            f"Partitioning scene into {config.partition_m}x{config.partition_n} cells…",
             config.report_fn,
         )
-        cells = partition_scene(
+        cells = [
+            (bounds, cell_scene)
+            for bounds, cell_scene in partition_scene(
             scene,
             config.partition_m,
             config.partition_n,
             config.partition_overlap,
-        )
+            )
+        ]
         _report(
             config.vol_id,
             "GAUSS",
@@ -468,16 +513,16 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
 
 @dataclass
 class GaussianTrainingState:
-    merged_model: Any
+    merged_model: GaussianModel
     final_ply: str
-    facade_subset_result: dict[str, Any] | None
+    facade_subset_result: dict[str, object] | None
 
 
 def _make_training_reporter(
     pct_start: int,
     pct_end: int,
     config: GaussianOrthoConfig,
-):
+) -> Callable[[int, float, int], None]:
     def reporter(iteration: int, loss_value: float, gaussian_count: int) -> None:
         progress = pct_start + int((pct_end - pct_start) * iteration / max(1, config.iterations))
         _report(
@@ -495,16 +540,18 @@ def train_and_merge_gaussian_models(
     config: GaussianOrthoConfig,
     scene_state: GaussianSceneState,
     *,
-    backend: Any,
+    backend: TrainingBackend,
     trainer_binary_sha256: str,
-    model_class: Any,
-    merge_models_fn: Any,
+    model_class: ModelFactory,
+    merge_models_fn: MergeModels,
     cupy_module: Any,
 ) -> GaussianTrainingState:
     """Train/reuse every cell, merge it, and persist the local-frame PLY."""
-    cell_models = []
+    if scene_state.point_cloud is None:
+        raise RuntimeError("Sparse point cloud is unavailable for training")
+    cell_models: list[tuple[CellBounds | None, GaussianModel]] = []
     n_cells = len(scene_state.cells)
-    facade_subset_result = None
+    facade_subset_result: dict[str, object] | None = None
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
     if not os.path.isdir(sparse_dir):
         sparse_dir = os.path.join(config.dense_path, "sparse")
@@ -544,7 +591,7 @@ def train_and_merge_gaussian_models(
                 config.checkpoint_dir,
                 "facade_texture_workspace",
             )
-            facade_subset_result = export_colmap_subset(
+            subset_export = export_colmap_subset(
                 source_sparse_dir=sparse_dir,
                 target_dir=texture_workspace,
                 camera_names=[camera.image_name for camera in cell_scene.train_cameras],
@@ -554,6 +601,9 @@ def train_and_merge_gaussian_models(
                 max_points=max(1, int(config.cap_max * 0.85)),
                 return_report=True,
             )
+            if isinstance(subset_export, str):
+                raise RuntimeError("Facade subset export did not return its report")
+            facade_subset_result = subset_export
             if facade_subset_result["coverage_balanced"]:
                 _report(
                     config.vol_id,
@@ -727,7 +777,7 @@ def train_and_merge_gaussian_models(
 
 @dataclass
 class GaussianRenderState:
-    merged_model: Any
+    merged_model: GaussianModel
     geo_origin: np.ndarray
     frame_origin: np.ndarray | None
     rotation_geo: np.ndarray | None
@@ -749,10 +799,10 @@ def prepare_gaussian_render_state(
     """Align, filter, and bound the trained model for raster rendering."""
     model = training_state.merged_model
     cameras = scene_state.registered_cameras
-    geo_origin = np.zeros(3, dtype=np.float64)
-    frame_origin = None
-    rotation_geo = None
-    sh_direction_rotation = None
+    geo_origin: np.ndarray = np.zeros(3, dtype=np.float64)
+    frame_origin: np.ndarray | None = None
+    rotation_geo: np.ndarray | None = None
+    sh_direction_rotation: np.ndarray | None = None
 
     if config.render_mode == "facade":
         _report(
@@ -762,6 +812,8 @@ def prepare_gaussian_render_state(
             "Applying optimized-camera facade frame…",
             config.report_fn,
         )
+        if scene_state.facade_frame is None:
+            raise RuntimeError("Facade frame is unavailable")
         rotation_geo = scene_state.facade_frame.world_to_facade.astype(np.float32)
         frame_origin = scene_state.facade_frame.origin.astype(np.float64)
         _report(
@@ -813,6 +865,8 @@ def prepare_gaussian_render_state(
         )
         from .pca_alignment import compute_pca_rotation
 
+        if scene_state.point_cloud is None:
+            raise RuntimeError("Sparse point cloud is unavailable")
         camera_positions = np.array(
             [camera.T for camera in cameras],
             dtype=np.float64,
@@ -857,7 +911,7 @@ def prepare_gaussian_render_state(
     else:
         local_camera_positions = geo_camera_positions - geo_origin
     if config.render_mode == "facade":
-        coverage_camera_positions = np.empty((0, 3), dtype=np.float64)
+        coverage_camera_positions: np.ndarray = np.empty((0, 3), dtype=np.float64)
     elif scene_state.transform_data:
         coverage_camera_positions = geo_camera_positions - geo_origin
     else:
@@ -912,6 +966,8 @@ def prepare_gaussian_render_state(
 
     depth_bounds = None
     if config.render_mode == "facade" and config.facade_depth_iqr_multiplier > 0:
+        if frame_origin is None or rotation_geo is None:
+            raise RuntimeError("Facade depth filtering requires a local frame")
         local_xyz = (
             model.positions
             - cupy_module.array(
@@ -937,7 +993,7 @@ def prepare_gaussian_render_state(
             config.vol_id,
             "GAUSS",
             90,
-            f"Facade depth filter ({multiplier:.2f}×IQR): "
+            f"Facade depth filter ({multiplier:.2f}xIQR): "
             f"{before_filter} → {model.num_gaussians}; window "
             f"[{depth_bounds[0] * scene_state.colmap_to_meters:.2f}, "
             f"{depth_bounds[1] * scene_state.colmap_to_meters:.2f}] m.",
@@ -996,8 +1052,8 @@ def generate_gaussian_orthophoto(
     ortho_file: str,
     utm_crs: str | None,
     vol_id: str = "vol",
-    transform_file: str = None,
-    report_fn=None,
+    transform_file: str | None = None,
+    report_fn: ProgressReport | None = None,
     resolution: float = 0.02,
     # Gaussian-specific params
     iterations: int = DRONEGS_PRODUCTION_PROFILE_V1.iterations,
@@ -1006,7 +1062,7 @@ def generate_gaussian_orthophoto(
     partition_overlap: float = 0.20,
     sh_degree: int = 3,
     fagk: bool = True,
-    checkpoint_dir: str = None,
+    checkpoint_dir: str | None = None,
     data_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
     max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width,
     ortho_mip_filter_variance: float = 0.03,
@@ -1048,8 +1104,8 @@ def generate_gaussian_orthophoto(
     dronegs_test_guard_percent: int = (DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
     dronegs_canary_min_psnr: float = (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
     dronegs_canary_min_ssim: float = (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
-    cancellation_check=None,
-    checkpoint_callback=None,
+    cancellation_check: CancellationCheck | None = None,
+    checkpoint_callback: CheckpointCallback | None = None,
     render_mode: str = "map",
     facade_scale_mode: str = FACADE_PARAMETER_DEFAULTS["facade_scale_mode"],
     facade_meters_per_model_unit: float = float(FACADE_PARAMETER_DEFAULTS["facade_meters_per_model_unit"]),
@@ -1058,7 +1114,7 @@ def generate_gaussian_orthophoto(
     facade_depth_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_iqr_multiplier"]),
     facade_seed_max_reprojection_error: float = float(FACADE_PARAMETER_DEFAULTS["facade_seed_max_reprojection_error"]),
     facade_seed_min_track_length: int = int(FACADE_PARAMETER_DEFAULTS["facade_seed_min_track_length"]),
-):
+) -> dict[str, Any]:
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
 
@@ -1081,7 +1137,7 @@ def generate_gaussian_orthophoto(
     iterations : int
         Training iterations per cell.
     partition_m, partition_n : int
-        Grid partition dimensions (1×1 = no partition).
+        Grid partition dimensions (1 x 1 = no partition).
     partition_overlap : float
         Overlap fraction for partitioning.
     sh_degree : int
@@ -1398,6 +1454,8 @@ def generate_gaussian_orthophoto(
     )
 
     if render_mode == "facade":
+        if facade_frame is None:
+            raise RuntimeError("Facade frame is unavailable for reporting")
         report_path = Path(facade_frame_report or str(Path(ortho_file).with_name("facade_frame.json")))
         frame_payload = {
             "schema_version": 1,
