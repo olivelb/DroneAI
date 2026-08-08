@@ -362,15 +362,17 @@ In practice it does the following:
 - collect detections from all returned tiles
 - merge overlap duplicates before final vector publication
 - transform pixel polygons through the orthomosaic affine/CRS into WGS84
+- publish verified GeoJSON to object storage
+- optionally rebuild the indexed PostGIS feature set transactionally
 
 `main.py` remains the Kafka composition root and dispatcher. Raster mechanics
 live in `orthomosaic_tiler.py`; rerunnable campaign mechanics live in
 `analysis_workflow.py`. CI applies Ruff cyclomatic-complexity budgets to these
-orchestration modules. The reusable processing modules and
-`app2-ia/detection_core.py` also pass the modern Bugbear, simplification,
-upgrade, Ruff-specific and async rule set as a progressive quality ratchet.
-The detector core and the three reusable processing modules additionally pass
-strict mypy checks. Tensor-to-NumPy conversion, raster access, detection
+orchestration modules. The reusable processing modules and complete app2
+worker also pass the modern Bugbear, simplification, upgrade, Ruff-specific
+and async rule set as a progressive quality ratchet. The complete app2 worker
+and the three reusable processing modules additionally pass strict mypy
+checks. Tensor-to-NumPy conversion, raster access, detection
 records, tiling plans, durable campaign state and recovery events therefore
 remain typed at the reusable local/Kafka boundary. Small protocols describe
 the Kafka, raster and callback integrations while ORM and validated JSON data
@@ -378,8 +380,6 @@ stay isolated at explicit dynamic boundaries.
 Architecture tests cap the composition roots and
 dashboard containers so responsibilities cannot silently collapse back into
 monoliths.
-- publish verified GeoJSON to object storage
-- optionally rebuild the indexed PostGIS feature set transactionally
 
 This service owns the transition from one georeferenced orthomosaic to many
 detector tiles, then back to one deduplicated vector product.
@@ -387,6 +387,13 @@ detector tiles, then back to one deduplicated vector product.
 ### IA worker (`app2-ia`)
 
 The IA worker is a tile-level dual-backend detection service. It supports Ultralytics YOLO OBB and Meta SAM 3 prompt-based segmentation. For SAM 3, treat the upstream source repository and the gated Hugging Face model distribution as separate license/compliance items.
+
+Its Kafka entrypoint follows the same composition-root rule as app1. SAM3
+model lifecycle and immutable provenance live in `sam3_backend.py`; per-tile
+download, inference routing, coordinate conversion, result publication and
+progress state live in `tile_detection_workflow.py`. Heavy Torch,
+Transformers and Hugging Face imports remain lazy, so the reusable geometry
+and workflow boundary stays testable in the lightweight CPU environment.
 
 Its runtime responsibilities are:
 

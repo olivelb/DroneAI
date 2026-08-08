@@ -79,7 +79,7 @@ Bugbear/simplification/upgrade/Ruff/async rules and a McCabe ceiling of 15
 across the complete worker package. The same modern rules cover `shared/`, with
 an initial McCabe ceiling of 18; scientific Unicode such as sigma remains
 allowed in operator-facing validation messages. A progressive service-core
-ratchet requires `app2-ia/detection_core.py`,
+ratchet requires the complete app2 worker plus
 `app3-processing/processing_core.py`, `orthomosaic_tiler.py` and
 `analysis_workflow.py` to pass those modern rules too. Stable contracts,
 runtime boundaries, artifact helpers, mission coordination and every COLMAP stage also
@@ -89,13 +89,15 @@ boundaries. Those dynamic integrations expose explicit session and S3 client
 contracts while keeping runtime-generated ORM/client behavior behind the
 boundary. Imports are skipped so missing or changing third-party stubs cannot
 weaken either strict contract.
-The reusable `app2-ia/detection_core.py` boundary and all three reusable app3
-processing modules now pass that strict mypy gate as well. This covers
+The complete app2 worker and all three reusable app3 processing modules now
+pass that strict mypy gate as well. This covers
 NumPy/tensor conversion, typed detection records, raster tiling, durable tile
 journaling, campaign finalization and recovery. Kafka producers, raster
 readers, progress callbacks and dynamic ORM/JSON boundaries expose explicit
-local contracts; the Kafka/Transformers entrypoint remains the next app2
-typing scope.
+local contracts. The complete app2 worker now passes the same strict gate:
+`main.py` is limited to Kafka composition, `sam3_backend.py` owns lazy model
+loading and segmentation, and `tile_detection_workflow.py` owns download,
+geolocation, publication and attempt-scoped progress state.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache

@@ -7,6 +7,9 @@ COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 SHARED_TYPED_PATHS := $(wildcard shared/*.py)
 SERVICE_CORE_PATHS := \
 	app2-ia/detection_core.py \
+	app2-ia/sam3_backend.py \
+	app2-ia/tile_detection_workflow.py \
+	app2-ia/main.py \
 	app3-processing/processing_core.py \
 	app3-processing/orthomosaic_tiler.py \
 	app3-processing/analysis_workflow.py
