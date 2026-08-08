@@ -228,7 +228,7 @@ release major. Keep the SHA pin when updating them. Dependabot checks Actions,
 Python, frontend npm and service Docker dependencies every Monday and groups
 the Python, frontend and Actions updates to keep review volume bounded. Actions
 using the Node.js 24 runtime require runner version 2.327.1 or newer; verify the
-self-hosted GPU runner before enabling the nightly workflow.
+self-hosted GPU runner before manually requesting physical-GPU qualification.
 
 The hosted CI builds the dashboard API, processing worker, CUDA COLMAP base and
 local Gaussian runtime images, then generates a CycloneDX JSON SBOM with Syft
@@ -238,24 +238,30 @@ in the report without making a release impossible. The commit-scoped
 `supply-chain-<image>-<sha>` artifacts are retained for 30 days, including
 failed jobs. Syft and Trivy container tags and multi-architecture digests are
 pinned in `.github/workflows/ci.yml` and
-`.github/workflows/cuda-containers.yml`.
+`.github/workflows/cuda-containers.yml`. The API and processing images also pin
+the multi-architecture `python:3.12-slim` index digest, so a rebuild cannot
+silently select a different upstream filesystem. Refresh that digest only as
+an explicit, reviewed dependency update.
 
 The `.in` files under `requirements/` list direct dependencies. Regenerate the
 corresponding lock after intentionally changing one of them:
 
 ```bash
-python -m piptools compile requirements/api.in
-python -m piptools compile requirements/processing.in
-python -m piptools compile requirements/colmap.in
-python -m piptools compile --allow-unsafe requirements/dev.in
+python -m piptools compile --generate-hashes --strip-extras requirements/api.in
+python -m piptools compile --generate-hashes --strip-extras requirements/processing.in
+python -m piptools compile --generate-hashes --strip-extras requirements/colmap.in
+python -m piptools compile --generate-hashes --strip-extras --allow-unsafe requirements/dev.in
 ```
 
 Use the Python version of the corresponding runtime image when regenerating a
-service lock.
+service lock. Runtime images, CI, and `scripts/bootstrap-dev.sh` install these
+locks with `--require-hashes`; a dependency line without an approved artifact
+hash therefore fails closed.
 
-`requirements/ia-extra.txt` is intentionally a direct-dependency lock layered
-on top of the Ultralytics base image. Do not resolve and pin its transitive
-Torch, CUDA, or NVIDIA dependencies independently from that image.
+`requirements/ia-extra.txt` is intentionally the exception: it is a
+direct-dependency compatibility layer over the digest-pinned Ultralytics base
+image, not an independently resolved environment. Do not resolve and pin its
+transitive Torch, CUDA, or NVIDIA dependencies independently from that image.
 
 ## Frontend
 

@@ -58,6 +58,7 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 "${VENV_DIR}/bin/python" -m pip install --quiet \
+    --require-hashes \
     --requirement "${PROJECT_ROOT}/requirements/dev.txt"
 
 (
