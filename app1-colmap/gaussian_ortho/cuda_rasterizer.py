@@ -8,10 +8,13 @@ Pipeline:
   1. Project 3D Gaussians to 2D (orthographic)
   2. Compute 2D covariance → conic (inverse)
   3. Evaluate SH colours with uniform nadir view direction
-  4. Tile-based binning (16×16 pixel tiles)
+  4. Tile-based binning (16 x 16 pixel tiles)
   5. Per-tile depth sort
   6. Alpha-compositing CUDA kernel (one thread per pixel)
 """
+
+from __future__ import annotations
+
 import math
 
 import cupy as cp
@@ -26,7 +29,7 @@ TILE_SIZE = 16
 SH_C0 = 0.28209479177387814
 
 
-def eval_sh_basis(degree, dirs):
+def eval_sh_basis(degree: int, dirs: cp.ndarray) -> cp.ndarray:
     """Evaluate SH basis functions.  dirs: (N, 3) CuPy array."""
     N = dirs.shape[0]
     n_coeffs = (degree + 1) ** 2
@@ -59,7 +62,11 @@ def eval_sh_basis(degree, dirs):
     return result
 
 
-def eval_sh(degree, dirs, sh_coeffs):
+def eval_sh(
+    degree: int,
+    dirs: cp.ndarray,
+    sh_coeffs: cp.ndarray,
+) -> cp.ndarray:
     """Evaluate SH → RGB.  sh_coeffs: (N, K, 3), dirs: (N, 3)."""
     basis = eval_sh_basis(degree, dirs)     # (N, (deg+1)^2)
     K = sh_coeffs.shape[1]
@@ -71,7 +78,7 @@ def eval_sh(degree, dirs, sh_coeffs):
 #  Quaternion → rotation matrix (vectorised)
 # =====================================================================
 
-def quat_to_rotmat(quats):
+def quat_to_rotmat(quats: cp.ndarray) -> cp.ndarray:
     """(N, 4) quaternions (w, x, y, z) → (N, 3, 3) rotation matrices."""
     w, x, y, z = quats[:, 0], quats[:, 1], quats[:, 2], quats[:, 3]
     xx = x * x; yy = y * y; zz = z * z
@@ -215,21 +222,26 @@ extern "C" __global__ void render_tiles(
 # =====================================================================
 
 def rasterize_ortho(
-    means_3d,      # (N, 3) cp float32 — world positions
-    quats,         # (N, 4) cp float32 — normalised wxyz quaternions
-    scales,        # (N, 3) cp float32 — activated scales (exp)
-    opacities,     # (N,)   cp float32 — activated opacities [0, 1]
-    sh_coeffs,     # (N, K, 3) cp float32 — SH coefficients
-    sh_degree,     # int or None
-    viewmat,       # (4, 4) cp float32 — world-to-camera
-    fx, fy, cx, cy,
-    width, height,
-    znear=0.01, zfar=1000.0,
-    bg_color=(1.0, 1.0, 1.0),
-    eps2d=0.03,
-    compensate_filter=True,
-    sh_direction_rotation=None,
-):
+    means_3d: cp.ndarray,      # (N, 3) cp float32 — world positions
+    quats: cp.ndarray,         # (N, 4) cp float32 — normalised wxyz quaternions
+    scales: cp.ndarray,        # (N, 3) cp float32 — activated scales (exp)
+    opacities: cp.ndarray,     # (N,)   cp float32 — activated opacities [0, 1]
+    sh_coeffs: cp.ndarray,     # (N, K, 3) cp float32 — SH coefficients
+    sh_degree: int | None,
+    viewmat: cp.ndarray,       # (4, 4) cp float32 — world-to-camera
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    width: int,
+    height: int,
+    znear: float = 0.01,
+    zfar: float = 1000.0,
+    bg_color: tuple[float, float, float] = (1.0, 1.0, 1.0),
+    eps2d: float = 0.03,
+    compensate_filter: bool = True,
+    sh_direction_rotation: np.ndarray | cp.ndarray | None = None,
+) -> tuple[cp.ndarray, cp.ndarray]:
     """
     Orthographic rasterisation of 3D Gaussians.
 

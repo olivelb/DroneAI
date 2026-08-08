@@ -28,7 +28,7 @@ def write_geotiff(
     x_min: float,
     y_max: float,
     gsd: float,
-    crs: str = "EPSG:32631",
+    crs: str | None = "EPSG:32631",
     height_map: NDArray[np.floating[Any]] | None = None,
     height_output_path: str | None = None,
 ) -> None:
@@ -47,8 +47,9 @@ def write_geotiff(
         Northern bound in CRS units.
     gsd : float
         Ground sample distance (pixel size in CRS units).
-    crs : str
-        Coordinate Reference System (e.g. 'EPSG:32631').
+    crs : str, optional
+        Coordinate Reference System (e.g. 'EPSG:32631'), or ``None`` for a
+        deliberately local raster such as a facade elevation.
     height_map : np.ndarray, optional
         (H, W) float32 height map. Written to separate file if given.
     height_output_path : str, optional

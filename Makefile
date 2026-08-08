@@ -5,18 +5,24 @@ PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared al
 PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/api shared tools $(CI_PYTHON_PATHS)
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
+	app1-colmap/gaussian_ortho/__init__.py \
 	app1-colmap/gaussian_ortho/colmap_loader.py \
 	app1-colmap/gaussian_ortho/colmap_subset.py \
 	app1-colmap/gaussian_ortho/coverage_quality.py \
+	app1-colmap/gaussian_ortho/cuda_rasterizer.py \
 	app1-colmap/gaussian_ortho/exif_altitude.py \
 	app1-colmap/gaussian_ortho/facade_frame.py \
 	app1-colmap/gaussian_ortho/filter_quality.py \
+	app1-colmap/gaussian_ortho/generate_gaussian_orthophoto.py \
+	app1-colmap/gaussian_ortho/gaussian_model.py \
 	app1-colmap/gaussian_ortho/geo_writer.py \
 	app1-colmap/gaussian_ortho/height_reference.py \
 	app1-colmap/gaussian_ortho/merge.py \
 	app1-colmap/gaussian_ortho/model_filtering.py \
+	app1-colmap/gaussian_ortho/ortho_renderer.py \
 	app1-colmap/gaussian_ortho/partition.py \
 	app1-colmap/gaussian_ortho/pca_alignment.py \
+	app1-colmap/gaussian_ortho/rasterizer.py \
 	app1-colmap/gaussian_ortho/scene_info.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
