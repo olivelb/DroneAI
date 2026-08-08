@@ -12,7 +12,12 @@ from .gaussian_model import GaussianModel
 from .partition import CellBounds
 
 
-def _core_bounds(cell: CellBounds, dx: float, dy: float, overlap: float):
+def _core_bounds(
+    cell: CellBounds,
+    dx: float,
+    dy: float,
+    overlap: float,
+) -> CellBounds:
     """Compute the core (non-overlap) region of a cell."""
     pad_x = dx * overlap
     pad_y = dy * overlap
