@@ -11,9 +11,10 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 import numpy as np
+from numpy.typing import NDArray
 
 from shared.model_provenance import (
     build_model_manifest,
@@ -70,6 +71,12 @@ REQUESTED_CLASS_MAP = {
 
 _yolo_models: dict[str, tuple[Any, list[str]]] = {}
 _yolo_model_hashes: dict[str, str] = {}
+DetectionRecord = dict[str, Any]
+
+
+class DetectionAttempt(TypedDict):
+    conf: float
+    label: str
 
 
 def normalize_yolo_model_variant(value: str | None) -> str:
@@ -160,14 +167,14 @@ def load_yolo_model(
     return model, available_labels, selected_variant, device, model_file_path
 
 
-def to_numpy(value: Any) -> np.ndarray | None:
+def to_numpy(value: Any) -> NDArray[Any] | None:
     if value is None:
         return None
     if hasattr(value, "tensor"):
         value = value.tensor
     if hasattr(value, "detach"):
-        return value.detach().cpu().numpy()
-    return np.asarray(value)
+        return cast(NDArray[Any], value.detach().cpu().numpy())
+    return cast(NDArray[Any], np.asarray(value))
 
 
 def polygon_center(polygon: list[list[float]]) -> tuple[float, float]:
@@ -202,8 +209,8 @@ def extract_obb_detections(
     raw_result: Any,
     requested_labels: list[str],
     min_confidence: float,
-) -> list[dict]:
-    detections = []
+) -> list[DetectionRecord]:
+    detections: list[DetectionRecord] = []
     requested = set(requested_labels)
     if raw_result is None:
         return detections
@@ -245,7 +252,7 @@ def run_yolo_detection(
     requested_classes: list[str],
     requested_conf: float,
     requested_model_variant: str | None = None,
-) -> tuple[list[dict], dict]:
+) -> tuple[list[DetectionRecord], dict[str, Any]]:
     model, available_labels, selected_variant, device, model_path = load_yolo_model(requested_model_variant)
     requested_labels = resolve_requested_labels(
         requested_classes,
@@ -260,7 +267,7 @@ def run_yolo_detection(
         verbose=False,
     )
     raw_result = raw_results[0] if raw_results else None
-    attempts = [
+    attempts: list[DetectionAttempt] = [
         {
             "conf": requested_conf,
             "label": f"YOLO primary pass conf={requested_conf:.2f}",
@@ -271,7 +278,7 @@ def run_yolo_detection(
         },
     ]
 
-    best_detections = []
+    best_detections: list[DetectionRecord] = []
     best_attempt = attempts[0]
     for attempt in attempts:
         detections = extract_obb_detections(
@@ -284,7 +291,7 @@ def run_yolo_detection(
             best_attempt = attempt
         if detections:
             break
-    best_attempt = {
+    attempt_details: dict[str, Any] = {
         **best_attempt,
         "label": f"{best_attempt['label']} model={selected_variant}",
         "model_variant": selected_variant,
@@ -307,4 +314,4 @@ def run_yolo_detection(
             },
         ),
     }
-    return best_detections, best_attempt
+    return best_detections, attempt_details

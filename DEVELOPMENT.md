@@ -89,6 +89,9 @@ boundaries. Those dynamic integrations expose explicit session and S3 client
 contracts while keeping runtime-generated ORM/client behavior behind the
 boundary. Imports are skipped so missing or changing third-party stubs cannot
 weaken either strict contract.
+The reusable `app2-ia/detection_core.py` boundary now passes that strict mypy
+gate as well, including its NumPy/tensor conversion and typed detection-attempt
+records; the Kafka/Transformers entrypoint remains the next app2 typing scope.
 `tests/test_modular_boundaries.py` prevents the entry point and focused modules
 from growing back into an orchestrator monolith.
 Focused worker tests also exercise RTK candidate acceptance, rejection, cache
