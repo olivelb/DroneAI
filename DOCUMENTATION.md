@@ -103,6 +103,10 @@ Operational notes:
 - The chart's revisioned migration job executes `alembic upgrade head`;
   database-dependent pods wait for the head revision in an init container and
   CI verifies an upgrade/downgrade/re-upgrade round-trip.
+- Migration `0007` adds named, reversible SQL `CHECK` constraints for mission,
+  aggregation, analysis, tile, map-feature, pipeline-log, inbox and outbox
+  states. Existing unexpected values deliberately block the upgrade instead of
+  being silently rewritten.
 
 ## Shared Python package
 
@@ -132,6 +136,8 @@ Current responsibilities:
 - define parameter metadata used by the frontend to render editable controls
 - provide helper functions that merge mission overrides with the selected pipeline preset
 - persist missions, logs, and detections through SQLAlchemy
+- enforce durable workflow state vocabularies in both SQLAlchemy metadata and
+  PostgreSQL rather than relying only on Python transitions
 - expose S3-compatible storage helpers used with MinIO
 - reconcile prefix deletions after every S3 `DeleteObjects` call and retry
   per-object failures up to `S3_DELETE_MAX_ATTEMPTS` (default: `3`), raising

@@ -71,6 +71,10 @@ dead-letter behavior, transactional inbox/outbox rollback and retry using
 SQLite, local orchestrator resumability, GeoPackage metadata and WGS84-to-EPSG
 vector reprojection. When Fiona/GDAL is installed, the QGIS export tests also
 open the generated GeoPackage through the GDAL driver and verify its layer CRS.
+Named SQL `CHECK` constraints reject impossible mission, aggregation, analysis,
+tile, map-feature, log, inbox and outbox states. Their SQLite regression tests
+run in the default suite, while CI validates migration `0007` through the
+PostgreSQL/PostGIS upgrade/downgrade/re-upgrade job.
 
 CI also rejects unused imports/locals and any new function above the repository
 complexity budget across every Python service, shared module and local tool. The

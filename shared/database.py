@@ -20,6 +20,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Float,
@@ -132,7 +133,64 @@ class RequiredTimestampMixin:
 # Mission statuses
 # ---------------------------------------------------------------------------
 
-MISSION_STATUSES = ("pending", "processing", "completed", "error", "cancelled", "stale")
+MISSION_STATUSES = (
+    "pending",
+    "processing",
+    "success",
+    "completed",
+    "error",
+    "cancelled",
+    "stale",
+    "deleting",
+    "deletion_failed",
+)
+AGGREGATION_STATUSES = (
+    "pending",
+    "collecting",
+    "finalizing",
+    "completed",
+    "failed",
+)
+ANALYSIS_RUN_STATUSES = (
+    "queued",
+    "tiling",
+    "running",
+    "finalizing",
+    "completed",
+    "failed",
+    "cancelled",
+)
+ANALYSIS_RUN_PHASES = (
+    "queued",
+    "tiling",
+    "detecting",
+    "deduplicating",
+    "completed",
+    "tiling_failed",
+    "finalization_failed",
+    "recovery_queued",
+    "cancelled",
+    "recovery_finalizing",
+    "recovery_retiling",
+    "tile_attempts_exhausted",
+    "recovery_detecting",
+)
+ANALYSIS_TILE_STATUSES = ("queued", "completed", "dead")
+MAP_FEATURE_SOURCES = ("manual", "ai")
+PIPELINE_LOG_STATUSES = ("processing", "success", "error", "cancelled")
+INBOX_EVENT_STATUSES = ("processing", "completed")
+OUTBOX_EVENT_STATUSES = (
+    "pending",
+    "publishing",
+    "published",
+    "failed",
+    "dead",
+)
+
+
+def _values_check(column: str, values: tuple[str, ...]) -> str:
+    quoted = ", ".join(f"'{value}'" for value in values)
+    return f"{column} IN ({quoted})"
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +205,16 @@ class Mission(Base):
     """
 
     __tablename__ = "missions"
+    __table_args__ = (
+        CheckConstraint(
+            _values_check("status", MISSION_STATUSES),
+            name="ck_missions_status",
+        ),
+        CheckConstraint(
+            _values_check("aggregation_status", AGGREGATION_STATUSES),
+            name="ck_missions_aggregation_status",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     vol_id = Column(String(256), unique=True, nullable=False, index=True)
@@ -301,6 +369,14 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     __table_args__ = (
         Index("ix_ai_runs_mission_created", "mission_id", "created_at"),
         Index("ix_ai_runs_recovery", "status", "heartbeat_at"),
+        CheckConstraint(
+            _values_check("status", ANALYSIS_RUN_STATUSES),
+            name="ck_ai_analysis_runs_status",
+        ),
+        CheckConstraint(
+            _values_check("phase", ANALYSIS_RUN_PHASES),
+            name="ck_ai_analysis_runs_phase",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -378,6 +454,10 @@ class AIAnalysisTile(Base):
             name="uq_ai_analysis_tile_run_index",
         ),
         Index("ix_ai_analysis_tiles_status", "analysis_run_id", "status"),
+        CheckConstraint(
+            _values_check("status", ANALYSIS_TILE_STATUSES),
+            name="ck_ai_analysis_tiles_status",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -423,6 +503,10 @@ class MapFeature(RequiredTimestampMixin, Base):
         Index("ix_map_features_mission_source", "mission_id", "source"),
         Index("ix_map_features_run_class", "analysis_run_id", "class_name"),
         Index("ix_map_features_name", "name"),
+        CheckConstraint(
+            _values_check("source", MAP_FEATURE_SOURCES),
+            name="ck_map_features_source",
+        ),
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -471,7 +555,13 @@ class MissionLog(Base):
     """
 
     __tablename__ = "mission_logs"
-    __table_args__ = (Index("ix_logs_mission_created", "mission_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_logs_mission_created", "mission_id", "created_at"),
+        CheckConstraint(
+            f"status IS NULL OR {_values_check('status', PIPELINE_LOG_STATUSES)}",
+            name="ck_mission_logs_status",
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     mission_id = Column(Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False)
@@ -504,6 +594,10 @@ class InboxEvent(Base):
             name="uq_inbox_consumer_event",
         ),
         Index("ix_inbox_source_offset", "source_topic", "source_partition", "source_offset"),
+        CheckConstraint(
+            _values_check("status", INBOX_EVENT_STATUSES),
+            name="ck_inbox_events_status",
+        ),
     )
 
     id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
@@ -532,6 +626,10 @@ class OutboxEvent(Base):
     __table_args__ = (
         UniqueConstraint("event_id", name="uq_outbox_event_id"),
         Index("ix_outbox_dispatch", "status", "available_at", "created_at"),
+        CheckConstraint(
+            _values_check("status", OUTBOX_EVENT_STATUSES),
+            name="ck_outbox_events_status",
+        ),
     )
 
     id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
