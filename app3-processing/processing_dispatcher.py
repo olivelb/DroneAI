@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, TypedDict, Unpack, cast
 
 
 JsonObject = dict[str, Any]
@@ -24,20 +24,25 @@ class CancellationRegistry(Protocol):
     ) -> bool: ...
 
 
+class OrthomosaicSliceOptions(TypedDict, total=False):
+    """Optional controls accepted by the orthomosaic tiling boundary."""
+
+    tile_size: int
+    classes: list[str] | None
+    ai_confidence: float
+    ai_backend: str
+    ai_model_variant: str
+    sam_prompt: str
+    analysis_run_id: str | None
+    analysis_attempt: int
+
+
 class OrthomosaicTiler(Protocol):
     def slice(
         self,
         ortho_s3_key: str,
         vol_id: str,
-        *,
-        tile_size: int = 1024,
-        classes: list[str] | None = None,
-        ai_confidence: float = 0.3,
-        ai_backend: str = "yolo",
-        ai_model_variant: str = "yolo26l",
-        sam_prompt: str = "car",
-        analysis_run_id: str | None = None,
-        analysis_attempt: int = 0,
+        **options: Unpack[OrthomosaicSliceOptions],
     ) -> None: ...
 
 
