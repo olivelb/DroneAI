@@ -4,12 +4,45 @@ from __future__ import annotations
 
 import os
 import struct
+from collections.abc import Mapping
 from pathlib import Path
+from typing import TypedDict
 
 import numpy as np
 
 
-def _coverage_balanced_point_ids(points: dict, maximum: int) -> set[int]:
+class ColmapCameraRecord(TypedDict):
+    model_id: int
+    width: int
+    height: int
+    params: list[float]
+
+
+class ColmapImageRecord(TypedDict):
+    qw: float
+    qx: float
+    qy: float
+    qz: float
+    tx: float
+    ty: float
+    tz: float
+    camera_id: int
+    name: str
+    xys: list[tuple[float, float]]
+    point3D_ids: list[int]
+
+
+class ColmapPointRecord(TypedDict):
+    xyz: tuple[float, float, float]
+    rgb: tuple[int, int, int]
+    error: float
+    track: list[tuple[int, int]]
+
+
+def _coverage_balanced_point_ids(
+    points: Mapping[int, ColmapPointRecord],
+    maximum: int,
+) -> set[int]:
     """Retain a deterministic, facade-wide seed when the GPU cap is smaller.
 
     One high-quality point is first retained per occupied cell in the two
@@ -60,7 +93,7 @@ def _coverage_balanced_point_ids(points: dict, maximum: int) -> set[int]:
     # error, and finally point id for a stable tie-break.
     spatial_order = np.lexsort((point_ids, errors, -tracks, cell_ids))
     ordered_cells = cell_ids[spatial_order]
-    first_in_cell = np.ones(len(spatial_order), dtype=bool)
+    first_in_cell: np.ndarray = np.ones(len(spatial_order), dtype=bool)
     first_in_cell[1:] = ordered_cells[1:] != ordered_cells[:-1]
     coverage_indices = spatial_order[first_in_cell]
     if len(coverage_indices) > maximum:
@@ -91,7 +124,7 @@ def export_colmap_subset(
     min_track_length: int = 0,
     max_points: int | None = None,
     return_report: bool = False,
-) -> str | dict:
+) -> str | dict[str, object]:
     """Write a filtered COLMAP sparse reconstruction for one training cell."""
     source = Path(source_sparse_dir)
     target_sparse = Path(target_dir) / "sparse" / "0"
@@ -102,22 +135,22 @@ def export_colmap_subset(
     points = _read_colmap_points3d_bin(source / "points3D.bin")
 
     selected_names = set(camera_names)
-    filtered_images = {
+    filtered_images: dict[int, ColmapImageRecord] = {
         image_id: image
         for image_id, image in images.items()
         if image["name"] in selected_names
     }
-    used_camera_ids = {
+    used_camera_ids: set[int] = {
         image["camera_id"] for image in filtered_images.values()
     }
-    filtered_cameras = {
+    filtered_cameras: dict[int, ColmapCameraRecord] = {
         camera_id: camera
         for camera_id, camera in cameras.items()
         if camera_id in used_camera_ids
     }
 
     if point_ids is None:
-        visible_point_ids = {
+        visible_point_ids: set[int] = {
             point_id
             for image in filtered_images.values()
             for point_id in image["point3D_ids"]
@@ -125,23 +158,24 @@ def export_colmap_subset(
         }
     else:
         visible_point_ids = point_ids
-    filtered_points = {
-        point_id: {
-            **point,
+    filtered_points: dict[int, ColmapPointRecord] = {}
+    for point_id, point in points.items():
+        if point_id not in visible_point_ids:
+            continue
+        if max_point_error is not None and point["error"] > float(max_point_error):
+            continue
+        if len(point["track"]) < int(min_track_length):
+            continue
+        filtered_points[point_id] = {
+            "xyz": point["xyz"],
+            "rgb": point["rgb"],
+            "error": point["error"],
             "track": [
                 observation
                 for observation in point["track"]
                 if observation[0] in filtered_images
             ],
         }
-        for point_id, point in points.items()
-        if point_id in visible_point_ids
-        and (
-            max_point_error is None
-            or float(point["error"]) <= float(max_point_error)
-        )
-        and len(point["track"]) >= int(min_track_length)
-    }
     points_before_cap = len(filtered_points)
     if max_points is not None and points_before_cap > int(max_points):
         retained_ids = _coverage_balanced_point_ids(
@@ -173,7 +207,7 @@ def export_colmap_subset(
     target_images = Path(target_dir) / "images"
     if images_dir and not target_images.exists():
         os.symlink(os.path.abspath(images_dir), target_images)
-    report = {
+    report: dict[str, object] = {
         "sparse_path": str(target_sparse),
         "points_before_cap": points_before_cap,
         "exported_points": len(filtered_points),
@@ -183,8 +217,8 @@ def export_colmap_subset(
     return report if return_report else str(target_sparse)
 
 
-def _read_colmap_cameras_bin(path: Path) -> dict:
-    cameras = {}
+def _read_colmap_cameras_bin(path: Path) -> dict[int, ColmapCameraRecord]:
+    cameras: dict[int, ColmapCameraRecord] = {}
     with path.open("rb") as stream:
         (camera_count,) = struct.unpack("<Q", stream.read(8))
         for _ in range(camera_count):
@@ -217,8 +251,8 @@ def _read_colmap_cameras_bin(path: Path) -> dict:
     return cameras
 
 
-def _read_colmap_images_bin(path: Path) -> dict:
-    images = {}
+def _read_colmap_images_bin(path: Path) -> dict[int, ColmapImageRecord]:
+    images: dict[int, ColmapImageRecord] = {}
     with path.open("rb") as stream:
         (image_count,) = struct.unpack("<Q", stream.read(8))
         for _ in range(image_count):
@@ -235,8 +269,8 @@ def _read_colmap_images_bin(path: Path) -> dict:
                     raise ValueError("truncated COLMAP image name")
                 name_bytes.extend(character)
             (point_count,) = struct.unpack("<Q", stream.read(8))
-            xys = []
-            point3d_ids = []
+            xys: list[tuple[float, float]] = []
+            point3d_ids: list[int] = []
             for _ in range(point_count):
                 xys.append(struct.unpack("<2d", stream.read(16)))
                 (point_id,) = struct.unpack("<q", stream.read(8))
@@ -257,8 +291,8 @@ def _read_colmap_images_bin(path: Path) -> dict:
     return images
 
 
-def _read_colmap_points3d_bin(path: Path) -> dict:
-    points = {}
+def _read_colmap_points3d_bin(path: Path) -> dict[int, ColmapPointRecord]:
+    points: dict[int, ColmapPointRecord] = {}
     with path.open("rb") as stream:
         (point_count,) = struct.unpack("<Q", stream.read(8))
         for _ in range(point_count):
@@ -280,7 +314,10 @@ def _read_colmap_points3d_bin(path: Path) -> dict:
     return points
 
 
-def _write_colmap_cameras_bin(cameras: dict, path: Path) -> None:
+def _write_colmap_cameras_bin(
+    cameras: Mapping[int, ColmapCameraRecord],
+    path: Path,
+) -> None:
     with path.open("wb") as stream:
         stream.write(struct.pack("<Q", len(cameras)))
         for camera_id, camera in cameras.items():
@@ -292,7 +329,10 @@ def _write_colmap_cameras_bin(cameras: dict, path: Path) -> None:
                 stream.write(struct.pack("<d", parameter))
 
 
-def _write_colmap_images_bin(images: dict, path: Path) -> None:
+def _write_colmap_images_bin(
+    images: Mapping[int, ColmapImageRecord],
+    path: Path,
+) -> None:
     with path.open("wb") as stream:
         stream.write(struct.pack("<Q", len(images)))
         for image_id, image in images.items():
@@ -321,7 +361,10 @@ def _write_colmap_images_bin(images: dict, path: Path) -> None:
                 stream.write(struct.pack("<q", point_id))
 
 
-def _write_colmap_points3d_bin(points: dict, path: Path) -> None:
+def _write_colmap_points3d_bin(
+    points: Mapping[int, ColmapPointRecord],
+    path: Path,
+) -> None:
     with path.open("wb") as stream:
         stream.write(struct.pack("<Q", len(points)))
         for point_id, point in points.items():
