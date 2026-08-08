@@ -29,6 +29,9 @@ from .messaging import get_producer
 from .mission_state import apply_mission_state
 
 
+JsonObject = dict[str, Any]
+
+
 class StatusHub:
     def __init__(self, history_size: int = 300):
         self.history: deque[str] = deque(maxlen=history_size)
@@ -45,7 +48,7 @@ class StatusHub:
             self.connections.remove(websocket)
 
     async def broadcast(self, message: str) -> None:
-        failed = []
+        failed: list[WebSocket] = []
         for connection in self.connections:
             try:
                 await connection.send_text(message)
@@ -54,7 +57,7 @@ class StatusHub:
         for connection in failed:
             self.disconnect(connection)
 
-    def remember(self, event: dict) -> str:
+    def remember(self, event: JsonObject) -> str:
         payload = json.dumps(event)
         self.history.append(payload)
         return payload
@@ -73,7 +76,7 @@ def handle_status_message(
 ) -> bool:
     handled: dict[str, Any] = {}
 
-    def persist(event: dict) -> None:
+    def persist(event: JsonObject) -> None:
         handled["event"] = event
         handled["inbox_result"] = process_inbox_transaction(
             get_session,

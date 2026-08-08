@@ -7,6 +7,7 @@ import os
 import ssl
 import urllib.error
 import urllib.request
+from typing import Any, TypedDict, cast
 
 POD_NAMES = (
     "kafka-broker",
@@ -20,7 +21,29 @@ POD_NAMES = (
 )
 
 
-def compose_service_states() -> list[dict]:
+JsonObject = dict[str, Any]
+
+
+class PodState(TypedDict):
+    name: str
+    phase: str
+    ready: str | None
+    restarts: int | None
+    reason: str | None
+    last_terminated_reason: str | None
+    last_terminated_exit_code: int | None
+    oom_killed: bool
+    memory_limit: str | None
+    memory_request: str | None
+
+
+class KubernetesStatus(TypedDict):
+    available: bool
+    pods: list[PodState]
+    error: str | None
+
+
+def compose_service_states() -> list[PodState]:
     """Describe the services managed by the local Compose deployment.
 
     Compose itself remains the source of truth for health checks. This adapter
@@ -44,7 +67,7 @@ def compose_service_states() -> list[dict]:
     ]
 
 
-def fallback_pod_states() -> list[dict]:
+def fallback_pod_states() -> list[PodState]:
     return [
         {
             "name": name,
@@ -62,7 +85,7 @@ def fallback_pod_states() -> list[dict]:
     ]
 
 
-def _pod_payload(item: dict) -> dict:
+def _pod_payload(item: JsonObject) -> PodState:
     status = item.get("status", {})
     container_statuses = status.get("containerStatuses", [])
     container_specs = item.get("spec", {}).get("containers", [])
@@ -74,28 +97,19 @@ def _pod_payload(item: dict) -> dict:
         state = entry.get("state", {})
         if "waiting" in state:
             waiting_reason = state["waiting"].get("reason")
-        terminated = entry.get("lastState", {}).get("terminated") or state.get(
-            "terminated"
-        )
+        terminated = entry.get("lastState", {}).get("terminated") or state.get("terminated")
         if terminated and last_terminated_reason is None:
             last_terminated_reason = terminated.get("reason")
             last_terminated_exit_code = terminated.get("exitCode")
-            oom_killed = (
-                last_terminated_reason == "OOMKilled"
-                or last_terminated_exit_code == 137
-            )
-    resources = (
-        container_specs[0].get("resources", {}) if container_specs else {}
-    )
+            oom_killed = last_terminated_reason == "OOMKilled" or last_terminated_exit_code == 137
+    resources = container_specs[0].get("resources", {}) if container_specs else {}
     ready_count = sum(1 for entry in container_statuses if entry.get("ready"))
     total_count = len(container_statuses)
     return {
         "name": item.get("metadata", {}).get("name", "unknown"),
         "phase": status.get("phase", "unknown").lower(),
         "ready": f"{ready_count}/{total_count}" if total_count else None,
-        "restarts": sum(
-            entry.get("restartCount", 0) for entry in container_statuses
-        ),
+        "restarts": sum(entry.get("restartCount", 0) for entry in container_statuses),
         "reason": waiting_reason or status.get("reason"),
         "last_terminated_reason": last_terminated_reason,
         "last_terminated_exit_code": last_terminated_exit_code,
@@ -105,7 +119,7 @@ def _pod_payload(item: dict) -> dict:
     }
 
 
-def get_pod_states() -> dict:
+def get_pod_states() -> KubernetesStatus:
     if os.getenv("DRONEAI_RUNTIME_MODE", "").strip().lower() == "compose":
         return {
             "available": True,
@@ -131,10 +145,7 @@ def get_pod_states() -> dict:
     try:
         with open(token_path, encoding="utf-8") as handle:
             token = handle.read().strip()
-        url = (
-            f"https://{api_host}:{api_port}/api/v1/namespaces/"
-            f"{namespace}/pods"
-        )
+        url = f"https://{api_host}:{api_port}/api/v1/namespaces/{namespace}/pods"
         request = urllib.request.Request(
             url,
             headers={"Authorization": f"Bearer {token}"},
@@ -145,9 +156,9 @@ def get_pod_states() -> dict:
             context=context,
             timeout=5,
         ) as response:
-            payload = json.load(response)
+            payload = cast(JsonObject, json.load(response))
         pods = sorted(
-            (_pod_payload(item) for item in payload.get("items", [])),
+            (_pod_payload(item) for item in cast(list[JsonObject], payload.get("items", []))),
             key=lambda pod: pod["name"],
         )
         return {"available": True, "pods": pods, "error": None}

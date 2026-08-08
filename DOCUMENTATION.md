@@ -189,6 +189,13 @@ The frontend does not perform any heavy computation. It depends on the API for m
 
 The API is the control plane for the pipeline.
 
+Its first progressive strict-typing boundary covers the package itself,
+RBAC/session security, Kafka/outbox publication, the transactional status
+consumer and WebSocket hub, Kubernetes status records and infrastructure-free
+image preview helpers. External event and pod dictionaries have explicit local
+contracts; Pydantic schemas, domain services and route adapters are migrated
+in subsequent increments rather than hidden behind broad ignores.
+
 Primary endpoints:
 
 - `POST|GET|DELETE /auth/session`
