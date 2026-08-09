@@ -11,8 +11,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from sqlalchemy import text
+
 from shared.database import Mission, MissionStageRun, get_session
-from shared.stage_contracts import STAGE_ORDER, ResourceClassId, StageId
+from shared.stage_contracts import (
+    STAGE_ORDER,
+    ResourceClassId,
+    StageId,
+    resource_class_for_stage,
+    resource_class_meets_gpu_envelope,
+)
 from shared.stage_scheduler import (
     SchedulingLimits,
     StageAllocation,
@@ -33,6 +41,8 @@ from .kubernetes_jobs import (
 logger = logging.getLogger("droneai.stage-orchestrator")
 EXECUTOR_NAME = "kubernetes-job"
 ACTIVE_STATUSES = ("queued", "running")
+SCHEDULER_LOCK_NAMESPACE = 0x44524F4E  # "DRON"
+SCHEDULER_LOCK_KEY = 1
 
 
 @dataclass(frozen=True)
@@ -243,11 +253,50 @@ def _reserved_job(
     )
 
 
+def _repair_underprovisioned_resource_class(run: MissionStageRun) -> None:
+    """Upgrade queued legacy rows before they can be dispatched."""
+    stage = cast(StageId, run.stage)
+    actual = cast(ResourceClassId, run.resource_class)
+    parameters = cast(dict[str, Any], run.parameters or {})
+    required = resource_class_for_stage(stage, parameters)
+    if resource_class_meets_gpu_envelope(actual, required):
+        return
+    logger.warning(
+        "Repairing underprovisioned stage run %s from %s to %s",
+        run.run_id,
+        actual,
+        required,
+    )
+    run.resource_class = required
+    run.provenance = {
+        **cast(dict[str, Any], run.provenance or {}),
+        "resource_class_repaired_from": actual,
+    }
+
+
+def _try_acquire_scheduler_reservation_lock(session: Any) -> bool:
+    """Serialize capacity reservation across all PostgreSQL API replicas."""
+    bind = session.get_bind()
+    if bind.dialect.name != "postgresql":
+        return True
+    acquired = session.execute(
+        text("SELECT pg_try_advisory_xact_lock(:namespace, :lock_key)"),
+        {
+            "namespace": SCHEDULER_LOCK_NAMESPACE,
+            "lock_key": SCHEDULER_LOCK_KEY,
+        },
+    ).scalar_one()
+    return bool(acquired)
+
+
 def reserve_ready_jobs(
     session: Any,
     settings: StageOrchestratorSettings,
     now: datetime,
 ) -> list[ReservedStageJob]:
+    if not _try_acquire_scheduler_reservation_lock(session):
+        logger.debug("Another scheduler replica owns the reservation transaction")
+        return []
     active_rows = session.query(MissionStageRun, Mission).join(
         Mission,
         Mission.id == MissionStageRun.mission_id,
@@ -267,6 +316,8 @@ def reserve_ready_jobs(
         MissionStageRun.created_at,
         MissionStageRun.run_id,
     ).with_for_update(skip_locked=True).limit(500).all()
+    for run, _mission in candidate_rows:
+        _repair_underprovisioned_resource_class(run)
     active = [
         StageAllocation(
             run_id=cast(str, run.run_id),

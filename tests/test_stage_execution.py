@@ -85,7 +85,7 @@ def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
         observed["context"] = context
         assert control.heartbeat()
         return StageExecutionResult(
-            kind="sparse_reconstruction",
+            kind="reconstruction_workspace",
             uri="s3://drone-ai/missions/mission-a/sparse.tar.zst",
             checksum_sha256="c" * 64,
             size_bytes=1234,
@@ -194,7 +194,7 @@ def test_one_shot_loads_exact_inputs_and_persists_parent_edges(execution_session
     def handler(context, _control):
         assert [item.artifact_id for item in context.inputs] == [source_artifact_id]
         return StageExecutionResult(
-            kind="gaussian_checkpoint",
+            kind="gaussian_training_workspace",
             uri="s3://drone-ai/checkpoint.ply",
             checksum_sha256="2" * 64,
         )
@@ -211,7 +211,31 @@ def test_one_shot_loads_exact_inputs_and_persists_parent_edges(execution_session
         assert edge.parent.artifact_id == source_artifact_id
         assert session.query(MissionArtifact).filter(
             MissionArtifact.id == edge.artifact_id
-        ).one().kind == "gaussian_checkpoint"
+        ).one().kind == "gaussian_training_workspace"
+
+
+def test_one_shot_rejects_wrong_artifact_kind(execution_sessions):
+    run_id = "9" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+
+    with pytest.raises(ValueError, match="must publish artifact kind"):
+        execute_one_shot_stage(
+            "reconstruction",
+            lambda _context, _control: StageExecutionResult(
+                kind="detection_workspace",
+                uri="s3://drone-ai/wrong.json",
+                checksum_sha256="9" * 64,
+            ),
+            run_id=run_id,
+            heartbeat_interval_seconds=60,
+        )
+
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter(
+            MissionStageRun.run_id == run_id
+        ).one()
+        assert run.status == "failed"
+        assert session.query(MissionArtifact).count() == 0
 
 
 def test_one_shot_observes_durable_mission_cancellation(execution_sessions):

@@ -64,7 +64,12 @@ artifact must exist in the same mission and must have been produced by the
 named dependency stage. Reusing an idempotency key for the same request returns
 the existing run; using it for another mission or stage returns `409`.
 
-A trusted operator or executor publishes an output with:
+Bounded executors publish through the internal `shared.stage_execution`
+transaction and do not call a public HTTP endpoint. The HTTP publication route
+is an admin-only recovery/import operation. It accepts only the canonical
+artifact kind for the run's stage, the exact stage-run workspace manifest URI,
+the exact durable parent set, and a manifest whose S3 `sha256` metadata matches
+the request. A new artifact is accepted only while the run is `running`:
 
 ```http
 POST /missions/{vol_id}/stages/runs/{run_id}/artifacts
@@ -72,20 +77,23 @@ Content-Type: application/json
 
 {
   "artifact_id": "c5b7c8fd-13c2-4df2-b3fd-b9fdcd69ab49",
-  "kind": "orthomosaic",
-  "uri": "s3://droneai/missions/example/orthomosaic.tif",
+  "kind": "reconstruction_workspace",
+  "uri": "s3://drone-ai/missions/example/stage-runs/110d8de1-9b6f-4dd4-a7f1-480c0843ed74/reconstruction-workspace/manifest.json",
   "checksum_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "size_bytes": 123456,
-  "metadata": {"crs": "EPSG:2154"},
-  "parent_artifact_ids": [
-    "d671317d-9424-42ab-86c3-56adb0ea7685"
-  ]
+  "metadata": {
+    "manifest_key": "missions/example/stage-runs/110d8de1-9b6f-4dd4-a7f1-480c0843ed74/reconstruction-workspace/manifest.json"
+  },
+  "parent_artifact_ids": []
 }
 ```
 
-Publishing an artifact releases only blocked direct dependants whose exact
-input stage is now available. The resulting Kafka command carries the run UUID,
-attempt, selected single stage, exact upstream UUID map and stage parameters.
+The route re-verifies S3 even for an idempotent replay; an unavailable,
+unverified or differently addressed manifest is never trusted from request
+metadata alone. Successful publication releases only blocked direct dependants
+whose exact input stage is now available. The resulting Kafka command carries
+the run UUID, attempt, selected single stage, exact upstream UUID map and stage
+parameters.
 
 ## Ownership and compatibility
 
@@ -122,13 +130,17 @@ the mode when `STAGE_JOBS_IMAGE_TAG` supplies the commit-derived image tag.
 
 When explicitly enabled, the dashboard reserves queued rows with
 `FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
-the Kubernetes API. A crash between reservation and creation is recovered by
-the next reconciliation tick; `409 AlreadyExists` is success, and missing Jobs
-are recreated only up to the configured dispatch bound. Active Jobs renew the
-stage heartbeat. Failed Jobs fail the run, mission cancellation deletes the
-Job, and a Job that exits successfully without first publishing its immutable
-artifact is treated as failed. Artifact publication atomically marks the run
-succeeded before releasing dependants.
+the Kubernetes API. Before reading capacity or candidates, the transaction
+must acquire the shared PostgreSQL advisory lock
+`droneai-stage-scheduler-v1`; a replica that does not acquire it skips that
+reservation tick. This preserves API-replica HA while serializing the global,
+owner, mission and resource-class budgets. A crash between reservation and
+creation is recovered by the next reconciliation tick; `409 AlreadyExists` is
+success, and missing Jobs are recreated only up to the configured dispatch
+bound. Active Jobs renew the stage heartbeat. Failed Jobs fail the run,
+mission cancellation deletes the Job, and a Job that exits successfully
+without first publishing its immutable artifact is treated as failed. Artifact
+publication atomically marks the run succeeded before releasing dependants.
 
 Activation requires a complete `stageJobs.executors` map for all five stages.
 Every entry supplies an immutable image, a non-empty one-shot command, optional
@@ -147,7 +159,8 @@ maintains a background database heartbeat. Handlers receive typed mission/run
 parameters and ordered artifact identities; long native subprocesses must call
 the cooperative cancellation control at safe boundaries.
 
-A successful handler returns one checksum-addressed result. The boundary
+A successful handler returns one checksum-addressed result whose kind is fixed
+by the stage contract. The boundary
 creates its deterministic artifact UUID and exact parent edges, merges quality
 metrics/provenance, marks the run succeeded, and releases direct dependants in
 the same transaction. Exceptions and durable mission cancellation are terminal
@@ -242,6 +255,8 @@ from adapter availability alone.
 - dependency ordering, duplicate rejection and canonical idempotency;
 - exact producer-stage validation for every upstream artifact;
 - immutable artifact replay and changed-content rejection;
+- admin-only recovery publication with canonical kind/URI/parents and remote
+  S3 checksum verification;
 - automatic release of the next ready stage;
 - compatibility status projection and terminal-error attribution;
 - owner-scoped API routes and versioned Kafka schema;
@@ -263,4 +278,7 @@ from adapter availability alone.
   that cannot retrain or refilter its parent model;
 - bounded raster streaming and YOLO/SAM3 detection, stable model provenance,
   overlap deduplication, GeoJSON publication and cleanup on stage completion;
-- PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
+- PostgreSQL/PostGIS migration round-trip through `0017`, including repair of
+  pending legacy rasterization rows assigned to `cpu-standard`;
+- two concurrent PostgreSQL scheduler transactions proving that only the lock
+  owner can reserve capacity and that ownership transfers after commit.

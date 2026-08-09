@@ -17,7 +17,7 @@ from shared.database import (
     get_session,
 )
 from shared.stage_artifacts import mark_stage_run_succeeded, release_ready_stage_runs
-from shared.stage_contracts import StageId
+from shared.stage_contracts import STAGE_ARTIFACT_KINDS, StageId
 
 
 class StageExecutionCancelled(RuntimeError):
@@ -227,6 +227,12 @@ def _publish_result(
     context: StageExecutionContext,
     result: StageExecutionResult,
 ) -> str:
+    expected_kind = STAGE_ARTIFACT_KINDS[context.stage]
+    if result.kind != expected_kind:
+        raise ValueError(
+            f"Stage {context.stage} must publish artifact kind {expected_kind}, "
+            f"not {result.kind}"
+        )
     artifact_id = _artifact_id(context, result)
     with get_session() as session:
         run = session.query(MissionStageRun).filter(

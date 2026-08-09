@@ -17,7 +17,7 @@ from shared.database import (
     MissionArtifactParent,
     MissionStageRun,
 )
-from shared.stage_contracts import STAGE_ORDER, StageId
+from shared.stage_contracts import STAGE_ARTIFACT_KINDS, STAGE_ORDER, StageId
 from shared.stage_execution import StageExecutionContext, StageExecutionResult
 
 
@@ -86,7 +86,7 @@ def _seed_mission(scope, *, vol_id: str, owner: str, run_digits: str) -> int:
 
 def _result(stage: StageId, checksum_digit: str) -> StageExecutionResult:
     return StageExecutionResult(
-        kind=f"{stage}_workspace",
+        kind=STAGE_ARTIFACT_KINDS[stage],
         uri=f"s3://drone-ai/qualification/{checksum_digit}/{stage}.json",
         checksum_sha256=checksum_digit * 64,
         quality_metrics={"qualified": True},

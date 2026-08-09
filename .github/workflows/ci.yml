@@ -149,6 +149,10 @@ jobs:
           alembic upgrade head
           alembic downgrade base
           alembic upgrade head
+      - name: Exercise PostgreSQL scheduler transaction boundary
+        run: >-
+          python -m pytest -q -m integration
+          tests/integration/test_stage_scheduler_postgres.py
 
   frontend:
     name: Frontend lint and build

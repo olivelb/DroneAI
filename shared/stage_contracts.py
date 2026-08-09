@@ -46,6 +46,14 @@ STAGE_DEPENDENCIES: dict[StageId, tuple[StageId, ...]] = {
     "detection": ("rasterization",),
 }
 
+STAGE_ARTIFACT_KINDS: dict[StageId, str] = {
+    "reconstruction": "reconstruction_workspace",
+    "gaussian_training": "gaussian_training_workspace",
+    "gaussian_filtering": "gaussian_filtering_workspace",
+    "rasterization": "raster_product_workspace",
+    "detection": "detection_workspace",
+}
+
 RESOURCE_CLASSES: dict[ResourceClassId, ResourceClassSpec] = {
     "cpu-standard": {
         "cpu_request": "2",
@@ -98,6 +106,20 @@ DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
 }
 
 
+def resource_class_meets_gpu_envelope(
+    candidate: ResourceClassId,
+    required: ResourceClassId,
+) -> bool:
+    """Return whether a class satisfies the required GPU/VRAM envelope."""
+    candidate_spec = RESOURCE_CLASSES[candidate]
+    required_spec = RESOURCE_CLASSES[required]
+    return bool(
+        candidate_spec["gpu_count"] >= required_spec["gpu_count"]
+        and candidate_spec["minimum_vram_gib"]
+        >= required_spec["minimum_vram_gib"]
+    )
+
+
 def resource_class_for_stage(
     stage: StageId,
     parameters: dict[str, Any] | None = None,
@@ -112,13 +134,7 @@ def resource_class_for_stage(
         if requested not in RESOURCE_CLASSES:
             raise ValueError(f"Unknown stage resource class: {requested}")
         requested_id = cast(ResourceClassId, requested)
-        requested_spec = RESOURCE_CLASSES[requested_id]
-        baseline_spec = RESOURCE_CLASSES[baseline_id]
-        if (
-            requested_spec["gpu_count"] < baseline_spec["gpu_count"]
-            or requested_spec["minimum_vram_gib"]
-            < baseline_spec["minimum_vram_gib"]
-        ):
+        if not resource_class_meets_gpu_envelope(requested_id, baseline_id):
             raise ValueError(
                 f"Resource class {requested} is below the {baseline_id} GPU envelope"
             )
@@ -133,6 +149,7 @@ def stage_dag_catalog() -> dict[str, Any]:
             {
                 "id": stage,
                 "dependencies": list(STAGE_DEPENDENCIES[stage]),
+                "artifact_kind": STAGE_ARTIFACT_KINDS[stage],
                 "resource_class": DEFAULT_STAGE_RESOURCE_CLASSES[stage],
             }
             for stage in STAGE_ORDER
