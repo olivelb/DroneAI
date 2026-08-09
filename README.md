@@ -120,6 +120,7 @@ guides for implementation and operational details:
 | Architecture, event contracts and processing | [`DOCUMENTATION.md`](DOCUMENTATION.md) |
 | Local and distributed installation | [`DEPLOYMENT.md`](DEPLOYMENT.md) |
 | OVHcloud MKS preproduction | [`docs/OVHCLOUD_PREPROD.md`](docs/OVHCLOUD_PREPROD.md) |
+| Qualification, recovery and cost controls | [`docs/OPERATIONS.md`](docs/OPERATIONS.md) |
 | Infrastructure-free workflow | [`LOCAL_PIPELINE.md`](LOCAL_PIPELINE.md) |
 | HD facade process | [`docs/FACADE_ORTHOPHOTO.md`](docs/FACADE_ORTHOPHOTO.md) |
 | Development, tests and dependency locks | [`DEVELOPMENT.md`](DEVELOPMENT.md) |
