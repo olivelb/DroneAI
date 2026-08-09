@@ -26,6 +26,14 @@ artifact IDs are fixed when the attempt is queued; executor, provenance,
 quality metrics, heartbeat and terminal error fields describe what actually
 ran.
 
+Migration `0016` adds the scheduling envelope: `resource_class`, bounded Job
+identity, dispatch count/error and scheduling timestamp. The v1 catalogue
+declares four portable classes (`cpu-standard`, `gpu-standard`,
+`gpu-geometry`, `gpu-high-memory`) with explicit CPU, memory, ephemeral storage,
+GPU and minimum-VRAM requirements. Detection with SAM3 is promoted to the
+high-memory GPU class, and a request may strengthen but never reduce its
+stage's GPU envelope.
+
 `mission_artifacts` assigns a UUID, kind, URI, SHA-256, optional size and
 metadata to an output from exactly one stage run. An existing UUID can only be
 published again when every immutable field and the complete parent set match.
@@ -100,6 +108,16 @@ points and restarts still use the durable command boundary introduced here and
 will move to bounded per-stage jobs in the resource-aware orchestration phase;
 this phase deliberately does not change CUDA, COLMAP or DroneGS versions.
 
+The scheduler policy is deterministic and tenant-aware: oldest work is kept in
+order within each owner, owners are served round-robin, and global, per-owner,
+per-mission and per-resource-class limits all apply. Same-mission concurrency
+is permitted only when neither DAG node is an ancestor of the other. Kubernetes
+Job manifests are bounded (`activeDeadlineSeconds`, no retry, automatic TTL),
+run as non-root with dropped capabilities and derive their requests/limits from
+the persisted resource class. Job mode is disabled by default until the fused
+workers expose and qualify one-shot per-stage commands; the existing Kafka
+workers therefore remain the safe runtime default during this migration.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -109,3 +127,7 @@ this phase deliberately does not change CUDA, COLMAP or DroneGS versions.
 - compatibility status projection and terminal-error attribution;
 - owner-scoped API routes and versioned Kafka schema;
 - PostgreSQL/PostGIS upgrade/downgrade round-trip for revision `0014`.
+- resource-class selection and prevention of GPU-envelope downgrades;
+- fair scheduling and every concurrency boundary;
+- deterministic, hardened CPU/GPU Kubernetes Job rendering;
+- PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

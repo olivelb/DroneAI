@@ -252,6 +252,25 @@ dashboardApi:
     rateLimitMaxClients: "10000"
 
 # --------------------------------------------------------------------------
+# Bounded stage Jobs (opt-in until every worker exposes a one-shot executor)
+# --------------------------------------------------------------------------
+stageJobs:
+  enabled: false
+  serviceAccountName: stage-job-sa
+  activeDeadlineSeconds: 86400
+  ttlSecondsAfterFinished: 3600
+  scheduler:
+    pollSeconds: 5
+    globalConcurrency: 2
+    perOwnerConcurrency: 1
+    perMissionConcurrency: 1
+    resourceConcurrency:
+      cpu-standard: 2
+      gpu-standard: 1
+      gpu-geometry: 1
+      gpu-high-memory: 1
+
+# --------------------------------------------------------------------------
 # Dashboard Frontend
 # --------------------------------------------------------------------------
 dashboardFrontend:

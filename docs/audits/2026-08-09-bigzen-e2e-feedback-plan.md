@@ -137,6 +137,14 @@ tombstones while preserving the rows for restoration and audit.
 
 ### Phase 7 — Resource-aware orchestration
 
+Status: in progress on 2026-08-09. Revision `0016` and the v1 DAG catalogue
+persist portable CPU/GPU/VRAM resource classes. A pure round-robin scheduler
+enforces global, owner, mission and resource-class concurrency, and a hardened
+Kubernetes Job renderer plus least-privilege opt-in RBAC is covered by tests.
+Job mode intentionally remains disabled until the fused workers are split into
+qualified one-shot stage executors; cancellation, heartbeat and reconciliation
+are the next short implementation lot.
+
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.
 - Implement Kubernetes Job launch, cancellation, heartbeat and reconciliation.
