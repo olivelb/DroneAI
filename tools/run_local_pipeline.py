@@ -304,6 +304,26 @@ def run_stage(command: list[str], log_path: Path) -> None:
         raise subprocess.CalledProcessError(return_code, command)
 
 
+def stage_log_path(workspace: Path, stage: str) -> Path:
+    """Keep bootstrap logs outside an unmarked workspace."""
+
+    if (workspace / WORKSPACE_MARKER).is_file():
+        return workspace / "pipeline_logs" / f"{stage}.log"
+    return workspace.parent / f".{workspace.name}.{stage}.log"
+
+
+def finalize_stage_log(workspace: Path, stage: str, current: Path) -> Path:
+    """Move a bootstrap sidecar log inside once COLMAP marks the workspace."""
+
+    if not (workspace / WORKSPACE_MARKER).is_file():
+        return current
+    final = workspace / "pipeline_logs" / f"{stage}.log"
+    if current != final and current.is_file():
+        final.parent.mkdir(parents=True, exist_ok=True)
+        current.replace(final)
+    return final
+
+
 def build_manifest(
     args: argparse.Namespace,
     dataset: Path,
@@ -372,8 +392,11 @@ def main() -> int:
             stage_started = time.monotonic()
             stage_record.update(status="running", started_at=utc_now())
             persist_manifest(workspace, manifest)
-            log_path = workspace / "pipeline_logs" / f"{stage}.log"
-            run_stage(command, log_path)
+            log_path = stage_log_path(workspace, stage)
+            try:
+                run_stage(command, log_path)
+            finally:
+                log_path = finalize_stage_log(workspace, stage, log_path)
             is_complete, evidence = stage_complete(stage, workspace, profile)
             if not is_complete:
                 raise RuntimeError(f"{stage} command returned success but validation failed: {evidence}")

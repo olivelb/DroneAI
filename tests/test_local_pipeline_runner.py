@@ -147,3 +147,20 @@ def test_manifest_stays_beside_unmarked_workspace_then_moves_inside(tmp_path):
     assert final == workspace / "pipeline_run.json"
     assert final.is_file()
     assert not sidecar.exists()
+
+
+def test_bootstrap_log_stays_beside_workspace_then_moves_after_marking(tmp_path):
+    workspace = tmp_path / "workspace"
+    sidecar = MODULE.stage_log_path(workspace, "colmap")
+
+    assert sidecar == tmp_path / ".workspace.colmap.log"
+    assert not workspace.exists()
+    sidecar.write_text("preflight\n", encoding="utf-8")
+    workspace.mkdir()
+    (workspace / MODULE.WORKSPACE_MARKER).write_text("{}", encoding="utf-8")
+
+    final = MODULE.finalize_stage_log(workspace, "colmap", sidecar)
+
+    assert final == workspace / "pipeline_logs" / "colmap.log"
+    assert final.read_text(encoding="utf-8") == "preflight\n"
+    assert not sidecar.exists()
