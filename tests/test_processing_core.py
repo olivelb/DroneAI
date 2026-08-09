@@ -10,6 +10,7 @@ APP3_ROOT = Path(__file__).resolve().parents[1] / "app3-processing"
 sys.path.insert(0, str(APP3_ROOT))
 
 import processing_core  # noqa: E402
+from shared import detection_geometry  # noqa: E402
 from processing_core import (  # noqa: E402
     build_tile_starts,
     dedupe_mission_detections,
@@ -77,7 +78,7 @@ def test_overlapping_detections_are_deduplicated():
 def test_spatial_dedupe_avoids_comparing_unrelated_detections(monkeypatch):
     detections = [_detection(index * 100, index * 100, 0.8) for index in range(500)]
     comparison_count = 0
-    original = processing_core.are_duplicate_detections
+    original = detection_geometry.are_duplicate_detections
 
     def counted_comparison(*args, **kwargs):
         nonlocal comparison_count
@@ -85,7 +86,7 @@ def test_spatial_dedupe_avoids_comparing_unrelated_detections(monkeypatch):
         return original(*args, **kwargs)
 
     monkeypatch.setattr(
-        processing_core,
+        detection_geometry,
         "are_duplicate_detections",
         counted_comparison,
     )

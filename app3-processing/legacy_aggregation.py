@@ -12,8 +12,8 @@ from typing import Any, Protocol, TypedDict, cast
 
 from geoalchemy2.elements import WKTElement
 
-from processing_core import dedupe_mission_detections
 from shared import storage
+from shared.detection_geometry import dedupe_mission_detections
 from shared.database import (
     Detection as DBDetection,
     Mission,
@@ -62,10 +62,15 @@ def dedupe_configured(
 ) -> list[DetectionRecord]:
     """Apply the deployment-configured overlap thresholds."""
 
-    return dedupe_mission_detections(
-        detections,
-        center_threshold=float(os.getenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "40")),
-        iou_threshold=float(os.getenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.05")),
+    return cast(
+        list[DetectionRecord],
+        dedupe_mission_detections(
+            detections,
+            center_threshold=float(
+                os.getenv("UNTILER_DEDUPE_CENTER_THRESHOLD", "40")
+            ),
+            iou_threshold=float(os.getenv("UNTILER_DEDUPE_IOU_THRESHOLD", "0.05")),
+        ),
     )
 
 

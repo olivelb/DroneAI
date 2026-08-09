@@ -137,9 +137,9 @@ tombstones while preserving the rows for restoration and audit.
 
 ### Phase 7 — Resource-aware orchestration
 
-Status: control plane and the first four worker adapters implemented on
-2026-08-09; worker split remains in progress. Revision `0016` and the v1 DAG catalogue
-persist portable CPU/GPU/VRAM resource classes. A pure round-robin scheduler
+Status: control plane and all five worker adapters implemented on 2026-08-09;
+GPU qualification and deployment activation remain. Revision `0016` and the
+v1 DAG catalogue persist portable CPU/GPU/VRAM resource classes. A pure round-robin scheduler
 enforces global, owner, mission and resource-class concurrency, and a hardened
 Kubernetes Job renderer plus least-privilege opt-in RBAC is covered by tests.
 Transactional reservation, idempotent creation/recreation, bounded dispatch,
@@ -150,9 +150,12 @@ boundary and verified S3 workspace hand-off are implemented and tested;
 the COLMAP reconstruction adapter and portable reconstruction state are also
 implemented. Gaussian training, filtering and rasterization now run as
 independent bounded commands with checksum-bound JSON/PLY handoffs, immutable
-parent handling, and one shared GeoTIFF/coverage finalizer. Detection is the
-remaining Phase 7 adapter. Job mode stays disabled until that last executor and
-a representative GPU E2E have qualified the complete chain.
+parent handling, and one shared GeoTIFF/coverage finalizer. Detection now
+restores that raster artifact, streams bounded overlapping tiles through YOLO
+or SAM3, validates stable model provenance, deduplicates overlaps and publishes
+raw JSON plus WGS84 GeoJSON. Job mode stays disabled until a representative GPU
+E2E qualifies the complete chain and deployment configuration provides all
+immutable executor images.
 
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.

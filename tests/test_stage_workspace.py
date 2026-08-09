@@ -111,3 +111,13 @@ def test_publish_rejects_symbolic_links(tmp_path, fake_s3):
 
     with pytest.raises(ValueError, match="symbolic link"):
         stage_workspace.publish_workspace(source, "missions/symlink")
+
+
+def test_resolve_workspace_path_accepts_nested_files_and_rejects_escape(tmp_path):
+    assert stage_workspace.resolve_workspace_path(
+        tmp_path,
+        "products/orthomosaic.tif",
+    ) == tmp_path / "products" / "orthomosaic.tif"
+
+    with pytest.raises(ValueError, match="Unsafe workspace manifest path"):
+        stage_workspace.resolve_workspace_path(tmp_path, "../secret.txt")

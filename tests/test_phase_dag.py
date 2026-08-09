@@ -75,6 +75,21 @@ def test_default_stage_plan_is_versioned_and_dependency_ordered():
     ]
 
 
+def test_detection_stage_persists_sam_prompt_and_tile_size():
+    specs = build_stage_run_specs(
+        {
+            "vol_id": "mission-sam",
+            "ai_backend": "sam3",
+            "sam_prompt": "construction vehicle",
+            "tile_size": 1536,
+        }
+    )
+
+    detection = next(spec for spec in specs if spec["stage"] == "detection")
+    assert detection["parameters"]["ai"]["sam_prompt"] == "construction vehicle"
+    assert detection["parameters"]["ai"]["tile_size"] == 1536
+
+
 def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
     catalog = stage_dag_catalog()
 

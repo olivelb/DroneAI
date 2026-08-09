@@ -93,6 +93,8 @@ def build_stage_run_specs(payload: dict[str, Any]) -> list[StageRunSpec]:
                 "model_variant": payload.get("ai_model_variant"),
                 "classes": payload.get("classes") or [],
                 "confidence": payload.get("ai_confidence"),
+                "sam_prompt": payload.get("sam_prompt"),
+                "tile_size": payload.get("tile_size"),
             },
         }
         specs.append(
