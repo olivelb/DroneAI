@@ -151,6 +151,8 @@ def prepare_gaussian_product_run(
     alignment_state: PipelineAlignmentState,
     workspace_dir: str,
     vol_id: str,
+    *,
+    prepare_checkpoints: bool = True,
 ) -> GaussianProductRun:
     """Resolve one immutable Gaussian recipe from portable COLMAP state."""
     params = preparation.params
@@ -177,16 +179,23 @@ def prepare_gaussian_product_run(
         data_factor=data_factor,
     )
     _report_config_warnings(vol_id, warnings)
-    checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
-        workspace_dir,
-        preparation.mission_s3_prefix,
-        vol_id,
+    checkpoint_s3_prefix = (
+        f"{preparation.mission_s3_prefix}/gaussian-checkpoints"
     )
-    checkpoint_callback = _checkpoint_callback(
-        checkpoint_dir,
-        checkpoint_s3_prefix,
-        vol_id,
-    )
+    if prepare_checkpoints:
+        checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
+            workspace_dir,
+            preparation.mission_s3_prefix,
+            vol_id,
+        )
+        checkpoint_callback = _checkpoint_callback(
+            checkpoint_dir,
+            checkpoint_s3_prefix,
+            vol_id,
+        )
+    else:
+        checkpoint_dir = os.path.join(workspace_dir, ".droneai", "checkpoints")
+        checkpoint_callback = None
     config = GaussianOrthoConfig(
         dense_path=dense_path,
         ortho_file=ortho_file,

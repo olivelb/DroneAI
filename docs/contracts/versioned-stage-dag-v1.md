@@ -197,6 +197,16 @@ summary; rasterization can therefore hydrate the filtered PLY without applying
 alignment or filtering a second time. Artifact paths must exist below the
 restored workspace and cannot escape it.
 
+The COLMAP image now exposes bounded commands for `gaussian_training` and
+`gaussian_filtering`. Training restores exactly one reconstruction workspace,
+uses the shared recipe resolver and publishes the unfiltered PLY with backend,
+trainer-binary and profile provenance. Filtering restores exactly one training
+workspace, verifies that recipe before loading the PLY, reconstructs only the
+lightweight scene metadata needed for alignment, and writes the filtered model
+to a distinct path so its immutable parent is never overwritten. Both Jobs
+reuse the common heartbeat/cancellation boundary and remove their disposable
+workspace in `finally` on success or failure.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -217,4 +227,6 @@ restored workspace and cannot escape it.
 - portable COLMAP reconstruction state and bounded reconstruction adapter;
 - checksum-bound Gaussian training/filtering handoffs, safe model paths and
   raster-state hydration without repeated transforms;
+- bounded Gaussian training/filtering adapters, immutable parent PLY handling
+  and cleanup on every exit path;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

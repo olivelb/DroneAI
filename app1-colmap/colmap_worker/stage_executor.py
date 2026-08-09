@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from pipeline_support import inspect_sparse_quality
 from shared.stage_execution import (
+    StageArtifactInput,
     StageExecutionContext,
     StageExecutionControl,
     StageExecutionResult,
 )
-from shared.stage_workspace import publish_workspace
+from shared.stage_workspace import (
+    PublishedWorkspace,
+    publish_workspace,
+    restore_workspace,
+)
 from shared.validation import safe_child_path, validate_dataset_prefix
 
 from . import runtime
@@ -22,12 +28,55 @@ from .stages.preparation import prepare_colmap_pipeline_run
 from .stages.reconstruction import reconstruct_colmap_sparse
 from .stages.rtk import refine_colmap_rtk
 from .stage_state import STATE_RELATIVE_PATH, write_reconstruction_state
+from .stage_state import load_reconstruction_state
 
 
 def _workspace_path(run_id: str) -> Path:
     root = Path(os.getenv("DRONEAI_STAGE_WORK_ROOT", "/work")).resolve()
     root.mkdir(parents=True, exist_ok=True)
     return cast(Path, safe_child_path(root, run_id, field_name="stage run id"))
+
+
+def _restore_input_workspace(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+    workspace: Path,
+    *,
+    expected_kind: str,
+) -> StageArtifactInput:
+    if len(context.inputs) != 1 or context.inputs[0].kind != expected_kind:
+        raise ValueError(
+            f"{context.stage} requires exactly one {expected_kind} artifact"
+        )
+    source = context.inputs[0]
+    manifest_key = source.metadata.get("manifest_key")
+    if not isinstance(manifest_key, str) or not manifest_key:
+        raise ValueError("Upstream workspace artifact has no manifest key")
+    restore_workspace(
+        manifest_key,
+        workspace,
+        source.checksum_sha256,
+        cancellation_check=control.raise_if_cancelled,
+    )
+    return source
+
+
+def _publish_stage_workspace(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+    workspace: Path,
+    *,
+    stage: str,
+) -> PublishedWorkspace:
+    prefix = (
+        f"missions/{context.vol_id}/stage-runs/"
+        f"{context.run_id}/{stage}-workspace"
+    )
+    return publish_workspace(
+        workspace,
+        prefix,
+        cancellation_check=control.raise_if_cancelled,
+    )
 
 
 def run_reconstruction_stage(
@@ -84,14 +133,11 @@ def run_reconstruction_stage(
             alignment,
         )
         ensure_active()
-        prefix = (
-            f"missions/{context.vol_id}/stage-runs/"
-            f"{context.run_id}/reconstruction-workspace"
-        )
-        published = publish_workspace(
+        published = _publish_stage_workspace(
+            context,
+            control,
             workspace,
-            prefix,
-            cancellation_check=ensure_active,
+            stage="reconstruction",
         )
         quality = cast(
             dict[str, Any],
@@ -121,6 +167,198 @@ def run_reconstruction_stage(
                 "stage_adapter": "colmap-reconstruction-v1",
                 "feature_type": preparation.feature_type,
                 "matcher_type": preparation.matcher_type,
+            },
+        )
+    finally:
+        runtime.cancellation_state.clear()
+        if workspace.exists():
+            shutil.rmtree(workspace)
+
+
+def run_gaussian_training_stage(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+) -> StageExecutionResult:
+    """Train and publish an unfiltered Gaussian model from reconstruction."""
+    workspace = _workspace_path(context.run_id)
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    runtime.cancellation_state.start_mission(
+        context.vol_id,
+        context.mission_attempt,
+    )
+    try:
+        _restore_input_workspace(
+            context,
+            control,
+            workspace,
+            expected_kind="reconstruction_workspace",
+        )
+        preparation, reconstruction, alignment = load_reconstruction_state(workspace)
+        from gaussian_ortho.generate_gaussian_orthophoto import (
+            execute_gaussian_training_phase,
+        )
+        from gaussian_ortho.phase_artifacts import write_training_artifact
+
+        from .stages.gaussian import prepare_gaussian_product_run
+
+        product = prepare_gaussian_product_run(
+            preparation,
+            reconstruction,
+            alignment,
+            str(workspace),
+            context.vol_id,
+        )
+        phase = execute_gaussian_training_phase(
+            product.config,
+            trainer_backend=product.trainer_backend,
+        )
+        control.raise_if_cancelled()
+        model_path = workspace / ".droneai" / "gaussian" / "training" / "final.ply"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(phase.training_state.final_ply, model_path)
+        write_training_artifact(
+            workspace,
+            product.config,
+            phase,
+            model_path=model_path,
+        )
+        published = _publish_stage_workspace(
+            context,
+            control,
+            workspace,
+            stage="gaussian-training",
+        )
+        return StageExecutionResult(
+            kind="gaussian_training_workspace",
+            uri=published.uri,
+            checksum_sha256=published.checksum_sha256,
+            size_bytes=published.size_bytes,
+            metadata={
+                "manifest_key": published.manifest_key,
+                "file_count": published.file_count,
+                "state_file": ".droneai/gaussian-training-state.json",
+                "model_file": model_path.relative_to(workspace).as_posix(),
+                "gaussian_count": phase.training_state.merged_model.num_gaussians,
+            },
+            quality_metrics={
+                "gaussian_count": phase.training_state.merged_model.num_gaussians,
+            },
+            provenance={
+                "stage_adapter": "gaussian-training-v1",
+                "backend": phase.backend_name,
+                "trainer_binary_sha256": phase.trainer_binary_sha256,
+                "profile_id": product.config.dronegs_profile_id,
+            },
+        )
+    finally:
+        runtime.cancellation_state.clear()
+        if workspace.exists():
+            shutil.rmtree(workspace)
+
+
+def run_gaussian_filtering_stage(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+) -> StageExecutionResult:
+    """Filter a verified training model once and persist raster geometry."""
+    workspace = _workspace_path(context.run_id)
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    runtime.cancellation_state.start_mission(
+        context.vol_id,
+        context.mission_attempt,
+    )
+    try:
+        _restore_input_workspace(
+            context,
+            control,
+            workspace,
+            expected_kind="gaussian_training_workspace",
+        )
+        preparation, reconstruction, alignment = load_reconstruction_state(workspace)
+        from gaussian_ortho.generate_gaussian_orthophoto import (
+            execute_gaussian_filtering_phase,
+            prepare_gaussian_scene,
+        )
+        from gaussian_ortho.gaussian_model import GaussianModel
+        from gaussian_ortho.phase_artifacts import (
+            hydrate_training_phase,
+            read_training_artifact,
+            write_filtering_artifact,
+        )
+
+        from .stages.gaussian import prepare_gaussian_product_run
+
+        product = prepare_gaussian_product_run(
+            preparation,
+            reconstruction,
+            alignment,
+            str(workspace),
+            context.vol_id,
+            prepare_checkpoints=False,
+        )
+        artifact = read_training_artifact(workspace, product.config)
+        model = GaussianModel(
+            sh_degree=product.config.sh_degree,
+            fagk_enabled=product.config.fagk,
+        )
+        model.load_ply(str(artifact.model_path))
+        scene = prepare_gaussian_scene(product.config)
+        filtered_model_path = (
+            workspace / ".droneai" / "gaussian" / "filtering" / "filtered.ply"
+        )
+        filtered_model_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact.model_path, filtered_model_path)
+        training_phase = hydrate_training_phase(
+            replace(artifact, model_path=filtered_model_path),
+            scene,
+            model,
+        )
+        filtering_phase = execute_gaussian_filtering_phase(
+            product.config,
+            training_phase,
+        )
+        control.raise_if_cancelled()
+        write_filtering_artifact(
+            workspace,
+            product.config,
+            training_phase,
+            filtering_phase,
+            model_path=filtered_model_path,
+        )
+        published = _publish_stage_workspace(
+            context,
+            control,
+            workspace,
+            stage="gaussian-filtering",
+        )
+        return StageExecutionResult(
+            kind="gaussian_filtering_workspace",
+            uri=published.uri,
+            checksum_sha256=published.checksum_sha256,
+            size_bytes=published.size_bytes,
+            metadata={
+                "manifest_key": published.manifest_key,
+                "file_count": published.file_count,
+                "state_file": ".droneai/gaussian-filtering-state.json",
+                "model_file": filtered_model_path.relative_to(workspace).as_posix(),
+                "input_gaussians": filtering_phase.input_gaussians,
+                "output_gaussians": filtering_phase.output_gaussians,
+            },
+            quality_metrics={
+                "input_gaussians": filtering_phase.input_gaussians,
+                "output_gaussians": filtering_phase.output_gaussians,
+                "retained_ratio": (
+                    filtering_phase.output_gaussians
+                    / max(1, filtering_phase.input_gaussians)
+                ),
+            },
+            provenance={
+                "stage_adapter": "gaussian-filtering-v1",
+                "profile_id": product.config.dronegs_profile_id,
             },
         )
     finally:

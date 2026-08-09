@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 
@@ -1153,7 +1153,7 @@ def execute_gaussian_rasterization_phase(
     if render_fn is None:
         from .ortho_renderer import render_orthophoto
 
-        render_fn = render_orthophoto
+        render_fn = cast(Callable[..., dict[str, Any]], render_orthophoto)
     render_state = filtering_phase.render_state
     _report(
         config.vol_id,
