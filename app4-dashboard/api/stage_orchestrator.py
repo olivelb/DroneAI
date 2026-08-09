@@ -12,7 +12,13 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 from shared.database import Mission, MissionStageRun, get_session
-from shared.stage_contracts import STAGE_ORDER, ResourceClassId, StageId
+from shared.stage_contracts import (
+    STAGE_ORDER,
+    ResourceClassId,
+    StageId,
+    resource_class_for_stage,
+    resource_class_meets_gpu_envelope,
+)
 from shared.stage_scheduler import (
     SchedulingLimits,
     StageAllocation,
@@ -243,6 +249,27 @@ def _reserved_job(
     )
 
 
+def _repair_underprovisioned_resource_class(run: MissionStageRun) -> None:
+    """Upgrade queued legacy rows before they can be dispatched."""
+    stage = cast(StageId, run.stage)
+    actual = cast(ResourceClassId, run.resource_class)
+    parameters = cast(dict[str, Any], run.parameters or {})
+    required = resource_class_for_stage(stage, parameters)
+    if resource_class_meets_gpu_envelope(actual, required):
+        return
+    logger.warning(
+        "Repairing underprovisioned stage run %s from %s to %s",
+        run.run_id,
+        actual,
+        required,
+    )
+    run.resource_class = required
+    run.provenance = {
+        **cast(dict[str, Any], run.provenance or {}),
+        "resource_class_repaired_from": actual,
+    }
+
+
 def reserve_ready_jobs(
     session: Any,
     settings: StageOrchestratorSettings,
@@ -267,6 +294,8 @@ def reserve_ready_jobs(
         MissionStageRun.created_at,
         MissionStageRun.run_id,
     ).with_for_update(skip_locked=True).limit(500).all()
+    for run, _mission in candidate_rows:
+        _repair_underprovisioned_resource_class(run)
     active = [
         StageAllocation(
             run_id=cast(str, run.run_id),

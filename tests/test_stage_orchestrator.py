@@ -66,7 +66,16 @@ def stage_sessions():
     return scope
 
 
-def _add_run(scope, vol_id, owner, run_id, *, status="queued"):
+def _add_run(
+    scope,
+    vol_id,
+    owner,
+    run_id,
+    *,
+    status="queued",
+    stage="reconstruction",
+    resource_class="gpu-geometry",
+):
     with scope() as session:
         mission = Mission(vol_id=vol_id, owner_subject=owner, status="pending")
         session.add(mission)
@@ -75,11 +84,11 @@ def _add_run(scope, vol_id, owner, run_id, *, status="queued"):
             MissionStageRun(
                 run_id=run_id,
                 mission_id=mission.id,
-                stage="reconstruction",
+                stage=stage,
                 attempt=0,
                 status=status,
                 idempotency_key=run_id[0] * 64,
-                resource_class="gpu-geometry",
+                resource_class=resource_class,
             )
         )
 
@@ -106,6 +115,31 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
         assert all(run.dispatch_attempts == 1 for run in scheduled)
         assert all(run.job_name.startswith("droneai-") for run in scheduled)
         assert all(run.provenance["gpu_architecture"] == "ampere" for run in scheduled)
+
+
+def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sessions):
+    run_id = "9" * 32
+    _add_run(
+        stage_sessions,
+        "mission-raster-repair",
+        "owner-a",
+        run_id,
+        stage="rasterization",
+        resource_class="cpu-standard",
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+
+    assert reserved[0].request.resource_class == "gpu-standard"
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.resource_class == "gpu-standard"
+        assert run.provenance["resource_class_repaired_from"] == "cpu-standard"
 
 
 class FakeJobClient:

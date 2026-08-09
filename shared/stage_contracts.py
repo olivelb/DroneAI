@@ -98,6 +98,20 @@ DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
 }
 
 
+def resource_class_meets_gpu_envelope(
+    candidate: ResourceClassId,
+    required: ResourceClassId,
+) -> bool:
+    """Return whether a class satisfies the required GPU/VRAM envelope."""
+    candidate_spec = RESOURCE_CLASSES[candidate]
+    required_spec = RESOURCE_CLASSES[required]
+    return bool(
+        candidate_spec["gpu_count"] >= required_spec["gpu_count"]
+        and candidate_spec["minimum_vram_gib"]
+        >= required_spec["minimum_vram_gib"]
+    )
+
+
 def resource_class_for_stage(
     stage: StageId,
     parameters: dict[str, Any] | None = None,
@@ -112,13 +126,7 @@ def resource_class_for_stage(
         if requested not in RESOURCE_CLASSES:
             raise ValueError(f"Unknown stage resource class: {requested}")
         requested_id = cast(ResourceClassId, requested)
-        requested_spec = RESOURCE_CLASSES[requested_id]
-        baseline_spec = RESOURCE_CLASSES[baseline_id]
-        if (
-            requested_spec["gpu_count"] < baseline_spec["gpu_count"]
-            or requested_spec["minimum_vram_gib"]
-            < baseline_spec["minimum_vram_gib"]
-        ):
+        if not resource_class_meets_gpu_envelope(requested_id, baseline_id):
             raise ValueError(
                 f"Resource class {requested} is below the {baseline_id} GPU envelope"
             )
