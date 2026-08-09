@@ -43,6 +43,7 @@ class SessionProtocol(Protocol):
 class MissionRecord(Protocol):
     id: int
     vol_id: str
+    owner_subject: str
     status: str
     current_step: str | None
     progress: int
@@ -78,6 +79,7 @@ class WorkspaceState(TypedDict):
 
 class SerializedMission(TypedDict):
     vol_id: str
+    owner_subject: str
     workspace_dir: str
     workspace_state: WorkspaceState
     colmap_resume: ColmapResumeState
@@ -220,7 +222,10 @@ def mission_event_age_seconds(mission: MissionRecord) -> float | None:
 
     if mission.updated_at is None:
         return None
-    return max(0.0, (datetime.now(UTC) - mission.updated_at).total_seconds())
+    updated_at = mission.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return max(0.0, (datetime.now(UTC) - updated_at).total_seconds())
 
 
 def build_colmap_resume_state(mission: MissionRecord) -> ColmapResumeState:
@@ -323,6 +328,7 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
     }
     return {
         "vol_id": mission.vol_id,
+        "owner_subject": mission.owner_subject,
         "workspace_dir": f"missions/{mission.vol_id}",
         "workspace_state": workspace_state,
         "colmap_resume": build_colmap_resume_state(mission),
@@ -335,11 +341,15 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
     }
 
 
-def get_status_summary() -> StatusSummary:
+def get_status_summary(owner_subject: str) -> StatusSummary:
     with get_session() as session:
         missions = cast(
             list[MissionRecord],
-            session.query(Mission).order_by(Mission.updated_at.desc()).limit(50).all(),
+            session.query(Mission)
+            .filter(Mission.owner_subject == owner_subject)
+            .order_by(Mission.updated_at.desc())
+            .limit(50)
+            .all(),
         )
         serialized = [serialize_mission(mission) for mission in missions]
     serialized.sort(key=lambda item: item["updated_at"], reverse=True)
@@ -353,11 +363,16 @@ def get_status_summary() -> StatusSummary:
     }
 
 
-def get_mission_state(vol_id: str) -> MissionStateResult:
+def get_mission_state(vol_id: str, owner_subject: str) -> MissionStateResult:
     with get_session() as session:
         mission = cast(
             MissionRecord | None,
-            session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+            session.query(Mission)
+            .filter(
+                Mission.vol_id == vol_id,
+                Mission.owner_subject == owner_subject,
+            )
+            .first(),
         )
         if mission is None:
             return {"vol_id": vol_id, "workspace_state": None}
@@ -370,10 +385,16 @@ def get_mission_state(vol_id: str) -> MissionStateResult:
 def prepare_resume_in_session(
     session: SessionProtocol,
     vol_id: str,
+    owner_subject: str,
 ) -> tuple[JsonObject | None, ResumeResponse]:
     mission = cast(
         MissionRecord | None,
-        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+        session.query(Mission)
+        .filter(
+            Mission.vol_id == vol_id,
+            Mission.owner_subject == owner_subject,
+        )
+        .first(),
     )
     if mission is None:
         return None, {
@@ -410,8 +431,11 @@ def prepare_resume_in_session(
     return payload, response
 
 
-def prepare_resume(vol_id: str) -> tuple[JsonObject | None, ResumeResponse]:
+def prepare_resume(
+    vol_id: str,
+    owner_subject: str,
+) -> tuple[JsonObject | None, ResumeResponse]:
     """Compatibility wrapper using its own transaction."""
 
     with get_session() as session:
-        return prepare_resume_in_session(session, vol_id)
+        return prepare_resume_in_session(session, vol_id, owner_subject)

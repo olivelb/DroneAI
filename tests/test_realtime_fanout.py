@@ -28,11 +28,11 @@ def test_duplicate_state_receipts_are_still_fanned_out_locally(monkeypatch):
 
     class Hub:
         @staticmethod
-        def remember(event):
+        def remember(event, _owner_subject):
             return event["event_id"]
 
         @staticmethod
-        async def broadcast(payload):
+        async def broadcast(payload, _owner_subject):
             calls["broadcasts"].append(payload)
 
     def submit(coroutine, _loop):
@@ -44,6 +44,7 @@ def test_duplicate_state_receipts_are_still_fanned_out_locally(monkeypatch):
 
     monkeypatch.setattr(realtime, "process_inbox_transaction", process_inbox)
     monkeypatch.setattr(realtime, "process_message", process_message)
+    monkeypatch.setattr(realtime, "mission_owner_subject", lambda _vol_id: "owner-1")
     monkeypatch.setattr(realtime.asyncio, "run_coroutine_threadsafe", submit)
 
     succeeded = realtime.handle_status_message(

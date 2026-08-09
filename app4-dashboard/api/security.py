@@ -298,14 +298,15 @@ def enforce_cookie_csrf(request: Request) -> None:
         )
 
 
-async def authorize_websocket(websocket: WebSocket) -> bool:
+async def authorize_websocket(websocket: WebSocket) -> Principal | None:
     token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if token is None and not is_production():
         token = websocket.query_params.get("access_token")
-    if authenticate_token(token) is not None:
-        return True
+    principal = authenticate_token(token)
+    if principal is not None:
+        return principal
     await websocket.close(code=4401, reason="Authentication required")
-    return False
+    return None
 
 
 def upload_limits() -> dict[str, int]:

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Annotated, Literal, Protocol, cast
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, or_
 from starlette.background import BackgroundTask
@@ -32,6 +32,7 @@ from ..map_support import (
     require_object,
     stored_map_feature_geojson,
 )
+from ..security import Principal, require_authenticated
 
 router = APIRouter()
 
@@ -170,8 +171,18 @@ def _export_features(
 def export_raster(
     vol_id: str,
     layer: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     output_format: Annotated[RasterFormat, Query(alias="format")] = "cog",
 ) -> StreamingResponse:
+    with get_session() as session:
+        get_mission(
+            cast(RouteSession, session),
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+            action="raster_export",
+        )
     key, _ = mission_key(vol_id, layer)
     require_object(key)
     body, content_length, content_type = storage.get_object_stream(key)
@@ -191,6 +202,8 @@ def export_raster(
 @router.get("/{vol_id}/export/vectors")
 def export_vectors(
     vol_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     output_format: Annotated[VectorFormat, Query(alias="format")] = "gpkg",
     scope: Annotated[VectorScope, Query()] = "all",
     run_ids: Annotated[str | None, Query()] = None,
@@ -211,7 +224,13 @@ def export_vectors(
     try:
         with get_session() as session:
             typed_session = cast(RouteSession, session)
-            mission = get_mission(typed_session, vol_id)
+            mission = get_mission(
+                typed_session,
+                vol_id,
+                principal,
+                owner_subject=owner_subject,
+                action="vector_export",
+            )
             try:
                 resolved_crs = resolve_export_crs(
                     (mission.tiling_metadata or {}).get("crs"),

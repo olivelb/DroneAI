@@ -104,6 +104,55 @@ export type MissionSummary = {
   last_event_age_seconds?: number | null;
 };
 
+export type MissionCatalogItem = {
+  vol_id: string;
+  owner_subject: string;
+  status: string;
+  current_step?: string | null;
+  progress: number;
+  pipeline: PipelineName;
+  quality_profile?: QualityProfileId | null;
+  attempt_count: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  overall_status: string;
+  is_stale: boolean;
+  last_event_age_seconds?: number | null;
+};
+
+export type MissionCatalogResponse = {
+  items: MissionCatalogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type MissionDetail = MissionCatalogItem & {
+  parameters: Record<string, unknown>;
+  attempts: Array<Record<string, unknown>>;
+  phases: Record<string, StatusPayload>;
+  heartbeat: {
+    updated_at?: string | null;
+    age_seconds?: number | null;
+    delayed: boolean;
+  };
+  logs: Array<{
+    service?: string | null;
+    step?: string | null;
+    status?: string | null;
+    progress?: number | null;
+    message?: string | null;
+    created_at?: string | null;
+  }>;
+  products: Array<{
+    kind: string;
+    run_id?: string;
+    name?: string;
+    status?: string;
+    s3_key?: string | null;
+  }>;
+};
+
 export type DatasetItem = {
   name: string;
   path: string;

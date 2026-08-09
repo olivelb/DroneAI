@@ -18,6 +18,7 @@ implemented system as it exists now.
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
 | Quality profiles and YOLO capability catalog | [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md) |
+| Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |
 | DroneGS architecture and backend boundary | [`dronegs/ARCHITECTURE.md`](dronegs/ARCHITECTURE.md), [`dronegs/BACKENDS.md`](dronegs/BACKENDS.md) |
 | Trainer command-line contract | [`dronegs/contracts/trainer-cli-v1.md`](dronegs/contracts/trainer-cli-v1.md) |

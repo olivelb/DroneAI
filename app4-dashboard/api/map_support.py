@@ -11,9 +11,12 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 
 from shared import storage
-from shared.database import Detection, MapFeature, Mission
+from shared.database import Detection, MapFeature
 from shared.geospatial_assets import detections_feature_collection
 from shared.geospatial_workspace import bounds_intersect, geometry_bounds
+
+from .mission_access import get_owned_mission
+from .security import Principal
 
 VOL_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,256}$")
 RASTER_LAYERS: dict[str, tuple[str, str]] = {
@@ -86,7 +89,14 @@ class RouteSession(Protocol):
 
 class MissionRecord(Protocol):
     id: int
+    owner_subject: str
     tiling_metadata: JsonObject | None
+
+
+class MapFeatureMutationRecord(Protocol):
+    geometry: Any
+    version: int
+    updated_at: datetime
 
 
 class AnalysisRunRecord(Protocol):
@@ -178,17 +188,24 @@ def parse_bbox(value: str | None) -> Bounds | None:
     return bounds
 
 
-def get_mission(session: SessionProtocol, vol_id: str) -> MissionRecord:
-    mission = cast(
-        MissionRecord | None,
-        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+def get_mission(
+    session: SessionProtocol,
+    vol_id: str,
+    principal: Principal,
+    *,
+    owner_subject: str | None = None,
+    action: str = "map_read",
+) -> MissionRecord:
+    return cast(
+        MissionRecord,
+        get_owned_mission(
+            cast(Any, session),
+            vol_id,
+            principal,
+            requested_owner=owner_subject,
+            action=action,
+        ),
     )
-    if mission is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Mission not found",
-        )
-    return mission
 
 
 def serialize_run(run: AnalysisRunRecord) -> dict[str, Any]:

@@ -204,6 +204,49 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       });
       return;
     }
+    if (url.pathname === "/missions") {
+      await route.fulfill(json({
+        items: [{
+          vol_id: "mission-existing",
+          owner_subject: "e2e-operator",
+          status: "success",
+          current_step: "DONE",
+          progress: 100,
+          pipeline: "modern",
+          quality_profile: "normal-v1",
+          attempt_count: 1,
+          updated_at: "2026-08-09T12:00:00Z",
+          overall_status: "success",
+          is_stale: false,
+        }],
+        total: 1,
+        limit: 20,
+        offset: 0,
+      }));
+      return;
+    }
+    if (url.pathname === "/missions/mission-existing") {
+      await route.fulfill(json({
+        vol_id: "mission-existing",
+        owner_subject: "e2e-operator",
+        status: "success",
+        current_step: "DONE",
+        progress: 100,
+        pipeline: "modern",
+        quality_profile: "normal-v1",
+        attempt_count: 1,
+        updated_at: "2026-08-09T12:00:00Z",
+        overall_status: "success",
+        is_stale: false,
+        parameters: { quality_profile: "normal-v1" },
+        attempts: [{ attempt: 0, status: "success" }],
+        phases: { COLMAP: { status: "success", progress: 100 } },
+        heartbeat: { updated_at: "2026-08-09T12:00:00Z", age_seconds: 2, delayed: false },
+        logs: [{ service: "COLMAP", step: "DONE", message: "Published" }],
+        products: [{ kind: "orthomosaic", s3_key: "missions/mission-existing/orthomosaic.tif" }],
+      }));
+      return;
+    }
     if (url.pathname === "/mission" && request.method() === "POST") {
       options.onMissionLaunch?.(request.postDataJSON());
       await route.fulfill(json({ status: "success", vol_id: "mission-e2e" }));
@@ -236,6 +279,20 @@ test("an operator selects a dataset and launches a mission", async ({ page }) =>
     quality_profile: "normal-v1",
     work_drive: "local",
   });
+});
+
+test("the owner-scoped catalogue opens a durable mission detail", async ({ page }) => {
+  await mockApi(page);
+
+  await page.goto("/missions");
+  await expect(page.getByRole("heading", { name: "Mission catalogue" })).toBeVisible();
+  await expect(page.getByText("mission-existing")).toBeVisible();
+  await page.getByRole("link", { name: "Open details" }).click();
+
+  await expect(page).toHaveURL(/\/missions\/mission-existing$/);
+  await expect(page.getByRole("heading", { name: "mission-existing" })).toBeVisible();
+  await expect(page.getByText("Published")).toBeVisible();
+  await expect(page.getByText("orthomosaic", { exact: true })).toBeVisible();
 });
 
 test("the English default can be switched to persistent French", async ({ page }) => {

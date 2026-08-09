@@ -88,6 +88,12 @@ Acceptance criteria:
 
 ### Phase 4 — Mission catalogue and detailed monitor
 
+Status: implemented on 2026-08-09. Migration `0013` persists the authenticated
+owner, the API and WebSocket streams enforce that boundary, and the frontend
+separates launch, paginated catalogue and mission detail routes. The current
+attempt list is an explicit compatibility projection until Phase 5 introduces
+immutable stage-run records.
+
 - Split the launch page from a paginated, owner-scoped mission catalogue.
 - Add a dedicated mission detail route with parameters, attempts, phase state,
   heartbeat age, logs and products.
