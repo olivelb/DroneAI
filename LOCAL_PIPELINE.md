@@ -45,7 +45,11 @@ runners; it does not duplicate their scientific logic.
 Profiles:
 
 - `smoke`: 25 contiguous images, sequential matching, Gaussian `smoke`,
-  one-tile YOLO smoke detection
+  one-tile YOLO smoke detection; this only checks integration and is not a
+  user-facing quality profile
+- `fast`: all readable images with the versioned `fast-v1` envelope: SIFT CUDA
+  at 1600 px and 2048 features, 7500 iterations, 1.5M Gaussian cap, image
+  factor 8, and full YOLO detection
 - `standard`: all readable images, bounded GPS matching, SIFT CUDA at 2400 px
   and 4096 features, two global BA passes with final retriangulation, Gaussian
   `low-memory`, and full YOLO detection
@@ -331,6 +335,7 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 | Profile | Iterations | Gaussian cap | SH | Image factor | Max dimension | Tile mode | GSD |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | 4 | 0.25 m |
+| `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | 4 | 0.05 m |
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
 | `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
 

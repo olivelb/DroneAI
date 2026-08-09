@@ -18,11 +18,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from shared.pipeline_params import PIPELINE_DEFAULTS
 from shared.json_io import atomic_write_json as write_json
+from shared.quality_profiles import quality_profile
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 MANIFEST_NAME = "pipeline_run.json"
 STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
+FAST_DEFAULTS = quality_profile("fast-v1").parameters
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,46 @@ class PipelineProfile:
     gaussian_profile: str
     gaussian_backend: str
     detection_profile: str
+
+
+def production_colmap_args(
+    *,
+    image_size: str,
+    maximum_features: str,
+) -> tuple[str, ...]:
+    """Return the complete production-like COLMAP command envelope."""
+
+    return (
+        "--stage",
+        "undistort",
+        "--selection",
+        "uniform",
+        "--matcher",
+        "gps",
+        "--engine",
+        str(MODERN_DEFAULTS["alignment_engine"]),
+        "--feature-type",
+        str(MODERN_DEFAULTS["feature_type"]),
+        "--matcher-type",
+        "SIFT_BRUTEFORCE",
+        "--camera-model",
+        str(MODERN_DEFAULTS["camera_model"]),
+        "--feature-max-image-size",
+        image_size,
+        "--feature-max-num-features",
+        maximum_features,
+        "--global-ba-iterations",
+        str(MODERN_DEFAULTS["global_mapper_ba_iterations"]),
+        "--global-ceres-iterations",
+        str(MODERN_DEFAULTS["global_mapper_ceres_iterations"]),
+        *(
+            ("--no-global-retriangulation",)
+            if MODERN_DEFAULTS["global_mapper_skip_retriangulation"]
+            else ("--global-retriangulation",)
+        ),
+        "--mapping-timeout-seconds",
+        str(MODERN_DEFAULTS["mapping_timeout_seconds"]),
+    )
 
 
 PROFILES = {
@@ -51,37 +93,19 @@ PROFILES = {
         gaussian_backend="dronegs",
         detection_profile="smoke",
     ),
+    "fast": PipelineProfile(
+        colmap_args=production_colmap_args(
+            image_size=str(FAST_DEFAULTS["feature_max_image_size"]),
+            maximum_features=str(FAST_DEFAULTS["feature_max_num_features"]),
+        ),
+        gaussian_profile="fast",
+        gaussian_backend="dronegs",
+        detection_profile="full",
+    ),
     "standard": PipelineProfile(
-        colmap_args=(
-            "--stage",
-            "undistort",
-            "--selection",
-            "uniform",
-            "--matcher",
-            "gps",
-            "--engine",
-            str(MODERN_DEFAULTS["alignment_engine"]),
-            "--feature-type",
-            str(MODERN_DEFAULTS["feature_type"]),
-            "--matcher-type",
-            "SIFT_BRUTEFORCE",
-            "--camera-model",
-            str(MODERN_DEFAULTS["camera_model"]),
-            "--feature-max-image-size",
-            str(MODERN_DEFAULTS["feature_max_image_size"]),
-            "--feature-max-num-features",
-            str(MODERN_DEFAULTS["feature_max_num_features"]),
-            "--global-ba-iterations",
-            str(MODERN_DEFAULTS["global_mapper_ba_iterations"]),
-            "--global-ceres-iterations",
-            str(MODERN_DEFAULTS["global_mapper_ceres_iterations"]),
-            *(
-                ("--no-global-retriangulation",)
-                if MODERN_DEFAULTS["global_mapper_skip_retriangulation"]
-                else ("--global-retriangulation",)
-            ),
-            "--mapping-timeout-seconds",
-            str(MODERN_DEFAULTS["mapping_timeout_seconds"]),
+        colmap_args=production_colmap_args(
+            image_size=str(MODERN_DEFAULTS["feature_max_image_size"]),
+            maximum_features=str(MODERN_DEFAULTS["feature_max_num_features"]),
         ),
         gaussian_profile="low-memory",
         gaussian_backend="dronegs",

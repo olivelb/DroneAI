@@ -35,6 +35,7 @@ from shared.geo_alignment import (  # noqa: E402
     compute_reconstruction_alignment,
     write_alignment_transform,
 )
+from shared.quality_profiles import quality_profile  # noqa: E402
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
 
@@ -206,6 +207,16 @@ PROFILES: dict[str, GaussianProfile] = {
         qualification_policy_id=FACADE_QUALIFICATION_POLICY_ID,
     ),
 }
+
+FAST_PARAMETERS = quality_profile("fast-v1").parameters
+PROFILES["fast"] = replace(
+    PROFILES["balanced"],
+    iterations=int(FAST_PARAMETERS["gs_iterations"]),
+    cap_max=int(FAST_PARAMETERS["gs_cap_max"]),
+    data_factor=int(FAST_PARAMETERS["gs_data_factor"]),
+    max_width=int(FAST_PARAMETERS["gs_max_width"]),
+    profile_id="fast-v1",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -419,7 +430,12 @@ def main() -> int:
     dense_path, aligned_path, projected_crs = validate_workspace(
         workspace, facade=facade_mode
     )
-    transform_path = None if facade_mode else ensure_transform(workspace, aligned_path)
+    if facade_mode:
+        transform_path = None
+    else:
+        if aligned_path is None:
+            raise RuntimeError("map workspace validation returned no aligned model")
+        transform_path = ensure_transform(workspace, aligned_path)
     ortho_path, height_path, checkpoint_path = output_paths(
         workspace,
         args.profile,

@@ -67,6 +67,33 @@ def test_standard_pipeline_uses_planimetric_survey_alignment_defaults():
     assert "--no-global-retriangulation" not in command
 
 
+def test_fast_pipeline_uses_full_dataset_and_versioned_minimum_envelope():
+    profile = MODULE.PROFILES["fast"]
+    colmap = MODULE.stage_command(
+        "colmap",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+    gaussian = MODULE.stage_command(
+        "gaussian",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+
+    assert "--max-images" not in colmap
+    assert colmap[colmap.index("--selection") + 1] == "uniform"
+    assert colmap[colmap.index("--feature-max-image-size") + 1] == "1600"
+    assert colmap[colmap.index("--feature-max-num-features") + 1] == "2048"
+    assert gaussian[gaussian.index("--profile") + 1] == "fast"
+    assert profile.detection_profile == "full"
+
+
 def test_colmap_completion_requires_model_alignment_and_images(tmp_path):
     workspace = tmp_path / "workspace"
     for name in ("cameras.bin", "images.bin", "points3D.bin"):
