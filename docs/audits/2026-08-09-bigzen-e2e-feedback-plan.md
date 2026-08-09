@@ -169,8 +169,11 @@ Status: CPU qualification foundation and operational contract implemented on
 2026-08-09. The automated scenario covers two complete immutable mission chains
 and a second AI run against an exact raster parent. The operational contract
 defines selective Q0-Q3 gates, backup/retention, failure recovery, cost controls
-and required operational views. A representative five-Job GPU E2E on the target
-deployment, multi-product operator exercise and deployment activation remain.
+and required operational views. A complete local Fast GPU E2E on BIGZEN now
+qualifies the scientific execution path while documenting inadequate visual
+quality and an unqualified zero-detection result on Chapelle Banyuls. A
+representative five-Job GPU E2E on the target deployment, multi-product operator
+exercise and deployment activation remain.
 
 - Add migration, authorization, event-ordering, retry and concurrency tests.
 - Exercise multiple missions, multiple products and multiple AI runs in E2E.
