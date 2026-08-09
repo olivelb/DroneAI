@@ -142,6 +142,42 @@ def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sess
         assert run.provenance["resource_class_repaired_from"] == "cpu-standard"
 
 
+def test_reservation_skips_when_another_postgres_scheduler_owns_the_lock():
+    statements = []
+
+    class LockResult:
+        @staticmethod
+        def scalar_one():
+            return False
+
+    class LockedSession:
+        @staticmethod
+        def get_bind():
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        @staticmethod
+        def execute(statement, parameters):
+            statements.append((str(statement), parameters))
+            return LockResult()
+
+        @staticmethod
+        def query(*_args):
+            raise AssertionError("Reservation queries must not run without the lock")
+
+    reserved = orchestrator.reserve_ready_jobs(
+        LockedSession(),
+        _settings(),
+        datetime.now(UTC),
+    )
+
+    assert reserved == []
+    assert "pg_try_advisory_xact_lock" in statements[0][0]
+    assert statements[0][1] == {
+        "namespace": orchestrator.SCHEDULER_LOCK_NAMESPACE,
+        "lock_key": orchestrator.SCHEDULER_LOCK_KEY,
+    }
+
+
 class FakeJobClient:
     def __init__(self, jobs=None):
         self.jobs = jobs or {}

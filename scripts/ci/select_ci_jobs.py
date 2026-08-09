@@ -78,8 +78,10 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["dronegs"] = True
         if _under(path, "alembic") or path in {
             "alembic.ini",
+            "app4-dashboard/api/stage_orchestrator.py",
             "shared/config.py",
             "shared/database.py",
+            "tests/integration/test_stage_scheduler_postgres.py",
             "requirements/dev.in",
             "requirements/dev.txt",
         }:

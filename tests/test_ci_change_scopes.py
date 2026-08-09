@@ -42,6 +42,18 @@ def test_schema_change_runs_python_migrations_and_service_images() -> None:
     }
 
 
+def test_scheduler_changes_run_postgres_locking_contract() -> None:
+    assert _enabled("app4-dashboard/api/stage_orchestrator.py") == {
+        "python",
+        "migrations",
+        "containers",
+    }
+    assert _enabled("tests/integration/test_stage_scheduler_postgres.py") == {
+        "python",
+        "migrations",
+    }
+
+
 def test_native_dronegs_change_runs_python_and_native_jobs_when_relevant() -> None:
     assert _enabled("app1-colmap/dronegs/src/trainer.cpp") == {"dronegs"}
     assert _enabled("app1-colmap/dronegs/tools/lpips_eval.py") == {"python", "dronegs"}

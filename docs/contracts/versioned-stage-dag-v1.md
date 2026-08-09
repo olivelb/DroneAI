@@ -122,13 +122,17 @@ the mode when `STAGE_JOBS_IMAGE_TAG` supplies the commit-derived image tag.
 
 When explicitly enabled, the dashboard reserves queued rows with
 `FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
-the Kubernetes API. A crash between reservation and creation is recovered by
-the next reconciliation tick; `409 AlreadyExists` is success, and missing Jobs
-are recreated only up to the configured dispatch bound. Active Jobs renew the
-stage heartbeat. Failed Jobs fail the run, mission cancellation deletes the
-Job, and a Job that exits successfully without first publishing its immutable
-artifact is treated as failed. Artifact publication atomically marks the run
-succeeded before releasing dependants.
+the Kubernetes API. Before reading capacity or candidates, the transaction
+must acquire the shared PostgreSQL advisory lock
+`droneai-stage-scheduler-v1`; a replica that does not acquire it skips that
+reservation tick. This preserves API-replica HA while serializing the global,
+owner, mission and resource-class budgets. A crash between reservation and
+creation is recovered by the next reconciliation tick; `409 AlreadyExists` is
+success, and missing Jobs are recreated only up to the configured dispatch
+bound. Active Jobs renew the stage heartbeat. Failed Jobs fail the run,
+mission cancellation deletes the Job, and a Job that exits successfully
+without first publishing its immutable artifact is treated as failed. Artifact
+publication atomically marks the run succeeded before releasing dependants.
 
 Activation requires a complete `stageJobs.executors` map for all five stages.
 Every entry supplies an immutable image, a non-empty one-shot command, optional
@@ -263,4 +267,7 @@ from adapter availability alone.
   that cannot retrain or refilter its parent model;
 - bounded raster streaming and YOLO/SAM3 detection, stable model provenance,
   overlap deduplication, GeoJSON publication and cleanup on stage completion;
-- PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
+- PostgreSQL/PostGIS migration round-trip through `0017`, including repair of
+  pending legacy rasterization rows assigned to `cpu-standard`;
+- two concurrent PostgreSQL scheduler transactions proving that only the lock
+  owner can reserve capacity and that ownership transfers after commit.
