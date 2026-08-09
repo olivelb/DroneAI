@@ -365,3 +365,118 @@ def run_gaussian_filtering_stage(
         runtime.cancellation_state.clear()
         if workspace.exists():
             shutil.rmtree(workspace)
+
+
+def run_rasterization_stage(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+) -> StageExecutionResult:
+    """Render and qualify GeoTIFF products from an already filtered model."""
+    workspace = _workspace_path(context.run_id)
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    runtime.cancellation_state.start_mission(
+        context.vol_id,
+        context.mission_attempt,
+    )
+    try:
+        _restore_input_workspace(
+            context,
+            control,
+            workspace,
+            expected_kind="gaussian_filtering_workspace",
+        )
+        preparation, reconstruction, alignment = load_reconstruction_state(workspace)
+        from gaussian_ortho.generate_gaussian_orthophoto import (
+            execute_gaussian_rasterization_phase,
+        )
+        from gaussian_ortho.gaussian_model import GaussianModel
+        from gaussian_ortho.phase_artifacts import (
+            hydrate_filtering_phase,
+            read_filtering_artifact,
+        )
+        from gaussian_ortho.raster_product import finalize_gaussian_raster_product
+
+        from .stages.gaussian import prepare_gaussian_product_run
+
+        product = prepare_gaussian_product_run(
+            preparation,
+            reconstruction,
+            alignment,
+            str(workspace),
+            context.vol_id,
+            prepare_checkpoints=False,
+        )
+        artifact = read_filtering_artifact(workspace, product.config)
+        model = GaussianModel(
+            sh_degree=product.config.sh_degree,
+            fagk_enabled=product.config.fagk,
+        )
+        model.load_ply(str(artifact.model_path))
+        filtering_phase = hydrate_filtering_phase(artifact, model)
+        rasterization_phase = execute_gaussian_rasterization_phase(
+            product.config,
+            filtering_phase,
+        )
+        control.raise_if_cancelled()
+        import cupy as cp
+
+        result = finalize_gaussian_raster_product(
+            product.config,
+            filtering_phase,
+            rasterization_phase,
+            artifact.scene_summary,
+            final_ply=str(artifact.model_path),
+            cupy_version=cp.__version__,
+        )
+        published = _publish_stage_workspace(
+            context,
+            control,
+            workspace,
+            stage="rasterization",
+        )
+        coverage = cast(dict[str, Any] | None, result.get("gaussian_coverage"))
+        quality_metrics: dict[str, Any] = {
+            "width": result["width"],
+            "height": result["height"],
+            "gaussian_count": result["n_gaussians"],
+        }
+        if coverage is not None:
+            quality_metrics["coverage"] = coverage
+        return StageExecutionResult(
+            kind="raster_product_workspace",
+            uri=published.uri,
+            checksum_sha256=published.checksum_sha256,
+            size_bytes=published.size_bytes,
+            metadata={
+                "manifest_key": published.manifest_key,
+                "file_count": published.file_count,
+                "ortho_file": Path(result["ortho_file"])
+                .relative_to(workspace)
+                .as_posix(),
+                "height_file": Path(result["height_file"])
+                .relative_to(workspace)
+                .as_posix(),
+                "coverage_report": (
+                    Path(result["gaussian_coverage_report"])
+                    .relative_to(workspace)
+                    .as_posix()
+                    if result.get("gaussian_coverage_report")
+                    else None
+                ),
+                "crs": result["coordinate_system"],
+                "raster_extent": result["raster_extent"],
+            },
+            quality_metrics=quality_metrics,
+            provenance={
+                "stage_adapter": "gaussian-rasterization-v1",
+                "profile_id": product.config.dronegs_profile_id,
+                "renderer_contract": result["renderer_contract"],
+                "cupy_version": result["cupy_version"],
+            },
+        )
+    finally:
+        runtime.cancellation_state.clear()
+        if workspace.exists():
+            shutil.rmtree(workspace)

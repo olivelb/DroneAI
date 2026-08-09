@@ -137,7 +137,7 @@ tombstones while preserving the rows for restoration and audit.
 
 ### Phase 7 — Resource-aware orchestration
 
-Status: control plane and the first three worker adapters implemented on
+Status: control plane and the first four worker adapters implemented on
 2026-08-09; worker split remains in progress. Revision `0016` and the v1 DAG catalogue
 persist portable CPU/GPU/VRAM resource classes. A pure round-robin scheduler
 enforces global, owner, mission and resource-class concurrency, and a hardened
@@ -148,11 +148,11 @@ intentionally remains disabled until the fused workers are split into qualified
 one-shot stage executors. The shared claim/heartbeat/cancellation/artifact
 boundary and verified S3 workspace hand-off are implemented and tested;
 the COLMAP reconstruction adapter and portable reconstruction state are also
-implemented. Gaussian training and filtering now run as independent bounded
-commands with checksum-bound JSON/PLY handoffs and immutable parent handling.
-Rasterization and detection adapters are the remaining Phase 7 lot. Job mode
-stays disabled until those last executors and a representative GPU E2E have
-qualified the complete chain.
+implemented. Gaussian training, filtering and rasterization now run as
+independent bounded commands with checksum-bound JSON/PLY handoffs, immutable
+parent handling, and one shared GeoTIFF/coverage finalizer. Detection is the
+remaining Phase 7 adapter. Job mode stays disabled until that last executor and
+a representative GPU E2E have qualified the complete chain.
 
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.

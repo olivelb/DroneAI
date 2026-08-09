@@ -8,6 +8,7 @@ import pytest
 from colmap_worker import stage_executor
 from colmap_worker.stages import gaussian as gaussian_stage
 from gaussian_ortho import phase_artifacts
+from gaussian_ortho import raster_product
 from shared.stage_execution import StageArtifactInput, StageExecutionContext
 from shared.stage_workspace import PublishedWorkspace
 
@@ -351,4 +352,127 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     assert calls == ["restore", "read", "hydrate", "write", "publish"]
     assert result.kind == "gaussian_filtering_workspace"
     assert result.quality_metrics["retained_ratio"] == 0.8
+    assert cancellation.cleared == 1
+
+
+def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
+    cancellation = FakeCancellationState()
+    monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
+    calls = []
+    _mock_workspace_transfer(monkeypatch, calls)
+    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
+    config = SimpleNamespace(
+        sh_degree=3,
+        fagk=True,
+        dronegs_profile_id="normal-v1",
+    )
+    monkeypatch.setattr(
+        gaussian_stage,
+        "prepare_gaussian_product_run",
+        lambda *_args, **_kwargs: SimpleNamespace(config=config),
+    )
+    model_path = tmp_path / "work" / ("a" * 32) / "filtered.ply"
+    scene_summary = SimpleNamespace(scale_source="geographic-sim3")
+    artifact = SimpleNamespace(
+        model_path=model_path,
+        scene_summary=scene_summary,
+    )
+
+    def read_artifact(workspace, artifact_config):
+        calls.append("read")
+        model_path.write_bytes(b"filtered")
+        return artifact
+
+    monkeypatch.setattr(phase_artifacts, "read_filtering_artifact", read_artifact)
+    fake_model_module = ModuleType("gaussian_ortho.gaussian_model")
+
+    class FakeModel:
+        def __init__(self, **_kwargs):
+            pass
+
+        def load_ply(self, path):
+            calls.append("load")
+            assert Path(path).read_bytes() == b"filtered"
+
+    fake_model_module.GaussianModel = FakeModel
+    monkeypatch.setitem(sys.modules, "gaussian_ortho.gaussian_model", fake_model_module)
+    filtering_phase = SimpleNamespace(output_gaussians=1_200_000)
+    monkeypatch.setattr(
+        phase_artifacts,
+        "hydrate_filtering_phase",
+        lambda hydrated_artifact, _model: (
+            calls.append("hydrate") or filtering_phase
+        ),
+    )
+    rasterization_phase = SimpleNamespace(width=800, height=600)
+    monkeypatch.setattr(
+        gaussian_workflow,
+        "execute_gaussian_rasterization_phase",
+        lambda raster_config, filtered: (
+            calls.append("render") or rasterization_phase
+        ),
+    )
+
+    def finalize(
+        raster_config,
+        filtered,
+        rasterized,
+        summary,
+        *,
+        final_ply,
+        cupy_version,
+    ):
+        calls.append("finalize")
+        assert filtered is filtering_phase
+        assert rasterized is rasterization_phase
+        assert summary is scene_summary
+        assert final_ply == str(model_path)
+        assert cupy_version == "test-cupy"
+        workspace = model_path.parent
+        ortho = workspace / "orthomosaic.tif"
+        height = workspace / "orthomosaic.height.tif"
+        ortho.write_bytes(b"ortho")
+        height.write_bytes(b"height")
+        return {
+            "ortho_file": str(ortho),
+            "height_file": str(height),
+            "gaussian_coverage_report": None,
+            "coordinate_system": "EPSG:32631",
+            "raster_extent": [0.0, 0.0, 20.0, 15.0],
+            "width": 800,
+            "height": 600,
+            "n_gaussians": 1_200_000,
+            "gaussian_coverage": {"accepted": True},
+            "renderer_contract": "cupy-ortho-v2-sh-frame",
+            "cupy_version": cupy_version,
+        }
+
+    monkeypatch.setattr(raster_product, "finalize_gaussian_raster_product", finalize)
+    fake_cupy = ModuleType("cupy")
+    fake_cupy.__version__ = "test-cupy"
+    monkeypatch.setitem(sys.modules, "cupy", fake_cupy)
+
+    result = stage_executor.run_rasterization_stage(
+        _context("rasterization", input_kind="gaussian_filtering_workspace"),
+        FakeControl(),
+    )
+
+    assert calls == [
+        "restore",
+        "read",
+        "load",
+        "hydrate",
+        "render",
+        "finalize",
+        "publish",
+    ]
+    assert result.kind == "raster_product_workspace"
+    assert result.metadata["ortho_file"] == "orthomosaic.tif"
+    assert result.quality_metrics["gaussian_count"] == 1_200_000
+    assert result.provenance["renderer_contract"] == "cupy-ortho-v2-sh-frame"
     assert cancellation.cleared == 1

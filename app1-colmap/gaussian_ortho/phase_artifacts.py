@@ -20,6 +20,7 @@ from .generate_gaussian_orthophoto import (
     GaussianTrainingPhaseState,
     GaussianTrainingState,
 )
+from .raster_product import GaussianSceneSummary
 
 if TYPE_CHECKING:
     from .gaussian_model import GaussianModel
@@ -52,24 +53,6 @@ class GaussianTrainingArtifact:
     trainer_binary_sha256: str
     gaussian_count: int
     facade_subset_result: dict[str, object] | None
-
-
-@dataclass(frozen=True)
-class GaussianSceneSummary:
-    sim3_aligned: bool
-    exif_altitude_available: bool
-    colmap_to_meters: float
-    scale_source: str
-    facade_frame: dict[str, object] | None
-    registered_camera_count: int
-    texture_camera_count: int
-    texture_filter_applied: bool
-    minimum_sparse_observations: int
-    seed_max_error: float
-    seed_min_track: int
-    gaussian_seed_point_count: int
-    facade_subset_result: dict[str, object] | None
-
 
 @dataclass(frozen=True)
 class GaussianFilteringArtifact:

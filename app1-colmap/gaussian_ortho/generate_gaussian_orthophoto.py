@@ -61,14 +61,12 @@ from gaussian_training.manifest_contract import (
     validate_run_manifest,
 )
 from .partition import partition_scene
-from .geo_writer import write_geotiff
 from .exif_altitude import (
     extract_exif_altitudes,
     compute_colmap_scale,
     compute_colmap_scale_geodesic,
     compute_projected_geo_origin,
 )
-from .height_reference import georeference_height_map, georeference_raster_origin
 from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
 from .partition import CellBounds
 from .scene_info import SceneInfo
@@ -1406,288 +1404,44 @@ def generate_gaussian_orthophoto(
         cupy_module=cp,
     )
     scene_state = training_phase.scene_state
-    registered_cameras = scene_state.registered_cameras
-    transform_data = scene_state.transform_data
-    mean_exif_alt = scene_state.mean_exif_alt
-    colmap_to_meters = scene_state.colmap_to_meters
-    scale_source = scene_state.scale_source
-    facade_frame = scene_state.facade_frame
-    texture_camera_count = scene_state.texture_camera_count
-    texture_filter_applied = scene_state.texture_filter_applied
-    minimum_sparse_observations = scene_state.minimum_sparse_observations
-    seed_max_error = scene_state.seed_max_error
-    seed_min_track = scene_state.seed_min_track
-    gaussian_seed_point_count = scene_state.gaussian_seed_point_count
-
-    # --- 3. Train per cell through the stable backend boundary ---
-    training_state = training_phase.training_state
-    merged_model = training_state.merged_model
-    final_ply = training_state.final_ply
-    facade_subset_result = training_state.facade_subset_result
     filtering_phase = execute_gaussian_filtering_phase(
         config,
         training_phase,
         cupy_module=cp,
     )
-    render_state = filtering_phase.render_state
-    merged_model = render_state.merged_model
-    geo_origin = render_state.geo_origin
-    facade_depth_bounds_model = render_state.facade_depth_bounds_model
-    resolution_units = render_state.resolution_units
-    coverage_camera_positions = render_state.coverage_camera_positions
     rasterization_phase = execute_gaussian_rasterization_phase(
         config,
         filtering_phase,
     )
-    result = rasterization_phase.result
-
-    rgb = result["rgb"]
-    height = result["height"]
-    x_min, x_max, y_min, y_max = result["extent"]
-    H = rasterization_phase.height
-    W = rasterization_phase.width
-
-    coverage_report_path = None
-    coverage_report = None
-    if render_mode == "map":
-        from .coverage_quality import (
-            SpatialCoveragePolicy,
-            evaluate_spatial_coverage,
-        )
-
-        coverage_policy = SpatialCoveragePolicy(
-            grid_size=coverage_grid_size,
-            minimum_valid_ratio=coverage_min_valid_ratio,
-            cell_coverage_threshold=coverage_cell_threshold,
-            minimum_covered_cells_ratio=coverage_min_covered_cells_ratio,
-            minimum_worst_cell_ratio=coverage_min_worst_cell_ratio,
-            minimum_camera_cell_ratio=coverage_min_camera_cell_ratio,
-        )
-        coverage_report = evaluate_spatial_coverage(
-            height,
-            extent=(x_min, x_max, y_min, y_max),
-            camera_positions=coverage_camera_positions,
-            policy=coverage_policy,
-            enforced=coverage_gate_enabled,
-        )
-        coverage_report_path = str(
-            Path(ortho_file).with_name("gaussian_coverage_report.json")
-        )
-        coverage_path = Path(coverage_report_path)
-        coverage_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_coverage_path = coverage_path.with_suffix(".json.tmp")
-        temporary_coverage_path.write_text(
-            json.dumps(coverage_report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary_coverage_path, coverage_path)
-        _report(
-            vol_id,
-            "GAUSS",
-            97,
-            "Gaussian spatial coverage: "
-            f"valid={coverage_report['valid_pixel_ratio']:.1%}, "
-            f"covered cells={coverage_report['covered_cells_ratio']:.1%}, "
-            f"worst cell={coverage_report['worst_cell_ratio']:.1%} "
-            f"({coverage_report['status']}).",
-            report_fn,
-        )
-        if coverage_gate_enabled and not coverage_report["accepted"]:
-            failed_checks = ", ".join(
-                check["name"]
-                for check in coverage_report["checks"]
-                if not check["passed"]
-            )
-            raise RuntimeError(
-                "Gaussian spatial coverage gate rejected the product: "
-                f"{failed_checks}. Report: {coverage_report_path}"
-            )
-
-    # --- 7. Write GeoTIFF ---
-    # Translate the local-coordinate extent back to geographic (UTM) coords.
-    # With Sim3: model is metric, geo_origin is the Sim3 translation (float64).
-    # With PCA: model is in COLMAP units, scale to metres + add GPS-derived origin.
-    geo_x_min, geo_y_max = georeference_raster_origin(
-        x_min,
-        y_max,
-        geo_origin=geo_origin,
-        colmap_to_meters=colmap_to_meters,
-        sim3_aligned=bool(transform_data),
-        facade=render_mode == "facade",
+    from .raster_product import (
+        GaussianSceneSummary,
+        finalize_gaussian_raster_product,
     )
 
-    # --- Altitude correction: convert local model Z to the georeferenced datum ---
-    if render_mode == "facade":
-        height = height * colmap_to_meters
-        z_offset = 0.0
-        vertical_reference = "local-facade-depth"
-    else:
-        height, z_offset, vertical_reference = georeference_height_map(
-            height,
-            sim3_aligned=bool(transform_data),
-            geo_origin_z=float(geo_origin[2]),
-            colmap_to_meters=colmap_to_meters,
-            exif_altitude_available=mean_exif_alt is not None,
-        )
-    if vertical_reference == "sim3":
-        _report(
-            vol_id,
-            "GAUSS",
-            97,
-            f"Applied Sim3 vertical translation ({z_offset:+.2f} m) to height map.",
-            report_fn,
-        )
-    elif vertical_reference == "exif":
-        _report(
-            vol_id,
-            "GAUSS",
-            97,
-            f"Applied GPS/EXIF vertical origin ({z_offset:+.2f} m) to height map.",
-            report_fn,
-        )
-    else:
-        _report(
-            vol_id,
-            "GAUSS",
-            97,
-            "No absolute altitude reference found; height map remains in local model Z.",
-            report_fn,
-        )
-
-    _report(vol_id, "GAUSS", 98, "Writing GeoTIFF\u2026", report_fn)
-
-    height_file = str(Path(ortho_file).with_suffix(".height.tif"))
-    output_crs = None if render_mode == "facade" else utm_crs
-    write_geotiff(
-        output_path=ortho_file,
-        rgb=rgb,
-        x_min=geo_x_min,
-        y_max=geo_y_max,
-        gsd=resolution,
-        crs=output_crs,
-        height_map=height,
-        height_output_path=height_file,
-    )
-
-    if render_mode == "facade":
-        if facade_frame is None:
-            raise RuntimeError("Facade frame is unavailable for reporting")
-        report_path = Path(facade_frame_report or str(Path(ortho_file).with_name("facade_frame.json")))
-        frame_payload = {
-            "schema_version": 1,
-            "coordinate_system": "LOCAL_FACADE",
-            "units": "metres" if scale_source != "model-units" else "model-units",
-            "axis_definition": {
-                "x": "horizontal-right",
-                "y": "vertical-up",
-                "z": "outward-toward-cameras",
-            },
-            "scale": {
-                "meters_per_model_unit": colmap_to_meters,
-                "source": scale_source,
-                "uses_absolute_position": False,
-                "uses_rtk_adjustment": False,
-            },
-            "frame": facade_frame.as_dict(),
-            "texture_selection": {
-                "registered_cameras": len(registered_cameras),
-                "training_cameras": texture_camera_count,
-                "maximum_incidence_deg": float(facade_texture_max_incidence_deg),
-                "minimum_sparse_observations": minimum_sparse_observations,
-                "filter_applied": texture_filter_applied,
-            },
-            "gaussian_seed": {
-                "maximum_reprojection_error_px": seed_max_error,
-                "minimum_track_length": seed_min_track,
-                "points_after_loader_filter": gaussian_seed_point_count,
-                "training_workspace_points": (
-                    facade_subset_result["exported_points"]
-                    if facade_subset_result is not None
-                    else gaussian_seed_point_count
-                ),
-                "coverage_balanced_cap_applied": bool(
-                    facade_subset_result and facade_subset_result["coverage_balanced"]
-                ),
-            },
-            "depth_filter": {
-                "iqr_multiplier": float(facade_depth_iqr_multiplier),
-                "bounds_model_units": (
-                    list(facade_depth_bounds_model) if facade_depth_bounds_model is not None else None
-                ),
-                "bounds_metres": (
-                    [
-                        facade_depth_bounds_model[0] * colmap_to_meters,
-                        facade_depth_bounds_model[1] * colmap_to_meters,
-                    ]
-                    if facade_depth_bounds_model is not None
-                    else None
-                ),
-            },
-            "raster": {
-                "width": W,
-                "height": H,
-                "pixel_size": resolution,
-                "pixel_size_units": resolution_units,
-                "extent": [
-                    geo_x_min,
-                    geo_y_max - H * resolution,
-                    geo_x_min + W * resolution,
-                    geo_y_max,
-                ],
-                "crs": None,
-            },
-        }
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = report_path.with_suffix(report_path.suffix + ".tmp")
-        temporary.write_text(
-            json.dumps(frame_payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        os.replace(temporary, report_path)
-    else:
-        report_path = None
-
-    _report(vol_id, "GAUSS", 100, f"Done. Orthomosaic: {ortho_file}, Height: {height_file}", report_fn)
-
-    return {
-        "ortho_file": ortho_file,
-        "height_file": height_file,
-        "checkpoint_dir": checkpoint_dir,
-        "final_ply": final_ply,
-        "width": W,
-        "height": H,
-        "gsd": resolution,
-        "gsd_units": resolution_units,
-        "raster_extent": [
-            geo_x_min,
-            geo_y_max - H * resolution,
-            geo_x_min + W * resolution,
-            geo_y_max,
-        ],
-        "projected_extent": (
-            None
-            if render_mode == "facade"
-            else [
-                geo_x_min,
-                geo_y_max - H * resolution,
-                geo_x_min + W * resolution,
-                geo_y_max,
-            ]
+    summary = GaussianSceneSummary(
+        sim3_aligned=scene_state.transform_data is not None,
+        exif_altitude_available=scene_state.mean_exif_alt is not None,
+        colmap_to_meters=scene_state.colmap_to_meters,
+        scale_source=scene_state.scale_source,
+        facade_frame=(
+            scene_state.facade_frame.as_dict()
+            if scene_state.facade_frame is not None
+            else None
         ),
-        "vertical_reference": vertical_reference,
-        "vertical_offset_m": z_offset,
-        "render_mode": render_mode,
-        "coordinate_system": "LOCAL_FACADE" if render_mode == "facade" else utm_crs,
-        "facade_frame_report": str(report_path) if report_path else None,
-        "gaussian_coverage_report": coverage_report_path,
-        "gaussian_coverage": coverage_report,
-        "scale_source": scale_source,
-        "meters_per_model_unit": colmap_to_meters,
-        "registered_cameras": len(registered_cameras),
-        "texture_cameras": texture_camera_count,
-        "renderer_contract": "cupy-ortho-v2-sh-frame",
-        "cupy_version": cp.__version__,
-        "n_gaussians": merged_model.num_gaussians,
-        "ortho_mip_filter_variance": ortho_mip_filter_variance,
-        "ortho_mip_filter_compensation": ortho_mip_filter_compensation,
-    }
+        registered_camera_count=len(scene_state.registered_cameras),
+        texture_camera_count=scene_state.texture_camera_count,
+        texture_filter_applied=scene_state.texture_filter_applied,
+        minimum_sparse_observations=scene_state.minimum_sparse_observations,
+        seed_max_error=scene_state.seed_max_error,
+        seed_min_track=scene_state.seed_min_track,
+        gaussian_seed_point_count=scene_state.gaussian_seed_point_count,
+        facade_subset_result=training_phase.training_state.facade_subset_result,
+    )
+    return finalize_gaussian_raster_product(
+        config,
+        filtering_phase,
+        rasterization_phase,
+        summary,
+        final_ply=training_phase.training_state.final_ply,
+        cupy_version=cp.__version__,
+    )

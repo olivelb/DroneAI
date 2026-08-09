@@ -207,6 +207,15 @@ to a distinct path so its immutable parent is never overwritten. Both Jobs
 reuse the common heartbeat/cancellation boundary and remove their disposable
 workspace in `finally` on success or failure.
 
+The `rasterization` command restores exactly one filtering workspace, hydrates
+the already aligned/filtered model and calls the same raster boundary as the
+legacy worker. A shared finalizer then applies the spatial-coverage gate,
+vertical/geographic reference, RGB and height GeoTIFF writes, and facade report.
+The resulting workspace publishes relative RGB, height and coverage paths plus
+CRS/extent metadata; width, height, Gaussian count and the complete coverage
+report are retained as quality metrics. This avoids a second raster
+qualification implementation while keeping retries independent from training.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -229,4 +238,6 @@ workspace in `finally` on success or failure.
   raster-state hydration without repeated transforms;
 - bounded Gaussian training/filtering adapters, immutable parent PLY handling
   and cleanup on every exit path;
+- shared raster qualification/finalization and a bounded rasterization adapter
+  that cannot retrain or refilter its parent model;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
