@@ -153,6 +153,14 @@ and never release dependants. This lifecycle is shared so stage-specific
 COLMAP, Gaussian, raster and detection adapters do not reimplement leases or
 artifact consistency.
 
+Stage-local disks are disposable. `shared.stage_workspace` transfers the
+required workspace through S3 as a canonical manifest plus individually
+verified files. Publication rejects symbolic links, records relative path,
+size and SHA-256 for every file, and uses the manifest SHA-256 as the stage
+artifact checksum. Restoration rejects absolute/traversal/duplicate paths and
+removes any file whose downloaded size or digest differs. Both directions call
+the cooperative cancellation hook between files.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -169,4 +177,5 @@ artifact consistency.
   and artifact-publication reconciliation;
 - one-shot claim, exact-input loading, cooperative cancellation, deterministic
   artifact publication and downstream release;
+- safe, checksum-verified S3 workspace publication and restoration;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
