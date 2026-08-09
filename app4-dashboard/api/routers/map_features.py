@@ -1,28 +1,19 @@
-"""Manual feature CRUD and database-backed geospatial search."""
+"""Database-backed geospatial feature search."""
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
 from typing import Annotated, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import Text, func, or_
 
-from shared.database import (
-    AIAnalysisRun,
-    Detection,
-    MapFeature,
-    get_session,
-)
+from shared.database import AIAnalysisRun, Detection, MapFeature, get_session
 from shared.geospatial_assets import detections_feature_collection
 from shared.geospatial_workspace import geometry_bounds
 
-from ..map_schemas import MapFeatureCreate, MapFeatureUpdate
 from ..map_support import (
     Bounds,
     JsonObject,
-    MapFeatureMutationRecord,
     MissionRecord,
     RouteSession,
     apply_detection_spatial_filter,
@@ -32,128 +23,9 @@ from ..map_support import (
     map_feature_geojson,
     parse_bbox,
 )
-from ..security import Principal, require_authenticated, require_operator
+from ..security import Principal, require_authenticated
 
 router = APIRouter()
-
-
-@router.post("/{vol_id}/features", status_code=status.HTTP_201_CREATED)
-def create_map_feature(
-    vol_id: str,
-    request: MapFeatureCreate,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
-) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_create"
-        )
-        feature = MapFeature(
-            mission_id=mission.id,
-            vol_id=vol_id,
-            source="manual",
-            geometry=func.ST_SetSRID(
-                func.ST_GeomFromGeoJSON(json.dumps(request.geometry)),
-                4326,
-            ),
-            name=request.name.strip(),
-            description=request.description.strip(),
-            color=request.color,
-            tags=request.tags,
-            properties=request.properties,
-            created_by=principal.subject,
-        )
-        typed_session.add(feature)
-        typed_session.flush()
-        return map_feature_geojson(typed_session, feature)
-
-
-@router.patch("/{vol_id}/features/{feature_id}")
-def update_map_feature(
-    vol_id: str,
-    feature_id: str,
-    request: MapFeatureUpdate,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
-) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_update"
-        )
-        feature = cast(
-            MapFeatureMutationRecord | None,
-            typed_session.query(MapFeature)
-            .filter(
-                MapFeature.vol_id == vol_id,
-                MapFeature.feature_id == feature_id,
-                MapFeature.source == "manual",
-            )
-            .with_for_update()
-            .first(),
-        )
-        if feature is None:
-            raise HTTPException(status_code=404, detail="Feature not found")
-        if feature.version != request.version:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "message": "Feature was changed by another user",
-                    "current_version": feature.version,
-                },
-            )
-        changes = request.model_dump(exclude_unset=True)
-        changes.pop("version", None)
-        if "geometry" in changes:
-            feature.geometry = func.ST_SetSRID(
-                func.ST_GeomFromGeoJSON(json.dumps(changes.pop("geometry"))),
-                4326,
-            )
-        for field, value in changes.items():
-            setattr(
-                feature,
-                field,
-                value.strip() if isinstance(value, str) else value,
-            )
-        feature.version += 1
-        feature.updated_at = datetime.now(UTC)
-        typed_session.flush()
-        return map_feature_geojson(
-            typed_session,
-            cast(MapFeature, feature),
-        )
-
-
-@router.delete(
-    "/{vol_id}/features/{feature_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-)
-def delete_map_feature(
-    vol_id: str,
-    feature_id: str,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
-) -> Response:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_delete"
-        )
-        feature = cast(
-            MapFeature | None,
-            typed_session.query(MapFeature)
-            .filter(
-                MapFeature.vol_id == vol_id,
-                MapFeature.feature_id == feature_id,
-                MapFeature.source == "manual",
-            )
-            .first(),
-        )
-        if feature is None:
-            raise HTTPException(status_code=404, detail="Feature not found")
-        typed_session.delete(feature)
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 def _search_map_records(
@@ -166,11 +38,18 @@ def _search_map_records(
     class_name: str | None,
     min_confidence: float | None,
     bounds: Bounds | None,
+    reviewed: bool | None,
+    deleted: bool,
     limit: int,
 ) -> tuple[list[MapFeature], bool]:
     if source == "legacy":
         return [], False
     query = session.query(MapFeature).filter(MapFeature.vol_id == vol_id)
+    query = query.filter(
+        MapFeature.deleted_at.is_not(None)
+        if deleted
+        else MapFeature.deleted_at.is_(None)
+    )
     if text:
         pattern = f"%{text}%"
         query = query.filter(
@@ -184,13 +63,17 @@ def _search_map_records(
     if source:
         query = query.filter(MapFeature.source == source)
     if run_id:
-        query = query.join(AIAnalysisRun).filter(
-            AIAnalysisRun.run_id == run_id
-        )
+        query = query.join(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id)
     if class_name:
         query = query.filter(MapFeature.class_name == class_name)
     if min_confidence is not None:
         query = query.filter(MapFeature.confidence >= min_confidence)
+    if reviewed is not None:
+        query = query.filter(
+            MapFeature.reviewed_at.is_not(None)
+            if reviewed
+            else MapFeature.reviewed_at.is_(None)
+        )
     query = apply_spatial_filter(query, MapFeature.geometry, bounds)
     records = cast(
         list[MapFeature],
@@ -243,7 +126,7 @@ def _legacy_geojson(
             {
                 "source": "legacy",
                 "name": properties.get("class_name"),
-                "description": "Détection du pipeline initial",
+                "description": "Initial pipeline detection",
                 "color": "#f43f5e",
             }
         )
@@ -274,10 +157,9 @@ def search_map_features(
     source: Annotated[str | None, Query()] = None,
     run_id: Annotated[str | None, Query()] = None,
     class_name: Annotated[str | None, Query()] = None,
-    min_confidence: Annotated[
-        float | None,
-        Query(ge=0, le=1),
-    ] = None,
+    min_confidence: Annotated[float | None, Query(ge=0, le=1)] = None,
+    reviewed: Annotated[bool | None, Query()] = None,
+    deleted: Annotated[bool, Query()] = False,
     bbox: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 200,
 ) -> JsonObject:
@@ -287,7 +169,8 @@ def search_map_features(
     with get_session() as session:
         typed_session = cast(RouteSession, session)
         mission = get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_search"
+            typed_session, vol_id, principal,
+            owner_subject=owner_subject, action="feature_search",
         )
         records, truncated = _search_map_records(
             typed_session,
@@ -298,12 +181,11 @@ def search_map_features(
             class_name=class_name,
             min_confidence=min_confidence,
             bounds=bounds,
+            reviewed=reviewed,
+            deleted=deleted,
             limit=limit,
         )
-        features.extend(
-            map_feature_geojson(typed_session, item)
-            for item in records
-        )
+        features.extend(map_feature_geojson(typed_session, item) for item in records)
         remaining = max(0, limit - len(features))
         if remaining and source in {None, "", "legacy"} and not run_id:
             legacy, legacy_truncated = _search_legacy_records(
@@ -318,10 +200,6 @@ def search_map_features(
             features.extend(_legacy_geojson(legacy, mission, vol_id))
             truncated = truncated or legacy_truncated
     return {
-        **feature_collection(
-            features,
-            vol_id=vol_id,
-            truncated=truncated,
-        ),
+        **feature_collection(features, vol_id=vol_id, truncated=truncated),
         "bounds": _aggregate_bounds(features),
     }

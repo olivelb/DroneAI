@@ -127,7 +127,6 @@ def _display_ranges(
 ) -> list[list[float] | None]:
     """Estimate stable per-band display ranges from one bounded global sample."""
 
-    indexes = _display_bands(dataset)
     scale = min(
         sample_size / max(dataset.width, 1),
         sample_size / max(dataset.height, 1),
@@ -135,14 +134,14 @@ def _display_ranges(
     )
     width = max(1, int(dataset.width * scale))
     height = max(1, int(dataset.height * scale))
-    sample = dataset.read(
-        indexes,
-        out_shape=(len(indexes), height, width),
-        masked=True,
-        resampling=Resampling.bilinear,
-    )
     ranges: list[list[float] | None] = []
-    for band in sample:
+    for index in range(1, dataset.count + 1):
+        band = dataset.read(
+            index,
+            out_shape=(height, width),
+            masked=True,
+            resampling=Resampling.bilinear,
+        )
         values = np.asarray(band.compressed(), dtype=np.float64)
         finite = values[np.isfinite(values)]
         if not finite.size:
@@ -206,12 +205,40 @@ def _rgba_image(
     mask = np.ma.getmaskarray(values)
     alpha = np.where(np.all(mask, axis=0), 0, 255).astype(np.uint8)
     normalized = _to_uint8(values, display_ranges=display_ranges)
-    if colormap == "depth":
+    if colormap in {"depth", "terrain", "viridis"}:
         gray = normalized[0].astype(np.float32) / 255.0
-        red = np.clip(1.5 - np.abs(4 * gray - 3), 0, 1)
-        green = np.clip(1.5 - np.abs(4 * gray - 2), 0, 1)
-        blue = np.clip(1.5 - np.abs(4 * gray - 1), 0, 1)
-        rgb = (np.stack((red, green, blue), axis=-1) * 255).astype(np.uint8)
+        anchors = {
+            "depth": (
+                (0.00, 0.00, 0.50),
+                (0.00, 0.75, 1.00),
+                (0.50, 1.00, 0.35),
+                (1.00, 0.85, 0.00),
+                (0.65, 0.00, 0.00),
+            ),
+            "terrain": (
+                (0.10, 0.35, 0.10),
+                (0.45, 0.65, 0.25),
+                (0.70, 0.55, 0.30),
+                (0.75, 0.75, 0.70),
+                (1.00, 1.00, 1.00),
+            ),
+            "viridis": (
+                (0.27, 0.00, 0.33),
+                (0.23, 0.32, 0.55),
+                (0.13, 0.57, 0.55),
+                (0.37, 0.79, 0.38),
+                (0.99, 0.91, 0.14),
+            ),
+        }[colormap]
+        position = gray * (len(anchors) - 1)
+        lower = np.floor(position).astype(np.int16)
+        upper = np.minimum(lower + 1, len(anchors) - 1)
+        fraction = (position - lower)[..., None]
+        palette = np.asarray(anchors, dtype=np.float32)
+        rgb = (
+            (palette[lower] * (1.0 - fraction) + palette[upper] * fraction)
+            * 255
+        ).astype(np.uint8)
     elif normalized.shape[0] >= 3:
         rgb = np.moveaxis(normalized[:3], 0, -1)
     else:
@@ -325,6 +352,7 @@ def render_cog_tile(
     tile_size: int = DEFAULT_TILE_SIZE,
     colormap: str = "",
     display_ranges: Sequence[Sequence[float] | None] | None = None,
+    band_indexes: Sequence[int] | None = None,
 ) -> io.BytesIO:
     tile_size = max(128, min(int(tile_size), 512))
     with (
@@ -339,7 +367,13 @@ def render_cog_tile(
             tile_size,
             tile_size,
         )
-        indexes = _display_bands(dataset)
+        indexes = list(band_indexes or _display_bands(dataset))
+        if len(indexes) not in {1, 3} or len(set(indexes)) != len(indexes):
+            raise ValueError(
+                "Raster display requires one grayscale or three unique RGB bands"
+            )
+        if any(index < 1 or index > dataset.count for index in indexes):
+            raise ValueError("Raster display band is outside the available band range")
         with WarpedVRT(
             dataset,
             crs="EPSG:3857",

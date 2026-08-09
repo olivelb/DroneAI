@@ -193,6 +193,14 @@ MISSION_STAGE_RUN_STATUSES = (
     "cancelled",
 )
 MAP_FEATURE_SOURCES = ("manual", "ai")
+MAP_FEATURE_AUDIT_ACTIONS = (
+    "created",
+    "updated",
+    "reviewed",
+    "unreviewed",
+    "tombstoned",
+    "restored",
+)
 PIPELINE_LOG_STATUSES = ("processing", "success", "error", "cancelled")
 INBOX_EVENT_STATUSES = ("processing", "completed", "failed")
 OUTBOX_EVENT_STATUSES = (
@@ -395,6 +403,16 @@ class Mission(Base):
     )
     map_features = relationship(
         "MapFeature",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    feature_audit_events = relationship(
+        "MapFeatureAuditEvent",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    layer_styles = relationship(
+        "RasterLayerStyle",
         back_populates="mission",
         cascade="all, delete-orphan",
     )
@@ -780,6 +798,8 @@ class MapFeature(RequiredTimestampMixin, Base):
         Index("ix_map_features_mission_source", "mission_id", "source"),
         Index("ix_map_features_run_class", "analysis_run_id", "class_name"),
         Index("ix_map_features_name", "name"),
+        Index("ix_map_features_visibility", "mission_id", "deleted_at"),
+        Index("ix_map_features_review", "mission_id", "reviewed_at"),
         CheckConstraint(
             _values_check("source", MAP_FEATURE_SOURCES),
             name="ck_map_features_source",
@@ -820,9 +840,110 @@ class MapFeature(RequiredTimestampMixin, Base):
     tile_index = Column(Integer, nullable=True)
     created_by = Column(String(256), nullable=True)
     version = Column(Integer, nullable=False, default=1)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(256), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_by = Column(String(256), nullable=True)
+    deletion_reason = Column(Text, nullable=True)
 
     mission = relationship("Mission", back_populates="map_features")
     analysis_run = relationship("AIAnalysisRun", back_populates="features")
+    audit_events = relationship(
+        "MapFeatureAuditEvent",
+        back_populates="feature",
+        cascade="all, delete-orphan",
+    )
+
+
+class MapFeatureAuditEvent(Base):
+    """Append-only operator audit trail for feature corrections."""
+
+    __tablename__ = "map_feature_audit_events"
+    __table_args__ = (
+        Index("ix_feature_audit_mission_created", "mission_id", "created_at"),
+        Index("ix_feature_audit_feature_created", "feature_id", "created_at"),
+        CheckConstraint(
+            _values_check("action", MAP_FEATURE_AUDIT_ACTIONS),
+            name="ck_map_feature_audit_action",
+        ),
+    )
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    event_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    feature_id = Column(
+        Integer,
+        ForeignKey("map_features.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    actor_subject = Column(String(256), nullable=False)
+    action = Column(String(32), nullable=False)
+    reason = Column(Text, nullable=True)
+    before_state = Column(PORTABLE_JSON, nullable=True)
+    after_state = Column(PORTABLE_JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    mission = relationship("Mission", back_populates="feature_audit_events")
+    feature = relationship("MapFeature", back_populates="audit_events")
+
+
+class RasterLayerStyle(RequiredTimestampMixin, Base):
+    """Named mutable display recipe, separate from an immutable raster."""
+
+    __tablename__ = "raster_layer_styles"
+    __table_args__ = (
+        UniqueConstraint(
+            "mission_id",
+            "layer_key",
+            "name",
+            name="uq_raster_layer_style_name",
+        ),
+        Index("ix_raster_layer_styles_mission_layer", "mission_id", "layer_key"),
+        CheckConstraint("version >= 1", name="ck_raster_layer_styles_version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    style_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    artifact_id = Column(
+        Integer,
+        ForeignKey("mission_artifacts.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    layer_key = Column(String(64), nullable=False)
+    name = Column(String(160), nullable=False)
+    style = Column(PORTABLE_JSON, nullable=False, default=dict)
+    is_default = Column(Boolean, nullable=False, default=False)
+    version = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+
+    mission = relationship("Mission", back_populates="layer_styles")
+    artifact = relationship("MissionArtifact")
 
 
 class MissionLog(Base):

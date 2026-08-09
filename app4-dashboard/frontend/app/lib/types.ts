@@ -238,6 +238,40 @@ export type AnalysisCreate = {
   persist_results: boolean;
 };
 
+export type RasterPalette = "none" | "gray" | "depth" | "terrain" | "viridis";
+
+export type RasterStyleRecipe = {
+  bands: number[];
+  display_ranges: Array<[number, number] | null>;
+  palette: RasterPalette;
+  opacity: number;
+  stretch: "global-percentile" | "fixed";
+};
+
+export type RasterLayerStyle = {
+  style_id: string;
+  layer: "ortho" | "depth";
+  name: string;
+  artifact_id?: string | null;
+  style: RasterStyleRecipe;
+  is_default: boolean;
+  version: number;
+  created_by: string;
+  updated_by: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type RasterMetadata = {
+  bounds: { wgs84: [number, number, number, number] };
+  bands: number;
+  min_zoom: number;
+  max_zoom: number;
+  display_ranges?: Array<[number, number] | null>;
+};
+
+export type FeatureBulkAction = "review" | "unreview" | "delete" | "restore";
+
 export type ParameterMeta = {
   label: string;
   description?: string;

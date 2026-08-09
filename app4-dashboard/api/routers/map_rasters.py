@@ -31,6 +31,8 @@ from ..map_support import (
     parse_bbox,
     require_object,
 )
+from ..map_schemas import RasterPalette
+from ..raster_style_contract import parse_band_indexes, parse_display_ranges
 from ..security import Principal, require_authenticated
 
 router = APIRouter()
@@ -109,6 +111,9 @@ def raster_tile(
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     display_min: float | None = Query(default=None),
     display_max: float | None = Query(default=None),
+    bands: str | None = Query(default=None, max_length=32),
+    display_ranges: str | None = Query(default=None, max_length=512),
+    palette: Annotated[RasterPalette | None, Query()] = None,
 ) -> StreamingResponse:
     with get_session() as session:
         get_mission(
@@ -124,6 +129,11 @@ def raster_tile(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="display_min and display_max must be provided together",
         )
+    if display_ranges is not None and display_min is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use display_ranges or display_min/display_max, not both",
+        )
     if (
         display_min is not None
         and display_max is not None
@@ -137,19 +147,29 @@ def raster_tile(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="display_max must be greater than display_min",
         )
-    display_ranges = (
+    legacy_display_ranges = (
         [[display_min, display_max]]
         if display_min is not None and display_max is not None
         else None
     )
     try:
+        band_indexes = parse_band_indexes(bands)
+        configured_ranges = parse_display_ranges(
+            display_ranges,
+            expected_count=len(band_indexes) if band_indexes else None,
+        )
         output = render_cog_tile(
             storage.get_presigned_url(key, expires=900, public=False),
             z=z,
             x=x,
             y=y,
-            colormap=default_colormap,
-            display_ranges=display_ranges,
+            colormap=(
+                default_colormap
+                if palette is None
+                else "" if palette in {"none", "gray"} else palette
+            ),
+            display_ranges=configured_ranges or legacy_display_ranges,
+            band_indexes=band_indexes,
         )
     except ValueError as error:
         raise HTTPException(
@@ -203,6 +223,7 @@ def _stored_features(
     query = session.query(MapFeature).filter(
         MapFeature.vol_id == vol_id,
         MapFeature.source.in_(requested_sources),
+        MapFeature.deleted_at.is_(None),
     )
     if requested_runs:
         from shared.database import AIAnalysisRun

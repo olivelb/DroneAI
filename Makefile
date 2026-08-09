@@ -53,17 +53,21 @@ API_FRAMEWORK_TYPED_PATHS := \
 API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_uploads.py \
+	app4-dashboard/api/feature_audit.py \
 	app4-dashboard/api/mission_detail.py \
 	app4-dashboard/api/mission_access.py \
 	app4-dashboard/api/mission_state.py \
-	app4-dashboard/api/map_support.py
+	app4-dashboard/api/map_support.py \
+	app4-dashboard/api/raster_style_contract.py
 API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/map_analyses.py \
 	app4-dashboard/api/routers/map_exports.py \
+	app4-dashboard/api/routers/map_feature_mutations.py \
 	app4-dashboard/api/routers/map_features.py \
 	app4-dashboard/api/routers/map_rasters.py \
+	app4-dashboard/api/routers/map_styles.py \
 	app4-dashboard/api/routers/maps.py \
 	app4-dashboard/api/routers/mission_catalog.py \
 	app4-dashboard/api/routers/mission_stages.py \

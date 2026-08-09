@@ -328,7 +328,20 @@ class AnalysisWorkflow:
         run: Any,
         collection: JsonObject,
     ) -> None:
-        session.query(MapFeature).filter(MapFeature.analysis_run_id == run.id).delete(synchronize_session=False)
+        now = datetime.now(UTC)
+        session.query(MapFeature).filter(
+            MapFeature.analysis_run_id == run.id,
+            MapFeature.deleted_at.is_(None),
+        ).update(
+            {
+                MapFeature.deleted_at: now,
+                MapFeature.deleted_by: "system:analysis-workflow",
+                MapFeature.deletion_reason: "superseded by analysis retry",
+                MapFeature.updated_at: now,
+                MapFeature.version: MapFeature.version + 1,
+            },
+            synchronize_session=False,
+        )
         for feature in collection["features"]:
             properties = feature.get("properties") or {}
             session.add(

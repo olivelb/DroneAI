@@ -135,6 +135,7 @@ def _stored_features(
         .filter(
             MapFeature.vol_id == vol_id,
             MapFeature.source.in_(sources),
+            MapFeature.deleted_at.is_(None),
         )
     )
     if run_ids:

@@ -246,6 +246,8 @@ def stored_map_feature_geojson(
 ) -> dict[str, Any]:
     """Serialize one stored feature consistently across API and exports."""
 
+    reviewed_at = getattr(feature, "reviewed_at", None)
+    deleted_at = getattr(feature, "deleted_at", None)
     return {
         "type": "Feature",
         "id": feature.feature_id,
@@ -263,6 +265,13 @@ def stored_map_feature_geojson(
             "confidence": feature.confidence,
             "version": feature.version,
             "created_by": feature.created_by,
+            "reviewed": reviewed_at is not None,
+            "reviewed_at": reviewed_at.isoformat() if reviewed_at else None,
+            "reviewed_by": getattr(feature, "reviewed_by", None),
+            "deleted": deleted_at is not None,
+            "deleted_at": deleted_at.isoformat() if deleted_at else None,
+            "deleted_by": getattr(feature, "deleted_by", None),
+            "deletion_reason": getattr(feature, "deletion_reason", None),
             "updated_at": (feature.updated_at.isoformat() if feature.updated_at else None),
         },
     }

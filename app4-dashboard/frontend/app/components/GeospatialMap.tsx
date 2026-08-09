@@ -34,7 +34,11 @@ import {
   getVectorLayer,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n/provider";
-import type { AnalysisRun } from "../lib/types";
+import type {
+  AnalysisRun,
+  RasterMetadata,
+  RasterStyleRecipe,
+} from "../lib/types";
 
 export type MapTool =
   | "navigate"
@@ -43,13 +47,6 @@ export type MapTool =
   | "polygon"
   | "measure-distance"
   | "measure-area";
-
-type RasterMetadata = {
-  bounds: { wgs84: [number, number, number, number] };
-  min_zoom: number;
-  max_zoom: number;
-  display_ranges?: Array<[number, number] | null>;
-};
 
 const escapeHtml = (value: unknown) =>
   String(value ?? "")
@@ -407,7 +404,7 @@ function ViewportVectors({
 export default function GeospatialMap({
   missionId,
   layer,
-  rasterOpacity,
+  rasterStyle,
   showLegacy,
   showManual,
   analyses,
@@ -417,10 +414,11 @@ export default function GeospatialMap({
   onGeometryReady,
   onFeatureSelect,
   onHint,
+  onMetadata,
 }: {
   missionId: string;
   layer: "ortho" | "depth";
-  rasterOpacity: number;
+  rasterStyle: RasterStyleRecipe;
   showLegacy: boolean;
   showManual: boolean;
   analyses: AnalysisRun[];
@@ -430,19 +428,34 @@ export default function GeospatialMap({
   onGeometryReady: (geometry: Geometry, measurement?: string) => void;
   onFeatureSelect: (feature: Feature) => void;
   onHint: (hint: string) => void;
+  onMetadata: (metadata: RasterMetadata | null) => void;
 }) {
-  const [metadata, setMetadata] = useState<RasterMetadata | null>(null);
-  const [error, setError] = useState("");
+  const requestKey = `${missionId}:${layer}`;
+  const [metadataState, setMetadataState] = useState<{
+    key: string;
+    data: RasterMetadata | null;
+    error: string;
+  }>({ key: requestKey, data: null, error: "" });
+  const metadata = metadataState.key === requestKey ? metadataState.data : null;
+  const error = metadataState.key === requestKey ? metadataState.error : "";
 
   useEffect(() => {
     let active = true;
     getMapMetadata(missionId, layer)
-      .then((result) => active && setMetadata(result as RasterMetadata))
-      .catch((reason: Error) => active && setError(reason.message));
+      .then((result) => {
+        if (!active) return;
+        setMetadataState({ key: requestKey, data: result, error: "" });
+        onMetadata(result);
+      })
+      .catch((reason: Error) => {
+        if (active) {
+          setMetadataState({ key: requestKey, data: null, error: reason.message });
+        }
+      });
     return () => {
       active = false;
     };
-  }, [layer, missionId]);
+  }, [layer, missionId, onMetadata, requestKey]);
 
   const bounds = useMemo<LatLngBoundsExpression | null>(() => {
     if (!metadata) return null;
@@ -462,8 +475,15 @@ export default function GeospatialMap({
         : null,
     [focusBounds],
   );
-  const displayRange =
-    layer === "depth" ? metadata?.display_ranges?.[0] ?? undefined : undefined;
+  const renderedStyle = useMemo<RasterStyleRecipe>(() => {
+    if (!metadata || rasterStyle.stretch === "fixed") return rasterStyle;
+    return {
+      ...rasterStyle,
+      display_ranges: rasterStyle.bands.map(
+        (band) => metadata.display_ranges?.[band - 1] ?? null,
+      ),
+    };
+  }, [metadata, rasterStyle]);
 
   if (error) {
     return (
@@ -494,12 +514,12 @@ export default function GeospatialMap({
       <FitBounds bounds={bounds} />
       {searchBounds && <FitBounds bounds={searchBounds} padding={42} />}
       <TileLayer
-        key={`${missionId}:${layer}:${displayRange?.join(":") ?? "default"}`}
-        url={getMapTileUrl(missionId, layer, displayRange)}
+        key={`${missionId}:${layer}:${JSON.stringify(renderedStyle)}`}
+        url={getMapTileUrl(missionId, layer, renderedStyle)}
         minZoom={metadata.min_zoom}
         maxNativeZoom={metadata.max_zoom}
         maxZoom={Math.min(24, metadata.max_zoom + 2)}
-        opacity={rasterOpacity}
+        opacity={renderedStyle.opacity}
         attribution="DroneAI COG"
       />
       <ScaleControl imperial={false} position="bottomleft" />

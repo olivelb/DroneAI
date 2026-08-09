@@ -235,7 +235,8 @@ def analysis_vectors(
         )
         if run.persist_results:
             query = typed_session.query(MapFeature).filter(
-                MapFeature.analysis_run_id == run.id
+                MapFeature.analysis_run_id == run.id,
+                MapFeature.deleted_at.is_(None),
             )
             query = apply_spatial_filter(
                 query, MapFeature.geometry, bounds

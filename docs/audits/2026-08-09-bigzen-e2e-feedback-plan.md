@@ -121,6 +121,13 @@ Bounded per-stage Kubernetes execution remains Phase 7.
 
 ### Phase 6 — Explorer editing and raster styles
 
+Status: implemented on 2026-08-09. Migration `0015` adds reversible feature
+tombstones, reviewed state, append-only before/after audit events and named
+raster display recipes. The owner-scoped API and dashboard support bulk
+correction of manual/persisted-AI features, global percentile or fixed band
+stretches, RGB composition and compact DEM palettes. Vector exports omit
+tombstones while preserving the rows for restoration and audit.
+
 - Use feature tombstones and an audit event for single/bulk correction instead
   of irrecoverable deletion.
 - Add reviewed/unreviewed state, bulk selection and GeoJSON/GPKG export.
