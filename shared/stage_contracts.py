@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict, cast
 
 StageId = Literal[
     "reconstruction",
@@ -11,6 +11,24 @@ StageId = Literal[
     "rasterization",
     "detection",
 ]
+
+ResourceClassId = Literal[
+    "cpu-standard",
+    "gpu-standard",
+    "gpu-geometry",
+    "gpu-high-memory",
+]
+
+
+class ResourceClassSpec(TypedDict):
+    cpu_request: str
+    cpu_limit: str
+    memory_request: str
+    memory_limit: str
+    ephemeral_storage_request: str
+    ephemeral_storage_limit: str
+    gpu_count: int
+    minimum_vram_gib: int
 
 STAGE_DAG_VERSION = 1
 STAGE_ORDER: tuple[StageId, ...] = (
@@ -28,6 +46,85 @@ STAGE_DEPENDENCIES: dict[StageId, tuple[StageId, ...]] = {
     "detection": ("rasterization",),
 }
 
+RESOURCE_CLASSES: dict[ResourceClassId, ResourceClassSpec] = {
+    "cpu-standard": {
+        "cpu_request": "2",
+        "cpu_limit": "8",
+        "memory_request": "4Gi",
+        "memory_limit": "16Gi",
+        "ephemeral_storage_request": "10Gi",
+        "ephemeral_storage_limit": "50Gi",
+        "gpu_count": 0,
+        "minimum_vram_gib": 0,
+    },
+    "gpu-standard": {
+        "cpu_request": "2",
+        "cpu_limit": "8",
+        "memory_request": "8Gi",
+        "memory_limit": "24Gi",
+        "ephemeral_storage_request": "20Gi",
+        "ephemeral_storage_limit": "60Gi",
+        "gpu_count": 1,
+        "minimum_vram_gib": 8,
+    },
+    "gpu-geometry": {
+        "cpu_request": "4",
+        "cpu_limit": "12",
+        "memory_request": "16Gi",
+        "memory_limit": "32Gi",
+        "ephemeral_storage_request": "40Gi",
+        "ephemeral_storage_limit": "120Gi",
+        "gpu_count": 1,
+        "minimum_vram_gib": 12,
+    },
+    "gpu-high-memory": {
+        "cpu_request": "4",
+        "cpu_limit": "12",
+        "memory_request": "24Gi",
+        "memory_limit": "64Gi",
+        "ephemeral_storage_request": "40Gi",
+        "ephemeral_storage_limit": "120Gi",
+        "gpu_count": 1,
+        "minimum_vram_gib": 24,
+    },
+}
+
+DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
+    "reconstruction": "gpu-geometry",
+    "gaussian_training": "gpu-high-memory",
+    "gaussian_filtering": "gpu-high-memory",
+    "rasterization": "cpu-standard",
+    "detection": "gpu-standard",
+}
+
+
+def resource_class_for_stage(
+    stage: StageId,
+    parameters: dict[str, Any] | None = None,
+) -> ResourceClassId:
+    parameters = parameters or {}
+    baseline_id = DEFAULT_STAGE_RESOURCE_CLASSES[stage]
+    ai = parameters.get("ai") or {}
+    if stage == "detection" and ai.get("backend") == "sam3":
+        baseline_id = "gpu-high-memory"
+    requested = parameters.get("resource_class")
+    if requested is not None:
+        if requested not in RESOURCE_CLASSES:
+            raise ValueError(f"Unknown stage resource class: {requested}")
+        requested_id = cast(ResourceClassId, requested)
+        requested_spec = RESOURCE_CLASSES[requested_id]
+        baseline_spec = RESOURCE_CLASSES[baseline_id]
+        if (
+            requested_spec["gpu_count"] < baseline_spec["gpu_count"]
+            or requested_spec["minimum_vram_gib"]
+            < baseline_spec["minimum_vram_gib"]
+        ):
+            raise ValueError(
+                f"Resource class {requested} is below the {baseline_id} GPU envelope"
+            )
+        return requested_id
+    return baseline_id
+
 
 def stage_dag_catalog() -> dict[str, Any]:
     return {
@@ -36,9 +133,11 @@ def stage_dag_catalog() -> dict[str, Any]:
             {
                 "id": stage,
                 "dependencies": list(STAGE_DEPENDENCIES[stage]),
+                "resource_class": DEFAULT_STAGE_RESOURCE_CLASSES[stage],
             }
             for stage in STAGE_ORDER
         ],
+        "resource_classes": RESOURCE_CLASSES,
     }
 
 

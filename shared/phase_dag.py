@@ -11,7 +11,9 @@ from shared.stage_contracts import (
     STAGE_DAG_VERSION,
     STAGE_DEPENDENCIES,
     STAGE_ORDER,
+    ResourceClassId,
     StageId,
+    resource_class_for_stage,
     validate_stage_selection,
 )
 
@@ -25,6 +27,7 @@ class StageRunSpec(TypedDict):
     parameters: dict[str, Any]
     upstream_artifact_ids: list[str]
     idempotency_key: str
+    resource_class: ResourceClassId
 
 
 class SessionProtocol(Protocol):
@@ -106,6 +109,7 @@ def build_stage_run_specs(payload: dict[str, Any]) -> list[StageRunSpec]:
                     parameters,
                     external_inputs,
                 ),
+                "resource_class": resource_class_for_stage(stage, parameters),
             }
         )
     return specs
@@ -127,6 +131,7 @@ def initialize_stage_runs(
             parameters=spec["parameters"],
             upstream_artifact_ids=spec["upstream_artifact_ids"],
             idempotency_key=spec["idempotency_key"],
+            resource_class=spec["resource_class"],
         )
         for spec in build_stage_run_specs(payload)
     ]

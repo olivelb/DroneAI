@@ -26,6 +26,14 @@ artifact IDs are fixed when the attempt is queued; executor, provenance,
 quality metrics, heartbeat and terminal error fields describe what actually
 ran.
 
+Migration `0016` adds the scheduling envelope: `resource_class`, bounded Job
+identity, dispatch count/error and scheduling timestamp. The v1 catalogue
+declares four portable classes (`cpu-standard`, `gpu-standard`,
+`gpu-geometry`, `gpu-high-memory`) with explicit CPU, memory, ephemeral storage,
+GPU and minimum-VRAM requirements. Detection with SAM3 is promoted to the
+high-memory GPU class, and a request may strengthen but never reduce its
+stage's GPU envelope.
+
 `mission_artifacts` assigns a UUID, kind, URI, SHA-256, optional size and
 metadata to an output from exactly one stage run. An existing UUID can only be
 published again when every immutable field and the complete parent set match.
@@ -100,6 +108,34 @@ points and restarts still use the durable command boundary introduced here and
 will move to bounded per-stage jobs in the resource-aware orchestration phase;
 this phase deliberately does not change CUDA, COLMAP or DroneGS versions.
 
+The scheduler policy is deterministic and tenant-aware: oldest work is kept in
+order within each owner, owners are served round-robin, and global, per-owner,
+per-mission and per-resource-class limits all apply. Same-mission concurrency
+is permitted only when neither DAG node is an ancestor of the other. Kubernetes
+Job manifests are bounded (`activeDeadlineSeconds`, no retry, automatic TTL),
+run as non-root with dropped capabilities and derive their requests/limits from
+the persisted resource class. Job mode is disabled by default until the fused
+workers expose and qualify one-shot per-stage commands; the existing Kafka
+workers therefore remain the safe runtime default during this migration.
+
+When explicitly enabled, the dashboard reserves queued rows with
+`FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
+the Kubernetes API. A crash between reservation and creation is recovered by
+the next reconciliation tick; `409 AlreadyExists` is success, and missing Jobs
+are recreated only up to the configured dispatch bound. Active Jobs renew the
+stage heartbeat. Failed Jobs fail the run, mission cancellation deletes the
+Job, and a Job that exits successfully without first publishing its immutable
+artifact is treated as failed. Artifact publication atomically marks the run
+succeeded before releasing dependants.
+
+Activation requires a complete `stageJobs.executors` map for all five stages.
+Every entry supplies an immutable image, a non-empty one-shot command, optional
+node selectors and (for GPU stages) the selected GPU architecture recorded in
+provenance. Job pods receive only run/mission identity plus S3/Kafka settings
+and Secret references for database/S3 credentials; they use bounded writable
+`/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
+dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -108,4 +144,10 @@ this phase deliberately does not change CUDA, COLMAP or DroneGS versions.
 - automatic release of the next ready stage;
 - compatibility status projection and terminal-error attribution;
 - owner-scoped API routes and versioned Kafka schema;
-- PostgreSQL/PostGIS upgrade/downgrade round-trip for revision `0014`.
+- PostgreSQL/PostGIS upgrade/downgrade round-trip for revision `0014`;
+- resource-class selection and prevention of GPU-envelope downgrades;
+- fair scheduling and every concurrency boundary;
+- deterministic, hardened CPU/GPU Kubernetes Job rendering;
+- transactional reservation, idempotent recreation, heartbeat, cancellation
+  and artifact-publication reconciliation;
+- PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

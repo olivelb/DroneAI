@@ -42,6 +42,7 @@ from sqlalchemy.orm import (
 )
 
 from shared.config import DATABASE_URL
+from shared.stage_contracts import RESOURCE_CLASSES
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,7 @@ MISSION_STAGE_RUN_STATUSES = (
     "failed",
     "cancelled",
 )
+MISSION_RESOURCE_CLASSES = tuple(RESOURCE_CLASSES)
 MAP_FEATURE_SOURCES = ("manual", "ai")
 MAP_FEATURE_AUDIT_ACTIONS = (
     "created",
@@ -448,6 +450,17 @@ class MissionStageRun(RequiredTimestampMixin, Base):
             "status",
             "heartbeat_at",
         ),
+        Index(
+            "ix_mission_stage_runs_dispatch",
+            "status",
+            "executor",
+            "scheduled_at",
+        ),
+        Index(
+            "ix_mission_stage_runs_job_name",
+            "job_name",
+            unique=True,
+        ),
         UniqueConstraint(
             "mission_id",
             "stage",
@@ -472,6 +485,14 @@ class MissionStageRun(RequiredTimestampMixin, Base):
             name="ck_mission_stage_runs_attempt",
         ),
         CheckConstraint(
+            _values_check("resource_class", MISSION_RESOURCE_CLASSES),
+            name="ck_mission_stage_runs_resource_class",
+        ),
+        CheckConstraint(
+            "dispatch_attempts >= 0",
+            name="ck_mission_stage_runs_dispatch_attempts",
+        ),
+        CheckConstraint(
             "length(idempotency_key) = 64",
             name="ck_mission_stage_runs_idempotency_length",
         ),
@@ -487,6 +508,11 @@ class MissionStageRun(RequiredTimestampMixin, Base):
     current_step = Column(String(64), nullable=True)
     idempotency_key = Column(String(64), nullable=False)
     executor = Column(String(256), nullable=True)
+    resource_class = Column(String(64), nullable=False, default="cpu-standard")
+    job_name = Column(String(253), nullable=True)
+    dispatch_attempts = Column(Integer, nullable=False, default=0)
+    dispatch_error = Column(Text, nullable=True)
+    scheduled_at = Column(DateTime(timezone=True), nullable=True)
     parameters = Column(PORTABLE_JSON, nullable=False, default=dict)
     upstream_artifact_ids = Column(PORTABLE_JSON, nullable=False, default=list)
     provenance = Column(PORTABLE_JSON, nullable=False, default=dict)

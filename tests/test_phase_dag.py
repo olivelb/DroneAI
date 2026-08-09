@@ -22,7 +22,10 @@ from shared.phase_dag import (
     stage_idempotency_key,
 )
 from shared.stage_contracts import (
+    RESOURCE_CLASSES,
     STAGE_ORDER,
+    resource_class_for_stage,
+    stage_dag_catalog,
     validate_stage_selection,
 )
 
@@ -63,6 +66,32 @@ def test_default_stage_plan_is_versioned_and_dependency_ordered():
     assert specs[0]["status"] == "queued"
     assert all(spec["status"] == "blocked" for spec in specs[1:])
     assert len({spec["idempotency_key"] for spec in specs}) == len(STAGE_ORDER)
+    assert [spec["resource_class"] for spec in specs] == [
+        "gpu-geometry",
+        "gpu-high-memory",
+        "gpu-high-memory",
+        "cpu-standard",
+        "gpu-standard",
+    ]
+
+
+def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
+    catalog = stage_dag_catalog()
+
+    assert catalog["resource_classes"] == RESOURCE_CLASSES
+    assert resource_class_for_stage(
+        "detection",
+        {"ai": {"backend": "sam3"}},
+    ) == "gpu-high-memory"
+    assert resource_class_for_stage(
+        "detection",
+        {"resource_class": "gpu-geometry"},
+    ) == "gpu-geometry"
+    with pytest.raises(ValueError, match="below the gpu-high-memory"):
+        resource_class_for_stage(
+            "gaussian_training",
+            {"resource_class": "gpu-standard"},
+        )
 
 
 def test_partial_stage_requires_an_exact_upstream_artifact():
@@ -265,10 +294,26 @@ def test_stage_retry_is_idempotent_and_uses_exact_mission_artifacts(
 
     assert first == second
     assert first["attempt"] == 0
+    assert first["resource_class"] == "gpu-standard"
     with dag_sessions() as session:
         assert session.query(MissionStageRun).filter(
             MissionStageRun.stage == "detection"
         ).count() == 1
+        assert session.query(OutboxEvent).count() == 1
+
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
+    stage_routes.create_stage_run(
+        "mission-dag",
+        "detection",
+        request,
+        PRINCIPAL,
+        "retry-request-job-002",
+        None,
+    )
+    with dag_sessions() as session:
+        assert session.query(MissionStageRun).filter(
+            MissionStageRun.stage == "detection"
+        ).count() == 2
         assert session.query(OutboxEvent).count() == 1
 
     with pytest.raises(HTTPException) as error:
@@ -369,9 +414,14 @@ def test_artifact_publication_queues_the_next_ready_stage(
 
     assert len(response["queued_stage_run_ids"]) == 1
     with dag_sessions() as session:
+        reconstruction = session.query(MissionStageRun).filter(
+            MissionStageRun.stage == "reconstruction"
+        ).one()
         training = session.query(MissionStageRun).filter(
             MissionStageRun.stage == "gaussian_training"
         ).one()
+        assert reconstruction.status == "succeeded"
+        assert reconstruction.completed_at is not None
         assert training.status == "queued"
         assert training.upstream_artifact_ids == [artifact_id]
         assert session.query(MissionArtifactParent).count() == 0

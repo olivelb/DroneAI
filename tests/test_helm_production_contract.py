@@ -71,3 +71,17 @@ def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
     assert ".Values.tileResults.maximumBytes" in ia_deployment
     assert ".Values.tileResults.maximumBytes" in processing_deployment
     assert compose.count('ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"') == 2
+
+
+def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
+    defaults = _read(CHART / "values.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+
+    assert "stageJobs:" in defaults
+    assert "enabled: false" in defaults
+    assert "globalConcurrency: 2" in defaults
+    assert "perOwnerConcurrency: 1" in defaults
+    assert 'resources: ["jobs"]' in deployment
+    assert 'verbs: ["create", "get", "list", "watch", "delete"]' in deployment
+    assert "DRONEAI_STAGE_JOBS_ENABLED" in deployment
+    assert "automountServiceAccountToken: false" in deployment

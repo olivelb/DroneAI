@@ -137,6 +137,16 @@ tombstones while preserving the rows for restoration and audit.
 
 ### Phase 7 — Resource-aware orchestration
 
+Status: control plane implemented on 2026-08-09; worker split remains in
+progress. Revision `0016` and the v1 DAG catalogue
+persist portable CPU/GPU/VRAM resource classes. A pure round-robin scheduler
+enforces global, owner, mission and resource-class concurrency, and a hardened
+Kubernetes Job renderer plus least-privilege opt-in RBAC is covered by tests.
+Transactional reservation, idempotent creation/recreation, bounded dispatch,
+cancellation, heartbeat and reconciliation are implemented. Job mode
+intentionally remains disabled until the fused workers are split into qualified
+one-shot stage executors; that worker split is the remaining Phase 7 lot.
+
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.
 - Implement Kubernetes Job launch, cancellation, heartbeat and reconciliation.

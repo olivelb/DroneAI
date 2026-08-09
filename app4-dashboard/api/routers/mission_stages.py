@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -22,11 +23,13 @@ from shared.stage_contracts import (
     STAGE_DAG_VERSION,
     STAGE_DEPENDENCIES,
     StageId,
+    resource_class_for_stage,
 )
 
 from ..messaging import build_stage_mission_event
 from ..mission_access import get_owned_mission
 from ..security import Principal, require_operator
+from ..stage_orchestrator import stage_jobs_enabled
 from ..stage_schemas import ArtifactCreate, StageRunCreate
 
 router = APIRouter()
@@ -42,6 +45,12 @@ def _serialize_stage_run(run: MissionStageRun) -> dict[str, Any]:
         "parameters": run.parameters or {},
         "upstream_artifact_ids": run.upstream_artifact_ids or [],
         "idempotency_key": run.idempotency_key,
+        "resource_class": run.resource_class,
+        "executor": run.executor,
+        "job_name": run.job_name,
+        "dispatch_attempts": run.dispatch_attempts,
+        "dispatch_error": run.dispatch_error,
+        "scheduled_at": run.scheduled_at,
     }
 
 
@@ -51,7 +60,7 @@ def _request_key(principal: Principal, raw_key: str) -> str:
     ).hexdigest()
 
 
-def _stage_parameters(request: StageRunCreate) -> dict[str, Any]:
+def _stage_parameters(stage: StageId, request: StageRunCreate) -> dict[str, Any]:
     return {
         "dag_version": STAGE_DAG_VERSION,
         **request.parameters,
@@ -120,6 +129,16 @@ def _immutable_artifact_matches(
     )
 
 
+def _mark_stage_run_succeeded(run: MissionStageRun) -> None:
+    now = datetime.now(UTC)
+    record = cast(Any, run)
+    record.status = "succeeded"
+    record.progress = 100
+    record.heartbeat_at = now
+    record.completed_at = now
+    record.error_message = None
+
+
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
     artifacts = cast(
         list[MissionArtifact],
@@ -168,12 +187,13 @@ def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
             "upstream_artifact_ids": upstream,
             "stage_parameters": cast(dict[str, Any], run.parameters or {}),
         }
-        enqueue_outbox(
-            session,
-            topic=TOPIC_MISSION,
-            event=build_stage_mission_event(payload),
-            key=cast(str, mission.vol_id),
-        )
+        if not stage_jobs_enabled():
+            enqueue_outbox(
+                session,
+                topic=TOPIC_MISSION,
+                event=build_stage_mission_event(payload),
+                key=cast(str, mission.vol_id),
+            )
         queued.append(cast(str, run.run_id))
     return queued
 
@@ -216,7 +236,7 @@ def create_stage_run(
                     )
                 if (
                     cast(dict[str, Any], existing.parameters or {})
-                    != _stage_parameters(request)
+                    != _stage_parameters(stage, request)
                     or set(cast(list[str], existing.upstream_artifact_ids or []))
                     != set(request.upstream_artifact_ids.values())
                 ):
@@ -260,12 +280,15 @@ def create_stage_run(
                 MissionStageRun.stage == stage,
             ).scalar()
             attempt = int(latest_attempt if latest_attempt is not None else -1) + 1
+            parameters = _stage_parameters(stage, request)
+            resource_class = resource_class_for_stage(stage, parameters)
             run = MissionStageRun(
                 mission_id=mission.id,
                 stage=stage,
                 attempt=attempt,
                 status="queued",
-                parameters=_stage_parameters(request),
+                parameters=parameters,
+                resource_class=resource_class,
                 upstream_artifact_ids=upstream_ids,
                 idempotency_key=durable_key,
             )
@@ -278,14 +301,15 @@ def create_stage_run(
                 "phases": [stage],
                 "stage_run_id": run.run_id,
                 "upstream_artifact_ids": request.upstream_artifact_ids,
-                "stage_parameters": request.parameters,
+                "stage_parameters": parameters,
             }
-            enqueue_outbox(
-                session,
-                topic=TOPIC_MISSION,
-                event=build_stage_mission_event(payload),
-                key=vol_id,
-            )
+            if not stage_jobs_enabled():
+                enqueue_outbox(
+                    session,
+                    topic=TOPIC_MISSION,
+                    event=build_stage_mission_event(payload),
+                    key=vol_id,
+                )
             return _serialize_stage_run(run)
     except HTTPException:
         raise
@@ -344,6 +368,7 @@ def publish_stage_artifact(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Artifact identity already exists with different immutable data",
                 )
+            _mark_stage_run_succeeded(run)
             return {"artifact_id": existing.artifact_id, "status": "existing"}
         parents = _artifacts_for_request(
             session,
@@ -369,6 +394,7 @@ def publish_stage_artifact(
                     parent_artifact_id=parent.id,
                 )
             )
+        _mark_stage_run_succeeded(run)
         queued_runs = _queue_ready_stage_runs(session, mission)
         return {
             "artifact_id": artifact.artifact_id,

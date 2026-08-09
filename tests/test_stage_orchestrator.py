@@ -1,0 +1,199 @@
+import importlib
+from contextlib import contextmanager
+from datetime import UTC, datetime
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+from shared.database import Mission, MissionStageRun
+from shared.stage_scheduler import SchedulingLimits
+
+orchestrator = importlib.import_module("app4-dashboard.api.stage_orchestrator")
+
+
+def _executors():
+    image = "registry.example/worker@sha256:" + "a" * 64
+    return {
+        stage: orchestrator.StageExecutorConfig(
+            image=image,
+            command=("python", "-m", f"{stage}_executor"),
+            gpu_architecture=None if stage == "rasterization" else "ampere",
+        )
+        for stage in (
+            "reconstruction",
+            "gaussian_training",
+            "gaussian_filtering",
+            "rasterization",
+            "detection",
+        )
+    }
+
+
+def _settings(**kwargs):
+    values = {
+        "enabled": True,
+        "namespace": "drone-ai",
+        "poll_seconds": 1.0,
+        "limits": SchedulingLimits(global_active=2, per_owner_active=1),
+        "executors": _executors(),
+    }
+    values.update(kwargs)
+    return orchestrator.StageOrchestratorSettings(**values)
+
+
+@pytest.fixture
+def stage_sessions():
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Mission.__table__.create(engine)
+    MissionStageRun.__table__.create(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def scope():
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    return scope
+
+
+def _add_run(scope, vol_id, owner, run_id, *, status="queued"):
+    with scope() as session:
+        mission = Mission(vol_id=vol_id, owner_subject=owner, status="pending")
+        session.add(mission)
+        session.flush()
+        session.add(
+            MissionStageRun(
+                run_id=run_id,
+                mission_id=mission.id,
+                stage="reconstruction",
+                attempt=0,
+                status=status,
+                idempotency_key=run_id[0] * 64,
+                resource_class="gpu-geometry",
+            )
+        )
+
+
+def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_sessions):
+    _add_run(stage_sessions, "mission-a", "owner-a", "a" * 32)
+    _add_run(stage_sessions, "mission-b", "owner-b", "b" * 32)
+    _add_run(stage_sessions, "mission-c", "owner-a", "c" * 32)
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+
+    assert {item.request.owner_subject for item in reserved} == {"owner-a", "owner-b"}
+    with stage_sessions() as session:
+        scheduled = session.query(MissionStageRun).filter(
+            MissionStageRun.executor == "kubernetes-job"
+        ).all()
+        assert len(scheduled) == 2
+        assert all(run.dispatch_attempts == 1 for run in scheduled)
+        assert all(run.job_name.startswith("droneai-") for run in scheduled)
+        assert all(run.provenance["gpu_architecture"] == "ampere" for run in scheduled)
+
+
+class FakeJobClient:
+    def __init__(self, jobs=None):
+        self.jobs = jobs or {}
+        self.created = []
+        self.deleted = []
+
+    def create(self, job):
+        self.created.append(job)
+        self.jobs[job["metadata"]["name"]] = job
+        return job
+
+    def get(self, name):
+        if name not in self.jobs:
+            raise orchestrator.KubernetesApiError(404, "missing")
+        return self.jobs[name]
+
+    def delete(self, name):
+        self.deleted.append(name)
+        self.jobs.pop(name, None)
+        return {}
+
+
+def test_reconciliation_tracks_heartbeat_and_fails_artifactless_success(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "d" * 32
+    _add_run(stage_sessions, "mission-running", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+    name = reserved[0].job_name
+    client = FakeJobClient({name: {"status": {"active": 1}}})
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.status == "running"
+        assert run.heartbeat_at is not None
+
+    client.jobs[name] = {"status": {"succeeded": 1}}
+    orchestrator.reconcile_stage_jobs(client, _settings())
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.status == "failed"
+        assert "immutable artifact" in run.error_message
+
+
+def test_reconciliation_deletes_jobs_for_cancelled_missions(stage_sessions, monkeypatch):
+    run_id = "e" * 32
+    _add_run(stage_sessions, "mission-cancelled", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+        mission = session.query(Mission).one()
+        mission.status = "cancelled"
+    client = FakeJobClient({reserved[0].job_name: {"status": {"active": 1}}})
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, _settings())
+
+    assert client.deleted == [reserved[0].job_name]
+    with stage_sessions() as session:
+        assert session.query(MissionStageRun).one().status == "cancelled"
+
+
+def test_reconciliation_idempotently_recreates_a_disappeared_job(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "f" * 32
+    _add_run(stage_sessions, "mission-recreate", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
+    client = FakeJobClient()
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, _settings())
+
+    assert len(client.created) == 1
+    assert client.created[0]["metadata"]["name"] == reserved[0].job_name
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.dispatch_attempts == 2
+        assert run.dispatch_error is None
+
+
+def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatch):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_STAGE_EXECUTORS_JSON", "{}")
+
+    with pytest.raises(ValueError, match="Missing one-shot executor"):
+        orchestrator.settings_from_environment()
