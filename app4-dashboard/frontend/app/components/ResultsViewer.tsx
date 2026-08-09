@@ -31,7 +31,8 @@ import ViewerHeader from "./geospatial/ViewerHeader";
 import ViewerSidePanel from "./geospatial/ViewerSidePanel";
 import ViewerToolbar from "./geospatial/ViewerToolbar";
 import {
-  DEFAULT_ANALYSIS,
+    DEFAULT_ANALYSIS,
+    retainKnownRunIds,
   splitTags,
   TOOL_SHORTCUTS,
   type ViewerLayer,
@@ -115,14 +116,12 @@ export default function ResultsViewer() {
     if (!missionId) return;
     const payload = await fetchAnalyses(missionId);
     setAnalyses(payload.runs);
-    setVisibleRuns((current) => {
-      const known = new Set(payload.runs.map((run) => run.run_id));
-      const retained = current.filter((runId) => known.has(runId));
-      const completed = payload.runs
-        .filter((run) => run.status === "completed")
-        .map((run) => run.run_id);
-      return [...new Set([...retained, ...completed])];
-    });
+    setVisibleRuns((current) =>
+      retainKnownRunIds(
+        current,
+        payload.runs.map((run) => run.run_id),
+      ),
+    );
   }, [missionId]);
 
   useEffect(() => {

@@ -11,6 +11,7 @@ import io
 import json
 import math
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -102,6 +103,7 @@ def raster_metadata(
         "height": dataset.height,
         "bands": dataset.count,
         "dtypes": list(dataset.dtypes),
+        "display_ranges": _display_ranges(dataset),
         "nodata": nodata,
         "tiled": bool(dataset.profile.get("tiled")),
         "block_shapes": [list(shape) for shape in dataset.block_shapes],
@@ -118,7 +120,46 @@ def _display_bands(dataset: rasterio.DatasetReader) -> list[int]:
     return [1]
 
 
-def _to_uint8(data: np.ma.MaskedArray[Any, Any]) -> NDArray[np.uint8]:
+def _display_ranges(
+    dataset: rasterio.DatasetReader,
+    *,
+    sample_size: int = 512,
+) -> list[list[float] | None]:
+    """Estimate stable per-band display ranges from one bounded global sample."""
+
+    indexes = _display_bands(dataset)
+    scale = min(
+        sample_size / max(dataset.width, 1),
+        sample_size / max(dataset.height, 1),
+        1.0,
+    )
+    width = max(1, int(dataset.width * scale))
+    height = max(1, int(dataset.height * scale))
+    sample = dataset.read(
+        indexes,
+        out_shape=(len(indexes), height, width),
+        masked=True,
+        resampling=Resampling.bilinear,
+    )
+    ranges: list[list[float] | None] = []
+    for band in sample:
+        values = np.asarray(band.compressed(), dtype=np.float64)
+        finite = values[np.isfinite(values)]
+        if not finite.size:
+            ranges.append(None)
+            continue
+        low, high = np.percentile(finite, (2, 98))
+        if high <= low:
+            high = low + 1.0
+        ranges.append([float(low), float(high)])
+    return ranges
+
+
+def _to_uint8(
+    data: np.ma.MaskedArray[Any, Any],
+    *,
+    display_ranges: Sequence[Sequence[float] | None] | None = None,
+) -> NDArray[np.uint8]:
     values: Any = np.ma.asarray(data)
     if values.dtype == np.uint8:
         return cast(
@@ -131,7 +172,18 @@ def _to_uint8(data: np.ma.MaskedArray[Any, Any]) -> NDArray[np.uint8]:
         compressed = band.compressed()
         if not compressed.size:
             continue
-        low, high = np.percentile(compressed, (2, 98))
+        configured_range = (
+            display_ranges[index]
+            if display_ranges is not None and index < len(display_ranges)
+            else None
+        )
+        if configured_range is not None and len(configured_range) == 2:
+            low, high = (float(configured_range[0]), float(configured_range[1]))
+        else:
+            finite = compressed[np.isfinite(compressed)]
+            if not finite.size:
+                continue
+            low, high = np.percentile(finite, (2, 98))
         if not math.isfinite(float(low)) or not math.isfinite(float(high)):
             continue
         if high <= low:
@@ -148,11 +200,12 @@ def _rgba_image(
     data: np.ma.MaskedArray[Any, Any],
     *,
     colormap: str = "",
+    display_ranges: Sequence[Sequence[float] | None] | None = None,
 ) -> Image.Image:
     values: Any = np.ma.asarray(data)
     mask = np.ma.getmaskarray(values)
     alpha = np.where(np.all(mask, axis=0), 0, 255).astype(np.uint8)
-    normalized = _to_uint8(values)
+    normalized = _to_uint8(values, display_ranges=display_ranges)
     if colormap == "depth":
         gray = normalized[0].astype(np.float32) / 255.0
         red = np.clip(1.5 - np.abs(4 * gray - 3), 0, 1)
@@ -271,6 +324,7 @@ def render_cog_tile(
     y: int,
     tile_size: int = DEFAULT_TILE_SIZE,
     colormap: str = "",
+    display_ranges: Sequence[Sequence[float] | None] | None = None,
 ) -> io.BytesIO:
     tile_size = max(128, min(int(tile_size), 512))
     with (
@@ -296,7 +350,11 @@ def render_cog_tile(
         ) as tile_dataset:
             data = tile_dataset.read(indexes, masked=True)
     output = io.BytesIO()
-    _rgba_image(data, colormap=colormap).save(
+    _rgba_image(
+        data,
+        colormap=colormap,
+        display_ranges=display_ranges,
+    ).save(
         output,
         format="PNG",
         optimize=True,

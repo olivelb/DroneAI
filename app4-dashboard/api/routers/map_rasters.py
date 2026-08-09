@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, cast
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -60,6 +61,17 @@ def raster_layer_metadata(vol_id: str, layer: str) -> JsonObject:
         finally:
             stream.close()
         payload["s3_key"] = key
+        if "display_ranges" not in payload:
+            try:
+                inspected = inspect_remote_cog(
+                    storage.get_presigned_url(key, public=False),
+                    s3_key=key,
+                )
+                payload["display_ranges"] = inspected.get("display_ranges")
+            except Exception:
+                # Legacy sidecars remain usable; only their display falls back
+                # to the historical per-tile normalization.
+                pass
         return payload
     try:
         return inspect_remote_cog(
@@ -80,9 +92,34 @@ def raster_tile(
     z: int,
     x: int,
     y: int,
+    display_min: float | None = Query(default=None),
+    display_max: float | None = Query(default=None),
 ) -> StreamingResponse:
     key, default_colormap = mission_key(vol_id, layer)
     require_object(key)
+    if (display_min is None) != (display_max is None):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="display_min and display_max must be provided together",
+        )
+    if (
+        display_min is not None
+        and display_max is not None
+        and (
+            not math.isfinite(display_min)
+            or not math.isfinite(display_max)
+            or display_max <= display_min
+        )
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="display_max must be greater than display_min",
+        )
+    display_ranges = (
+        [[display_min, display_max]]
+        if display_min is not None and display_max is not None
+        else None
+    )
     try:
         output = render_cog_tile(
             storage.get_presigned_url(key, expires=900, public=False),
@@ -90,6 +127,7 @@ def raster_tile(
             x=x,
             y=y,
             colormap=default_colormap,
+            display_ranges=display_ranges,
         )
     except ValueError as error:
         raise HTTPException(

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { overallStatusFor, SERVICE_ORDER, serviceOrderFor } from "./types";
+import {
+  missionPhaseStatus,
+  overallStatusFor,
+  SERVICE_ORDER,
+  serviceOrderFor,
+} from "./types";
 
 describe("serviceOrderFor", () => {
   it("keeps the complete map pipeline", () => {
@@ -38,5 +43,27 @@ describe("overallStatusFor", () => {
     expect(overallStatusFor({
       COLMAP: { vol_id: "map-1", status: "success" },
     })).toBe("processing");
+  });
+});
+
+describe("missionPhaseStatus", () => {
+  it("marks reconstruction complete once DroneGS is active", () => {
+    const mission = {
+      vol_id: "mission-1",
+      services: {
+        COLMAP: {
+          vol_id: "mission-1",
+          step: "GAUSS",
+          status: "processing" as const,
+          progress: 68,
+        },
+      },
+      logs: [],
+      updated_at: 1,
+      overall_status: "processing",
+    };
+
+    expect(missionPhaseStatus(mission, "reconstruction")).toBe("success");
+    expect(missionPhaseStatus(mission, "gaussian")).toBe("processing");
   });
 });

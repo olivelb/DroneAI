@@ -50,6 +50,26 @@ const autoSelectMission = (
   return running?.vol_id ?? sorted[0]?.vol_id ?? null;
 };
 
+export const mergeMissionSnapshots = (
+  previous: Record<string, MissionSummary>,
+  incoming: Record<string, MissionSummary>,
+): Record<string, MissionSummary> =>
+  Object.fromEntries(
+    Object.entries(incoming).map(([volId, mission]) => [
+      volId,
+      (previous[volId]?.updated_at ?? 0) > mission.updated_at
+        ? previous[volId]
+        : mission,
+    ]),
+  );
+
+export const summaryLogMessages = (
+  mission: MissionSummary,
+): string[] | null => {
+  const messages = mission.logs.map((entry) => entry.message).slice(-100);
+  return messages.length > 0 ? messages : null;
+};
+
 export function MissionRuntimeProvider({
   children,
 }: {
@@ -80,10 +100,11 @@ export function MissionRuntimeProvider({
       for (const mission of (data.missions ?? []) as MissionSummary[]) {
         map[mission.vol_id] = mission;
       }
-      setMissions(map);
+      setMissions((previous) => mergeMissionSnapshots(previous, map));
       const current = activeVolIdRef.current;
       if (userSelectedRef.current && current && map[current]) {
-        setLogs(map[current].logs.map((entry) => entry.message).slice(-100));
+        const summaryLogs = summaryLogMessages(map[current]);
+        if (summaryLogs) setLogs(summaryLogs);
         return;
       }
       const hint = (data.active_vol_id as string) ?? current;
@@ -91,7 +112,8 @@ export function MissionRuntimeProvider({
       setActiveMissionId(next);
       activeVolIdRef.current = next;
       if (next && map[next]) {
-        setLogs(map[next].logs.map((entry) => entry.message).slice(-100));
+        const summaryLogs = summaryLogMessages(map[next]);
+        if (summaryLogs) setLogs(summaryLogs);
       }
     } catch (error) {
       console.error("Summary error:", error);

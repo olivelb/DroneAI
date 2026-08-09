@@ -3,7 +3,7 @@ import inspect
 import io
 import json
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -558,6 +558,93 @@ def test_terminal_success_clears_an_earlier_transient_error(monkeypatch):
     assert mission.error_message is None
     assert mission.current_step == "DONE"
     assert added
+
+
+def test_processing_retry_clears_a_recovered_service_error(monkeypatch):
+    mission = SimpleNamespace(
+        id=1,
+        service_states={"COLMAP": {"status": "error"}},
+        status="error",
+        current_step="ERROR",
+        progress=0,
+        error_message="temporary worker error",
+        resume_info=None,
+        updated_at=None,
+    )
+    monkeypatch.setattr(
+        mission_state,
+        "get_or_create_mission",
+        lambda _session, _vol_id: mission,
+    )
+
+    mission_state.apply_mission_state(
+        SimpleNamespace(add=lambda _record: None),
+        {
+            "vol_id": "mission-1",
+            "service": "COLMAP",
+            "status": "processing",
+            "step": "GAUSS",
+            "progress": 68,
+        },
+    )
+
+    assert mission.status == "processing"
+    assert mission.error_message is None
+
+
+def test_delayed_progress_does_not_resurrect_a_cancelled_mission(monkeypatch):
+    mission = SimpleNamespace(
+        id=1,
+        service_states={"COLMAP": {"status": "cancelled"}},
+        status="cancelled",
+        current_step="CANCELLED",
+        progress=0,
+        error_message=None,
+        resume_info=None,
+        updated_at=None,
+    )
+    monkeypatch.setattr(
+        mission_state,
+        "get_or_create_mission",
+        lambda _session, _vol_id: mission,
+    )
+
+    mission_state.apply_mission_state(
+        SimpleNamespace(add=lambda _record: None),
+        {
+            "vol_id": "mission-1",
+            "service": "COLMAP",
+            "status": "processing",
+            "step": "GAUSS",
+            "progress": 68,
+        },
+    )
+
+    assert mission.status == "cancelled"
+
+
+def test_stale_heartbeat_is_monitoring_metadata_not_pipeline_failure(monkeypatch):
+    monkeypatch.setattr(mission_state, "MISSION_PROCESSING_STALE_SECONDS", 120)
+    mission = SimpleNamespace(
+        id=1,
+        vol_id="mission-1",
+        service_states={"COLMAP": {"status": "processing", "step": "GAUSS"}},
+        status="processing",
+        current_step="GAUSS",
+        progress=68,
+        retry_count=0,
+        resume_info=None,
+        params={"vol_id": "mission-1"},
+        error_message=None,
+        created_at=datetime.now(UTC) - timedelta(minutes=20),
+        updated_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+
+    serialized = mission_state.serialize_mission(mission)
+
+    assert serialized["overall_status"] == "processing"
+    assert serialized["is_stale"] is True
+    assert serialized["last_event_age_seconds"] >= 600
 
 
 @pytest.mark.parametrize("vol_id", [None, 42, ""])

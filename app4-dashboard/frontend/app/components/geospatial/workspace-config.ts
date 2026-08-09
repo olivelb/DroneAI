@@ -10,6 +10,15 @@ import type { AnalysisCreate } from "../../lib/types";
 import type { MapTool } from "../GeospatialMap";
 
 export type ViewerLayer = "ortho" | "depth";
+
+export const retainKnownRunIds = (
+  visibleRunIds: string[],
+  knownRunIds: string[],
+): string[] => {
+  const known = new Set(knownRunIds);
+  return visibleRunIds.filter((runId) => known.has(runId));
+};
+
 export type WorkspacePanel = "layers" | "analysis" | "search" | "export";
 
 export const DEFAULT_ANALYSIS: AnalysisCreate = {

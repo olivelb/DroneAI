@@ -99,6 +99,8 @@ export type MissionSummary = {
   logs: MissionLog[];
   updated_at: number;
   overall_status: string;
+  is_stale?: boolean;
+  last_event_age_seconds?: number | null;
 };
 
 export type DatasetItem = {
@@ -262,6 +264,35 @@ export const PHASE_STEPS: Record<string, string[]> = {
     "PREPARING", "DOWNLOADING_IMAGES", "COPYING_IMAGES", "GPS_EXTRACTION",
     "FEATURES", "MATCHING", "CALIBRATING", "MAPPING", "UNDISTORT", "ALIGNING",
   ],
-  gaussian: ["GAUSS", "UPLOADING"],
+  gaussian: ["GAUSS", "ORTHO", "UPLOADING", "DONE"],
   detection: ["TILING_START", "TILING_IN_PROGRESS", "TILING_DONE", "DETECTING", "AGGREGATING_DETECTIONS"],
+};
+
+export const missionPhaseStatus = (
+  mission: MissionSummary | null,
+  phase: "reconstruction" | "gaussian" | "detection",
+): string => {
+  if (!mission) return "waiting";
+  const colmap = mission.services.COLMAP;
+  const colmapStep = colmap?.step ?? "";
+  if (phase === "reconstruction") {
+    if (
+      PHASE_STEPS.gaussian.includes(colmapStep) ||
+      colmap?.status === "success"
+    ) {
+      return "success";
+    }
+    return colmap?.status ?? "waiting";
+  }
+  if (phase === "gaussian") {
+    if (PHASE_STEPS.gaussian.includes(colmapStep)) {
+      return colmap?.status ?? "processing";
+    }
+    return colmap?.status === "success" ? "success" : "waiting";
+  }
+  return (
+    mission.services.IA?.status ??
+    mission.services.TILER?.status ??
+    "waiting"
+  );
 };
