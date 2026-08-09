@@ -20,6 +20,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/merge.py \
 	app1-colmap/gaussian_ortho/model_filtering.py \
 	app1-colmap/gaussian_ortho/ortho_renderer.py \
+	app1-colmap/gaussian_ortho/phase_artifacts.py \
 	app1-colmap/gaussian_ortho/partition.py \
 	app1-colmap/gaussian_ortho/pca_alignment.py \
 	app1-colmap/gaussian_ortho/rasterizer.py \

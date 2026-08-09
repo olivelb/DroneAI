@@ -186,6 +186,17 @@ state and produces raw RGB, height and extent buffers with explicit dimensions.
 It cannot invoke training or filtering. The legacy workflow calls the same
 function before its unchanged coverage gates and GeoTIFF writer.
 
+The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
+the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
+all deterministic product parameters while excluding Job-local paths and
+callbacks. A retry with a changed resolution, profile, Gaussian cap, filtering
+policy or qualification threshold is rejected instead of silently reusing an
+incompatible model. The filtering sidecar records finite, shape-validated
+alignment matrices, raster extent, camera coverage positions and reporting
+summary; rasterization can therefore hydrate the filtered PLY without applying
+alignment or filtering a second time. Artifact paths must exist below the
+restored workspace and cannot escape it.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -204,4 +215,6 @@ function before its unchanged coverage gates and GeoTIFF writer.
   artifact publication and downstream release;
 - safe, checksum-verified S3 workspace publication and restoration;
 - portable COLMAP reconstruction state and bounded reconstruction adapter;
+- checksum-bound Gaussian training/filtering handoffs, safe model paths and
+  raster-state hydration without repeated transforms;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
