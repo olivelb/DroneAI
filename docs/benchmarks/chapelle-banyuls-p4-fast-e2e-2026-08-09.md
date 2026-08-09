@@ -156,3 +156,79 @@ zero detections cannot be considered a successful detection qualification.
 - A separate Q3 deployment run must still exercise the five bounded Kubernetes
   Jobs, checksum S3 hand-offs, immutable database edges, cancellation/retry and
   reconciliation before enabling Job mode.
+
+## Q3 Kubernetes five-Job qualification addendum
+
+The follow-up mission `chapelle-q3-five-jobs-20260809` exercised the same 114
+images through the deployed K3s control plane on BIGZEN.  Unlike the first run,
+this execution used the durable stage DAG, PostgreSQL state, MinIO artifact
+hand-offs and one bounded Kubernetes Job per stage.  The mission reached
+`success` at 100% and published all five declared workspaces.
+
+The operator-facing Dashboard was exercised through its SSH-forwarded local
+URLs.  The mission catalogue, home navigation, exact selected-mission monitor,
+three-second refresh, human-readable stage graph, retry history, lifecycle
+logs, product sizes/checksums and technical disclosures all reflected the
+durable API state.  Browser console inspection reported no errors.  Commits
+`4cdf3d7`, `31c361a` and `6d7ceed` contain the live monitor and terminal-state
+projection fixes found during this qualification.
+
+### Runtime configuration
+
+| Item | Effective value |
+|---|---|
+| Kubernetes | K3s on BIGZEN, namespace `drone-ai` |
+| Stage mode | `DRONEAI_STAGE_JOBS_ENABLED=true` |
+| Global / owner / mission concurrency | 2 / 1 / 1 |
+| GPU runtime | `runtimeClassName: nvidia`, one GPU per executor Job |
+| Reconstruction through rasterization | `drone-colmap:5492ee8`, image ID `sha256:74ccfccdde403d51d24a082c1c0ec24c815e0571305facc310f9b592daedb802` |
+| Detection | `drone-ia:5492ee8`, image ID `sha256:4cd2b10d47ab11943e1bff35bf69b922359aebfbbcc226a65fe4f55634a82630` |
+| GPU architecture selector | `ampere` for all five executors |
+| Quality profile | `normal-v1`: 2,400 px, 4,096 features, 15,000 Gaussian iterations, 3M cap |
+| SAM3 identity | `facebook/sam3` revision `3c879f39826c281e95690f02c7821c4de09afae7` |
+
+The commit-derived executor tags were used unchanged by every Job; no COLMAP,
+CUDA or model image was rebuilt during the retry.
+
+### Stage outcome
+
+| Stage | Attempt | Duration | Result |
+|---|---:|---:|---|
+| Reconstruction | 0 | 4 min 57 s | succeeded |
+| Gaussian training | 0 | 13 min 02 s | succeeded, 3,000,000 Gaussians |
+| Gaussian filtering | 0 | 57 s | succeeded, 2,969,271 retained (98.98%) |
+| Ortho/DEM rasterization | 0 | 18 s | failed: legacy CPU resource class had no NVIDIA runtime |
+| Ortho/DEM rasterization | 1 | 1 min 09 s | succeeded on RTX 3090 with `gpu-standard` |
+| SAM3 detection | 0 | 2 min 09 s | succeeded on RTX 3090 |
+
+The raster retry was created through the stage-run API with the exact filtering
+artifact ID `8b5aabe9-0d1c-5f04-9dea-a9aece074c9e`.  Dependency reconciliation
+then released the previously blocked detection Job automatically.  This
+validated retry lineage and the normal blocked-to-runnable transition without
+replaying the three successful upstream stages.
+
+SAM3 used prompt/class `car`, 1,024 px tiles and confidence 0.5.  It processed
+81 tiles using CUDA with bfloat16 autocast.  The measured run produced four raw
+detections and one geolocated feature after deduplication.  Its model artifact
+SHA-256 is
+`6d06f0a5f84e435071fe6603e61d0b4cc7b40e0d39d487cfd4d67d8cc11cc14a`.
+
+### Durable products
+
+| Product | Size | SHA-256 |
+|---|---:|---|
+| Reconstruction workspace | 1.41 GiB | `2439b23e47fa905d09de03597768cbd6817ad1c72ee9379bea81fe145977b7e7` |
+| Gaussian training workspace | 2.07 GiB | `d986370977f9d2df08200230c5f68bd888cfd71e1c0ed4f8bb074c69a26cdf35` |
+| Gaussian filtering workspace | 2.72 GiB | `24cec3fc8aa144b1af49f8f11f6cf4af1d6a0ddb45f740b4f12f36b07014c8bd` |
+| Raster product workspace | 2.99 GiB | `33fd0048a96aca012f4367b406ec232f205b1dbcd1ccdaa9a32582d251327906` |
+| Detection workspace | 2.99 GiB | `8e485808347dd43d6603f09b4e4691ca2a0eb371351e55e4a36886ddca34155d` |
+
+The raster product declares `orthomosaic.tif` and
+`orthomosaic.height.tif` in `EPSG:3942`, with extent
+`[1708938.735, 1252716.067, 1709079.395, 1252853.447]`.  The detection product
+declares one feature in `.droneai/detection/detections.geojson`.
+
+This pass qualifies the five-Job mode for continued preproduction testing.  It
+does not by itself qualify unattended production operation: explicit
+cancellation/timeout drills, pod/node interruption recovery and longer-running
+reconciliation soak tests remain separate operational gates.
