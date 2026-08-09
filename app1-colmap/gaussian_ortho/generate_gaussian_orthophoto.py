@@ -518,6 +518,59 @@ class GaussianTrainingState:
     facade_subset_result: dict[str, object] | None
 
 
+@dataclass(frozen=True)
+class GaussianTrainingPhaseState:
+    """Explicit output boundary between training and later GPU phases."""
+
+    scene_state: GaussianSceneState
+    training_state: GaussianTrainingState
+    backend_name: str
+    trainer_binary_sha256: str
+
+
+def execute_gaussian_training_phase(
+    config: GaussianOrthoConfig,
+    *,
+    trainer_backend: str | None = None,
+    backend: TrainingBackend | None = None,
+    model_class: ModelFactory | None = None,
+    merge_models_fn: MergeModels | None = None,
+    cupy_module: Any | None = None,
+) -> GaussianTrainingPhaseState:
+    """Prepare the scene and train its merged, unfiltered Gaussian model."""
+    if backend is None:
+        backend = resolve_training_backend(trainer_backend)
+    if model_class is None:
+        from .gaussian_model import GaussianModel
+
+        model_class = GaussianModel
+    if merge_models_fn is None:
+        from .merge import merge_models
+
+        merge_models_fn = merge_models
+    if cupy_module is None:
+        import cupy as cp
+
+        cupy_module = cp
+    trainer_binary_sha256 = backend.binary_sha256()
+    scene_state = prepare_gaussian_scene(config)
+    training_state = train_and_merge_gaussian_models(
+        config,
+        scene_state,
+        backend=backend,
+        trainer_binary_sha256=trainer_binary_sha256,
+        model_class=model_class,
+        merge_models_fn=merge_models_fn,
+        cupy_module=cupy_module,
+    )
+    return GaussianTrainingPhaseState(
+        scene_state=scene_state,
+        training_state=training_state,
+        backend_name=backend.name,
+        trainer_binary_sha256=trainer_binary_sha256,
+    )
+
+
 def _make_training_reporter(
     pct_start: int,
     pct_end: int,
@@ -1165,8 +1218,6 @@ def generate_gaussian_orthophoto(
     """
     import cupy as cp
 
-    from .gaussian_model import GaussianModel
-    from .merge import merge_models
     from .ortho_renderer import render_orthophoto
 
     # Ensure any stale CUDA allocations from a previous crashed run are freed
@@ -1191,9 +1242,6 @@ def generate_gaussian_orthophoto(
 
     if checkpoint_dir is None:
         checkpoint_dir = str(Path(ortho_file).parent / "gaussian_checkpoints")
-    backend = resolve_training_backend(trainer_backend)
-    trainer_binary_sha256 = backend.binary_sha256()
-
     render_mode = str(render_mode).strip().lower()
     if render_mode not in {"map", "facade"}:
         raise ValueError(f"Unsupported orthophoto render mode: {render_mode}")
@@ -1264,7 +1312,12 @@ def generate_gaussian_orthophoto(
         facade_seed_max_reprojection_error=facade_seed_max_reprojection_error,
         facade_seed_min_track_length=facade_seed_min_track_length,
     )
-    scene_state = prepare_gaussian_scene(config)
+    training_phase = execute_gaussian_training_phase(
+        config,
+        trainer_backend=trainer_backend,
+        cupy_module=cp,
+    )
+    scene_state = training_phase.scene_state
     registered_cameras = scene_state.registered_cameras
     transform_data = scene_state.transform_data
     mean_exif_alt = scene_state.mean_exif_alt
@@ -1279,15 +1332,7 @@ def generate_gaussian_orthophoto(
     gaussian_seed_point_count = scene_state.gaussian_seed_point_count
 
     # --- 3. Train per cell through the stable backend boundary ---
-    training_state = train_and_merge_gaussian_models(
-        config,
-        scene_state,
-        backend=backend,
-        trainer_binary_sha256=trainer_binary_sha256,
-        model_class=GaussianModel,
-        merge_models_fn=merge_models,
-        cupy_module=cp,
-    )
+    training_state = training_phase.training_state
     merged_model = training_state.merged_model
     final_ply = training_state.final_ply
     facade_subset_result = training_state.facade_subset_result

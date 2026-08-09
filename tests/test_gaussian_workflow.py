@@ -15,6 +15,42 @@ if str(APP1_ROOT) not in sys.path:
 workflow = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 
 
+def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
+    scene_state = SimpleNamespace(name="scene")
+    training_state = SimpleNamespace(final_ply="final.ply")
+    calls = {}
+    backend = SimpleNamespace(
+        name="dronegs",
+        binary_sha256=lambda: "a" * 64,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "prepare_gaussian_scene",
+        lambda config: scene_state,
+    )
+
+    def train(config, scene, **kwargs):
+        calls.update(kwargs)
+        assert scene is scene_state
+        return training_state
+
+    monkeypatch.setattr(workflow, "train_and_merge_gaussian_models", train)
+
+    result = workflow.execute_gaussian_training_phase(
+        SimpleNamespace(),
+        backend=backend,
+        model_class=lambda: None,
+        merge_models_fn=lambda: None,
+        cupy_module=SimpleNamespace(),
+    )
+
+    assert result.scene_state is scene_state
+    assert result.training_state is training_state
+    assert result.backend_name == "dronegs"
+    assert result.trainer_binary_sha256 == "a" * 64
+    assert calls["trainer_binary_sha256"] == "a" * 64
+
+
 def test_prepare_gaussian_scene_keeps_loading_and_scale_contracts(
     monkeypatch,
     tmp_path,

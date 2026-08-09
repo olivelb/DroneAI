@@ -169,6 +169,12 @@ local paths are rebased on restore, and paths outside the workspace are
 rejected. Its Job always removes the local workspace in `finally`; no GPU or
 CUDA implementation/version changes are part of this adapter.
 
+The Gaussian workflow exposes `execute_gaussian_training_phase` as its first
+explicit GPU boundary. It returns the prepared scene, merged unfiltered PLY
+state, backend name and trainer binary SHA-256. The legacy fused call now uses
+this same boundary, so subsequent Job extraction does not create a second
+training implementation or alter established raster results.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;

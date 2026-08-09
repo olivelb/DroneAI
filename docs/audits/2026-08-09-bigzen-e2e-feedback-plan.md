@@ -149,7 +149,10 @@ one-shot stage executors. The shared claim/heartbeat/cancellation/artifact
 boundary and verified S3 workspace hand-off are implemented and tested;
 the COLMAP reconstruction adapter and portable reconstruction state are also
 implemented. Gaussian training/filtering, rasterization and detection adapters
-are the remaining Phase 7 lot.
+are the remaining Phase 7 lot. The legacy Gaussian workflow now calls an
+explicit training-phase boundary that returns the scene, unfiltered model and
+immutable trainer identity without changing its output contract; serializing
+that boundary is the current step.
 
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.
