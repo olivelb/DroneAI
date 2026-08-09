@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any, Literal
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.validation import (
@@ -16,6 +15,7 @@ from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QualityProfileId,
 )
+from shared.stage_contracts import STAGE_ORDER, StageId, validate_stage_selection
 from shared.yolo_capabilities import yolo_model_manifest
 
 YOLOModelVariant = Literal[
@@ -45,6 +45,11 @@ class MissionParams(BaseModel):
     classes: list[str] = Field(default_factory=lambda: ["car"], min_length=1, max_length=20)
     colmap_params: dict[str, Any] = Field(default_factory=dict)
     work_drive: str = ""
+    phases: list[StageId] = Field(
+        default_factory=lambda: list(STAGE_ORDER),
+        min_length=1,
+        max_length=len(STAGE_ORDER),
+    )
 
     @field_validator("vol_id")
     @classmethod
@@ -66,6 +71,13 @@ class MissionParams(BaseModel):
         if self.ai_backend == "yolo":
             validate_aerial_class_names(self.classes)
             yolo_model_manifest(self.ai_model_variant)
+        return self
+
+    @model_validator(mode="after")
+    def validate_phase_dag(self) -> MissionParams:
+        if len(set(self.phases)) != len(self.phases):
+            raise ValueError("Mission phases must not contain duplicates")
+        validate_stage_selection(self.phases, {})
         return self
 
     @field_validator("colmap_params")

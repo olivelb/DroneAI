@@ -272,6 +272,45 @@ def test_completion_routes_only_aerial_products_to_detection(tmp_path, facade_mo
         publish_next.assert_called_once()
 
 
+def test_completion_stops_after_raster_publication_when_detection_is_not_selected(
+    tmp_path,
+):
+    preparation = SimpleNamespace(facade_mode=False)
+    publication_state = SimpleNamespace(
+        ortho_s3_key="missions/vol/orthomosaic.tif",
+        gaussian_upload_complete=False,
+    )
+    gaussian_state = SimpleNamespace(
+        durable_checkpoint_dir="",
+        checkpoint_s3_prefix="missions/vol/checkpoints",
+    )
+
+    with (
+        patch.object(publication_stage, "cleanup_pipeline_workspace"),
+        patch.object(worker_runtime, "report_mission_progress") as progress,
+        patch.object(publication_stage, "publish_next_stage_message") as publish_next,
+    ):
+        publication_stage.complete_colmap_pipeline(
+            preparation,
+            publication_state,
+            gaussian_state,
+            str(tmp_path),
+            "vol",
+            {
+                "phases": [
+                    "reconstruction",
+                    "gaussian_training",
+                    "gaussian_filtering",
+                    "rasterization",
+                ]
+            },
+        )
+
+    publish_next.assert_not_called()
+    terminal = progress.call_args_list[-1]
+    assert terminal.kwargs["details"]["event"] == "selected_pipeline_complete"
+
+
 def test_workspace_cleanup_reports_verified_success(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

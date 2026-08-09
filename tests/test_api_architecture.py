@@ -13,7 +13,7 @@ from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from shared.database import Mission, OutboxEvent
+from shared.database import Mission, MissionStageRun, OutboxEvent
 
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
 main = importlib.import_module("app4-dashboard.api.main")
@@ -66,6 +66,8 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/mission/parameters",
         "/missions",
         "/missions/{vol_id}",
+        "/missions/{vol_id}/stages/{stage}/runs",
+        "/missions/{vol_id}/stages/runs/{run_id}/artifacts",
         "/pods",
         "/datasets",
         "/datasets/upload",
@@ -170,6 +172,7 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
 def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Mission.__table__.create(engine)
+    MissionStageRun.__table__.create(engine)
     OutboxEvent.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 

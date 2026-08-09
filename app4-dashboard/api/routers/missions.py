@@ -15,6 +15,8 @@ from shared.database import Mission, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
+from shared.phase_dag import initialize_stage_runs
+from shared.stage_contracts import stage_dag_catalog
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QUALITY_PROFILES,
@@ -47,12 +49,14 @@ from ..security import (
     require_operator,
 )
 from .mission_catalog import router as mission_catalog_router
+from .mission_stages import router as mission_stages_router
 
 router = APIRouter(
     tags=["missions"],
     dependencies=[Depends(require_authenticated)],
 )
 router.include_router(mission_catalog_router)
+router.include_router(mission_stages_router)
 
 
 class MissionMutationRecord(Protocol):
@@ -86,6 +90,7 @@ class MissionParametersResponse(TypedDict):
     quality_profiles: list[dict[str, Any]]
     quality_profile_default: str
     yolo_models: list[dict[str, object]]
+    stage_dag: dict[str, Any]
 
 
 def _find_mission(
@@ -365,6 +370,7 @@ def mission_parameters() -> MissionParametersResponse:
         "quality_profiles": [profile.as_api_dict() for profile in QUALITY_PROFILES],
         "quality_profile_default": DEFAULT_QUALITY_PROFILE_ID,
         "yolo_models": yolo_model_catalog(),
+        "stage_dag": stage_dag_catalog(),
     }
 
 
@@ -407,18 +413,18 @@ def _start_mission(
                 payload["ai_model_manifest"] = yolo_model_manifest(
                     params.ai_model_variant
                 )
-            session.add(
-                Mission(
-                    vol_id=params.vol_id,
-                    owner_subject=principal.subject,
-                    status="pending",
-                    pipeline=params.pipeline,
-                    input_dataset=params.input_dataset,
-                    workspace_prefix=f"missions/{params.vol_id}",
-                    params=payload,
-                )
+            mission = Mission(
+                vol_id=params.vol_id,
+                owner_subject=principal.subject,
+                status="pending",
+                pipeline=params.pipeline,
+                input_dataset=params.input_dataset,
+                workspace_prefix=f"missions/{params.vol_id}",
+                params=payload,
             )
+            session.add(mission)
             session.flush()
+            initialize_stage_runs(session, mission, payload)
             enqueue_outbox(
                 session,
                 topic=TOPIC_MISSION,

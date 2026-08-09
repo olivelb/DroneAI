@@ -15,6 +15,7 @@ import { useStore } from "../lib/store";
 import { useWorkspaceData } from "../lib/workspace-data";
 import { uploadDataset as uploadDatasetApi, deleteDataset as deleteDatasetApi } from "../lib/api";
 import StageHeader from "./StageHeader";
+import MissionStageSelector from "./MissionStageSelector";
 
 export default function PhaseSetup() {
   const { t } = useI18n();
@@ -267,6 +268,7 @@ export default function PhaseSetup() {
                 className="input-control min-h-11 font-mono"
               />
             </label>
+            <MissionStageSelector />
           </div>
         </div>
 

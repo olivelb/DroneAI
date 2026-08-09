@@ -48,10 +48,12 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/image_preview.py
 API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/schemas.py \
-	app4-dashboard/api/map_schemas.py
+	app4-dashboard/api/map_schemas.py \
+	app4-dashboard/api/stage_schemas.py
 API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_uploads.py \
+	app4-dashboard/api/mission_detail.py \
 	app4-dashboard/api/mission_access.py \
 	app4-dashboard/api/mission_state.py \
 	app4-dashboard/api/map_support.py
@@ -64,6 +66,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/map_rasters.py \
 	app4-dashboard/api/routers/maps.py \
 	app4-dashboard/api/routers/mission_catalog.py \
+	app4-dashboard/api/routers/mission_stages.py \
 	app4-dashboard/api/routers/missions.py \
 	app4-dashboard/api/routers/operations.py
 SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)

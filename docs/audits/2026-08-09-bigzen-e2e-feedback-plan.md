@@ -102,6 +102,13 @@ immutable stage-run records.
 
 ### Phase 5 — Versioned phase DAG
 
+Status: control-plane contract implemented on 2026-08-09. Migration `0014`
+adds per-stage attempts, immutable artifacts and exact parent edges. Mission
+commands select a dependency-closed phase set; owner-scoped retry/publication
+routes use deterministic idempotency and exact upstream artifact identities.
+Legacy worker events are projected during the incremental executor migration.
+Bounded per-stage Kubernetes execution remains Phase 7.
+
 - Introduce `mission_stage_runs`, immutable `mission_artifacts` and parent-edge
   records through an additive migration.
 - Record queued/running/terminal state, attempt, executor, parameters,

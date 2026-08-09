@@ -90,6 +90,28 @@ def build_resume_event(payload: JsonObject) -> JsonObject:
     )
 
 
+def build_stage_mission_event(payload: JsonObject) -> JsonObject:
+    vol_id = str(payload["vol_id"])
+    stage_run_id = str(payload["stage_run_id"])
+    attempt = int(payload.get("attempt", 0))
+    return cast(
+        JsonObject,
+        make_event(
+            "mission",
+            payload,
+            event_id=deterministic_event_id(
+                "mission",
+                vol_id,
+                "stage",
+                stage_run_id,
+                attempt,
+            ),
+            correlation_id=stage_run_id,
+            attempt=attempt,
+        ),
+    )
+
+
 def publish_outbox_event(
     topic: str,
     payload: JsonObject,
