@@ -9,6 +9,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { useMissionRuntime } from "../lib/mission-runtime";
+import { useI18n } from "../lib/i18n/provider";
 import { useStore } from "../lib/store";
 import StageHeader from "./StageHeader";
 import {
@@ -17,6 +18,7 @@ import {
 import type { AIBackend, YOLOModelVariant } from "../lib/types";
 
 export default function PhaseDetection() {
+  const { t } = useI18n();
   const {
     aiConfidence,
     setAiConfidence,
@@ -61,9 +63,9 @@ export default function PhaseDetection() {
   return (
     <div className="space-y-5">
       <StageHeader
-        eyebrow="Étape 04 · Intelligence"
-        title="Tuilage et détection"
-        description="Choisissez le type d’analyse et sa sensibilité. Le modèle et le tuilage restent accessibles pour les cas spécialisés."
+        eyebrow={t("detection.eyebrow")}
+        title={t("detection.title")}
+        description={t("detection.description")}
         icon={<ScanSearch size={21} />}
         iconClassName="bg-[#e8eefb] text-[#3458a5]"
         status={
@@ -80,10 +82,12 @@ export default function PhaseDetection() {
             />
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-[#7c8884]">
-                Input readiness
+                {t("detection.inputReadiness")}
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {hasOrthomosaic ? "Orthomosaïque prête" : "En attente de DroneGS"}
+                {hasOrthomosaic
+                  ? t("detection.inputReady")
+                  : t("detection.inputWaiting")}
               </div>
             </div>
           </div>
@@ -117,9 +121,9 @@ export default function PhaseDetection() {
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="surface p-5 sm:p-6">
-        <div className="eyebrow">Stratégie d’inférence</div>
+        <div className="eyebrow">{t("detection.strategy")}</div>
         <h3 className="mb-4 mt-1 text-lg font-bold text-[#26332f]">
-          Quel résultat recherchez-vous ?
+          {t("detection.goal")}
         </h3>
         <div className="grid gap-3 sm:grid-cols-2">
           {AVAILABLE_AI_BACKENDS.map((backend) => (
@@ -142,7 +146,11 @@ export default function PhaseDetection() {
                 {backend.label}
               </span>
               <span className="mt-1.5 block text-xs leading-5 text-[#75827e]">
-                {backend.description}
+                {t(
+                  backend.value === "yolo"
+                    ? "detection.backend.yolo.description"
+                    : "detection.backend.sam3.description",
+                )}
               </span>
             </button>
           ))}
@@ -152,12 +160,11 @@ export default function PhaseDetection() {
           <div className="flex items-center gap-2">
             <SlidersHorizontal size={16} className="text-[#4568b1]" />
             <h3 className="text-base font-bold text-[#2d3a36]">
-              Sensibilité
+              {t("detection.sensitivity")}
             </h3>
           </div>
           <p className="mt-1 text-xs leading-5 text-[#77847f]">
-            Une valeur basse retrouve plus de candidats ; une valeur haute
-            limite les faux positifs.
+            {t("detection.sensitivityHelp")}
           </p>
           <div className="mt-5 flex items-center gap-4">
             <input
@@ -181,12 +188,14 @@ export default function PhaseDetection() {
 
       <section className="surface p-5 sm:p-6">
         <h3 className="text-base font-bold text-[#2d3a36]">
-          {aiBackend === "sam3" ? "Prompt de segmentation" : "Classes à conserver"}
+          {aiBackend === "sam3"
+            ? t("detection.promptTitle")
+            : t("detection.classesTitle")}
         </h3>
         <p className="mt-1 text-xs leading-5 text-[#77847f]">
           {aiBackend === "sam3"
-            ? "Décrivez la catégorie visuelle à segmenter sur toute l’orthomosaïque."
-            : "Les classes sélectionnées seront indexées et affichées dans le viewer."}
+            ? t("detection.promptHelp")
+            : t("detection.classesHelp")}
         </p>
         {aiBackend === "sam3" ? (
           <div className="relative mt-4">
@@ -229,18 +238,22 @@ export default function PhaseDetection() {
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4 sm:px-6">
           <span>
             <span className="block text-sm font-bold text-[#2d3a36]">
-              Modèle et tuilage
+              {t("detection.modelAndTiles")}
             </span>
             <span className="mt-0.5 block text-xs text-[#77847f]">
               {aiBackend === "yolo" ? aiModelVariant : "SAM 3"} · {tileSize} × {tileSize} px
             </span>
           </span>
-          <span className="text-xs font-semibold text-[#4568b1]">Modifier</span>
+          <span className="text-xs font-semibold text-[#4568b1]">
+            {t("detection.modify")}
+          </span>
         </summary>
         <div className="grid gap-6 border-t border-[#e5ebe8] p-5 sm:p-6 lg:grid-cols-[minmax(0,1fr)_280px]">
           <div>
             <h3 className="text-sm font-bold text-[#2d3a36]">
-              {aiBackend === "yolo" ? "Capacité du modèle YOLO OBB" : "Backend SAM 3"}
+              {aiBackend === "yolo"
+                ? t("detection.yoloCapacity")
+                : t("detection.samBackend")}
             </h3>
             {aiBackend === "yolo" ? (
               <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -269,14 +282,16 @@ export default function PhaseDetection() {
               </div>
             ) : (
               <p className="mt-2 text-xs leading-5 text-[#77847f]">
-                La catégorie à segmenter est pilotée par le prompt principal.
+                {t("detection.samPromptHelp")}
               </p>
             )}
           </div>
           <label className="block">
-            <span className="text-sm font-bold text-[#2d3a36]">Taille des tuiles</span>
+            <span className="text-sm font-bold text-[#2d3a36]">
+              {t("detection.tileSize")}
+            </span>
             <span className="mt-1 block text-xs leading-5 text-[#77847f]">
-              Les grandes tuiles préservent le contexte mais consomment davantage de VRAM.
+              {t("detection.tileSizeHelp")}
             </span>
             <select
               value={tileSize}

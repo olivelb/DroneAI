@@ -3,6 +3,7 @@
 import React from "react";
 import { Cpu, Gauge, HardDrive, ShieldCheck, Zap } from "lucide-react";
 import { useMissionRuntime } from "../lib/mission-runtime";
+import { useI18n } from "../lib/i18n/provider";
 import { useStore } from "../lib/store";
 import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
@@ -134,8 +135,8 @@ const isTrue = (value: unknown) =>
 const ALIGNMENT_PRESETS = [
   {
     id: "fast",
-    label: "Rapide · grande mission",
-    description: "Profil ALBAGNAC sous une heure, avec une passe BA sans retriangulation finale.",
+    label: "Fast · large mission",
+    description: "Sub-hour ALBAGNAC profile with one BA pass and no final retriangulation.",
     icon: <Zap size={16} />,
     values: {
       feature_type: "SIFT",
@@ -166,8 +167,8 @@ const ALIGNMENT_PRESETS = [
   },
   {
     id: "survey",
-    label: "Planimétrie · Helenenschacht",
-    description: "Profil 2400 px validé sur un Autel et 5 checkpoints ; il priorise le XY, avec une verticale moins précise.",
+    label: "Planimetry · Helenenschacht",
+    description: "2,400 px profile qualified on an Autel and five checkpoints; it prioritizes XY with less accurate elevation.",
     icon: <ShieldCheck size={16} />,
     values: {
       feature_type: "SIFT",
@@ -198,8 +199,8 @@ const ALIGNMENT_PRESETS = [
   },
   {
     id: "precision-rtk",
-    label: "Précision 3D · RTK",
-    description: "Profil 3200 px/8192 SIFT validé sur Helenenschacht : meilleur compromis 3D avec RTK, mais moins précis en planimétrie que le profil 2400 px.",
+    label: "3D accuracy · RTK",
+    description: "3,200 px / 8,192 SIFT profile qualified on Helenenschacht: best 3D compromise with RTK, but less accurate in planimetry than the 2,400 px profile.",
     icon: <ShieldCheck size={16} />,
     values: {
       feature_type: "SIFT",
@@ -231,6 +232,7 @@ const ALIGNMENT_PRESETS = [
 ] as const;
 
 export default function PhaseReconstruction() {
+  const { t } = useI18n();
   const {
     pipeline, setPipeline, parameterSchema,
     parameterValues, updateParameter, setParameterValues,
@@ -247,10 +249,44 @@ export default function PhaseReconstruction() {
   );
   const facadeMode = parameterValues.orthophoto_mode === "facade";
 
+  const groupTranslations: Record<
+    string,
+    { label: string; description: string }
+  > = {
+    Product: {
+      label: t("reconstruction.group.product"),
+      description: t("reconstruction.group.productDescription"),
+    },
+    Facade: {
+      label: t("reconstruction.group.facade"),
+      description: t("reconstruction.group.facadeDescription"),
+    },
+    Features: {
+      label: t("reconstruction.group.features"),
+      description: t("reconstruction.group.featuresDescription"),
+    },
+    Matching: {
+      label: t("reconstruction.group.matching"),
+      description: t("reconstruction.group.matchingDescription"),
+    },
+    Mapping: {
+      label: t("reconstruction.group.mapping"),
+      description: t("reconstruction.group.mappingDescription"),
+    },
+    Georeferencing: {
+      label: t("reconstruction.group.georeferencing"),
+      description: t("reconstruction.group.georeferencingDescription"),
+    },
+    Undistortion: {
+      label: t("reconstruction.group.undistortion"),
+      description: t("reconstruction.group.undistortionDescription"),
+    },
+  };
   const advancedGroups = RECONSTRUCTION_GROUPS.map((group) => ({
     id: group.toLocaleLowerCase(),
-    label: group,
-    description: GROUP_DESCRIPTIONS[group],
+    label: groupTranslations[group]?.label ?? group,
+    description:
+      groupTranslations[group]?.description ?? GROUP_DESCRIPTIONS[group],
     keys: RECONSTRUCTION_PARAMS.filter(
       (key) => metadata[key]?.group === group && !ESSENTIAL_KEYS.has(key)
         && !(facadeMode && HIDDEN_IN_FACADE.has(key))
@@ -289,9 +325,9 @@ export default function PhaseReconstruction() {
   return (
     <div className="space-y-5">
       <StageHeader
-        eyebrow="Étape 02 · Géométrie"
-        title="Reconstruction et alignement"
-        description="Choisissez un objectif de production, puis ajustez uniquement les contrôles qui ont un impact direct sur la durée ou la précision."
+        eyebrow={t("reconstruction.eyebrow")}
+        title={t("reconstruction.title")}
+        description={t("reconstruction.description")}
         icon={<Cpu size={21} />}
         iconClassName="bg-[#e1f3ef] text-[#0f766e]"
         status={
@@ -299,10 +335,12 @@ export default function PhaseReconstruction() {
             <Gauge size={17} className="text-[#0f766e]" />
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-[#8a9692]">
-                Moteur actif
+                {t("reconstruction.activeEngine")}
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {pipeline === "modern" ? "Alignement global rapide" : "Référence legacy"}
+                {pipeline === "modern"
+                  ? t("reconstruction.engineModern")
+                  : t("reconstruction.engineLegacy")}
               </div>
             </div>
           </div>
@@ -333,14 +371,12 @@ export default function PhaseReconstruction() {
       <QualityProfileSelector />
 
       <section className="surface p-5 sm:p-6">
-        <div className="eyebrow">Processus de production</div>
+        <div className="eyebrow">{t("reconstruction.process")}</div>
         <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-          Choisir le produit attendu
+          {t("reconstruction.processTitle")}
         </h3>
         <p className="mt-1 text-xs leading-5 text-[#77847f]">
-          Le choix configure toute la chaîne et ses étapes terminales. Une
-          façade reste dans un repère métrique local et ne lance pas la
-          détection cartographique.
+          {t("reconstruction.processDescription")}
         </p>
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           {processes.map((process) => {
@@ -359,18 +395,24 @@ export default function PhaseReconstruction() {
               >
                 <span className="flex items-center justify-between gap-3">
                   <span className="text-sm font-bold text-[#26332f]">
-                    {process.label}
+                    {process.id === "facade"
+                      ? t("reconstruction.process.facade")
+                      : t("reconstruction.process.map")}
                   </span>
                   <span className="rounded-full bg-white px-2 py-1 text-[9px] font-bold uppercase tracking-wide text-[#0f766e]">
                     {process.stages.join(" → ")}
                   </span>
                 </span>
                 <span className="mt-2 block text-xs leading-5 text-[#6f7d78]">
-                  {process.description}
+                  {process.id === "facade"
+                    ? t("reconstruction.process.facadeDescription")
+                    : t("reconstruction.process.mapDescription")}
                 </span>
                 {process.profile_id && (
                   <span className="mt-2 block font-mono text-[9px] text-[#82908b]">
-                    Profil validé : {process.profile_id}
+                    {t("reconstruction.validatedProfile", {
+                      profile: process.profile_id,
+                    })}
                   </span>
                 )}
               </button>
@@ -381,26 +423,43 @@ export default function PhaseReconstruction() {
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="surface p-5 sm:p-6">
-          <div className="eyebrow">Profil de production</div>
+          <div className="eyebrow">{t("reconstruction.profile")}</div>
           <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            {facadeMode ? "Façade HD · couverture qualifiée" : "Relevé précis ou traitement rapide"}
+            {facadeMode
+              ? t("reconstruction.facadeTitle")
+              : t("reconstruction.mapTitle")}
           </h3>
           <p className="mt-1 text-xs leading-5 text-[#77847f]">
             {facadeMode
-              ? "Le profil Façade HD privilégie une distribution homogène des points ; les séquences de détail peuvent être exclues avant la densification DroneGS."
-              : "Le profil initial cible la planimétrie ; il ne constitue pas une certification universelle. Pour un autre capteur ou un besoin altimétrique, partez du profil rapide et validez sur des checkpoints."}
+              ? t("reconstruction.facadeDescription")
+              : t("reconstruction.mapDescription")}
           </p>
           {facadeMode ? (
             <div className="mt-4 rounded-2xl border border-[#bee2da] bg-white p-4 text-xs leading-5 text-[#60716b]">
-              SIFT 4200 px · Caspar · voisinage 48/16 + 6 temporelles ·
-              DroneGS 30 000 itérations en 4K · texture ≤ 45°.
+              {t("reconstruction.facadeRecipe")}
             </div>
           ) : (
             <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               {ALIGNMENT_PRESETS.map((preset) => (
                 <PresetButton
                   key={preset.id}
-                  preset={preset}
+                  preset={{
+                    ...preset,
+                    label: t(
+                      preset.id === "fast"
+                        ? "reconstruction.preset.fast"
+                        : preset.id === "survey"
+                          ? "reconstruction.preset.survey"
+                          : "reconstruction.preset.precision",
+                    ),
+                    description: t(
+                      preset.id === "fast"
+                        ? "reconstruction.preset.fastDescription"
+                        : preset.id === "survey"
+                          ? "reconstruction.preset.surveyDescription"
+                          : "reconstruction.preset.precisionDescription",
+                    ),
+                  }}
                   parameterValues={parameterValues}
                   layout="row"
                   tone="teal"
@@ -414,18 +473,26 @@ export default function PhaseReconstruction() {
         </div>
 
         <div className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
-          <div className="eyebrow">Résumé effectif</div>
+          <div className="eyebrow">{t("reconstruction.summary")}</div>
           <div className="mt-4 grid grid-cols-2 gap-x-4 gap-y-5">
             {[
-              ["Résolution SIFT", `${parameterValues.feature_max_image_size ?? "—"} px`],
-              ["Passes BA", String(parameterValues.global_mapper_ba_iterations ?? "—")],
-              ["Retriangulation", retriangulationEnabled ? "Activée" : "Ignorée"],
+              [t("reconstruction.siftResolution"), `${parameterValues.feature_max_image_size ?? "—"} px`],
+              [t("reconstruction.baPasses"), String(parameterValues.global_mapper_ba_iterations ?? "—")],
+              [
+                t("reconstruction.retriangulation"),
+                retriangulationEnabled
+                  ? t("reconstruction.enabled")
+                  : t("reconstruction.skipped"),
+              ],
               [
                 "CRS",
                 facadeMode
-                  ? "Repère local (sans CRS)"
+                  ? t("reconstruction.localFrame")
                   : parameterValues.projected_crs_mode === "custom"
-                  ? String(parameterValues.projected_crs || "EPSG requis")
+                  ? String(
+                      parameterValues.projected_crs ||
+                        t("reconstruction.epsgRequired"),
+                    )
                   : String(parameterValues.projected_crs_mode ?? "auto-local"),
               ],
             ].map(([label, value]) => (
@@ -445,13 +512,13 @@ export default function PhaseReconstruction() {
       <section className="surface p-5 sm:p-6">
         <div className="mb-5 flex items-start justify-between gap-4">
           <div>
-            <div className="eyebrow">Contrôles essentiels</div>
+            <div className="eyebrow">{t("reconstruction.essential")}</div>
             <h3 className="mt-1 text-lg font-bold text-[#293632]">
-              Les réglages qui changent vraiment le résultat
+              {t("reconstruction.essentialTitle")}
             </h3>
           </div>
           <span className="hidden rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#65736e] sm:inline">
-            {essentialKeys.length} réglages
+            {t("advanced.controls", { count: essentialKeys.length })}
           </span>
         </div>
         <div className="parameter-grid">
@@ -473,20 +540,26 @@ export default function PhaseReconstruction() {
             <HardDrive size={16} className="text-[#0f766e]" />
             <span>
               <span className="block text-sm font-bold text-[#2d3a36]">
-                Environnement d’exécution
+                {t("reconstruction.environment")}
               </span>
               <span className="mt-0.5 block text-xs text-[#77847f]">
                 {workDrives.find((drive) => drive.name === workDrive)?.label ??
-                  "Stockage automatique"}{" "}
-                · {pipeline === "modern" ? "pipeline moderne" : "pipeline legacy"}
+                  t("reconstruction.automaticStorage")}{" "}
+                · {pipeline === "modern"
+                  ? t("reconstruction.modernPipeline")
+                  : t("reconstruction.legacyPipeline")}
               </span>
             </span>
           </span>
-          <span className="text-xs font-semibold text-[#0f766e]">Modifier</span>
+          <span className="text-xs font-semibold text-[#0f766e]">
+            {t("reconstruction.modify")}
+          </span>
         </summary>
         <div className="grid gap-5 border-t border-[#e5ebe8] p-5 sm:p-6 lg:grid-cols-2">
           <div>
-            <h4 className="text-sm font-bold text-[#34413d]">Disque de travail</h4>
+            <h4 className="text-sm font-bold text-[#34413d]">
+              {t("reconstruction.workDisk")}
+            </h4>
             <div className="mt-3 grid gap-2">
               {workDrives.map((drive) => (
                 <button
@@ -504,13 +577,15 @@ export default function PhaseReconstruction() {
               ))}
               {workDrives.length === 0 && (
                 <p className="text-xs text-[#77847f]">
-                  Le meilleur volume disponible sera sélectionné automatiquement.
+                  {t("reconstruction.autoDisk")}
                 </p>
               )}
             </div>
           </div>
           <div>
-            <h4 className="text-sm font-bold text-[#34413d]">Famille de moteur</h4>
+            <h4 className="text-sm font-bold text-[#34413d]">
+              {t("reconstruction.engineFamily")}
+            </h4>
             <div className="mt-3 grid gap-2">
               {(["modern", "legacy"] as const).map((engine) => (
                 <button
@@ -528,8 +603,8 @@ export default function PhaseReconstruction() {
                   </span>
                   <span className="mt-0.5 block text-[11px] text-[#77847f]">
                     {engine === "modern"
-                      ? "SIFT CUDA, paires GPS bornées et GLOMAP GPU"
-                      : "SIFT haute résolution, paires spatiales et mapper Ceres"}
+                      ? t("reconstruction.modernDescription")
+                      : t("reconstruction.legacyDescription")}
                   </span>
                 </button>
               ))}
@@ -543,7 +618,7 @@ export default function PhaseReconstruction() {
         metadata={metadata}
         values={parameterValues}
         onChange={updateParameter}
-        description="Matching, solveur, RTK, garde-fous et budgets de temps restent disponibles sans encombrer la configuration courante."
+        description={t("reconstruction.advancedDescription")}
       />
     </div>
   );

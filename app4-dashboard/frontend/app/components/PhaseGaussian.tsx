@@ -13,6 +13,7 @@ import { ParamField } from "./ParamField";
 import QualityProfileSelector from "./QualityProfileSelector";
 import StageHeader from "./StageHeader";
 import { useMissionRuntime } from "../lib/mission-runtime";
+import { useI18n } from "../lib/i18n/provider";
 import { useStore } from "../lib/store";
 
 const PARAMETER_GROUPS = [
@@ -220,6 +221,7 @@ const ESSENTIAL_KEYS = new Set([
 ]);
 
 export default function PhaseGaussian() {
+  const { t } = useI18n();
   const {
     parameterSchema,
     parameterValues,
@@ -283,17 +285,40 @@ export default function PhaseGaussian() {
     "gs_filter_z_floater",
   ].filter((key) => isTrue(parameterValues[key])).length;
   const essentialKeys = [...ESSENTIAL_KEYS].filter((key) => metadata[key]);
+  const groupTranslations = {
+    output: {
+      label: t("gaussian.group.output"),
+      description: t("gaussian.group.outputDescription"),
+    },
+    training: {
+      label: t("gaussian.group.training"),
+      description: t("gaussian.group.trainingDescription"),
+    },
+    schedule: {
+      label: t("gaussian.group.schedule"),
+      description: t("gaussian.group.scheduleDescription"),
+    },
+    reliability: {
+      label: t("gaussian.group.reliability"),
+      description: t("gaussian.group.reliabilityDescription"),
+    },
+    filters: {
+      label: t("gaussian.group.filters"),
+      description: t("gaussian.group.filtersDescription"),
+    },
+  };
   const advancedGroups = PARAMETER_GROUPS.map((group) => ({
     ...group,
+    ...groupTranslations[group.id],
     keys: group.keys.filter((key) => !ESSENTIAL_KEYS.has(key)),
   }));
 
   return (
     <div className="space-y-5">
       <StageHeader
-        eyebrow="Étape 03 · Apparence"
-        title="DroneGS et orthomosaïque"
-        description="Sélectionnez un budget de production, contrôlez la résolution finale et laissez les réglages de recherche accessibles à la demande."
+        eyebrow={t("gaussian.eyebrow")}
+        title={t("gaussian.title")}
+        description={t("gaussian.description")}
         icon={<Sparkles size={21} />}
         iconClassName="bg-[#fff1cf] text-[#b66b05]"
         status={
@@ -310,10 +335,12 @@ export default function PhaseGaussian() {
             />
             <div>
               <div className="text-[10px] font-bold uppercase tracking-wide text-[#7c8884]">
-                Input readiness
+                {t("gaussian.inputReadiness")}
               </div>
               <div className="text-sm font-semibold text-[#34413d]">
-                {hasReconstruction ? "Modèle sparse prêt" : "Reconstruction requise"}
+                {hasReconstruction
+                  ? t("gaussian.inputReady")
+                  : t("gaussian.inputRequired")}
               </div>
             </div>
           </div>
@@ -324,7 +351,7 @@ export default function PhaseGaussian() {
         <section className="rounded-[1.25rem] border border-[#bee2da] bg-[#edf9f6] p-5">
           <div className="flex items-center justify-between text-sm">
             <span className="font-semibold text-[#31504a]">
-              Entraînement DroneGS en cours
+              {t("gaussian.training")}
             </span>
             <span className="font-bold text-[#0f766e]">
               {colmapService.progress ?? 0}%
@@ -342,13 +369,15 @@ export default function PhaseGaussian() {
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
         <QualityProfileSelector />
         <div className="rounded-[1.25rem] border border-[#eadcb9] bg-[#fff9e9] p-5">
-          <div className="eyebrow text-[#a76509]">Budget effectif</div>
+          <div className="eyebrow text-[#a76509]">
+            {t("gaussian.budget")}
+          </div>
           <div className="mt-4 space-y-4">
             {([
-              ["Itérations", String(parameterValues.gs_iterations ?? "—")],
-              ["Largeur d’entraînement", `${String(parameterValues.gs_max_width ?? "—")} px`],
-              ["Plafond de Gaussiennes", Number(parameterValues.gs_cap_max || 0).toLocaleString()],
-              ["Nettoyages actifs", String(activeFilters)],
+              [t("gaussian.iterations"), String(parameterValues.gs_iterations ?? "—")],
+              [t("gaussian.trainingWidth"), `${String(parameterValues.gs_max_width ?? "—")} px`],
+              [t("gaussian.cap"), Number(parameterValues.gs_cap_max || 0).toLocaleString()],
+              [t("gaussian.activeCleanups"), String(activeFilters)],
             ] satisfies Array<[string, string]>).map(([label, value]) => (
               <div key={label} className="flex items-end justify-between gap-3 border-b border-[#eadfca] pb-3 last:border-0 last:pb-0">
                 <span className="text-xs text-[#766f62]">{label}</span>
@@ -360,9 +389,9 @@ export default function PhaseGaussian() {
       </section>
 
       <section className="surface p-5 sm:p-6">
-        <div className="eyebrow">Contrôles essentiels</div>
+        <div className="eyebrow">{t("gaussian.essential")}</div>
         <h3 className="mt-1 text-lg font-bold text-[#293632]">
-          Sortie, budget et seuils qualité
+          {t("gaussian.essentialTitle")}
         </h3>
         <div className="parameter-grid mt-5">
           {essentialKeys.map((key) => (
@@ -382,7 +411,7 @@ export default function PhaseGaussian() {
         metadata={metadata}
         values={parameterValues}
         onChange={updateDroneGSParameter}
-        description="Capacité, optimiseur, checkpoints, stratégie de test et filtres spatiaux sont regroupés et recherchables."
+        description={t("gaussian.advancedDescription")}
       />
     </div>
   );
