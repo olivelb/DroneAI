@@ -132,6 +132,27 @@ fixture. The next detection action should benchmark a model trained or
 fine-tuned for nadir vehicles against this tile, rather than lowering the
 production threshold and admitting unrelated false positives.
 
+### Internet-image control
+
+To separate a broken runtime or class resolver from a Chapelle domain miss, the
+same image and code path were tested against Wikimedia Commons
+[`Top view of a freeway (Unsplash).jpg`](https://commons.wikimedia.org/wiki/File:Top_view_of_a_freeway_(Unsplash).jpg).
+The 4,288 × 2,848 JPEG is CC0 and has SHA-256
+`2f5c56e295b56a6864035cac5d1fbe8a8309362ee7c6e79e60c102f99303053a`.
+
+It was split into 24 native-resolution 1,024 px tiles with the same 256 px
+overlap. The exact `run_yolo_detection` function, model artifact, `car` class
+mapping and 0.20 confidence threshold produced 13 raw vehicle detections across
+10 positive tiles, with confidences from 0.2149 to 0.5637. No deduplication or
+ground-truth recall score was computed for this control, and several visible
+cars were missed. It nevertheless proves that CUDA inference, model loading,
+OBB extraction and the `small vehicle`/`large vehicle` resolver are operational.
+
+The Chapelle failure is consequently a model/domain-generalization problem,
+likely amplified by Gaussian texture and contrast, rather than a dead YOLO
+runtime or an impossible vehicle scale: the missed Chapelle car is larger in
+pixels than multiple vehicles detected in the control.
+
 ## Operational outcome
 
 - The Normal workspace occupies 2.9 GiB; 66 GiB remained free on Ubuntu.
