@@ -177,6 +177,21 @@ ANALYSIS_RUN_PHASES = (
     "recovery_detecting",
 )
 ANALYSIS_TILE_STATUSES = ("queued", "completed", "dead")
+MISSION_STAGE_TYPES = (
+    "reconstruction",
+    "gaussian_training",
+    "gaussian_filtering",
+    "rasterization",
+    "detection",
+)
+MISSION_STAGE_RUN_STATUSES = (
+    "blocked",
+    "queued",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+)
 MAP_FEATURE_SOURCES = ("manual", "ai")
 PIPELINE_LOG_STATUSES = ("processing", "success", "error", "cancelled")
 INBOX_EVENT_STATUSES = ("processing", "completed", "failed")
@@ -384,9 +399,160 @@ class Mission(Base):
         cascade="all, delete-orphan",
     )
     logs = relationship("MissionLog", back_populates="mission", cascade="all, delete-orphan")
+    stage_runs = relationship(
+        "MissionStageRun",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    artifacts = relationship(
+        "MissionArtifact",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<Mission(vol_id={self.vol_id!r}, status={self.status!r}, step={self.current_step!r})>"
+
+
+class MissionStageRun(RequiredTimestampMixin, Base):
+    """One idempotent execution attempt for a declared mission stage."""
+
+    __tablename__ = "mission_stage_runs"
+    __table_args__ = (
+        Index(
+            "ix_mission_stage_runs_mission_stage",
+            "mission_id",
+            "stage",
+            "attempt",
+        ),
+        Index(
+            "ix_mission_stage_runs_recovery",
+            "status",
+            "heartbeat_at",
+        ),
+        UniqueConstraint(
+            "mission_id",
+            "stage",
+            "attempt",
+            name="uq_mission_stage_run_attempt",
+        ),
+        UniqueConstraint("idempotency_key", name="uq_mission_stage_run_idempotency"),
+        CheckConstraint(
+            _values_check("stage", MISSION_STAGE_TYPES),
+            name="ck_mission_stage_runs_stage",
+        ),
+        CheckConstraint(
+            _values_check("status", MISSION_STAGE_RUN_STATUSES),
+            name="ck_mission_stage_runs_status",
+        ),
+        CheckConstraint(
+            "progress >= 0 AND progress <= 100",
+            name="ck_mission_stage_runs_progress",
+        ),
+        CheckConstraint(
+            "attempt >= 0",
+            name="ck_mission_stage_runs_attempt",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) = 64",
+            name="ck_mission_stage_runs_idempotency_length",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid4()), index=True)
+    mission_id = Column(Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage = Column(String(32), nullable=False)
+    attempt = Column(Integer, nullable=False, default=0)
+    status = Column(String(32), nullable=False, default="blocked")
+    progress = Column(Integer, nullable=False, default=0)
+    current_step = Column(String(64), nullable=True)
+    idempotency_key = Column(String(64), nullable=False)
+    executor = Column(String(256), nullable=True)
+    parameters = Column(PORTABLE_JSON, nullable=False, default=dict)
+    upstream_artifact_ids = Column(PORTABLE_JSON, nullable=False, default=list)
+    provenance = Column(PORTABLE_JSON, nullable=False, default=dict)
+    quality_metrics = Column(PORTABLE_JSON, nullable=False, default=dict)
+    error_message = Column(Text, nullable=True)
+    heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+
+    mission = relationship("Mission", back_populates="stage_runs")
+    artifacts = relationship(
+        "MissionArtifact",
+        back_populates="stage_run",
+        cascade="all, delete-orphan",
+    )
+
+
+class MissionArtifact(Base):
+    """Immutable output identity produced by exactly one stage run."""
+
+    __tablename__ = "mission_artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(checksum_sha256) = 64",
+            name="ck_mission_artifacts_sha256_length",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    artifact_id = Column(String(36), unique=True, nullable=False, default=lambda: str(uuid4()), index=True)
+    mission_id = Column(Integer, ForeignKey("missions.id", ondelete="CASCADE"), nullable=False, index=True)
+    stage_run_id = Column(
+        Integer,
+        ForeignKey("mission_stage_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(64), nullable=False, index=True)
+    uri = Column(String(2048), nullable=False)
+    checksum_sha256 = Column(String(64), nullable=False)
+    size_bytes = Column(PORTABLE_BIGINT, nullable=True)
+    artifact_metadata = Column(PORTABLE_JSON, nullable=False, default=dict)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+
+    mission = relationship("Mission", back_populates="artifacts")
+    stage_run = relationship("MissionStageRun", back_populates="artifacts")
+    parent_edges = relationship(
+        "MissionArtifactParent",
+        foreign_keys="MissionArtifactParent.artifact_id",
+        cascade="all, delete-orphan",
+    )
+
+
+class MissionArtifactParent(Base):
+    """Exact immutable parent edge between two mission artifacts."""
+
+    __tablename__ = "mission_artifact_parents"
+    __table_args__ = (
+        Index(
+            "ix_mission_artifact_parents_parent",
+            "parent_artifact_id",
+        ),
+        CheckConstraint(
+            "artifact_id <> parent_artifact_id",
+            name="ck_mission_artifact_parent_not_self",
+        ),
+    )
+
+    artifact_id = Column(
+        Integer,
+        ForeignKey("mission_artifacts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    parent_artifact_id = Column(
+        Integer,
+        ForeignKey("mission_artifacts.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    relation = Column(String(64), nullable=False, default="derived_from")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(UTC))
+    parent = relationship(
+        "MissionArtifact",
+        foreign_keys=[parent_artifact_id],
+    )
 
 
 class Detection(Base):

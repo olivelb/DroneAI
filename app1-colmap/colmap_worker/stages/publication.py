@@ -545,6 +545,10 @@ def complete_colmap_pipeline(
     gaussian_upload_complete = publication_state.gaussian_upload_complete
     durable_checkpoint_dir = gaussian_state.durable_checkpoint_dir
     checkpoint_s3_prefix = gaussian_state.checkpoint_s3_prefix
+    requested_phases = mission_params.get("phases")
+    detection_requested = (
+        requested_phases is None or "detection" in requested_phases
+    )
 
     cleanup_pipeline_workspace(workspace_dir, vol_id)
 
@@ -560,6 +564,15 @@ def complete_colmap_pipeline(
             "Facade orthophoto published in a local coordinate frame; "
             "aerial detection stages were intentionally skipped."
         )
+    elif not detection_requested:
+        completion_details = {
+            "event": "selected_pipeline_complete",
+            "terminal": True,
+            "selected_phases": requested_phases,
+        }
+        completion_log = (
+            "Detection was not selected; orthomosaic publication is terminal."
+        )
     runtime.report_mission_progress(
         vol_id,
         "DONE",
@@ -568,7 +581,7 @@ def complete_colmap_pipeline(
         log=completion_log,
         details=completion_details,
     )
-    if not facade_mode:
+    if not facade_mode and detection_requested:
         publish_next_stage_message(
             runtime.require_producer(),
             TOPIC_OUT,

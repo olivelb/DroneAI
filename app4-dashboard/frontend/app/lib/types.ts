@@ -12,6 +12,12 @@ export type ParameterOption = string | {
   label: string;
 };
 export type PhaseId = "setup" | "reconstruction" | "gaussian" | "detection" | "results";
+export type MissionStageId =
+  | "reconstruction"
+  | "gaussian_training"
+  | "gaussian_filtering"
+  | "rasterization"
+  | "detection";
 
 export type StatusPayload = {
   vol_id: string;
@@ -129,7 +135,8 @@ export type MissionCatalogResponse = {
 
 export type MissionDetail = MissionCatalogItem & {
   parameters: Record<string, unknown>;
-  attempts: Array<Record<string, unknown>>;
+  attempts: Array<number | Record<string, unknown>>;
+  stage_runs?: Array<Record<string, unknown>>;
   phases: Record<string, StatusPayload>;
   heartbeat: {
     updated_at?: string | null;
@@ -147,9 +154,13 @@ export type MissionDetail = MissionCatalogItem & {
   products: Array<{
     kind: string;
     run_id?: string;
+    artifact_id?: string;
+    stage_run_id?: string;
     name?: string;
     status?: string;
     s3_key?: string | null;
+    checksum_sha256?: string;
+    parent_artifact_ids?: string[];
   }>;
 };
 
@@ -253,6 +264,13 @@ export type ParameterConfigResponse = {
   quality_profiles: QualityProfile[];
   quality_profile_default: QualityProfileId;
   yolo_models: YoloModelCapability[];
+  stage_dag: {
+    version: number;
+    stages: Array<{
+      id: MissionStageId;
+      dependencies: MissionStageId[];
+    }>;
+  };
 };
 
 export type QualityProfile = {

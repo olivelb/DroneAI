@@ -591,6 +591,43 @@
           "default": null,
           "title": "Input Dataset"
         },
+        "owner_subject": {
+          "anyOf": [
+            {
+              "maxLength": 256,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Owner Subject"
+        },
+        "phases": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "reconstruction",
+                  "gaussian_training",
+                  "gaussian_filtering",
+                  "rasterization",
+                  "detection"
+                ],
+                "type": "string"
+              },
+              "maxItems": 5,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phases"
+        },
         "pipeline": {
           "anyOf": [
             {
@@ -668,6 +705,32 @@
           "title": "Schema Version",
           "type": "integer"
         },
+        "stage_parameters": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage Parameters"
+        },
+        "stage_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 36,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage Run Id"
+        },
         "tile_size": {
           "anyOf": [
             {
@@ -681,6 +744,30 @@
           ],
           "default": null,
           "title": "Tile Size"
+        },
+        "upstream_artifact_ids": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "propertyNames": {
+                "enum": [
+                  "reconstruction",
+                  "gaussian_training",
+                  "gaussian_filtering",
+                  "rasterization",
+                  "detection"
+                ]
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Upstream Artifact Ids"
         },
         "vol_id": {
           "maxLength": 256,
@@ -1006,6 +1093,19 @@
           ],
           "default": null,
           "title": "Service"
+        },
+        "stage_run_id": {
+          "anyOf": [
+            {
+              "maxLength": 36,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage Run Id"
         },
         "status": {
           "enum": [

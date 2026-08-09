@@ -40,12 +40,13 @@ logger must be collected by the deployment's immutable audit-log sink.
 The same explicit scope is available on mission mutations and all `/maps`
 metadata, tile, vector, feature, analysis and export routes.
 
-## Compatibility and next phase
+## Versioned execution history
 
-The `attempts` section currently projects the mission retry counter because the
-legacy schema stores a single mutable lifecycle record. Phase 5 replaces this
-projection with immutable `mission_stage_runs`, artifacts and parent edges
-without changing the owner boundary introduced here.
+Migration `0014` replaces the attempt-counter-only detail projection for new
+missions with durable per-stage attempts and immutable artifact parent edges.
+Existing missions without these records retain the compatibility projection.
+The owner boundary introduced here applies unchanged to every stage and
+artifact operation. See [`versioned-stage-dag-v1.md`](versioned-stage-dag-v1.md).
 
 ## Validation performed
 

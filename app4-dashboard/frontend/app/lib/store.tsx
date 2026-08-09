@@ -4,8 +4,9 @@ import React, { createContext, useCallback, useContext, useEffect, useId, useSta
 import type {
   AIBackend, ParameterConfigResponse,
   ParamValue, PipelineName, QualityProfileId, YOLOModelVariant,
-  PhaseId,
+  MissionStageId, PhaseId,
 } from "./types";
+import { MISSION_STAGE_ORDER } from "./stage-selection";
 import { fetchParameters } from "./api";
 import { useAuth } from "./auth";
 import {
@@ -15,15 +16,12 @@ import {
 } from "./quality-profile-state";
 
 type StoreState = {
-  // Mission input selection
   selectedPath: string;
   setSelectedPath: (path: string) => void;
-
-  // Mission draft
   volId: string;
   setVolId: (id: string) => void;
-
-  // Pipeline params
+  selectedStages: MissionStageId[];
+  setSelectedStages: (stages: MissionStageId[]) => void;
   pipeline: PipelineName;
   setPipeline: (p: PipelineName) => void;
   parameterSchema: ParameterConfigResponse | null;
@@ -35,7 +33,6 @@ type StoreState = {
   workDrive: string;
   setWorkDrive: (d: string) => void;
 
-  // AI config
   aiConfidence: number;
   setAiConfidence: (c: number) => void;
   aiBackend: AIBackend;
@@ -49,7 +46,6 @@ type StoreState = {
   tileSize: number;
   setTileSize: (size: number) => void;
 
-  // Upload
   uploadDatasetName: string;
   setUploadDatasetName: (n: string) => void;
   uploadFiles: FileList | null;
@@ -59,10 +55,8 @@ type StoreState = {
   isUploading: boolean;
   setIsUploading: (u: boolean) => void;
 
-  // Active tab (phase)
   activePhase: PhaseId;
   setActivePhase: (phase: PhaseId) => void;
-
 };
 
 const StoreContext = createContext<StoreState | null>(null);
@@ -78,6 +72,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const generatedMissionId = useId().replace(/[^A-Za-z0-9]/g, "") || "new";
   const [selectedPath, setSelectedPath] = useState("");
   const [volId, setVolId] = useState(`mission-${generatedMissionId}`);
+  const [selectedStages, setSelectedStages] = useState<MissionStageId[]>(MISSION_STAGE_ORDER);
   const [activePhase, setActivePhase] = useState<PhaseId>("setup");
 
   const [aiConfidence, setAiConfidence] = useState(0.5);
@@ -156,7 +151,6 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     setParameterValues((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  // Load protected data only after an authenticated cookie session exists.
   useEffect(() => {
     if (authStatus !== "authenticated") return;
     const initialLoad = window.setTimeout(() => {
@@ -175,6 +169,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const value: StoreState = {
     selectedPath, setSelectedPath,
     volId, setVolId,
+    selectedStages, setSelectedStages,
     pipeline, setPipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
     qualityProfileId, setQualityProfile,
     workDrive, setWorkDrive,

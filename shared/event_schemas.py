@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 from shared.quality_profiles import QualityProfileId
+from shared.stage_contracts import (
+    STAGE_DEPENDENCIES,
+    STAGE_ORDER,
+    StageId,
+    validate_stage_selection,
+)
 
 
 JsonObject = dict[str, Any]
@@ -45,6 +52,34 @@ class MissionEvent(EventEnvelope):
     classes: list[str] | None = Field(default=None, max_length=20)
     colmap_params: JsonObject | None = None
     work_drive: str | None = Field(default=None, max_length=256)
+    owner_subject: str | None = Field(default=None, max_length=256)
+    phases: list[StageId] | None = Field(default=None, min_length=1, max_length=5)
+    stage_run_id: str | None = Field(default=None, max_length=36)
+    upstream_artifact_ids: dict[StageId, str] | None = None
+    stage_parameters: JsonObject | None = None
+
+    @model_validator(mode="after")
+    def validate_stage_contract(self) -> MissionEvent:
+        phases = list(self.phases or STAGE_ORDER)
+        upstream = self.upstream_artifact_ids or {}
+        validate_stage_selection(phases, upstream)
+        for artifact_id in upstream.values():
+            UUID(artifact_id)
+        if self.stage_run_id is None:
+            if upstream:
+                raise ValueError(
+                    "upstream artifacts are only accepted for a stage-run command"
+                )
+            return self
+        UUID(self.stage_run_id)
+        if len(phases) != 1:
+            raise ValueError("a stage-run command must select exactly one phase")
+        required = set(STAGE_DEPENDENCIES[phases[0]])
+        if set(upstream) != required:
+            raise ValueError(
+                "a stage-run command must identify every direct dependency"
+            )
+        return self
 
 
 class InferenceEventEnvelope(EventEnvelope):
@@ -138,6 +173,13 @@ class StatusEvent(EventEnvelope):
     progress: int | None = Field(default=None, ge=0, le=100, strict=True)
     log: str | None = Field(default=None, max_length=16_384)
     details: JsonObject | None = None
+    stage_run_id: str | None = Field(default=None, max_length=36)
+
+    @model_validator(mode="after")
+    def validate_stage_run_id(self) -> StatusEvent:
+        if self.stage_run_id is not None:
+            UUID(self.stage_run_id)
+        return self
 
 
 class ControlEvent(EventEnvelope):

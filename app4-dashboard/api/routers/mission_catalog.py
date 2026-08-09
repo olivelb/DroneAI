@@ -6,9 +6,10 @@ from typing import Annotated, Any, TypedDict, cast
 
 from fastapi import APIRouter, Depends, Query
 
-from shared.database import AIAnalysisRun, Mission, MissionLog, get_session
+from shared.database import Mission, get_session
 
 from ..mission_access import get_owned_mission, mission_query
+from ..mission_detail import mission_detail_projection
 from ..mission_state import serialize_mission
 from ..security import Principal, require_authenticated
 
@@ -39,67 +40,6 @@ def _catalog_item(mission: Mission) -> dict[str, Any]:
         "overall_status": serialized["overall_status"],
         "is_stale": serialized["is_stale"],
         "last_event_age_seconds": serialized["last_event_age_seconds"],
-    }
-
-
-def _mission_detail(session: Any, mission: Mission) -> dict[str, Any]:
-    logs = (
-        session.query(MissionLog)
-        .filter(MissionLog.mission_id == mission.id)
-        .order_by(MissionLog.created_at.desc())
-        .limit(200)
-        .all()
-    )
-    analyses = (
-        session.query(AIAnalysisRun)
-        .filter(AIAnalysisRun.mission_id == mission.id)
-        .order_by(AIAnalysisRun.created_at.desc())
-        .all()
-    )
-    products: list[dict[str, Any]] = []
-    if mission.ortho_s3_key:
-        products.append({"kind": "orthomosaic", "s3_key": mission.ortho_s3_key})
-    products.extend(
-        {
-            "kind": "analysis",
-            "run_id": analysis.run_id,
-            "name": analysis.name,
-            "status": analysis.status,
-            "s3_key": analysis.result_s3_key,
-        }
-        for analysis in analyses
-    )
-    snapshot = serialize_mission(cast(Any, mission))
-    return {
-        **_catalog_item(mission),
-        "parameters": mission.params or {},
-        "attempts": [
-            {
-                "attempt": int(mission.retry_count or 0),
-                "status": mission.status,
-                "started_at": mission.created_at.isoformat() if mission.created_at else None,
-                "updated_at": mission.updated_at.isoformat() if mission.updated_at else None,
-            }
-        ],
-        "phases": snapshot["services"],
-        "heartbeat": {
-            "updated_at": snapshot["workspace_state"]["updated_at"],
-            "age_seconds": snapshot["last_event_age_seconds"],
-            "delayed": snapshot["is_stale"],
-        },
-        "logs": [
-            {
-                "service": entry.service,
-                "step": entry.step,
-                "status": entry.status,
-                "progress": entry.progress,
-                "message": entry.message,
-                "details": entry.details,
-                "created_at": entry.created_at.isoformat() if entry.created_at else None,
-            }
-            for entry in reversed(logs)
-        ],
-        "products": products,
     }
 
 
@@ -150,4 +90,8 @@ def mission_detail(
             requested_owner=owner_subject,
             action="detail",
         )
-        return _mission_detail(session, mission)
+        return mission_detail_projection(
+            session,
+            mission,
+            _catalog_item(mission),
+        )

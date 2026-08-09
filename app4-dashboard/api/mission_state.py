@@ -10,6 +10,7 @@ from typing import Any, NotRequired, Protocol, TypedDict, cast
 
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
+from shared.phase_dag import project_status_to_stage_run
 
 TERMINAL_STATUSES = {"success", "error", "cancelled"}
 MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
@@ -157,6 +158,18 @@ def apply_mission_state(session: SessionProtocol, payload: JsonObject) -> None:
         elif event == "copy_progress":
             resume_info["copy_progress"] = details
         mission.resume_info = resume_info
+
+    if isinstance(mission, Mission):
+        project_status_to_stage_run(
+            cast(Any, session),
+            mission,
+            service=service,
+            step=step,
+            event_status=event_status,
+            progress=progress,
+            error_message=log_message,
+            stage_run_id=cast(str | None, payload.get("stage_run_id")),
+        )
 
     session.add(
         MissionLog(

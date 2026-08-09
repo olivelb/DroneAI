@@ -22,11 +22,12 @@ export default function MissionLaunchBar() {
     selectedClasses,
     tileSize,
     workDrive,
+    selectedStages,
   } = useStore();
   const { setLogs, activeMission, setActiveMissionId } = useMissionRuntime();
 
   const isRunning = activeMission?.overall_status === "processing";
-  const canLaunch = Boolean(selectedPath && volId.trim()) && !isRunning;
+  const canLaunch = Boolean(selectedPath && volId.trim() && selectedStages.length) && !isRunning;
 
   const launch = async () => {
     setLogs([t("launch.preparing")]);
@@ -48,6 +49,7 @@ export default function MissionLaunchBar() {
             : selectedClasses,
         colmap_params: parameterValues,
         work_drive: workDrive,
+        phases: selectedStages,
       });
       setLogs((previous) => [
         ...previous,

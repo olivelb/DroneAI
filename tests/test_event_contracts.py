@@ -64,6 +64,37 @@ def test_decode_event_upgrades_a_legacy_payload():
     assert event["event_id"].startswith("tile_detection:")
 
 
+def test_mission_event_accepts_a_versioned_single_stage_command():
+    artifact_id = "d671317d-9424-42ab-86c3-56adb0ea7685"
+    run_id = "02fd284a-aa1c-489b-bb8f-f9eeed70e761"
+
+    event = make_event(
+        "mission",
+        {
+            "vol_id": "mission-stage",
+            "phases": ["detection"],
+            "stage_run_id": run_id,
+            "upstream_artifact_ids": {"rasterization": artifact_id},
+            "stage_parameters": {"confidence": 0.45},
+        },
+    )
+
+    assert event["stage_run_id"] == run_id
+    assert event["upstream_artifact_ids"] == {"rasterization": artifact_id}
+
+
+def test_mission_event_rejects_incomplete_stage_dependencies():
+    with pytest.raises(EventValidationError, match="requires selected phase"):
+        make_event(
+            "mission",
+            {
+                "vol_id": "mission-stage",
+                "phases": ["detection"],
+                "stage_run_id": "02fd284a-aa1c-489b-bb8f-f9eeed70e761",
+            },
+        )
+
+
 def test_tile_detection_accepts_a_complete_object_storage_reference():
     event = make_event(
         "tile_detection",
@@ -142,6 +173,15 @@ def test_status_events_accept_cancelled_and_reject_unknown_states():
     )
 
     assert event["status"] == "cancelled"
+    identified = make_event(
+        "status",
+        {
+            "vol_id": "mission-1",
+            "status": "processing",
+            "stage_run_id": "02fd284a-aa1c-489b-bb8f-f9eeed70e761",
+        },
+    )
+    assert identified["stage_run_id"] == "02fd284a-aa1c-489b-bb8f-f9eeed70e761"
     with pytest.raises(EventValidationError, match="unsupported status"):
         make_event(
             "status",

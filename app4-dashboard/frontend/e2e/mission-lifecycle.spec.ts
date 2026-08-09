@@ -121,6 +121,16 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
           { name: "local", label: "Local", mount: "/work/local" },
         ],
         work_drive_default: "local",
+        stage_dag: {
+          version: 1,
+          stages: [
+            { id: "reconstruction", dependencies: [] },
+            { id: "gaussian_training", dependencies: ["reconstruction"] },
+            { id: "gaussian_filtering", dependencies: ["gaussian_training"] },
+            { id: "rasterization", dependencies: ["gaussian_filtering"] },
+            { id: "detection", dependencies: ["rasterization"] },
+          ],
+        },
       }));
       return;
     }
@@ -278,6 +288,13 @@ test("an operator selects a dataset and launches a mission", async ({ page }) =>
     pipeline: "modern",
     quality_profile: "normal-v1",
     work_drive: "local",
+    phases: [
+      "reconstruction",
+      "gaussian_training",
+      "gaussian_filtering",
+      "rasterization",
+      "detection",
+    ],
   });
 });
 

@@ -41,7 +41,7 @@ function MissionDetailView() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Section title={t("detail.heartbeat")}><pre className="overflow-auto text-xs text-[#53615c]">{JSON.stringify(mission.heartbeat, null, 2)}</pre></Section>
             <Section title={t("detail.attempts")}><pre className="overflow-auto text-xs text-[#53615c]">{JSON.stringify(mission.attempts, null, 2)}</pre></Section>
-            <Section title={t("detail.phases")}><pre className="max-h-96 overflow-auto text-xs text-[#53615c]">{JSON.stringify(mission.phases, null, 2)}</pre></Section>
+            <Section title={t("detail.phases")}><pre className="max-h-96 overflow-auto text-xs text-[#53615c]">{JSON.stringify({ stage_runs: mission.stage_runs ?? [], compatibility: mission.phases }, null, 2)}</pre></Section>
             <Section title={t("detail.products")}>
               {mission.products.length === 0 ? <p className="text-sm text-[#77837f]">{t("detail.noProducts")}</p> : mission.products.map((product, index) => <div key={`${product.kind}-${product.run_id ?? index}`} className="border-b border-[#e7ecea] py-2 text-xs last:border-0"><strong>{product.kind}</strong> · {product.name ?? product.s3_key ?? product.status}</div>)}
             </Section>
