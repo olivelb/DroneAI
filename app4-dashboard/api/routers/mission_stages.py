@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -19,6 +18,10 @@ from shared.database import (
     get_session,
 )
 from shared.inbox_outbox import enqueue_outbox
+from shared.stage_artifacts import (
+    mark_stage_run_succeeded,
+    release_ready_stage_runs,
+)
 from shared.stage_contracts import (
     STAGE_DAG_VERSION,
     STAGE_DEPENDENCIES,
@@ -129,55 +132,19 @@ def _immutable_artifact_matches(
     )
 
 
-def _mark_stage_run_succeeded(run: MissionStageRun) -> None:
-    now = datetime.now(UTC)
-    record = cast(Any, run)
-    record.status = "succeeded"
-    record.progress = 100
-    record.heartbeat_at = now
-    record.completed_at = now
-    record.error_message = None
-
-
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
-    artifacts = cast(
-        list[MissionArtifact],
-        session.query(MissionArtifact)
-        .filter(MissionArtifact.mission_id == mission.id)
-        .order_by(MissionArtifact.created_at.desc())
-        .all(),
-    )
-    artifact_by_stage: dict[str, MissionArtifact] = {}
-    for artifact in artifacts:
-        artifact_by_stage.setdefault(
-            cast(str, artifact.stage_run.stage),
-            artifact,
-        )
-    blocked_runs = cast(
-        list[MissionStageRun],
-        session.query(MissionStageRun)
-        .filter(
-            MissionStageRun.mission_id == mission.id,
-            MissionStageRun.status == "blocked",
-        )
-        .with_for_update()
-        .all(),
-    )
+    ready_runs = release_ready_stage_runs(session, mission)
     queued: list[str] = []
-    for run in blocked_runs:
+    for run in ready_runs:
         dependencies = STAGE_DEPENDENCIES[cast(StageId, run.stage)]
-        if not all(dependency in artifact_by_stage for dependency in dependencies):
-            continue
         upstream = {
-            dependency: cast(
-                str,
-                artifact_by_stage[dependency].artifact_id,
+            dependency: artifact_id
+            for dependency, artifact_id in zip(
+                dependencies,
+                cast(list[str], run.upstream_artifact_ids),
+                strict=True,
             )
-            for dependency in dependencies
         }
-        run_record = cast(Any, run)
-        run_record.upstream_artifact_ids = list(upstream.values())
-        run_record.status = "queued"
         payload = {
             **cast(dict[str, Any], mission.params or {}),
             "vol_id": cast(str, mission.vol_id),
@@ -368,7 +335,7 @@ def publish_stage_artifact(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Artifact identity already exists with different immutable data",
                 )
-            _mark_stage_run_succeeded(run)
+            mark_stage_run_succeeded(run)
             return {"artifact_id": existing.artifact_id, "status": "existing"}
         parents = _artifacts_for_request(
             session,
@@ -394,7 +361,7 @@ def publish_stage_artifact(
                     parent_artifact_id=parent.id,
                 )
             )
-        _mark_stage_run_succeeded(run)
+        mark_stage_run_succeeded(run)
         queued_runs = _queue_ready_stage_runs(session, mission)
         return {
             "artifact_id": artifact.artifact_id,

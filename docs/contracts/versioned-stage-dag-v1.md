@@ -136,6 +136,39 @@ and Secret references for database/S3 credentials; they use bounded writable
 `/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
 dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
 
+## One-shot worker boundary
+
+`shared.stage_execution` is the common boundary used by bounded executor
+images. It claims only a run already reserved for `kubernetes-job`, verifies the
+expected stage and exact immutable inputs, moves the run to `running`, and
+maintains a background database heartbeat. Handlers receive typed mission/run
+parameters and ordered artifact identities; long native subprocesses must call
+the cooperative cancellation control at safe boundaries.
+
+A successful handler returns one checksum-addressed result. The boundary
+creates its deterministic artifact UUID and exact parent edges, merges quality
+metrics/provenance, marks the run succeeded, and releases direct dependants in
+the same transaction. Exceptions and durable mission cancellation are terminal
+and never release dependants. This lifecycle is shared so stage-specific
+COLMAP, Gaussian, raster and detection adapters do not reimplement leases or
+artifact consistency.
+
+Stage-local disks are disposable. `shared.stage_workspace` transfers the
+required workspace through S3 as a canonical manifest plus individually
+verified files. Publication rejects symbolic links, records relative path,
+size and SHA-256 for every file, and uses the manifest SHA-256 as the stage
+artifact checksum. Restoration rejects absolute/traversal/duplicate paths and
+removes any file whose downloaded size or digest differs. Both directions call
+the cooperative cancellation hook between files.
+
+The first bundled adapter now executes `reconstruction` in the COLMAP image:
+it downloads the immutable dataset prefix, runs preparation, sparse mapping,
+optional RTK refinement, undistortion/alignment, writes a versioned portable
+COLMAP state file, and publishes the complete verified workspace. Absolute
+local paths are rebased on restore, and paths outside the workspace are
+rejected. Its Job always removes the local workspace in `finally`; no GPU or
+CUDA implementation/version changes are part of this adapter.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -150,4 +183,8 @@ dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
 - deterministic, hardened CPU/GPU Kubernetes Job rendering;
 - transactional reservation, idempotent recreation, heartbeat, cancellation
   and artifact-publication reconciliation;
+- one-shot claim, exact-input loading, cooperative cancellation, deterministic
+  artifact publication and downstream release;
+- safe, checksum-verified S3 workspace publication and restoration;
+- portable COLMAP reconstruction state and bounded reconstruction adapter;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.
