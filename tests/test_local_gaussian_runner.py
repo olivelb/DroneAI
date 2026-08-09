@@ -54,6 +54,16 @@ def test_balanced_profile_matches_validated_dev45_recipe():
     assert profile.photometric_mse_percent == 100
 
 
+def test_fast_profile_matches_versioned_minimum_quality_envelope():
+    profile = PROFILES["fast"]
+
+    assert profile.iterations == 7_500
+    assert profile.cap_max == 1_500_000
+    assert profile.data_factor == 8
+    assert profile.max_width == 1600
+    assert profile.profile_id == "fast-v1"
+
+
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     profile = PROFILES["facade-hd"]
 
