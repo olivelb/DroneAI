@@ -3,6 +3,7 @@
 import { LocateFixed } from "lucide-react";
 import { useEffect, useState } from "react";
 import { getMapMetadata } from "../../lib/api";
+import { useI18n } from "../../lib/i18n/provider";
 
 export type ExportCrsChoice = {
   request: string;
@@ -17,6 +18,7 @@ export default function ExportCrsSelector({
   missionId: string;
   onChange: (choice: ExportCrsChoice) => void;
 }) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<"raster" | "wgs84" | "custom">("raster");
   const [rasterCrs, setRasterCrs] = useState("");
   const [customCrs, setCustomCrs] = useState("EPSG:2154");
@@ -66,10 +68,10 @@ export default function ExportCrsSelector({
         </span>
         <div>
           <h3 className="text-sm font-bold text-[#2d3a36]">
-            CRS des GeoPackages
+            {t("export.crsTitle")}
           </h3>
           <p className="mt-0.5 text-[11px] leading-4 text-[#7a8783]">
-            Appliqué aux couches IA, détections et annotations manuelles.
+            {t("export.crsHelp")}
           </p>
         </div>
       </div>
@@ -81,10 +83,12 @@ export default function ExportCrsSelector({
         className="input-control mt-3 text-xs"
       >
         <option value="raster">
-          CRS du raster — {rasterCrs || "repli WGS84"}
+          {t("export.rasterCrs", {
+            fallback: rasterCrs || t("export.wgsFallback"),
+          })}
         </option>
         <option value="wgs84">WGS84 — EPSG:4326</option>
-        <option value="custom">EPSG personnalisé</option>
+        <option value="custom">{t("export.customEpsg")}</option>
       </select>
       {mode === "custom" && (
         <div className="mt-2">
@@ -92,18 +96,18 @@ export default function ExportCrsSelector({
             value={customCrs}
             onChange={(event) => setCustomCrs(event.target.value)}
             placeholder="EPSG:2154"
-            aria-label="Code EPSG personnalisé"
+            aria-label={t("export.customEpsgCode")}
             className="input-control text-xs uppercase"
           />
           {!/^EPSG:\d{4,6}$/i.test(customCrs.trim()) && (
             <p className="mt-1 text-[10px] text-rose-600">
-              Format attendu : EPSG:2154
+              {t("export.expectedFormat")}
             </p>
           )}
         </div>
       )}
       <p className="mt-2 text-[10px] leading-4 text-[#7a8783]">
-        GeoJSON reste en EPSG:4326 selon RFC 7946.
+        {t("export.geojsonCrs")}
       </p>
     </section>
   );

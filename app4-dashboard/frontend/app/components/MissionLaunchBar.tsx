@@ -3,10 +3,12 @@
 import React from "react";
 import { CircleStop, Play, Radio, Route } from "lucide-react";
 import { postCancel, postMission } from "../lib/api";
+import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
 
 export default function MissionLaunchBar() {
+  const { t } = useI18n();
   const {
     volId,
     selectedPath,
@@ -26,7 +28,7 @@ export default function MissionLaunchBar() {
   const canLaunch = Boolean(selectedPath && volId.trim()) && !isRunning;
 
   const launch = async () => {
-    setLogs(["[SYSTEM] Preparing the complete DroneAI pipeline…"]);
+    setLogs([t("launch.preparing")]);
     setActiveMissionId(volId);
     try {
       await postMission({
@@ -47,12 +49,12 @@ export default function MissionLaunchBar() {
       });
       setLogs((previous) => [
         ...previous,
-        `[SYSTEM] Mission ${volId} queued with the current end-to-end profile.`,
+        t("launch.queued", { mission: volId }),
       ]);
     } catch (error) {
       setLogs((previous) => [
         ...previous,
-        `[SYSTEM] Launch failed: ${error}`,
+        t("launch.failed", { error: String(error) }),
       ]);
     }
   };
@@ -60,11 +62,11 @@ export default function MissionLaunchBar() {
   const cancel = async () => {
     try {
       await postCancel(activeMission?.vol_id ?? volId);
-      setLogs((previous) => [...previous, "[SYSTEM] Cancellation requested."]);
+      setLogs((previous) => [...previous, t("launch.cancelRequested")]);
     } catch (error) {
       setLogs((previous) => [
         ...previous,
-        `[SYSTEM] Cancellation failed: ${error}`,
+        t("launch.cancelFailed", { error: String(error) }),
       ]);
     }
   };
@@ -83,8 +85,8 @@ export default function MissionLaunchBar() {
           </div>
           <div className="truncate text-[10px] text-[#7a8783]">
             {isRunning
-              ? activeMission?.services?.COLMAP?.step ?? "Pipeline running"
-              : selectedPath || "Select a dataset to launch"}
+              ? activeMission?.services?.COLMAP?.step ?? t("launch.running")
+              : selectedPath || t("launch.selectDataset")}
           </div>
         </div>
       </div>
@@ -96,8 +98,8 @@ export default function MissionLaunchBar() {
           className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 text-sm font-semibold text-red-700 transition hover:bg-red-100"
         >
           <CircleStop size={16} />
-          <span className="hidden sm:inline">Stop mission</span>
-          <span className="sm:hidden">Stop</span>
+          <span className="hidden sm:inline">{t("launch.stopMission")}</span>
+          <span className="sm:hidden">{t("launch.stop")}</span>
         </button>
       ) : (
         <button
@@ -107,8 +109,8 @@ export default function MissionLaunchBar() {
           className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#0f766e] px-4 text-sm font-semibold text-white shadow-[0_8px_20px_rgba(15,118,110,0.2)] transition hover:bg-[#115e59] disabled:cursor-not-allowed disabled:bg-[#cfd8d5] disabled:shadow-none"
         >
           <Play size={16} fill="currentColor" />
-          <span className="hidden sm:inline">Launch pipeline</span>
-          <span className="sm:hidden">Launch</span>
+          <span className="hidden sm:inline">{t("launch.pipeline")}</span>
+          <span className="sm:hidden">{t("launch.short")}</span>
         </button>
       )}
     </div>

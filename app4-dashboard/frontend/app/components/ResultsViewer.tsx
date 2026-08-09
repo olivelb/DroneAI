@@ -20,6 +20,7 @@ import {
   searchMapFeatures,
   updateMapFeature,
 } from "../lib/api";
+import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
 import type { AnalysisCreate, AnalysisRun } from "../lib/types";
 import type { MapTool } from "./GeospatialMap";
@@ -61,6 +62,7 @@ const isTypingTarget = (target: EventTarget | null) =>
     target.isContentEditable);
 
 export default function ResultsViewer() {
+  const { t } = useI18n();
   const { activeMission, missions } = useMissionRuntime();
   const sortedMissions = useMemo(
     () =>
@@ -228,9 +230,13 @@ export default function ResultsViewer() {
       setAnalyses((current) => [created, ...current]);
       setVisibleRuns((current) => [...current, created.run_id]);
       setShowAnalysisForm(false);
-      setNotice("Analyse IA mise en file avec reprise automatique.");
+      setNotice(t("explorer.analysisQueued"));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Échec du lancement");
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : t("explorer.analysisLaunchFailed"),
+      );
     } finally {
       setSubmittingAnalysis(false);
     }
@@ -252,7 +258,7 @@ export default function ResultsViewer() {
       setPanelOpen(true);
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Recherche impossible",
+        reason instanceof Error ? reason.message : t("explorer.searchFailed"),
       );
     } finally {
       setBusySearch(false);
@@ -264,13 +270,17 @@ export default function ResultsViewer() {
       setSelectedFeature({ ...selectedFeature, geometry });
       setRedrawingFeature(false);
       setTool("navigate");
-      setNotice("Nouvelle géométrie prête. Enregistrez pour confirmer.");
+      setNotice(t("explorer.geometryReady"));
       return;
     }
     setDraftGeometry(geometry);
     setMeasurement(result ?? "");
     setTool("navigate");
-    setAnnotationName(result ? `Mesure ${result}` : "Nouvelle annotation");
+    setAnnotationName(
+      result
+        ? t("explorer.measurementName", { measurement: result })
+        : t("explorer.newAnnotation"),
+    );
   };
 
   const saveAnnotation = async () => {
@@ -288,12 +298,12 @@ export default function ResultsViewer() {
       setDraftGeometry(null);
       setMeasurement("");
       setRefreshToken((value) => value + 1);
-      setNotice("Annotation enregistrée dans la couche collaborative.");
+      setNotice(t("explorer.annotationSaved"));
     } catch (reason) {
       setError(
         reason instanceof Error
           ? reason.message
-          : "Échec de l’enregistrement",
+          : t("explorer.annotationSaveFailed"),
       );
     }
   };
@@ -308,10 +318,12 @@ export default function ResultsViewer() {
       await deleteMapFeature(missionId, selectedFeatureId);
       setSelectedFeature(null);
       setRefreshToken((value) => value + 1);
-      setNotice("Annotation supprimée.");
+      setNotice(t("explorer.annotationDeleted"));
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Suppression impossible",
+        reason instanceof Error
+          ? reason.message
+          : t("explorer.annotationDeleteFailed"),
       );
     }
   };
@@ -329,10 +341,12 @@ export default function ResultsViewer() {
       });
       setSelectedFeature(updated);
       setRefreshToken((value) => value + 1);
-      setNotice("Annotation et géométrie mises à jour.");
+      setNotice(t("explorer.annotationUpdated"));
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Mise à jour impossible",
+        reason instanceof Error
+          ? reason.message
+          : t("explorer.annotationUpdateFailed"),
       );
     }
   };
@@ -357,7 +371,7 @@ export default function ResultsViewer() {
         <div className="text-center">
           <MapIcon size={30} className="mx-auto mb-3" />
           <p className="font-semibold">
-            Aucun produit cartographique disponible
+            {t("explorer.noProducts")}
           </p>
         </div>
       </div>
@@ -400,7 +414,7 @@ export default function ResultsViewer() {
               setError("");
               setNotice("");
             }}
-            aria-label="Fermer"
+            aria-label={t("common.close")}
           >
             <X size={15} />
           </button>

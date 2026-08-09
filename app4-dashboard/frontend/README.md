@@ -27,6 +27,8 @@ The frontend:
 - downloads COG/GeoTIFF rasters and QGIS-ready GeoPackage/GeoJSON layers.
   GeoPackages default to the raster CRS or use WGS84/custom EPSG; GeoJSON stays
   in EPSG:4326.
+- defaults to English and offers a persistent English/French locale switch for
+  authentication, mission launch and monitoring, and geospatial workflows.
 
 Chromium-based browsers open a native save-file picker and stream large
 downloads directly to the selected file. Other browsers use their configured
@@ -66,6 +68,16 @@ system dependencies and retains the Playwright report on failure.
 
 Use the committed `package-lock.json`; do not replace `npm ci` with an
 unreviewed dependency update.
+
+## Internationalization
+
+The dependency-free locale contract lives in `app/lib/i18n`. English is the
+source and default catalog; French implements the same typed `MessageKey`
+record. Adding an English key without its French value fails TypeScript, while
+`catalog.test.ts` also rejects missing or empty values. Use `useI18n().t()` for
+operator-facing copy and interpolation instead of adding raw bilingual text to
+a migrated component. The selected locale is stored as `droneai.locale`; no
+mission or authentication data is attached to that preference.
 
 ## Production image
 

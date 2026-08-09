@@ -2,6 +2,8 @@
 
 import type { ComponentProps } from "react";
 import { Download, Layers, Search, Sparkles } from "lucide-react";
+import type { MessageKey } from "../../lib/i18n/catalog";
+import { useI18n } from "../../lib/i18n/provider";
 import AnalysisPanel from "./AnalysisPanel";
 import ExportPanel from "./ExportPanel";
 import LayersPanel from "./LayersPanel";
@@ -19,11 +21,13 @@ interface ViewerSidePanelProps {
 }
 
 const PANELS = [
-  ["layers", Layers, "Couches"],
-  ["analysis", Sparkles, "IA"],
-  ["search", Search, "Objets"],
-  ["export", Download, "Export"],
-] as const;
+  ["layers", Layers, "explorer.panel.layers"],
+  ["analysis", Sparkles, "explorer.panel.analysis"],
+  ["search", Search, "explorer.panel.objects"],
+  ["export", Download, "explorer.panel.export"],
+] as const satisfies ReadonlyArray<
+  readonly [WorkspacePanel, typeof Layers, MessageKey]
+>;
 
 export default function ViewerSidePanel({
   expanded,
@@ -34,6 +38,7 @@ export default function ViewerSidePanel({
   search,
   exportPanel,
 }: ViewerSidePanelProps) {
+  const { t } = useI18n();
   return (
     <aside
       className={`surface flex min-h-0 flex-col overflow-hidden ${
@@ -43,7 +48,7 @@ export default function ViewerSidePanel({
       }`}
     >
       <div className="grid grid-cols-4 border-b border-[#e1e8e5] p-2">
-        {PANELS.map(([id, Icon, label]) => (
+        {PANELS.map(([id, Icon, labelKey]) => (
           <button
             type="button"
             key={id}
@@ -54,7 +59,7 @@ export default function ViewerSidePanel({
                 : "text-[#76827e] hover:bg-[#f3f6f5]"
             }`}
           >
-            <Icon size={13} /> {label}
+            <Icon size={13} /> {t(labelKey)}
           </button>
         ))}
       </div>

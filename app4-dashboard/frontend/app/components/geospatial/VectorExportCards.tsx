@@ -1,6 +1,7 @@
 "use client";
 
 import { Database, Download, MapPinned, Tags } from "lucide-react";
+import { useI18n } from "../../lib/i18n/provider";
 
 export type VectorFormat = "gpkg" | "geojson";
 export type VectorScope = "all" | "ai" | "legacy";
@@ -32,6 +33,7 @@ export default function VectorExportCards({
   onExportVectors: () => void;
   onExportAnnotations: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
       <section className="rounded-2xl border border-[#dce4e1] p-3.5">
@@ -41,10 +43,10 @@ export default function VectorExportCards({
           </span>
           <div>
             <h3 className="text-sm font-bold text-[#2d3a36]">
-              Couche vectorielle
+              {t("export.vectorLayer")}
             </h3>
             <p className="mt-0.5 text-[11px] leading-4 text-[#7a8783]">
-              Détections, analyses IA et, au choix, annotations manuelles.
+              {t("export.vectorHelp")}
             </p>
           </div>
         </div>
@@ -56,9 +58,9 @@ export default function VectorExportCards({
             }
             className="input-control text-xs"
           >
-            <option value="all">Toutes les sources</option>
-            <option value="ai">Analyses IA</option>
-            <option value="legacy">Pipeline initial</option>
+            <option value="all">{t("export.allSources")}</option>
+            <option value="ai">{t("export.aiAnalyses")}</option>
+            <option value="legacy">{t("export.initialPipeline")}</option>
           </select>
           <select
             value={vectorFormat}
@@ -67,7 +69,7 @@ export default function VectorExportCards({
             }
             className="input-control text-xs"
           >
-            <option value="gpkg">GeoPackage recommandé</option>
+            <option value="gpkg">{t("export.gpkgRecommended")}</option>
             <option value="geojson">GeoJSON</option>
           </select>
         </div>
@@ -79,7 +81,7 @@ export default function VectorExportCards({
               onChange={(event) => onVisibleOnlyChange(event.target.checked)}
               className="mt-0.5 accent-[#0f766e]"
             />
-            Limiter l’IA aux analyses actuellement visibles
+            {t("export.visibleOnly")}
           </label>
         )}
         <button
@@ -90,8 +92,8 @@ export default function VectorExportCards({
         >
           <Database size={14} />
           {busy === "vectors"
-            ? "Création du fichier…"
-            : "Enregistrer la couche"}
+            ? t("export.creating")
+            : t("export.saveLayer")}
         </button>
       </section>
 
@@ -101,9 +103,11 @@ export default function VectorExportCards({
             <Tags size={15} />
           </span>
           <div>
-            <h3 className="text-sm font-bold text-[#2d3a36]">Annotations</h3>
+            <h3 className="text-sm font-bold text-[#2d3a36]">
+              {t("export.annotations")}
+            </h3>
             <p className="mt-0.5 text-[11px] leading-4 text-[#7a8783]">
-              Géométries manuelles, noms, descriptions, tags et couleurs.
+              {t("export.annotationsHelp")}
             </p>
           </div>
         </div>
@@ -114,7 +118,7 @@ export default function VectorExportCards({
           }
           className="input-control mt-3 text-xs"
         >
-          <option value="gpkg">GeoPackage recommandé</option>
+          <option value="gpkg">{t("export.gpkgRecommended")}</option>
           <option value="geojson">GeoJSON</option>
         </select>
         <button
@@ -125,8 +129,8 @@ export default function VectorExportCards({
         >
           <Download size={14} />
           {busy === "annotations"
-            ? "Création du fichier…"
-            : "Enregistrer les annotations"}
+            ? t("export.creating")
+            : t("export.saveAnnotations")}
         </button>
       </section>
     </>

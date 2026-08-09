@@ -185,6 +185,18 @@ test("an operator selects a dataset and launches a mission", async ({ page }) =>
   });
 });
 
+test("the English default can be switched to persistent French", async ({ page }) => {
+  await mockApi(page);
+
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: /1\. Prepare/ })).toBeVisible();
+  await page.getByRole("combobox", { name: "Language" }).selectOption("fr");
+  await expect(page.getByRole("button", { name: /1\. Préparer/ })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole("button", { name: /1\. Préparer/ })).toBeVisible();
+});
+
 test("a running mission can be cancelled and remains distinct from failure", async ({ page }) => {
   let cancelledMission = "";
   await mockApi(page, {
@@ -243,8 +255,8 @@ test("live mission updates recover after a WebSocket disconnect", async ({ page 
 
   await page.goto("/");
   await expect.poll(() => connectionCount).toBe(2);
-  await expect(page.getByText("Temps réel")).toBeVisible();
-  await page.getByRole("button", { name: "Ouvrir le suivi de mission" }).click();
+  await expect(page.getByText("Live", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open mission monitor" }).click();
   await expect(page.getByText("WebSocket reconnect confirmed")).toBeVisible();
 });
 
@@ -265,10 +277,10 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
 
   await page.goto("/");
   await expect(page.getByText("success", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: /5\. Explorer/ }).click();
+  await page.getByRole("button", { name: /5\. Explore/ }).click();
   await page.getByRole("button", { name: "Export", exact: true }).click();
   const exportButton = page.getByRole("button", {
-    name: "Enregistrer la couche",
+    name: "Save layer",
   });
   await expect(exportButton).toBeVisible();
   await exportButton.click();

@@ -7,6 +7,7 @@ import {
   Ruler,
 } from "lucide-react";
 import type { AnalysisCreate } from "../../lib/types";
+import type { MessageKey } from "../../lib/i18n/catalog";
 import type { MapTool } from "../GeospatialMap";
 
 export type ViewerLayer = "ortho" | "depth";
@@ -22,7 +23,7 @@ export const retainKnownRunIds = (
 export type WorkspacePanel = "layers" | "analysis" | "search" | "export";
 
 export const DEFAULT_ANALYSIS: AnalysisCreate = {
-  name: "Détection véhicules",
+  name: "Vehicle detection",
   description: "",
   color: "#f43f5e",
   tags: ["IA"],
@@ -37,15 +38,15 @@ export const DEFAULT_ANALYSIS: AnalysisCreate = {
 
 export const TOOL_BUTTONS: Array<{
   id: MapTool;
-  label: string;
+  labelKey: MessageKey;
   icon: typeof MousePointer2;
 }> = [
-  { id: "navigate", label: "Naviguer", icon: MousePointer2 },
-  { id: "point", label: "Point", icon: CircleDot },
-  { id: "line", label: "Ligne", icon: Route },
-  { id: "polygon", label: "Polygone", icon: Pentagon },
-  { id: "measure-distance", label: "Distance", icon: Ruler },
-  { id: "measure-area", label: "Surface", icon: Pentagon },
+  { id: "navigate", labelKey: "toolbar.navigate", icon: MousePointer2 },
+  { id: "point", labelKey: "toolbar.point", icon: CircleDot },
+  { id: "line", labelKey: "toolbar.line", icon: Route },
+  { id: "polygon", labelKey: "toolbar.polygon", icon: Pentagon },
+  { id: "measure-distance", labelKey: "toolbar.distance", icon: Ruler },
+  { id: "measure-area", labelKey: "toolbar.area", icon: Pentagon },
 ];
 
 export const TOOL_SHORTCUTS: Record<MapTool, string> = {

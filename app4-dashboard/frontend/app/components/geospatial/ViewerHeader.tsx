@@ -9,6 +9,7 @@ import {
   PanelLeftOpen,
   Search,
 } from "lucide-react";
+import { useI18n } from "../../lib/i18n/provider";
 
 interface ViewerHeaderProps {
   expanded: boolean;
@@ -41,6 +42,7 @@ export default function ViewerHeader({
   onShortcutsToggle,
   onExpandedToggle,
 }: ViewerHeaderProps) {
+  const { t } = useI18n();
   return (
     <section
       className={`flex shrink-0 flex-col gap-3 p-3 sm:flex-row sm:items-center ${
@@ -54,7 +56,7 @@ export default function ViewerHeader({
           <Eye size={17} />
         </span>
         <div className="min-w-0">
-          <div className="eyebrow">Espace géospatial</div>
+          <div className="eyebrow">{t("explorer.title")}</div>
           <h2 className="truncate text-lg font-bold tracking-[-0.03em] text-[#17201e]">
             {missionId}
           </h2>
@@ -65,7 +67,7 @@ export default function ViewerHeader({
         <select
           value={selectedMission}
           onChange={(event) => onMissionChange(event.target.value)}
-          aria-label="Mission affichée"
+          aria-label={t("explorer.displayedMission")}
           className="input-control hidden min-h-10 max-w-52 sm:block"
         >
           {missions.map((item) => (
@@ -79,7 +81,7 @@ export default function ViewerHeader({
             value={searchText}
             onChange={(event) => onSearchTextChange(event.target.value)}
             onKeyDown={(event) => event.key === "Enter" && onSearch()}
-            placeholder="Rechercher un nom, tag, classe…"
+            placeholder={t("explorer.searchPlaceholder")}
             className="input-control min-h-10 rounded-r-none"
           />
           <button
@@ -87,7 +89,7 @@ export default function ViewerHeader({
             onClick={onSearch}
             disabled={busySearch}
             className="flex min-w-11 items-center justify-center rounded-r-xl bg-[#173f38] text-white hover:bg-[#0f766e] disabled:opacity-50"
-            aria-label="Rechercher"
+            aria-label={t("explorer.search")}
           >
             <Search size={16} />
           </button>
@@ -96,8 +98,10 @@ export default function ViewerHeader({
           type="button"
           onClick={onPanelToggle}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#d7e0dc] bg-white text-[#53615d] hover:border-[#a9bdb6]"
-          aria-label={panelOpen ? "Masquer le panneau" : "Afficher le panneau"}
-          title={panelOpen ? "Masquer le panneau (B)" : "Afficher le panneau (B)"}
+          aria-label={
+            panelOpen ? t("explorer.hidePanel") : t("explorer.showPanel")
+          }
+          title={`${panelOpen ? t("explorer.hidePanel") : t("explorer.showPanel")} (B)`}
         >
           {panelOpen ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
         </button>
@@ -105,8 +109,8 @@ export default function ViewerHeader({
           type="button"
           onClick={onShortcutsToggle}
           className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#d7e0dc] bg-white text-[#53615d] hover:border-[#a9bdb6] sm:flex"
-          aria-label="Afficher les raccourcis"
-          title="Raccourcis clavier"
+          aria-label={t("explorer.shortcuts")}
+          title={t("explorer.shortcuts")}
         >
           <Keyboard size={16} />
         </button>
@@ -114,8 +118,10 @@ export default function ViewerHeader({
           type="button"
           onClick={onExpandedToggle}
           className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#173f38] text-white hover:bg-[#0f766e]"
-          aria-label={expanded ? "Quitter le plein écran" : "Plein écran"}
-          title={expanded ? "Quitter le plein écran (F)" : "Plein écran (F)"}
+          aria-label={
+            expanded ? t("explorer.exitFullscreen") : t("explorer.fullscreen")
+          }
+          title={`${expanded ? t("explorer.exitFullscreen") : t("explorer.fullscreen")} (F)`}
         >
           {expanded ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
         </button>
