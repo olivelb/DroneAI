@@ -40,6 +40,8 @@ the current release status:
 - BIGZEN Villesèque P4 high-quality full E2E, Metashape comparison and
   YOLO/SAM3 qualification:
   [`benchmarks/villeseque-p4-hq-e2e-2026-08-09.md`](benchmarks/villeseque-p4-hq-e2e-2026-08-09.md)
+- implementation plan derived from the BIGZEN E2E operator feedback:
+  [`audits/2026-08-09-bigzen-e2e-feedback-plan.md`](audits/2026-08-09-bigzen-e2e-feedback-plan.md)
 - 2026-08-06 audit-hardening changes and focused test results:
   [`audits/2026-08-06-audit-hardening-validation.md`](audits/2026-08-06-audit-hardening-validation.md)
 - 2026-08-08 platform audit verification and first P1 implementation batch:

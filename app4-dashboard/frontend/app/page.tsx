@@ -27,7 +27,7 @@ import {
   useMissionRuntime,
 } from "./lib/mission-runtime";
 import { StoreProvider, useStore } from "./lib/store";
-import type { PhaseId } from "./lib/types";
+import { missionPhaseStatus, type PhaseId } from "./lib/types";
 import { WorkspaceDataProvider } from "./lib/workspace-data";
 
 const PHASES: Array<{
@@ -112,19 +112,13 @@ function DashboardInner() {
   const phaseState = (phase: PhaseId) => {
     if (phase === "setup") return selectedPath ? "ready" : "configure";
     if (!activeMission) return "waiting";
-    if (phase === "reconstruction")
-      return activeMission.services.COLMAP?.status ?? "waiting";
-    if (phase === "gaussian") {
-      const colmap = activeMission.services.COLMAP;
-      if (colmap?.step === "GAUSS") return colmap.status ?? "processing";
-      return colmap?.status === "success" ? "ready" : "waiting";
+    if (
+      phase === "reconstruction" ||
+      phase === "gaussian" ||
+      phase === "detection"
+    ) {
+      return missionPhaseStatus(activeMission, phase);
     }
-    if (phase === "detection")
-      return (
-        activeMission.services.IA?.status ??
-        activeMission.services.TILER?.status ??
-        "waiting"
-      );
     return activeMission.overall_status === "success" ? "ready" : "waiting";
   };
 

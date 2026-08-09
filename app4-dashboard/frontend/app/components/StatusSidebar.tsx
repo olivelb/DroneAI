@@ -175,6 +175,7 @@ export default function StatusSidebar() {
           {sortedMissions.map((mission) => (
             <option key={mission.vol_id} value={mission.vol_id}>
               {mission.vol_id} · {mission.overall_status}
+              {mission.is_stale ? " · updates delayed" : ""}
             </option>
           ))}
         </select>

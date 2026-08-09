@@ -7,6 +7,7 @@ from PIL import Image
 from rasterio.transform import from_bounds
 
 from shared.geospatial_assets import (
+    _rgba_image,
     convert_to_cog,
     detections_feature_collection,
     metadata_path,
@@ -99,6 +100,7 @@ def test_float_cog_metadata_is_strict_json_when_nodata_is_nan(tmp_path):
     metadata_text = metadata_path(raster).read_text(encoding="utf-8")
 
     assert metadata["nodata"] is None
+    assert metadata["display_ranges"] == [[0.0, 1.0]]
     assert "NaN" not in metadata_text
     assert json.loads(metadata_text)["nodata"] is None
 
@@ -113,6 +115,20 @@ def test_render_cog_tile_reads_a_bounded_web_mercator_tile(tmp_path):
     with Image.open(tile) as image:
         assert image.size == (256, 256)
         assert image.mode == "RGBA"
+
+
+def test_depth_tiles_share_one_global_display_range():
+    first = np.ma.array([[[0.0, 50.0]]], mask=False)
+    second = np.ma.array([[[50.0, 100.0]]], mask=False)
+
+    first_image = np.asarray(
+        _rgba_image(first, colormap="depth", display_ranges=[[0.0, 100.0]])
+    )
+    second_image = np.asarray(
+        _rgba_image(second, colormap="depth", display_ranges=[[0.0, 100.0]])
+    )
+
+    assert np.array_equal(first_image[0, 1], second_image[0, 0])
 
 
 def test_detection_segments_are_published_as_wgs84_vectors():

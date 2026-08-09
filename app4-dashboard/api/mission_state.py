@@ -85,6 +85,8 @@ class SerializedMission(TypedDict):
     logs: list[JsonObject]
     updated_at: float
     overall_status: str
+    is_stale: bool
+    last_event_age_seconds: float | None
 
 
 class StatusSummary(TypedDict):
@@ -126,13 +128,19 @@ def apply_mission_state(session: SessionProtocol, payload: JsonObject) -> None:
     overall_status = compute_overall_status(states)
     if overall_status in TERMINAL_STATUSES:
         mission.status = overall_status
-    elif mission.status not in TERMINAL_STATUSES:
+    elif (
+        mission.status == "error" and event_status == "processing"
+    ) or mission.status not in TERMINAL_STATUSES:
         mission.status = "processing"
     mission.updated_at = datetime.now(UTC)
 
     if event_status == "error" and log_message:
         mission.error_message = log_message
-    elif overall_status == "success" or event_status == "cancelled":
+    elif (
+        overall_status == "success"
+        or event_status == "cancelled"
+        or (event_status == "processing" and overall_status != "error")
+    ):
         mission.error_message = None
     if details:
         event = details.get("event")
@@ -205,6 +213,14 @@ def is_mission_stale(mission: MissionRecord) -> bool:
         return False
     elapsed = (datetime.now(UTC) - mission.updated_at).total_seconds()
     return elapsed > MISSION_PROCESSING_STALE_SECONDS
+
+
+def mission_event_age_seconds(mission: MissionRecord) -> float | None:
+    """Return event age as monitoring metadata, never as a pipeline failure."""
+
+    if mission.updated_at is None:
+        return None
+    return max(0.0, (datetime.now(UTC) - mission.updated_at).total_seconds())
 
 
 def build_colmap_resume_state(mission: MissionRecord) -> ColmapResumeState:
@@ -282,8 +298,12 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
     overall = compute_overall_status(services)
     if mission.status in TERMINAL_STATUSES:
         overall = mission.status
-    if overall == "processing" and is_mission_stale(mission):
-        overall = "error"
+    event_age = mission_event_age_seconds(mission)
+    stale = (
+        overall == "processing"
+        and event_age is not None
+        and event_age > MISSION_PROCESSING_STALE_SECONDS
+    )
 
     resume_info = mission.resume_info or {}
     current_command = resume_info.get("last_command_event")
@@ -310,6 +330,8 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
         "logs": [],
         "updated_at": (mission.updated_at.timestamp() if mission.updated_at else time.time()),
         "overall_status": overall,
+        "is_stale": stale,
+        "last_event_age_seconds": event_age,
     }
 
 

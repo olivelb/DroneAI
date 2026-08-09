@@ -47,6 +47,7 @@ type RasterMetadata = {
   bounds: { wgs84: [number, number, number, number] };
   min_zoom: number;
   max_zoom: number;
+  display_ranges?: Array<[number, number] | null>;
 };
 
 const escapeHtml = (value: unknown) =>
@@ -458,6 +459,8 @@ export default function GeospatialMap({
         : null,
     [focusBounds],
   );
+  const displayRange =
+    layer === "depth" ? metadata?.display_ranges?.[0] ?? undefined : undefined;
 
   if (error) {
     return (
@@ -488,8 +491,8 @@ export default function GeospatialMap({
       <FitBounds bounds={bounds} />
       {searchBounds && <FitBounds bounds={searchBounds} padding={42} />}
       <TileLayer
-        key={`${missionId}:${layer}`}
-        url={getMapTileUrl(missionId, layer)}
+        key={`${missionId}:${layer}:${displayRange?.join(":") ?? "default"}`}
+        url={getMapTileUrl(missionId, layer, displayRange)}
         minZoom={metadata.min_zoom}
         maxNativeZoom={metadata.max_zoom}
         maxZoom={Math.min(24, metadata.max_zoom + 2)}

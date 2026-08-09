@@ -285,7 +285,15 @@ export const getMapMetadata = (
 export const getMapTileUrl = (
   missionId: string,
   layer: "ortho" | "depth",
-) => `${getApiBaseUrl()}/maps/${encodeURIComponent(missionId)}/tiles/${layer}/{z}/{x}/{y}.png`;
+  displayRange?: [number, number],
+) => {
+  const url = `${getApiBaseUrl()}/maps/${encodeURIComponent(missionId)}/tiles/${layer}/{z}/{x}/{y}.png`;
+  if (!displayRange) return url;
+  return `${url}?${new URLSearchParams({
+    display_min: String(displayRange[0]),
+    display_max: String(displayRange[1]),
+  }).toString()}`;
+};
 
 export const getVectorLayer = (
   missionId: string,
