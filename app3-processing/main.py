@@ -33,7 +33,9 @@ from shared.config import (
     TOPIC_TILE_DETECTIONS,
 )
 from shared.kafka_reliability import (
+    ConsumerAssignmentWatchdog,
     process_message,
+    recreate_unassigned_consumer,
     reliable_consumer_config,
 )
 from shared.worker_inbox import make_inbox_work_handler
@@ -67,38 +69,6 @@ ia_progress_publisher = make_progress_publisher(
 cancel_manager = DurableCancellationRegistry()
 
 
-def report_progress(
-    vol_id: str,
-    step: str,
-    progress: int,
-    status: str = "processing",
-    log: str | None = None,
-) -> None:
-    progress_publisher(
-        vol_id,
-        step,
-        progress,
-        status=status,
-        log=log,
-    )
-
-
-def report_ia_progress(
-    vol_id: str,
-    step: str,
-    progress: int,
-    status: str = "processing",
-    log: str | None = None,
-) -> None:
-    ia_progress_publisher(
-        vol_id,
-        step,
-        progress,
-        status=status,
-        log=log,
-    )
-
-
 analysis_workflow = AnalysisWorkflow(
     producer=producer,
     orthomosaic_topic=TOPIC_ORTHO,
@@ -110,12 +80,12 @@ orthomosaic_tiler = OrthomosaicTiler(
     producer=producer,
     tile_topic=TOPIC_IMAGE_TILES,
     is_cancelled=cancel_manager.is_cancelled,
-    report_progress=report_progress,
+    report_progress=progress_publisher,
     logger=logger,
 )
 legacy_workflow = LegacyAggregationWorkflow(
-    report_progress=report_progress,
-    report_ia_progress=report_ia_progress,
+    report_progress=progress_publisher,
+    report_ia_progress=ia_progress_publisher,
     logger=logger,
 )
 dispatcher = ProcessingDispatcher(
@@ -161,12 +131,18 @@ def event_handler(topic: str) -> Callable[[dict[str, Any]], None]:
 
 def worker_main() -> None:
     work_consumer = create_work_consumer()
+    assignment_watchdog = ConsumerAssignmentWatchdog.from_environment()
     threading.Thread(target=control_consumer_thread, daemon=True).start()
     logger.info("App 3 (Tiler/Aggregator) waiting for Kafka events")
     last_recovery = 0.0
     try:
         while True:
             message = work_consumer.poll(1.0)
+            work_consumer, recreated = recreate_unassigned_consumer(
+                work_consumer, assignment_watchdog, create_work_consumer, logger, "processing"
+            )
+            if recreated:
+                continue
             if time.monotonic() - last_recovery >= 60:
                 dispatcher.recover()
                 last_recovery = time.monotonic()

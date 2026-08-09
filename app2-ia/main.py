@@ -27,7 +27,9 @@ from shared.config import (
     TOPIC_TILE_DETECTIONS,
 )
 from shared.kafka_reliability import (
+    ConsumerAssignmentWatchdog,
     process_message,
+    recreate_unassigned_consumer,
     reliable_consumer_config,
 )
 from shared.worker_inbox import make_inbox_work_handler
@@ -117,11 +119,17 @@ def process_tile(tile_info: dict[str, Any]) -> None:
 
 def worker_main() -> None:
     work_consumer = create_work_consumer()
+    assignment_watchdog = ConsumerAssignmentWatchdog.from_environment()
     threading.Thread(target=control_consumer_thread, daemon=True).start()
     logger.info("App 2 (IA Workers) waiting for tiles on Kafka")
     try:
         while True:
             message = work_consumer.poll(1.0)
+            work_consumer, recreated = recreate_unassigned_consumer(
+                work_consumer, assignment_watchdog, create_work_consumer, logger, "tile"
+            )
+            if recreated:
+                continue
             if message is None or message.error():
                 continue
             process_message(

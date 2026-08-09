@@ -27,15 +27,21 @@ def test_production_overlay_requires_immutable_application_images() -> None:
 def test_browser_upload_cors_exposes_multipart_etag() -> None:
     defaults = _read(CHART / "values.yaml")
     minio = _read(CHART / "templates" / "minio.yaml")
+    compose = _read(ROOT / "compose.local.yaml")
     external_script = _read(
         ROOT / "scripts" / "deploy" / "configure-s3-upload-cors.sh"
     )
 
     assert "browserUploadCors:" in defaults
-    for source in (minio, external_script):
-        assert "PUT" in source
-        assert "ETag" in source
-        assert "AllowedOrigin" in source
+    assert "MINIO_API_CORS_ALLOW_ORIGIN" in minio
+    assert 'join \",\" .Values.minio.browserUploadCors.allowedOrigins' in minio
+    assert "mc cors set" not in minio
+    assert "MINIO_API_CORS_ALLOW_ORIGIN" in compose
+    assert "http://localhost:3000,http://127.0.0.1:3000" in compose
+    assert "mc cors set" not in compose
+    assert "PUT" in external_script
+    assert "ETag" in external_script
+    assert "AllowedOrigin" in external_script
 
 
 def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
