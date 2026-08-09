@@ -102,10 +102,12 @@ def test_stage_projection_surfaces_failure_before_blocked_downstream_stage():
         params={"phases": ["rasterization", "detection"]},
         updated_at=now,
     )
-    runs = [
-        _run(1, "rasterization", "failed", completed_at=now),
-        _run(2, "detection", "blocked"),
-    ]
+    failed_rasterization = _run(
+        1, "rasterization", "failed", completed_at=now
+    )
+    # Old executors could leave their last live step behind at termination.
+    failed_rasterization.current_step = "EXECUTING"
+    runs = [failed_rasterization, _run(2, "detection", "blocked")]
 
     result = projection.project_stage_mission(mission, runs)
 

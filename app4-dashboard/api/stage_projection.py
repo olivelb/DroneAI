@@ -107,7 +107,12 @@ def project_stage_mission(mission: Any, runs: Iterable[Any]) -> StageMissionProj
         ),
         selected[-1],
     )
-    active_step = str(active.current_step or active.status).upper()
+    active_status = str(active.status)
+    active_step = (
+        active_status
+        if active_status in {"failed", "cancelled", "succeeded"}
+        else str(active.current_step or active_status)
+    ).upper()
     current_step = f"{str(active.stage).upper()} · {active_step}"
 
     updated_at = max(
