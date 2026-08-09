@@ -65,6 +65,58 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
           },
         ],
         metadata: {},
+        quality_profile_default: "normal-v1",
+        quality_profiles: [
+          {
+            id: "fast-v1",
+            version: 1,
+            name: "Fast",
+            description: "Fast production profile",
+            parameters: {
+              feature_max_image_size: "1600",
+              feature_max_num_features: "2048",
+              gs_iterations: "7500",
+              gs_cap_max: "1500000",
+            },
+          },
+          {
+            id: "normal-v1",
+            version: 1,
+            name: "Normal",
+            description: "Balanced production profile",
+            parameters: {
+              feature_max_image_size: "2400",
+              feature_max_num_features: "4096",
+              gs_iterations: "15000",
+              gs_cap_max: "3000000",
+            },
+          },
+          {
+            id: "high-quality-v1",
+            version: 1,
+            name: "High Quality",
+            description: "High quality production profile",
+            parameters: {
+              feature_max_image_size: "4096",
+              feature_max_num_features: "16384",
+              gs_iterations: "30000",
+              gs_cap_max: "5000000",
+            },
+          },
+        ],
+        yolo_models: [
+          {
+            id: "yolo26l",
+            label: "YOLO26L",
+            available: true,
+            artifact: "yolo26l-obb.pt",
+            repository: "ultralytics/assets",
+            revision: "v8.4.0",
+            artifact_sha256: "a".repeat(64),
+            classes: ["small vehicle", "large vehicle"],
+            selectable_classes: ["car", "small vehicle", "large vehicle"],
+          },
+        ],
         work_drives: [
           { name: "local", label: "Local", mount: "/work/local" },
         ],
@@ -181,6 +233,7 @@ test("an operator selects a dataset and launches a mission", async ({ page }) =>
     vol_id: "mission-e2e",
     input_dataset: "datasets/survey-set",
     pipeline: "modern",
+    quality_profile: "normal-v1",
     work_drive: "local",
   });
 });
@@ -195,6 +248,28 @@ test("the English default can be switched to persistent French", async ({ page }
 
   await page.reload();
   await expect(page.getByRole("button", { name: /1\. Préparer/ })).toBeVisible();
+});
+
+test("a versioned quality profile applies its effective parameters", async ({ page }) => {
+  let launched: Record<string, unknown> | undefined;
+  await mockApi(page, { onMissionLaunch: (payload) => { launched = payload; } });
+
+  await page.goto("/");
+  await page.getByTitle("Select as input dataset").click();
+  await page.getByLabel("Mission ID").fill("mission-fast-profile");
+  await page.getByRole("button", { name: /2\. Align/ }).click();
+  await page.getByRole("button", { name: /Fast fast-v1/ }).click();
+  await page.getByRole("button", { name: "Launch pipeline" }).click();
+
+  await expect.poll(() => launched).toMatchObject({
+    quality_profile: "fast-v1",
+    colmap_params: {
+      feature_max_image_size: "1600",
+      feature_max_num_features: "2048",
+      gs_iterations: "7500",
+      gs_cap_max: "1500000",
+    },
+  });
 });
 
 test("a running mission can be cancelled and remains distinct from failure", async ({ page }) => {

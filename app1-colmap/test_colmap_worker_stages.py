@@ -23,6 +23,7 @@ from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
+from shared.quality_profiles import quality_profile
 
 
 class TestColmapStageHelpers(unittest.TestCase):
@@ -156,6 +157,27 @@ class TestColmapStageHelpers(unittest.TestCase):
             {**params, "gs_iterations": "123"},
             facade_mode=False,
             data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        self.assertEqual(overridden.profile_id, "custom")
+        self.assertTrue(warnings)
+
+    def test_versioned_quality_profile_becomes_custom_after_training_override(self):
+        profile = quality_profile("high-quality-v1")
+        config, warnings = dronegs_config.resolve_dronegs_config(
+            profile.parameters,
+            facade_mode=False,
+            data_factor=int(profile.parameters["gs_data_factor"]),
+        )
+
+        self.assertEqual(config.profile_id, "high-quality-v1")
+        self.assertEqual(config.iterations, 30_000)
+        self.assertEqual(config.cap_max, 5_000_000)
+        self.assertEqual(warnings, ())
+
+        overridden, warnings = dronegs_config.resolve_dronegs_config(
+            {**profile.parameters, "gs_cap_max": "4500000"},
+            facade_mode=False,
+            data_factor=int(profile.parameters["gs_data_factor"]),
         )
         self.assertEqual(overridden.profile_id, "custom")
         self.assertTrue(warnings)

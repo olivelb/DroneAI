@@ -15,7 +15,14 @@ from shared.database import Mission, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
+from shared.quality_profiles import (
+    DEFAULT_QUALITY_PROFILE_ID,
+    QUALITY_PROFILES,
+    profile_overrides,
+    quality_profile,
+)
 from shared.validation import configured_work_drives
+from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 
 from ..kubernetes_status import KubernetesStatus, get_pod_states
 from ..messaging import (
@@ -72,6 +79,9 @@ class MissionParametersResponse(TypedDict):
     metadata: dict[str, dict[str, Any]]
     work_drives: list[dict[str, str]]
     work_drive_default: str
+    quality_profiles: list[dict[str, Any]]
+    quality_profile_default: str
+    yolo_models: list[dict[str, object]]
 
 
 def _find_mission(
@@ -244,6 +254,9 @@ def mission_parameters() -> MissionParametersResponse:
         "metadata": PARAMETER_METADATA,
         "work_drives": work_drives,
         "work_drive_default": work_drive_default,
+        "quality_profiles": [profile.as_api_dict() for profile in QUALITY_PROFILES],
+        "quality_profile_default": DEFAULT_QUALITY_PROFILE_ID,
+        "yolo_models": yolo_model_catalog(),
     }
 
 
@@ -252,7 +265,6 @@ def mission_parameters() -> MissionParametersResponse:
     dependencies=[Depends(require_operator)],
 )
 def start_mission(params: MissionParams) -> StartMissionResponse:
-    payload = params.model_dump()
     try:
         with get_session() as session:
             existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
@@ -260,6 +272,21 @@ def start_mission(params: MissionParams) -> StartMissionResponse:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
+                )
+            payload = params.model_dump()
+            selected_profile = quality_profile(params.quality_profile)
+            payload["colmap_params"] = {
+                **selected_profile.parameters,
+                **params.colmap_params,
+            }
+            payload["quality_profile_version"] = selected_profile.version
+            payload["quality_profile_overrides"] = profile_overrides(
+                params.quality_profile,
+                params.colmap_params,
+            )
+            if params.ai_backend == "yolo":
+                payload["ai_model_manifest"] = yolo_model_manifest(
+                    params.ai_model_variant
                 )
             session.add(
                 Mission(

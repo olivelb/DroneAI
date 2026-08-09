@@ -12,6 +12,11 @@ from shared.validation import (
     validate_pipeline_overrides,
     validate_work_drive,
 )
+from shared.quality_profiles import (
+    DEFAULT_QUALITY_PROFILE_ID,
+    QualityProfileId,
+)
+from shared.yolo_capabilities import yolo_model_manifest
 
 YOLOModelVariant = Literal[
     "yolo26l",
@@ -31,6 +36,7 @@ class MissionParams(BaseModel):
     vol_id: str
     input_dataset: str
     pipeline: Literal["modern", "legacy"] = "modern"
+    quality_profile: QualityProfileId = DEFAULT_QUALITY_PROFILE_ID
     tile_size: int = Field(default=1024, ge=256, le=4096)
     ai_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     ai_backend: Literal["yolo", "sam3"] = "yolo"
@@ -59,6 +65,7 @@ class MissionParams(BaseModel):
     def validate_yolo_classes(self) -> MissionParams:
         if self.ai_backend == "yolo":
             validate_aerial_class_names(self.classes)
+            yolo_model_manifest(self.ai_model_variant)
         return self
 
     @field_validator("colmap_params")

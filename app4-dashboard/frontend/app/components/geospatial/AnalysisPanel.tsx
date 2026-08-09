@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { getFileUrl } from "../../lib/api";
 import { useI18n } from "../../lib/i18n/provider";
+import { useStore } from "../../lib/store";
 import type {
   AIBackend,
   AnalysisCreate,
@@ -42,6 +43,13 @@ export default function AnalysisPanel({
   onCancel,
 }: AnalysisPanelProps) {
   const { t } = useI18n();
+  const { parameterSchema } = useStore();
+  const yoloModels = parameterSchema?.yolo_models ?? [];
+  const modelAvailable =
+    form.backend !== "yolo" ||
+    yoloModels.some(
+      (model) => model.id === form.model_variant && model.available,
+    );
   const update = (patch: Partial<AnalysisCreate>) =>
     onFormChange({ ...form, ...patch });
 
@@ -107,10 +115,15 @@ export default function AnalysisPanel({
                 }
                 className="input-control"
               >
-                <option value="yolo26l">YOLO26-L · {t("analysis.quality")}</option>
-                <option value="yolo26m">YOLO26-M · {t("analysis.balanced")}</option>
-                <option value="yolo26s">YOLO26-S · {t("analysis.fast")}</option>
-                <option value="yolo11l">YOLO11-L</option>
+                {yoloModels.map((model) => (
+                  <option
+                    key={model.id}
+                    value={model.id}
+                    disabled={!model.available}
+                  >
+                    {model.label}
+                  </option>
+                ))}
               </select>
             ) : (
               <input
@@ -176,7 +189,7 @@ export default function AnalysisPanel({
           <button
             type="button"
             onClick={onSubmit}
-            disabled={submitting || !form.name.trim()}
+            disabled={submitting || !form.name.trim() || !modelAvailable}
             className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#0f766e] text-sm font-semibold text-white disabled:opacity-50"
           >
             <Play size={14} />

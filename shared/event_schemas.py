@@ -7,6 +7,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
+from shared.quality_profiles import QualityProfileId
+
 
 JsonObject = dict[str, Any]
 PIPELINE_STATUSES = frozenset({"processing", "success", "error", "cancelled"})
@@ -31,10 +33,14 @@ class MissionEvent(EventEnvelope):
     vol_id: str = Field(min_length=1, max_length=256)
     input_dataset: str | None = Field(default=None, max_length=1024)
     pipeline: Literal["modern", "legacy"] | None = None
+    quality_profile: QualityProfileId | None = None
+    quality_profile_version: int | None = Field(default=None, ge=1, strict=True)
+    quality_profile_overrides: JsonObject | None = None
     tile_size: int | None = Field(default=None, ge=256, le=4096, strict=True)
     ai_confidence: float | None = Field(default=None, ge=0, le=1)
     ai_backend: Literal["yolo", "sam3"] | None = None
     ai_model_variant: str | None = Field(default=None, max_length=128)
+    ai_model_manifest: JsonObject | None = None
     sam_prompt: str | None = Field(default=None, max_length=256)
     classes: list[str] | None = Field(default=None, max_length=20)
     colmap_params: JsonObject | None = None

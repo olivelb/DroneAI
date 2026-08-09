@@ -24,6 +24,10 @@ from shared.model_provenance import (
     sha256_file,
 )
 from shared.validation import validate_aerial_class_names
+from shared.yolo_capabilities import (
+    YOLO_CLASS_MAP as REQUESTED_CLASS_MAP,
+    YOLO_MODEL_REGISTRY,
+)
 
 
 logger = logging.getLogger("app2-ia.detection-core")
@@ -32,61 +36,6 @@ YOLO_MODEL_ASSETS_DIR = Path(os.getenv("AERIAL_MODEL_DIR", "/opt/modelzoo"))
 YOLO_BAKED_MODEL_DIR = Path(os.getenv("AERIAL_BAKED_MODEL_DIR", "/opt/modelzoo"))
 YOLO_MODEL_IMAGE_SIZE = int(os.getenv("AERIAL_MODEL_IMGSZ", "1024"))
 YOLO_MODEL_RELEASE = os.getenv("AERIAL_MODEL_RELEASE", "v8.4.0")
-
-class YoloModelAsset(TypedDict):
-    checkpoint: str
-    repository: str
-    release: str
-    url: str
-    sha256: str
-
-
-def _official_yolo_asset(checkpoint: str, sha256: str) -> YoloModelAsset:
-    repository = "ultralytics/assets"
-    release = "v8.4.0"
-    return {
-        "checkpoint": checkpoint,
-        "repository": repository,
-        "release": release,
-        "url": f"https://github.com/{repository}/releases/download/{release}/{checkpoint}",
-        "sha256": sha256,
-    }
-
-
-YOLO_MODEL_REGISTRY: dict[str, YoloModelAsset] = {
-    "yolo26l": _official_yolo_asset(
-        "yolo26l-obb.pt",
-        "8674b0c24bf68aab5eb45009e0ac3808ce432237edf8cb5c50ae2191cb263a2b",
-    ),
-    "yolo26m": _official_yolo_asset(
-        "yolo26m-obb.pt",
-        "23e0630f66857cf4b87535f6e705b065f1e8a33603640b8e61ace85b75312903",
-    ),
-    "yolo26s": _official_yolo_asset(
-        "yolo26s-obb.pt",
-        "38dbd72ef6804f9bbbea7ad20f486e6ca6e093c8cd9bc857207a846565bd6e0b",
-    ),
-    "yolo26n": _official_yolo_asset(
-        "yolo26n-obb.pt",
-        "6f51c78197aacda4a33be77294065a9001675fb893f56227a179731b53dbd2b0",
-    ),
-    "yolo11l": _official_yolo_asset(
-        "yolo11l-obb.pt",
-        "92dcf9face59a821cd4ee93828f4c19b51f6dee9b842b23c1dacab7aa89039fc",
-    ),
-    "yolo11m": _official_yolo_asset(
-        "yolo11m-obb.pt",
-        "41832a4349c08190335bbc11a8e64726750702eb49cf09abb262bc394a13498c",
-    ),
-    "yolo11s": _official_yolo_asset(
-        "yolo11s-obb.pt",
-        "43fa63102922e0701501241b307420d24fc55e080816888b18bf8c6f96b1a45a",
-    ),
-    "yolo11n": _official_yolo_asset(
-        "yolo11n-obb.pt",
-        "b62898ebf38940ca4df323863e45ee9d84a1a46d5d11ebdde529fb33aa9f3a32",
-    ),
-}
 
 YOLO_MODEL_ALIASES = {
     "best": "yolo26l",
@@ -103,16 +52,6 @@ YOLO_MODEL_ALIASES = {
     "11m": "yolo11m",
     "11s": "yolo11s",
     "11n": "yolo11n",
-}
-
-REQUESTED_CLASS_MAP = {
-    "car": {"small vehicle", "large vehicle"},
-    "truck": {"large vehicle"},
-    "bus": {"large vehicle"},
-    "motorcycle": {"small vehicle"},
-    "bicycle": {"small vehicle"},
-    "airplane": {"plane"},
-    "boat": {"ship"},
 }
 
 _yolo_models: dict[str, tuple[Any, list[str]]] = {}
@@ -180,7 +119,7 @@ def resolve_yolo_model_integrity(
 
 def verify_yolo_model_file(model_path: Path, expected_sha256: str) -> str:
     """Verify a checkpoint before Ultralytics or Torch can deserialize it."""
-    digest = cast(str, sha256_file(model_path))
+    digest: str = sha256_file(model_path)
     if not compare_digest(digest, expected_sha256):
         raise RuntimeError(
             f"YOLO checkpoint checksum mismatch for {model_path}: "
@@ -279,7 +218,7 @@ def to_numpy(value: Any) -> NDArray[Any] | None:
         value = value.tensor
     if hasattr(value, "detach"):
         return cast(NDArray[Any], value.detach().cpu().numpy())
-    return cast(NDArray[Any], np.asarray(value))
+    return np.asarray(value)
 
 
 def polygon_center(polygon: list[list[float]]) -> tuple[float, float]:

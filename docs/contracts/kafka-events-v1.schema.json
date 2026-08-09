@@ -482,6 +482,19 @@
           "default": null,
           "title": "Ai Confidence"
         },
+        "ai_model_manifest": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ai Model Manifest"
+        },
         "ai_model_variant": {
           "anyOf": [
             {
@@ -593,6 +606,49 @@
           ],
           "default": null,
           "title": "Pipeline"
+        },
+        "quality_profile": {
+          "anyOf": [
+            {
+              "enum": [
+                "fast-v1",
+                "normal-v1",
+                "high-quality-v1"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality Profile"
+        },
+        "quality_profile_overrides": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality Profile Overrides"
+        },
+        "quality_profile_version": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quality Profile Version"
         },
         "sam_prompt": {
           "anyOf": [

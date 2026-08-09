@@ -7,6 +7,7 @@ import { useStore } from "../lib/store";
 import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
 import { PresetButton } from "./PresetButton";
+import QualityProfileSelector from "./QualityProfileSelector";
 import StageHeader from "./StageHeader";
 
 const RECONSTRUCTION_PARAMS = [
@@ -328,6 +329,8 @@ export default function PhaseReconstruction() {
           </div>
         </div>
       )}
+
+      <QualityProfileSelector />
 
       <section className="surface p-5 sm:p-6">
         <div className="eyebrow">Processus de production</div>

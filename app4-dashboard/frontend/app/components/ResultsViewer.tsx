@@ -3,12 +3,7 @@
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Feature, Geometry } from "geojson";
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Map as MapIcon,
-  X,
-} from "lucide-react";
+import { AlertTriangle, CheckCircle2, Map as MapIcon, X } from "lucide-react";
 import {
   cancelAnalysis,
   createAnalysis,
@@ -32,8 +27,8 @@ import ViewerHeader from "./geospatial/ViewerHeader";
 import ViewerSidePanel from "./geospatial/ViewerSidePanel";
 import ViewerToolbar from "./geospatial/ViewerToolbar";
 import {
-    DEFAULT_ANALYSIS,
-    retainKnownRunIds,
+  DEFAULT_ANALYSIS,
+  retainKnownRunIds,
   splitTags,
   TOOL_SHORTCUTS,
   type ViewerLayer,
