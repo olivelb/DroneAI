@@ -25,6 +25,7 @@ MANIFEST_NAME = "pipeline_run.json"
 STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 FAST_DEFAULTS = quality_profile("fast-v1").parameters
+NORMAL_DEFAULTS = quality_profile("normal-v1").parameters
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,17 @@ PROFILES = {
             maximum_features=str(FAST_DEFAULTS["feature_max_num_features"]),
         ),
         gaussian_profile="fast",
+        gaussian_backend="dronegs",
+        detection_profile="full",
+    ),
+    "normal": PipelineProfile(
+        colmap_args=production_colmap_args(
+            image_size=str(NORMAL_DEFAULTS["feature_max_image_size"]),
+            maximum_features=str(
+                NORMAL_DEFAULTS["feature_max_num_features"]
+            ),
+        ),
+        gaussian_profile="normal",
         gaussian_backend="dronegs",
         detection_profile="full",
     ),
