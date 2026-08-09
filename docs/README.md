@@ -11,6 +11,7 @@ implemented system as it exists now.
 | System architecture, events, states and artifacts | [`../DOCUMENTATION.md`](../DOCUMENTATION.md) |
 | Installation and distributed deployment | [`../DEPLOYMENT.md`](../DEPLOYMENT.md) |
 | OVHcloud MKS realistic preproduction | [`OVHCLOUD_PREPROD.md`](OVHCLOUD_PREPROD.md) |
+| Qualification, recovery, retention and cost controls | [`OPERATIONS.md`](OPERATIONS.md) |
 | Local workflow | [`../LOCAL_PIPELINE.md`](../LOCAL_PIPELINE.md) |
 | Development, tests and dependency management | [`../DEVELOPMENT.md`](../DEVELOPMENT.md) |
 | Platform versioning and release procedure | [`RELEASES.md`](RELEASES.md) |
