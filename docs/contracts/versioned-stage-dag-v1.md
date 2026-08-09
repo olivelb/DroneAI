@@ -169,6 +169,53 @@ local paths are rebased on restore, and paths outside the workspace are
 rejected. Its Job always removes the local workspace in `finally`; no GPU or
 CUDA implementation/version changes are part of this adapter.
 
+The Gaussian workflow exposes `execute_gaussian_training_phase` as its first
+explicit GPU boundary. It returns the prepared scene, merged unfiltered PLY
+state, backend name and trainer binary SHA-256. The legacy fused call now uses
+this same boundary, so subsequent Job extraction does not create a second
+training implementation or alter established raster results.
+
+`execute_gaussian_filtering_phase` is the next explicit boundary. It consumes
+the training state, applies geo/facade alignment and the configured filter
+chain exactly once, records Gaussian counts before/after, and returns the
+filtered model with immutable render geometry. Keeping this state separate is
+what prevents a later raster Job from applying Sim3/PCA transforms twice.
+
+`execute_gaussian_rasterization_phase` consumes only that filtered render
+state and produces raw RGB, height and extent buffers with explicit dimensions.
+It cannot invoke training or filtering. The legacy workflow calls the same
+function before its unchanged coverage gates and GeoTIFF writer.
+
+The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
+the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
+all deterministic product parameters while excluding Job-local paths and
+callbacks. A retry with a changed resolution, profile, Gaussian cap, filtering
+policy or qualification threshold is rejected instead of silently reusing an
+incompatible model. The filtering sidecar records finite, shape-validated
+alignment matrices, raster extent, camera coverage positions and reporting
+summary; rasterization can therefore hydrate the filtered PLY without applying
+alignment or filtering a second time. Artifact paths must exist below the
+restored workspace and cannot escape it.
+
+The COLMAP image now exposes bounded commands for `gaussian_training` and
+`gaussian_filtering`. Training restores exactly one reconstruction workspace,
+uses the shared recipe resolver and publishes the unfiltered PLY with backend,
+trainer-binary and profile provenance. Filtering restores exactly one training
+workspace, verifies that recipe before loading the PLY, reconstructs only the
+lightweight scene metadata needed for alignment, and writes the filtered model
+to a distinct path so its immutable parent is never overwritten. Both Jobs
+reuse the common heartbeat/cancellation boundary and remove their disposable
+workspace in `finally` on success or failure.
+
+The `rasterization` command restores exactly one filtering workspace, hydrates
+the already aligned/filtered model and calls the same raster boundary as the
+legacy worker. A shared finalizer then applies the spatial-coverage gate,
+vertical/geographic reference, RGB and height GeoTIFF writes, and facade report.
+The resulting workspace publishes relative RGB, height and coverage paths plus
+CRS/extent metadata; width, height, Gaussian count and the complete coverage
+report are retained as quality metrics. This avoids a second raster
+qualification implementation while keeping retries independent from training.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -187,4 +234,10 @@ CUDA implementation/version changes are part of this adapter.
   artifact publication and downstream release;
 - safe, checksum-verified S3 workspace publication and restoration;
 - portable COLMAP reconstruction state and bounded reconstruction adapter;
+- checksum-bound Gaussian training/filtering handoffs, safe model paths and
+  raster-state hydration without repeated transforms;
+- bounded Gaussian training/filtering adapters, immutable parent PLY handling
+  and cleanup on every exit path;
+- shared raster qualification/finalization and a bounded rasterization adapter
+  that cannot retrain or refilter its parent model;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

@@ -3,9 +3,11 @@ import sys
 import tempfile
 import types
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT_DIR = APP_DIR.parent
@@ -19,10 +21,12 @@ from colmap_worker import sparse_mapping
 from colmap_worker.stages import gaussian as gaussian_stage
 from colmap_worker.stages import preparation as preparation_stage
 from colmap_worker.stages import publication as publication_stage
+from gaussian_ortho import phase_artifacts
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
+from shared.facade_process import FACADE_PARAMETER_DEFAULTS
 from shared.quality_profiles import quality_profile
 
 
@@ -232,6 +236,138 @@ class TestColmapStageHelpers(unittest.TestCase):
                 callback(checkpoint, 10)
 
         self.assertIn("remains locally durable", report.call_args.kwargs["log"])
+
+    def test_gaussian_product_run_resolves_one_reusable_typed_recipe(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dense_path = os.path.join(tmp_dir, "dense")
+            os.makedirs(dense_path)
+            params = {
+                **DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults(),
+                **FACADE_PARAMETER_DEFAULTS,
+                "ortho_mesh_resolution": "0.025",
+            }
+            preparation = types.SimpleNamespace(
+                params=params,
+                facade_mode=False,
+                orthophoto_mode="map",
+                mission_s3_prefix="missions/vol-recipe",
+                dense_path=dense_path,
+            )
+            reconstruction = types.SimpleNamespace(utm_crs="EPSG:32631")
+            alignment = types.SimpleNamespace(alignment_transform_path=None)
+            checkpoint_dir = os.path.join(tmp_dir, "checkpoints")
+            with (
+                patch.object(gaussian_stage, "dense_sparse_model_ready", return_value=True),
+                patch.object(
+                    gaussian_stage,
+                    "_prepare_checkpoint_store",
+                    return_value=(
+                        checkpoint_dir,
+                        "missions/vol-recipe/gaussian-checkpoints",
+                    ),
+                ),
+                patch.object(gaussian_stage, "_checkpoint_callback", return_value=lambda *_: None),
+            ):
+                product_run = gaussian_stage.prepare_gaussian_product_run(
+                    preparation,
+                    reconstruction,
+                    alignment,
+                    tmp_dir,
+                    "vol-recipe",
+                )
+
+            config = product_run.config
+            self.assertEqual(config.dense_path, dense_path)
+            self.assertEqual(config.ortho_file, os.path.join(tmp_dir, "orthomosaic.tif"))
+            self.assertEqual(config.utm_crs, "EPSG:32631")
+            self.assertEqual(config.resolution, 0.025)
+            self.assertEqual(config.cap_max, DRONEGS_PRODUCTION_PROFILE_V1.cap_max)
+            self.assertEqual(config.checkpoint_dir, checkpoint_dir)
+            self.assertEqual(product_run.trainer_backend, "dronegs")
+            self.assertEqual(
+                product_run.checkpoint_s3_prefix,
+                "missions/vol-recipe/gaussian-checkpoints",
+            )
+
+            model_path = Path(tmp_dir, "training", "final.ply")
+            model_path.parent.mkdir()
+            model_path.write_bytes(b"ply")
+            phase = types.SimpleNamespace(
+                backend_name="dronegs",
+                trainer_binary_sha256="a" * 64,
+                scene_state=types.SimpleNamespace(
+                    transform_data={"scale": 1.0},
+                    mean_exif_alt=123.0,
+                    colmap_to_meters=1.0,
+                    scale_source="geographic-sim3",
+                    facade_frame=None,
+                    registered_cameras=[object(), object()],
+                    texture_camera_count=2,
+                    texture_filter_applied=False,
+                    minimum_sparse_observations=20,
+                    seed_max_error=1.0,
+                    seed_min_track=3,
+                    gaussian_seed_point_count=50_000,
+                ),
+                training_state=types.SimpleNamespace(
+                    merged_model=types.SimpleNamespace(num_gaussians=1_500_000),
+                    facade_subset_result=None,
+                ),
+            )
+            phase_artifacts.write_training_artifact(
+                tmp_dir,
+                config,
+                phase,
+                model_path=model_path,
+            )
+            artifact = phase_artifacts.read_training_artifact(tmp_dir, config)
+            self.assertEqual(artifact.model_path, model_path)
+            self.assertEqual(artifact.gaussian_count, 1_500_000)
+            with self.assertRaisesRegex(ValueError, "config identity"):
+                phase_artifacts.read_training_artifact(
+                    tmp_dir,
+                    replace(config, cap_max=config.cap_max + 1),
+                )
+
+            filtered_model_path = Path(tmp_dir, "filtering", "filtered.ply")
+            filtered_model_path.parent.mkdir()
+            filtered_model_path.write_bytes(b"filtered-ply")
+            filtering_phase = types.SimpleNamespace(
+                input_gaussians=1_500_000,
+                output_gaussians=1_200_000,
+                render_state=types.SimpleNamespace(
+                    geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
+                    frame_origin=None,
+                    rotation_geo=np.eye(3),
+                    sh_direction_rotation=np.eye(3),
+                    facade_depth_bounds_model=None,
+                    render_extent=(-10.0, 10.0, -5.0, 5.0, 0.0, 8.0),
+                    local_gsd=0.025,
+                    resolution_units="metres",
+                    coverage_camera_positions=np.array(
+                        [[0.0, 0.0, 10.0], [2.0, 1.0, 11.0]]
+                    ),
+                ),
+            )
+            phase_artifacts.write_filtering_artifact(
+                tmp_dir,
+                config,
+                phase,
+                filtering_phase,
+                model_path=filtered_model_path,
+            )
+            filtered = phase_artifacts.read_filtering_artifact(tmp_dir, config)
+            self.assertEqual(filtered.model_path, filtered_model_path)
+            self.assertEqual(filtered.output_gaussians, 1_200_000)
+            self.assertEqual(filtered.render_extent, (-10.0, 10.0, -5.0, 5.0, 0.0, 8.0))
+            self.assertEqual(filtered.scene_summary.registered_camera_count, 2)
+            loaded_model = types.SimpleNamespace(num_gaussians=1_200_000)
+            hydrated = phase_artifacts.hydrate_filtering_phase(filtered, loaded_model)
+            self.assertIs(hydrated.render_state.merged_model, loaded_model)
+            np.testing.assert_array_equal(
+                hydrated.render_state.coverage_camera_positions,
+                filtering_phase.render_state.coverage_camera_positions,
+            )
 
     def test_product_verification_requires_matching_canary_manifests(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
