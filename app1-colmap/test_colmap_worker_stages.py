@@ -23,6 +23,7 @@ from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
+from shared.facade_process import FACADE_PARAMETER_DEFAULTS
 from shared.quality_profiles import quality_profile
 
 
@@ -232,6 +233,58 @@ class TestColmapStageHelpers(unittest.TestCase):
                 callback(checkpoint, 10)
 
         self.assertIn("remains locally durable", report.call_args.kwargs["log"])
+
+    def test_gaussian_product_run_resolves_one_reusable_typed_recipe(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dense_path = os.path.join(tmp_dir, "dense")
+            os.makedirs(dense_path)
+            params = {
+                **DRONEGS_PRODUCTION_PROFILE_V1.pipeline_defaults(),
+                **FACADE_PARAMETER_DEFAULTS,
+                "ortho_mesh_resolution": "0.025",
+            }
+            preparation = types.SimpleNamespace(
+                params=params,
+                facade_mode=False,
+                orthophoto_mode="map",
+                mission_s3_prefix="missions/vol-recipe",
+                dense_path=dense_path,
+            )
+            reconstruction = types.SimpleNamespace(utm_crs="EPSG:32631")
+            alignment = types.SimpleNamespace(alignment_transform_path=None)
+            checkpoint_dir = os.path.join(tmp_dir, "checkpoints")
+            with (
+                patch.object(gaussian_stage, "dense_sparse_model_ready", return_value=True),
+                patch.object(
+                    gaussian_stage,
+                    "_prepare_checkpoint_store",
+                    return_value=(
+                        checkpoint_dir,
+                        "missions/vol-recipe/gaussian-checkpoints",
+                    ),
+                ),
+                patch.object(gaussian_stage, "_checkpoint_callback", return_value=lambda *_: None),
+            ):
+                product_run = gaussian_stage.prepare_gaussian_product_run(
+                    preparation,
+                    reconstruction,
+                    alignment,
+                    tmp_dir,
+                    "vol-recipe",
+                )
+
+        config = product_run.config
+        self.assertEqual(config.dense_path, dense_path)
+        self.assertEqual(config.ortho_file, os.path.join(tmp_dir, "orthomosaic.tif"))
+        self.assertEqual(config.utm_crs, "EPSG:32631")
+        self.assertEqual(config.resolution, 0.025)
+        self.assertEqual(config.cap_max, DRONEGS_PRODUCTION_PROFILE_V1.cap_max)
+        self.assertEqual(config.checkpoint_dir, checkpoint_dir)
+        self.assertEqual(product_run.trainer_backend, "dronegs")
+        self.assertEqual(
+            product_run.checkpoint_s3_prefix,
+            "missions/vol-recipe/gaussian-checkpoints",
+        )
 
     def test_product_verification_requires_matching_canary_manifests(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

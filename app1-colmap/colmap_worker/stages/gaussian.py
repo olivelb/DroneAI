@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from PIL import Image as PILImage
 from pipeline_support import choose_dronegs_data_factor
 from shared import storage
 from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
+from gaussian_ortho.generate_gaussian_orthophoto import GaussianOrthoConfig
 
 from .. import runtime
 from ..artifacts import dense_sparse_model_ready
@@ -25,6 +27,15 @@ from ..contracts import (
 from ..dronegs_config import resolve_dronegs_config
 
 APP1_DIR = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class GaussianProductRun:
+    """Resolved runtime inputs shared by bounded Gaussian stage Jobs."""
+
+    config: GaussianOrthoConfig
+    trainer_backend: str
+    checkpoint_s3_prefix: str
 
 
 def _resolve_data_factor(params: dict[str, Any], dense_path: str, vol_id: str) -> int:
@@ -134,6 +145,127 @@ def _report_config_warnings(vol_id: str, warnings: tuple[str, ...]) -> None:
         runtime.report_mission_progress(vol_id, "GAUSS", 94, log=warning)
 
 
+def prepare_gaussian_product_run(
+    preparation: PipelinePreparation,
+    reconstruction: PipelineReconstruction,
+    alignment_state: PipelineAlignmentState,
+    workspace_dir: str,
+    vol_id: str,
+) -> GaussianProductRun:
+    """Resolve one immutable Gaussian recipe from portable COLMAP state."""
+    params = preparation.params
+    facade_mode = preparation.facade_mode
+    dense_path = preparation.dense_path
+    ortho_file = os.path.join(
+        workspace_dir,
+        "facade_orthophoto.tif" if facade_mode else "orthomosaic.tif",
+    )
+    align_tf = alignment_state.alignment_transform_path
+    workspace_transform = os.path.join(workspace_dir, "alignment_transform.json")
+    if not facade_mode and os.path.exists(workspace_transform):
+        align_tf = workspace_transform
+    if not dense_sparse_model_ready(dense_path):
+        raise RuntimeError(
+            "Gaussian Splatting requires dense/sparse model "
+            "(cameras.bin, images.bin, points3D.bin)."
+        )
+
+    data_factor = _resolve_data_factor(params, dense_path, vol_id)
+    resolved, warnings = resolve_dronegs_config(
+        params,
+        facade_mode=facade_mode,
+        data_factor=data_factor,
+    )
+    _report_config_warnings(vol_id, warnings)
+    checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
+        workspace_dir,
+        preparation.mission_s3_prefix,
+        vol_id,
+    )
+    checkpoint_callback = _checkpoint_callback(
+        checkpoint_dir,
+        checkpoint_s3_prefix,
+        vol_id,
+    )
+    config = GaussianOrthoConfig(
+        dense_path=dense_path,
+        ortho_file=ortho_file,
+        utm_crs=reconstruction.utm_crs,
+        vol_id=vol_id,
+        transform_file=align_tf,
+        report_fn=runtime.report_mission_progress,
+        resolution=resolved.resolution,
+        iterations=resolved.iterations,
+        partition_m=1,
+        partition_n=1,
+        partition_overlap=0.20,
+        sh_degree=resolved.sh_degree,
+        fagk=True,
+        checkpoint_dir=checkpoint_dir,
+        data_factor=resolved.data_factor,
+        max_width=resolved.max_width,
+        ortho_mip_filter_variance=resolved.mip_filter_variance,
+        ortho_mip_filter_compensation=resolved.mip_filter_compensation,
+        tile_mode=resolved.tile_mode,
+        cap_max=resolved.cap_max,
+        filter_enabled=resolved.filter_enabled,
+        filter_max_scale=resolved.filter_max_scale,
+        filter_min_retained_ratio=resolved.filter_min_retained_ratio,
+        filter_dist_multiplier=resolved.filter_dist,
+        filter_opacity_threshold=resolved.filter_opacity,
+        filter_needle_ratio=resolved.filter_needle,
+        filter_sor=resolved.filter_sor,
+        filter_sor_sigma=resolved.filter_sor_sigma,
+        filter_cc=resolved.filter_cc,
+        filter_z_floater=resolved.filter_z_floater,
+        coverage_gate_enabled=resolved.coverage_gate_enabled,
+        coverage_grid_size=resolved.coverage_grid_size,
+        coverage_min_valid_ratio=resolved.coverage_min_valid_ratio,
+        coverage_cell_threshold=resolved.coverage_cell_threshold,
+        coverage_min_covered_cells_ratio=(
+            resolved.coverage_min_covered_cells_ratio
+        ),
+        coverage_min_worst_cell_ratio=resolved.coverage_min_worst_cell_ratio,
+        coverage_min_camera_cell_ratio=resolved.coverage_min_camera_cell_ratio,
+        verbose=False,
+        training_seed=resolved.seed,
+        dronegs_profile_id=resolved.profile_id,
+        dronegs_qualification_policy_id=resolved.qualification_policy_id,
+        dronegs_optimizer_profile=resolved.optimizer_profile,
+        dronegs_pruning_policy=resolved.pruning_policy,
+        dronegs_raster_profile=resolved.raster_profile,
+        dronegs_sh_degree_interval=resolved.sh_degree_interval,
+        dronegs_topology_cooldown=resolved.topology_cooldown,
+        dronegs_photometric_finish=resolved.photometric_finish,
+        dronegs_photometric_mse_percent=resolved.photometric_mse_percent,
+        dronegs_checkpoint_every=resolved.checkpoint_every,
+        dronegs_test_every=resolved.test_every,
+        dronegs_test_split=resolved.test_split,
+        dronegs_test_guard_percent=resolved.test_guard_percent,
+        dronegs_canary_min_psnr=resolved.canary_min_psnr,
+        dronegs_canary_min_ssim=resolved.canary_min_ssim,
+        cancellation_check=runtime.ensure_not_cancelled,
+        checkpoint_callback=checkpoint_callback,
+        render_mode=preparation.orthophoto_mode,
+        facade_scale_mode=str(params["facade_scale_mode"]),
+        facade_meters_per_model_unit=float(params["facade_meters_per_model_unit"]),
+        facade_frame_report=os.path.join(workspace_dir, "facade_frame.json"),
+        facade_texture_max_incidence_deg=float(
+            params["facade_texture_max_incidence_deg"]
+        ),
+        facade_depth_iqr_multiplier=float(params["facade_depth_iqr_multiplier"]),
+        facade_seed_max_reprojection_error=float(
+            params["facade_seed_max_reprojection_error"]
+        ),
+        facade_seed_min_track_length=int(params["facade_seed_min_track_length"]),
+    )
+    return GaussianProductRun(
+        config=config,
+        trainer_backend=resolved.backend,
+        checkpoint_s3_prefix=checkpoint_s3_prefix,
+    )
+
+
 def run_gaussian_product(
     preparation: PipelinePreparation,
     reconstruction: PipelineReconstruction,
@@ -141,30 +273,7 @@ def run_gaussian_product(
     workspace_dir: str,
     vol_id: str,
 ) -> PipelineGaussianState:
-    params = preparation.params
     facade_mode = preparation.facade_mode
-    orthophoto_mode = preparation.orthophoto_mode
-    mission_s3_prefix = preparation.mission_s3_prefix
-    dense_path = preparation.dense_path
-    utm_crs = reconstruction.utm_crs
-    align_tf = alignment_state.alignment_transform_path
-
-    # --- 9. Gaussian Splatting Orthomosaic ---
-    ortho_file = os.path.join(
-        workspace_dir,
-        "facade_orthophoto.tif" if facade_mode else "orthomosaic.tif",
-    )
-
-    align_tf_path = os.path.join(workspace_dir, "alignment_transform.json")
-    if not facade_mode and os.path.exists(align_tf_path):
-        align_tf = align_tf_path
-
-    dense_sparse_ready = dense_sparse_model_ready(dense_path)
-    if not dense_sparse_ready:
-        raise RuntimeError(
-            "Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin). "
-            f"dense_sparse_ready={dense_sparse_ready}."
-        )
     try:
         import gc
         import traceback as _tb
@@ -183,94 +292,91 @@ def run_gaussian_product(
         except Exception:
             pass
 
-        # Dataset count is handled by tile mode and Gaussian caps, not by
-        # uniformly blurring every image.
-        gs_data_factor = _resolve_data_factor(params, dense_path, vol_id)
-        gs_config, config_warnings = resolve_dronegs_config(
-            params,
-            facade_mode=facade_mode,
-            data_factor=gs_data_factor,
-        )
-        _report_config_warnings(vol_id, config_warnings)
-
-        durable_checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
+        product_run = prepare_gaussian_product_run(
+            preparation,
+            reconstruction,
+            alignment_state,
             workspace_dir,
-            mission_s3_prefix,
             vol_id,
         )
-        persist_dronegs_checkpoint = _checkpoint_callback(
-            durable_checkpoint_dir,
-            checkpoint_s3_prefix,
-            vol_id,
-        )
+        config = product_run.config
 
         result = generate_gaussian_orthophoto(
-            dense_path=dense_path,
-            ortho_file=ortho_file,
-            utm_crs=utm_crs,
-            vol_id=vol_id,
-            transform_file=align_tf,
-            report_fn=runtime.report_mission_progress,
-            resolution=gs_config.resolution,
-            iterations=gs_config.iterations,
-            sh_degree=gs_config.sh_degree,
-            data_factor=gs_config.data_factor,
-            max_width=gs_config.max_width,
-            ortho_mip_filter_variance=gs_config.mip_filter_variance,
-            ortho_mip_filter_compensation=gs_config.mip_filter_compensation,
-            tile_mode=gs_config.tile_mode,
-            cap_max=gs_config.cap_max,
-            filter_enabled=gs_config.filter_enabled,
-            filter_max_scale=gs_config.filter_max_scale,
-            filter_min_retained_ratio=gs_config.filter_min_retained_ratio,
-            filter_dist_multiplier=gs_config.filter_dist,
-            filter_opacity_threshold=gs_config.filter_opacity,
-            filter_needle_ratio=gs_config.filter_needle,
-            filter_sor=gs_config.filter_sor,
-            filter_sor_sigma=gs_config.filter_sor_sigma,
-            filter_cc=gs_config.filter_cc,
-            filter_z_floater=gs_config.filter_z_floater,
-            coverage_gate_enabled=gs_config.coverage_gate_enabled,
-            coverage_grid_size=gs_config.coverage_grid_size,
-            coverage_min_valid_ratio=gs_config.coverage_min_valid_ratio,
-            coverage_cell_threshold=gs_config.coverage_cell_threshold,
+            dense_path=config.dense_path,
+            ortho_file=config.ortho_file,
+            utm_crs=config.utm_crs,
+            vol_id=config.vol_id,
+            transform_file=config.transform_file,
+            report_fn=config.report_fn,
+            resolution=config.resolution,
+            iterations=config.iterations,
+            partition_m=config.partition_m,
+            partition_n=config.partition_n,
+            partition_overlap=config.partition_overlap,
+            sh_degree=config.sh_degree,
+            fagk=config.fagk,
+            checkpoint_dir=config.checkpoint_dir,
+            data_factor=config.data_factor,
+            max_width=config.max_width,
+            ortho_mip_filter_variance=config.ortho_mip_filter_variance,
+            ortho_mip_filter_compensation=config.ortho_mip_filter_compensation,
+            tile_mode=config.tile_mode,
+            cap_max=config.cap_max,
+            filter_enabled=config.filter_enabled,
+            filter_max_scale=config.filter_max_scale,
+            filter_min_retained_ratio=config.filter_min_retained_ratio,
+            filter_dist_multiplier=config.filter_dist_multiplier,
+            filter_opacity_threshold=config.filter_opacity_threshold,
+            filter_needle_ratio=config.filter_needle_ratio,
+            filter_sor=config.filter_sor,
+            filter_sor_sigma=config.filter_sor_sigma,
+            filter_cc=config.filter_cc,
+            filter_z_floater=config.filter_z_floater,
+            coverage_gate_enabled=config.coverage_gate_enabled,
+            coverage_grid_size=config.coverage_grid_size,
+            coverage_min_valid_ratio=config.coverage_min_valid_ratio,
+            coverage_cell_threshold=config.coverage_cell_threshold,
             coverage_min_covered_cells_ratio=(
-                gs_config.coverage_min_covered_cells_ratio
+                config.coverage_min_covered_cells_ratio
             ),
             coverage_min_worst_cell_ratio=(
-                gs_config.coverage_min_worst_cell_ratio
+                config.coverage_min_worst_cell_ratio
             ),
             coverage_min_camera_cell_ratio=(
-                gs_config.coverage_min_camera_cell_ratio
+                config.coverage_min_camera_cell_ratio
             ),
-            checkpoint_dir=durable_checkpoint_dir,
-            trainer_backend=gs_config.backend,
-            training_seed=gs_config.seed,
-            dronegs_profile_id=gs_config.profile_id,
-            dronegs_qualification_policy_id=gs_config.qualification_policy_id,
-            dronegs_optimizer_profile=gs_config.optimizer_profile,
-            dronegs_pruning_policy=gs_config.pruning_policy,
-            dronegs_raster_profile=gs_config.raster_profile,
-            dronegs_sh_degree_interval=gs_config.sh_degree_interval,
-            dronegs_topology_cooldown=gs_config.topology_cooldown,
-            dronegs_photometric_finish=gs_config.photometric_finish,
-            dronegs_photometric_mse_percent=gs_config.photometric_mse_percent,
-            dronegs_checkpoint_every=gs_config.checkpoint_every,
-            dronegs_test_every=gs_config.test_every,
-            dronegs_test_split=gs_config.test_split,
-            dronegs_test_guard_percent=gs_config.test_guard_percent,
-            dronegs_canary_min_psnr=gs_config.canary_min_psnr,
-            dronegs_canary_min_ssim=gs_config.canary_min_ssim,
-            cancellation_check=runtime.ensure_not_cancelled,
-            checkpoint_callback=persist_dronegs_checkpoint,
-            render_mode=orthophoto_mode,
-            facade_scale_mode=str(params["facade_scale_mode"]),
-            facade_meters_per_model_unit=float(params["facade_meters_per_model_unit"]),
-            facade_frame_report=os.path.join(workspace_dir, "facade_frame.json"),
-            facade_texture_max_incidence_deg=float(params["facade_texture_max_incidence_deg"]),
-            facade_depth_iqr_multiplier=float(params["facade_depth_iqr_multiplier"]),
-            facade_seed_max_reprojection_error=float(params["facade_seed_max_reprojection_error"]),
-            facade_seed_min_track_length=int(params["facade_seed_min_track_length"]),
+            verbose=config.verbose,
+            trainer_backend=product_run.trainer_backend,
+            training_seed=config.training_seed,
+            dronegs_profile_id=config.dronegs_profile_id,
+            dronegs_qualification_policy_id=config.dronegs_qualification_policy_id,
+            dronegs_optimizer_profile=config.dronegs_optimizer_profile,
+            dronegs_pruning_policy=config.dronegs_pruning_policy,
+            dronegs_raster_profile=config.dronegs_raster_profile,
+            dronegs_sh_degree_interval=config.dronegs_sh_degree_interval,
+            dronegs_topology_cooldown=config.dronegs_topology_cooldown,
+            dronegs_photometric_finish=config.dronegs_photometric_finish,
+            dronegs_photometric_mse_percent=config.dronegs_photometric_mse_percent,
+            dronegs_checkpoint_every=config.dronegs_checkpoint_every,
+            dronegs_test_every=config.dronegs_test_every,
+            dronegs_test_split=config.dronegs_test_split,
+            dronegs_test_guard_percent=config.dronegs_test_guard_percent,
+            dronegs_canary_min_psnr=config.dronegs_canary_min_psnr,
+            dronegs_canary_min_ssim=config.dronegs_canary_min_ssim,
+            cancellation_check=config.cancellation_check,
+            checkpoint_callback=config.checkpoint_callback,
+            render_mode=config.render_mode,
+            facade_scale_mode=config.facade_scale_mode,
+            facade_meters_per_model_unit=config.facade_meters_per_model_unit,
+            facade_frame_report=config.facade_frame_report,
+            facade_texture_max_incidence_deg=(
+                config.facade_texture_max_incidence_deg
+            ),
+            facade_depth_iqr_multiplier=config.facade_depth_iqr_multiplier,
+            facade_seed_max_reprojection_error=(
+                config.facade_seed_max_reprojection_error
+            ),
+            facade_seed_min_track_length=config.facade_seed_min_track_length,
         )
         runtime.report_mission_progress(
             vol_id,
@@ -279,7 +385,7 @@ def run_gaussian_product(
             log=f"Gaussian Splatting {'facade orthophoto' if facade_mode else 'orthomosaic'} complete: "
             f"{result['width']}x{result['height']}px, "
             f"{result['n_gaussians']} Gaussians, "
-            f"pixel size={gs_config.resolution} {result['gsd_units']}",
+            f"pixel size={config.resolution} {result['gsd_units']}",
         )
     except Exception as e:
         _tb.print_exc()
@@ -287,10 +393,10 @@ def run_gaussian_product(
         raise
 
     return PipelineGaussianState(
-        ortho_file=ortho_file,
+        ortho_file=config.ortho_file,
         result=result,
-        durable_checkpoint_dir=durable_checkpoint_dir,
-        checkpoint_s3_prefix=checkpoint_s3_prefix,
-        profile_id=gs_config.profile_id,
-        qualification_policy_id=gs_config.qualification_policy_id,
+        durable_checkpoint_dir=config.checkpoint_dir,
+        checkpoint_s3_prefix=product_run.checkpoint_s3_prefix,
+        profile_id=config.dronegs_profile_id,
+        qualification_policy_id=config.dronegs_qualification_policy_id,
     )
