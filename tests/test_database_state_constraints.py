@@ -17,6 +17,7 @@ from shared.database import (
     MapFeature,
     MapFeatureAuditEvent,
     Mission,
+    MissionStageRun,
     MissionLog,
     OutboxEvent,
     RasterLayerStyle,
@@ -27,6 +28,14 @@ EXPECTED_CHECKS = {
     Mission: {
         "ck_missions_status",
         "ck_missions_aggregation_status",
+    },
+    MissionStageRun: {
+        "ck_mission_stage_runs_status",
+        "ck_mission_stage_runs_stage",
+        "ck_mission_stage_runs_attempt",
+        "ck_mission_stage_runs_resource_class",
+        "ck_mission_stage_runs_dispatch_attempts",
+        "ck_mission_stage_runs_idempotency_length",
     },
     AIAnalysisRun: {
         "ck_ai_analysis_runs_status",

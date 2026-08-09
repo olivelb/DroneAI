@@ -22,6 +22,7 @@ from shared.stage_contracts import (
     STAGE_DAG_VERSION,
     STAGE_DEPENDENCIES,
     StageId,
+    resource_class_for_stage,
 )
 
 from ..messaging import build_stage_mission_event
@@ -42,6 +43,12 @@ def _serialize_stage_run(run: MissionStageRun) -> dict[str, Any]:
         "parameters": run.parameters or {},
         "upstream_artifact_ids": run.upstream_artifact_ids or [],
         "idempotency_key": run.idempotency_key,
+        "resource_class": run.resource_class,
+        "executor": run.executor,
+        "job_name": run.job_name,
+        "dispatch_attempts": run.dispatch_attempts,
+        "dispatch_error": run.dispatch_error,
+        "scheduled_at": run.scheduled_at,
     }
 
 
@@ -51,7 +58,7 @@ def _request_key(principal: Principal, raw_key: str) -> str:
     ).hexdigest()
 
 
-def _stage_parameters(request: StageRunCreate) -> dict[str, Any]:
+def _stage_parameters(stage: StageId, request: StageRunCreate) -> dict[str, Any]:
     return {
         "dag_version": STAGE_DAG_VERSION,
         **request.parameters,
@@ -216,7 +223,7 @@ def create_stage_run(
                     )
                 if (
                     cast(dict[str, Any], existing.parameters or {})
-                    != _stage_parameters(request)
+                    != _stage_parameters(stage, request)
                     or set(cast(list[str], existing.upstream_artifact_ids or []))
                     != set(request.upstream_artifact_ids.values())
                 ):
@@ -260,12 +267,15 @@ def create_stage_run(
                 MissionStageRun.stage == stage,
             ).scalar()
             attempt = int(latest_attempt if latest_attempt is not None else -1) + 1
+            parameters = _stage_parameters(stage, request)
+            resource_class = resource_class_for_stage(stage, parameters)
             run = MissionStageRun(
                 mission_id=mission.id,
                 stage=stage,
                 attempt=attempt,
                 status="queued",
-                parameters=_stage_parameters(request),
+                parameters=parameters,
+                resource_class=resource_class,
                 upstream_artifact_ids=upstream_ids,
                 idempotency_key=durable_key,
             )
@@ -278,7 +288,7 @@ def create_stage_run(
                 "phases": [stage],
                 "stage_run_id": run.run_id,
                 "upstream_artifact_ids": request.upstream_artifact_ids,
-                "stage_parameters": request.parameters,
+                "stage_parameters": parameters,
             }
             enqueue_outbox(
                 session,
