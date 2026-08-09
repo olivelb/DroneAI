@@ -161,6 +161,14 @@ artifact checksum. Restoration rejects absolute/traversal/duplicate paths and
 removes any file whose downloaded size or digest differs. Both directions call
 the cooperative cancellation hook between files.
 
+The first bundled adapter now executes `reconstruction` in the COLMAP image:
+it downloads the immutable dataset prefix, runs preparation, sparse mapping,
+optional RTK refinement, undistortion/alignment, writes a versioned portable
+COLMAP state file, and publishes the complete verified workspace. Absolute
+local paths are rebased on restore, and paths outside the workspace are
+rejected. Its Job always removes the local workspace in `finally`; no GPU or
+CUDA implementation/version changes are part of this adapter.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -178,4 +186,5 @@ the cooperative cancellation hook between files.
 - one-shot claim, exact-input loading, cooperative cancellation, deterministic
   artifact publication and downstream release;
 - safe, checksum-verified S3 workspace publication and restoration;
+- portable COLMAP reconstruction state and bounded reconstruction adapter;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

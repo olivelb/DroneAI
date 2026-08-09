@@ -147,7 +147,9 @@ cancellation, heartbeat and reconciliation are implemented. Job mode
 intentionally remains disabled until the fused workers are split into qualified
 one-shot stage executors. The shared claim/heartbeat/cancellation/artifact
 boundary and verified S3 workspace hand-off are implemented and tested;
-stage-specific worker adapters are the remaining Phase 7 lot.
+the COLMAP reconstruction adapter and portable reconstruction state are also
+implemented. Gaussian training/filtering, rasterization and detection adapters
+are the remaining Phase 7 lot.
 
 - Add resource-class declarations to phase definitions.
 - Queue ready DAG nodes and enforce per-owner/global concurrency limits.

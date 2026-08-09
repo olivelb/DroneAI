@@ -102,6 +102,7 @@ def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
     )
 
     assert observed["context"].mission_parameters["quality_profile"] == "normal-v1"
+    assert observed["context"].mission_attempt == 0
     with execution_sessions() as session:
         reconstruction = session.query(MissionStageRun).filter(
             MissionStageRun.stage == "reconstruction"

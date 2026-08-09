@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -43,6 +42,7 @@ class StageExecutionContext:
     owner_subject: str
     stage: StageId
     attempt: int
+    mission_attempt: int
     parameters: dict[str, Any]
     mission_parameters: dict[str, Any]
     inputs: tuple[StageArtifactInput, ...]
@@ -121,6 +121,7 @@ def _load_context(run_id: str, expected_stage: StageId) -> StageExecutionContext
             owner_subject=cast(str, mission.owner_subject),
             stage=cast(StageId, run.stage),
             attempt=cast(int, run.attempt),
+            mission_attempt=cast(int, mission.retry_count or 0),
             parameters=cast(dict[str, Any], run.parameters or {}),
             mission_parameters=cast(dict[str, Any], mission.params or {}),
             inputs=tuple(
