@@ -14,7 +14,11 @@ from shared.config import (
     TOPIC_MISSION,
     TOPIC_STATUS,
 )
-from shared.kafka_reliability import process_message
+from shared.kafka_reliability import (
+    ConsumerAssignmentWatchdog,
+    process_message,
+    recreate_unassigned_consumer,
+)
 from shared.worker_inbox import make_inbox_work_handler
 from worker_support import (
     build_mission_context,
@@ -54,6 +58,7 @@ def worker_main() -> None:
     )
     threading.Thread(target=control_consumer_thread, args=(producer,), daemon=True).start()
     consumer = create_consumer(KAFKA_BROKER, TOPIC_MISSION)
+    assignment_watchdog = ConsumerAssignmentWatchdog.from_environment()
 
     print("🎧 App 1 (COLMAP 4 — ALIKED/GLOMAP) ready.")
 
@@ -116,6 +121,15 @@ def worker_main() -> None:
     try:
         while True:
             message = consumer.poll(1.0)
+            consumer, recreated = recreate_unassigned_consumer(
+                consumer,
+                assignment_watchdog,
+                lambda: create_consumer(KAFKA_BROKER, TOPIC_MISSION),
+                logger,
+                "mission",
+            )
+            if recreated:
+                continue
             if message is None or message.error():
                 continue
             process_message(

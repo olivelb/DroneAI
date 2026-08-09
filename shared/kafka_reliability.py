@@ -43,6 +43,66 @@ class RetryPolicy:
         )
 
 
+@dataclass
+class ConsumerAssignmentWatchdog:
+    """Detect a consumer that stopped rejoining its subscribed group."""
+
+    timeout_seconds: float = 60.0
+    _unassigned_since: float | None = None
+
+    @classmethod
+    def from_environment(cls) -> ConsumerAssignmentWatchdog:
+        return cls(
+            timeout_seconds=max(
+                10.0,
+                float(
+                    os.getenv(
+                        "KAFKA_CONSUMER_UNASSIGNED_TIMEOUT_SECONDS",
+                        "60",
+                    )
+                ),
+            )
+        )
+
+    def should_recreate(
+        self,
+        consumer: Any,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        if consumer.assignment():
+            self._unassigned_since = None
+            return False
+        observed_at = time.monotonic() if now is None else now
+        if self._unassigned_since is None:
+            self._unassigned_since = observed_at
+            return False
+        return observed_at - self._unassigned_since >= self.timeout_seconds
+
+    def reset(self) -> None:
+        self._unassigned_since = None
+
+
+def recreate_unassigned_consumer(
+    consumer: Any,
+    watchdog: ConsumerAssignmentWatchdog,
+    consumer_factory: Callable[[], Any],
+    logger: Any,
+    consumer_name: str,
+) -> tuple[Any, bool]:
+    """Replace a consumer that remained outside its group past the deadline."""
+
+    if not watchdog.should_recreate(consumer):
+        return consumer, False
+    logger.warning(
+        "Kafka %s consumer remained unassigned; recreating it",
+        consumer_name,
+    )
+    consumer.close()
+    watchdog.reset()
+    return consumer_factory(), True
+
+
 def reliable_consumer_config(
     broker: str,
     group_id: str,

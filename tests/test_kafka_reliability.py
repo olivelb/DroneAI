@@ -3,9 +3,11 @@ import json
 import pytest
 
 from shared.kafka_reliability import (
+    ConsumerAssignmentWatchdog,
     MessageDeferredError,
     RetryPolicy,
     publish_json,
+    recreate_unassigned_consumer,
     process_message,
     reliable_consumer_config,
 )
@@ -32,12 +34,20 @@ class FakeConsumer:
     def __init__(self):
         self.commits = []
         self.seeks = []
+        self.assignments = []
+        self.closed = False
 
     def commit(self, *, message, asynchronous):
         self.commits.append((message, asynchronous))
 
     def seek(self, position):
         self.seeks.append(position)
+
+    def assignment(self):
+        return self.assignments
+
+    def close(self):
+        self.closed = True
 
 
 class FakeProducer:
@@ -83,6 +93,42 @@ def test_consumer_config_disables_automatic_offset_management():
     assert config["enable.auto.commit"] is False
     assert config["enable.auto.offset.store"] is False
     assert config["max.poll.interval.ms"] == 123
+
+
+def test_assignment_watchdog_recovers_only_after_continuous_timeout():
+    consumer = FakeConsumer()
+    watchdog = ConsumerAssignmentWatchdog(timeout_seconds=60)
+
+    assert watchdog.should_recreate(consumer, now=100) is False
+    assert watchdog.should_recreate(consumer, now=159) is False
+    assert watchdog.should_recreate(consumer, now=160) is True
+
+    consumer.assignments = [object()]
+    assert watchdog.should_recreate(consumer, now=161) is False
+
+    consumer.assignments = []
+    assert watchdog.should_recreate(consumer, now=200) is False
+    watchdog.reset()
+    assert watchdog.should_recreate(consumer, now=300) is False
+
+
+def test_recreate_unassigned_consumer_closes_and_replaces_stalled_member():
+    consumer = FakeConsumer()
+    replacement = FakeConsumer()
+    watchdog = ConsumerAssignmentWatchdog(timeout_seconds=0)
+    watchdog.should_recreate(consumer, now=100)
+
+    result, recreated = recreate_unassigned_consumer(
+        consumer,
+        watchdog,
+        lambda: replacement,
+        logger=type("Logger", (), {"warning": lambda *_args: None})(),
+        consumer_name="tile",
+    )
+
+    assert recreated is True
+    assert result is replacement
+    assert consumer.closed is True
 
 
 def test_publish_json_confirms_only_its_delivery_with_poll():

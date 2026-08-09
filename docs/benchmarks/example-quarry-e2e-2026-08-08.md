@@ -143,12 +143,12 @@ mission products.
 - GeoTIFF/COG: BigTIFF signatures, dimensions, CRS, transforms, bands, NoData,
   tiles, overviews and representative reads passed.
 
-## Remaining acceptance work
+## Fresh-run acceptance
 
-A fresh mission from ingestion through IA using the committed 5 m default is
-the final release-level regression test. It is intentionally separate from
-this controlled checkpoint reuse because repeating COLMAP and 15,000 DroneGS
-iterations would not add information to the filter comparison itself.
+The required fresh mission from direct ingestion through IA using the committed
+5 m default completed on 2026-08-09. See
+[`example-quarry-fresh-e2e-2026-08-09.md`](example-quarry-fresh-e2e-2026-08-09.md)
+for the release-qualification evidence, COG checks and Kafka recovery finding.
 
 For a GCP-qualified run, each surveyed point must first be marked in at least
 two registered source images and exported through DroneAI's
