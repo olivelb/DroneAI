@@ -2,8 +2,10 @@
 
 DroneAI exposes three immutable end-to-end envelopes through
 `GET /mission/parameters`. The profile ID, version, effective COLMAP/DroneGS
-parameters, explicit envelope overrides and selected YOLO artifact identity are
-persisted with every new mission and included in its Kafka event.
+parameters, explicit envelope overrides and the selected AI backend are
+persisted with every new mission and included in its durable stage parameters.
+YOLO identity is present only for a YOLO mission; SAM3 missions persist their
+prompt/classes and resolve the deployment-pinned SAM3 revision at execution.
 
 | Profile ID | Image width | SIFT features | DroneGS iterations | Gaussian cap | Training downscale |
 |---|---:|---:|---:|---:|---:|
@@ -25,3 +27,8 @@ SHA-256, availability and the complete native OBB class list. The optional
 what a deployment advertises and accepts. An empty value exposes all approved
 registry entries. The dashboard never maintains a separate class or model
 constant.
+
+SAM3 is a separate backend and never inherits a YOLO variant from a previous
+selection. Its repository, immutable revision, weight SHA-256, prompt,
+thresholds, CUDA device and library versions are recorded in the detection
+artifact provenance.

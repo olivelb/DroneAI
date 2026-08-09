@@ -60,11 +60,14 @@ npm run test:e2e
 ```
 
 The browser suite mocks API transport while exercising the production Next.js
-application in Chromium. Its six journeys cover dataset selection and mission
-launch, operator cancellation, the terminal cancelled state, browser-session
-renewal, live-event delivery after a WebSocket reconnect, and projected
-GeoPackage export from a completed mission. CI installs Chromium with its Linux
-system dependencies and retains the Playwright report on failure.
+application in Chromium. Its nine journeys cover dataset selection and mission
+launch, durable mission detail, locale persistence, versioned quality profiles,
+operator cancellation, the terminal cancelled state, browser-session renewal,
+live-event delivery after a WebSocket reconnect and projected GeoPackage export
+from a completed mission. Unit tests separately verify exact selected-mission
+polling, stale WebSocket protection and the five-stage projection. CI installs
+Chromium with its Linux system dependencies and retains the Playwright report
+on failure.
 
 Use the committed `package-lock.json`; do not replace `npm ci` with an
 unreviewed dependency update.
@@ -86,7 +89,7 @@ From the repository root:
 ```bash
 docker build \
   -f app4-dashboard/frontend/Dockerfile \
-  -t drone-dashboard-frontend:latest \
+  -t "drone-dashboard-frontend:$(git rev-parse --short=7 HEAD)" \
   .
 ```
 

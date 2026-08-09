@@ -1,11 +1,11 @@
 # DroneAI Cloud Deployment Guide
 
 > [!IMPORTANT]
-> This self-managed K3s guide is retained as a generic/legacy alternative. The
+> This self-managed K3s guide is retained as a generic alternative. The
 > current OVHcloud target uses managed MKS and is documented in
-> [`docs/OVHCLOUD_PREPROD.md`](docs/OVHCLOUD_PREPROD.md). Its measured COLMAP
-> preproduction envelope is 16 GiB requested / 32 GiB limited, not the older
-> 80 GiB sizing below.
+> [`docs/OVHCLOUD_PREPROD.md`](docs/OVHCLOUD_PREPROD.md). Use immutable
+> Git-SHA/digest service images and the bounded five-Job execution map below;
+> do not copy deployment values from dated benchmark reports.
 
 Deploy the DroneAI pipeline on a cloud K3s cluster with GPU support.
 
@@ -25,7 +25,8 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 - Provider: OVHcloud (or any provider with GPU instances)
 - Region: `GRA` (Gravelines) or `SBG` (Strasbourg) — or any region with GPU flavors
 - Kubernetes: self-managed K3s
-- GPU: dedicated nodes for `colmap-worker` and `ia-worker`
+- GPU: one or more nodes for bounded reconstruction, Gaussian, rasterization
+  and detection Jobs
 - Storage: cloud block volumes with dynamic provisioning via `storageClass`
 - Object storage: MinIO in-cluster (default), or managed S3
 - Database: PostGIS in-cluster (default), or managed PostgreSQL
@@ -36,9 +37,9 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 
 | Service | Image | GPU | Memory | Role |
 |---------|-------|-----|--------|------|
-| `colmap-worker` | `drone-colmap` | 1 | 80 Gi | 3D reconstruction, orthomosaic via Gaussian splatting |
-| `ia-worker` | `drone-ia` | 1 | 2–8 Gi | YOLO OBB + SAM3 inference on tiles |
-| `processing-worker` | `drone-processing` | — | 4–16 Gi | Tiling, detection aggregation, annotated orthomosaic |
+| Stage Jobs 1–4 | `drone-colmap:<git-sha>` | 1 when required | resource class; initially 16 Gi request / 32 Gi limit | Reconstruction, Gaussian training/filtering and Ortho/DEM rasterization |
+| Stage Job 5 | `drone-ia:<git-sha>` | 1 | `gpu-high-memory` class | SAM3/YOLO streaming inference and GeoJSON publication |
+| Compatibility processing worker | `drone-processing:<git-sha>` | — | 4–16 Gi | Used only by the fused Kafka compatibility path |
 | `dashboard-api` | `drone-dashboard-api` | — | 512 Mi–2 Gi | FastAPI control plane, WebSocket status |
 | `dashboard-frontend` | `drone-dashboard-frontend` | — | 128–512 Mi | Next.js web UI |
 
@@ -47,43 +48,47 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 | Component | Default | Cloud alternative |
 |-----------|---------|-------------------|
 | Kafka | `apache/kafka:3.7.0` in-cluster (KRaft) | Managed Kafka / keep in-cluster |
-| MinIO | `minio/minio:latest` in-cluster | Managed S3 (set `minio.enabled: false`) |
+| MinIO | Chart-selected local image | Managed S3 (set `minio.enabled: false`) |
 | PostgreSQL | `postgis/postgis:16-3.5` in-cluster | Managed PostgreSQL (set `postgres.enabled: false`) |
 
 ### Communication
 
-```
-Dashboard API  ─── vols-bruts ──────►  COLMAP Worker (GPU)
-                                            │
-                                       images-ortho
-                                            │
-                                            ▼
-                                    Processing Worker
-                                     ┌──────┴──────┐
-                                image-tiles      tile-detections
-                                     │               ▲
-                                     ▼               │
-                                  IA Worker (GPU) ───┘
-                                            │
-All workers  ─── pipeline-status ──►  Dashboard API ──► WebSocket ──► Frontend
-Dashboard API ─── pipeline-control ─►  All workers (cancellation)
+```mermaid
+flowchart LR
+    UI["Frontend"] --> API["Dashboard API"]
+    API --> DB[("PostgreSQL stage DAG")]
+    API --> K8S["Kubernetes Jobs"]
+    K8S --> R["Reconstruction"] --> GT["Gaussian training"]
+    GT --> GF["Gaussian filtering"] --> RA["Ortho / DEM"]
+    RA --> AI["SAM3 / YOLO detection"]
+    R <--> S3[("Managed S3 or MinIO")]
+    GT <--> S3
+    GF <--> S3
+    RA <--> S3
+    AI <--> S3
+    DB --> UI
 ```
 
-All services communicate through Kafka topics and read/write objects through the S3-compatible storage layer (`shared/storage.py` using `boto3`). Mission metadata is persisted in PostgreSQL via SQLAlchemy + GeoAlchemy2.
+PostgreSQL persists append-only attempts and immutable artifact edges. S3
+manifests carry large inter-stage state. Kafka remains deployed for platform
+events and the explicitly selected fused-worker compatibility path.
 
 ## Recommended node layout
 
 | Node | Role | vCPU | RAM | Disk | Runs |
 |------|------|------|-----|------|------|
-| `cp-1` | control-plane + CPU | 8–16 | 16–32 Gi | 100+ Gi SSD | K3s server, Kafka, MinIO, PostgreSQL, processing-worker, dashboard-api, dashboard-frontend, ingress |
-| `gpu-colmap-1` | GPU worker | 16+ | 96–128 Gi | fast SSD | colmap-worker |
-| `gpu-ia-1` | GPU worker | 8+ | 16–32 Gi | SSD | ia-worker |
+| `cp-1` | control-plane + CPU | 8–16 | 16–32 Gi | 100+ Gi SSD | K3s server, Kafka, object/database services, dashboard and ingress |
+| `gpu-1` | bounded GPU Jobs | 16+ | 32–64 Gi | fast SSD | sequential reconstruction, Gaussian, raster and detection Jobs |
+| `gpu-2` | optional scale-out | 8+ | 32–64 Gi | SSD | reviewed concurrent Jobs only when quota/cost permit |
 
-COLMAP requests 80 Gi memory — it needs a big node. The two GPU services run concurrently, so they need separate GPUs (or GPU time-slicing with `replicas: 2` if you accept contention).
+Start with one GPU node and the qualified 16 GiB request / 32 GiB limit. Raise
+that envelope only from measured dataset evidence. Per-mission and GPU resource
+concurrency default to one, so stages do not require separate GPUs.
 
 ### Cost-aware variant
 
-Collapse to 1 control-plane + 1 GPU node. Run `colmap-worker` and `ia-worker` sequentially (scale one to 0 while the other runs), or use GPU time-slicing.
+Collapse to one control-plane plus one autoscaled GPU node. The stage scheduler
+already serializes one mission and does not require manual worker scaling.
 
 ## Step 1: Provision infrastructure
 
@@ -244,24 +249,27 @@ From your development machine, build all images and push to a container registry
 
 ```bash
 REGISTRY="ghcr.io/<your-org>"
+IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
 docker login ghcr.io
 
-# Base image (COLMAP + Ceres + portable DroneGS — heavy, build once)
+# Base image (COLMAP + Ceres + portable DroneGS — heavy, build only when its
+# inputs change). The local :latest alias is a Dockerfile build dependency;
+# only the immutable Git tag is published.
 docker build \
   -t drone-colmap-base:latest \
-  -t $REGISTRY/drone-colmap-base:latest \
+  -t "$REGISTRY/drone-colmap-base:$IMAGE_TAG" \
   -f app1-colmap/Dockerfile.base .
-docker push $REGISTRY/drone-colmap-base:latest
+docker push "$REGISTRY/drone-colmap-base:$IMAGE_TAG"
 
 # Application images
-docker build -t $REGISTRY/drone-colmap:latest -f app1-colmap/Dockerfile .
-docker build -t $REGISTRY/drone-ia:latest -f app2-ia/Dockerfile .
-docker build -t $REGISTRY/drone-processing:latest -f app3-processing/Dockerfile .
-docker build -t $REGISTRY/drone-dashboard-api:latest -f app4-dashboard/api/Dockerfile .
-docker build -t $REGISTRY/drone-dashboard-frontend:latest -f app4-dashboard/frontend/Dockerfile .
+docker build -t "$REGISTRY/drone-colmap:$IMAGE_TAG" -f app1-colmap/Dockerfile .
+docker build -t "$REGISTRY/drone-ia:$IMAGE_TAG" -f app2-ia/Dockerfile .
+docker build -t "$REGISTRY/drone-processing:$IMAGE_TAG" -f app3-processing/Dockerfile .
+docker build -t "$REGISTRY/drone-dashboard-api:$IMAGE_TAG" -f app4-dashboard/api/Dockerfile .
+docker build -t "$REGISTRY/drone-dashboard-frontend:$IMAGE_TAG" -f app4-dashboard/frontend/Dockerfile .
 
 for img in drone-colmap drone-ia drone-processing drone-dashboard-api drone-dashboard-frontend; do
-  docker push $REGISTRY/$img:latest
+  docker push "$REGISTRY/$img:$IMAGE_TAG"
 done
 ```
 
@@ -308,6 +316,7 @@ This overrides `charts/drone-ai/values.yaml` for cloud deployment. Only set what
 global:
   imageRegistry: "ghcr.io/<your-org>/"   # trailing slash required
   imagePullPolicy: Always
+  requireImmutableImages: true
   imagePullSecrets:
     - name: regcred                       # omit if registry is public
 
@@ -338,6 +347,8 @@ postgres:
 
 # --- IA model cache ---
 iaWorker:
+  enabled: false
+  tag: "REPLACE_GIT_SHA"
   modelCache:
     hostPath: ""
     storageClass: "csi-cinder-high-speed"
@@ -345,6 +356,8 @@ iaWorker:
 
 # --- COLMAP scratch volume ---
 colmapWorker:
+  enabled: false
+  tag: "REPLACE_GIT_SHA"
   workVolume:
     sizeLimit: 200Gi
     drives:
@@ -352,6 +365,40 @@ colmapWorker:
         existingClaim: drone-ai-colmap-work
         label: "Cloud persistent workspace"
     default: cloud-workspace
+
+processingWorker:
+  tag: "REPLACE_GIT_SHA"
+  replicaCount: 0
+
+# --- Qualified bounded stage DAG ---
+stageJobs:
+  enabled: true
+  executors:
+    reconstruction:
+      image: "ghcr.io/<your-org>/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "reconstruction"]
+      gpu_architecture: "ampere"
+      node_selector: {gpu: "true"}
+    gaussian_training:
+      image: "ghcr.io/<your-org>/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_training"]
+      gpu_architecture: "ampere"
+      node_selector: {gpu: "true"}
+    gaussian_filtering:
+      image: "ghcr.io/<your-org>/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_filtering"]
+      gpu_architecture: "ampere"
+      node_selector: {gpu: "true"}
+    rasterization:
+      image: "ghcr.io/<your-org>/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "rasterization"]
+      gpu_architecture: "ampere"
+      node_selector: {gpu: "true"}
+    detection:
+      image: "ghcr.io/<your-org>/drone-ia:REPLACE_GIT_SHA"
+      command: ["python3", "app2-ia/stage_executor.py"]
+      gpu_architecture: "ampere"
+      node_selector: {gpu: "true"}
 
 # --- Storage connection strings ---
 # If using managed S3, override these:
@@ -369,6 +416,7 @@ colmapWorker:
 
 # --- Services: ClusterIP + Ingress instead of NodePort ---
 dashboardApi:
+  tag: "REPLACE_GIT_SHA"
   environment: production
   service:
     type: ClusterIP
@@ -383,6 +431,7 @@ dashboardApi:
     sessionMaxAgeSeconds: 28800
 
 dashboardFrontend:
+  tag: "REPLACE_GIT_SHA"
   apiUrl: "https://api.droneai.example.fr"
   service:
     type: ClusterIP
@@ -411,14 +460,16 @@ ingress:
 
 # --- GPU scheduling: pin to labeled nodes ---
 gpu:
-  nodeSelector:
-    gpu: "true"
-  # Uncomment if you tainted GPU nodes:
-  # tolerations:
-  #   - key: gpu
-  #     operator: Exists
-  #     effect: NoSchedule
+  runtimeClassName: nvidia
+  # This selector is retained for compatibility worker Deployments. Bounded
+  # Jobs use each executor's node_selector above.
+  nodeSelector: {gpu: "true"}
 ```
+
+Do not taint a stage-Job-only GPU node in this configuration: the current
+dynamic Job contract accepts an executor node selector but not per-executor
+tolerations. Adding toleration support requires a reviewed renderer/schema
+change and tests before the taint is applied.
 
 ### Using managed S3 instead of MinIO
 
@@ -465,7 +516,7 @@ install the extension beforehand.
 ```bash
 kubectl create namespace drone-ai
 
-# Hugging Face token (required for SAM3 model in ia-worker)
+# Hugging Face token (required for the gated SAM3 detection executor)
 kubectl -n drone-ai create secret generic hf-token \
   --from-literal=HF_TOKEN="hf_..."
 
@@ -498,13 +549,10 @@ Watch rollout:
 kubectl get pods -n drone-ai -w
 ```
 
-Expected pods:
+Expected steady-state pods (stage Jobs appear only while a mission runs):
 
 ```
 NAME                                  READY   STATUS
-colmap-worker-xxx                     1/1     Running
-ia-worker-xxx                         1/1     Running
-processing-worker-xxx                 1/1     Running
 dashboard-api-xxx                     1/1     Running
 dashboard-frontend-xxx                1/1     Running
 kafka-broker-xxx                      1/1     Running
@@ -557,8 +605,9 @@ open https://droneai.example.fr
 3. Watch progress via WebSocket in the frontend
 4. Verify the COG `orthomosaic.tif`, its `.cog.json`/WebP preview and
    `detections.geojson` appear in S3
-5. Check the mission summary through `/status/summary` and inspect the
-   `detections` table directly when database-level validation is needed
+5. Check the exact durable mission through `/missions/{vol_id}` and use its
+   stage runs, products, checksums and logs; `/status/summary` is retained only
+   for compatibility missions
 
 ## How the Helm chart works (local vs cloud)
 
@@ -589,10 +638,12 @@ kafka:
 
 ### Image references
 
-The `drone-ai.image` helper prepends `global.imageRegistry` if set:
+The `drone-ai.image` helper prepends `global.imageRegistry` to application
+Deployments. Dynamic executor Jobs use the complete immutable image stored in
+`stageJobs.executors`:
 
-- Local: `drone-colmap:latest` (imported into K3s via `docker save | k3s ctr import`)
-- Cloud: `ghcr.io/<org>/drone-colmap:latest` (pulled from registry)
+- Local: `drone-colmap:<git-sha>` imported into K3s with `docker save | k3s ctr import`
+- Cloud: `ghcr.io/<org>/drone-colmap:<git-sha>` or an OCI digest
 
 ### Services
 
@@ -618,6 +669,7 @@ For local K3s (WSL2/Ubuntu), use the unified entry point:
 
 ```bash
 # First clone, build and deployment
+export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
 ./deploy.sh distributed
 
 # Fast idempotent redeployment
@@ -638,5 +690,6 @@ After the first cloud deployment works:
 3. **Monitoring**: Prometheus + Grafana for pod metrics and GPU utilization
 4. **Logging**: centralized log aggregation (Loki, CloudWatch)
 5. **Backups**: automated PostgreSQL dumps, S3 lifecycle policies
-6. **Autoscaling**: HPA on processing-worker if tile volume is high
+6. **Autoscaling**: resource-class queue metrics and reviewed GPU-node bounds;
+   do not autoscale from an unbounded raw Job count
 7. **Secrets management**: external secrets operator or cloud vault

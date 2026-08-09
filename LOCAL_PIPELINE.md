@@ -93,6 +93,11 @@ an old orthomosaic or detection output cannot be silently reused.
 - `droneai-gaussian-local:latest` for Gaussian generation
 - `drone-ia:latest` for YOLO detection
 
+These `latest` names are deliberate workstation-only aliases used by the local
+diagnostic scripts. They are not deployment identities and must never be
+copied into a preproduction/production Helm executor map; Kubernetes uses a
+Git-SHA tag or OCI digest.
+
 Build the lightweight image from the repository root:
 
 ```bash

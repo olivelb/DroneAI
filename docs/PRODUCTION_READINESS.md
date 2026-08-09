@@ -1,6 +1,6 @@
 # DroneAI production readiness
 
-Date: 2026-07-29
+Last verified: 2026-08-09
 
 ## Supported deployment boundary
 
@@ -18,6 +18,14 @@ overlay. Before installation, create:
 - the API auth Secret with `api-keys.json` and a distinct random
   `session-secret` of at least 32 characters;
 - the ingress TLS Secret.
+
+The production example intentionally does not activate bounded stage Jobs.
+Those executors are qualified for controlled preproduction, but a production
+environment must first satisfy the environment-specific cancellation,
+deadline, backup/restore, interruption and rollback gates in
+[`OPERATIONS.md`](OPERATIONS.md). When approved, add the complete immutable
+`stageJobs.executors` map, disable the fused COLMAP/IA Deployments, scale the
+compatibility processing worker to zero and review the resulting Job RBAC.
 
 `api-keys.json` is a JSON array:
 

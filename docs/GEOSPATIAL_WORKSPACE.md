@@ -9,6 +9,17 @@ The browser never downloads the complete orthomosaic to display or zoom it.
 
 ## AI analysis lifecycle
 
+The mission's initial AI result is produced by the bounded `detection` stage
+Job in qualified Kubernetes mode. That executor streams the raster, performs
+SAM3/YOLO inference and publishes immutable JSON/GeoJSON as the fifth stage
+artifact.
+
+The API below is a separate post-publication campaign facility. It retains the
+Kafka processing/IA worker implementation for rerunning alternative models or
+prompts against an existing COG. A stage-Job-only deployment must provision
+those compatibility workers before enabling these campaign controls; the
+mission monitor must not present their state as a sixth DAG stage.
+
 `POST /maps/{vol_id}/analyses` creates an immutable analysis identity and an
 outbox event in the same PostgreSQL transaction. The existing processing and
 GPU inference workers then execute the campaign:

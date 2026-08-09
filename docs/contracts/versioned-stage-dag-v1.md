@@ -101,12 +101,12 @@ runs keep their legacy detail projection. New executors include `stage_run_id`
 in status events so a delayed event from an older attempt can never mutate the
 newer attempt.
 
-The current fused COLMAP/DroneGS worker remains supported during the executor
-migration. It now treats an omitted `detection` phase as terminal after raster
-publication, so no tiling or inference is launched accidentally. Earlier stop
-points and restarts still use the durable command boundary introduced here and
-will move to bounded per-stage jobs in the resource-aware orchestration phase;
-this phase deliberately does not change CUDA, COLMAP or DroneGS versions.
+The fused COLMAP/DroneGS worker remains a compatibility path for existing and
+deliberately local deployments. It treats an omitted `detection` phase as
+terminal after raster publication, so no tiling or inference is launched
+accidentally. New Kubernetes qualifications use the bounded executors below;
+both paths call the same scientific stage boundaries and this migration did not
+change CUDA, COLMAP or DroneGS versions.
 
 The scheduler policy is deterministic and tenant-aware: oldest work is kept in
 order within each owner, owners are served round-robin, and global, per-owner,
@@ -114,9 +114,11 @@ per-mission and per-resource-class limits all apply. Same-mission concurrency
 is permitted only when neither DAG node is an ancestor of the other. Kubernetes
 Job manifests are bounded (`activeDeadlineSeconds`, no retry, automatic TTL),
 run as non-root with dropped capabilities and derive their requests/limits from
-the persisted resource class. Job mode is disabled by default until the fused
-workers expose and qualify one-shot per-stage commands; the existing Kafka
-workers therefore remain the safe runtime default during this migration.
+the persisted resource class. All five commands completed the representative
+BIGZEN K3s/RTX 3090 Q3 chain. The generic chart default remains disabled only
+to require an explicit immutable executor map for each environment; it is no
+longer an adapter-availability limitation. `deploy.sh distributed` activates
+the mode when `STAGE_JOBS_IMAGE_TAG` supplies the commit-derived image tag.
 
 When explicitly enabled, the dashboard reserves queued rows with
 `FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
@@ -228,10 +230,12 @@ removed on every stage exit. Mission `sam_prompt` and `tile_size` choices remain
 part of the immutable stage parameters rather than being replaced by worker
 defaults.
 
-All five one-shot adapters are therefore implemented. Job mode remains disabled
-until a representative GPU E2E qualifies the complete artifact chain and the
-deployment supplies the immutable executor-image map; adapter availability
-alone does not activate Kubernetes dispatch.
+All five one-shot adapters are implemented and the complete artifact chain is
+qualified by
+[`../benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](../benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md).
+Kubernetes dispatch still requires deliberate per-environment activation plus
+a complete immutable executor-image map; the chart never infers that authority
+from adapter availability alone.
 
 ## Invariants covered by tests
 

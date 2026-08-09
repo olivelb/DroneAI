@@ -36,6 +36,10 @@ docker build --network=host --progress=plain \
   -f app1-colmap/Dockerfile .
 ```
 
+The `latest` tags above are local build dependencies for this workstation
+workflow only. A deployed executor must use the resulting image under the
+reviewed Git-SHA tag or OCI digest.
+
 `setup_deps.sh` pins and checksum-verifies COLMAP, PoseLib, faiss, ONNX Runtime,
 ALIKED and LightGlue. The ONNX models are embedded in the image, so production
 workers do not download models at runtime.

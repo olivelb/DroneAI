@@ -1,5 +1,11 @@
 # Chapelle Banyuls P4 Fast E2E on BIGZEN — 9 August 2026
 
+> [!IMPORTANT]
+> The initial sections are immutable evidence for the earlier local Fast run at
+> `adff3b9`. The
+> [Q3 Kubernetes addendum](#q3-kubernetes-five-job-qualification-addendum)
+> supersedes its former conclusion that stage Job mode was unqualified.
+
 ## Verdict
 
 The infrastructure-free full pipeline completed successfully on BIGZEN at
@@ -13,7 +19,9 @@ is heavily smoothed and contains Gaussian streaks and white peripheral areas.
 YOLO returned zero detections although the preview contains at least two
 vehicle-like objects that merit manual review. Kubernetes five-Job dispatch,
 S3 hand-offs, database publication and Kafka reconciliation were not exercised;
-`stageJobs.enabled` must therefore remain disabled.
+at commit `adff3b9`, that run alone was therefore insufficient to qualify
+`stageJobs.enabled`. The later Q3 addendum below records the superseding
+five-Job qualification.
 
 ## Environment and immutable inputs
 
@@ -178,9 +186,12 @@ projection fixes found during this qualification.
 | Item | Effective value |
 |---|---|
 | Kubernetes | K3s on BIGZEN, namespace `drone-ai` |
+| Kubernetes version | `v1.36.3+k3s1`, Linux/amd64 |
 | Stage mode | `DRONEAI_STAGE_JOBS_ENABLED=true` |
 | Global / owner / mission concurrency | 2 / 1 / 1 |
 | GPU runtime | `runtimeClassName: nvidia`, one GPU per executor Job |
+| GPU / driver / VRAM | NVIDIA GeForce RTX 3090 / 591.74 / 24,576 MiB |
+| Executor Git tag | `5492ee8` |
 | Reconstruction through rasterization | `drone-colmap:5492ee8`, image ID `sha256:74ccfccdde403d51d24a082c1c0ec24c815e0571305facc310f9b592daedb802` |
 | Detection | `drone-ia:5492ee8`, image ID `sha256:4cd2b10d47ab11943e1bff35bf69b922359aebfbbcc226a65fe4f55634a82630` |
 | GPU architecture selector | `ampere` for all five executors |

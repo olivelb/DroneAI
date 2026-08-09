@@ -23,10 +23,18 @@ CI.
 | Images | OVH Harbor/MPR, Git SHA tags | `latest` is forbidden for preproduction service images. |
 | DNS | `droneai-preprod.olembo.fr` and `api-droneai-preprod.olembo.fr` | Do not alter apex, `www`, MX, SPF or DKIM records. |
 
-With the default maximum of one GPU node, Kubernetes cannot allocate one
-exclusive `nvidia.com/gpu` to COLMAP and another to IA at the same time. Scale
-one worker to zero while the other runs. Set `gpu_max_nodes = 2` only after a
-quota and cost review if concurrent processing is required.
+With the default maximum of one GPU node, keep global and per-mission GPU
+resource concurrency at one so reconstruction/Gaussian/raster/detection Jobs
+run sequentially. Set `gpu_max_nodes = 2` only after a quota and cost review if
+cross-mission concurrency is required.
+
+The five one-shot executors are now qualified on BIGZEN K3s/RTX 3090; see the
+[Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
+That result replaces the former executor-availability blocker, but it does not
+create OVH GPU quota or authorize waking the zero-node pool. The next OVH GPU
+qualification must deploy `stageJobs.enabled=true` with the published Git-SHA
+executor map and one-per-mission GPU concurrency. The dated hybrid worker run
+later in this document remains historical cloud evidence.
 
 ## 1. Prepare credentials locally
 
@@ -423,7 +431,7 @@ kubectl -n drone-ai-preprod create secret generic drone-ai-api-auth \
 ```
 
 Do not reuse examples or local-development passwords. Create `hf-token` only
-before enabling the IA worker:
+before enabling a SAM3 detection Job (or the compatibility IA worker):
 
 ```bash
 kubectl -n drone-ai-preprod create secret generic hf-token \
