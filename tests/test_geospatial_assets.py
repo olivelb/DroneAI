@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import rasterio
+import pytest
 from PIL import Image
 from rasterio.transform import from_bounds
 
@@ -115,6 +116,34 @@ def test_render_cog_tile_reads_a_bounded_web_mercator_tile(tmp_path):
     with Image.open(tile) as image:
         assert image.size == (256, 256)
         assert image.mode == "RGBA"
+
+
+def test_render_cog_tile_supports_explicit_rgb_bands_and_global_ranges(tmp_path):
+    raster = tmp_path / "orthomosaic.tif"
+    _write_test_raster(raster)
+
+    tile = render_cog_tile(
+        raster,
+        z=0,
+        x=0,
+        y=0,
+        band_indexes=[3, 2, 1],
+        display_ranges=[[0, 255], [0, 255], [0, 255]],
+    )
+
+    with Image.open(tile) as image:
+        assert image.size == (256, 256)
+        assert image.mode == "RGBA"
+
+
+def test_render_cog_tile_rejects_duplicate_or_missing_bands(tmp_path):
+    raster = tmp_path / "orthomosaic.tif"
+    _write_test_raster(raster)
+
+    with pytest.raises(ValueError, match="one grayscale or three unique"):
+        render_cog_tile(raster, z=0, x=0, y=0, band_indexes=[1, 1, 2])
+    with pytest.raises(ValueError, match="outside the available band range"):
+        render_cog_tile(raster, z=0, x=0, y=0, band_indexes=[4])
 
 
 def test_depth_tiles_share_one_global_display_range():

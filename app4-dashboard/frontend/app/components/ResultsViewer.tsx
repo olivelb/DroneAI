@@ -8,12 +8,9 @@ import {
   cancelAnalysis,
   createAnalysis,
   createMapFeature,
-  deleteMapFeature,
   fetchAnalyses,
   fetchBrowse,
   retryAnalysis,
-  searchMapFeatures,
-  updateMapFeature,
 } from "../lib/api";
 import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
@@ -26,6 +23,8 @@ import {
 import ViewerHeader from "./geospatial/ViewerHeader";
 import ViewerSidePanel from "./geospatial/ViewerSidePanel";
 import ViewerToolbar from "./geospatial/ViewerToolbar";
+import { useRasterStyles } from "./geospatial/use-raster-styles";
+import { useFeatureOperations } from "./geospatial/use-feature-operations";
 import {
   DEFAULT_ANALYSIS,
   retainKnownRunIds,
@@ -75,7 +74,6 @@ export default function ResultsViewer() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [activePanel, setActivePanel] = useState<WorkspacePanel>("layers");
   const [activeLayer, setActiveLayer] = useState<ViewerLayer>("ortho");
-  const [rasterOpacity, setRasterOpacity] = useState(1);
   const [showLegacy, setShowLegacy] = useState(true);
   const [showManual, setShowManual] = useState(true);
   const [availableFiles, setAvailableFiles] = useState<string[]>([]);
@@ -95,19 +93,52 @@ export default function ResultsViewer() {
   const [annotationDescription, setAnnotationDescription] = useState("");
   const [annotationColor, setAnnotationColor] = useState("#10b981");
   const [annotationTags, setAnnotationTags] = useState("terrain");
-  const [selectedFeature, setSelectedFeature] = useState<Feature | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
-
-  const [searchText, setSearchText] = useState("");
-  const [searchSource, setSearchSource] = useState("");
-  const [searchRun, setSearchRun] = useState("");
-  const [searchResults, setSearchResults] = useState<Feature[]>([]);
-  const [focusBounds, setFocusBounds] = useState<
-    [number, number, number, number] | null
-  >(null);
-  const [busySearch, setBusySearch] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const refreshFeatures = useCallback(
+    () => setRefreshToken((value) => value + 1),
+    [],
+  );
+  const setFeatureNotice = useCallback((message: string) => setNotice(message), []);
+  const setFeatureError = useCallback((message: string) => setError(message), []);
+  const featureOperations = useFeatureOperations(
+    missionId,
+    refreshFeatures,
+    setFeatureNotice,
+    setFeatureError,
+  );
+  const {
+    selectedFeature,
+    setSelectedFeature,
+    searchText,
+    setSearchText,
+    searchSource,
+    setSearchSource,
+    searchRun,
+    setSearchRun,
+    searchReviewed,
+    setSearchReviewed,
+    searchDeleted,
+    setSearchDeleted,
+    searchResults,
+    selectedSearchIds,
+    setSelectedSearchIds,
+    focusBounds,
+    setFocusBounds,
+    busySearch,
+  } = featureOperations;
+  const setRasterError = useCallback((message: string) => setError(message), []);
+  const announceRasterStyleSaved = useCallback(
+    () => setNotice(t("explorer.rasterStyleSaved")),
+    [t],
+  );
+  const rasterStyles = useRasterStyles(
+    missionId,
+    activeLayer,
+    setRasterError,
+    announceRasterStyleSaved,
+  );
 
   const refreshAnalyses = useCallback(async () => {
     if (!missionId) return;
@@ -200,7 +231,7 @@ export default function ResultsViewer() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [draftGeometry, expanded, redrawingFeature, tool]);
+  }, [draftGeometry, expanded, redrawingFeature, setSelectedFeature, tool]);
 
   const hasDepth = availableFiles.some((file) =>
     file.endsWith("orthomosaic.height.tif") ||
@@ -237,27 +268,10 @@ export default function ResultsViewer() {
     }
   };
 
-  const runSearch = async () => {
-    if (!missionId) return;
-    setBusySearch(true);
-    setError("");
-    try {
-      const response = await searchMapFeatures(missionId, {
-        q: searchText,
-        source: searchSource || undefined,
-        runId: searchRun || undefined,
-      });
-      setSearchResults(response.features);
-      if (response.bounds) setFocusBounds(response.bounds);
-      setActivePanel("search");
-      setPanelOpen(true);
-    } catch (reason) {
-      setError(
-        reason instanceof Error ? reason.message : t("explorer.searchFailed"),
-      );
-    } finally {
-      setBusySearch(false);
-    }
+  const showSearch = async () => {
+    await featureOperations.runSearch();
+    setActivePanel("search");
+    setPanelOpen(true);
   };
 
   const geometryReady = (geometry: Geometry, result?: string) => {
@@ -303,49 +317,6 @@ export default function ResultsViewer() {
     }
   };
 
-  const selectedFeatureId = String(
-    selectedFeature?.properties?.feature_id ?? selectedFeature?.id ?? "",
-  );
-
-  const removeSelected = async () => {
-    if (!missionId || !selectedFeatureId) return;
-    try {
-      await deleteMapFeature(missionId, selectedFeatureId);
-      setSelectedFeature(null);
-      setRefreshToken((value) => value + 1);
-      setNotice(t("explorer.annotationDeleted"));
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("explorer.annotationDeleteFailed"),
-      );
-    }
-  };
-
-  const saveSelected = async () => {
-    if (!missionId || !selectedFeature || !selectedFeatureId) return;
-    try {
-      const updated = await updateMapFeature(missionId, selectedFeatureId, {
-        geometry: selectedFeature.geometry,
-        name: selectedFeature.properties?.name || "Annotation",
-        description: selectedFeature.properties?.description || "",
-        color: selectedFeature.properties?.color || "#10b981",
-        tags: selectedFeature.properties?.tags || [],
-        version: selectedFeature.properties?.version || 1,
-      });
-      setSelectedFeature(updated);
-      setRefreshToken((value) => value + 1);
-      setNotice(t("explorer.annotationUpdated"));
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("explorer.annotationUpdateFailed"),
-      );
-    }
-  };
-
   const beginRedraw = () => {
     if (!selectedFeature?.geometry) return;
     setRedrawingFeature(true);
@@ -385,7 +356,7 @@ export default function ResultsViewer() {
         busySearch={busySearch}
         onMissionChange={setSelectedVol}
         onSearchTextChange={setSearchText}
-        onSearch={() => void runSearch()}
+        onSearch={() => void showSearch()}
         onPanelToggle={() => setPanelOpen((current) => !current)}
         onShortcutsToggle={() => setShortcutsOpen((current) => !current)}
         onExpandedToggle={() => setExpanded((current) => !current)}
@@ -440,13 +411,20 @@ export default function ResultsViewer() {
                 activeLayer,
                 hasDepth,
                 availableFiles,
-                rasterOpacity,
+                rasterMetadata: rasterStyles.metadata,
+                rasterStyle: rasterStyles.recipe,
+                savedRasterStyles: rasterStyles.savedStyles,
+                rasterStyleName: rasterStyles.styleName,
+                savingRasterStyle: rasterStyles.saving,
                 showLegacy,
                 showManual,
                 analyses,
                 visibleRuns,
                 onLayerChange: setActiveLayer,
-                onOpacityChange: setRasterOpacity,
+                onRasterStyleChange: rasterStyles.setRecipe,
+                onRasterStyleNameChange: rasterStyles.setStyleName,
+                onSavedRasterStyleApply: rasterStyles.applySavedStyle,
+                onRasterStyleSave: () => void rasterStyles.save(),
                 onLegacyChange: setShowLegacy,
                 onManualChange: setShowManual,
                 onRunVisibilityChange: (runId, visible) =>
@@ -472,11 +450,18 @@ export default function ResultsViewer() {
               search={{
                 source: searchSource,
                 runId: searchRun,
+                reviewed: searchReviewed,
+                deleted: searchDeleted,
                 analyses,
                 results: searchResults,
+                selectedIds: selectedSearchIds,
                 onSourceChange: setSearchSource,
                 onRunChange: setSearchRun,
-                onSearch: () => void runSearch(),
+                onReviewedChange: setSearchReviewed,
+                onDeletedChange: setSearchDeleted,
+                onSelectionChange: setSelectedSearchIds,
+                onBulkAction: (action) => void featureOperations.mutateBulk(action),
+                onSearch: () => void showSearch(),
                 onFeatureSelect: selectFeature,
                 onFocus: setFocusBounds,
               }}
@@ -505,7 +490,7 @@ export default function ResultsViewer() {
             <GeospatialMap
               missionId={missionId}
               layer={activeLayer}
-              rasterOpacity={rasterOpacity}
+              rasterStyle={rasterStyles.recipe}
               showLegacy={showLegacy}
               showManual={showManual}
               analyses={visibleAnalyses}
@@ -515,6 +500,7 @@ export default function ResultsViewer() {
               onGeometryReady={geometryReady}
               onFeatureSelect={selectFeature}
               onHint={setToolHint}
+              onMetadata={rasterStyles.handleMetadata}
             />
             {draftGeometry && (
               <DraftFeatureEditor
@@ -536,9 +522,10 @@ export default function ResultsViewer() {
                 feature={selectedFeature}
                 onChange={setSelectedFeature}
                 onClose={() => setSelectedFeature(null)}
-                onDelete={() => void removeSelected()}
+                onDelete={() => void featureOperations.removeSelected()}
                 onRedraw={beginRedraw}
-                onSave={() => void saveSelected()}
+                onSave={() => void featureOperations.saveSelected()}
+                onReview={(reviewed) => void featureOperations.reviewSelected(reviewed)}
               />
             )}
           </main>

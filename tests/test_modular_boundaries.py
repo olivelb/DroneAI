@@ -17,8 +17,10 @@ def test_map_api_keeps_a_small_composition_router():
     feature_modules = [
         "app4-dashboard/api/routers/map_analyses.py",
         "app4-dashboard/api/routers/map_exports.py",
+        "app4-dashboard/api/routers/map_feature_mutations.py",
         "app4-dashboard/api/routers/map_features.py",
         "app4-dashboard/api/routers/map_rasters.py",
+        "app4-dashboard/api/routers/map_styles.py",
     ]
 
     assert _line_count(composition) < 40

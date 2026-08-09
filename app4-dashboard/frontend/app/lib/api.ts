@@ -1,4 +1,11 @@
-import type { MissionCatalogResponse, MissionDetail } from "./types";
+import type {
+  FeatureBulkAction,
+  MissionCatalogResponse,
+  MissionDetail,
+  RasterLayerStyle,
+  RasterMetadata,
+  RasterStyleRecipe,
+} from "./types";
 
 export type SessionPrincipal = {
   subject: string;
@@ -289,19 +296,28 @@ export const getPreviewUrl = (s3Key: string, maxSize = 4096, colormap = "") => {
 export const getMapMetadata = (
   missionId: string,
   layer: "ortho" | "depth",
-) => api(`/maps/${encodeURIComponent(missionId)}/metadata/${layer}`);
+) => api<RasterMetadata>(`/maps/${encodeURIComponent(missionId)}/metadata/${layer}`);
 
 export const getMapTileUrl = (
   missionId: string,
   layer: "ortho" | "depth",
-  displayRange?: [number, number],
+  style?: RasterStyleRecipe,
 ) => {
   const url = `${getApiBaseUrl()}/maps/${encodeURIComponent(missionId)}/tiles/${layer}/{z}/{x}/{y}.png`;
-  if (!displayRange) return url;
-  return `${url}?${new URLSearchParams({
-    display_min: String(displayRange[0]),
-    display_max: String(displayRange[1]),
-  }).toString()}`;
+  if (!style) return url;
+  const params = new URLSearchParams({
+    bands: style.bands.join(","),
+    palette: style.palette,
+  });
+  if (style.display_ranges.length) {
+    params.set(
+      "display_ranges",
+      style.display_ranges
+        .map((range) => (range ? `${range[0]}:${range[1]}` : "auto"))
+        .join(","),
+    );
+  }
+  return `${url}?${params.toString()}`;
 };
 
 export const getVectorLayer = (
@@ -363,6 +379,8 @@ export const searchMapFeatures = (
     runId?: string;
     className?: string;
     minConfidence?: number;
+    reviewed?: boolean;
+    deleted?: boolean;
   },
 ) => {
   const params = new URLSearchParams();
@@ -372,6 +390,12 @@ export const searchMapFeatures = (
   if (filters.className) params.set("class_name", filters.className);
   if (filters.minConfidence !== undefined) {
     params.set("min_confidence", String(filters.minConfidence));
+  }
+  if (filters.reviewed !== undefined) {
+    params.set("reviewed", String(filters.reviewed));
+  }
+  if (filters.deleted !== undefined) {
+    params.set("deleted", String(filters.deleted));
   }
   return api<import("geojson").FeatureCollection & { bounds?: [number, number, number, number] | null }>(
     `/maps/${encodeURIComponent(missionId)}/search?${params.toString()}`,
@@ -410,11 +434,54 @@ export const updateMapFeature = (
   },
 );
 
-export const deleteMapFeature = (missionId: string, featureId: string) =>
+export const deleteMapFeature = (
+  missionId: string,
+  featureId: string,
+  reason = "",
+) =>
   api<void>(
-    `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}`,
+    `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}?${new URLSearchParams({ reason }).toString()}`,
     { method: "DELETE" },
   );
+
+export const mutateMapFeaturesBulk = (
+  missionId: string,
+  request: {
+    action: FeatureBulkAction;
+    feature_ids: string[];
+    expected_versions?: Record<string, number>;
+    reason?: string;
+  },
+) => api<{
+  action: FeatureBulkAction;
+  requested_count: number;
+  changed_count: number;
+  features: import("geojson").Feature[];
+}>(`/maps/${encodeURIComponent(missionId)}/features/bulk`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(request),
+});
+
+export const fetchRasterStyles = (
+  missionId: string,
+  layer: "ortho" | "depth",
+) => api<{ layer: string; styles: RasterLayerStyle[] }>(
+  `/maps/${encodeURIComponent(missionId)}/styles/${layer}`,
+);
+
+export const createRasterStyle = (
+  missionId: string,
+  layer: "ortho" | "depth",
+  request: { name: string; style: RasterStyleRecipe; is_default?: boolean },
+) => api<RasterLayerStyle>(
+  `/maps/${encodeURIComponent(missionId)}/styles/${layer}`,
+  {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
 
 type SaveFilePickerType = {
   description: string;

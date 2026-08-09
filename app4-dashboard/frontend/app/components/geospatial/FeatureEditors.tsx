@@ -1,7 +1,7 @@
 "use client";
 
 import type { Feature } from "geojson";
-import { PenLine, Save, Trash2, X } from "lucide-react";
+import { CheckCircle2, PenLine, Save, Trash2, Undo2, X } from "lucide-react";
 import { useI18n } from "../../lib/i18n/provider";
 import { splitTags } from "./workspace-config";
 
@@ -101,6 +101,7 @@ interface SelectedFeatureEditorProps {
   onDelete: () => void;
   onRedraw: () => void;
   onSave: () => void;
+  onReview: (reviewed: boolean) => void;
 }
 
 export function SelectedFeatureEditor({
@@ -110,9 +111,11 @@ export function SelectedFeatureEditor({
   onDelete,
   onRedraw,
   onSave,
+  onReview,
 }: SelectedFeatureEditorProps) {
   const { t } = useI18n();
-  const manual = feature.properties?.source === "manual";
+  const editable = ["manual", "ai"].includes(String(feature.properties?.source));
+  const reviewed = feature.properties?.reviewed === true;
   const updateProperty = (name: string, value: string) =>
     onChange({
       ...feature,
@@ -139,7 +142,7 @@ export function SelectedFeatureEditor({
               feature.properties?.class_name ||
               "",
           )}
-          disabled={!manual}
+          disabled={!editable}
           onChange={(event) =>
             updateProperty("name", event.target.value)
           }
@@ -147,13 +150,13 @@ export function SelectedFeatureEditor({
         />
         <textarea
           value={String(feature.properties?.description || "")}
-          disabled={!manual}
+          disabled={!editable}
           onChange={(event) =>
             updateProperty("description", event.target.value)
           }
           className="input-control min-h-16 disabled:bg-slate-50"
         />
-        {manual && (
+        {editable && (
           <div className="grid grid-cols-[1fr_50px] gap-2">
             <input
               value={tags}
@@ -191,14 +194,22 @@ export function SelectedFeatureEditor({
             </span>
           )}
         </div>
-        {manual && (
-          <div className="grid grid-cols-[auto_auto_1fr] gap-2">
+        {editable && (
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => onReview(!reviewed)}
+              className="flex min-h-10 items-center justify-center gap-1 rounded-xl border border-emerald-200 px-3 text-xs text-emerald-700"
+            >
+              {reviewed ? <Undo2 size={13} /> : <CheckCircle2 size={13} />}
+              {reviewed ? t("editor.unreview") : t("editor.review")}
+            </button>
             <button
               type="button"
               onClick={onDelete}
               className="flex min-h-10 items-center justify-center gap-1 rounded-xl border border-rose-200 px-3 text-xs text-rose-700"
             >
-              <Trash2 size={13} /> {t("editor.delete")}
+              <Trash2 size={13} /> {t("editor.withdraw")}
             </button>
             <button
               type="button"

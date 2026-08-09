@@ -15,9 +15,11 @@ from shared.database import (
     DatasetUploadSession,
     InboxEvent,
     MapFeature,
+    MapFeatureAuditEvent,
     Mission,
     MissionLog,
     OutboxEvent,
+    RasterLayerStyle,
 )
 
 
@@ -32,6 +34,8 @@ EXPECTED_CHECKS = {
     },
     AIAnalysisTile: {"ck_ai_analysis_tiles_status"},
     MapFeature: {"ck_map_features_source"},
+    MapFeatureAuditEvent: {"ck_map_feature_audit_action"},
+    RasterLayerStyle: {"ck_raster_layer_styles_version"},
     MissionLog: {"ck_mission_logs_status"},
     InboxEvent: {"ck_inbox_events_status"},
     OutboxEvent: {"ck_outbox_events_status"},

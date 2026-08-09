@@ -23,6 +23,9 @@ map_support = importlib.import_module("app4-dashboard.api.map_support")
 analysis_routes = importlib.import_module("app4-dashboard.api.routers.map_analyses")
 export_routes = importlib.import_module("app4-dashboard.api.routers.map_exports")
 feature_routes = importlib.import_module("app4-dashboard.api.routers.map_features")
+feature_mutation_routes = importlib.import_module(
+    "app4-dashboard.api.routers.map_feature_mutations"
+)
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
@@ -87,6 +90,10 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     assert "/maps/{vol_id}/analyses/{run_id}/vectors.geojson" in paths
     assert "/maps/{vol_id}/features" in paths
     assert "/maps/{vol_id}/features/{feature_id}" in paths
+    assert "/maps/{vol_id}/features/bulk" in paths
+    assert "/maps/{vol_id}/features/{feature_id}/audit" in paths
+    assert "/maps/{vol_id}/styles/{layer}" in paths
+    assert "/maps/{vol_id}/styles/{layer}/{style_id}" in paths
     assert "/maps/{vol_id}/search" in paths
     assert "/operations/outbox/dead" in paths
     assert "/ws/status" in direct_paths
@@ -279,9 +286,9 @@ def test_sync_io_handlers_are_threadpool_eligible():
     assert not inspect.iscoroutinefunction(analysis_routes.analysis_vectors)
     assert not inspect.iscoroutinefunction(export_routes.export_raster)
     assert not inspect.iscoroutinefunction(export_routes.export_vectors)
-    assert not inspect.iscoroutinefunction(feature_routes.create_map_feature)
-    assert not inspect.iscoroutinefunction(feature_routes.update_map_feature)
-    assert not inspect.iscoroutinefunction(feature_routes.delete_map_feature)
+    assert not inspect.iscoroutinefunction(feature_mutation_routes.create_map_feature)
+    assert not inspect.iscoroutinefunction(feature_mutation_routes.update_map_feature)
+    assert not inspect.iscoroutinefunction(feature_mutation_routes.delete_map_feature)
     assert not inspect.iscoroutinefunction(feature_routes.search_map_features)
 
 
@@ -307,11 +314,11 @@ def test_manual_feature_update_rejects_a_stale_version(monkeypatch):
     def session_scope():
         yield session
 
-    monkeypatch.setattr(feature_routes, "get_session", session_scope)
+    monkeypatch.setattr(feature_mutation_routes, "get_session", session_scope)
     request = SimpleNamespace(version=2)
 
     with pytest.raises(HTTPException) as error:
-        feature_routes.update_map_feature(
+        feature_mutation_routes.update_map_feature(
             "mission-1",
             "feature-1",
             request,

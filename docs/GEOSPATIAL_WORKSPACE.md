@@ -62,15 +62,22 @@ Read routes require `viewer`; mutations require `operator`.
 | `GET` | `/maps/{vol_id}/export/vectors` | create a GeoPackage or GeoJSON export by source/campaign and CRS |
 | `POST` | `/maps/{vol_id}/features` | create a manual WGS84 feature |
 | `PATCH` | `/maps/{vol_id}/features/{feature_id}` | optimistic update using `version` |
-| `DELETE` | `/maps/{vol_id}/features/{feature_id}` | delete a manual feature |
+| `DELETE` | `/maps/{vol_id}/features/{feature_id}` | audited tombstone of a manual or persisted-AI feature |
+| `POST` | `/maps/{vol_id}/features/bulk` | review, unreview, tombstone or restore selected features |
+| `GET` | `/maps/{vol_id}/features/{feature_id}/audit` | append-only correction history |
+| `GET/POST` | `/maps/{vol_id}/styles/{layer}` | list/create named raster recipes |
+| `PATCH` | `/maps/{vol_id}/styles/{layer}/{style_id}` | versioned named-style update |
 
 Accepted manual geometries are Point, LineString, Polygon and their Multi
 variants in EPSG:4326. Coordinates, vertex count, color, tag count and text
-lengths are validated server-side. AI features are read-only; changing model
-results requires a new campaign and preserves provenance.
+lengths are validated server-side. Persisted AI features can be corrected
+without changing the immutable source campaign. Their provenance remains
+attached and every correction records the operator plus before/after state.
+Legacy detections that were not persisted remain read-only.
 
-Search filters include free text, source, campaign, class, confidence and
-optional WGS84 bounding box. The response includes `bounds`, which the
+Search filters include free text, source, campaign, class, confidence, review
+state, active/withdrawn state and an optional WGS84 bounding box. The response
+includes `bounds`, which the
 dashboard uses to frame all returned zones. Persisted AI and manual features
 use the PostGIS GiST index. Legacy pipeline detections remain searchable by
 class and spatial extent.
@@ -87,13 +94,15 @@ registration to a map CRS.
 
 The workspace is responsive and contains four panels:
 
-- **Couches** controls the COG/depth raster, opacity, legacy detections,
-  manual objects and independent AI campaign visibility.
+- **Couches** controls RGB/single-band composition, COG-wide percentile or
+  fixed min/max stretch, opacity, DEM palettes, named recipes, legacy
+  detections, manual objects and independent AI campaign visibility.
 - **IA** configures name, description, color, tags, backend, model/prompt,
   classes, confidence, tile size and PostGIS persistence. It also shows phase,
   tile progress, errors, retry/cancel controls and final download.
-- **Objets** applies database filters, lists matches and zooms to one result or
-  to the aggregate result bounds.
+- **Objets** applies database/review filters, lists matches, selects persisted
+  objects in bulk, marks them reviewed/unreviewed and performs reversible
+  removal/restoration.
 - **Export** streams the orthomosaic or height raster as COG/GeoTIFF and exports
   all vectors, AI/legacy subsets or manual annotations as GeoPackage or
   GeoJSON. GeoPackage is the recommended QGIS 4+ interchange format because it
@@ -129,9 +138,12 @@ filesystem path.
 
 The map toolbar supports navigation, point/line/polygon creation and
 distance/area measurement. A measure can remain temporary or be saved as a
-normal tagged feature. Manual objects can be selected, renamed, described,
-updated or removed. Concurrent edits are protected by a version check and
-return HTTP 409 rather than overwriting another operator's change.
+normal tagged feature. Manual and persisted-AI objects can be selected,
+corrected, reviewed or withdrawn. Withdrawal creates a tombstone and audit
+event rather than deleting the row; bulk operations follow the same rule.
+Concurrent edits are protected by a version check and return HTTP 409 rather
+than overwriting another operator's change. GeoJSON and GeoPackage exports
+omit tombstoned rows.
 
 ### Maintenance boundaries
 
@@ -140,8 +152,9 @@ The layers, AI campaign, search, export and feature-editing interfaces live in
 focused components under `components/geospatial/`; CRS selection and vector
 export cards are separate from download orchestration, and shared defaults and
 geometry helpers live in `workspace-config.ts`. On the API side,
-`routers/maps.py` only composes the raster, export, campaign and feature
-routers. Request models and the framework-neutral GeoJSON/GeoPackage writer
+`routers/maps.py` only composes the raster, export, campaign, feature-mutation
+and named-style routers. Request models and the framework-neutral
+GeoJSON/GeoPackage writer
 are kept outside those routers; CRS resolution and lazy reprojection live in a
 separate shared module.
 
@@ -160,6 +173,6 @@ helm upgrade --install drone-ai charts/drone-ai \
 ```
 
 The Helm migration job runs `alembic upgrade head`; API and worker init
-containers wait for revision `0004`. No additional Kafka topic is required:
+containers wait for the configured schema head. No additional Kafka topic is required:
 campaign events extend the existing versioned orthomosaic, image-tile,
 tile-detection and control contracts with `analysis_run_id`.
