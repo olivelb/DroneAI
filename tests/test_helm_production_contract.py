@@ -39,6 +39,8 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
     assert "mc cors set" not in minio
     assert "MINIO_API_CORS_ALLOW_ORIGIN" in compose
     assert "http://localhost:3000,http://127.0.0.1:3000" in compose
+    assert "http://localhost:30000,http://127.0.0.1:30000" in compose
+    assert "DRONEAI_MINIO_CORS_ALLOW_ORIGIN" in compose
     assert "mc cors set" not in compose
     assert "PUT" in external_script
     assert "ETag" in external_script

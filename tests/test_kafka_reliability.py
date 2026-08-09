@@ -124,6 +124,7 @@ def test_recreate_unassigned_consumer_closes_and_replaces_stalled_member():
         lambda: replacement,
         logger=type("Logger", (), {"warning": lambda *_args: None})(),
         consumer_name="tile",
+        now=100,
     )
 
     assert recreated is True

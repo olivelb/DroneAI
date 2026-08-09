@@ -89,10 +89,12 @@ def recreate_unassigned_consumer(
     consumer_factory: Callable[[], Any],
     logger: Any,
     consumer_name: str,
+    *,
+    now: float | None = None,
 ) -> tuple[Any, bool]:
     """Replace a consumer that remained outside its group past the deadline."""
 
-    if not watchdog.should_recreate(consumer):
+    if not watchdog.should_recreate(consumer, now=now):
         return consumer, False
     logger.warning(
         "Kafka %s consumer remained unassigned; recreating it",

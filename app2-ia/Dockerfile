@@ -45,7 +45,8 @@ if digest != expected:
 PY
 
 RUN groupadd --gid 10001 droneai \
-    && useradd --uid 10001 --gid 10001 --create-home droneai
+    && useradd --uid 10001 --gid 10001 --create-home droneai \
+    && install -d --owner=10001 --group=10001 /cache/huggingface
 
 ENV HOME=/home/droneai
 ENV YOLO_CONFIG_DIR=/tmp/Ultralytics

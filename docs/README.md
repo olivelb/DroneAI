@@ -37,6 +37,9 @@ the current release status:
   [`benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json`](benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json)
 - local CUDA 12.9.2 runtime qualification:
   [`benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md`](benchmarks/cuda-12.9.2-runtime-qualification-2026-08-06.md)
+- BIGZEN Villesèque P4 high-quality full E2E, Metashape comparison and
+  YOLO/SAM3 qualification:
+  [`benchmarks/villeseque-p4-hq-e2e-2026-08-09.md`](benchmarks/villeseque-p4-hq-e2e-2026-08-09.md)
 - 2026-08-06 audit-hardening changes and focused test results:
   [`audits/2026-08-06-audit-hardening-validation.md`](audits/2026-08-06-audit-hardening-validation.md)
 - 2026-08-08 platform audit verification and first P1 implementation batch:

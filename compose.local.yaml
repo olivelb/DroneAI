@@ -131,7 +131,7 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       # MinIO Community exposes CORS globally through this environment variable.
-      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:3000,http://127.0.0.1:3000"
+      MINIO_API_CORS_ALLOW_ORIGIN: "${DRONEAI_MINIO_CORS_ALLOW_ORIGIN:-http://localhost:3000,http://127.0.0.1:3000,http://localhost:30000,http://127.0.0.1:30000}"
     ports:
       - ${DRONEAI_BIND_ADDRESS:-127.0.0.1}:${DRONEAI_MINIO_CONSOLE_PORT:-30090}:9001
       - ${DRONEAI_BIND_ADDRESS:-127.0.0.1}:${DRONEAI_MINIO_API_PORT:-30091}:9000
