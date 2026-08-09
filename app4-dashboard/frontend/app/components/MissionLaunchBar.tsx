@@ -89,7 +89,9 @@ export default function MissionLaunchBar() {
           </div>
           <div className="truncate text-[10px] text-[#7a8783]">
             {isRunning
-              ? activeMission?.services?.COLMAP?.step ?? t("launch.running")
+              ? activeMission?.current_step ??
+                activeMission?.services?.COLMAP?.step ??
+                t("launch.running")
               : selectedPath || t("launch.selectDataset")}
           </div>
         </div>

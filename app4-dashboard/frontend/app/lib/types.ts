@@ -106,8 +106,52 @@ export type MissionSummary = {
   logs: MissionLog[];
   updated_at: number;
   overall_status: string;
+  status?: string;
+  current_step?: string | null;
+  progress?: number;
+  quality_profile?: QualityProfileId | null;
+  stage_runs?: MissionStageRun[];
+  parameters?: Record<string, unknown>;
+  products?: MissionProduct[];
   is_stale?: boolean;
   last_event_age_seconds?: number | null;
+};
+
+export type MissionStageRun = {
+  run_id: string;
+  stage: MissionStageId;
+  attempt: number;
+  status: string;
+  progress: number;
+  current_step?: string | null;
+  executor?: string | null;
+  resource_class?: string | null;
+  job_name?: string | null;
+  dispatch_attempts?: number;
+  dispatch_error?: string | null;
+  parameters?: Record<string, unknown>;
+  upstream_artifact_ids?: string[];
+  provenance?: Record<string, unknown>;
+  quality_metrics?: Record<string, unknown>;
+  error_message?: string | null;
+  heartbeat_at?: string | null;
+  scheduled_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export type MissionProduct = {
+  kind: string;
+  run_id?: string;
+  artifact_id?: string;
+  stage_run_id?: string;
+  name?: string;
+  status?: string;
+  s3_key?: string | null;
+  checksum_sha256?: string;
+  size_bytes?: number | null;
+  metadata?: Record<string, unknown>;
+  parent_artifact_ids?: string[];
 };
 
 export type MissionCatalogItem = {
@@ -136,7 +180,7 @@ export type MissionCatalogResponse = {
 export type MissionDetail = MissionCatalogItem & {
   parameters: Record<string, unknown>;
   attempts: Array<number | Record<string, unknown>>;
-  stage_runs?: Array<Record<string, unknown>>;
+  stage_runs?: MissionStageRun[];
   phases: Record<string, StatusPayload>;
   heartbeat: {
     updated_at?: string | null;
@@ -151,17 +195,7 @@ export type MissionDetail = MissionCatalogItem & {
     message?: string | null;
     created_at?: string | null;
   }>;
-  products: Array<{
-    kind: string;
-    run_id?: string;
-    artifact_id?: string;
-    stage_run_id?: string;
-    name?: string;
-    status?: string;
-    s3_key?: string | null;
-    checksum_sha256?: string;
-    parent_artifact_ids?: string[];
-  }>;
+  products: MissionProduct[];
 };
 
 export type DatasetItem = {
@@ -382,6 +416,35 @@ export const missionPhaseStatus = (
   phase: "reconstruction" | "gaussian" | "detection",
 ): string => {
   if (!mission) return "waiting";
+  const latestStage = (stage: MissionStageId) =>
+    [...(mission.stage_runs ?? [])]
+      .filter((run) => run.stage === stage)
+      .sort((left, right) => right.attempt - left.attempt)[0];
+  const projectedStatus = (run?: MissionStageRun) => {
+    if (!run) return "waiting";
+    if (run.status === "succeeded") return "success";
+    if (run.status === "running") return "processing";
+    if (run.status === "failed") return "error";
+    return run.status;
+  };
+  if (mission.stage_runs?.length) {
+    if (phase === "reconstruction") {
+      return projectedStatus(latestStage("reconstruction"));
+    }
+    if (phase === "gaussian") {
+      const gaussianStages: MissionStageId[] = [
+        "gaussian_training",
+        "gaussian_filtering",
+        "rasterization",
+      ];
+      const runs = gaussianStages.map(latestStage).filter(Boolean) as MissionStageRun[];
+      if (runs.some((run) => run.status === "failed")) return "error";
+      if (runs.some((run) => run.status === "running")) return "processing";
+      if (runs.every((run) => run.status === "succeeded")) return "success";
+      return "waiting";
+    }
+    return projectedStatus(latestStage("detection"));
+  }
   const colmap = mission.services.COLMAP;
   const colmapStep = colmap?.step ?? "";
   if (phase === "reconstruction") {

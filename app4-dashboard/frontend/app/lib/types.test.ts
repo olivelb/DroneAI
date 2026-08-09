@@ -66,4 +66,48 @@ describe("missionPhaseStatus", () => {
     expect(missionPhaseStatus(mission, "reconstruction")).toBe("success");
     expect(missionPhaseStatus(mission, "gaussian")).toBe("processing");
   });
+
+  it("uses five-job stage runs instead of stale legacy services", () => {
+    const mission = {
+      vol_id: "mission-stage-jobs",
+      services: {},
+      logs: [],
+      updated_at: 1,
+      overall_status: "processing",
+      stage_runs: [
+        {
+          run_id: "reconstruction-1",
+          stage: "reconstruction" as const,
+          attempt: 0,
+          status: "succeeded",
+          progress: 100,
+        },
+        {
+          run_id: "training-1",
+          stage: "gaussian_training" as const,
+          attempt: 0,
+          status: "running",
+          progress: 40,
+        },
+        {
+          run_id: "filtering-1",
+          stage: "gaussian_filtering" as const,
+          attempt: 0,
+          status: "blocked",
+          progress: 0,
+        },
+        {
+          run_id: "raster-1",
+          stage: "rasterization" as const,
+          attempt: 0,
+          status: "blocked",
+          progress: 0,
+        },
+      ],
+    };
+
+    expect(missionPhaseStatus(mission, "reconstruction")).toBe("success");
+    expect(missionPhaseStatus(mission, "gaussian")).toBe("processing");
+    expect(missionPhaseStatus(mission, "detection")).toBe("waiting");
+  });
 });

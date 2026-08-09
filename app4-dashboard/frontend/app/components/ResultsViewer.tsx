@@ -57,7 +57,7 @@ const isTypingTarget = (target: EventTarget | null) =>
 
 export default function ResultsViewer() {
   const { t } = useI18n();
-  const { activeMission, missions } = useMissionRuntime();
+  const { activeMission, missions, setActiveMissionId } = useMissionRuntime();
   const sortedMissions = useMemo(
     () =>
       Object.values(missions).sort(
@@ -65,8 +65,13 @@ export default function ResultsViewer() {
       ),
     [missions],
   );
-  const [selectedVol, setSelectedVol] = useState<string | null>(null);
-  const mission = selectedVol ? missions[selectedVol] : activeMission;
+  const selectMission = useCallback(
+    (missionId: string) => {
+      setActiveMissionId(missionId);
+    },
+    [setActiveMissionId],
+  );
+  const mission = activeMission;
   const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
 
   const [expanded, setExpanded] = useState(false);
@@ -350,11 +355,11 @@ export default function ResultsViewer() {
         expanded={expanded}
         panelOpen={panelOpen}
         missionId={missionId}
-        selectedMission={selectedVol ?? missionId}
+        selectedMission={missionId}
         missions={sortedMissions}
         searchText={searchText}
         busySearch={busySearch}
-        onMissionChange={setSelectedVol}
+        onMissionChange={selectMission}
         onSearchTextChange={setSearchText}
         onSearch={() => void showSearch()}
         onPanelToggle={() => setPanelOpen((current) => !current)}

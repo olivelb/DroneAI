@@ -91,7 +91,7 @@ function DashboardInner() {
     parameterValues,
   } = useStore();
   const { authPrincipal, logout } = useAuth();
-  const { activeMission, wsConnected } = useMissionRuntime();
+  const { activeMission, setActiveMissionId, wsConnected } = useMissionRuntime();
   const [monitorOpen, setMonitorOpen] = useState(false);
 
   useEffect(() => {
@@ -118,6 +118,7 @@ function DashboardInner() {
 
   const progress = useMemo(() => {
     if (!activeMission) return 0;
+    if (activeMission.progress !== undefined) return activeMission.progress;
     const services = Object.values(activeMission.services);
     if (services.length === 0) return 0;
     return Math.round(
@@ -132,6 +133,11 @@ function DashboardInner() {
     : PHASES;
 
   useEffect(() => {
+    const selected = new URLSearchParams(window.location.search).get("mission");
+    if (selected) setActiveMissionId(selected);
+  }, [setActiveMissionId]);
+
+  useEffect(() => {
     if (facadeMode && activePhase === "detection") {
       setActivePhase("results");
     }
@@ -142,9 +148,13 @@ function DashboardInner() {
       <header className="sticky top-0 z-[700] border-b border-[#dbe3e0]/90 bg-[#f3f5f4]/92 backdrop-blur-xl">
         <div className="mx-auto flex h-16 max-w-[1920px] items-center justify-between gap-3 px-3 sm:px-5">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#173f3b] text-white shadow-[0_8px_20px_rgba(23,63,59,0.18)]">
+            <Link
+              href="/"
+              aria-label="DroneAI"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[#173f3b] text-white shadow-[0_8px_20px_rgba(23,63,59,0.18)]"
+            >
               <Boxes size={18} />
-            </div>
+            </Link>
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="truncate text-base font-bold tracking-[-0.03em] text-[#17201e] sm:text-lg">
