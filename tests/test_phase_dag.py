@@ -34,6 +34,28 @@ stage_schemas = importlib.import_module("app4-dashboard.api.stage_schemas")
 PRINCIPAL = SimpleNamespace(subject="dag-operator", role="operator")
 
 
+def _reconstruction_artifact_request(
+    vol_id: str,
+    run_id: str,
+    artifact_id: str,
+    *,
+    checksum: str = "b" * 64,
+    parent_artifact_ids: list[str] | None = None,
+):
+    key = (
+        f"missions/{vol_id}/stage-runs/{run_id}/"
+        "reconstruction-workspace/manifest.json"
+    )
+    return stage_schemas.ArtifactCreate(
+        artifact_id=artifact_id,
+        kind="reconstruction_workspace",
+        uri=f"s3://{stage_routes.S3_BUCKET}/{key}",
+        checksum_sha256=checksum,
+        metadata={"manifest_key": key},
+        parent_artifact_ids=parent_artifact_ids or [],
+    )
+
+
 @pytest.fixture
 def dag_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
@@ -94,6 +116,13 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
     catalog = stage_dag_catalog()
 
     assert catalog["resource_classes"] == RESOURCE_CLASSES
+    assert [stage["artifact_kind"] for stage in catalog["stages"]] == [
+        "reconstruction_workspace",
+        "gaussian_training_workspace",
+        "gaussian_filtering_workspace",
+        "raster_product_workspace",
+        "detection_workspace",
+    ]
     assert resource_class_for_stage(
         "detection",
         {"ai": {"backend": "sam3"}},
@@ -410,18 +439,23 @@ def test_artifact_publication_queues_the_next_ready_stage(
             mission,
             {"vol_id": mission.vol_id},
         )
+        runs[0].status = "running"
         reconstruction_run_id = runs[0].run_id
     monkeypatch.setattr(stage_routes, "get_session", dag_sessions)
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *_args, **_kwargs: None,
+    )
     artifact_id = str(uuid4())
 
     response = stage_routes.publish_stage_artifact(
         "mission-chain",
         reconstruction_run_id,
-        stage_schemas.ArtifactCreate(
-            artifact_id=artifact_id,
-            kind="sparse_reconstruction",
-            uri="s3://droneai/mission-chain/sparse.tar.zst",
-            checksum_sha256="b" * 64,
+        _reconstruction_artifact_request(
+            "mission-chain",
+            reconstruction_run_id,
+            artifact_id,
         ),
         PRINCIPAL,
         None,
@@ -463,15 +497,24 @@ def test_artifact_identity_rejects_changed_immutable_content(
         session.flush()
         run_id = run.run_id
     monkeypatch.setattr(stage_routes, "get_session", dag_sessions)
-    original = stage_schemas.ArtifactCreate(
-        artifact_id=artifact_id,
-        kind="sparse_reconstruction",
-        uri="s3://droneai/mission-immutable/sparse.tar.zst",
-        checksum_sha256="c" * 64,
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *_args, **_kwargs: None,
+    )
+    original = _reconstruction_artifact_request(
+        "mission-immutable",
+        run_id,
+        artifact_id,
+        checksum="c" * 64,
     )
     stage_routes.publish_stage_artifact(
         "mission-immutable", run_id, original, PRINCIPAL, None
     )
+    replay = stage_routes.publish_stage_artifact(
+        "mission-immutable", run_id, original, PRINCIPAL, None
+    )
+    assert replay["status"] == "existing"
 
     with pytest.raises(HTTPException) as error:
         stage_routes.publish_stage_artifact(
@@ -490,6 +533,126 @@ def test_artifact_identity_rejects_changed_immutable_content(
             run_id,
             original.model_copy(
                 update={"uri": "s3://droneai/mission-immutable/changed.tar.zst"}
+            ),
+            PRINCIPAL,
+            None,
+        )
+
+    assert error.value.status_code == 422
+
+
+def test_manual_artifact_publication_requires_admin_dependency():
+    route = next(
+        item
+        for item in stage_routes.router.routes
+        if item.path == "/missions/{vol_id}/stages/runs/{run_id}/artifacts"
+    )
+
+    assert any(
+        dependency.call is stage_routes.require_admin
+        for dependency in route.dependant.dependencies
+    )
+
+
+def test_manual_artifact_publication_validates_contract_before_s3(monkeypatch):
+    request = _reconstruction_artifact_request(
+        "mission-contract",
+        "run-contract",
+        str(uuid4()),
+    )
+    mission = SimpleNamespace(vol_id="mission-contract")
+    run = SimpleNamespace(
+        stage="reconstruction",
+        run_id="run-contract",
+        upstream_artifact_ids=[],
+    )
+    verifier_calls = []
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *args: verifier_calls.append(args),
+    )
+
+    stage_routes._validate_published_artifact(mission, run, request)
+    assert verifier_calls == [
+        (
+            "missions/mission-contract/stage-runs/run-contract/"
+            "reconstruction-workspace/manifest.json",
+            "b" * 64,
+        )
+    ]
+
+    invalid_requests = [
+        request.model_copy(update={"kind": "detection_workspace"}),
+        request.model_copy(update={"uri": "s3://drone-ai/other/manifest.json"}),
+        request.model_copy(update={"metadata": {"manifest_key": "other"}}),
+        request.model_copy(update={"parent_artifact_ids": [str(uuid4())]}),
+    ]
+    for invalid in invalid_requests:
+        with pytest.raises(HTTPException) as error:
+            stage_routes._validate_published_artifact(mission, run, invalid)
+        assert error.value.status_code == 422
+
+
+def test_manual_artifact_publication_rejects_failed_remote_verification(monkeypatch):
+    request = _reconstruction_artifact_request(
+        "mission-remote",
+        "run-remote",
+        str(uuid4()),
+    )
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *_args: (_ for _ in ()).throw(OSError("missing")),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        stage_routes._validate_published_artifact(
+            SimpleNamespace(vol_id="mission-remote"),
+            SimpleNamespace(
+                stage="reconstruction",
+                run_id="run-remote",
+                upstream_artifact_ids=[],
+            ),
+            request,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == (
+        "Artifact manifest is missing or failed remote checksum verification"
+    )
+
+
+def test_new_manual_artifact_requires_a_running_stage(dag_sessions, monkeypatch):
+    with dag_sessions() as session:
+        mission = Mission(vol_id="mission-queued", owner_subject="dag-operator")
+        session.add(mission)
+        session.flush()
+        run = MissionStageRun(
+            mission_id=mission.id,
+            stage="reconstruction",
+            attempt=0,
+            status="queued",
+            idempotency_key="7" * 64,
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.run_id
+    monkeypatch.setattr(stage_routes, "get_session", dag_sessions)
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        stage_routes.publish_stage_artifact(
+            "mission-queued",
+            run_id,
+            _reconstruction_artifact_request(
+                "mission-queued",
+                run_id,
+                str(uuid4()),
             ),
             PRINCIPAL,
             None,

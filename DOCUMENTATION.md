@@ -234,7 +234,8 @@ Primary endpoints:
 - `GET /missions`
 - `GET /missions/{vol_id}`
 - `POST /missions/{vol_id}/stages/{stage}/runs`
-- `POST /missions/{vol_id}/stages/runs/{run_id}/artifacts`
+- `POST /missions/{vol_id}/stages/runs/{run_id}/artifacts` (admin-only,
+  verified recovery/import path)
 - `GET /status/summary` (compatibility missions)
 - `GET /pods`
 - `GET /mission/parameters`
@@ -270,7 +271,8 @@ Primary responsibilities:
 - reserve eligible runs fairly under global/owner/mission/resource limits
 - render deterministic hardened Kubernetes Jobs from immutable executor maps
 - reconcile missing/finished Jobs, heartbeats, cancellation and dispatch bounds
-- publish immutable artifacts and release only direct dependants atomically
+- publish immutable artifacts internally and release only direct dependants
+  atomically; admin recovery publication revalidates the canonical S3 manifest
 - expose owner-scoped mission summaries, exact stage attempts, products,
   checksums, quality metrics and durable lifecycle logs
 - retain Kafka mission/control/status publication, compatibility completion

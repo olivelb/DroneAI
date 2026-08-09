@@ -111,7 +111,7 @@ can still reference an older product.
 | Queued run has no Job | Let the bounded reconciler recreate it within its dispatch limit; do not create an untracked pod. |
 | Heartbeat is stale | Treat it as delayed observability, inspect the Job and node, and do not infer failure solely from silence. |
 | Job failed or exceeded its deadline | Preserve logs and durable error, then create a new stage attempt against the same exact parents. |
-| Artifact checksum or parent replay conflicts | Stop publication and investigate; never overwrite or relabel the existing artifact. |
+| Artifact checksum, canonical manifest URI or parent replay conflicts | Stop publication and investigate; never overwrite or relabel the existing artifact. The admin recovery route must successfully reverify the S3 manifest metadata. |
 | Mission is cancelled | Keep it terminal, remove active Jobs and do not release dependants. |
 | Database is unavailable/corrupt | Stop writers, restore into an isolated instance, validate migrations/counts, then perform a reviewed cutover. |
 | S3 object is missing | Stop downstream retries and recover the exact version/checksum; do not substitute a similarly named object. |

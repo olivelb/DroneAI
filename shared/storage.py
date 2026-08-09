@@ -200,6 +200,28 @@ def upload_verified_file(
     return {"key": s3_key, "size": size, "sha256": digest}
 
 
+def verify_object_checksum(
+    s3_key: str,
+    expected_sha256: str,
+    bucket: str | None = None,
+) -> None:
+    """Verify that a published S3 object carries the expected SHA-256 metadata."""
+
+    bucket = bucket or S3_BUCKET
+    try:
+        head = _get_client().head_object(Bucket=bucket, Key=s3_key)
+    except ClientError as error:
+        raise OSError(
+            f"S3 object verification failed for s3://{bucket}/{s3_key}"
+        ) from error
+    remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
+    if remote_digest != expected_sha256:
+        raise OSError(
+            f"S3 checksum verification failed for s3://{bucket}/{s3_key}: "
+            f"sha256={remote_digest}/{expected_sha256}"
+        )
+
+
 def download_file(s3_key: str, local_path: str | Path, bucket: str | None = None) -> Path:
     """Download a file from S3 to a local path. Creates parent dirs. Returns local Path."""
     bucket = bucket or S3_BUCKET

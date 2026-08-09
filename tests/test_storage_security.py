@@ -107,6 +107,20 @@ def test_verified_upload_checks_size_and_sha256(tmp_path, monkeypatch):
     assert result["sha256"] == client.metadata["sha256"]
 
 
+def test_remote_object_checksum_verification(monkeypatch):
+    client = _VerifiedClient()
+    client.metadata = {"sha256": "a" * 64}
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    storage.verify_object_checksum("missions/mission-1/manifest.json", "a" * 64)
+
+    with pytest.raises(OSError, match="checksum verification failed"):
+        storage.verify_object_checksum(
+            "missions/mission-1/manifest.json",
+            "b" * 64,
+        )
+
+
 class _DeleteClient:
     def __init__(self, responses):
         self.responses = iter(responses)

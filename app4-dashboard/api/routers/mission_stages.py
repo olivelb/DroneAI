@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 from typing import Annotated, Any, cast
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
-from shared.config import TOPIC_MISSION
+from shared import storage
+from shared.config import S3_BUCKET, TOPIC_MISSION
 from shared.database import (
     Mission,
     MissionArtifact,
@@ -23,6 +25,7 @@ from shared.stage_artifacts import (
     release_ready_stage_runs,
 )
 from shared.stage_contracts import (
+    STAGE_ARTIFACT_KINDS,
     STAGE_DAG_VERSION,
     STAGE_DEPENDENCIES,
     StageId,
@@ -31,7 +34,7 @@ from shared.stage_contracts import (
 
 from ..messaging import build_stage_mission_event
 from ..mission_access import get_owned_mission
-from ..security import Principal, require_operator
+from ..security import Principal, require_admin, require_operator
 from ..stage_orchestrator import stage_jobs_enabled
 from ..stage_schemas import ArtifactCreate, StageRunCreate
 
@@ -130,6 +133,54 @@ def _immutable_artifact_matches(
         == request.metadata
         and existing_parent_ids == parent_artifact_ids
     )
+
+
+def _validate_published_artifact(
+    mission: Mission,
+    run: MissionStageRun,
+    request: ArtifactCreate,
+) -> None:
+    stage = cast(StageId, run.stage)
+    expected_kind = STAGE_ARTIFACT_KINDS[stage]
+    if request.kind != expected_kind:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"Stage {stage} requires artifact kind {expected_kind}",
+        )
+
+    expected_key = (
+        f"missions/{mission.vol_id}/stage-runs/{run.run_id}/"
+        f"{stage}-workspace/manifest.json"
+    )
+    parsed = urlsplit(request.uri)
+    if (
+        parsed.scheme != "s3"
+        or parsed.netloc != S3_BUCKET
+        or parsed.path != f"/{expected_key}"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Artifact URI must identify this exact stage-run manifest",
+        )
+    if request.metadata.get("manifest_key") != expected_key:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Artifact metadata must identify this exact stage-run manifest",
+        )
+    if set(request.parent_artifact_ids) != set(run.upstream_artifact_ids or []):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Artifact parents must match the durable stage inputs exactly",
+        )
+    try:
+        storage.verify_object_checksum(expected_key, request.checksum_sha256)
+    except OSError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Artifact manifest is missing or failed remote checksum verification",
+        ) from error
 
 
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
@@ -295,7 +346,7 @@ def publish_stage_artifact(
     vol_id: str,
     run_id: str,
     request: ArtifactCreate,
-    principal: Annotated[Principal, Depends(require_operator)],
+    principal: Annotated[Principal, Depends(require_admin)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> dict[str, Any]:
     with get_session() as session:
@@ -316,6 +367,7 @@ def publish_stage_artifact(
         )
         if run is None:
             raise HTTPException(status_code=404, detail="Stage run not found")
+        _validate_published_artifact(mission, run, request)
         existing = (
             session.query(MissionArtifact)
             .filter(MissionArtifact.artifact_id == request.artifact_id)
@@ -335,8 +387,17 @@ def publish_stage_artifact(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Artifact identity already exists with different immutable data",
                 )
-            mark_stage_run_succeeded(run)
+            if run.status != "succeeded":
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Existing artifact conflicts with the durable stage state",
+                )
             return {"artifact_id": existing.artifact_id, "status": "existing"}
+        if run.status != "running":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A new artifact can only be published for a running stage",
+            )
         parents = _artifacts_for_request(
             session,
             mission,

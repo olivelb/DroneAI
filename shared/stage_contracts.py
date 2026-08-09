@@ -46,6 +46,14 @@ STAGE_DEPENDENCIES: dict[StageId, tuple[StageId, ...]] = {
     "detection": ("rasterization",),
 }
 
+STAGE_ARTIFACT_KINDS: dict[StageId, str] = {
+    "reconstruction": "reconstruction_workspace",
+    "gaussian_training": "gaussian_training_workspace",
+    "gaussian_filtering": "gaussian_filtering_workspace",
+    "rasterization": "raster_product_workspace",
+    "detection": "detection_workspace",
+}
+
 RESOURCE_CLASSES: dict[ResourceClassId, ResourceClassSpec] = {
     "cpu-standard": {
         "cpu_request": "2",
@@ -141,6 +149,7 @@ def stage_dag_catalog() -> dict[str, Any]:
             {
                 "id": stage,
                 "dependencies": list(STAGE_DEPENDENCIES[stage]),
+                "artifact_kind": STAGE_ARTIFACT_KINDS[stage],
                 "resource_class": DEFAULT_STAGE_RESOURCE_CLASSES[stage],
             }
             for stage in STAGE_ORDER
