@@ -37,6 +37,7 @@ def _settings(**kwargs):
         "poll_seconds": 1.0,
         "limits": SchedulingLimits(global_active=2, per_owner_active=1),
         "executors": _executors(),
+        "runtime_class_name": "nvidia",
     }
     values.update(kwargs)
     return orchestrator.StageOrchestratorSettings(**values)
@@ -95,6 +96,7 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
         )
 
     assert {item.request.owner_subject for item in reserved} == {"owner-a", "owner-b"}
+    assert all(item.config.runtime_class_name == "nvidia" for item in reserved)
     with stage_sessions() as session:
         scheduled = session.query(MissionStageRun).filter(
             MissionStageRun.executor == "kubernetes-job"

@@ -176,6 +176,8 @@ spec:
           value: {{ .Values.stageJobs.activeDeadlineSeconds | quote }}
         - name: DRONEAI_STAGE_JOB_TTL_SECONDS_AFTER_FINISHED
           value: {{ .Values.stageJobs.ttlSecondsAfterFinished | quote }}
+        - name: DRONEAI_STAGE_JOB_RUNTIME_CLASS
+          value: {{ .Values.gpu.runtimeClassName | quote }}
         - name: DRONEAI_STAGE_STORAGE_SECRET_NAME
           value: {{ include "drone-ai.storageSecretName" . | quote }}
         - name: DRONEAI_STAGE_DATABASE_URL_SECRET_KEY

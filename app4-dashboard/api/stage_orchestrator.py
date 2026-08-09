@@ -55,6 +55,7 @@ class StageOrchestratorSettings:
     service_account_name: str = "stage-job-sa"
     active_deadline_seconds: int = 86_400
     ttl_seconds_after_finished: int = 3_600
+    runtime_class_name: str | None = None
     maximum_dispatch_attempts: int = 3
 
 
@@ -167,6 +168,9 @@ def settings_from_environment() -> StageOrchestratorSettings:
         ttl_seconds_after_finished=int(
             os.getenv("DRONEAI_STAGE_JOB_TTL_SECONDS_AFTER_FINISHED", "3600")
         ),
+        runtime_class_name=(
+            os.getenv("DRONEAI_STAGE_JOB_RUNTIME_CLASS", "").strip() or None
+        ),
         maximum_dispatch_attempts=_positive_int("DRONEAI_STAGE_MAX_DISPATCH_ATTEMPTS", 3),
     )
 
@@ -195,6 +199,7 @@ def _reserved_job(
             service_account_name=settings.service_account_name,
             active_deadline_seconds=settings.active_deadline_seconds,
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
+            runtime_class_name=settings.runtime_class_name,
             node_selector=executor.node_selector,
             environment=settings.job_environment,
             secret_environment=settings.job_secret_environment,

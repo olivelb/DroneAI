@@ -319,7 +319,8 @@ ingress:
 # --------------------------------------------------------------------------
 gpu:
   # K3s creates this RuntimeClass automatically when
-  # nvidia-container-runtime is installed before K3s starts.
+  # nvidia-container-runtime is installed before K3s starts. Bounded stage
+  # Jobs apply it only to resource classes that request a GPU.
   runtimeClassName: nvidia
   nodeSelector: {}
   tolerations: []
