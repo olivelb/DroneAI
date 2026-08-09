@@ -171,9 +171,14 @@ and a second AI run against an exact raster parent. The operational contract
 defines selective Q0-Q3 gates, backup/retention, failure recovery, cost controls
 and required operational views. A complete local Fast GPU E2E on BIGZEN now
 qualifies the scientific execution path while documenting inadequate visual
-quality and an unqualified zero-detection result on Chapelle Banyuls. A
-representative five-Job GPU E2E on the target deployment, multi-product operator
-exercise and deployment activation remain.
+quality and an unqualified zero-detection result on Chapelle Banyuls. The
+follow-up Normal run at 2,400 px, 15,000 iterations and the exact 3M training
+cap materially improves visual detail and makes the car unambiguous, but a
+direct 0.01-confidence diagnostic confirms that the current aerial OBB model
+does not produce a vehicle candidate. Normal therefore qualifies the local
+photogrammetry path, not vehicle detection. A representative five-Job GPU E2E
+on the target deployment, multi-product operator exercise and deployment
+activation remain.
 
 - Add migration, authorization, event-ordering, retry and concurrency tests.
 - Exercise multiple missions, multiple products and multiple AI runs in E2E.
