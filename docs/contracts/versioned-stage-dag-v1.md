@@ -175,6 +175,12 @@ state, backend name and trainer binary SHA-256. The legacy fused call now uses
 this same boundary, so subsequent Job extraction does not create a second
 training implementation or alter established raster results.
 
+`execute_gaussian_filtering_phase` is the next explicit boundary. It consumes
+the training state, applies geo/facade alignment and the configured filter
+chain exactly once, records Gaussian counts before/after, and returns the
+filtered model with immutable render geometry. Keeping this state separate is
+what prevents a later raster Job from applying Sim3/PCA transforms twice.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;

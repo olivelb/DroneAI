@@ -51,6 +51,49 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
     assert calls["trainer_binary_sha256"] == "a" * 64
 
 
+def test_filtering_phase_applies_render_preparation_once_and_records_counts(
+    monkeypatch,
+):
+    training_model = SimpleNamespace(num_gaussians=100)
+    filtered_model = SimpleNamespace(num_gaussians=72)
+    training_phase = workflow.GaussianTrainingPhaseState(
+        scene_state=SimpleNamespace(name="scene"),
+        training_state=workflow.GaussianTrainingState(
+            merged_model=training_model,
+            final_ply="final.ply",
+            facade_subset_result=None,
+        ),
+        backend_name="dronegs",
+        trainer_binary_sha256="a" * 64,
+    )
+    calls = []
+
+    def prepare(config, scene, training, *, cupy_module):
+        calls.append((config, scene, training, cupy_module))
+        return SimpleNamespace(merged_model=filtered_model)
+
+    monkeypatch.setattr(workflow, "prepare_gaussian_render_state", prepare)
+    config = SimpleNamespace(name="config")
+    cupy = SimpleNamespace(name="cupy")
+
+    result = workflow.execute_gaussian_filtering_phase(
+        config,
+        training_phase,
+        cupy_module=cupy,
+    )
+
+    assert len(calls) == 1
+    assert calls[0] == (
+        config,
+        training_phase.scene_state,
+        training_phase.training_state,
+        cupy,
+    )
+    assert result.render_state.merged_model is filtered_model
+    assert result.input_gaussians == 100
+    assert result.output_gaussians == 72
+
+
 def test_prepare_gaussian_scene_keeps_loading_and_scale_contracts(
     monkeypatch,
     tmp_path,

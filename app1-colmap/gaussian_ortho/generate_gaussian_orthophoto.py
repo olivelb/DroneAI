@@ -1100,6 +1100,40 @@ def prepare_gaussian_render_state(
     )
 
 
+@dataclass(frozen=True)
+class GaussianFilteringPhaseState:
+    """Filtered model plus the immutable geometry required for rasterization."""
+
+    render_state: GaussianRenderState
+    input_gaussians: int
+    output_gaussians: int
+
+
+def execute_gaussian_filtering_phase(
+    config: GaussianOrthoConfig,
+    training_phase: GaussianTrainingPhaseState,
+    *,
+    cupy_module: Any | None = None,
+) -> GaussianFilteringPhaseState:
+    """Apply alignment/filtering exactly once and prepare raster geometry."""
+    if cupy_module is None:
+        import cupy as cp
+
+        cupy_module = cp
+    input_gaussians = int(training_phase.training_state.merged_model.num_gaussians)
+    render_state = prepare_gaussian_render_state(
+        config,
+        training_phase.scene_state,
+        training_phase.training_state,
+        cupy_module=cupy_module,
+    )
+    return GaussianFilteringPhaseState(
+        render_state=render_state,
+        input_gaussians=input_gaussians,
+        output_gaussians=int(render_state.merged_model.num_gaussians),
+    )
+
+
 def generate_gaussian_orthophoto(
     dense_path: str,
     ortho_file: str,
@@ -1336,12 +1370,12 @@ def generate_gaussian_orthophoto(
     merged_model = training_state.merged_model
     final_ply = training_state.final_ply
     facade_subset_result = training_state.facade_subset_result
-    render_state = prepare_gaussian_render_state(
+    filtering_phase = execute_gaussian_filtering_phase(
         config,
-        scene_state,
-        training_state,
+        training_phase,
         cupy_module=cp,
     )
+    render_state = filtering_phase.render_state
     merged_model = render_state.merged_model
     geo_origin = render_state.geo_origin
     frame_origin = render_state.frame_origin
