@@ -46,6 +46,7 @@ install_gpu_plugin() {
         --force-update >/dev/null
     helm_root repo update >/dev/null
     helm_root upgrade --install nvidia-device-plugin nvdp/nvidia-device-plugin \
+        --version 0.19.3 \
         --namespace nvidia-device-plugin \
         --create-namespace \
         --values "$REPO_ROOT/nvdp-values.yaml" \
@@ -71,24 +72,25 @@ install_gpu_plugin() {
 
 import_images_into_k3s() {
     info "Importing service images into K3s containerd"
-    local image docker_id k3s_digest reference
-    for image in "${SERVICE_IMAGES[@]}"; do
-        reference="docker.io/library/$image:latest"
+    local image image_tag docker_id k3s_digest reference
+    image_tag="$(application_image_tag)"
+    while IFS= read -r image; do
+        reference="docker.io/library/$image:$image_tag"
         docker_id="$("${DOCKER[@]}" image inspect \
-            --format '{{.Id}}' "$image:latest")"
+            --format '{{.Id}}' "$image:$image_tag")"
         k3s_digest="$("${SUDO[@]}" k3s ctr images list 2>/dev/null \
             | awk -v reference="$reference" '
                 $1 == reference {digest = $3}
                 END {if (digest) print digest}
             ')"
         if [[ -n "$k3s_digest" && "$docker_id" == "$k3s_digest" ]]; then
-            info "Reusing $image:latest already imported in K3s"
+            info "Reusing $image:$image_tag already imported in K3s"
             continue
         fi
-        info "Importing $image:latest"
-        "${DOCKER[@]}" save "$image:latest" \
+        info "Importing $image:$image_tag"
+        "${DOCKER[@]}" save "$image:$image_tag" \
             | "${SUDO[@]}" k3s ctr images import -
-    done
+    done < <(active_service_images)
 }
 
 ensure_helm_namespace() {
@@ -102,9 +104,13 @@ ensure_helm_namespace() {
         meta.helm.sh/release-namespace=drone-ai \
         --overwrite >/dev/null
 
+    local hf_token="${HF_TOKEN:-}"
+    if [[ -z "$hf_token" && -r "$HOME/.cache/huggingface/token" ]]; then
+        hf_token="$(<"$HOME/.cache/huggingface/token")"
+    fi
     kube create secret generic hf-token \
         --namespace drone-ai \
-        --from-literal="HF_TOKEN=${HF_TOKEN:-}" \
+        --from-literal="HF_TOKEN=$hf_token" \
         --dry-run=client \
         --output=yaml \
         | kube apply --filename=- >/dev/null
@@ -180,6 +186,41 @@ deploy_distributed() {
     drives_json="$(discover_work_drives)"
     info "Work drives: $(jq --raw-output 'map(.label) | join(", ")' <<<"$drives_json")"
 
+    local stage_job_values=()
+    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
+        stage_job_values=(
+            --set global.requireImmutableImages=true
+            --set-string "colmapWorker.tag=$STAGE_JOBS_IMAGE_TAG"
+            --set-string "iaWorker.tag=$STAGE_JOBS_IMAGE_TAG"
+            --set-string "processingWorker.tag=$STAGE_JOBS_IMAGE_TAG"
+            --set-string "dashboardApi.tag=$STAGE_JOBS_IMAGE_TAG"
+            --set-string "dashboardFrontend.tag=$STAGE_JOBS_IMAGE_TAG"
+            --set colmapWorker.enabled=false
+            --set iaWorker.enabled=false
+            --set processingWorker.replicaCount=0
+            --set stageJobs.enabled=true
+            --set-string "stageJobs.executors.reconstruction.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.reconstruction.command=["python3","app1-colmap/stage_executor.py","reconstruction"]'
+            --set-string stageJobs.executors.reconstruction.gpu_architecture=ampere
+            --set-json 'stageJobs.executors.reconstruction.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-string "stageJobs.executors.gaussian_training.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.gaussian_training.command=["python3","app1-colmap/stage_executor.py","gaussian_training"]'
+            --set-string stageJobs.executors.gaussian_training.gpu_architecture=ampere
+            --set-json 'stageJobs.executors.gaussian_training.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-string "stageJobs.executors.gaussian_filtering.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.gaussian_filtering.command=["python3","app1-colmap/stage_executor.py","gaussian_filtering"]'
+            --set-string stageJobs.executors.gaussian_filtering.gpu_architecture=ampere
+            --set-json 'stageJobs.executors.gaussian_filtering.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-string "stageJobs.executors.rasterization.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.rasterization.command=["python3","app1-colmap/stage_executor.py","rasterization"]'
+            --set-json 'stageJobs.executors.rasterization.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-string "stageJobs.executors.detection.image=drone-ia:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.detection.command=["python3","app2-ia/stage_executor.py"]'
+            --set-string stageJobs.executors.detection.gpu_architecture=ampere
+            --set-json 'stageJobs.executors.detection.node_selector={"nvidia.com/gpu.present":"true"}'
+        )
+    fi
+
     info "Deploying DroneAI through Helm"
     helm_root upgrade --install drone-ai "$REPO_ROOT/charts/drone-ai" \
         --namespace drone-ai \
@@ -199,23 +240,24 @@ deploy_distributed() {
         --set "minio.apiNodePort=$MINIO_API_PORT" \
         --set-string "dashboardFrontend.apiUrl=http://$access_host:$API_PORT" \
         --set-string "storage.s3PublicEndpoint=http://$access_host:$MINIO_API_PORT" \
+        "${stage_job_values[@]}" \
         --wait \
         --wait-for-jobs \
         --timeout 10m
 
-    kube rollout restart deployment \
-        colmap-worker \
-        ia-worker \
-        processing-worker \
-        dashboard-api \
-        dashboard-frontend \
-        --namespace drone-ai
-    kube wait \
-        --for=condition=Available \
-        deployment \
-        --all \
-        --namespace drone-ai \
-        --timeout=5m
+    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
+        kube rollout restart deployment/dashboard-api deployment/dashboard-frontend \
+            --namespace drone-ai
+        kube wait --for=condition=Available \
+            deployment/dashboard-api deployment/dashboard-frontend \
+            --namespace drone-ai --timeout=5m
+    else
+        kube rollout restart deployment \
+            colmap-worker ia-worker processing-worker dashboard-api dashboard-frontend \
+            --namespace drone-ai
+        kube wait --for=condition=Available deployment --all \
+            --namespace drone-ai --timeout=5m
+    fi
 
     wait_for_http "http://$access_host:$API_PORT/" "Dashboard API"
     wait_for_http "http://$access_host:$DASHBOARD_PORT/" "Dashboard"

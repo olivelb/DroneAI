@@ -19,6 +19,8 @@ Modes:
 Options:
   --base                    Rebuild the COLMAP base and every service without cache.
   --no-build                Reuse already-built Docker images.
+  --stage-jobs GIT_SHA      Qualify the five bounded Jobs with immutable images
+                            (distributed mode only; disables fused workers).
   --skip-host-setup         Do not install missing host packages or runtimes.
   --data-root PATH          Persistent runtime root (distributed mode).
   --dashboard-port PORT     Dashboard port (default: 30000).
@@ -40,6 +42,7 @@ Examples:
 
   ./deploy.sh distributed
   ./deploy.sh distributed --base
+  ./deploy.sh distributed --no-build --stage-jobs abc1234
 EOF
 }
 
@@ -67,6 +70,7 @@ esac
 # shellcheck disable=SC2034
 REBUILD_BASE=false
 BUILD_IMAGES=true
+STAGE_JOBS_IMAGE_TAG=""
 # shellcheck disable=SC2034
 SETUP_HOST=true
 # shellcheck disable=SC2034
@@ -85,6 +89,11 @@ while [[ $# -gt 0 ]]; do
         --no-build)
             BUILD_IMAGES=false
             shift
+            ;;
+        --stage-jobs)
+            [[ $# -ge 2 ]] || { echo "Missing Git SHA for --stage-jobs" >&2; exit 2; }
+            STAGE_JOBS_IMAGE_TAG="$2"
+            shift 2
             ;;
         --skip-host-setup)
             SETUP_HOST=false
@@ -126,6 +135,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -n "$STAGE_JOBS_IMAGE_TAG" ]]; then
+    [[ "$MODE" == "distributed" ]] \
+        || { echo "--stage-jobs is supported only in distributed mode" >&2; exit 2; }
+    [[ "$STAGE_JOBS_IMAGE_TAG" =~ ^[0-9a-f]{7,40}$ ]] \
+        || { echo "--stage-jobs requires a 7-40 character lower-case Git SHA" >&2; exit 2; }
+fi
 
 DATA_ROOT="$(realpath --canonicalize-missing "$DATA_ROOT")"
 
