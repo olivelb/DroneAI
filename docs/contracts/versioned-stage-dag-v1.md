@@ -216,6 +216,23 @@ CRS/extent metadata; width, height, Gaussian count and the complete coverage
 report are retained as quality metrics. This avoids a second raster
 qualification implementation while keeping retries independent from training.
 
+The `detection` command restores exactly one raster workspace and streams its
+orthomosaic through bounded overlapping tiles without loading the complete
+raster in memory. It uses the existing YOLO or SAM3 backend, checks cancellation
+between tiles, caps both the tile plan and raw detection count, and requires one
+validated model manifest to remain identical throughout the run. Pixel-space
+results are projected back into the complete raster, deduplicated through the
+shared overlap policy, then published as immutable JSON and WGS84 GeoJSON with
+the exact model provenance. The disposable tile and restored workspaces are
+removed on every stage exit. Mission `sam_prompt` and `tile_size` choices remain
+part of the immutable stage parameters rather than being replaced by worker
+defaults.
+
+All five one-shot adapters are therefore implemented. Job mode remains disabled
+until a representative GPU E2E qualifies the complete artifact chain and the
+deployment supplies the immutable executor-image map; adapter availability
+alone does not activate Kubernetes dispatch.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -240,4 +257,6 @@ qualification implementation while keeping retries independent from training.
   and cleanup on every exit path;
 - shared raster qualification/finalization and a bounded rasterization adapter
   that cannot retrain or refilter its parent model;
+- bounded raster streaming and YOLO/SAM3 detection, stable model provenance,
+  overlap deduplication, GeoJSON publication and cleanup on stage completion;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

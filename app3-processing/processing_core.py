@@ -16,7 +16,7 @@ from rasterio.windows import Window
 
 from shared.detection_geometry import (
     build_tile_starts,
-    dedupe_mission_detections,
+    dedupe_mission_detections as dedupe_mission_detections,
 )
 
 

@@ -42,6 +42,16 @@ def _safe_relative_path(raw_path: str) -> Path:
     return Path(*pure.parts)
 
 
+def resolve_workspace_path(workspace: str | Path, raw_path: str) -> Path:
+    """Resolve one manifest-style relative path below a local workspace."""
+    root = Path(workspace).resolve()
+    relative = _safe_relative_path(raw_path)
+    candidate = (root / relative).resolve()
+    if root not in candidate.parents:
+        raise ValueError(f"Workspace path escapes its root: {raw_path!r}")
+    return candidate
+
+
 def publish_workspace(
     workspace: str | Path,
     s3_prefix: str,

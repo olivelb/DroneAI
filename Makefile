@@ -30,7 +30,9 @@ SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \
 	app2-ia/detection_core.py \
+	app2-ia/detection_stage.py \
 	app2-ia/sam3_backend.py \
+	app2-ia/stage_executor.py \
 	app2-ia/tile_detection_workflow.py \
 	app2-ia/main.py
 APP3_TYPED_PATHS := \

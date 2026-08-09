@@ -17,11 +17,11 @@ from typing import Any, Protocol, cast
 import numpy as np
 import rasterio
 from numpy.typing import NDArray
-from processing_core import build_tile_starts
 from rasterio.warp import transform_bounds
 from rasterio.windows import Window
 
 from shared import storage
+from shared.detection_geometry import build_tile_starts
 from shared.database import (
     AIAnalysisRun,
     AIAnalysisTile,
