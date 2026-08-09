@@ -20,6 +20,19 @@ class StageMissionProjection(TypedDict):
     last_event_age_seconds: float | None
 
 
+def operator_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    """Hide backend-inapplicable choices without mutating durable provenance."""
+    normalized = dict(parameters)
+    if normalized.get("ai_backend") == "sam3":
+        normalized.pop("ai_model_variant", None)
+    ai = normalized.get("ai")
+    if isinstance(ai, dict) and ai.get("backend") == "sam3":
+        normalized["ai"] = {
+            key: value for key, value in ai.items() if key != "model_variant"
+        }
+    return normalized
+
+
 def _aware(value: datetime | None) -> datetime | None:
     if value is None:
         return None

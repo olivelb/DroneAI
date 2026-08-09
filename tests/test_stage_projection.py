@@ -92,3 +92,15 @@ def test_stage_projection_reports_failure_and_lifecycle_logs():
     assert result["progress"] == 0
     assert [entry["status"] for entry in logs] == ["processing", "error"]
     assert logs[-1]["message"].endswith("failed: boom")
+
+
+def test_operator_parameters_hide_yolo_choice_from_sam3_projection():
+    mission = projection.operator_parameters(
+        {"ai_backend": "sam3", "ai_model_variant": "yolo26l"}
+    )
+    stage = projection.operator_parameters(
+        {"ai": {"backend": "sam3", "model_variant": "yolo26l", "classes": ["car"]}}
+    )
+
+    assert "ai_model_variant" not in mission
+    assert stage["ai"] == {"backend": "sam3", "classes": ["car"]}

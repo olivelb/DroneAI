@@ -14,7 +14,7 @@ from shared.database import (
 )
 
 from .mission_state import serialize_mission
-from .stage_projection import stage_lifecycle_logs
+from .stage_projection import operator_parameters, stage_lifecycle_logs
 
 
 def mission_detail_projection(
@@ -110,7 +110,7 @@ def mission_detail_projection(
     )
     return {
         **catalog_item,
-        "parameters": mission.params or {},
+        "parameters": operator_parameters(mission.params or {}),
         "attempts": sorted({run.attempt for run in stage_runs})
         or [int(mission.retry_count or 0)],
         "stage_runs": [
@@ -126,7 +126,7 @@ def mission_detail_projection(
                 "job_name": run.job_name,
                 "dispatch_attempts": run.dispatch_attempts,
                 "dispatch_error": run.dispatch_error,
-                "parameters": run.parameters or {},
+                "parameters": operator_parameters(run.parameters or {}),
                 "upstream_artifact_ids": run.upstream_artifact_ids or [],
                 "provenance": run.provenance or {},
                 "quality_metrics": run.quality_metrics or {},
