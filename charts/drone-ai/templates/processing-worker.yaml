@@ -71,7 +71,7 @@ spec:
         - name: ANALYSIS_FINALIZATION_LEASE_SECONDS
           value: {{ .Values.processingWorker.analysis.finalizationLeaseSeconds | quote }}
         - name: ANALYSIS_MAX_TILE_RESULT_BYTES
-          value: {{ .Values.processingWorker.analysis.maximumTileResultBytes | quote }}
+          value: {{ .Values.tileResults.maximumBytes | quote }}
         - name: ANALYSIS_MAX_AGGREGATE_RESULT_BYTES
           value: {{ .Values.processingWorker.analysis.maximumAggregateResultBytes | quote }}
         - name: ANALYSIS_MAX_RAW_DETECTIONS

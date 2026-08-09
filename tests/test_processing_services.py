@@ -339,6 +339,41 @@ def test_active_finalization_lease_rejects_second_owner(monkeypatch):
     assert _workflow(finalization_owner="worker-b")._claim_finalization("run-1") is None
 
 
+def test_finalization_owner_renews_its_lease(monkeypatch):
+    session_scope = _analysis_session_scope()
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+    initial_lease = datetime.now(timezone.utc) + timedelta(seconds=5)
+    with session_scope() as session:
+        mission = Mission(vol_id="mission-1")
+        session.add(mission)
+        session.flush()
+        session.add(
+            AIAnalysisRun(
+                run_id="run-1",
+                mission_id=mission.id,
+                vol_id=mission.vol_id,
+                name="Analysis",
+                ortho_s3_key="missions/mission-1/orthomosaic.tif",
+                status="finalizing",
+                finalization_owner="worker-a",
+                finalization_lease_until=initial_lease,
+            )
+        )
+
+    workflow = _workflow(finalization_owner="worker-a")
+
+    assert workflow._renew_finalization_lease("run-1", force=True)
+    with session_scope() as session:
+        renewed = session.query(AIAnalysisRun).one()
+        renewed_until = renewed.finalization_lease_until.replace(
+            tzinfo=timezone.utc,
+        )
+        assert renewed_until > initial_lease
+        renewed.finalization_owner = "worker-b"
+
+    assert not workflow._renew_finalization_lease("run-1", force=True)
+
+
 def test_finalization_keeps_each_completed_tile_producing_attempt(monkeypatch):
     session_scope = _analysis_session_scope()
     monkeypatch.setattr(analysis_workflow, "get_session", session_scope)

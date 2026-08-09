@@ -77,7 +77,10 @@ short-lived URL for each S3 multipart part, sends the bytes directly to object
 storage and returns the ETags for server-side completion. The API verifies the
 completed object size and publishes `dataset-manifest.json` only after every
 file is complete. Incomplete sessions expire after 24 hours by default and the
-API cleanup worker aborts their stored multipart parts.
+API cleanup worker aborts their stored multipart parts. A partial unique index
+reserves each active dataset name across API replicas. Cleanup replicas claim
+expired rows with `FOR UPDATE SKIP LOCKED`, and an already-missing multipart
+upload is treated as an idempotent successful abort.
 
 The API accepts aerial images plus DJI/GNSS sidecars and enforces the same
 quotas before issuing any storage URL:
@@ -99,7 +102,8 @@ origin and expose the `ETag` response header. Local MinIO receives that rule
 automatically. For an external S3-compatible bucket, apply it with
 `scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
 origin. The previous API-proxied `/datasets/upload` endpoint remains available
-temporarily for compatibility, but Mission Studio no longer uses it.
+only in development for compatibility. Staging and production return `404`;
+Mission Studio always uses the direct multipart protocol.
 
 Retention and lifecycle rules remain the responsibility of the selected S3
 service and must be configured before public ingestion.
@@ -180,6 +184,10 @@ because their local wall-frame selection has a separate quality contract.
   corresponding output or dead-letter record is confirmed by the broker.
 - Staging and production use PostgreSQL-backed raster token buckets shared by
   every API replica; process-local limiting is rejected in those environments.
+- Buckets use the authenticated subject, hashed before database storage, rather
+  than the ingress-dependent peer address. Forwarded headers are not trusted.
+- Long AI finalizations renew their database ownership lease while loading
+  referenced tile artifacts and around deduplication and final S3 publication.
 - Each API pod has a distinct status consumer group for local WebSocket fan-out,
   while the shared status inbox applies the database transition only once.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init

@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+WORKFLOWS = ROOT / ".github" / "workflows"
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 CUDA_WORKFLOW = ROOT / ".github" / "workflows" / "cuda-containers.yml"
 PINNED_PYTHON_BASE = re.compile(
@@ -11,11 +12,31 @@ PINNED_PYTHON_BASE = re.compile(
 PINNED_NODE_BASE = re.compile(
     r"^FROM node:20-alpine@sha256:[0-9a-f]{64} AS (builder|runner)$",
 )
+PINNED_ACTION_REF = re.compile(r"[0-9a-f]{40}")
+PINNED_CONTAINER_REF = re.compile(r".+@sha256:[0-9a-f]{64}")
+USES_LINE = re.compile(r"^\s*(?:-\s*)?uses:\s*([^#\s]+)", re.MULTILINE)
 
 
 def _trigger_block(workflow_path: Path) -> str:
     workflow = workflow_path.read_text(encoding="utf-8")
     return workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+
+
+def test_every_external_workflow_action_is_immutable() -> None:
+    for workflow_path in sorted(WORKFLOWS.glob("*.yml")):
+        workflow = workflow_path.read_text(encoding="utf-8")
+        for reference in USES_LINE.findall(workflow):
+            if reference.startswith("./"):
+                continue
+            if reference.startswith("docker://"):
+                assert PINNED_CONTAINER_REF.fullmatch(reference.removeprefix("docker://")), (
+                    f"{workflow_path.name}: mutable container action {reference}"
+                )
+                continue
+            action, separator, revision = reference.rpartition("@")
+            assert separator and "/" in action and PINNED_ACTION_REF.fullmatch(revision), (
+                f"{workflow_path.name}: mutable action {reference}"
+            )
 
 
 def test_pr_workflows_do_not_repeat_checks_after_merge() -> None:

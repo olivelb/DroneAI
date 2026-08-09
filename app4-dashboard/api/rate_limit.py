@@ -14,6 +14,15 @@ from starlette.responses import Response
 from . import security
 
 
+def rate_limit_identity(request: Request) -> str:
+    """Prefer the authenticated subject over ingress-dependent source addresses."""
+    principal = security.authenticate_request(request)
+    if principal is not None:
+        return f"subject:{principal.subject}"
+    peer = request.client.host if request.client else "unknown"
+    return f"peer:{peer}"
+
+
 class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
     async def dispatch(
         self,
@@ -29,10 +38,9 @@ class RasterTileRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
         if not is_tile_request:
             return await call_next(request)
 
-        client_key = request.client.host if request.client else "unknown"
         retry_after = await run_in_threadpool(
             security.tile_rate_limiter.consume,
-            client_key,
+            rate_limit_identity(request),
         )
         if retry_after is not None:
             return JSONResponse(

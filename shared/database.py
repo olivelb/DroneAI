@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import (
@@ -216,6 +217,13 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
     __tablename__ = "dataset_upload_sessions"
     __table_args__ = (
         Index("ix_dataset_upload_sessions_expiry", "status", "expires_at"),
+        Index(
+            "uq_dataset_upload_sessions_active_name",
+            "dataset_name",
+            unique=True,
+            postgresql_where=text("status IN ('uploading', 'failed')"),
+            sqlite_where=text("status IN ('uploading', 'failed')"),
+        ),
         CheckConstraint(
             _values_check("status", DATASET_UPLOAD_SESSION_STATUSES),
             name="ck_dataset_upload_sessions_status",

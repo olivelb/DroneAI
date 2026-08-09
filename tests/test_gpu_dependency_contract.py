@@ -36,6 +36,7 @@ def test_colmap_runtime_is_non_root_and_read_only() -> None:
 def test_ia_model_variants_use_a_writable_controlled_cache() -> None:
     dockerfile = (ROOT / "app2-ia" / "Dockerfile").read_text(encoding="utf-8")
     chart = (ROOT / "charts" / "drone-ai" / "templates" / "ia-worker.yaml").read_text(encoding="utf-8")
+    compose = (ROOT / "compose.local.yaml").read_text(encoding="utf-8")
 
     assert "ENV AERIAL_BAKED_MODEL_DIR=/opt/modelzoo" in dockerfile
     assert "ENV AERIAL_MODEL_RELEASE=v8.4.0" in dockerfile
@@ -44,6 +45,8 @@ def test_ia_model_variants_use_a_writable_controlled_cache() -> None:
         "8674b0c24bf68aab5eb45009e0ac3808ce432237edf8cb5c50ae2191cb263a2b"
     ) in dockerfile
     assert "readOnlyRootFilesystem: true" in chart
+    assert "install -d --owner=10001 --group=10001 /cache/huggingface" in dockerfile
+    assert "HF_HOME: /cache/huggingface" in compose
     assert "- name: AERIAL_MODEL_DIR" in chart
     assert 'value: "/cache/modelzoo"' in chart
     assert "- name: AERIAL_BAKED_MODEL_DIR" in chart

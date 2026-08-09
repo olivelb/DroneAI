@@ -348,11 +348,19 @@ jobs:
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-production.example.yaml
+          --set-string colmapWorker.tag="${GITHUB_SHA}"
+          --set-string iaWorker.tag="${GITHUB_SHA}"
+          --set-string processingWorker.tag="${GITHUB_SHA}"
+          --set-string dashboardApi.tag="${GITHUB_SHA}"
+          --set-string dashboardFrontend.tag="${GITHUB_SHA}"
           > /tmp/drone-ai-production.yaml
       - name: Render OVHcloud preproduction values
         run: >-
           helm template drone-ai charts/drone-ai
           --values charts/drone-ai/values-ovh-preprod.example.yaml
+          --set-string processingWorker.tag="${GITHUB_SHA}"
+          --set-string dashboardApi.tag="${GITHUB_SHA}"
+          --set-string dashboardFrontend.tag="${GITHUB_SHA}"
           > /tmp/drone-ai-ovh-preprod.yaml
       - name: Verify production storage Secret references
         run: |
@@ -363,11 +371,11 @@ jobs:
           grep -Eq '^[[:space:]]+name: drone-ai-storage-production$' /tmp/drone-ai-production.yaml
       - name: Verify production application images are immutable
         run: |
-          if grep -Eq '^[[:space:]]+image: .+:latest$' /tmp/drone-ai-production.yaml; then
+          if grep -Eq '^[[:space:]]+image: .+:(latest|main|stable)$' /tmp/drone-ai-production.yaml; then
             echo "Mutable application image tag found in the production render" >&2
             exit 1
           fi
-          test "$(grep -Ec '^[[:space:]]+image: .+:REPLACE_GIT_SHA$' /tmp/drone-ai-production.yaml)" -ge 5
+          test "$(grep -Ec '^[[:space:]]+image: .+:[0-9a-f]{40}$' /tmp/drone-ai-production.yaml)" -ge 5
       - name: Verify preproduction cost and image guards
         run: |
           if grep -Eq '^[[:space:]]+name: (colmap-worker|ia-worker)$' /tmp/drone-ai-ovh-preprod.yaml; then

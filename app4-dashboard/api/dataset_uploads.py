@@ -13,7 +13,8 @@ from typing import TypedDict, cast
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Query, Session
 
 from shared import storage
 from shared.database import (
@@ -44,6 +45,18 @@ DATASET_SUFFIXES = {
 MIN_PART_BYTES = 5 * 1024 * 1024
 MAX_PART_BYTES = 512 * 1024 * 1024
 MAX_MULTIPART_PARTS = 10_000
+
+
+def _storage_error_code(error: Exception) -> str | None:
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        details = response.get("Error")
+        if isinstance(details, dict):
+            code = details.get("Code")
+            if isinstance(code, str):
+                return code
+    code = getattr(error, "code", None)
+    return code if isinstance(code, str) else None
 
 
 class UploadSessionFileRequest(BaseModel):  # type: ignore[misc]
@@ -280,7 +293,24 @@ def create_upload_session(
         expires_at=datetime.now(UTC) + _session_lifetime(),
     )
     session.add(record)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError:
+        session.rollback()
+        collision = (
+            session.query(DatasetUploadSession)
+            .filter(
+                DatasetUploadSession.dataset_name == safe_name,
+                DatasetUploadSession.status.in_(("uploading", "failed")),
+            )
+            .first()
+        )
+        if collision is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Dataset upload already in progress",
+            ) from None
+        raise
 
     created: list[tuple[str, str]] = []
     try:
@@ -522,6 +552,9 @@ def _abort_record(record: DatasetUploadSession) -> None:
                 storage.delete_object(str(item.s3_key))
             item.status = "aborted"
         except Exception as error:
+            if item.status == "uploading" and _storage_error_code(error) == "NoSuchUpload":
+                item.status = "aborted"
+                continue
             errors.append(f"{item.filename}: {error}")
     record.status = "failed" if errors else "aborted"
     if errors:
@@ -551,19 +584,29 @@ def abort_upload_session(
     return {"session_id": str(record.session_id), "status": "aborted"}
 
 
+def _expired_upload_query(
+    session: Session,
+    now: datetime,
+) -> Query[DatasetUploadSession]:
+    return (
+        session.query(DatasetUploadSession)
+        .filter(
+            DatasetUploadSession.status.in_(("uploading", "failed")),
+            DatasetUploadSession.expires_at <= now,
+        )
+        .order_by(DatasetUploadSession.expires_at, DatasetUploadSession.id)
+        .with_for_update(skip_locked=True)
+        .limit(100)
+    )
+
+
 def cleanup_expired_uploads() -> int:
     now = datetime.now(UTC)
     cleaned = 0
     with get_session() as session:
         records = cast(
             list[DatasetUploadSession],
-            session.query(DatasetUploadSession)
-            .filter(
-                DatasetUploadSession.status.in_(("uploading", "failed")),
-                DatasetUploadSession.expires_at <= now,
-            )
-            .limit(100)
-            .all(),
+            _expired_upload_query(session, now).all(),
         )
         for record in records:
             try:

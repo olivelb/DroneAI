@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import socket
+import time
 from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, UTC
 from pathlib import Path
@@ -97,6 +98,11 @@ class AnalysisWorkflow:
         )
         self.finalization_lease_seconds = max(60, configured_lease)
         self.finalization_owner = finalization_owner or (f"{socket.gethostname()}:{os.getpid()}:{uuid4()}")
+        self.finalization_heartbeat_seconds = max(
+            10,
+            min(300, self.finalization_lease_seconds // 3),
+        )
+        self._next_finalization_heartbeat = 0.0
         self.maximum_tile_result_bytes = max(
             1,
             maximum_tile_result_bytes
@@ -275,6 +281,8 @@ class AnalysisWorkflow:
         self,
         references: Iterable[TileResultReference],
         descriptor: RunDescriptor,
+        *,
+        renew_finalization: bool = False,
     ) -> list[DetectionRecord]:
         detections: list[DetectionRecord] = []
         total_payload_bytes = 0
@@ -308,6 +316,10 @@ class AnalysisWorkflow:
                     f"AI analysis exceeds the raw detection safety limit ({self.maximum_raw_detections})"
                 )
             detections.extend(tile_detections)
+            if renew_finalization:
+                self._require_finalization_ownership(
+                    cast(str, descriptor["run_id"]),
+                )
         return detections
 
     def _replace_persisted_features(
@@ -375,6 +387,9 @@ class AnalysisWorkflow:
             run.finalization_owner = self.finalization_owner
             run.finalization_lease_until = now + timedelta(seconds=self.finalization_lease_seconds)
             run.heartbeat_at = now
+            self._next_finalization_heartbeat = (
+                time.monotonic() + self.finalization_heartbeat_seconds
+            )
             descriptor = self._run_descriptor(run)
             references: list[TileResultReference] = []
             for tile in tiles:
@@ -399,14 +414,63 @@ class AnalysisWorkflow:
                 )
             return descriptor, references
 
+    def _renew_finalization_lease(
+        self,
+        run_id: str,
+        *,
+        force: bool = False,
+    ) -> bool:
+        monotonic_now = time.monotonic()
+        if not force and monotonic_now < self._next_finalization_heartbeat:
+            return True
+        now = datetime.now(UTC)
+        with get_session() as session:
+            run = (
+                session.query(AIAnalysisRun)
+                .filter(AIAnalysisRun.run_id == run_id)
+                .with_for_update()
+                .first()
+            )
+            if (
+                run is None
+                or run.status != "finalizing"
+                or run.finalization_owner != self.finalization_owner
+            ):
+                return False
+            run.finalization_lease_until = now + timedelta(
+                seconds=self.finalization_lease_seconds
+            )
+            run.heartbeat_at = now
+        self._next_finalization_heartbeat = (
+            monotonic_now + self.finalization_heartbeat_seconds
+        )
+        return True
+
+    def _require_finalization_ownership(
+        self,
+        run_id: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        if not self._renew_finalization_lease(run_id, force=force):
+            raise RuntimeError(
+                f"AI analysis finalization lease was lost for {run_id}"
+            )
+
     def finalize(self, run_id: str) -> bool:
         claim = self._claim_finalization(run_id)
         if claim is None:
             return False
         descriptor, references = claim
 
-        raw = self._load_tile_payloads(references, descriptor)
+        raw = self._load_tile_payloads(
+            references,
+            descriptor,
+            renew_finalization=True,
+        )
+        self._require_finalization_ownership(run_id, force=True)
         unique = self.dedupe(raw)
+        self._require_finalization_ownership(run_id, force=True)
         if len(unique) > self.maximum_final_detections:
             raise RuntimeError(
                 f"AI analysis exceeds the final detection safety limit ({self.maximum_final_detections})"
@@ -417,11 +481,13 @@ class AnalysisWorkflow:
             run=self._descriptor_proxy(descriptor),
         )
         result_key = f"missions/{descriptor['vol_id']}/analyses/{descriptor['run_id']}/detections.geojson"
+        self._require_finalization_ownership(run_id, force=True)
         self._write_verified_json(
             collection,
             result_key,
             (f"/tmp/processing/{descriptor['vol_id']}/{descriptor['run_id']}/detections.geojson"),
         )
+        self._require_finalization_ownership(run_id, force=True)
 
         with get_session() as session:
             run = session.query(AIAnalysisRun).filter(AIAnalysisRun.run_id == run_id).with_for_update().one()

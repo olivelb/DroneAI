@@ -227,6 +227,17 @@ def authenticate_token(token: str | None) -> Principal | None:
     return _authenticate_session_token(token)
 
 
+def authenticate_request(request: Request) -> Principal | None:
+    """Resolve the authenticated rate-limit identity without trusting proxy headers."""
+    return authenticate_token(
+        _extract_token(
+            request.headers.get("authorization"),
+            request.headers.get("x-api-key"),
+            request.cookies.get(SESSION_COOKIE_NAME),
+        )
+    )
+
+
 def require_role(minimum_role: str) -> Callable[..., Principal]:
     if minimum_role not in ROLE_RANK:
         raise ValueError("unknown API role")
