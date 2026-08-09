@@ -216,19 +216,26 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
 
 def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
     runtime = "app4-dashboard/frontend/app/lib/mission-runtime.tsx"
+    runtime_state = "app4-dashboard/frontend/app/lib/mission-runtime-state.ts"
     store = "app4-dashboard/frontend/app/lib/store.tsx"
     page = "app4-dashboard/frontend/app/page.tsx"
     providers = "app4-dashboard/frontend/app/components/AppProviders.tsx"
     runtime_source = _source(runtime)
+    runtime_state_source = _source(runtime_state)
     store_source = _source(store)
     page_source = _source(page)
     providers_source = _source(providers)
 
     assert _line_count(runtime) < 240
-    assert "fetchSummary" in runtime_source
+    assert _line_count(runtime_state) < 110
+    assert "fetchMissionCatalog" in runtime_source
+    assert "fetchMissionDetail" in runtime_source
     assert "new WebSocket" in runtime_source
     assert "autoSelectMission" in runtime_source
-    assert "fetchSummary" not in store_source
+    assert "missionSummaryFromDetail" in runtime_state_source
+    assert "mergeMissionSnapshots" in runtime_state_source
+    assert "fetchMissionCatalog" not in store_source
+    assert "fetchMissionDetail" not in store_source
     assert "new WebSocket" not in store_source
     assert "MissionSummary" not in store_source
     assert "<AppProviders>" in page_source

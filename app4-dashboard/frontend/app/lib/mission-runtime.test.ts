@@ -4,7 +4,7 @@ import {
   mergeMissionSnapshots,
   missionSummaryFromDetail,
   summaryLogMessages,
-} from "./mission-runtime";
+} from "./mission-runtime-state";
 import type { MissionDetail } from "./types";
 import type { MissionSummary } from "./types";
 
