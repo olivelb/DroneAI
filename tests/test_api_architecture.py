@@ -26,6 +26,7 @@ feature_routes = importlib.import_module("app4-dashboard.api.routers.map_feature
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
+TEST_PRINCIPAL = SimpleNamespace(subject="test-operator", role="admin")
 
 
 class FakeProducer:
@@ -63,6 +64,8 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/mission/resume",
         "/mission/state",
         "/mission/parameters",
+        "/missions",
+        "/missions/{vol_id}",
         "/pods",
         "/datasets",
         "/datasets/upload",
@@ -85,6 +88,18 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     assert "/maps/{vol_id}/search" in paths
     assert "/operations/outbox/dead" in paths
     assert "/ws/status" in direct_paths
+
+
+def test_every_map_route_exposes_the_explicit_admin_owner_scope():
+    schema = main.app.openapi()
+    for path, operations in schema["paths"].items():
+        if not path.startswith("/maps/"):
+            continue
+        for operation in operations.values():
+            parameter_names = {
+                parameter["name"] for parameter in operation.get("parameters", [])
+            }
+            assert "owner_subject" in parameter_names, path
 
 
 def test_importing_the_api_does_not_create_a_kafka_producer():
@@ -146,7 +161,7 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
     )
 
     with pytest.raises(HTTPException) as error:
-        mission_routes.start_mission(params)
+        mission_routes._start_mission(params, TEST_PRINCIPAL)
 
     assert error.value.status_code == 409
     assert "already exists" in error.value.detail
@@ -179,12 +194,13 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
         colmap_params={"gs_iterations": "35000"},
     )
 
-    assert mission_routes.start_mission(params)["status"] == "success"
+    assert mission_routes._start_mission(params, TEST_PRINCIPAL)["status"] == "success"
 
     with session_scope() as session:
         mission = session.query(Mission).one()
         outbox = session.query(OutboxEvent).one()
         assert mission.params["quality_profile"] == "high-quality-v1"
+        assert mission.owner_subject == "test-operator"
         assert mission.params["quality_profile_version"] == 1
         assert mission.params["quality_profile_overrides"] == {
             "gs_iterations": "35000"
@@ -227,10 +243,17 @@ def test_cancel_mission_persists_state_and_outbox_atomically(monkeypatch):
             session.close()
 
     with session_scope() as session:
-        session.add(Mission(vol_id="mission-1", status="processing", retry_count=2))
+        session.add(
+            Mission(
+                vol_id="mission-1",
+                owner_subject="test-operator",
+                status="processing",
+                retry_count=2,
+            )
+        )
     monkeypatch.setattr(mission_routes, "get_session", session_scope)
 
-    response = mission_routes.cancel_mission("mission-1")
+    response = mission_routes._cancel_mission("mission-1", TEST_PRINCIPAL)
 
     assert response["status"] == "success"
     with session_scope() as session:
@@ -289,6 +312,7 @@ def test_manual_feature_update_rejects_a_stale_version(monkeypatch):
             "mission-1",
             "feature-1",
             request,
+            TEST_PRINCIPAL,
             None,
         )
 
@@ -500,6 +524,7 @@ def test_prepare_resume_increments_mission_attempt():
     payload, response = mission_state.prepare_resume_in_session(
         session,
         "mission-1",
+        "test-operator",
     )
 
     assert response["status"] == "success"
@@ -684,6 +709,7 @@ def test_stale_heartbeat_is_monitoring_metadata_not_pipeline_failure(monkeypatch
     mission = SimpleNamespace(
         id=1,
         vol_id="mission-1",
+        owner_subject="test-operator",
         service_states={"COLMAP": {"status": "processing", "step": "GAUSS"}},
         status="processing",
         current_step="GAUSS",

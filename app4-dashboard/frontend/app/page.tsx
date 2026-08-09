@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Activity,
   Boxes,
@@ -13,7 +14,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import AuthGate from "./components/AuthGate";
+import AppProviders from "./components/AppProviders";
 import MissionLaunchBar from "./components/MissionLaunchBar";
 import PhaseDetection from "./components/PhaseDetection";
 import PhaseGaussian from "./components/PhaseGaussian";
@@ -21,16 +22,12 @@ import PhaseReconstruction from "./components/PhaseReconstruction";
 import PhaseSetup from "./components/PhaseSetup";
 import ResultsViewer from "./components/ResultsViewer";
 import StatusSidebar from "./components/StatusSidebar";
-import { AuthProvider, useAuth } from "./lib/auth";
+import { useAuth } from "./lib/auth";
 import { type MessageKey } from "./lib/i18n/catalog";
-import { I18nProvider, useI18n } from "./lib/i18n/provider";
-import {
-  MissionRuntimeProvider,
-  useMissionRuntime,
-} from "./lib/mission-runtime";
-import { StoreProvider, useStore } from "./lib/store";
+import { useI18n } from "./lib/i18n/provider";
+import { useMissionRuntime } from "./lib/mission-runtime";
+import { useStore } from "./lib/store";
 import { missionPhaseStatus, type PhaseId } from "./lib/types";
-import { WorkspaceDataProvider } from "./lib/workspace-data";
 
 const PHASES: Array<{
   id: PhaseId;
@@ -168,6 +165,12 @@ function DashboardInner() {
           </div>
 
           <div className="flex min-w-0 items-center gap-2">
+            <Link
+              href="/missions"
+              className="hidden min-h-11 items-center rounded-xl border border-[#dce5e1] bg-white/80 px-3 text-xs font-semibold text-[#34413d] transition hover:border-[#adc2bb] sm:flex"
+            >
+              {t("shell.missions")}
+            </Link>
             <button
               type="button"
               onClick={() => setMonitorOpen(true)}
@@ -346,18 +349,8 @@ function DashboardInner() {
 
 export default function Dashboard() {
   return (
-    <I18nProvider>
-      <AuthProvider>
-        <WorkspaceDataProvider>
-          <MissionRuntimeProvider>
-            <StoreProvider>
-              <AuthGate>
-                <DashboardInner />
-              </AuthGate>
-            </StoreProvider>
-          </MissionRuntimeProvider>
-        </WorkspaceDataProvider>
-      </AuthProvider>
-    </I18nProvider>
+    <AppProviders>
+      <DashboardInner />
+    </AppProviders>
   );
 }

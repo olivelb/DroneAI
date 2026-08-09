@@ -8,7 +8,6 @@ import os
 import socket
 import threading
 from collections import deque
-from contextlib import suppress
 from typing import Any
 
 from confluent_kafka import Consumer
@@ -19,7 +18,7 @@ from shared.config import (
     TOPIC_DEAD_LETTER,
     TOPIC_STATUS,
 )
-from shared.database import get_session
+from shared.database import Mission, get_session
 from shared.inbox_outbox import process_inbox_transaction
 from shared.kafka_reliability import (
     message_location,
@@ -46,25 +45,27 @@ def status_consumer_group(instance_id: str | None = None) -> str:
 
 class StatusHub:
     def __init__(self, history_size: int = 300):
-        self.history: deque[str] = deque(maxlen=history_size)
-        self.connections: list[WebSocket] = []
+        self.history: deque[tuple[str, str]] = deque(maxlen=history_size)
+        self.connections: dict[WebSocket, str] = {}
         self._history_lock = threading.Lock()
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, owner_subject: str) -> None:
         await websocket.accept()
-        self.connections.append(websocket)
+        self.connections[websocket] = owner_subject
         with self._history_lock:
             history = list(self.history)
-        for message in history:
-            await websocket.send_text(message)
+        for owner, message in history:
+            if owner == owner_subject:
+                await websocket.send_text(message)
 
     def disconnect(self, websocket: WebSocket) -> None:
-        with suppress(ValueError):
-            self.connections.remove(websocket)
+        self.connections.pop(websocket, None)
 
-    async def broadcast(self, message: str) -> None:
+    async def broadcast(self, message: str, owner_subject: str) -> None:
         failed: list[WebSocket] = []
-        for connection in self.connections:
+        for connection, connection_owner in list(self.connections.items()):
+            if connection_owner != owner_subject:
+                continue
             try:
                 await connection.send_text(message)
             except Exception:
@@ -72,14 +73,22 @@ class StatusHub:
         for connection in failed:
             self.disconnect(connection)
 
-    def remember(self, event: JsonObject) -> str:
+    def remember(self, event: JsonObject, owner_subject: str) -> str:
         payload = json.dumps(event)
         with self._history_lock:
-            self.history.append(payload)
+            self.history.append((owner_subject, payload))
         return payload
 
 
 status_hub = StatusHub()
+
+
+def mission_owner_subject(vol_id: str) -> str:
+    if not vol_id:
+        return "legacy-unassigned"
+    with get_session() as session:
+        mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+        return str(getattr(mission, "owner_subject", "legacy-unassigned"))
 
 
 def handle_status_message(
@@ -99,10 +108,12 @@ def handle_status_message(
             source=message_location(message),
             handler=apply_mission_state,
         )
-        payload = hub.remember(event)
+        vol_id = str(event.get("vol_id") or "")
+        owner_subject = mission_owner_subject(vol_id)
+        payload = hub.remember(event, owner_subject)
         print(f"STATUS {payload}")
         future = asyncio.run_coroutine_threadsafe(
-            hub.broadcast(payload),
+            hub.broadcast(payload, owner_subject),
             loop,
         )
         future.result(timeout=5)

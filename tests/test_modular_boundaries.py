@@ -27,6 +27,16 @@ def test_map_api_keeps_a_small_composition_router():
     assert all("confluent_kafka" not in _source(module) for module in [composition, *feature_modules])
 
 
+def test_mission_catalog_is_separate_from_lifecycle_commands():
+    catalog = "app4-dashboard/api/routers/mission_catalog.py"
+    lifecycle = "app4-dashboard/api/routers/missions.py"
+
+    assert _line_count(catalog) < 180
+    assert "mission_catalog_router" in _source(lifecycle)
+    assert '@router.get("/missions")' in _source(catalog)
+    assert '@router.get("/missions/{vol_id}")' in _source(catalog)
+
+
 def test_qgis_crs_logic_stays_framework_neutral():
     source = _source("shared/qgis_crs.py")
 
@@ -183,9 +193,11 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     auth = "app4-dashboard/frontend/app/lib/auth.tsx"
     store = "app4-dashboard/frontend/app/lib/store.tsx"
     page = "app4-dashboard/frontend/app/page.tsx"
+    providers = "app4-dashboard/frontend/app/components/AppProviders.tsx"
     auth_source = _source(auth)
     store_source = _source(store)
     page_source = _source(page)
+    providers_source = _source(providers)
 
     assert _line_count(auth) < 130
     assert _line_count(store) < 190
@@ -196,16 +208,19 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     assert "deleteSession" not in store_source
     assert "fetchSession" not in store_source
     assert "const { authStatus } = useAuth()" in store_source
-    assert "<AuthProvider>" in page_source
+    assert "<AppProviders>" in page_source
+    assert "<AuthProvider>" in providers_source
 
 
 def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
     runtime = "app4-dashboard/frontend/app/lib/mission-runtime.tsx"
     store = "app4-dashboard/frontend/app/lib/store.tsx"
     page = "app4-dashboard/frontend/app/page.tsx"
+    providers = "app4-dashboard/frontend/app/components/AppProviders.tsx"
     runtime_source = _source(runtime)
     store_source = _source(store)
     page_source = _source(page)
+    providers_source = _source(providers)
 
     assert _line_count(runtime) < 240
     assert "fetchSummary" in runtime_source
@@ -214,16 +229,19 @@ def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
     assert "fetchSummary" not in store_source
     assert "new WebSocket" not in store_source
     assert "MissionSummary" not in store_source
-    assert "<MissionRuntimeProvider>" in page_source
+    assert "<AppProviders>" in page_source
+    assert "<MissionRuntimeProvider>" in providers_source
 
 
 def test_frontend_workspace_cache_is_separate_from_local_editing_state():
     workspace = "app4-dashboard/frontend/app/lib/workspace-data.tsx"
     store = "app4-dashboard/frontend/app/lib/store.tsx"
     page = "app4-dashboard/frontend/app/page.tsx"
+    providers = "app4-dashboard/frontend/app/components/AppProviders.tsx"
     workspace_source = _source(workspace)
     store_source = _source(store)
     page_source = _source(page)
+    providers_source = _source(providers)
 
     assert _line_count(workspace) < 110
     assert "fetchBrowse" in workspace_source
@@ -233,4 +251,5 @@ def test_frontend_workspace_cache_is_separate_from_local_editing_state():
     assert "DatasetItem" not in store_source
     assert "PodState" not in store_source
     assert "selectedPath" in store_source
-    assert "<WorkspaceDataProvider>" in page_source
+    assert "<AppProviders>" in page_source
+    assert "<WorkspaceDataProvider>" in providers_source

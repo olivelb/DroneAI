@@ -19,6 +19,7 @@ from shared.database import (
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.inbox_outbox import enqueue_outbox
 
+from ..analysis_support import analysis_event, get_owned_run, owned_run_scope
 from ..map_schemas import AnalysisCreate
 from ..map_support import (
     AnalysisRunRecord,
@@ -35,7 +36,7 @@ from ..map_support import (
     require_object,
     serialize_run,
 )
-from ..security import Principal, require_operator
+from ..security import Principal, require_authenticated, require_operator
 
 router = APIRouter()
 
@@ -44,44 +45,17 @@ class AnalysisListResponse(TypedDict):
     runs: list[JsonObject]
 
 
-def _analysis_event(run: AnalysisRunRecord) -> JsonObject:
-    return {
-        "vol_id": run.vol_id,
-        "ortho_s3_key": run.ortho_s3_key,
-        "analysis_run_id": run.run_id,
-        "classes": run.classes or [],
-        "ai_confidence": run.confidence,
-        "ai_backend": run.backend,
-        "ai_model_variant": run.model_variant,
-        "sam_prompt": run.prompt,
-        "tile_size": run.tile_size,
-    }
-
-
-def _get_run(
-    session: RouteSession,
-    vol_id: str,
-    run_id: str,
-    *,
-    lock: bool = False,
-) -> AnalysisRunRecord:
-    query = session.query(AIAnalysisRun).filter(
-        AIAnalysisRun.vol_id == vol_id,
-        AIAnalysisRun.run_id == run_id,
-    )
-    if lock:
-        query = query.with_for_update()
-    run = cast(AnalysisRunRecord | None, query.first())
-    if run is None:
-        raise HTTPException(status_code=404, detail="Analysis not found")
-    return run
-
-
 @router.get("/{vol_id}/analyses")
-def list_analyses(vol_id: str) -> AnalysisListResponse:
+def list_analyses(
+    vol_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> AnalysisListResponse:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        get_mission(typed_session, vol_id)
+        get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_list"
+        )
         runs = cast(
             list[AnalysisRunRecord],
             typed_session.query(AIAnalysisRun)
@@ -100,13 +74,16 @@ def create_analysis(
     vol_id: str,
     request: AnalysisCreate,
     principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     key, _ = mission_key(vol_id, "ortho")
-    require_object(key)
     run_id = str(uuid4())
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(typed_session, vol_id)
+        mission = get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_create"
+        )
+        require_object(key)
         run_model = AIAnalysisRun(
             run_id=run_id,
             mission_id=mission.id,
@@ -129,7 +106,7 @@ def create_analysis(
         typed_session.add(run_model)
         event = make_event(
             "orthomosaic",
-            _analysis_event(run),
+            analysis_event(run),
             event_id=deterministic_event_id(
                 "orthomosaic", vol_id, run_id, 0
             ),
@@ -147,11 +124,12 @@ def create_analysis(
 def retry_analysis(
     vol_id: str,
     run_id: str,
-    _principal: Annotated[Principal, Depends(require_operator)],
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        run = _get_run(typed_session, vol_id, run_id, lock=True)
+    with owned_run_scope(
+        vol_id, run_id, principal, owner_subject, "analysis_retry"
+    ) as (typed_session, run):
         if run.status != "failed":
             raise HTTPException(
                 status_code=409,
@@ -179,7 +157,7 @@ def retry_analysis(
         )
         event = make_event(
             "orthomosaic",
-            _analysis_event(run),
+            analysis_event(run),
             event_id=deterministic_event_id(
                 "orthomosaic", vol_id, run_id, run.retry_count
             ),
@@ -195,13 +173,14 @@ def retry_analysis(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def cancel_analysis(
+    principal: Annotated[Principal, Depends(require_operator)],
     vol_id: str,
     run_id: str,
-    _principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        run = _get_run(typed_session, vol_id, run_id, lock=True)
+    with owned_run_scope(
+        vol_id, run_id, principal, owner_subject, "analysis_cancel"
+    ) as (typed_session, run):
         if run.status == "completed":
             raise HTTPException(
                 status_code=409,
@@ -238,13 +217,22 @@ def cancel_analysis(
 def analysis_vectors(
     vol_id: str,
     run_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     bbox: str | None = Query(default=None),
     limit: int = Query(default=10_000, ge=1, le=50_000),
 ) -> JsonObject:
     bounds = parse_bbox(bbox)
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        run = _get_run(typed_session, vol_id, run_id)
+        run = get_owned_run(
+            typed_session,
+            vol_id,
+            run_id,
+            principal,
+            owner_subject,
+            action="analysis_vectors",
+        )
         if run.persist_results:
             query = typed_session.query(MapFeature).filter(
                 MapFeature.analysis_run_id == run.id

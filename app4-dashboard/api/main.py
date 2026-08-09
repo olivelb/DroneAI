@@ -95,9 +95,10 @@ def create_app() -> FastAPI:
 
     @application.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):
-        if not await security.authorize_websocket(websocket):
+        principal = await security.authorize_websocket(websocket)
+        if principal is None:
             return
-        await status_hub.connect(websocket)
+        await status_hub.connect(websocket, principal.subject)
         try:
             while True:
                 await websocket.receive_text()

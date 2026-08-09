@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Protocol, TypedDict, cast
+from typing import Annotated, Any, Protocol, TypedDict, cast
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 
 from shared import storage
@@ -25,6 +25,7 @@ from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 
 from ..kubernetes_status import KubernetesStatus, get_pod_states
+from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
     build_cancel_event,
     build_new_mission_event,
@@ -40,15 +41,18 @@ from ..mission_state import (
 )
 from ..schemas import MissionParams
 from ..security import (
+    Principal,
     require_admin,
     require_authenticated,
     require_operator,
 )
+from .mission_catalog import router as mission_catalog_router
 
 router = APIRouter(
     tags=["missions"],
     dependencies=[Depends(require_authenticated)],
 )
+router.include_router(mission_catalog_router)
 
 
 class MissionMutationRecord(Protocol):
@@ -87,19 +91,38 @@ class MissionParametersResponse(TypedDict):
 def _find_mission(
     session: Any,
     vol_id: str,
+    principal: Principal,
     *,
+    requested_owner: str | None = None,
+    action: str = "read",
     for_update: bool = False,
 ) -> MissionMutationRecord | None:
-    query = session.query(Mission).filter(Mission.vol_id == vol_id)
+    query = mission_query(
+        session,
+        principal,
+        requested_owner=requested_owner,
+        action=action,
+        vol_id=vol_id,
+    ).filter(Mission.vol_id == vol_id)
     if for_update:
         query = query.with_for_update()
     return cast(MissionMutationRecord | None, query.first())
 
 
 @router.get("/status/summary")
-def status_summary() -> StatusSummary:
+def status_summary(
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> StatusSummary:
     try:
-        return get_status_summary()
+        owner = resolve_owner_subject(
+            principal,
+            owner_subject,
+            action="summary",
+        )
+        return get_status_summary(owner)
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -108,9 +131,21 @@ def status_summary() -> StatusSummary:
 
 
 @router.get("/mission/state")
-def mission_state(vol_id: str) -> MissionStateResult:
+def mission_state(
+    vol_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> MissionStateResult:
     try:
-        return get_mission_state(vol_id)
+        owner = resolve_owner_subject(
+            principal,
+            owner_subject,
+            action="state",
+            vol_id=vol_id,
+        )
+        return get_mission_state(vol_id, owner)
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -122,9 +157,28 @@ def mission_state(vol_id: str) -> MissionStateResult:
     "/mission/cancel",
     dependencies=[Depends(require_operator)],
 )
-def cancel_mission(vol_id: str) -> CommandResponse:
+def cancel_mission(
+    vol_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> CommandResponse:
+    return _cancel_mission(vol_id, principal, owner_subject)
+
+
+def _cancel_mission(
+    vol_id: str,
+    principal: Principal,
+    owner_subject: str | None = None,
+) -> CommandResponse:
     with get_session() as session:
-        mission = _find_mission(session, vol_id, for_update=True)
+        mission = _find_mission(
+            session,
+            vol_id,
+            principal,
+            requested_owner=owner_subject,
+            action="cancel",
+            for_update=True,
+        )
         if mission is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -159,10 +213,29 @@ def cancel_mission(vol_id: str) -> CommandResponse:
     "/mission/{vol_id}",
     dependencies=[Depends(require_admin)],
 )
-def delete_mission(vol_id: str) -> DeleteMissionResponse:
+def delete_mission(
+    vol_id: str,
+    principal: Annotated[Principal, Depends(require_admin)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> DeleteMissionResponse:
+    return _delete_mission(vol_id, principal, owner_subject)
+
+
+def _delete_mission(
+    vol_id: str,
+    principal: Principal,
+    owner_subject: str | None = None,
+) -> DeleteMissionResponse:
     mission_exists = False
     with get_session() as session:
-        mission = _find_mission(session, vol_id, for_update=True)
+        mission = _find_mission(
+            session,
+            vol_id,
+            principal,
+            requested_owner=owner_subject,
+            action="delete",
+            for_update=True,
+        )
         if mission is not None:
             mission_exists = True
             mission.status = "deleting"
@@ -175,7 +248,14 @@ def delete_mission(vol_id: str) -> DeleteMissionResponse:
     except Exception as error:
         if mission_exists:
             with get_session() as session:
-                mission = _find_mission(session, vol_id, for_update=True)
+                mission = _find_mission(
+                    session,
+                    vol_id,
+                    principal,
+                    requested_owner=owner_subject,
+                    action="delete_failure",
+                    for_update=True,
+                )
                 if mission is not None:
                     mission.status = "deletion_failed"
                     mission.current_step = "DELETION_FAILED"
@@ -187,7 +267,13 @@ def delete_mission(vol_id: str) -> DeleteMissionResponse:
 
     try:
         with get_session() as session:
-            mission = _find_mission(session, vol_id)
+            mission = _find_mission(
+                session,
+                vol_id,
+                principal,
+                requested_owner=owner_subject,
+                action="delete_commit",
+            )
             if mission:
                 session.delete(mission)
     except Exception as error:
@@ -207,10 +293,32 @@ def delete_mission(vol_id: str) -> DeleteMissionResponse:
     "/mission/resume",
     dependencies=[Depends(require_operator)],
 )
-def resume_mission(vol_id: str) -> ResumeResponse:
+def resume_mission(
+    vol_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> ResumeResponse:
+    return _resume_mission(vol_id, principal, owner_subject)
+
+
+def _resume_mission(
+    vol_id: str,
+    principal: Principal,
+    owner_subject: str | None = None,
+) -> ResumeResponse:
     try:
+        owner = resolve_owner_subject(
+            principal,
+            owner_subject,
+            action="resume",
+            vol_id=vol_id,
+        )
         with get_session() as session:
-            payload, response = prepare_resume_in_session(session, vol_id)
+            payload, response = prepare_resume_in_session(
+                session,
+                vol_id,
+                owner,
+            )
             if payload is not None:
                 enqueue_outbox(
                     session,
@@ -264,7 +372,17 @@ def mission_parameters() -> MissionParametersResponse:
     "/mission",
     dependencies=[Depends(require_operator)],
 )
-def start_mission(params: MissionParams) -> StartMissionResponse:
+def start_mission(
+    params: MissionParams,
+    principal: Annotated[Principal, Depends(require_operator)],
+) -> StartMissionResponse:
+    return _start_mission(params, principal)
+
+
+def _start_mission(
+    params: MissionParams,
+    principal: Principal,
+) -> StartMissionResponse:
     try:
         with get_session() as session:
             existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
@@ -274,6 +392,7 @@ def start_mission(params: MissionParams) -> StartMissionResponse:
                     detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
                 )
             payload = params.model_dump()
+            payload["owner_subject"] = principal.subject
             selected_profile = quality_profile(params.quality_profile)
             payload["colmap_params"] = {
                 **selected_profile.parameters,
@@ -291,6 +410,7 @@ def start_mission(params: MissionParams) -> StartMissionResponse:
             session.add(
                 Mission(
                     vol_id=params.vol_id,
+                    owner_subject=principal.subject,
                     status="pending",
                     pipeline=params.pipeline,
                     input_dataset=params.input_dataset,

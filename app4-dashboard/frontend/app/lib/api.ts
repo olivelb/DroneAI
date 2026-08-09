@@ -1,3 +1,5 @@
+import type { MissionCatalogResponse, MissionDetail } from "./types";
+
 export type SessionPrincipal = {
   subject: string;
   role: "viewer" | "operator" | "admin";
@@ -82,6 +84,13 @@ export const deleteSession = () =>
   api<{ status: string }>("/auth/session", { method: "DELETE" });
 
 export const fetchSummary = () => api<{ missions?: Array<Record<string, unknown>>; active_vol_id?: string }>("/status/summary");
+export const fetchMissionCatalog = (limit = 25, offset = 0) =>
+  api<MissionCatalogResponse>(`/missions?${new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  }).toString()}`);
+export const fetchMissionDetail = (volId: string) =>
+  api<MissionDetail>(`/missions/${encodeURIComponent(volId)}`);
 export const fetchPods = () => api<{ pods?: Array<Record<string, unknown>>; error?: string }>("/pods");
 export const fetchParameters = () => api<Record<string, unknown>>("/mission/parameters");
 export const fetchBrowse = (prefix: string) => api<Array<Record<string, unknown>>>(`/browse?prefix=${encodeURIComponent(prefix)}`);

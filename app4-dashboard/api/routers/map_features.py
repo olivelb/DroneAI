@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import Text, func, or_
@@ -22,6 +22,7 @@ from ..map_schemas import MapFeatureCreate, MapFeatureUpdate
 from ..map_support import (
     Bounds,
     JsonObject,
+    MapFeatureMutationRecord,
     MissionRecord,
     RouteSession,
     apply_detection_spatial_filter,
@@ -31,15 +32,9 @@ from ..map_support import (
     map_feature_geojson,
     parse_bbox,
 )
-from ..security import Principal, require_operator
+from ..security import Principal, require_authenticated, require_operator
 
 router = APIRouter()
-
-
-class MapFeatureMutationRecord(Protocol):
-    geometry: Any
-    version: int
-    updated_at: datetime
 
 
 @router.post("/{vol_id}/features", status_code=status.HTTP_201_CREATED)
@@ -47,10 +42,13 @@ def create_map_feature(
     vol_id: str,
     request: MapFeatureCreate,
     principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(typed_session, vol_id)
+        mission = get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_create"
+        )
         feature = MapFeature(
             mission_id=mission.id,
             vol_id=vol_id,
@@ -76,10 +74,14 @@ def update_map_feature(
     vol_id: str,
     feature_id: str,
     request: MapFeatureUpdate,
-    _principal: Annotated[Principal, Depends(require_operator)],
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
+        get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_update"
+        )
         feature = cast(
             MapFeatureMutationRecord | None,
             typed_session.query(MapFeature)
@@ -130,10 +132,14 @@ def update_map_feature(
 def delete_map_feature(
     vol_id: str,
     feature_id: str,
-    _principal: Annotated[Principal, Depends(require_operator)],
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> Response:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
+        get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_delete"
+        )
         feature = cast(
             MapFeature | None,
             typed_session.query(MapFeature)
@@ -262,6 +268,8 @@ def _aggregate_bounds(features: list[JsonObject]) -> list[float] | None:
 @router.get("/{vol_id}/search")
 def search_map_features(
     vol_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     q: Annotated[str, Query(max_length=160)] = "",
     source: Annotated[str | None, Query()] = None,
     run_id: Annotated[str | None, Query()] = None,
@@ -278,7 +286,9 @@ def search_map_features(
     features: list[JsonObject] = []
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(typed_session, vol_id)
+        mission = get_mission(
+            typed_session, vol_id, principal, owner_subject=owner_subject, action="feature_search"
+        )
         records, truncated = _search_map_records(
             typed_session,
             vol_id=vol_id,

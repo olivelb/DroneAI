@@ -319,6 +319,13 @@ class Mission(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     vol_id = Column(String(256), unique=True, nullable=False, index=True)
+    owner_subject = Column(
+        String(256),
+        nullable=False,
+        default="local-development",
+        server_default="legacy-unassigned",
+        index=True,
+    )
     status = Column(String(32), nullable=False, default="pending")
     pipeline = Column(String(32), nullable=False, default="modern")
 

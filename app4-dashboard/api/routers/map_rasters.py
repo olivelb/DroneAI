@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any, cast
+from typing import Annotated, Any, cast
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 
 from shared import storage
@@ -31,12 +31,25 @@ from ..map_support import (
     parse_bbox,
     require_object,
 )
+from ..security import Principal, require_authenticated
 
 router = APIRouter()
 
 
 @router.get("/{vol_id}/metadata/{layer}")
-def raster_layer_metadata(vol_id: str, layer: str) -> JsonObject:
+def raster_layer_metadata(
+    vol_id: str,
+    layer: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> JsonObject:
+    with get_session() as session:
+        get_mission(
+            cast(RouteSession, session),
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+        )
     key, _ = mission_key(vol_id, layer)
     require_object(key)
     sidecar_key = f"{key}.cog.json"
@@ -92,9 +105,18 @@ def raster_tile(
     z: int,
     x: int,
     y: int,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     display_min: float | None = Query(default=None),
     display_max: float | None = Query(default=None),
 ) -> StreamingResponse:
+    with get_session() as session:
+        get_mission(
+            cast(RouteSession, session),
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+        )
     key, default_colormap = mission_key(vol_id, layer)
     require_object(key)
     if (display_min is None) != (display_max is None):
@@ -202,6 +224,8 @@ def _stored_features(
 @router.get("/{vol_id}/vectors.geojson")
 def vector_layer(
     vol_id: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
     bbox: str | None = Query(default=None),
     sources: str = Query(default="legacy,manual,ai"),
     run_ids: str | None = Query(default=None),
@@ -219,7 +243,12 @@ def vector_layer(
     truncated = False
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(typed_session, vol_id)
+        mission = get_mission(
+            typed_session,
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+        )
         if "legacy" in requested_sources:
             legacy, truncated = _legacy_features(
                 typed_session, mission, vol_id, bounds, limit

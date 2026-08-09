@@ -78,6 +78,41 @@ summary:focus-visible {
   background: rgba(248, 250, 249, 0.9);
 }
 
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  padding: 0.65rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  transition: border-color 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+
+.primary-button {
+  background: var(--brand-strong);
+  color: #fff;
+}
+
+.secondary-button {
+  border: 1px solid #d8dfdc;
+  background: #fff;
+  color: #34413d;
+}
+
+.primary-button:hover,
+.secondary-button:hover {
+  opacity: 0.88;
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .stage-header {
   display: flex;
   align-items: flex-end;
