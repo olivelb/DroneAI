@@ -19,7 +19,7 @@ def _executors():
         stage: orchestrator.StageExecutorConfig(
             image=image,
             command=("python", "-m", f"{stage}_executor"),
-            gpu_architecture=None if stage == "rasterization" else "ampere",
+            gpu_architecture="ampere",
         )
         for stage in (
             "reconstruction",

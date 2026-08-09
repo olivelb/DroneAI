@@ -14,6 +14,7 @@ def mark_stage_run_succeeded(run: MissionStageRun) -> None:
     record = cast(Any, run)
     record.status = "succeeded"
     record.progress = 100
+    record.current_step = "SUCCEEDED"
     record.heartbeat_at = now
     record.completed_at = now
     record.error_message = None
@@ -59,5 +60,6 @@ def release_ready_stage_runs(
         record = cast(Any, run)
         record.upstream_artifact_ids = upstream
         record.status = "queued"
+        record.current_step = "QUEUED"
         released.append(run)
     return released

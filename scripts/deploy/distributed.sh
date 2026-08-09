@@ -213,6 +213,7 @@ deploy_distributed() {
             --set-json 'stageJobs.executors.gaussian_filtering.node_selector={"nvidia.com/gpu.present":"true"}'
             --set-string "stageJobs.executors.rasterization.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.rasterization.command=["python3","app1-colmap/stage_executor.py","rasterization"]'
+            --set-string stageJobs.executors.rasterization.gpu_architecture=ampere
             --set-json 'stageJobs.executors.rasterization.node_selector={"nvidia.com/gpu.present":"true"}'
             --set-string "stageJobs.executors.detection.image=drone-ia:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.detection.command=["python3","app2-ia/stage_executor.py"]'

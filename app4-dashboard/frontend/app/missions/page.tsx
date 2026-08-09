@@ -17,17 +17,22 @@ function MissionCatalogue() {
 
   useEffect(() => {
     let active = true;
-    void fetchMissionCatalog(PAGE_SIZE, offset)
-      .then((result) => {
-        if (!active) return;
-        setCatalog(result);
-        setError(null);
-      })
-      .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : String(reason));
-      });
+    const refresh = () => {
+      void fetchMissionCatalog(PAGE_SIZE, offset)
+        .then((result) => {
+          if (!active) return;
+          setCatalog(result);
+          setError(null);
+        })
+        .catch((reason) => {
+          if (active) setError(reason instanceof Error ? reason.message : String(reason));
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 5_000);
     return () => {
       active = false;
+      window.clearInterval(interval);
     };
   }, [offset]);
 

@@ -301,6 +301,7 @@ def _mark_terminal(run_id: str, status: str, message: str | None) -> None:
         ).with_for_update().one()
         record = cast(Any, run)
         record.status = status
+        record.current_step = status.upper()
         record.error_message = message
         record.heartbeat_at = datetime.now(UTC)
         record.completed_at = record.heartbeat_at

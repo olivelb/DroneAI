@@ -41,7 +41,7 @@ export default function MissionLaunchBar() {
         tile_size: tileSize,
         ai_confidence: aiConfidence,
         ai_backend: aiBackend,
-        ai_model_variant: aiModelVariant,
+        ...(aiBackend === "yolo" ? { ai_model_variant: aiModelVariant } : {}),
         sam_prompt: samPrompt.trim() || "car",
         classes:
           aiBackend === "sam3"

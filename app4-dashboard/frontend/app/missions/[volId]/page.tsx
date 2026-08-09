@@ -21,10 +21,23 @@ function MissionDetailView() {
 
   useEffect(() => {
     let active = true;
-    void fetchMissionDetail(volId)
-      .then((result) => active && setMission(result))
-      .catch((reason) => active && setError(reason instanceof Error ? reason.message : String(reason)));
-    return () => { active = false; };
+    const refresh = () => {
+      void fetchMissionDetail(volId)
+        .then((result) => {
+          if (!active) return;
+          setMission(result);
+          setError(null);
+        })
+        .catch((reason) => {
+          if (active) setError(reason instanceof Error ? reason.message : String(reason));
+        });
+    };
+    refresh();
+    const interval = window.setInterval(refresh, 3_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
   }, [volId]);
 
   return (
