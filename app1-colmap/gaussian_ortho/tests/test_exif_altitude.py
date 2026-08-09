@@ -6,6 +6,15 @@ import pytest
 from gaussian_ortho import exif_altitude
 
 
+def test_pair_sampling_is_deterministic_and_bounded():
+    first = exif_altitude._sample_pair_indices(12, 1000)
+    second = exif_altitude._sample_pair_indices(12, 1000)
+
+    assert first.shape == (66, 2)
+    assert np.array_equal(first, second)
+    assert np.all((first >= 0) & (first < 12))
+
+
 def test_exif_coordinates_accept_byte_references(tmp_path, monkeypatch):
     for name in ("north.jpg", "south.jpg", "ignored.txt"):
         (tmp_path / name).write_bytes(b"fixture")

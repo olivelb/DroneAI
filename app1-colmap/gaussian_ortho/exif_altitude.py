@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import numpy as np
 from PIL import Image as PILImage, UnidentifiedImageError
@@ -16,6 +16,20 @@ type GpsInfo = dict[str | int, Any]
 class _CameraPose(Protocol):
     image_name: str
     T: np.ndarray
+
+
+def _sample_pair_indices(item_count: int, max_pairs: int) -> np.ndarray:
+    """Return a deterministic bounded sample of index pairs."""
+
+    pair_count = min(max_pairs, item_count * (item_count - 1) // 2)
+    return cast(
+        np.ndarray,
+        np.random.default_rng(42).choice(
+            item_count,
+            size=(pair_count, 2),
+            replace=True,
+        ),
+    )
 
 
 def _get_gps_info(filepath: ImageDirectory) -> GpsInfo | None:
@@ -125,9 +139,7 @@ def compute_colmap_scale(
         return 1.0  # not enough data
 
     # Sample random pairs and compute distance ratios
-    rng = np.random.default_rng(42)
-    n_pairs = min(1000, len(matched) * (len(matched) - 1) // 2)
-    indices = rng.choice(len(matched), size=(n_pairs, 2), replace=True)
+    indices = _sample_pair_indices(len(matched), 1000)
     ratios: list[float] = []
     for i, j in indices:
         if i == j:
@@ -209,9 +221,7 @@ def compute_colmap_scale_geodesic(
         return 1.0, "model-units"
 
     radius_m = 6_371_008.8
-    rng = np.random.default_rng(42)
-    n_pairs = min(2000, len(matched) * (len(matched) - 1) // 2)
-    indices = rng.choice(len(matched), size=(n_pairs, 2), replace=True)
+    indices = _sample_pair_indices(len(matched), 2000)
     ratios: list[float] = []
     for i, j in indices:
         if i == j:
