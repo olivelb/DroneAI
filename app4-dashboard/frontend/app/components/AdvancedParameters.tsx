@@ -2,6 +2,7 @@
 
 import { ChevronDown, Search, SlidersHorizontal, X } from "lucide-react";
 import { useMemo, useState } from "react";
+import { useI18n } from "../lib/i18n/provider";
 import type { ParameterMeta } from "../lib/types";
 import { ParamField } from "./ParamField";
 
@@ -26,9 +27,10 @@ export default function AdvancedParameters({
   metadata,
   values,
   onChange,
-  title = "Paramètres avancés",
-  description = "Affinez les réglages techniques uniquement lorsque le profil choisi doit être adapté.",
+  title,
+  description,
 }: AdvancedParametersProps) {
+  const { t } = useI18n();
   const availableGroups = useMemo(
     () =>
       groups
@@ -86,14 +88,14 @@ export default function AdvancedParameters({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block text-sm font-bold text-[#2d3a36]">
-            {title}
+            {title ?? t("advanced.title")}
           </span>
           <span className="mt-0.5 block text-xs leading-5 text-[#77847f]">
-            {description}
+            {description ?? t("advanced.description")}
           </span>
         </span>
         <span className="hidden rounded-full bg-[#edf3f1] px-2.5 py-1 text-[10px] font-bold text-[#5d6b66] sm:inline">
-          {controlCount} réglages
+          {t("advanced.controls", { count: controlCount })}
         </span>
         <ChevronDown
           size={17}
@@ -113,13 +115,13 @@ export default function AdvancedParameters({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="input-control min-h-11 pl-10 pr-10"
-                placeholder="Rechercher un réglage, par exemple « CRS » ou « checkpoint »"
+                placeholder={t("advanced.searchPlaceholder")}
               />
               {query && (
                 <button
                   type="button"
                   onClick={() => setQuery("")}
-                  aria-label="Effacer la recherche"
+                  aria-label={t("advanced.clearSearch")}
                   className="absolute right-2.5 top-2.5 flex h-7 w-7 items-center justify-center rounded-lg text-[#7d8a85] hover:bg-[#e9efec]"
                 >
                   <X size={14} />
@@ -151,7 +153,7 @@ export default function AdvancedParameters({
             <div className="mb-5">
               <h3 className="text-base font-bold text-[#2d3a36]">
                 {normalizedQuery
-                  ? `${visibleKeys.length} résultat${visibleKeys.length > 1 ? "s" : ""}`
+                  ? t("advanced.results", { count: visibleKeys.length })
                   : selectedGroup?.label}
               </h3>
               {!normalizedQuery && selectedGroup && (
@@ -174,7 +176,7 @@ export default function AdvancedParameters({
               </div>
             ) : (
               <div className="rounded-2xl border border-dashed border-[#d4ddda] bg-[#fafcfb] px-5 py-8 text-center text-sm text-[#7d8a85]">
-                Aucun paramètre ne correspond à cette recherche.
+                {t("advanced.noResults")}
               </div>
             )}
           </div>

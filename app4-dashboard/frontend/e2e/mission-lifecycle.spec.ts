@@ -341,7 +341,28 @@ test("the English default can be switched to persistent French", async ({ page }
 
   await page.goto("/");
   await expect(page.getByRole("button", { name: /1\. Prepare/ })).toBeVisible();
+  await page.getByRole("button", { name: /2\. Align/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Reconstruction and alignment" }),
+  ).toBeVisible();
+  await expect(page.getByText("Production process", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /3\. Produce/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "DroneGS and orthomosaic" }),
+  ).toBeVisible();
+  await expect(page.getByText("Effective budget", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /4\. Detect/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "Tiling and detection" }),
+  ).toBeVisible();
+  await expect(page.getByText("Inference strategy", { exact: true })).toBeVisible();
+  await expect(page.getByText("Stratégie d’inférence", { exact: true })).toHaveCount(0);
+
   await page.getByRole("combobox", { name: "Language" }).selectOption("fr");
+  await expect(
+    page.getByRole("heading", { name: "Tuilage et détection" }),
+  ).toBeVisible();
+  await expect(page.getByText("Stratégie d’inférence", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /1\. Préparer/ })).toBeVisible();
 
   await page.reload();
