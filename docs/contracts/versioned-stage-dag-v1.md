@@ -181,6 +181,11 @@ chain exactly once, records Gaussian counts before/after, and returns the
 filtered model with immutable render geometry. Keeping this state separate is
 what prevents a later raster Job from applying Sim3/PCA transforms twice.
 
+`execute_gaussian_rasterization_phase` consumes only that filtered render
+state and produces raw RGB, height and extent buffers with explicit dimensions.
+It cannot invoke training or filtering. The legacy workflow calls the same
+function before its unchanged coverage gates and GeoTIFF writer.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;

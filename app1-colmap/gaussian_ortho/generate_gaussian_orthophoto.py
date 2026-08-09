@@ -1134,6 +1134,62 @@ def execute_gaussian_filtering_phase(
     )
 
 
+@dataclass(frozen=True)
+class GaussianRasterizationPhaseState:
+    """Raw raster buffers produced only from an already filtered model."""
+
+    result: dict[str, Any]
+    width: int
+    height: int
+
+
+def execute_gaussian_rasterization_phase(
+    config: GaussianOrthoConfig,
+    filtering_phase: GaussianFilteringPhaseState,
+    *,
+    render_fn: Callable[..., dict[str, Any]] | None = None,
+) -> GaussianRasterizationPhaseState:
+    """Render RGB/height buffers without training or filtering side effects."""
+    if render_fn is None:
+        from .ortho_renderer import render_orthophoto
+
+        render_fn = render_orthophoto
+    render_state = filtering_phase.render_state
+    _report(
+        config.vol_id,
+        "GAUSS",
+        96,
+        "Rendering orthographic TDOM at "
+        f"{config.resolution} {render_state.resolution_units}/px "
+        f"(local GSD={render_state.local_gsd:.6f})…",
+        config.report_fn,
+    )
+    result = render_fn(
+        render_state.merged_model,
+        gsd=render_state.local_gsd,
+        extent=render_state.render_extent,
+        R_geo=render_state.rotation_geo,
+        frame_origin=render_state.frame_origin,
+        sh_direction_rotation=render_state.sh_direction_rotation,
+        mip_filter_variance=config.ortho_mip_filter_variance,
+        mip_filter_compensation=config.ortho_mip_filter_compensation,
+    )
+    rgb = result["rgb"]
+    height, width = rgb.shape[:2]
+    _report(
+        config.vol_id,
+        "GAUSS",
+        97,
+        f"Orthophoto rendered: {width}x{height} px at GSD={config.resolution} m/px",
+        config.report_fn,
+    )
+    return GaussianRasterizationPhaseState(
+        result=result,
+        width=int(width),
+        height=int(height),
+    )
+
+
 def generate_gaussian_orthophoto(
     dense_path: str,
     ortho_file: str,
@@ -1251,8 +1307,6 @@ def generate_gaussian_orthophoto(
         production profile.
     """
     import cupy as cp
-
-    from .ortho_renderer import render_orthophoto
 
     # Ensure any stale CUDA allocations from a previous crashed run are freed
     import gc
@@ -1378,37 +1432,20 @@ def generate_gaussian_orthophoto(
     render_state = filtering_phase.render_state
     merged_model = render_state.merged_model
     geo_origin = render_state.geo_origin
-    frame_origin = render_state.frame_origin
-    R_geo = render_state.rotation_geo
-    sh_direction_rotation = render_state.sh_direction_rotation
     facade_depth_bounds_model = render_state.facade_depth_bounds_model
-    render_extent = render_state.render_extent
-    local_gsd = render_state.local_gsd
     resolution_units = render_state.resolution_units
     coverage_camera_positions = render_state.coverage_camera_positions
-    _report(
-        vol_id,
-        "GAUSS",
-        96,
-        f"Rendering orthographic TDOM at {resolution} {resolution_units}/px (local GSD={local_gsd:.6f})…",
-        report_fn,
+    rasterization_phase = execute_gaussian_rasterization_phase(
+        config,
+        filtering_phase,
     )
-    result = render_orthophoto(
-        merged_model,
-        gsd=local_gsd,
-        extent=render_extent,
-        R_geo=R_geo,
-        frame_origin=frame_origin,
-        sh_direction_rotation=sh_direction_rotation,
-        mip_filter_variance=ortho_mip_filter_variance,
-        mip_filter_compensation=ortho_mip_filter_compensation,
-    )
+    result = rasterization_phase.result
 
     rgb = result["rgb"]
     height = result["height"]
     x_min, x_max, y_min, y_max = result["extent"]
-    H, W = rgb.shape[:2]
-    _report(vol_id, "GAUSS", 97, f"Orthophoto rendered: {W}x{H} px at GSD={resolution} m/px", report_fn)
+    H = rasterization_phase.height
+    W = rasterization_phase.width
 
     coverage_report_path = None
     coverage_report = None

@@ -94,6 +94,52 @@ def test_filtering_phase_applies_render_preparation_once_and_records_counts(
     assert result.output_gaussians == 72
 
 
+def test_rasterization_phase_consumes_only_filtered_render_state():
+    model = SimpleNamespace(name="filtered")
+    render_state = SimpleNamespace(
+        merged_model=model,
+        local_gsd=0.025,
+        render_extent=(-1.0, 1.0, -2.0, 2.0, 0.0, 3.0),
+        rotation_geo=np.eye(3),
+        frame_origin=None,
+        sh_direction_rotation=np.eye(3),
+        resolution_units="metres",
+    )
+    filtering_phase = workflow.GaussianFilteringPhaseState(
+        render_state=render_state,
+        input_gaussians=100,
+        output_gaussians=72,
+    )
+    calls = []
+
+    def render(filtered_model, **kwargs):
+        calls.append((filtered_model, kwargs))
+        return {
+            "rgb": np.zeros((12, 20, 3), dtype=np.uint8),
+            "height": np.zeros((12, 20), dtype=np.float32),
+            "extent": (-1.0, 1.0, -2.0, 2.0),
+        }
+
+    result = workflow.execute_gaussian_rasterization_phase(
+        SimpleNamespace(
+            vol_id="mission",
+            resolution=0.02,
+            report_fn=None,
+            ortho_mip_filter_variance=0.03,
+            ortho_mip_filter_compensation=True,
+        ),
+        filtering_phase,
+        render_fn=render,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is model
+    assert calls[0][1]["gsd"] == 0.025
+    assert calls[0][1]["extent"] == render_state.render_extent
+    assert result.width == 20
+    assert result.height == 12
+
+
 def test_prepare_gaussian_scene_keeps_loading_and_scale_contracts(
     monkeypatch,
     tmp_path,
