@@ -21,6 +21,7 @@ from .generate_gaussian_orthophoto import (
     GaussianTrainingState,
 )
 from .raster_product import GaussianSceneSummary
+from .render_geometry import GaussianRenderGeometry
 
 if TYPE_CHECKING:
     from .gaussian_model import GaussianModel
@@ -55,20 +56,11 @@ class GaussianTrainingArtifact:
     facade_subset_result: dict[str, object] | None
 
 @dataclass(frozen=True)
-class GaussianFilteringArtifact:
+class GaussianFilteringArtifact(GaussianRenderGeometry):
     model_path: Path
     config_sha256: str
     input_gaussians: int
     output_gaussians: int
-    geo_origin: np.ndarray
-    frame_origin: np.ndarray | None
-    rotation_geo: np.ndarray | None
-    sh_direction_rotation: np.ndarray | None
-    facade_depth_bounds_model: tuple[float, float] | None
-    render_extent: tuple[float, float, float, float, float, float]
-    local_gsd: float
-    resolution_units: str
-    coverage_camera_positions: np.ndarray
     scene_summary: GaussianSceneSummary
 
 

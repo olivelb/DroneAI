@@ -8,19 +8,24 @@ DroneAI has one public build-and-deploy entry point:
 ```
 
 Both modes build the same five application images and expose the complete
-operator dashboard. A mission launched from either dashboard uses Kafka,
-MinIO, PostgreSQL/PostGIS, COLMAP/GLOMAP, DroneGS, COG processing and the AI
-worker. The difference is the container orchestrator:
+operator dashboard. Every mission uses MinIO/S3, PostgreSQL/PostGIS,
+COLMAP/GLOMAP, DroneGS, COG processing and the selected AI backend. Kafka owns
+platform events and the compatibility worker path; the qualified distributed
+path dispatches the scientific stages as Kubernetes Jobs. The deployment modes
+differ as follows:
 
 | Mode | Orchestrator | Intended use |
 |---|---|---|
 | `local` | Docker Compose | simplest workstation and WSL deployment |
 | `distributed` | single-node K3s + Helm | Kubernetes/Helm validation and production-like operations |
 
-The chart also contains an opt-in resource-aware stage Job control plane. It
-remains disabled while the bundled fused workers are migrated to qualified
-one-shot stage executors; its durable contract and activation safeguards are
-documented in [Versioned mission-stage DAG contract v1](docs/contracts/versioned-stage-dag-v1.md).
+The chart contains the qualified resource-aware stage Job control plane. All
+five one-shot executors completed the BIGZEN K3s/RTX 3090 Q3 mission documented
+in the [Chapelle qualification report](docs/benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md).
+The generic chart default stays `false` to prevent accidental Job dispatch with
+mutable or incomplete image settings; `deploy.sh distributed` activates it
+only when `STAGE_JOBS_IMAGE_TAG` supplies an immutable Git-SHA tag. The fused
+Kafka workers remain available as an explicit compatibility path.
 
 The infrastructure-free Python runner in `tools/run_local_pipeline.sh` remains
 available for scientific diagnostics, but it is not the dashboard deployment.
@@ -42,6 +47,7 @@ For the Kubernetes topology:
 ```bash
 git clone https://github.com/olivelb/DroneAI.git
 cd DroneAI
+export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
 ./deploy.sh distributed
 ```
 
@@ -139,6 +145,39 @@ Examples:
 
 The distributed data root must remain stable across upgrades because
 Kubernetes hostPath persistent volumes are intentionally retained.
+
+## Qualified bounded stage Jobs
+
+Set `STAGE_JOBS_IMAGE_TAG` to the exact commit being built to deploy the
+five-stage DAG:
+
+```bash
+export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
+./deploy.sh distributed
+
+# Reuse those immutable images on a configuration-only redeploy.
+./deploy.sh distributed --no-build
+```
+
+This mode disables the long-running COLMAP and IA Deployments, scales the
+compatibility processing worker to zero and configures these commands:
+
+| Stage | Image | One-shot command |
+|---|---|---|
+| Reconstruction | `drone-colmap:<git-sha>` | `python3 app1-colmap/stage_executor.py reconstruction` |
+| Gaussian training | `drone-colmap:<git-sha>` | `python3 app1-colmap/stage_executor.py gaussian_training` |
+| Gaussian filtering | `drone-colmap:<git-sha>` | `python3 app1-colmap/stage_executor.py gaussian_filtering` |
+| Ortho/DEM rasterization | `drone-colmap:<git-sha>` | `python3 app1-colmap/stage_executor.py rasterization` |
+| Detection | `drone-ia:<git-sha>` | `python3 app2-ia/stage_executor.py` |
+
+Each Job uses the `nvidia` RuntimeClass for its GPU resource class, a read-only
+root filesystem, bounded scratch/cache volumes, no Kubernetes retry and an
+automatic TTL. PostgreSQL stores the attempts and exact artifact edges; S3 is
+the durable hand-off. A retry selects exact parent artifact UUIDs and never
+overwrites or relabels an earlier attempt.
+
+Leaving `STAGE_JOBS_IMAGE_TAG` unset intentionally deploys the compatibility
+Kafka workers. Do not mix the two execution modes for one new mission.
 
 ## Work-drive discovery
 
@@ -255,7 +294,8 @@ The last command permanently removes local databases, datasets and results.
 ```bash
 sudo k3s kubectl get pods -n drone-ai
 sudo k3s kubectl logs -n drone-ai deployment/dashboard-api
-sudo k3s kubectl logs -n drone-ai deployment/colmap-worker
+sudo k3s kubectl get jobs -n drone-ai
+sudo k3s kubectl logs -n drone-ai job/<stage-job>
 
 # Redeploy after code or WSL address changes, without rebuilding
 ./deploy.sh distributed --no-build
@@ -279,10 +319,11 @@ journeys documented in [`app4-dashboard/frontend/README.md`](app4-dashboard/fron
 5. For a map, review the alignment preset, retriangulation and projected CRS.
    For a facade, review the exclusion ranges and local scale; the qualified
    Caspar/DroneGS values are loaded from the API profile.
-6. Select a DroneGS profile and YOLO OBB configuration.
-7. Launch the mission. A map continues through reconstruction, COG generation,
-   tiling, inference and aggregation. A facade ends after its local RGB/depth
-   COGs and audit reports; the dashboard does not wait for TILER or IA.
+6. Select a DroneGS profile and AI backend. For SAM 3, enter the segmentation
+   prompt/classes; choose a YOLO OBB variant only for a YOLO mission.
+7. Launch the mission. In bounded Job mode, a map advances through the five
+   durable stages shown by the live mission monitor. A facade ends after its
+   local RGB/depth products and reports; no aerial detection Job is released.
 8. Open Results to inspect the available raster products. Map missions also
    expose vector detections, measurements, search and manual annotations;
    facade rasters remain explicitly labelled as local and CRS-free.

@@ -16,6 +16,16 @@ const json = (body: unknown, status = 200) => ({
 });
 
 async function mockApi(page: Page, options: ApiOptions = {}) {
+  const missionStatus = options.missionStatus ?? "success";
+  const missionStep =
+    missionStatus === "cancelled"
+      ? "CANCELLED"
+      : missionStatus === "success"
+        ? "DONE"
+        : "MAPPING";
+  const missionProgress =
+    missionStatus === "success" ? 100 : missionStatus === "processing" ? 42 : 0;
+
   await page.route("http://127.0.0.1:30080/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -219,14 +229,14 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         items: [{
           vol_id: "mission-existing",
           owner_subject: "e2e-operator",
-          status: "success",
-          current_step: "DONE",
-          progress: 100,
+          status: missionStatus,
+          current_step: missionStep,
+          progress: missionProgress,
           pipeline: "modern",
           quality_profile: "normal-v1",
           attempt_count: 1,
           updated_at: "2026-08-09T12:00:00Z",
-          overall_status: "success",
+          overall_status: missionStatus,
           is_stale: false,
         }],
         total: 1,
@@ -239,20 +249,34 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       await route.fulfill(json({
         vol_id: "mission-existing",
         owner_subject: "e2e-operator",
-        status: "success",
-        current_step: "DONE",
-        progress: 100,
+        status: missionStatus,
+        current_step: missionStep,
+        progress: missionProgress,
         pipeline: "modern",
         quality_profile: "normal-v1",
         attempt_count: 1,
         updated_at: "2026-08-09T12:00:00Z",
-        overall_status: "success",
+        overall_status: missionStatus,
         is_stale: false,
         parameters: { quality_profile: "normal-v1" },
-        attempts: [{ attempt: 0, status: "success" }],
-        phases: { COLMAP: { status: "success", progress: 100 } },
+        attempts: [{ attempt: 0, status: missionStatus }],
+        phases: {
+          COLMAP: {
+            status: missionStatus,
+            step: missionStep,
+            progress: missionProgress,
+          },
+        },
         heartbeat: { updated_at: "2026-08-09T12:00:00Z", age_seconds: 2, delayed: false },
-        logs: [{ service: "COLMAP", step: "DONE", message: "Published" }],
+        logs: [{
+          service: "COLMAP",
+          step: missionStep,
+          status: missionStatus,
+          message:
+            missionStatus === "success"
+              ? "Published"
+              : `Mission ${missionStatus}`,
+        }],
         products: [{ kind: "orthomosaic", s3_key: "missions/mission-existing/orthomosaic.tif" }],
       }));
       return;
@@ -392,7 +416,7 @@ test("live mission updates recover after a WebSocket disconnect", async ({ page 
       return;
     }
     setTimeout(() => socket.send(JSON.stringify({
-      vol_id: "mission-websocket",
+      vol_id: "mission-existing",
       service: "COLMAP",
       step: "MAPPING",
       progress: 17,

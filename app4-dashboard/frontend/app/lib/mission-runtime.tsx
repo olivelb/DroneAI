@@ -8,9 +8,19 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { fetchSummary, getWsBaseUrl } from "./api";
+import { fetchMissionCatalog, fetchMissionDetail, getWsBaseUrl } from "./api";
 import { useAuth } from "./auth";
-import type { MissionLog, MissionSummary, StatusPayload } from "./types";
+import {
+  autoSelectMission,
+  missionSummaryFromCatalog,
+  missionSummaryFromDetail,
+  summaryLogMessages,
+} from "./mission-runtime-state";
+import type {
+  MissionLog,
+  MissionSummary,
+  StatusPayload,
+} from "./types";
 import { overallStatusFor } from "./types";
 
 type MissionRuntimeState = {
@@ -36,40 +46,6 @@ export function useMissionRuntime() {
   return context;
 }
 
-const autoSelectMission = (
-  map: Record<string, MissionSummary>,
-  preferred?: string | null,
-): string | null => {
-  if (preferred && map[preferred]) return preferred;
-  const sorted = Object.values(map).sort(
-    (left, right) => right.updated_at - left.updated_at,
-  );
-  const running = sorted.find(
-    (mission) => mission.overall_status === "processing",
-  );
-  return running?.vol_id ?? sorted[0]?.vol_id ?? null;
-};
-
-export const mergeMissionSnapshots = (
-  previous: Record<string, MissionSummary>,
-  incoming: Record<string, MissionSummary>,
-): Record<string, MissionSummary> =>
-  Object.fromEntries(
-    Object.entries(incoming).map(([volId, mission]) => [
-      volId,
-      (previous[volId]?.updated_at ?? 0) > mission.updated_at
-        ? previous[volId]
-        : mission,
-    ]),
-  );
-
-export const summaryLogMessages = (
-  mission: MissionSummary,
-): string[] | null => {
-  const messages = mission.logs.map((entry) => entry.message).slice(-100);
-  return messages.length > 0 ? messages : null;
-};
-
 export function MissionRuntimeProvider({
   children,
 }: {
@@ -80,50 +56,85 @@ export function MissionRuntimeProvider({
   const [activeMissionId, setActiveMissionId] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
+  const missionsRef = useRef<Record<string, MissionSummary>>({});
   const activeVolIdRef = useRef<string | null>(null);
-  const userSelectedRef = useRef(false);
+  const detailRequestRef = useRef(0);
 
-  const setActiveMissionIdUser = useCallback((id: string | null) => {
-    userSelectedRef.current = id !== null;
-    activeVolIdRef.current = id;
-    setActiveMissionId(id);
+  const refreshSelectedMission = useCallback(async (volId: string) => {
+    const request = ++detailRequestRef.current;
+    try {
+      const detail = await fetchMissionDetail(volId);
+      if (
+        request !== detailRequestRef.current ||
+        activeVolIdRef.current !== volId
+      ) {
+        return;
+      }
+      const selected = missionSummaryFromDetail(detail);
+      const next = { ...missionsRef.current, [volId]: selected };
+      missionsRef.current = next;
+      setMissions(next);
+      setLogs(summaryLogMessages(selected));
+    } catch (error) {
+      console.error(`Mission detail error for ${volId}:`, error);
+    }
   }, []);
 
-  const activeMission = activeMissionId
-    ? missions[activeMissionId] ?? null
-    : null;
+  const selectMission = useCallback(
+    (id: string | null) => {
+      activeVolIdRef.current = id;
+      setActiveMissionId(id);
+      setLogs([]);
+      if (id) void refreshSelectedMission(id);
+    },
+    [refreshSelectedMission],
+  );
 
   const refreshSummary = useCallback(async () => {
     try {
-      const data = await fetchSummary();
-      const map: Record<string, MissionSummary> = {};
-      for (const mission of (data.missions ?? []) as MissionSummary[]) {
-        map[mission.vol_id] = mission;
-      }
-      setMissions((previous) => mergeMissionSnapshots(previous, map));
+      const catalog = await fetchMissionCatalog(100, 0);
       const current = activeVolIdRef.current;
-      if (userSelectedRef.current && current && map[current]) {
-        const summaryLogs = summaryLogMessages(map[current]);
-        if (summaryLogs) setLogs(summaryLogs);
-        return;
+      const map = Object.fromEntries(
+        catalog.items.map((mission) => {
+          const summary = missionSummaryFromCatalog(mission);
+          const selectedDetail =
+            mission.vol_id === current
+              ? missionsRef.current[mission.vol_id]
+              : undefined;
+          return [
+            mission.vol_id,
+            selectedDetail?.stage_runs
+              ? {
+                  ...selectedDetail,
+                  ...summary,
+                  services: selectedDetail.services,
+                  logs: selectedDetail.logs,
+                  stage_runs: selectedDetail.stage_runs,
+                  parameters: selectedDetail.parameters,
+                  products: selectedDetail.products,
+                }
+              : summary,
+          ];
+        }),
+      );
+      const selected = autoSelectMission(map, current);
+      missionsRef.current = map;
+      setMissions(map);
+      if (selected !== current) {
+        activeVolIdRef.current = selected;
+        setActiveMissionId(selected);
+        setLogs([]);
       }
-      const hint = (data.active_vol_id as string) ?? current;
-      const next = autoSelectMission(map, hint);
-      setActiveMissionId(next);
-      activeVolIdRef.current = next;
-      if (next && map[next]) {
-        const summaryLogs = summaryLogMessages(map[next]);
-        if (summaryLogs) setLogs(summaryLogs);
-      }
+      if (selected) await refreshSelectedMission(selected);
     } catch (error) {
-      console.error("Summary error:", error);
+      console.error("Mission catalog error:", error);
     }
-  }, []);
+  }, [refreshSelectedMission]);
 
   useEffect(() => {
     if (authStatus !== "authenticated") return;
     const initialLoad = window.setTimeout(() => void refreshSummary(), 0);
-    const interval = window.setInterval(() => void refreshSummary(), 5000);
+    const interval = window.setInterval(() => void refreshSummary(), 3_000);
     return () => {
       window.clearTimeout(initialLoad);
       window.clearInterval(interval);
@@ -147,56 +158,40 @@ export function MissionRuntimeProvider({
         try {
           const payload = JSON.parse(event.data) as StatusPayload;
           if (!payload.vol_id) return;
-          setMissions((previous) => {
-            const existing = previous[payload.vol_id] ?? {
-              vol_id: payload.vol_id,
-              services: {},
-              logs: [],
-              updated_at: Date.now() / 1000,
-              overall_status: "processing",
-            };
-            const services = {
-              ...existing.services,
-              ...(payload.service ? { [payload.service]: payload } : {}),
-            };
-            const missionLogs = payload.log
-              ? [
-                  ...existing.logs.slice(-199),
-                  {
-                    message: payload.log,
-                    service: payload.service,
-                    step: payload.step,
-                    status: payload.status,
-                    ts: Date.now() / 1000,
-                  } as MissionLog,
-                ]
-              : existing.logs;
-            const mission: MissionSummary = {
-              ...existing,
-              services,
-              logs: missionLogs,
-              updated_at: Date.now() / 1000,
-              overall_status: overallStatusFor(services),
-            };
-            const next = { ...previous, [payload.vol_id]: mission };
-            if (!userSelectedRef.current) {
-              const selected = autoSelectMission(
-                next,
-                activeVolIdRef.current ?? payload.vol_id,
-              );
-              if (selected !== activeVolIdRef.current) {
-                activeVolIdRef.current = selected;
-                setActiveMissionId(selected);
-              }
-            }
-            if (
-              (activeVolIdRef.current ?? payload.vol_id) === payload.vol_id &&
-              payload.log
-            ) {
-              setLogs(mission.logs.map((entry) => entry.message).slice(-100));
-            }
-            return next;
-          });
+          const existing = missionsRef.current[payload.vol_id];
+          if (!existing || existing.stage_runs?.length) return;
+          const services = {
+            ...existing.services,
+            ...(payload.service ? { [payload.service]: payload } : {}),
+          };
+          const missionLogs = payload.log
+            ? [
+                ...existing.logs.slice(-199),
+                {
+                  message: payload.log,
+                  service: payload.service,
+                  step: payload.step,
+                  status: payload.status,
+                  ts: Date.now() / 1000,
+                } as MissionLog,
+              ]
+            : existing.logs;
+          const mission: MissionSummary = {
+            ...existing,
+            services,
+            logs: missionLogs,
+            updated_at: Date.now() / 1000,
+            overall_status: overallStatusFor(services),
+          };
+          const next = {
+            ...missionsRef.current,
+            [payload.vol_id]: mission,
+          };
+          missionsRef.current = next;
+          setMissions(next);
+          if (activeVolIdRef.current === payload.vol_id) {
+            setLogs(summaryLogMessages(mission));
+          }
         } catch (error) {
           console.error("WS parse error:", error);
         }
@@ -217,10 +212,14 @@ export function MissionRuntimeProvider({
     };
   }, [authStatus]);
 
+  const activeMission = activeMissionId
+    ? missions[activeMissionId] ?? null
+    : null;
+
   const value: MissionRuntimeState = {
     missions,
     activeMissionId,
-    setActiveMissionId: setActiveMissionIdUser,
+    setActiveMissionId: selectMission,
     activeMission,
     logs,
     setLogs,

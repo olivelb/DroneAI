@@ -11,6 +11,7 @@ from shared.database import Mission, get_session
 from ..mission_access import get_owned_mission, mission_query
 from ..mission_detail import mission_detail_projection
 from ..mission_state import serialize_mission
+from ..stage_projection import project_stage_mission
 from ..security import Principal, require_authenticated
 
 router = APIRouter()
@@ -25,21 +26,47 @@ class MissionCatalogResponse(TypedDict):
 
 def _catalog_item(mission: Mission) -> dict[str, Any]:
     serialized = serialize_mission(cast(Any, mission))
+    stage_projection = project_stage_mission(mission, mission.stage_runs)
     parameters = cast(dict[str, Any], mission.params or {})
+    updated_at = (
+        stage_projection["updated_at"]
+        if stage_projection is not None
+        else mission.updated_at
+    )
     return {
         "vol_id": mission.vol_id,
         "owner_subject": mission.owner_subject,
-        "status": mission.status,
-        "current_step": mission.current_step,
-        "progress": mission.progress,
+        "status": (
+            stage_projection["status"] if stage_projection else mission.status
+        ),
+        "current_step": (
+            stage_projection["current_step"]
+            if stage_projection
+            else mission.current_step
+        ),
+        "progress": (
+            stage_projection["progress"] if stage_projection else mission.progress
+        ),
         "pipeline": mission.pipeline,
         "quality_profile": parameters.get("quality_profile"),
         "attempt_count": int(mission.retry_count or 0) + 1,
         "created_at": mission.created_at.isoformat() if mission.created_at else None,
-        "updated_at": mission.updated_at.isoformat() if mission.updated_at else None,
-        "overall_status": serialized["overall_status"],
-        "is_stale": serialized["is_stale"],
-        "last_event_age_seconds": serialized["last_event_age_seconds"],
+        "updated_at": updated_at.isoformat() if updated_at else None,
+        "overall_status": (
+            stage_projection["overall_status"]
+            if stage_projection
+            else serialized["overall_status"]
+        ),
+        "is_stale": (
+            stage_projection["is_stale"]
+            if stage_projection
+            else serialized["is_stale"]
+        ),
+        "last_event_age_seconds": (
+            stage_projection["last_event_age_seconds"]
+            if stage_projection
+            else serialized["last_event_age_seconds"]
+        ),
     }
 
 

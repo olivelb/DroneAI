@@ -1,9 +1,9 @@
 # Qualification and operations contract
 
-This document defines the evidence required to activate bounded stage Jobs and
-the safe operating procedures for DroneAI. The detailed OVHcloud commands remain
-in the [preproduction runbook](OVHCLOUD_PREPROD.md); this contract applies to any
-Kubernetes deployment.
+This document defines the evidence required to activate and operate bounded
+stage Jobs safely. The detailed OVHcloud commands remain in the
+[preproduction runbook](OVHCLOUD_PREPROD.md); this contract applies to every
+Kubernetes environment.
 
 ## Qualification levels
 
@@ -12,7 +12,7 @@ Kubernetes deployment.
 | Q0 — contracts | Every code change | Static analysis, CPU tests, contract and documentation checks | Yes |
 | Q1 — images | A service image or import boundary changes | Affected image build/import smoke test and immutable image digest | Only for affected services |
 | Q2 — GPU runtime | CUDA/COLMAP version, GPU architecture, CTest or native GPU behavior changes | `nvidia-smi`, affected CTests and a small representative GPU mission | No; explicit dispatch |
-| Q3 — platform E2E | Before enabling Kubernetes stage Jobs or promoting an environment | Complete five-stage mission, retry, cancellation and recovery evidence | No; explicit dispatch |
+| Q3 — platform E2E | Before first activation on a GPU target or promotion of that environment | Complete five-stage mission, retry, cancellation and recovery evidence | No; explicit dispatch |
 
 Q2 and Q3 are intentionally manual, scoped qualifications. A pull request or
 merge with no relevant CUDA, COLMAP, GPU-architecture or CTest change must not
@@ -39,11 +39,23 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 Never store credentials, signed URLs, bearer tokens, private datasets or raw
 Terraform state in the report.
 
-## Activation gate for bounded Jobs
+## Activation status and gate for bounded Jobs
 
-`stageJobs.enabled` remains false until all of the following are true:
+The one-shot executor implementation and complete artifact chain are qualified
+on BIGZEN K3s/RTX 3090. Mission `chapelle-q3-five-jobs-20260809` exercised all
+five Jobs, immutable S3 hand-offs, missing-Job reconciliation, a failed
+rasterization followed by an exact-parent retry, automatic dependant release,
+SAM3 CUDA inference and the multi-product operator view. The retained evidence
+is the
+[Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 
-1. All five executor entries use immutable image digests and one-shot commands.
+`stageJobs.enabled=true` is therefore supported for controlled preproduction.
+The generic chart default remains `false` so a deployment cannot acquire Job
+RBAC or dispatch GPU work without an explicit immutable executor map. Each new
+target environment must satisfy all of the following before activation:
+
+1. All five executor entries use OCI digests or commit-derived immutable tags
+   and the reviewed one-shot commands.
 2. The Q3 record demonstrates the complete artifact chain on the target GPU.
 3. Resource requests/limits fit the live quota and one active Job cannot force
    an unreviewed second GPU node.
@@ -55,9 +67,12 @@ Terraform state in the report.
    quality metrics and exact failure reason from the mission detail view.
 7. A rollback revision and deep-sleep procedure have been reviewed.
 
-Enabling the flag is a deployment change requiring its own reviewed plan. The
-presence of all executor binaries in the repository is not authorization to
-activate it.
+Enabling the flag is a reviewed deployment change, not a code-side default. On
+the single-node distributed installer, set `STAGE_JOBS_IMAGE_TAG` to the exact
+Git SHA; leaving it unset deliberately selects compatibility workers.
+Production promotion remains blocked until its own cancellation/deadline,
+backup/restore, rollback and interruption drills are recorded, even though the
+preproduction execution path is qualified.
 
 ## Backup and retention
 

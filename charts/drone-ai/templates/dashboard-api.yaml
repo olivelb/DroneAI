@@ -176,6 +176,16 @@ spec:
           value: {{ .Values.stageJobs.activeDeadlineSeconds | quote }}
         - name: DRONEAI_STAGE_JOB_TTL_SECONDS_AFTER_FINISHED
           value: {{ .Values.stageJobs.ttlSecondsAfterFinished | quote }}
+        - name: DRONEAI_STAGE_JOB_RUNTIME_CLASS
+          value: {{ .Values.gpu.runtimeClassName | quote }}
+        - name: DRONEAI_STAGE_HF_TOKEN_SECRET_NAME
+          value: {{ .Values.hfToken.existingSecret | quote }}
+        - name: DRONEAI_STAGE_HF_TOKEN_SECRET_KEY
+          value: {{ .Values.hfToken.secretKey | quote }}
+        - name: DRONEAI_STAGE_SAM3_MODEL_ID
+          value: {{ .Values.iaWorker.sam3.repository | quote }}
+        - name: DRONEAI_STAGE_SAM3_MODEL_REVISION
+          value: {{ .Values.iaWorker.sam3.revision | quote }}
         - name: DRONEAI_STAGE_STORAGE_SECRET_NAME
           value: {{ include "drone-ai.storageSecretName" . | quote }}
         - name: DRONEAI_STAGE_DATABASE_URL_SECRET_KEY

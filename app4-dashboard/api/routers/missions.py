@@ -94,6 +94,13 @@ class MissionParametersResponse(TypedDict):
     stage_dag: dict[str, Any]
 
 
+def _mission_payload(params: MissionParams) -> dict[str, Any]:
+    payload = params.model_dump()
+    if params.ai_backend == "sam3":
+        payload.pop("ai_model_variant", None)
+    return payload
+
+
 def _find_mission(
     session: Any,
     vol_id: str,
@@ -398,7 +405,7 @@ def _start_mission(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
                 )
-            payload = params.model_dump()
+            payload = _mission_payload(params)
             payload["owner_subject"] = principal.subject
             selected_profile = quality_profile(params.quality_profile)
             payload["colmap_params"] = {

@@ -1,6 +1,7 @@
 import importlib
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine
@@ -18,7 +19,7 @@ def _executors():
         stage: orchestrator.StageExecutorConfig(
             image=image,
             command=("python", "-m", f"{stage}_executor"),
-            gpu_architecture=None if stage == "rasterization" else "ampere",
+            gpu_architecture="ampere",
         )
         for stage in (
             "reconstruction",
@@ -37,6 +38,7 @@ def _settings(**kwargs):
         "poll_seconds": 1.0,
         "limits": SchedulingLimits(global_active=2, per_owner_active=1),
         "executors": _executors(),
+        "runtime_class_name": "nvidia",
     }
     values.update(kwargs)
     return orchestrator.StageOrchestratorSettings(**values)
@@ -95,6 +97,7 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
         )
 
     assert {item.request.owner_subject for item in reserved} == {"owner-a", "owner-b"}
+    assert all(item.config.runtime_class_name == "nvidia" for item in reserved)
     with stage_sessions() as session:
         scheduled = session.query(MissionStageRun).filter(
             MissionStageRun.executor == "kubernetes-job"
@@ -197,3 +200,46 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
 
     with pytest.raises(ValueError, match="Missing one-shot executor"):
         orchestrator.settings_from_environment()
+
+
+def test_detection_job_alone_receives_model_configuration_and_hf_token():
+    model_environment = (
+        ("SAM3_MODEL_ID", "facebook/sam3"),
+        ("SAM3_MODEL_REVISION", "3" * 40),
+    )
+    model_secret = (
+        orchestrator.SecretEnvironment("HF_TOKEN", "hf-token", "HF_TOKEN"),
+    )
+    settings = _settings(
+        detection_environment=model_environment,
+        detection_secret_environment=model_secret,
+    )
+    mission = Mission(
+        id=42,
+        vol_id="mission-model-scope",
+        owner_subject="operator@example.test",
+    )
+
+    detection = orchestrator._reserved_job(
+        SimpleNamespace(
+            run_id="d" * 32,
+            stage="detection",
+            resource_class="gpu-high-memory",
+        ),
+        mission,
+        settings,
+    )
+    reconstruction = orchestrator._reserved_job(
+        SimpleNamespace(
+            run_id="r" * 32,
+            stage="reconstruction",
+            resource_class="gpu-geometry",
+        ),
+        mission,
+        settings,
+    )
+
+    assert detection.config.environment == model_environment
+    assert detection.config.secret_environment == model_secret
+    assert reconstruction.config.environment == ()
+    assert reconstruction.config.secret_environment == ()

@@ -14,6 +14,7 @@ from shared.database import (
 )
 
 from .mission_state import serialize_mission
+from .stage_projection import operator_parameters, stage_lifecycle_logs
 
 
 def mission_detail_projection(
@@ -89,9 +90,27 @@ def mission_detail_projection(
         for artifact in artifacts
     )
     snapshot = serialize_mission(cast(Any, mission))
+    persisted_logs = [
+        {
+            "service": entry.service,
+            "step": entry.step,
+            "status": entry.status,
+            "progress": entry.progress,
+            "message": entry.message,
+            "details": entry.details,
+            "created_at": entry.created_at,
+        }
+        for entry in reversed(logs)
+    ]
+    operator_logs = sorted(
+        [*persisted_logs, *stage_lifecycle_logs(stage_runs)],
+        key=lambda entry: (
+            entry["created_at"].timestamp() if entry["created_at"] else 0.0
+        ),
+    )
     return {
         **catalog_item,
-        "parameters": mission.params or {},
+        "parameters": operator_parameters(mission.params or {}),
         "attempts": sorted({run.attempt for run in stage_runs})
         or [int(mission.retry_count or 0)],
         "stage_runs": [
@@ -103,7 +122,11 @@ def mission_detail_projection(
                 "progress": run.progress,
                 "current_step": run.current_step,
                 "executor": run.executor,
-                "parameters": run.parameters or {},
+                "resource_class": run.resource_class,
+                "job_name": run.job_name,
+                "dispatch_attempts": run.dispatch_attempts,
+                "dispatch_error": run.dispatch_error,
+                "parameters": operator_parameters(run.parameters or {}),
                 "upstream_artifact_ids": run.upstream_artifact_ids or [],
                 "provenance": run.provenance or {},
                 "quality_metrics": run.quality_metrics or {},
@@ -112,6 +135,9 @@ def mission_detail_projection(
                     run.heartbeat_at.isoformat() if run.heartbeat_at else None
                 ),
                 "started_at": run.started_at.isoformat() if run.started_at else None,
+                "scheduled_at": (
+                    run.scheduled_at.isoformat() if run.scheduled_at else None
+                ),
                 "completed_at": (
                     run.completed_at.isoformat() if run.completed_at else None
                 ),
@@ -120,23 +146,25 @@ def mission_detail_projection(
         ],
         "phases": snapshot["services"],
         "heartbeat": {
-            "updated_at": snapshot["workspace_state"]["updated_at"],
-            "age_seconds": snapshot["last_event_age_seconds"],
-            "delayed": snapshot["is_stale"],
+            "updated_at": catalog_item["updated_at"],
+            "age_seconds": catalog_item["last_event_age_seconds"],
+            "delayed": catalog_item["is_stale"],
         },
         "logs": [
             {
-                "service": entry.service,
-                "step": entry.step,
-                "status": entry.status,
-                "progress": entry.progress,
-                "message": entry.message,
-                "details": entry.details,
+                "service": entry["service"],
+                "step": entry["step"],
+                "status": entry["status"],
+                "progress": entry["progress"],
+                "message": entry["message"],
+                "details": entry["details"],
                 "created_at": (
-                    entry.created_at.isoformat() if entry.created_at else None
+                    entry["created_at"].isoformat()
+                    if entry["created_at"]
+                    else None
                 ),
             }
-            for entry in reversed(logs)
+            for entry in operator_logs
         ],
         "products": products,
     }

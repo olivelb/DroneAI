@@ -252,12 +252,13 @@ dashboardApi:
     rateLimitMaxClients: "10000"
 
 # --------------------------------------------------------------------------
-# Bounded stage Jobs (opt-in until every worker exposes a one-shot executor)
+# Bounded stage Jobs (qualified; explicit immutable-map opt-in per environment)
 # --------------------------------------------------------------------------
 stageJobs:
   enabled: false
-  # Enabling requires all five entries. Each image must use an OCI digest or
-  # Git-SHA tag and each command must implement the immutable stage API.
+  # All five one-shot commands are implemented and Q3-qualified. Enabling still
+  # requires every entry so a generic Helm install cannot dispatch mutable or
+  # partially configured workloads. Images use an OCI digest or Git-SHA tag.
   executors: {}
   serviceAccountName: stage-job-sa
   activeDeadlineSeconds: 86400
@@ -319,7 +320,8 @@ ingress:
 # --------------------------------------------------------------------------
 gpu:
   # K3s creates this RuntimeClass automatically when
-  # nvidia-container-runtime is installed before K3s starts.
+  # nvidia-container-runtime is installed before K3s starts. Bounded stage
+  # Jobs apply it only to resource classes that request a GPU.
   runtimeClassName: nvidia
   nodeSelector: {}
   tolerations: []

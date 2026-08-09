@@ -93,7 +93,7 @@ DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
     "reconstruction": "gpu-geometry",
     "gaussian_training": "gpu-high-memory",
     "gaussian_filtering": "gpu-high-memory",
-    "rasterization": "cpu-standard",
+    "rasterization": "gpu-standard",
     "detection": "gpu-standard",
 }
 

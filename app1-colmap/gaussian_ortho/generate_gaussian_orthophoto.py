@@ -70,6 +70,7 @@ from .exif_altitude import (
 from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
 from .partition import CellBounds
 from .scene_info import SceneInfo
+from .render_geometry import GaussianRenderGeometry
 
 if TYPE_CHECKING:
     from .facade_frame import FacadeFrame
@@ -826,18 +827,9 @@ def train_and_merge_gaussian_models(
     )
 
 
-@dataclass
-class GaussianRenderState:
+@dataclass(frozen=True)
+class GaussianRenderState(GaussianRenderGeometry):
     merged_model: GaussianModel
-    geo_origin: np.ndarray
-    frame_origin: np.ndarray | None
-    rotation_geo: np.ndarray | None
-    sh_direction_rotation: np.ndarray | None
-    facade_depth_bounds_model: tuple[float, float] | None
-    render_extent: tuple[float, float, float, float, float, float]
-    local_gsd: float
-    resolution_units: str
-    coverage_camera_positions: np.ndarray
 
 
 def prepare_gaussian_render_state(

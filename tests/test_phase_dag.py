@@ -70,7 +70,7 @@ def test_default_stage_plan_is_versioned_and_dependency_ordered():
         "gpu-geometry",
         "gpu-high-memory",
         "gpu-high-memory",
-        "cpu-standard",
+        "gpu-standard",
         "gpu-standard",
     ]
 

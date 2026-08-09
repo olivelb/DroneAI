@@ -18,6 +18,7 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
             namespace="drone-ai",
             image="registry.example/drone-colmap@sha256:" + "a" * 64,
             command=("python", "-m", "stage_executor"),
+            runtime_class_name="nvidia",
             environment=(("S3_ENDPOINT", "https://s3.example"),),
             secret_environment=(
                 jobs.SecretEnvironment("DATABASE_URL", "drone-ai-storage", "database-url"),
@@ -33,6 +34,7 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
     assert job["spec"]["ttlSecondsAfterFinished"] == 3600
     pod = job["spec"]["template"]["spec"]
     assert pod["restartPolicy"] == "Never"
+    assert pod["runtimeClassName"] == "nvidia"
     container = pod["containers"][0]
     assert container["resources"]["requests"]["memory"] == "24Gi"
     assert container["resources"]["limits"]["memory"] == "64Gi"
@@ -61,8 +63,14 @@ def test_cpu_job_does_not_request_a_gpu():
             stage="rasterization",
             resource_class="cpu-standard",
         ),
-        jobs.StageJobConfig(namespace="drone-ai", image="image@sha256:" + "b" * 64, command=("run",)),
+        jobs.StageJobConfig(
+            namespace="drone-ai",
+            image="image@sha256:" + "b" * 64,
+            command=("run",),
+            runtime_class_name="nvidia",
+        ),
     )
 
     limits = job["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]
     assert "nvidia.com/gpu" not in limits
+    assert "runtimeClassName" not in job["spec"]["template"]["spec"]

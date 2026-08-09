@@ -42,6 +42,7 @@ class StageJobConfig:
     service_account_name: str = "stage-job-sa"
     active_deadline_seconds: int = 86_400
     ttl_seconds_after_finished: int = 3_600
+    runtime_class_name: str | None = None
     node_selector: tuple[tuple[str, str], ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     secret_environment: tuple[SecretEnvironment, ...] = ()
@@ -51,6 +52,8 @@ class StageJobConfig:
             raise ValueError("A stage Job requires an image and command")
         if self.active_deadline_seconds < 1 or self.ttl_seconds_after_finished < 0:
             raise ValueError("Stage Job deadlines must be non-negative")
+        if self.runtime_class_name is not None and not self.runtime_class_name.strip():
+            raise ValueError("Stage Job runtime class must not be blank")
         reserved = {
             "DRONEAI_STAGE_RUN_ID",
             "DRONEAI_MISSION_ID",
@@ -164,6 +167,8 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
     }
     if config.node_selector:
         pod_spec["nodeSelector"] = dict(config.node_selector)
+    if resources["gpu_count"] and config.runtime_class_name:
+        pod_spec["runtimeClassName"] = config.runtime_class_name
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",

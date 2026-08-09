@@ -30,11 +30,34 @@ more uniform seed because DroneGS performs the later densification. See the
 | Mode | Intended use | Entry point |
 |---|---|---|
 | Local dashboard | Complete workstation deployment with Docker Compose | `./deploy.sh local` |
-| Distributed dashboard | Single-node K3s deployment managed by Helm | `./deploy.sh distributed` |
+| Distributed dashboard | Single-node K3s deployment managed by Helm; qualified bounded stage Jobs with an immutable Git-SHA tag | `STAGE_JOBS_IMAGE_TAG=<git-sha> ./deploy.sh distributed` |
 | Local runner | Infrastructure-free scientific diagnostics | `./tools/run_local_pipeline.sh` |
 
 DroneAI uses S3-compatible object storage for datasets and mission artifacts,
 Kafka for pipeline events, and PostgreSQL/PostGIS for mission and vector data.
+
+The qualified Kubernetes execution path is an append-only five-stage DAG. Each
+stage runs in its own bounded Job and publishes one checksum-addressed workspace
+before its dependant can start:
+
+```mermaid
+flowchart LR
+    UI["Mission Studio"] --> API["Dashboard API"]
+    API --> DB[("PostgreSQL stage DAG")]
+    API --> R["1 · Reconstruction Job"]
+    R --> S3[("S3 / MinIO artifacts")]
+    S3 --> GT["2 · Gaussian training Job"]
+    GT --> GF["3 · Gaussian filtering Job"]
+    GF --> RA["4 · Ortho / DEM rasterization Job"]
+    RA --> AI["5 · SAM3 or YOLO detection Job"]
+    AI --> S3
+    DB --> API
+    API --> UI
+```
+
+Retries create a new immutable attempt against exact parent artifact IDs; they
+do not replay successful ancestors. The Kafka fused-worker path remains a
+compatibility mode for local deployments and existing missions.
 
 ## How the parts work together
 
@@ -50,31 +73,30 @@ status stream needed for their own WebSocket clients.
 
 ### Reconstruction and raster products — `app1-colmap`
 
-The reconstruction worker runs explicit preparation, sparse reconstruction,
-RTK, alignment, DroneGS and verified-publication stages. Typed stage results
-carry resume and product state between them; the Kafka entry point only owns
-the worker lifecycle. The pipeline creates either a georeferenced map frame or
-a local facade frame, applies product-specific quality gates and renders RGB
-and height/depth rasters. Only map missions continue to raster processing and
-AI. Aerial publication also requires a versioned spatial-coverage report over
-the registered-camera footprint, preventing a sparse DSM from passing solely
-because enough Gaussian primitives survived filtering.
+The COLMAP image exposes independent one-shot reconstruction, Gaussian
+training, Gaussian filtering and rasterization commands. They share the same
+typed scientific boundaries as the compatibility worker, while S3 manifests
+carry verified state between disposable Jobs. The pipeline creates either a
+georeferenced map frame or a local facade frame, applies product-specific
+quality gates and renders RGB and height/depth rasters. Only map missions
+continue to AI. Aerial publication also requires a versioned spatial-coverage
+report over the registered-camera footprint, preventing a sparse DSM from
+passing solely because enough Gaussian primitives survived filtering.
 
 ### Raster processing — `app3-processing`
 
-The processing worker converts the orthomosaic into overlapping tiles and
-queues them for inference. When detections return, it removes duplicates across
-tile boundaries, creates the final GeoJSON result and can persist indexed
-vectors in PostGIS for spatial search. Tile results are read from versioned S3
-artifacts whose exact size, SHA-256, identity and model provenance are verified
-before aggregation.
+The processing image provides the compatibility Kafka tiling and aggregation
+worker. In bounded stage-Job mode, the detection executor streams overlapping
+raster windows directly, removes duplicates, publishes the final GeoJSON and
+retains the same bounded tiling and provenance contracts. Indexed vectors can
+then be persisted in PostGIS for spatial search.
 
 ### AI inference — `app2-ia`
 
-The AI worker consumes tile jobs and runs either Ultralytics YOLO OBB for
-oriented detections or Meta SAM 3 for segmentation. It uploads tile-level
-geometries and confidence data as verified S3 artifacts; Kafka carries bounded
-references rather than embedding potentially large segmentation payloads.
+The AI image exposes both the one-shot detection executor and the compatibility
+tile worker. It runs either Meta SAM 3 prompt-based segmentation or
+Ultralytics YOLO OBB, records immutable model provenance and publishes bounded
+JSON/GeoJSON artifacts without embedding large segmentation payloads in Kafka.
 
 ### Shared services — `shared`
 
@@ -103,12 +125,15 @@ cd DroneAI
 For the distributed K3s deployment:
 
 ```bash
+export STAGE_JOBS_IMAGE_TAG="$(git rev-parse --short=7 HEAD)"
 ./deploy.sh distributed
 ```
 
 The deployment command prepares pinned external sources, builds the services,
 starts the required infrastructure and prints the dashboard URL. `HF_TOKEN` is
 optional for YOLO and required only for gated Hugging Face models such as SAM 3.
+Omit `STAGE_JOBS_IMAGE_TAG` only when deliberately exercising the fused-worker
+compatibility path.
 
 ## Documentation
 

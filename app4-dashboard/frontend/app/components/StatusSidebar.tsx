@@ -16,6 +16,7 @@ import { useMissionRuntime } from "../lib/mission-runtime";
 import { useWorkspaceData } from "../lib/workspace-data";
 import { serviceOrderFor } from "../lib/types";
 import type { PodState, ServiceName, StatusPayload } from "../lib/types";
+import MissionStageProgress from "./MissionStageProgress";
 
 const SERVICE_LABELS: Record<ServiceName, MessageKey> = {
   COLMAP: "monitor.service.colmap",
@@ -143,6 +144,14 @@ export default function StatusSidebar() {
     (left, right) => right.updated_at - left.updated_at,
   );
   const serviceOrder = serviceOrderFor(activeMission?.services ?? {});
+  const missionProgress = Math.max(
+    0,
+    Math.min(100, activeMission?.progress ?? 0),
+  );
+  const updateAge = Math.max(
+    0,
+    Math.round(activeMission?.last_event_age_seconds ?? 0),
+  );
 
   return (
     <div className="space-y-4">
@@ -187,6 +196,46 @@ export default function StatusSidebar() {
           ))}
         </select>
 
+        {activeMission && (
+          <div className="mt-3 rounded-2xl border border-[#dfe8e5] bg-[#f8fbfa] p-3.5">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-xs font-bold text-[#2f3c38]">
+                  {activeMission.vol_id}
+                </div>
+                <div className="mt-1 text-[10px] text-[#7b8883]">
+                  {t("monitor.lastUpdate", { seconds: updateAge })}
+                </div>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-[9px] font-bold uppercase tracking-wide ${
+                activeMission.overall_status === "success"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : activeMission.overall_status === "error"
+                    ? "bg-red-100 text-red-700"
+                    : "bg-teal-100 text-teal-700"
+              }`}>
+                {activeMission.overall_status}
+              </span>
+            </div>
+            <div className="mt-3 flex items-center gap-3">
+              <div className="h-2 flex-1 overflow-hidden rounded-full bg-[#e2eae7]">
+                <div
+                  className="h-full rounded-full bg-[#0f766e] transition-all duration-500"
+                  style={{ width: `${missionProgress}%` }}
+                />
+              </div>
+              <span className="font-mono text-xs font-bold text-[#31504a]">
+                {missionProgress}%
+              </span>
+            </div>
+            {activeMission.current_step && (
+              <p className="mt-2 text-[11px] font-semibold text-[#596762]">
+                {activeMission.current_step}
+              </p>
+            )}
+          </div>
+        )}
+
         {confirmDelete && (
           <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3">
             <p className="text-xs leading-5 text-red-700">
@@ -220,16 +269,40 @@ export default function StatusSidebar() {
             {t("monitor.progress")}
           </h3>
         </div>
-        <div className="space-y-2">
-          {serviceOrder.map((service) => (
-            <ServiceProgress
-              key={service}
-              name={service}
-              data={activeMission?.services?.[service]}
-            />
-          ))}
-        </div>
+        {activeMission?.stage_runs?.length ? (
+          <MissionStageProgress runs={activeMission.stage_runs} compact />
+        ) : (
+          <div className="space-y-2">
+            {serviceOrder.map((service) => (
+              <ServiceProgress
+                key={service}
+                name={service}
+                data={activeMission?.services?.[service]}
+              />
+            ))}
+          </div>
+        )}
       </section>
+
+      {activeMission && (
+        <details className="surface">
+          <summary className="cursor-pointer list-none px-4 py-4 text-xs font-bold uppercase tracking-[0.12em] text-[#65726e]">
+            {t("monitor.technical")}
+          </summary>
+          <pre className="max-h-80 overflow-auto border-t border-[#e7ecea] p-4 text-[10px] leading-5 text-[#53615c]">
+            {JSON.stringify(
+              {
+                status: activeMission.status,
+                current_step: activeMission.current_step,
+                stage_runs: activeMission.stage_runs ?? [],
+                parameters: activeMission.parameters ?? {},
+              },
+              null,
+              2,
+            )}
+          </pre>
+        </details>
+      )}
 
       <details className="surface">
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4">

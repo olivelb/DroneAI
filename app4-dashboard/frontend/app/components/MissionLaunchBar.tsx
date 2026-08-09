@@ -41,7 +41,7 @@ export default function MissionLaunchBar() {
         tile_size: tileSize,
         ai_confidence: aiConfidence,
         ai_backend: aiBackend,
-        ai_model_variant: aiModelVariant,
+        ...(aiBackend === "yolo" ? { ai_model_variant: aiModelVariant } : {}),
         sam_prompt: samPrompt.trim() || "car",
         classes:
           aiBackend === "sam3"
@@ -89,7 +89,9 @@ export default function MissionLaunchBar() {
           </div>
           <div className="truncate text-[10px] text-[#7a8783]">
             {isRunning
-              ? activeMission?.services?.COLMAP?.step ?? t("launch.running")
+              ? activeMission?.current_step ??
+                activeMission?.services?.COLMAP?.step ??
+                t("launch.running")
               : selectedPath || t("launch.selectDataset")}
           </div>
         </div>

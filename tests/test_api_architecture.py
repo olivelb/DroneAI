@@ -234,6 +234,22 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities():
     assert all(model["selectable_classes"] for model in response["yolo_models"])
 
 
+def test_sam3_mission_payload_does_not_persist_an_irrelevant_yolo_model():
+    params = mission_routes.MissionParams(
+        vol_id="sam3-mission-001",
+        input_dataset="datasets/sam3-mission",
+        ai_backend="sam3",
+        ai_model_variant="yolo26l",
+        sam_prompt="building",
+        classes=["building"],
+    )
+
+    payload = mission_routes._mission_payload(params)
+
+    assert payload["ai_backend"] == "sam3"
+    assert "ai_model_variant" not in payload
+
+
 def test_cancel_mission_persists_state_and_outbox_atomically(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Mission.__table__.create(engine)

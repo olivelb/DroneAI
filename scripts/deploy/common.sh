@@ -7,6 +7,24 @@ readonly SERVICE_IMAGES=(
     drone-dashboard-api
     drone-dashboard-frontend
 )
+readonly STAGE_JOB_SERVICE_IMAGES=(
+    drone-colmap
+    drone-ia
+    drone-dashboard-api
+    drone-dashboard-frontend
+)
+
+application_image_tag() {
+    printf '%s\n' "${STAGE_JOBS_IMAGE_TAG:-latest}"
+}
+
+active_service_images() {
+    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
+        printf '%s\n' "${STAGE_JOB_SERVICE_IMAGES[@]}"
+    else
+        printf '%s\n' "${SERVICE_IMAGES[@]}"
+    fi
+}
 
 SUDO=()
 DOCKER=()
@@ -216,7 +234,12 @@ prepare_build_dependencies() {
 docker_build() {
     local image="$1"
     local dockerfile="$2"
-    local flags=(--network=host --progress=plain --tag "$image:latest" --file "$dockerfile")
+    local image_tag
+    image_tag="$(application_image_tag)"
+    local flags=(--network=host --progress=plain --tag "$image:$image_tag" --file "$dockerfile")
+    if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
+        flags+=(--label "org.opencontainers.image.revision=$image_tag")
+    fi
     if "$REBUILD_BASE"; then
         flags+=(--no-cache)
     fi
@@ -236,18 +259,21 @@ build_all_images() {
     info "Building DroneAI service images"
     docker_build drone-colmap app1-colmap/Dockerfile
     docker_build drone-ia app2-ia/Dockerfile
-    docker_build drone-processing app3-processing/Dockerfile
+    if [[ -z "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
+        docker_build drone-processing app3-processing/Dockerfile
+    fi
     docker_build drone-dashboard-api app4-dashboard/api/Dockerfile
     docker_build drone-dashboard-frontend app4-dashboard/frontend/Dockerfile
     validate_service_images
 }
 
 validate_service_images() {
-    local image
-    for image in "${SERVICE_IMAGES[@]}"; do
-        "${DOCKER[@]}" image inspect "$image:latest" >/dev/null 2>&1 \
-            || fatal "Missing image $image:latest. Remove --no-build or build it first."
-    done
+    local image image_tag
+    image_tag="$(application_image_tag)"
+    while IFS= read -r image; do
+        "${DOCKER[@]}" image inspect "$image:$image_tag" >/dev/null 2>&1 \
+            || fatal "Missing image $image:$image_tag. Remove --no-build or build it first."
+    done < <(active_service_images)
 }
 
 wait_for_http() {

@@ -31,38 +31,36 @@ The pipeline is a local event-driven photogrammetry and detection system compose
 4. `app3-processing`
 5. `app2-ia`
 
-The runtime data path is:
+The qualified Kubernetes data path is:
 
 1. Images are uploaded below an S3 prefix such as `datasets/site-a/`.
-2. The API persists the mission and its `vols-bruts` outbox row in one
-   transaction.
-3. The API outbox dispatcher publishes the mission to Kafka.
-4. The COLMAP worker downloads the selected dataset into `/work/<drive>/<id>`,
-   reconstructs the scene and uploads durable artifacts below
-   `missions/<id>/`. An aerial-map mission publishes `images-ortho`; a facade
-   mission ends successfully here with `details.terminal=true` after publishing
-   its local RGB/depth products and audit reports.
-5. For aerial maps only, the processing worker downloads the orthomosaic,
-   creates overlapping tiles, uploads them to S3 and publishes `image-tiles`.
-6. The IA worker downloads each tile, runs YOLO OBB or SAM 3, and publishes
-   `tile-detections`.
-7. The processing worker merges overlap duplicates, publishes verified
-   GeoJSON and optionally persists indexed PostGIS features.
-8. Workers emit `pipeline-status`; the API applies each unique event to
-   PostgreSQL through its inbox transaction and forwards it over WebSocket.
+2. The API persists the owned mission and dependency-closed stage rows in
+   PostgreSQL.
+3. The bounded scheduler reserves the oldest eligible run and creates one
+   deterministic Kubernetes Job from its persisted resource class.
+4. Reconstruction downloads the dataset, runs preparation/COLMAP and publishes
+   a checksum-addressed workspace manifest to S3.
+5. Gaussian training restores that exact workspace and publishes its own
+   immutable result; filtering repeats the pattern without mutating its parent.
+6. Rasterization restores the filtered model, applies the shared coverage and
+   GeoTIFF finalizer, then publishes the RGB/height workspace.
+7. For aerial maps, detection streams bounded raster tiles through SAM 3 or
+   YOLO, deduplicates them and publishes JSON plus WGS84 GeoJSON with exact
+   model provenance. Facade missions stop before this aerial stage.
+8. Each successful artifact atomically marks its run succeeded and releases
+   only direct dependants. The frontend polls the exact selected mission and
+   renders the five-stage graph, retries, products and durable lifecycle logs.
 
-The control path is:
+The qualified control path is database-first. Cancellation marks the mission
+terminal and deletes its active Job; executor heartbeats, deadlines and the
+reconciler converge the durable state if a Job disappears. A retry is a new
+attempt bound to exact parent artifact UUIDs, never a replay or overwrite of a
+successful ancestor.
 
-1. The dashboard asks the API to cancel a mission.
-2. The API marks the current mission attempt `cancelled` in PostgreSQL and
-   durably enqueues a `pipeline-control` outbox event in the same transaction.
-3. The dispatcher publishes it to Kafka.
-4. Dedicated control consumers give the matching COLMAP, IA and processing
-   worker replicas an immediate cancellation signal.
-5. Every worker replica also checks the attempt-scoped PostgreSQL state at its
-   available cancellation points, with negative checks rate-limited to two
-   seconds by default. Cancellation therefore converges even when Kafka
-   delivers the control event to a replica that is not running the work.
+The original Kafka fused-worker path remains implemented for local
+compatibility and existing missions. It uses the `vols-bruts`, `images-ortho`,
+`image-tiles`, `tile-detections`, `pipeline-status` and `pipeline-control`
+topics described later in this document. It is not the bounded stage-Job path.
 
 ## Deployment topology
 
@@ -71,8 +69,11 @@ The control path is:
 - `local` uses `compose.local.yaml`;
 - `distributed` uses the Helm chart under `charts/drone-ai/`.
 
-Both topologies run the same five application images, Kafka, MinIO,
-PostgreSQL/PostGIS and the same dashboard API contract.
+Both topologies build the same five application images and expose the same
+dashboard API contract. Local mode uses the compatibility workers. Distributed
+mode uses those workers when `STAGE_JOBS_IMAGE_TAG` is absent and activates the
+qualified five-Job DAG when the variable supplies an immutable Git-SHA tag.
+Kafka, MinIO and PostgreSQL/PostGIS remain deployed in either mode.
 
 Main runtime objects:
 
@@ -80,28 +81,31 @@ Main runtime objects:
 - Kafka broker service: `my-kafka.drone-ai.svc.cluster.local:9092`
 - MinIO services: `minio`, `minio-api`, and `minio-console`
 - PostgreSQL service: `postgres`
-- COLMAP worker deployment: `colmap-worker`
-- IA worker deployment: `ia-worker`
-- processing worker deployment: `processing-worker`
+- bounded executor Jobs: one deterministic `droneai-<run-id>-<hash>` Job per
+  active stage when `stageJobs.enabled=true`
+- stage Job service account: `stage-job-sa`
+- compatibility deployments: `colmap-worker`, `ia-worker` and
+  `processing-worker` when bounded Jobs are not active
 - dashboard API deployment: `dashboard-api`
 - dashboard frontend deployment: `dashboard-frontend`
 
 Operational notes:
 
 - Mission inputs and durable outputs live in S3-compatible object storage.
-- The COLMAP worker uses `/work/system` as an `emptyDir` and optionally mounts
-  configured host work drives below `/work/<name>`.
-- The selected mission work drive is temporary scratch space. App1 uploads
-  durable artifacts to S3 and cleans the local mission directory.
-- The COLMAP worker and IA worker both request one NVIDIA GPU.
-- The IA worker reads `HF_TOKEN` from the Kubernetes secret `hf-token` for approved access to the gated Hugging Face `facebook/sam3` model distribution.
-- The IA worker mounts a persistent model cache at `/cache/huggingface`.
-- The processing worker receives explicit overlap-deduplication values from the
-  Helm template.
+- Stage Job disks are disposable; exact inter-stage state lives in verified S3
+  manifests and immutable PostgreSQL artifact edges.
+- GPU stage Jobs use the `nvidia` RuntimeClass and their persisted resource
+  class. Per-resource, mission, owner and global concurrency limits prevent
+  accidental GPU overlap.
+- Detection reads `HF_TOKEN` from the Kubernetes secret `hf-token` for approved
+  access to the gated `facebook/sam3` distribution and mounts the model cache
+  at `/cache/huggingface`.
+- Compatibility workers keep their existing `/work` mounts and Kafka contracts
+  only when that mode is deliberately selected.
 - Kafka is deployed in-cluster. There is no separate host Kafka service.
 - The dashboard API deployment runs as service account `dashboard-api-sa`.
-- `dashboard-api-sa` is granted `get`, `list`, and `watch` on pods so the API
-  can serve `/pods`.
+  Its namespaced Job RBAC is rendered only while bounded Job mode is enabled;
+  pod reads remain available for the operator status view.
 - `deploy.sh distributed` runs `helm upgrade --install`; the legacy
   `build_and_deploy.sh` and `setup.sh` entry points delegate to it.
 - The chart's revisioned migration job executes `alembic upgrade head`;
@@ -195,7 +199,11 @@ The frontend is the operator interface. Its responsibilities are:
 - allow cancellation
 - select an uploaded S3 dataset prefix and an advertised COLMAP work drive
 
-The frontend does not perform any heavy computation. It depends on the API for mission submission and on the WebSocket stream for live status.
+The frontend does not perform heavy computation. It submits through the API
+and polls `GET /missions` plus the exact selected `GET /missions/{vol_id}`
+record every three seconds. WebSocket snapshots are accepted only for legacy
+missions without stage runs, so an older event cannot replace durable Job
+state or leak another mission's logs into the monitor.
 
 ### Dashboard API
 
@@ -223,7 +231,11 @@ Primary endpoints:
 - `POST /mission/cancel`
 - `GET /browse`
 - `GET /datasets`
-- `GET /status/summary`
+- `GET /missions`
+- `GET /missions/{vol_id}`
+- `POST /missions/{vol_id}/stages/{stage}/runs`
+- `POST /missions/{vol_id}/stages/runs/{run_id}/artifacts`
+- `GET /status/summary` (compatibility missions)
 - `GET /pods`
 - `GET /mission/parameters`
 - `POST /mission/resume`
@@ -254,16 +266,15 @@ Primary endpoints:
 Primary responsibilities:
 
 - authenticate browser sessions and enforce viewer/operator/admin roles
-- validate and serialize mission requests
-- publish mission events to `vols-bruts`
-- publish cancellation commands to `pipeline-control`
-- consume `pipeline-status`
-- buffer recent raw status messages in memory
-- persist mission state and logs in PostgreSQL
-- compute map completion from `COLMAP -> TILER -> IA` and facade completion
-  from the terminal COLMAP product event
-- replay buffered history to newly connected WebSocket clients
-- expose a summary view of known missions through `GET /status/summary`
+- validate mission requests and persist the dependency-closed stage DAG
+- reserve eligible runs fairly under global/owner/mission/resource limits
+- render deterministic hardened Kubernetes Jobs from immutable executor maps
+- reconcile missing/finished Jobs, heartbeats, cancellation and dispatch bounds
+- publish immutable artifacts and release only direct dependants atomically
+- expose owner-scoped mission summaries, exact stage attempts, products,
+  checksums, quality metrics and durable lifecycle logs
+- retain Kafka mission/control/status publication, compatibility completion
+  (`COLMAP -> TILER -> IA`) and bounded WebSocket replay for legacy missions
 - expose pod health and restart information through `GET /pods`
 - fall back to a static pod list when Kubernetes service-account credentials are unavailable
 - expose pipeline defaults, the map/facade process catalog and parameter
@@ -603,10 +614,10 @@ this code:
 alembic upgrade head
 ```
 
-For a manually managed database, Alembic is the authoritative path. The
-current Helm hook instead creates missing tables with SQLAlchemy metadata. That
-is sufficient for a new empty database, but it is not a replacement for
-versioned in-place schema migration.
+Alembic is the authoritative schema path. The revisioned Helm migration Job
+runs `alembic upgrade head`, and database-dependent pods wait for that exact
+head before starting. SQLAlchemy metadata creation is limited to isolated test
+fixtures and is not a deployment migration strategy.
 
 Mission/control/status events use the transactional API inbox/outbox. Migration
 `0008_worker_inbox_leases.py` extends durable inbox deduplication to the COLMAP,
@@ -651,7 +662,6 @@ Expected payload shape:
   "tile_size": 1024,
   "ai_confidence": 0.5,
   "ai_backend": "sam3",
-  "ai_model_variant": "yolo26l",
   "sam_prompt": "car",
   "classes": ["car"],
   "colmap_params": {},
@@ -665,6 +675,8 @@ Notes:
 - `work_drive` must be one of the drives advertised by
   `GET /mission/parameters`.
 - `pipeline` selects the parameter profile.
+- `ai_model_variant` is accepted and persisted only when `ai_backend` is
+  `yolo`; SAM3 never inherits a stale YOLO choice.
 - YOLO accepts only `airplane`, `bicycle`, `boat`, `bus`, `car`, `motorcycle`,
   and `truck`; unsupported classes are rejected instead of silently selecting
   vehicle labels. SAM3 prompts remain free-form.
@@ -987,85 +999,88 @@ sequenceDiagram
     participant API as Dashboard API
     participant DB as PostgreSQL
     participant S3 as Object Storage
-    participant K as Kafka
-    participant C as app1-colmap
-    participant P as app3-processing
-    participant IA as app2-ia
+    participant K8S as Kubernetes API
+    participant R as Reconstruction Job
+    participant GT as Gaussian Training Job
+    participant GF as Gaussian Filtering Job
+    participant RA as Rasterization Job
+    participant AI as Detection Job
 
     UI->>API: POST /mission
-    API->>DB: mission + vols-bruts outbox
-    API->>K: outbox dispatcher publishes vols-bruts
-    C->>S3: download datasets/<name>
-    C->>K: publish pipeline-status PREPARING
-    C->>C: extract GPS, choose profile
-    C->>C: COLMAP SfM + undistortion
-    C->>C: train qualified DroneGS model + render selected product
-    C->>S3: upload mission artifacts
-    alt Aerial map
-        C->>K: publish images-ortho
-        P->>K: consume images-ortho
-        P->>S3: download orthomosaic
-        P->>P: open GeoTIFF and compute overlapping tile grid
-        loop for each tile
-            P->>S3: upload tile
-            P->>K: publish image-tiles
-            IA->>K: consume image-tiles
-            IA->>S3: download tile
-            IA->>IA: run YOLO OBB or SAM 3
-            IA->>K: publish tile-detections
-        end
-        P->>K: consume tile-detections
-        P->>P: aggregate and deduplicate detections
-        P->>DB: optionally replace indexed campaign features
-        P->>S3: upload verified detections.geojson
-        P->>K: publish pipeline-status DONE
+    API->>DB: mission + blocked/queued stage runs
+    API->>K8S: create bounded reconstruction Job
+    R->>S3: download dataset
+    R->>R: prepare + COLMAP reconstruction
+    R->>S3: publish verified workspace manifest
+    R->>DB: artifact edge + succeeded; release training
+    API->>K8S: create Gaussian training Job
+    GT->>S3: restore reconstruction; publish trained model
+    GT->>DB: artifact edge + succeeded; release filtering
+    API->>K8S: create Gaussian filtering Job
+    GF->>S3: restore training; publish filtered model
+    GF->>DB: artifact edge + succeeded; release rasterization
+    API->>K8S: create rasterization Job
+    RA->>S3: restore filtering; publish RGB/height workspace
+    RA->>DB: artifact edge + succeeded
+    alt Aerial map with detection selected
+        RA->>DB: release detection
+        API->>K8S: create detection Job
+        AI->>S3: stream raster windows
+        AI->>AI: SAM 3 or YOLO + overlap deduplication
+        AI->>S3: publish JSON and WGS84 GeoJSON
+        AI->>DB: model provenance + artifact + succeeded
     else HD facade
-        C->>K: publish terminal COLMAP status
+        RA->>DB: mission succeeded without aerial detection
     end
-    K->>API: pipeline-status stream
-    API->>DB: inbox + mission state + log
-    API->>UI: WebSocket status updates
+    UI->>API: poll exact selected mission
+    API->>UI: stage graph + products + durable logs
 ```
+
+The Kafka topic sequence is retained as a compatibility contract in the event
+sections below; it must not be used to infer the state of a bounded Job mission.
 
 ## Global mission state model
 
-This is the operational state machine across services, not a single-process implementation detail.
+This is the durable bounded-Job state machine, not a single-process
+implementation detail.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Submitted
-    Submitted --> PreparingWorkspace: vols-bruts consumed
-    PreparingWorkspace --> ExtractingGPS
-    ExtractingGPS --> SparseReconstruction
-    SparseReconstruction --> GeoAlignment: aerial map
-    SparseReconstruction --> LocalFacadeFrame: HD facade
-    GeoAlignment --> OrthoConstruction
-    LocalFacadeFrame --> OrthoConstruction
-    OrthoConstruction --> Completed: HD facade
-    OrthoConstruction --> Tiling: aerial map
-    Tiling --> Detecting
-    Detecting --> Aggregating
-    Aggregating --> Annotating
-    Annotating --> Completed
+    Submitted --> Reconstruction
+    Reconstruction --> GaussianTraining: verified workspace
+    GaussianTraining --> GaussianFiltering: verified trained model
+    GaussianFiltering --> Rasterization: verified filtered model
+    Rasterization --> Detection: aerial detection selected
+    Rasterization --> Completed: facade or detection omitted
+    Detection --> Completed: JSON + GeoJSON published
 
-    PreparingWorkspace --> Failed
-    ExtractingGPS --> Failed
-    SparseReconstruction --> Failed
-    GeoAlignment --> Failed
-    LocalFacadeFrame --> Failed
-    OrthoConstruction --> Failed
-    Tiling --> Failed
-    Detecting --> Failed
-    Aggregating --> Failed
-    Annotating --> Failed
+    Reconstruction --> Failed
+    GaussianTraining --> Failed
+    GaussianFiltering --> Failed
+    Rasterization --> Failed
+    Detection --> Failed
 
-    PreparingWorkspace --> Cancelled: pipeline-control cancel
-    ExtractingGPS --> Cancelled: pipeline-control cancel
-    SparseReconstruction --> Cancelled: pipeline-control cancel
-    GeoAlignment --> Cancelled: pipeline-control cancel
-    LocalFacadeFrame --> Cancelled: pipeline-control cancel
-    OrthoConstruction --> Cancelled: pipeline-control cancel
+    Failed --> QueuedRetry: new attempt + exact parents
+    QueuedRetry --> Reconstruction
+    QueuedRetry --> GaussianTraining
+    QueuedRetry --> GaussianFiltering
+    QueuedRetry --> Rasterization
+    QueuedRetry --> Detection
+
+    Submitted --> Cancelled
+    Reconstruction --> Cancelled
+    GaussianTraining --> Cancelled
+    GaussianFiltering --> Cancelled
+    Rasterization --> Cancelled
+    Detection --> Cancelled
 ```
+
+Each named stage contains append-only attempts with `blocked`, `queued`,
+`running`, `succeeded`, `failed` or `cancelled` state. A mission summary is a
+projection of the latest attempt per selected stage; old attempts remain
+visible as retry evidence. The detailed worker sections below also document the
+fused Kafka compatibility implementation because it remains supported.
 
 ## COLMAP worker detailed behavior
 
@@ -1637,6 +1652,13 @@ horizontal checkpoint RMSE by only 0.011 mm while mapping time increased
 
 All GS parameters are exposed in the **Orthomosaic** parameter group in the dashboard. The frontend renders these dynamically from `PARAMETER_METADATA` in `shared/pipeline_params.py`:
 
+The table's `Default` column is the low-level validated DroneGS recipe used
+before an end-to-end quality envelope is applied. New Mission Studio missions
+default to `normal-v1`, which overrides width/cap to 2,400 px and 3,000,000
+Gaussians. Fast/Normal/High Quality are respectively 1.5M/3M/5M; the complete
+immutable envelopes are in
+[`docs/contracts/quality-profiles-v1.md`](docs/contracts/quality-profiles-v1.md).
+
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |
 | Ortho Resolution (m/px) | `ortho_mesh_resolution` | float | 0.02 | 0.005–1.0 |
@@ -1960,10 +1982,13 @@ Rendering characteristics:
 - text is cyan with a dark outline for readability
 - labels prefer positions that stay within image bounds
 
-### Processing event sequence
+### Kafka compatibility processing sequence
 
-This sequence is the aerial-map continuation of the product branch shown in
-the end-to-end diagram; it is intentionally absent for HD facades.
+This sequence applies only to the retained Kafka compatibility workers and to
+explicit asynchronous re-analysis campaigns. The qualified five-Job path uses
+the bounded Detection Job shown in the primary end-to-end diagram and does not
+depend on this topic exchange. Both paths are intentionally absent for HD
+facades.
 
 ```mermaid
 sequenceDiagram
