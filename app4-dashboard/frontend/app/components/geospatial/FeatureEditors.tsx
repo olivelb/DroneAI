@@ -2,6 +2,7 @@
 
 import type { Feature } from "geojson";
 import { PenLine, Save, Trash2, X } from "lucide-react";
+import { useI18n } from "../../lib/i18n/provider";
 import { splitTags } from "./workspace-config";
 
 interface DraftFeatureEditorProps {
@@ -31,15 +32,16 @@ export function DraftFeatureEditor({
   onClose,
   onSave,
 }: DraftFeatureEditorProps) {
+  const { t } = useI18n();
   return (
     <div className="absolute bottom-4 right-4 z-[500] w-[min(360px,calc(100%-32px))] rounded-2xl bg-white p-4 shadow-2xl">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold text-[#27342f]">
           {measurement
-            ? `Mesure · ${measurement}`
-            : "Nouvelle annotation"}
+            ? t("editor.measurement", { measurement })
+            : t("editor.newAnnotation")}
         </h3>
-        <button type="button" onClick={onClose} aria-label="Fermer">
+        <button type="button" onClick={onClose} aria-label={t("common.close")}>
           <X size={15} />
         </button>
       </div>
@@ -48,27 +50,27 @@ export function DraftFeatureEditor({
           value={name}
           onChange={(event) => onNameChange(event.target.value)}
           className="input-control"
-          placeholder="Nom"
+          placeholder={t("editor.name")}
         />
         <textarea
           value={description}
           onChange={(event) => onDescriptionChange(event.target.value)}
           className="input-control min-h-16"
-          placeholder="Description"
+          placeholder={t("editor.description")}
         />
         <div className="grid grid-cols-[1fr_50px] gap-2">
           <input
             value={tags}
             onChange={(event) => onTagsChange(event.target.value)}
             className="input-control"
-            placeholder="tags, séparés, par virgules"
+            placeholder={t("editor.tagsPlaceholder")}
           />
           <input
             type="color"
             value={color}
             onChange={(event) => onColorChange(event.target.value)}
             className="h-11 rounded-xl border p-1"
-            aria-label="Couleur"
+            aria-label={t("editor.color")}
           />
         </div>
         <div className="flex gap-2">
@@ -77,14 +79,14 @@ export function DraftFeatureEditor({
             onClick={onClose}
             className="min-h-10 flex-1 rounded-xl border text-xs"
           >
-            Garder temporaire
+            {t("editor.keepTemporary")}
           </button>
           <button
             type="button"
             onClick={onSave}
             className="flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-[#0f766e] text-xs font-semibold text-white"
           >
-            <Save size={13} /> Enregistrer
+            <Save size={13} /> {t("common.save")}
           </button>
         </div>
       </div>
@@ -109,6 +111,7 @@ export function SelectedFeatureEditor({
   onRedraw,
   onSave,
 }: SelectedFeatureEditorProps) {
+  const { t } = useI18n();
   const manual = feature.properties?.source === "manual";
   const updateProperty = (name: string, value: string) =>
     onChange({
@@ -123,9 +126,9 @@ export function SelectedFeatureEditor({
     <div className="absolute bottom-4 right-4 z-[500] w-[min(360px,calc(100%-32px))] rounded-2xl bg-white p-4 shadow-2xl">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold text-[#27342f]">
-          Propriétés de l’objet
+          {t("editor.objectProperties")}
         </h3>
-        <button type="button" onClick={onClose} aria-label="Fermer">
+        <button type="button" onClick={onClose} aria-label={t("common.close")}>
           <X size={15} />
         </button>
       </div>
@@ -164,14 +167,14 @@ export function SelectedFeatureEditor({
                 })
               }
               className="input-control"
-              placeholder="tags, séparés, par virgules"
+              placeholder={t("editor.tagsPlaceholder")}
             />
             <input
               type="color"
               value={String(feature.properties?.color || "#10b981")}
               onChange={(event) => updateProperty("color", event.target.value)}
               className="h-11 rounded-xl border border-[#dce4e1] p-1"
-              aria-label="Couleur"
+              aria-label={t("editor.color")}
             />
           </div>
         )}
@@ -195,21 +198,21 @@ export function SelectedFeatureEditor({
               onClick={onDelete}
               className="flex min-h-10 items-center justify-center gap-1 rounded-xl border border-rose-200 px-3 text-xs text-rose-700"
             >
-              <Trash2 size={13} /> Supprimer
+              <Trash2 size={13} /> {t("editor.delete")}
             </button>
             <button
               type="button"
               onClick={onRedraw}
               className="flex min-h-10 items-center justify-center gap-1 rounded-xl border border-[#d4dfdb] px-3 text-xs text-[#52615c]"
             >
-              <PenLine size={13} /> Redessiner
+              <PenLine size={13} /> {t("editor.redraw")}
             </button>
             <button
               type="button"
               onClick={onSave}
               className="flex min-h-10 flex-1 items-center justify-center gap-1 rounded-xl bg-[#0f766e] text-xs font-semibold text-white"
             >
-              <Save size={13} /> Mettre à jour
+              <Save size={13} /> {t("editor.update")}
             </button>
           </div>
         )}

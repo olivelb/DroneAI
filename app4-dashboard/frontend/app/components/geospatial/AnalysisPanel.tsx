@@ -10,6 +10,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { getFileUrl } from "../../lib/api";
+import { useI18n } from "../../lib/i18n/provider";
 import type {
   AIBackend,
   AnalysisCreate,
@@ -40,6 +41,7 @@ export default function AnalysisPanel({
   onRetry,
   onCancel,
 }: AnalysisPanelProps) {
+  const { t } = useI18n();
   const update = (patch: Partial<AnalysisCreate>) =>
     onFormChange({ ...form, ...patch });
 
@@ -50,7 +52,7 @@ export default function AnalysisPanel({
         onClick={() => onFormVisibilityChange(!formVisible)}
         className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#173f38] text-sm font-semibold text-white hover:bg-[#0f766e]"
       >
-        <Plus size={16} /> Nouvelle analyse du GeoTIFF
+        <Plus size={16} /> {t("analysis.new")}
       </button>
 
       {formVisible && (
@@ -59,7 +61,7 @@ export default function AnalysisPanel({
             value={form.name}
             onChange={(event) => update({ name: event.target.value })}
             className="input-control"
-            placeholder="Nom de la couche"
+            placeholder={t("analysis.name")}
           />
           <textarea
             value={form.description}
@@ -67,7 +69,7 @@ export default function AnalysisPanel({
               update({ description: event.target.value })
             }
             className="input-control min-h-20"
-            placeholder="Description"
+            placeholder={t("analysis.description")}
           />
           <div className="grid grid-cols-[1fr_52px] gap-2">
             <input
@@ -76,14 +78,14 @@ export default function AnalysisPanel({
                 update({ tags: splitTags(event.target.value) })
               }
               className="input-control"
-              placeholder="Tags"
+              placeholder={t("analysis.tags")}
             />
             <input
               type="color"
               value={form.color}
               onChange={(event) => update({ color: event.target.value })}
               className="h-11 w-full rounded-xl border border-[#dce4e1] p-1"
-              aria-label="Couleur"
+              aria-label={t("analysis.color")}
             />
           </div>
           <div className="grid grid-cols-2 gap-2">
@@ -105,9 +107,9 @@ export default function AnalysisPanel({
                 }
                 className="input-control"
               >
-                <option value="yolo26l">YOLO26-L · qualité</option>
-                <option value="yolo26m">YOLO26-M · équilibré</option>
-                <option value="yolo26s">YOLO26-S · rapide</option>
+                <option value="yolo26l">YOLO26-L · {t("analysis.quality")}</option>
+                <option value="yolo26m">YOLO26-M · {t("analysis.balanced")}</option>
+                <option value="yolo26s">YOLO26-S · {t("analysis.fast")}</option>
                 <option value="yolo11l">YOLO11-L</option>
               </select>
             ) : (
@@ -126,7 +128,7 @@ export default function AnalysisPanel({
                 update({ classes: splitTags(event.target.value) })
               }
               className="input-control"
-              placeholder="Classes"
+              placeholder={t("analysis.classes")}
             />
             <select
               value={form.tile_size}
@@ -140,7 +142,9 @@ export default function AnalysisPanel({
               <option value={2048}>2048 px</option>
             </select>
             <label className="text-xs text-[#66736f]">
-              Confiance {Math.round(form.confidence * 100)} %
+              {t("analysis.confidence", {
+                percent: Math.round(form.confidence * 100),
+              })}
               <input
                 type="range"
                 min="0.05"
@@ -166,8 +170,7 @@ export default function AnalysisPanel({
             <span>
               <strong>Index PostGIS</strong>
               <br />
-              Désactivez pour conserver les résultats uniquement en
-              GeoJSON tuilé dans le stockage objet.
+              {t("analysis.postgisHelp")}
             </span>
           </label>
           <button
@@ -177,7 +180,7 @@ export default function AnalysisPanel({
             className="flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#0f766e] text-sm font-semibold text-white disabled:opacity-50"
           >
             <Play size={14} />
-            {submitting ? "Mise en file…" : "Lancer"}
+            {submitting ? t("analysis.queueing") : t("analysis.launch")}
           </button>
         </div>
       )}
@@ -223,7 +226,7 @@ export default function AnalysisPanel({
             <span>{run.phase}</span>
             <span>
               {run.tiles_completed}/{run.total_tiles} ·{" "}
-              {run.detection_count} objets
+              {t("analysis.objects", { count: run.detection_count })}
             </span>
           </div>
           {run.error_message && (
@@ -238,7 +241,7 @@ export default function AnalysisPanel({
                 onClick={() => onRetry(run.run_id)}
                 className="flex min-h-9 flex-1 items-center justify-center gap-1 rounded-lg border border-[#d4dfdb] text-xs"
               >
-                <RotateCcw size={12} /> Reprendre
+                <RotateCcw size={12} /> {t("analysis.retry")}
               </button>
             )}
             {["queued", "tiling", "running", "finalizing"].includes(
@@ -249,7 +252,7 @@ export default function AnalysisPanel({
                 onClick={() => onCancel(run.run_id)}
                 className="flex min-h-9 flex-1 items-center justify-center gap-1 rounded-lg border border-rose-200 text-xs text-rose-700"
               >
-                <XCircle size={12} /> Annuler
+                <XCircle size={12} /> {t("analysis.cancel")}
               </button>
             )}
             {run.result_s3_key && (

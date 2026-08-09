@@ -33,6 +33,7 @@ import {
   getMapTileUrl,
   getVectorLayer,
 } from "../lib/api";
+import { useI18n } from "../lib/i18n/provider";
 import type { AnalysisRun } from "../lib/types";
 
 export type MapTool =
@@ -137,6 +138,7 @@ function DrawController({
   onGeometryReady: (geometry: Geometry, measurement?: string) => void;
   onHint: (hint: string) => void;
 }) {
+  const { t } = useI18n();
   const [points, setPoints] = useState<[number, number][]>([]);
 
   useEffect(() => {
@@ -144,10 +146,10 @@ function DrawController({
       tool === "navigate"
         ? ""
         : tool === "point"
-          ? "Cliquez pour placer le point"
-          : "Cliquez pour ajouter des sommets · Entrée ou double-clic pour terminer · Retour pour annuler le dernier sommet",
+          ? t("map.placePoint")
+          : t("map.addVertices"),
     );
-  }, [onHint, tool]);
+  }, [onHint, t, tool]);
 
   const finish = useCallback(
     (input: [number, number][]) => {
@@ -293,6 +295,7 @@ function ViewportVectors({
   refreshToken: number;
   onFeatureSelect: (feature: Feature) => void;
 }) {
+  const { t } = useI18n();
   const [vectors, setVectors] = useState<FeatureCollection[]>([]);
   const load = useCallback(
     async (west: number, south: number, east: number, north: number) => {
@@ -385,9 +388,9 @@ function ViewportVectors({
               properties.confidence === null ||
               properties.confidence === undefined
                 ? ""
-                : `<br/>Confiance : ${Math.round(Number(properties.confidence) * 100)} %`;
+                : `<br/>${t("map.confidence")} : ${Math.round(Number(properties.confidence) * 100)} %`;
             layer.bindPopup(
-              `<strong>${escapeHtml(properties.name || properties.class_name || "Objet")}</strong>` +
+              `<strong>${escapeHtml(properties.name || properties.class_name || t("search.object"))}</strong>` +
                 (properties.description
                   ? `<br/>${escapeHtml(properties.description)}`
                   : "") +

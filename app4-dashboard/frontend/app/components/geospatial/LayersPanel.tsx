@@ -7,6 +7,8 @@ import {
   Map as MapIcon,
 } from "lucide-react";
 import { getFileUrl } from "../../lib/api";
+import type { MessageKey } from "../../lib/i18n/catalog";
+import { useI18n } from "../../lib/i18n/provider";
 import type { AnalysisRun } from "../../lib/types";
 import type { ViewerLayer } from "./workspace-config";
 
@@ -43,6 +45,7 @@ export default function LayersPanel({
   onManualChange,
   onRunVisibilityChange,
 }: LayersPanelProps) {
+  const { t } = useI18n();
   const hasMapOrthophoto = availableFiles.some((file) =>
     file.endsWith("orthomosaic.tif"),
   );
@@ -52,7 +55,7 @@ export default function LayersPanel({
   return (
     <div className="space-y-5">
       <div>
-        <div className="eyebrow mb-2">Raster</div>
+        <div className="eyebrow mb-2">{t("layers.raster")}</div>
         <div className="space-y-2">
           {(["ortho", "depth"] as ViewerLayer[]).map((layer) => {
             const available = layer === "ortho" || hasDepth;
@@ -70,14 +73,14 @@ export default function LayersPanel({
               >
                 <MapIcon size={15} />
                 {layer === "ortho"
-                  ? "Orthomosaïque COG"
-                  : "Carte de profondeur"}
+                  ? t("layers.orthomosaic")
+                  : t("layers.depth")}
               </button>
             );
           })}
         </div>
         <label className="mt-3 block text-xs text-[#66736f]">
-          Opacité raster · {Math.round(rasterOpacity * 100)} %
+          {t("layers.opacity", { percent: Math.round(rasterOpacity * 100) })}
           <input
             type="range"
             min="0.1"
@@ -93,27 +96,27 @@ export default function LayersPanel({
       </div>
 
       <div>
-        <div className="eyebrow mb-2">Vecteurs</div>
+        <div className="eyebrow mb-2">{t("layers.vectors")}</div>
         {[
           {
-            label: "Détections pipeline",
+            labelKey: "layers.pipelineDetections" as MessageKey,
             visible: showLegacy,
             toggle: onLegacyChange,
           },
           {
-            label: "Annotations manuelles",
+            labelKey: "layers.manualAnnotations" as MessageKey,
             visible: showManual,
             toggle: onManualChange,
           },
-        ].map(({ label, visible, toggle }) => (
+        ].map(({ labelKey, visible, toggle }) => (
           <button
             type="button"
-            key={label}
+            key={labelKey}
             onClick={() => toggle(!visible)}
             className="mb-2 flex w-full items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-left text-sm text-[#5d6965]"
           >
             {visible ? <Eye size={15} /> : <EyeOff size={15} />}
-            {label}
+            {t(labelKey)}
           </button>
         ))}
         {analyses.map((run) => {
@@ -139,7 +142,7 @@ export default function LayersPanel({
       </div>
 
       <div>
-        <div className="eyebrow mb-2">Exports</div>
+        <div className="eyebrow mb-2">{t("layers.exports")}</div>
         {hasMapOrthophoto && (
           <a
             href={getFileUrl(`missions/${missionId}/orthomosaic.tif`)}
@@ -154,13 +157,13 @@ export default function LayersPanel({
               href={getFileUrl(`missions/${missionId}/facade_orthophoto.tif`)}
               className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
             >
-              <Download size={14} /> Ortho de façade (repère local)
+              <Download size={14} /> {t("layers.facadeOrtho")}
             </a>
             <a
               href={getFileUrl(`missions/${missionId}/facade_frame.json`)}
               className="mt-2 flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
             >
-              <Download size={14} /> Rapport du repère façade
+              <Download size={14} /> {t("layers.facadeReport")}
             </a>
           </>
         )}

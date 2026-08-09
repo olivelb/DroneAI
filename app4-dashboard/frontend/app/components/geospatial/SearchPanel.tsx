@@ -1,6 +1,7 @@
 "use client";
 
 import type { Feature } from "geojson";
+import { useI18n } from "../../lib/i18n/provider";
 import type { AnalysisRun } from "../../lib/types";
 import { geometryBounds } from "./workspace-config";
 
@@ -27,6 +28,7 @@ export default function SearchPanel({
   onFeatureSelect,
   onFocus,
 }: SearchPanelProps) {
+  const { t } = useI18n();
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-2">
@@ -35,17 +37,17 @@ export default function SearchPanel({
           onChange={(event) => onSourceChange(event.target.value)}
           className="input-control text-xs"
         >
-          <option value="">Toutes sources</option>
-          <option value="legacy">Pipeline initial</option>
-          <option value="manual">Manuel</option>
-          <option value="ai">IA persistée</option>
+          <option value="">{t("search.allSources")}</option>
+          <option value="legacy">{t("search.initialPipeline")}</option>
+          <option value="manual">{t("search.manual")}</option>
+          <option value="ai">{t("search.persistedAi")}</option>
         </select>
         <select
           value={runId}
           onChange={(event) => onRunChange(event.target.value)}
           className="input-control text-xs"
         >
-          <option value="">Toutes analyses</option>
+          <option value="">{t("search.allAnalyses")}</option>
           {analyses
             .filter((run) => run.persist_results)
             .map((run) => (
@@ -60,10 +62,10 @@ export default function SearchPanel({
         onClick={onSearch}
         className="min-h-10 w-full rounded-xl bg-[#173f38] text-xs font-semibold text-white"
       >
-        Appliquer les filtres
+        {t("search.applyFilters")}
       </button>
       <p className="text-xs text-[#82908b]">
-        {results.length} résultat(s)
+        {t("search.results", { count: results.length })}
       </p>
       {results.map((feature, index) => (
         <button
@@ -81,7 +83,7 @@ export default function SearchPanel({
             {String(
               feature.properties?.name ||
                 feature.properties?.class_name ||
-                "Objet",
+                t("search.object"),
             )}
           </div>
           <div className="mt-1 truncate text-xs text-[#82908b]">

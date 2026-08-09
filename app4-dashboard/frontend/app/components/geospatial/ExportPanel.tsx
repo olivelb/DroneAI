@@ -13,6 +13,7 @@ import {
   getRasterExportPath,
   getVectorExportPath,
 } from "../../lib/api";
+import { useI18n } from "../../lib/i18n/provider";
 import ExportCrsSelector, {
   type ExportCrsChoice,
 } from "./ExportCrsSelector";
@@ -49,6 +50,7 @@ export default function ExportPanel({
   hasDepth,
   visibleRunIds,
 }: ExportPanelProps) {
+  const { t } = useI18n();
   const [rasterLayer, setRasterLayer] = useState<"ortho" | "depth">("ortho");
   const [rasterFormat, setRasterFormat] = useState<RasterFormat>("cog");
   const [vectorFormat, setVectorFormat] = useState<VectorFormat>("gpkg");
@@ -77,15 +79,15 @@ export default function ExportPanel({
     try {
       const result = await downloadMapExport(path, filename, fileType);
       if (result === "saved") {
-        setMessage(`Enregistré à l’emplacement choisi : ${filename}`);
+        setMessage(t("export.saved", { filename }));
       } else if (result === "download") {
         setMessage(
-          `Téléchargement lancé. L’emplacement dépend des réglages du navigateur.`,
+          t("export.downloadStarted"),
         );
       }
     } catch (reason) {
       setError(
-        reason instanceof Error ? reason.message : "Export impossible",
+        reason instanceof Error ? reason.message : t("export.failed"),
       );
     } finally {
       setBusy("");
@@ -106,11 +108,11 @@ export default function ExportPanel({
   const exportVectors = () => {
     const extension = vectorFormat === "gpkg" ? "gpkg" : "geojson";
     if (vectorFormat === "gpkg" && !exportCrs.valid) {
-      setError("Le code EPSG personnalisé est invalide.");
+      setError(t("export.invalidEpsg"));
       return Promise.resolve();
     }
     if (visibleOnly && visibleRunIds.length === 0) {
-      setError("Aucune analyse IA visible à exporter.");
+      setError(t("export.noVisibleAnalysis"));
       return Promise.resolve();
     }
     const runIds = visibleOnly ? visibleRunIds : [];
@@ -137,7 +139,7 @@ export default function ExportPanel({
   const exportAnnotations = () => {
     const extension = annotationFormat === "gpkg" ? "gpkg" : "geojson";
     if (annotationFormat === "gpkg" && !exportCrs.valid) {
-      setError("Le code EPSG personnalisé est invalide.");
+      setError(t("export.invalidEpsg"));
       return Promise.resolve();
     }
     const crs =
@@ -160,11 +162,10 @@ export default function ExportPanel({
           <FolderOpen size={15} className="mt-0.5 shrink-0 text-[#0f766e]" />
           <div>
             <div className="text-xs font-bold text-[#31504a]">
-              Choix de destination
+              {t("export.destination")}
             </div>
             <p className="mt-1 text-[11px] leading-5 text-[#61746e]">
-              Chrome et Edge ouvrent le sélecteur d’emplacement natif. Les
-              autres navigateurs utilisent leur dossier de téléchargement.
+              {t("export.destinationHelp")}
             </p>
           </div>
         </div>
@@ -193,7 +194,7 @@ export default function ExportPanel({
           <div>
             <h3 className="text-sm font-bold text-[#2d3a36]">GeoTIFF</h3>
             <p className="mt-0.5 text-[11px] leading-4 text-[#7a8783]">
-              Raster géoréférencé avec CRS et pyramides intégrés.
+              {t("export.geotiffHelp")}
             </p>
           </div>
         </div>
@@ -205,8 +206,8 @@ export default function ExportPanel({
             }
             className="input-control text-xs"
           >
-            <option value="ortho">Orthomosaïque</option>
-            {hasDepth && <option value="depth">Élévation / profondeur</option>}
+            <option value="ortho">{t("export.orthomosaic")}</option>
+            {hasDepth && <option value="depth">{t("export.elevation")}</option>}
           </select>
           <select
             value={rasterFormat}
@@ -215,7 +216,7 @@ export default function ExportPanel({
             }
             className="input-control text-xs"
           >
-            <option value="cog">COG optimisé</option>
+            <option value="cog">{t("export.optimizedCog")}</option>
             <option value="geotiff">GeoTIFF</option>
           </select>
         </div>
@@ -226,7 +227,7 @@ export default function ExportPanel({
           className="mt-3 flex min-h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#173f38] text-xs font-semibold text-white disabled:opacity-50"
         >
           <Download size={14} />
-          {busy === "raster" ? "Préparation…" : "Enregistrer le raster"}
+          {busy === "raster" ? t("export.preparing") : t("export.saveRaster")}
         </button>
       </section>
 
@@ -246,9 +247,7 @@ export default function ExportPanel({
       />
 
       <div className="rounded-xl bg-[#f7f9f8] p-3 text-[10px] leading-5 text-[#72807b]">
-        <strong>Interopérabilité QGIS :</strong> GeoPackage utilise le CRS
-        sélectionné ; GeoJSON utilise WGS84. Géométries, attributs et
-        provenance sont conservés.
+        <strong>{t("export.qgis")}</strong> {t("export.qgisHelp")}
       </div>
     </div>
   );

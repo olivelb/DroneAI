@@ -10,15 +10,17 @@ import {
   Trash2,
 } from "lucide-react";
 import { deleteMission } from "../lib/api";
+import type { MessageKey } from "../lib/i18n/catalog";
+import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
 import { useWorkspaceData } from "../lib/workspace-data";
 import { serviceOrderFor } from "../lib/types";
 import type { PodState, ServiceName, StatusPayload } from "../lib/types";
 
-const SERVICE_LABELS: Record<ServiceName, string> = {
-  COLMAP: "Geometry + DroneGS",
-  TILER: "Raster tiling",
-  IA: "AI inference",
+const SERVICE_LABELS: Record<ServiceName, MessageKey> = {
+  COLMAP: "monitor.service.colmap",
+  TILER: "monitor.service.tiler",
+  IA: "monitor.service.ai",
 };
 
 function ServiceProgress({
@@ -28,6 +30,7 @@ function ServiceProgress({
   name: ServiceName;
   data?: StatusPayload;
 }) {
+  const { t } = useI18n();
   const progress = Math.max(0, Math.min(100, data?.progress ?? 0));
   const status = data?.status ?? "idle";
   const color =
@@ -44,10 +47,10 @@ function ServiceProgress({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="text-xs font-bold text-[#34413d]">
-            {SERVICE_LABELS[name]}
+            {t(SERVICE_LABELS[name])}
           </div>
           <div className="mt-0.5 text-[10px] text-[#8a9692]">
-            {data?.step ?? "Waiting"}
+            {data?.step ?? t("common.waiting")}
           </div>
         </div>
         <span
@@ -80,6 +83,7 @@ function ServiceProgress({
 }
 
 function PodRow({ pod }: { pod: PodState }) {
+  const { t } = useI18n();
   const healthy = pod.phase === "Running" && !pod.oom_killed;
   return (
     <div className="flex items-center justify-between gap-3 border-b border-[#edf1ef] py-2.5 last:border-0">
@@ -93,13 +97,14 @@ function PodRow({ pod }: { pod: PodState }) {
             : "bg-amber-100 text-amber-700"
         }`}
       >
-        {pod.oom_killed ? "OOM" : pod.phase || pod.reason || "unknown"}
+        {pod.oom_killed ? "OOM" : pod.phase || pod.reason || t("common.unknown")}
       </span>
     </div>
   );
 }
 
 export default function StatusSidebar() {
+  const { t } = useI18n();
   const {
     activeMission,
     missions,
@@ -144,19 +149,21 @@ export default function StatusSidebar() {
       <section className="surface p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="eyebrow">Mission monitor</div>
+            <div className="eyebrow">{t("monitor.title")}</div>
             <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#7a8783]">
               <Radio
                 size={11}
                 className={wsConnected ? "text-emerald-500" : "text-amber-500"}
               />
-              {wsConnected ? "Live updates" : "Reconnecting"}
+              {wsConnected
+                ? t("monitor.liveUpdates")
+                : t("monitor.reconnecting")}
             </div>
           </div>
           {activeMissionId && (
             <button
               type="button"
-              aria-label="Delete active mission"
+              aria-label={t("monitor.deleteActive")}
               onClick={() => setConfirmDelete(activeMissionId)}
               className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#e1e8e5] text-[#9aa5a1] transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
             >
@@ -166,16 +173,16 @@ export default function StatusSidebar() {
         </div>
 
         <select
-          aria-label="Active mission"
+          aria-label={t("monitor.activeMission")}
           value={activeMissionId ?? ""}
           onChange={(event) => setActiveMissionId(event.target.value || null)}
           className="input-control mt-4 min-h-11 font-mono"
         >
-          <option value="">No active mission</option>
+          <option value="">{t("monitor.noActiveMission")}</option>
           {sortedMissions.map((mission) => (
             <option key={mission.vol_id} value={mission.vol_id}>
               {mission.vol_id} · {mission.overall_status}
-              {mission.is_stale ? " · updates delayed" : ""}
+              {mission.is_stale ? ` · ${t("monitor.updatesDelayed")}` : ""}
             </option>
           ))}
         </select>
@@ -183,7 +190,7 @@ export default function StatusSidebar() {
         {confirmDelete && (
           <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3">
             <p className="text-xs leading-5 text-red-700">
-              Delete <strong>{confirmDelete}</strong> and its generated files?
+              {t("monitor.deleteConfirm", { mission: confirmDelete })}
             </p>
             <div className="mt-2 flex gap-2">
               <button
@@ -192,14 +199,14 @@ export default function StatusSidebar() {
                 disabled={deleting}
                 className="min-h-9 rounded-lg bg-red-600 px-3 text-xs font-semibold text-white disabled:opacity-50"
               >
-                {deleting ? "Deleting…" : "Delete"}
+                {deleting ? t("common.deleting") : t("common.delete")}
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmDelete(null)}
                 className="min-h-9 rounded-lg border border-red-200 bg-white px-3 text-xs font-semibold text-red-700"
               >
-                Keep
+                {t("common.keep")}
               </button>
             </div>
           </div>
@@ -210,7 +217,7 @@ export default function StatusSidebar() {
         <div className="mb-3 flex items-center gap-2">
           <Activity size={15} className="text-[#0f766e]" />
           <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-[#65726e]">
-            End-to-end progress
+            {t("monitor.progress")}
           </h3>
         </div>
         <div className="space-y-2">
@@ -228,7 +235,7 @@ export default function StatusSidebar() {
         <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4">
           <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-[#65726e]">
             <Cpu size={14} className="text-[#0f766e]" />
-            Workers
+            {t("monitor.workers")}
           </span>
           <span className="rounded-full bg-[#edf3f1] px-2 py-0.5 text-[10px] font-bold text-[#66736f]">
             {pods.length}
@@ -239,7 +246,9 @@ export default function StatusSidebar() {
             <PodRow key={pod.name} pod={pod} />
           ))}
           {pods.length === 0 && (
-            <p className="py-3 text-xs text-[#8a9692]">No workers reported.</p>
+            <p className="py-3 text-xs text-[#8a9692]">
+              {t("monitor.noWorkers")}
+            </p>
           )}
           {podsError && (
             <p className="pb-2 text-[11px] text-amber-700">{podsError}</p>
@@ -251,11 +260,11 @@ export default function StatusSidebar() {
         <div className="flex items-center justify-between border-b border-white/8 px-4 py-3">
           <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.13em] text-[#a8bab4]">
             <Terminal size={13} />
-            Live console
+            {t("monitor.console")}
           </span>
           <button
             type="button"
-            aria-label="Clear console"
+            aria-label={t("monitor.clearConsole")}
             onClick={() => setLogs([])}
             className="text-[#6f817b] hover:text-white"
           >
@@ -269,7 +278,7 @@ export default function StatusSidebar() {
           {logs.length === 0 && (
             <span className="flex items-center gap-2 text-[#60736c]">
               <CircleDot size={10} />
-              Waiting for pipeline events…
+              {t("monitor.waitingEvents")}
             </span>
           )}
           {logs.map((line, index) => (

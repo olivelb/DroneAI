@@ -22,6 +22,8 @@ import PhaseSetup from "./components/PhaseSetup";
 import ResultsViewer from "./components/ResultsViewer";
 import StatusSidebar from "./components/StatusSidebar";
 import { AuthProvider, useAuth } from "./lib/auth";
+import { type MessageKey } from "./lib/i18n/catalog";
+import { I18nProvider, useI18n } from "./lib/i18n/provider";
 import {
   MissionRuntimeProvider,
   useMissionRuntime,
@@ -32,44 +34,38 @@ import { WorkspaceDataProvider } from "./lib/workspace-data";
 
 const PHASES: Array<{
   id: PhaseId;
-  label: string;
-  shortLabel: string;
-  description: string;
+  labelKey: MessageKey;
+  descriptionKey: MessageKey;
   icon: React.ReactNode;
 }> = [
   {
     id: "setup",
-    label: "Préparer",
-    shortLabel: "Préparer",
-    description: "Images et mission",
+    labelKey: "phase.setup.label",
+    descriptionKey: "phase.setup.description",
     icon: <Database size={17} />,
   },
   {
     id: "reconstruction",
-    label: "Aligner",
-    shortLabel: "Aligner",
-    description: "Géométrie et GPS",
+    labelKey: "phase.reconstruction.label",
+    descriptionKey: "phase.reconstruction.description",
     icon: <Cpu size={17} />,
   },
   {
     id: "gaussian",
-    label: "Produire",
-    shortLabel: "DroneGS",
-    description: "DroneGS et ortho",
+    labelKey: "phase.gaussian.label",
+    descriptionKey: "phase.gaussian.description",
     icon: <Sparkles size={17} />,
   },
   {
     id: "detection",
-    label: "Détecter",
-    shortLabel: "Détecter",
-    description: "Tuilage et IA",
+    labelKey: "phase.detection.label",
+    descriptionKey: "phase.detection.description",
     icon: <ScanSearch size={17} />,
   },
   {
     id: "results",
-    label: "Explorer",
-    shortLabel: "Viewer",
-    description: "Carte et vecteurs",
+    labelKey: "phase.results.label",
+    descriptionKey: "phase.results.description",
     icon: <Eye size={17} />,
   },
 ];
@@ -90,6 +86,7 @@ function PhaseContent({ phase }: { phase: PhaseId }) {
 }
 
 function DashboardInner() {
+  const { locale, setLocale, t } = useI18n();
   const {
     activePhase,
     setActivePhase,
@@ -165,7 +162,7 @@ function DashboardInner() {
                   size={9}
                   className={wsConnected ? "text-emerald-500" : "text-amber-500"}
                 />
-                {wsConnected ? "Temps réel" : "Reconnexion"}
+                {wsConnected ? t("shell.realtime") : t("shell.reconnecting")}
               </div>
             </div>
           </div>
@@ -175,7 +172,7 @@ function DashboardInner() {
               type="button"
               onClick={() => setMonitorOpen(true)}
               className="relative flex min-h-11 min-w-11 items-center justify-center gap-2 rounded-xl border border-[#dce5e1] bg-white/80 px-3 text-[#4f5e59] transition hover:border-[#adc2bb] hover:bg-white"
-              aria-label="Ouvrir le suivi de mission"
+              aria-label={t("shell.openMonitor")}
             >
               <Activity
                 size={16}
@@ -183,20 +180,32 @@ function DashboardInner() {
               />
               <span className="hidden text-left lg:block">
                 <span className="block text-[10px] font-bold uppercase tracking-wide text-[#87938f]">
-                  Suivi
+                  {t("shell.monitor")}
                 </span>
                 <span className="block max-w-28 truncate text-xs font-semibold text-[#34413d]">
                   {activeMission
                     ? isRunning
                       ? `${progress} %`
                       : activeMission.overall_status
-                    : "Aucune mission"}
+                    : t("shell.noMission")}
                 </span>
               </span>
               {isRunning && (
                 <span className="absolute right-1.5 top-1.5 h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
               )}
             </button>
+            <label className="hidden items-center gap-1 text-[10px] text-[#66736f] sm:flex">
+              <span className="sr-only">{t("language.label")}</span>
+              <select
+                value={locale}
+                onChange={(event) => setLocale(event.target.value as "en" | "fr")}
+                aria-label={t("language.label")}
+                className="min-h-9 rounded-lg border border-[#dce5e1] bg-white/80 px-2 font-semibold"
+              >
+                <option value="en">EN</option>
+                <option value="fr">FR</option>
+              </select>
+            </label>
             <div className="hidden text-right text-[10px] leading-4 text-[#77837f] xl:block">
               <div className="max-w-32 truncate font-semibold text-[#44524e]">
                 {authPrincipal?.subject}
@@ -206,7 +215,7 @@ function DashboardInner() {
                 onClick={() => void logout()}
                 className="hover:text-[#0f766e]"
               >
-                Déconnexion
+                {t("shell.logout")}
               </button>
             </div>
             <MissionLaunchBar />
@@ -224,7 +233,7 @@ function DashboardInner() {
 
       <nav
         className="sticky top-16 z-[650] border-b border-[#e0e7e4] bg-[#f3f5f4]/95 backdrop-blur-xl"
-        aria-label="Étapes du pipeline"
+        aria-label={t("shell.pipelineNavigation")}
       >
         <div className="mx-auto flex max-w-[1500px] gap-1.5 overflow-x-auto px-3 py-2 sm:px-5">
           {visiblePhases.map((phase, index) => {
@@ -266,14 +275,14 @@ function DashboardInner() {
                 </span>
                 <span className="min-w-0">
                   <span className="block text-xs font-bold">
-                    {index + 1}. {phase.label}
+                    {index + 1}. {t(phase.labelKey)}
                   </span>
                   <span
                     className={`hidden truncate text-[10px] sm:block ${
                       selected ? "text-white/55" : "text-[#8a9692]"
                     }`}
                   >
-                    {phase.description}
+                    {t(phase.descriptionKey)}
                   </span>
                 </span>
               </button>
@@ -294,14 +303,14 @@ function DashboardInner() {
         <div className="fixed inset-0 z-[900]">
           <button
             type="button"
-            aria-label="Fermer le suivi"
+            aria-label={t("shell.closeMonitor")}
             onClick={() => setMonitorOpen(false)}
             className="absolute inset-0 bg-[#14201d]/35 backdrop-blur-[2px]"
           />
           <aside
             role="dialog"
             aria-modal="true"
-            aria-label="Suivi de mission"
+            aria-label={t("shell.monitorTitle")}
             className="absolute bottom-0 right-0 top-0 flex w-[min(430px,100%)] flex-col border-l border-[#dbe4e0] bg-[#f5f7f6] shadow-[-24px_0_70px_rgba(20,32,28,0.17)]"
           >
             <div className="flex h-16 shrink-0 items-center justify-between border-b border-[#dfe7e4] px-4">
@@ -309,17 +318,17 @@ function DashboardInner() {
                 <PanelRightClose size={17} className="text-[#0f766e]" />
                 <div>
                   <div className="text-sm font-bold text-[#273530]">
-                    Suivi de mission
+                    {t("shell.monitorTitle")}
                   </div>
                   <div className="text-[10px] text-[#7b8883]">
-                    Progression, workers et événements
+                    {t("shell.monitorDescription")}
                   </div>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setMonitorOpen(false)}
-                aria-label="Fermer"
+                aria-label={t("common.close")}
                 className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#dce4e1] bg-white text-[#65726e]"
               >
                 <X size={15} />
@@ -337,16 +346,18 @@ function DashboardInner() {
 
 export default function Dashboard() {
   return (
-    <AuthProvider>
-      <WorkspaceDataProvider>
-        <MissionRuntimeProvider>
-          <StoreProvider>
-            <AuthGate>
-              <DashboardInner />
-            </AuthGate>
-          </StoreProvider>
-        </MissionRuntimeProvider>
-      </WorkspaceDataProvider>
-    </AuthProvider>
+    <I18nProvider>
+      <AuthProvider>
+        <WorkspaceDataProvider>
+          <MissionRuntimeProvider>
+            <StoreProvider>
+              <AuthGate>
+                <DashboardInner />
+              </AuthGate>
+            </StoreProvider>
+          </MissionRuntimeProvider>
+        </WorkspaceDataProvider>
+      </AuthProvider>
+    </I18nProvider>
   );
 }
