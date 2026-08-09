@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from shared.validation import validate_aerial_class_names
+from shared.yolo_capabilities import yolo_model_manifest
 
 from shared.geospatial_workspace import (
     normalize_color,
@@ -50,6 +51,7 @@ class AnalysisCreate(BaseModel):
     def validate_yolo_classes(self) -> AnalysisCreate:
         if self.backend == "yolo":
             validate_aerial_class_names(self.classes)
+            yolo_model_manifest(self.model_variant)
         return self
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
@@ -16,6 +16,7 @@ from shared.facade_process import (
     FACADE_QUALIFICATION_POLICY_ID,
     FACADE_QUALIFICATION_THRESHOLDS,
 )
+from shared.quality_profiles import QUALITY_PROFILE_BY_ID, QualityProfileId
 from gaussian_ortho.coverage_quality import SpatialCoveragePolicy
 
 
@@ -94,6 +95,23 @@ def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> di
         return dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
     if profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
         return {name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name) for name in fields}
+    if profile_id in QUALITY_PROFILE_BY_ID:
+        expected = {
+            name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
+            for name in fields
+        }
+        parameters = QUALITY_PROFILE_BY_ID[
+            cast(QualityProfileId, profile_id)
+        ].parameters
+        expected.update(
+            {
+                "iterations": int(parameters["gs_iterations"]),
+                "data_factor": int(parameters["gs_data_factor"]),
+                "max_width": int(parameters["gs_max_width"]),
+                "cap_max": int(parameters["gs_cap_max"]),
+            }
+        )
+        return expected
     return None
 
 

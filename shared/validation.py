@@ -7,25 +7,13 @@ from typing import Any
 from shared.pipeline_params import PARAM_OVERRIDE_KEYS, PARAMETER_METADATA
 from shared.facade_selection import parse_excluded_basename_ranges
 from shared.projected_crs import normalize_epsg
+from shared.yolo_capabilities import SUPPORTED_AERIAL_CLASSES
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MISSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
 CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
 DATASET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BOOLEAN_STRINGS = {"0", "1", "false", "true", "no", "yes", "off", "on"}
-
-SUPPORTED_AERIAL_CLASSES = frozenset(
-    {
-        "airplane",
-        "bicycle",
-        "boat",
-        "bus",
-        "car",
-        "motorcycle",
-        "truck",
-    }
-)
-
 
 def validate_mission_id(value: str) -> str:
     normalized = str(value or "").strip()

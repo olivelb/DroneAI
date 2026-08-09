@@ -152,6 +152,62 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
     assert "already exists" in error.value.detail
 
 
+def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch):
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Mission.__table__.create(engine)
+    OutboxEvent.__table__.create(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    @contextmanager
+    def session_scope():
+        session = factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    monkeypatch.setattr(mission_routes, "get_session", session_scope)
+    params = mission_routes.MissionParams(
+        vol_id="profile-mission-001",
+        input_dataset="datasets/profile-mission",
+        quality_profile="high-quality-v1",
+        ai_model_variant="yolo26n",
+        colmap_params={"gs_iterations": "35000"},
+    )
+
+    assert mission_routes.start_mission(params)["status"] == "success"
+
+    with session_scope() as session:
+        mission = session.query(Mission).one()
+        outbox = session.query(OutboxEvent).one()
+        assert mission.params["quality_profile"] == "high-quality-v1"
+        assert mission.params["quality_profile_version"] == 1
+        assert mission.params["quality_profile_overrides"] == {
+            "gs_iterations": "35000"
+        }
+        assert mission.params["colmap_params"]["gs_cap_max"] == "5000000"
+        assert mission.params["colmap_params"]["gs_iterations"] == "35000"
+        assert mission.params["ai_model_manifest"]["id"] == "yolo26n"
+        assert outbox.payload["ai_model_manifest"]["artifact_sha256"]
+
+
+def test_parameter_catalog_exposes_profiles_and_model_capabilities():
+    response = mission_routes.mission_parameters()
+
+    assert response["quality_profile_default"] == "normal-v1"
+    assert [profile["id"] for profile in response["quality_profiles"]] == [
+        "fast-v1",
+        "normal-v1",
+        "high-quality-v1",
+    ]
+    assert len(response["yolo_models"]) == 8
+    assert all(model["selectable_classes"] for model in response["yolo_models"])
+
+
 def test_cancel_mission_persists_state_and_outbox_atomically(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Mission.__table__.create(engine)

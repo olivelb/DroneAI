@@ -13,8 +13,6 @@ import { useStore } from "../lib/store";
 import StageHeader from "./StageHeader";
 import {
   AVAILABLE_AI_BACKENDS,
-  AVAILABLE_CLASSES,
-  AVAILABLE_YOLO_MODELS,
 } from "../lib/types";
 import type { AIBackend, YOLOModelVariant } from "../lib/types";
 
@@ -32,6 +30,7 @@ export default function PhaseDetection() {
     setSelectedClasses,
     tileSize,
     setTileSize,
+    parameterSchema,
   } = useStore();
   const { activeMission } = useMissionRuntime();
 
@@ -39,6 +38,11 @@ export default function PhaseDetection() {
   const iaService = activeMission?.services?.IA;
   const hasOrthomosaic =
     tilerService?.status === "success" || (tilerService?.progress ?? 0) >= 100;
+  const yoloModels = parameterSchema?.yolo_models ?? [];
+  const selectedModel = yoloModels.find(
+    (model) => model.id === aiModelVariant,
+  );
+  const availableClasses = selectedModel?.selectable_classes ?? [];
 
   const toggleClass = (className: string) => {
     if (
@@ -199,7 +203,7 @@ export default function PhaseDetection() {
           </div>
         ) : (
           <div className="mt-4 flex flex-wrap gap-2">
-            {AVAILABLE_CLASSES.map((className) => {
+            {availableClasses.map((className) => {
               const selected = selectedClasses.includes(className);
               return (
                 <button
@@ -240,24 +244,25 @@ export default function PhaseDetection() {
             </h3>
             {aiBackend === "yolo" ? (
               <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {AVAILABLE_YOLO_MODELS.map((model) => (
+                {yoloModels.map((model) => (
                   <button
-                    key={model.value}
+                    key={model.id}
                     type="button"
+                    disabled={!model.available}
                     onClick={() =>
-                      setAiModelVariant(model.value as YOLOModelVariant)
+                      setAiModelVariant(model.id as YOLOModelVariant)
                     }
                     className={`min-h-[78px] rounded-xl border p-3 text-left transition ${
-                      aiModelVariant === model.value
+                      aiModelVariant === model.id
                         ? "border-[#7f9bd4] bg-[#f0f4fc]"
                         : "border-[#dce4e1] bg-[#fafcfb] hover:border-[#b8c9c3]"
-                    }`}
+                    } disabled:cursor-not-allowed disabled:opacity-40`}
                   >
                     <span className="block text-xs font-bold text-[#2f3c38]">
                       {model.label}
                     </span>
                     <span className="mt-1 block text-[10px] leading-4 text-[#7a8783]">
-                      {model.description}
+                      {model.artifact} · {model.revision}
                     </span>
                   </button>
                 ))}

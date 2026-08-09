@@ -228,6 +228,15 @@ export const EN_MESSAGES = {
   "setup.clearSelection": "Clear selection",
   "setup.previousMissions": "Previous missions",
   "setup.previousMissionsHelp": "Resume or inspect a production.",
+  "profile.title": "Production profile",
+  "profile.description": "Choose one versioned envelope for reconstruction and DroneGS. Expert changes remain explicit overrides.",
+  "profile.fast.description": "Fast coverage and pipeline validation with a bounded compute budget.",
+  "profile.normal.description": "Balanced production profile for routine aerial missions.",
+  "profile.highQuality.description": "Maximum detail for qualified hardware and deliberate long runs.",
+  "profile.imageSize": "{value}px images",
+  "profile.features": "{value} features",
+  "profile.iterations": "{value} iterations",
+  "profile.gaussians": "{value} Gaussians",
 } as const;
 
 export type MessageKey = keyof typeof EN_MESSAGES;
@@ -456,6 +465,15 @@ export const FR_MESSAGES: Readonly<Record<MessageKey, string>> = {
   "setup.clearSelection": "Effacer la sélection",
   "setup.previousMissions": "Missions précédentes",
   "setup.previousMissionsHelp": "Reprendre ou inspecter une production.",
+  "profile.title": "Profil de production",
+  "profile.description": "Choisissez une enveloppe versionnée pour la reconstruction et DroneGS. Les réglages experts restent des dérogations explicites.",
+  "profile.fast.description": "Validation rapide de la couverture et du pipeline avec un budget de calcul borné.",
+  "profile.normal.description": "Profil de production équilibré pour les missions aériennes courantes.",
+  "profile.highQuality.description": "Détail maximal sur un matériel qualifié pour des calculs longs assumés.",
+  "profile.imageSize": "Images {value}px",
+  "profile.features": "{value} features",
+  "profile.iterations": "{value} itérations",
+  "profile.gaussians": "{value} Gaussiennes",
 };
 
 export const MESSAGES: Readonly<

@@ -5,6 +5,7 @@ export type AIBackend = "yolo" | "sam3";
 export type YOLOModelVariant =
   | "yolo26l" | "yolo26m" | "yolo26s" | "yolo26n"
   | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
+export type QualityProfileId = "fast-v1" | "normal-v1" | "high-quality-v1";
 export type ParamValue = string | boolean;
 export type ParameterOption = string | {
   value: string;
@@ -200,6 +201,29 @@ export type ParameterConfigResponse = {
   metadata: Record<string, ParameterMeta>;
   work_drives?: WorkDrive[];
   work_drive_default?: string;
+  quality_profiles: QualityProfile[];
+  quality_profile_default: QualityProfileId;
+  yolo_models: YoloModelCapability[];
+};
+
+export type QualityProfile = {
+  id: QualityProfileId;
+  version: number;
+  name: string;
+  description: string;
+  parameters: Record<string, ParamValue>;
+};
+
+export type YoloModelCapability = {
+  id: YOLOModelVariant;
+  label: string;
+  available: boolean;
+  artifact: string;
+  repository: string;
+  revision: string;
+  artifact_sha256: string;
+  classes: string[];
+  selectable_classes: string[];
 };
 
 export type ProductProcess = {
@@ -237,25 +261,9 @@ export const overallStatusFor = (
     : "processing";
 };
 
-export const AVAILABLE_CLASSES = [
-  "bicycle", "car", "motorcycle", "airplane",
-  "bus", "truck", "boat",
-];
-
 export const AVAILABLE_AI_BACKENDS: Array<{ value: AIBackend; label: string; description: string }> = [
   { value: "yolo", label: "YOLO OBB", description: "Fast oriented-box vehicle detector" },
   { value: "sam3", label: "SAM 3", description: "Prompted mask segmentation from Meta" },
-];
-
-export const AVAILABLE_YOLO_MODELS: Array<{ value: YOLOModelVariant; label: string; description: string }> = [
-  { value: "yolo26l", label: "YOLO26-L", description: "Largest YOLO26 OBB model" },
-  { value: "yolo26m", label: "YOLO26-M", description: "Balanced YOLO26 OBB model" },
-  { value: "yolo26s", label: "YOLO26-S", description: "Smaller YOLO26 OBB model" },
-  { value: "yolo26n", label: "YOLO26-N", description: "Lightest YOLO26 OBB model" },
-  { value: "yolo11l", label: "YOLO11-L", description: "Largest YOLO11 OBB model" },
-  { value: "yolo11m", label: "YOLO11-M", description: "Balanced YOLO11 OBB model" },
-  { value: "yolo11s", label: "YOLO11-S", description: "Smaller YOLO11 OBB model" },
-  { value: "yolo11n", label: "YOLO11-N", description: "Lightest YOLO11 OBB model" },
 ];
 
 // Phase → COLMAP step mapping (for progress tracking)

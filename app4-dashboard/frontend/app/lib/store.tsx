@@ -3,11 +3,16 @@
 import React, { createContext, useCallback, useContext, useEffect, useId, useState } from "react";
 import type {
   AIBackend, ParameterConfigResponse,
-  ParamValue, PipelineName, YOLOModelVariant,
+  ParamValue, PipelineName, QualityProfileId, YOLOModelVariant,
   PhaseId,
 } from "./types";
 import { fetchParameters } from "./api";
 import { useAuth } from "./auth";
+import {
+  initialParameterValues,
+  qualityProfileParameters,
+  useQualityProfileState,
+} from "./quality-profile-state";
 
 type StoreState = {
   // Mission input selection
@@ -25,6 +30,8 @@ type StoreState = {
   parameterValues: Record<string, ParamValue>;
   setParameterValues: React.Dispatch<React.SetStateAction<Record<string, ParamValue>>>;
   updateParameter: (key: string, value: ParamValue) => void;
+  qualityProfileId: QualityProfileId;
+  setQualityProfile: (profileId: QualityProfileId) => void;
   workDrive: string;
   setWorkDrive: (d: string) => void;
 
@@ -83,6 +90,8 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
   const [pipeline, setPipelineRaw] = useState<PipelineName>("modern");
   const [parameterSchema, setParameterSchema] = useState<ParameterConfigResponse | null>(null);
   const [parameterValues, setParameterValues] = useState<Record<string, ParamValue>>({});
+  const { qualityProfileId, setQualityProfile, synchronizeQualityProfile } =
+    useQualityProfileState(parameterSchema, setParameterValues);
   const [workDrive, setWorkDrive] = useState<string>("");
 
   const [uploadDatasetName, setUploadDatasetName] = useState("");
@@ -94,11 +103,17 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     try {
       const data = (await fetchParameters()) as ParameterConfigResponse;
       setParameterSchema(data);
+      setAiModelVariant((current) =>
+        data.yolo_models.some((model) => model.id === current && model.available)
+          ? current
+          : data.yolo_models.find((model) => model.available)?.id ?? current,
+      );
       setParameterValues((current) =>
         Object.keys(current).length > 0
           ? current
-          : (data.pipelines["modern"] ?? {}),
+          : initialParameterValues(data),
       );
+      synchronizeQualityProfile(data);
       setWorkDrive((current) => {
         const names = new Set((data.work_drives ?? []).map((drive) => drive.name));
         if (current && names.has(current)) return current;
@@ -118,7 +133,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
       setWorkDrive("");
       console.error("Param error:", e);
     }
-  }, []);
+  }, [synchronizeQualityProfile]);
 
   const setPipeline = useCallback((p: PipelineName) => {
     setPipelineRaw(p);
@@ -131,10 +146,11 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
         return {
           ...(parameterSchema.pipelines[p] ?? {}),
           ...(process?.parameters ?? { orthophoto_mode: processId }),
+          ...qualityProfileParameters(parameterSchema, qualityProfileId),
         };
       });
     }
-  }, [parameterSchema]);
+  }, [parameterSchema, qualityProfileId]);
 
   const updateParameter = useCallback((key: string, value: ParamValue) => {
     setParameterValues((prev) => ({ ...prev, [key]: value }));
@@ -160,6 +176,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
     selectedPath, setSelectedPath,
     volId, setVolId,
     pipeline, setPipeline, parameterSchema, parameterValues, setParameterValues, updateParameter,
+    qualityProfileId, setQualityProfile,
     workDrive, setWorkDrive,
     aiConfidence, setAiConfidence, aiBackend, setAiBackend, aiModelVariant, setAiModelVariant,
     samPrompt, setSamPrompt, selectedClasses, setSelectedClasses, tileSize, setTileSize,

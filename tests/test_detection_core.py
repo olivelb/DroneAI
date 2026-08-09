@@ -159,6 +159,15 @@ def test_car_request_maps_to_aerial_vehicle_labels():
     ) == ["small-vehicle", "large_vehicle"]
 
 
+def test_every_native_model_class_can_be_selected_directly():
+    available = ["plane", "bridge", "swimming pool"]
+
+    assert resolve_requested_labels(["bridge", "swimming pool"], available) == [
+        "bridge",
+        "swimming pool",
+    ]
+
+
 def test_api_and_worker_share_the_same_supported_class_contract():
     assert set(REQUESTED_CLASS_MAP) == SUPPORTED_AERIAL_CLASSES
 

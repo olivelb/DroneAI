@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import AdvancedParameters from "./AdvancedParameters";
 import { ParamField } from "./ParamField";
-import { PresetButton } from "./PresetButton";
+import QualityProfileSelector from "./QualityProfileSelector";
 import StageHeader from "./StageHeader";
 import { useMissionRuntime } from "../lib/mission-runtime";
 import { useStore } from "../lib/store";
@@ -340,32 +340,7 @@ export default function PhaseGaussian() {
       )}
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_330px]">
-        <div className="surface p-5 sm:p-6">
-        <div className="mb-4">
-          <div className="eyebrow">DroneGS profiles</div>
-          <h3 className="mt-1 text-lg font-bold text-[#26332f]">
-            Partir d’un budget opérationnel
-          </h3>
-          <p className="mt-1 max-w-2xl text-xs leading-5 text-[#77847f]">
-            Le profil équilibré reprend la recette de production validée. Les
-            profils aperçu et détaillé bornent clairement le coût GPU.
-          </p>
-        </div>
-        <div className="grid gap-3 md:grid-cols-3">
-          {DRONEGS_PRESETS.map((preset) => (
-            <PresetButton
-              key={preset.id}
-              preset={preset}
-              parameterValues={parameterValues}
-              layout="stacked"
-              tone="amber"
-              onApply={(values) =>
-                setParameterValues((previous) => ({ ...previous, ...values }))
-              }
-            />
-          ))}
-        </div>
-        </div>
+        <QualityProfileSelector />
         <div className="rounded-[1.25rem] border border-[#eadcb9] bg-[#fff9e9] p-5">
           <div className="eyebrow text-[#a76509]">Budget effectif</div>
           <div className="mt-4 space-y-4">
