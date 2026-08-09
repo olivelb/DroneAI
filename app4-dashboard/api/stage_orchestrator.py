@@ -52,6 +52,8 @@ class StageOrchestratorSettings:
     executors: dict[StageId, StageExecutorConfig]
     job_environment: tuple[tuple[str, str], ...] = ()
     job_secret_environment: tuple[SecretEnvironment, ...] = ()
+    detection_environment: tuple[tuple[str, str], ...] = ()
+    detection_secret_environment: tuple[SecretEnvironment, ...] = ()
     service_account_name: str = "stage-job-sa"
     active_deadline_seconds: int = 86_400
     ttl_seconds_after_finished: int = 3_600
@@ -146,6 +148,29 @@ def settings_from_environment() -> StageOrchestratorSettings:
             ("S3_SECRET_KEY", "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY", "s3-secret-key"),
         )
     )
+    detection_environment = (
+        ("HF_HOME", "/cache/huggingface"),
+        ("HF_HUB_CACHE", "/cache/huggingface/hub"),
+        ("TRANSFORMERS_CACHE", "/cache/huggingface/transformers"),
+        (
+            "SAM3_MODEL_ID",
+            os.getenv("DRONEAI_STAGE_SAM3_MODEL_ID", "facebook/sam3"),
+        ),
+        (
+            "SAM3_MODEL_REVISION",
+            os.getenv(
+                "DRONEAI_STAGE_SAM3_MODEL_REVISION",
+                "3c879f39826c281e95690f02c7821c4de09afae7",
+            ),
+        ),
+    )
+    detection_secret_environment = (
+        SecretEnvironment(
+            "HF_TOKEN",
+            os.getenv("DRONEAI_STAGE_HF_TOKEN_SECRET_NAME", "hf-token"),
+            os.getenv("DRONEAI_STAGE_HF_TOKEN_SECRET_KEY", "HF_TOKEN"),
+        ),
+    )
     return StageOrchestratorSettings(
         enabled=enabled,
         namespace=os.getenv("POD_NAMESPACE", "drone-ai"),
@@ -163,6 +188,8 @@ def settings_from_environment() -> StageOrchestratorSettings:
         ),
         job_environment=plain_environment,
         job_secret_environment=secret_environment,
+        detection_environment=detection_environment,
+        detection_secret_environment=detection_secret_environment,
         service_account_name=os.getenv("DRONEAI_STAGE_JOB_SERVICE_ACCOUNT", "stage-job-sa"),
         active_deadline_seconds=_positive_int("DRONEAI_STAGE_JOB_ACTIVE_DEADLINE_SECONDS", 86_400),
         ttl_seconds_after_finished=int(
@@ -182,6 +209,12 @@ def _reserved_job(
 ) -> ReservedStageJob:
     stage = cast(StageId, run.stage)
     executor = settings.executors[stage]
+    detection_environment = (
+        settings.detection_environment if stage == "detection" else ()
+    )
+    detection_secret_environment = (
+        settings.detection_secret_environment if stage == "detection" else ()
+    )
     request = StageJobRequest(
         run_id=cast(str, run.run_id),
         mission_id=cast(int, mission.id),
@@ -201,8 +234,10 @@ def _reserved_job(
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
             runtime_class_name=settings.runtime_class_name,
             node_selector=executor.node_selector,
-            environment=settings.job_environment,
-            secret_environment=settings.job_secret_environment,
+            environment=settings.job_environment + detection_environment,
+            secret_environment=(
+                settings.job_secret_environment + detection_secret_environment
+            ),
         ),
         job_name=stage_job_name(request.run_id),
     )
