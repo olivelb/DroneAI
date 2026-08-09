@@ -301,6 +301,21 @@ def test_stage_retry_is_idempotent_and_uses_exact_mission_artifacts(
         ).count() == 1
         assert session.query(OutboxEvent).count() == 1
 
+    monkeypatch.setattr(stage_routes, "stage_jobs_enabled", lambda: True)
+    stage_routes.create_stage_run(
+        "mission-dag",
+        "detection",
+        request,
+        PRINCIPAL,
+        "retry-request-job-002",
+        None,
+    )
+    with dag_sessions() as session:
+        assert session.query(MissionStageRun).filter(
+            MissionStageRun.stage == "detection"
+        ).count() == 2
+        assert session.query(OutboxEvent).count() == 1
+
     with pytest.raises(HTTPException) as error:
         stage_routes.create_stage_run(
             "mission-dag",
@@ -399,9 +414,14 @@ def test_artifact_publication_queues_the_next_ready_stage(
 
     assert len(response["queued_stage_run_ids"]) == 1
     with dag_sessions() as session:
+        reconstruction = session.query(MissionStageRun).filter(
+            MissionStageRun.stage == "reconstruction"
+        ).one()
         training = session.query(MissionStageRun).filter(
             MissionStageRun.stage == "gaussian_training"
         ).one()
+        assert reconstruction.status == "succeeded"
+        assert reconstruction.completed_at is not None
         assert training.status == "queued"
         assert training.upstream_artifact_ids == [artifact_id]
         assert session.query(MissionArtifactParent).count() == 0

@@ -118,6 +118,24 @@ the persisted resource class. Job mode is disabled by default until the fused
 workers expose and qualify one-shot per-stage commands; the existing Kafka
 workers therefore remain the safe runtime default during this migration.
 
+When explicitly enabled, the dashboard reserves queued rows with
+`FOR UPDATE SKIP LOCKED`, commits their deterministic Job identity, then calls
+the Kubernetes API. A crash between reservation and creation is recovered by
+the next reconciliation tick; `409 AlreadyExists` is success, and missing Jobs
+are recreated only up to the configured dispatch bound. Active Jobs renew the
+stage heartbeat. Failed Jobs fail the run, mission cancellation deletes the
+Job, and a Job that exits successfully without first publishing its immutable
+artifact is treated as failed. Artifact publication atomically marks the run
+succeeded before releasing dependants.
+
+Activation requires a complete `stageJobs.executors` map for all five stages.
+Every entry supplies an immutable image, a non-empty one-shot command, optional
+node selectors and (for GPU stages) the selected GPU architecture recorded in
+provenance. Job pods receive only run/mission identity plus S3/Kafka settings
+and Secret references for database/S3 credentials; they use bounded writable
+`/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
+dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
+
 ## Invariants covered by tests
 
 - dependency ordering, duplicate rejection and canonical idempotency;
@@ -126,8 +144,10 @@ workers therefore remain the safe runtime default during this migration.
 - automatic release of the next ready stage;
 - compatibility status projection and terminal-error attribution;
 - owner-scoped API routes and versioned Kafka schema;
-- PostgreSQL/PostGIS upgrade/downgrade round-trip for revision `0014`.
+- PostgreSQL/PostGIS upgrade/downgrade round-trip for revision `0014`;
 - resource-class selection and prevention of GPU-envelope downgrades;
 - fair scheduling and every concurrency boundary;
 - deterministic, hardened CPU/GPU Kubernetes Job rendering;
+- transactional reservation, idempotent recreation, heartbeat, cancellation
+  and artifact-publication reconciliation;
 - PostgreSQL/PostGIS `0015 -> 0016 -> 0015 -> 0016` migration round-trip.

@@ -17,6 +17,11 @@ worker. The difference is the container orchestrator:
 | `local` | Docker Compose | simplest workstation and WSL deployment |
 | `distributed` | single-node K3s + Helm | Kubernetes/Helm validation and production-like operations |
 
+The chart also contains an opt-in resource-aware stage Job control plane. It
+remains disabled while the bundled fused workers are migrated to qualified
+one-shot stage executors; its durable contract and activation safeguards are
+documented in [Versioned mission-stage DAG contract v1](docs/contracts/versioned-stage-dag-v1.md).
+
 The infrastructure-free Python runner in `tools/run_local_pipeline.sh` remains
 available for scientific diagnostics, but it is not the dashboard deployment.
 

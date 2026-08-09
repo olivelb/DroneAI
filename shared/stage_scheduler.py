@@ -83,8 +83,11 @@ def select_stage_candidates(
         return selected
 
     owner_queues: dict[str, deque[StageCandidate]] = defaultdict(deque)
-    for candidate in sorted(candidates, key=lambda item: (item.created_at, item.run_id)):
-        owner_queues[candidate.owner_subject].append(candidate)
+    for queued_candidate in sorted(
+        candidates,
+        key=lambda item: (item.created_at, item.run_id),
+    ):
+        owner_queues[queued_candidate.owner_subject].append(queued_candidate)
     owner_order = deque(owner_queues)
 
     while owner_order and len(selected) < capacity:

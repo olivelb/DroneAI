@@ -18,6 +18,7 @@ from . import dataset_uploads, security
 from .messaging import publish_outbox_event
 from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
+from .stage_orchestrator import start_stage_orchestrator
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
 from .routers.maps import router as maps_router
@@ -54,6 +55,7 @@ async def lifespan(_app: FastAPI):
     consumer_thread.start()
     outbox_thread.start()
     upload_cleanup_thread.start()
+    stage_orchestrator_thread = start_stage_orchestrator(stop_event)
     try:
         yield
     finally:
@@ -61,6 +63,8 @@ async def lifespan(_app: FastAPI):
         consumer_thread.join(timeout=2)
         outbox_thread.join(timeout=2)
         upload_cleanup_thread.join(timeout=2)
+        if stage_orchestrator_thread is not None:
+            stage_orchestrator_thread.join(timeout=2)
 
 
 def create_app() -> FastAPI:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import UTC, datetime
 from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -28,6 +29,7 @@ from shared.stage_contracts import (
 from ..messaging import build_stage_mission_event
 from ..mission_access import get_owned_mission
 from ..security import Principal, require_operator
+from ..stage_orchestrator import stage_jobs_enabled
 from ..stage_schemas import ArtifactCreate, StageRunCreate
 
 router = APIRouter()
@@ -127,6 +129,16 @@ def _immutable_artifact_matches(
     )
 
 
+def _mark_stage_run_succeeded(run: MissionStageRun) -> None:
+    now = datetime.now(UTC)
+    record = cast(Any, run)
+    record.status = "succeeded"
+    record.progress = 100
+    record.heartbeat_at = now
+    record.completed_at = now
+    record.error_message = None
+
+
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
     artifacts = cast(
         list[MissionArtifact],
@@ -175,12 +187,13 @@ def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
             "upstream_artifact_ids": upstream,
             "stage_parameters": cast(dict[str, Any], run.parameters or {}),
         }
-        enqueue_outbox(
-            session,
-            topic=TOPIC_MISSION,
-            event=build_stage_mission_event(payload),
-            key=cast(str, mission.vol_id),
-        )
+        if not stage_jobs_enabled():
+            enqueue_outbox(
+                session,
+                topic=TOPIC_MISSION,
+                event=build_stage_mission_event(payload),
+                key=cast(str, mission.vol_id),
+            )
         queued.append(cast(str, run.run_id))
     return queued
 
@@ -290,12 +303,13 @@ def create_stage_run(
                 "upstream_artifact_ids": request.upstream_artifact_ids,
                 "stage_parameters": parameters,
             }
-            enqueue_outbox(
-                session,
-                topic=TOPIC_MISSION,
-                event=build_stage_mission_event(payload),
-                key=vol_id,
-            )
+            if not stage_jobs_enabled():
+                enqueue_outbox(
+                    session,
+                    topic=TOPIC_MISSION,
+                    event=build_stage_mission_event(payload),
+                    key=vol_id,
+                )
             return _serialize_stage_run(run)
     except HTTPException:
         raise
@@ -354,6 +368,7 @@ def publish_stage_artifact(
                     status_code=status.HTTP_409_CONFLICT,
                     detail="Artifact identity already exists with different immutable data",
                 )
+            _mark_stage_run_succeeded(run)
             return {"artifact_id": existing.artifact_id, "status": "existing"}
         parents = _artifacts_for_request(
             session,
@@ -379,6 +394,7 @@ def publish_stage_artifact(
                     parent_artifact_id=parent.id,
                 )
             )
+        _mark_stage_run_succeeded(run)
         queued_runs = _queue_ready_stage_runs(session, mission)
         return {
             "artifact_id": artifact.artifact_id,

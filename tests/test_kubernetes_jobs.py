@@ -18,6 +18,10 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
             namespace="drone-ai",
             image="registry.example/drone-colmap@sha256:" + "a" * 64,
             command=("python", "-m", "stage_executor"),
+            environment=(("S3_ENDPOINT", "https://s3.example"),),
+            secret_environment=(
+                jobs.SecretEnvironment("DATABASE_URL", "drone-ai-storage", "database-url"),
+            ),
         ),
     )
 
@@ -35,6 +39,16 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
     assert container["resources"]["limits"]["nvidia.com/gpu"] == "1"
     assert container["securityContext"]["readOnlyRootFilesystem"] is True
     assert container["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+    assert {mount["mountPath"] for mount in container["volumeMounts"]} == {
+        "/tmp",
+        "/work",
+        "/cache",
+    }
+    database = next(item for item in container["env"] if item["name"] == "DATABASE_URL")
+    assert database["valueFrom"]["secretKeyRef"] == {
+        "name": "drone-ai-storage",
+        "key": "database-url",
+    }
 
 
 def test_cpu_job_does_not_request_a_gpu():

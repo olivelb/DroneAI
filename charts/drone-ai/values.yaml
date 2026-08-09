@@ -256,6 +256,9 @@ dashboardApi:
 # --------------------------------------------------------------------------
 stageJobs:
   enabled: false
+  # Enabling requires all five entries. Each image must use an OCI digest or
+  # Git-SHA tag and each command must implement the immutable stage API.
+  executors: {}
   serviceAccountName: stage-job-sa
   activeDeadlineSeconds: 86400
   ttlSecondsAfterFinished: 3600

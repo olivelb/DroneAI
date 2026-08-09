@@ -48,6 +48,7 @@ from ..security import (
     require_authenticated,
     require_operator,
 )
+from ..stage_orchestrator import stage_jobs_enabled
 from .mission_catalog import router as mission_catalog_router
 from .mission_stages import router as mission_stages_router
 
@@ -425,12 +426,13 @@ def _start_mission(
             session.add(mission)
             session.flush()
             initialize_stage_runs(session, mission, payload)
-            enqueue_outbox(
-                session,
-                topic=TOPIC_MISSION,
-                event=build_new_mission_event(payload),
-                key=params.vol_id,
-            )
+            if not stage_jobs_enabled():
+                enqueue_outbox(
+                    session,
+                    topic=TOPIC_MISSION,
+                    event=build_new_mission_event(payload),
+                    key=params.vol_id,
+                )
     except HTTPException:
         raise
     except IntegrityError as error:
