@@ -195,6 +195,7 @@ services:
       HF_HOME: /cache/huggingface
       HF_HUB_CACHE: /cache/huggingface/hub
       TRANSFORMERS_CACHE: /cache/huggingface/transformers
+      ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"
     volumes:
       - model-cache:/cache/huggingface
     deploy: *gpu-reservation

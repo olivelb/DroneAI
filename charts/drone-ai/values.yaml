@@ -161,6 +161,10 @@ colmapWorker:
 # --------------------------------------------------------------------------
 # IA Worker
 # --------------------------------------------------------------------------
+tileResults:
+  # Shared producer/consumer bound for one versioned IA result artifact.
+  maximumBytes: "10485760"
+
 iaWorker:
   enabled: true
   replicaCount: 1
@@ -197,7 +201,6 @@ processingWorker:
   analysis:
     maximumTileAttempts: "5"
     finalizationLeaseSeconds: "1800"
-    maximumTileResultBytes: "10485760"
     maximumAggregateResultBytes: "268435456"
     maximumRawDetections: "100000"
     maximumFinalDetections: "50000"

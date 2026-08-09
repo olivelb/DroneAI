@@ -195,8 +195,9 @@ adding an existing `hostPath` or external disk must make its dedicated
 it.
 
 AI campaign finalization rejects pathological aggregate payloads instead of
-allowing an unbounded in-memory allocation. Helm defaults are configurable at
-`processingWorker.analysis`; the corresponding environment variables are:
+allowing an unbounded in-memory allocation. The producer and consumer share
+`tileResults.maximumBytes`; other Helm defaults are configurable at
+`processingWorker.analysis`. The corresponding environment variables are:
 
 ```text
 ANALYSIS_MAX_TILE_RESULT_BYTES=10485760
@@ -207,11 +208,13 @@ ANALYSIS_MAX_TILE_ATTEMPTS=5
 ```
 
 Raster PNG responses retain their one-hour private browser cache and are
-protected by a per-process token bucket. Configure it through
+protected by a PostgreSQL token bucket shared by API replicas in staging and
+production. The bucket key is the authenticated subject, not a proxy-dependent
+source address. Configure it through
 `dashboardApi.tiles` or `DRONEAI_TILE_RATE_LIMIT_PER_MINUTE`,
 `DRONEAI_TILE_RATE_LIMIT_BURST` and
-`DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS`. A multi-replica public deployment
-should enforce an additional shared limit at the ingress or API gateway.
+`DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS`. Local development retains its bounded
+in-process implementation.
 
 ## Operating the local mode
 

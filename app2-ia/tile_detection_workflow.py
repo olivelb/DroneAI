@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from contextlib import suppress
 from pathlib import Path
@@ -86,6 +87,7 @@ class TileDetectionWorkflow:
         sam3_backend: Sam3Backend,
         logger: logging.Logger,
         workspace_root: Path = Path("/tmp/ia_tiles"),
+        maximum_tile_result_bytes: int | None = None,
     ) -> None:
         self.producer = producer
         self.output_topic = output_topic
@@ -94,6 +96,17 @@ class TileDetectionWorkflow:
         self.sam3_backend = sam3_backend
         self.logger = logger
         self.workspace_root = workspace_root
+        self.maximum_tile_result_bytes = max(
+            1,
+            maximum_tile_result_bytes
+            if maximum_tile_result_bytes is not None
+            else int(
+                os.getenv(
+                    "ANALYSIS_MAX_TILE_RESULT_BYTES",
+                    str(10 * 1024 * 1024),
+                )
+            ),
+        )
 
     def run_detection(
         self,
@@ -244,6 +257,13 @@ class TileDetectionWorkflow:
         local_result = workspace / f"tile_result_{tile_index}.json"
         atomic_write_json(local_result, artifact)
         try:
+            result_size = local_result.stat().st_size
+            if result_size > self.maximum_tile_result_bytes:
+                raise RuntimeError(
+                    "AI tile result exceeds the "
+                    f"{self.maximum_tile_result_bytes}-byte limit before upload: "
+                    f"{result_key}"
+                )
             uploaded = storage.upload_verified_file(local_result, result_key)
         finally:
             local_result.unlink(missing_ok=True)

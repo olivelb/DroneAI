@@ -3,7 +3,7 @@ import io
 import json
 
 import pytest
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.testclient import TestClient
 
 security = importlib.import_module("app4-dashboard.api.security")
@@ -254,10 +254,37 @@ def test_raster_tile_middleware_returns_retry_after(monkeypatch):
         return {"status": "ok"}
 
     client = TestClient(application)
-    first = client.get("/maps/mission-1/tiles/ortho/1/2/3.png")
-    second = client.get("/maps/mission-1/tiles/ortho/1/2/3.png")
+    first = client.get(
+        "/maps/mission-1/tiles/ortho/1/2/3.png",
+        headers={"X-Forwarded-For": "198.51.100.10"},
+    )
+    second = client.get(
+        "/maps/mission-1/tiles/ortho/1/2/3.png",
+        headers={"X-Forwarded-For": "203.0.113.20"},
+    )
 
     assert first.status_code == 200
     assert first.headers["X-RateLimit-Limit"] == "1"
     assert second.status_code == 429
     assert second.headers["Retry-After"] == "60"
+
+
+def test_rate_limit_identity_uses_authenticated_subject(monkeypatch):
+    monkeypatch.setattr(
+        security,
+        "authenticate_request",
+        lambda _request: security.Principal("operator-1", "operator"),
+    )
+    application = FastAPI()
+
+    @application.get("/identity")
+    def identity(request: Request):
+        return {"key": rate_limit.rate_limit_identity(request)}
+
+    client = TestClient(application)
+    response = client.get(
+        "/identity",
+        headers={"X-Forwarded-For": "203.0.113.20"},
+    )
+
+    assert response.json() == {"key": "subject:operator-1"}

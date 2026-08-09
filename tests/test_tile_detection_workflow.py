@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 
 APP2_ROOT = Path(__file__).resolve().parents[1] / "app2-ia"
@@ -73,7 +74,14 @@ class FakeSam3Backend:
         )
 
 
-def _workflow(tmp_path, *, producer=None, cancellation=None, progress=None):
+def _workflow(
+    tmp_path,
+    *,
+    producer=None,
+    cancellation=None,
+    progress=None,
+    maximum_tile_result_bytes=None,
+):
     return tile_workflow.TileDetectionWorkflow(
         producer=producer or FakeProducer(),
         output_topic="tile-detections",
@@ -82,6 +90,7 @@ def _workflow(tmp_path, *, producer=None, cancellation=None, progress=None):
         sam3_backend=FakeSam3Backend(),
         logger=importlib.import_module("logging").getLogger("test"),
         workspace_root=tmp_path,
+        maximum_tile_result_bytes=maximum_tile_result_bytes,
     )
 
 
@@ -259,6 +268,45 @@ def test_replicas_publish_results_without_local_terminal_status(
     assert progress_a == []
     assert progress_b == []
     assert not list(tmp_path.rglob("*.jpg"))
+
+
+def test_oversized_tile_result_is_rejected_before_storage_upload(
+    tmp_path,
+    monkeypatch,
+):
+    workflow = _workflow(tmp_path, maximum_tile_result_bytes=100)
+    workspace = tmp_path / "mission-1" / "pipeline"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(
+        tile_workflow.storage,
+        "upload_verified_file",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("upload called")),
+    )
+
+    with pytest.raises(RuntimeError, match="before upload"):
+        workflow._publish_result(
+            tile_info={"tile_index": 1},
+            vol_id="mission-1",
+            analysis_run_id=None,
+            analysis_attempt=0,
+            detections=[
+                {
+                    "vol_id": "mission-1",
+                    "global_pixel_x": 1.0,
+                    "global_pixel_y": 2.0,
+                    "geo_lon": None,
+                    "geo_lat": None,
+                    "confidence": 0.9,
+                    "class_id": 1,
+                    "class_name": "vehicle",
+                    "segment": [[float(index), 0.0] for index in range(100)],
+                }
+            ],
+            attempt={"model_manifest": {"backend": "test"}},
+            workspace=workspace,
+        )
+
+    assert not list(workspace.glob("tile_result_*.json"))
 
 
 def test_cancelled_tile_is_not_downloaded_or_published(

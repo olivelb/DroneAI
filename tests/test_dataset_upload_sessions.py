@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import importlib
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi import HTTPException
 from sqlalchemy import create_engine
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shared.database import DatasetUploadFile, DatasetUploadSession
 
 uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 security = importlib.import_module("app4-dashboard.api.security")
+datasets_router = importlib.import_module("app4-dashboard.api.routers.datasets")
 
 
 @pytest.fixture
@@ -223,3 +227,94 @@ def test_direct_upload_applies_existing_batch_quotas(
         )
 
     assert error.value.status_code == 413
+
+
+def _upload_record(dataset_name: str, *, status: str = "uploading") -> DatasetUploadSession:
+    return DatasetUploadSession(
+        dataset_name=dataset_name,
+        status=status,
+        total_bytes=1,
+        file_count=1,
+        part_size=uploads.MIN_PART_BYTES,
+        created_by="operator-1",
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+
+def test_active_dataset_name_is_reserved_by_a_partial_unique_index(upload_session):
+    first = _upload_record("same-name")
+    upload_session.add(first)
+    upload_session.commit()
+
+    upload_session.add(_upload_record("same-name", status="failed"))
+    with pytest.raises(IntegrityError):
+        upload_session.flush()
+    upload_session.rollback()
+
+    first = upload_session.query(DatasetUploadSession).one()
+    first.status = "completed"
+    upload_session.commit()
+    upload_session.add(_upload_record("same-name"))
+    upload_session.flush()
+
+
+def test_expired_cleanup_query_uses_skip_locked(upload_session):
+    statement = uploads._expired_upload_query(
+        upload_session,
+        datetime.now(UTC),
+    ).statement
+    sql = str(
+        statement.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+    assert "FOR UPDATE SKIP LOCKED" in sql
+    assert "ORDER BY dataset_upload_sessions.expires_at" in sql
+
+
+def test_missing_multipart_upload_is_an_idempotent_abort(
+    upload_session,
+    fake_storage,
+    monkeypatch,
+):
+    principal = security.Principal("operator-1", "operator")
+    response = uploads.create_upload_session(
+        upload_session,
+        uploads.UploadSessionRequest(
+            dataset_name="already-aborted",
+            files=[{"name": "image.jpg", "size": 1024}],
+        ),
+        principal,
+    )
+    record = upload_session.query(DatasetUploadSession).filter(
+        DatasetUploadSession.session_id == response["session_id"]
+    ).one()
+
+    class MissingUploadError(RuntimeError):
+        response = {"Error": {"Code": "NoSuchUpload"}}
+
+    monkeypatch.setattr(
+        uploads.storage,
+        "abort_multipart_upload",
+        lambda *_args: (_ for _ in ()).throw(MissingUploadError()),
+    )
+
+    uploads._abort_record(record)
+
+    assert record.status == "aborted"
+    assert record.files[0].status == "aborted"
+
+
+@pytest.mark.parametrize("environment", ["staging", "production"])
+def test_legacy_proxied_upload_is_disabled_outside_development(
+    environment,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_ENV", environment)
+
+    with pytest.raises(HTTPException) as error:
+        datasets_router.upload_dataset_batch("dataset", [])
+
+    assert error.value.status_code == 404

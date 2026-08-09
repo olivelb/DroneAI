@@ -25,6 +25,7 @@ from .. import dataset_uploads
 from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
     Principal,
+    is_production,
     require_admin,
     require_authenticated,
     require_operator,
@@ -289,6 +290,11 @@ def upload_dataset_batch(
     dataset_name: Annotated[str, Query()],
     files: Annotated[list[UploadFile], File()],
 ) -> UploadBatchResponse:
+    if is_production():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not found",
+        )
     validate_uploads(files)
     safe_name = sanitize_dataset_name(dataset_name, replacement="_")
     if not safe_name:

@@ -18,10 +18,11 @@ def test_production_overlay_requires_immutable_application_images() -> None:
     assert "requireImmutableImages: false" in defaults
     assert "requireImmutableImages: true" in values
     assert values.count('tag: "REPLACE_GIT_SHA"') == 5
-    assert 'eq $tag "latest"' in helpers
-    assert "@sha256:" in helpers
+    assert 'regexMatch "^[0-9a-f]{7,40}$" $tag' in helpers
+    assert 'regexMatch "@sha256:[0-9a-f]{64}$" .image' in helpers
     assert "Mutable application image tag found in the production render" in ci
-    assert "REPLACE_GIT_SHA" in ci
+    assert ci.count("--set-string") >= 8
+    assert "${GITHUB_SHA}" in ci
 
 
 def test_browser_upload_cors_exposes_multipart_etag() -> None:
@@ -56,3 +57,15 @@ def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
     assert "type: RollingUpdate" in deployment
     assert "DRONEAI_TILE_RATE_LIMIT_BACKEND" in deployment
     assert "fieldPath: metadata.name" in deployment
+
+
+def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
+    defaults = _read(CHART / "values.yaml")
+    ia_deployment = _read(CHART / "templates" / "ia-worker.yaml")
+    processing_deployment = _read(CHART / "templates" / "processing-worker.yaml")
+    compose = _read(ROOT / "compose.local.yaml")
+
+    assert 'maximumBytes: "10485760"' in defaults
+    assert ".Values.tileResults.maximumBytes" in ia_deployment
+    assert ".Values.tileResults.maximumBytes" in processing_deployment
+    assert compose.count('ANALYSIS_MAX_TILE_RESULT_BYTES: "10485760"') == 2

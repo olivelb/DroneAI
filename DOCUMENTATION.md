@@ -228,7 +228,11 @@ Primary endpoints:
 - `GET /mission/parameters`
 - `POST /mission/resume`
 - `DELETE /mission/{vol_id}`
-- `POST /datasets/upload` (server-validated multi-file batch)
+- `POST /datasets/upload` (development-only compatibility endpoint)
+- `POST /datasets/upload-sessions`
+- `POST /datasets/upload-sessions/{session_id}/files/{file_id}/parts/{part_number}`
+- `POST /datasets/upload-sessions/{session_id}/files/{file_id}/complete`
+- `POST|DELETE /datasets/upload-sessions/{session_id}`
 - `GET /preview/{s3_key}`
 - `GET /maps/{vol_id}/metadata/{layer}`
 - `GET /maps/{vol_id}/tiles/{layer}/{z}/{x}/{y}.png`
