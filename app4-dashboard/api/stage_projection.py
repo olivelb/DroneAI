@@ -94,10 +94,14 @@ def project_stage_mission(mission: Any, runs: Iterable[Any]) -> StageMissionProj
     ]
     progress = round(sum(weighted_progress) / len(weighted_progress))
 
+    # Keep genuine activity first, but surface a terminal failure before the
+    # downstream stages it has blocked.  Otherwise an operator sees the
+    # consequence (for example detection blocked) instead of the root cause
+    # (rasterization failed).
     active = next(
         (
             run
-            for status in ("running", "queued", "blocked")
+            for status in ("running", "failed", "cancelled", "queued", "blocked")
             for run in selected
             if str(run.status) == status
         ),

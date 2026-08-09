@@ -90,8 +90,28 @@ def test_stage_projection_reports_failure_and_lifecycle_logs():
     assert result is not None
     assert result["overall_status"] == "error"
     assert result["progress"] == 0
+    assert result["current_step"] == "RASTERIZATION · FAILED"
     assert [entry["status"] for entry in logs] == ["processing", "error"]
     assert logs[-1]["message"].endswith("failed: boom")
+
+
+def test_stage_projection_surfaces_failure_before_blocked_downstream_stage():
+    now = datetime.now(UTC)
+    mission = SimpleNamespace(
+        status="pending",
+        params={"phases": ["rasterization", "detection"]},
+        updated_at=now,
+    )
+    runs = [
+        _run(1, "rasterization", "failed", completed_at=now),
+        _run(2, "detection", "blocked"),
+    ]
+
+    result = projection.project_stage_mission(mission, runs)
+
+    assert result is not None
+    assert result["overall_status"] == "error"
+    assert result["current_step"] == "RASTERIZATION · FAILED"
 
 
 def test_operator_parameters_hide_yolo_choice_from_sam3_projection():
