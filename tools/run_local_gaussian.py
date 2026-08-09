@@ -208,15 +208,22 @@ PROFILES: dict[str, GaussianProfile] = {
     ),
 }
 
-FAST_PARAMETERS = quality_profile("fast-v1").parameters
-PROFILES["fast"] = replace(
-    PROFILES["balanced"],
-    iterations=int(FAST_PARAMETERS["gs_iterations"]),
-    cap_max=int(FAST_PARAMETERS["gs_cap_max"]),
-    data_factor=int(FAST_PARAMETERS["gs_data_factor"]),
-    max_width=int(FAST_PARAMETERS["gs_max_width"]),
-    profile_id="fast-v1",
-)
+def versioned_quality_profile(profile_id: str) -> GaussianProfile:
+    """Derive a local runner profile from the shared product envelope."""
+
+    parameters = quality_profile(profile_id).parameters
+    return replace(
+        PROFILES["balanced"],
+        iterations=int(parameters["gs_iterations"]),
+        cap_max=int(parameters["gs_cap_max"]),
+        data_factor=int(parameters["gs_data_factor"]),
+        max_width=int(parameters["gs_max_width"]),
+        profile_id=profile_id,
+    )
+
+
+PROFILES["fast"] = versioned_quality_profile("fast-v1")
+PROFILES["normal"] = versioned_quality_profile("normal-v1")
 
 
 def parse_args() -> argparse.Namespace:

@@ -64,6 +64,16 @@ def test_fast_profile_matches_versioned_minimum_quality_envelope():
     assert profile.profile_id == "fast-v1"
 
 
+def test_normal_profile_matches_versioned_quality_envelope():
+    profile = PROFILES["normal"]
+
+    assert profile.iterations == 15_000
+    assert profile.cap_max == 3_000_000
+    assert profile.data_factor == 4
+    assert profile.max_width == 2400
+    assert profile.profile_id == "normal-v1"
+
+
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     profile = PROFILES["facade-hd"]
 
