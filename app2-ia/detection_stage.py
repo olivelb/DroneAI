@@ -24,7 +24,7 @@ from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
 from shared.model_provenance import validate_model_manifest
 from shared.pipeline_params import normalize_ai_backend
-from shared.sam3_capabilities import validate_sam3_tile_size
+from shared.sam3_capabilities import SAM3_DEFAULT_CONFIDENCE, validate_sam3_tile_size
 from shared.stage_execution import (
     StageExecutionContext,
     StageExecutionControl,
@@ -66,7 +66,12 @@ class DetectionStageConfig:
             raise ValueError("Detection stage AI parameters must be an object")
         ai = cast(dict[str, Any], raw_ai)
         backend = normalize_ai_backend(cast(str | None, ai.get("backend")))
-        confidence = float(ai.get("confidence") or 0.3)
+        raw_confidence = ai.get("confidence")
+        confidence = float(
+            raw_confidence
+            if raw_confidence is not None
+            else (SAM3_DEFAULT_CONFIDENCE if backend == "sam3" else 0.3)
+        )
         if not 0.0 < confidence <= 1.0:
             raise ValueError("Detection confidence must be in (0, 1]")
         raw_classes = ai.get("classes") or ["car"]

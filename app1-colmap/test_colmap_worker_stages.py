@@ -166,20 +166,23 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertTrue(warnings)
 
     def test_versioned_quality_profile_becomes_custom_after_training_override(self):
-        profile = quality_profile("high-quality-v1")
+        profile = quality_profile("high-quality-v2")
         config, warnings = dronegs_config.resolve_dronegs_config(
             profile.parameters,
             facade_mode=False,
             data_factor=int(profile.parameters["gs_data_factor"]),
         )
 
-        self.assertEqual(config.profile_id, "high-quality-v1")
+        self.assertEqual(config.profile_id, "high-quality-v2")
         self.assertEqual(config.iterations, 30_000)
-        self.assertEqual(config.cap_max, 5_000_000)
+        self.assertEqual(config.cap_max, 12_000_000)
+        self.assertEqual(config.capacity_mode, "adaptive")
+        self.assertEqual(config.capacity_floor, 5_000_000)
+        self.assertEqual(config.target_gaussian_spacing_pixels, 8.0)
         self.assertEqual(warnings, ())
 
         overridden, warnings = dronegs_config.resolve_dronegs_config(
-            {**profile.parameters, "gs_cap_max": "4500000"},
+            {**profile.parameters, "gs_cap_max": "11000000"},
             facade_mode=False,
             data_factor=int(profile.parameters["gs_data_factor"]),
         )

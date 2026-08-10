@@ -332,8 +332,18 @@ def test_sam3_schemas_keep_free_form_semantic_prompts():
     )
 
     assert mission.classes == ["roof defect"]
+    assert mission.ai_confidence == 0.75
     assert analysis.classes == ["roof defect"]
     assert analysis.model_variant is None
+    assert analysis.confidence == 0.75
+
+    explicit = MissionParams(
+        vol_id="mission-002",
+        input_dataset="datasets/banyuls",
+        ai_backend="sam3",
+        ai_confidence=0.5,
+    )
+    assert explicit.ai_confidence == 0.5
 
 
 def test_yolo_analysis_applies_the_default_model_after_backend_validation():

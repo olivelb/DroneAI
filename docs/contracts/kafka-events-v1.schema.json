@@ -650,7 +650,9 @@
               "enum": [
                 "fast-v1",
                 "normal-v1",
-                "high-quality-v1"
+                "high-quality-v1",
+                "normal-v2",
+                "high-quality-v2"
               ],
               "type": "string"
             },

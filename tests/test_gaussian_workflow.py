@@ -17,7 +17,17 @@ raster_product = importlib.import_module("gaussian_ortho.raster_product")
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
-    scene_state = SimpleNamespace(name="scene")
+    scene_state = SimpleNamespace(
+        name="scene",
+        point_cloud=SimpleNamespace(
+            points=np.array(
+                [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                dtype=np.float32,
+            )
+        ),
+        colmap_to_meters=1.0,
+        cells=[(None, SimpleNamespace())],
+    )
     training_state = SimpleNamespace(final_ply="final.ply")
     calls = {}
     backend = SimpleNamespace(
@@ -36,9 +46,20 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
         return training_state
 
     monkeypatch.setattr(workflow, "train_and_merge_gaussian_models", train)
+    monkeypatch.setattr(
+        workflow,
+        "replace",
+        lambda config, **changes: SimpleNamespace(**(vars(config) | changes)),
+    )
 
     result = workflow.execute_gaussian_training_phase(
-        SimpleNamespace(),
+        SimpleNamespace(
+            capacity_mode="fixed",
+            cap_max=1_500_000,
+            capacity_floor=1_500_000,
+            target_gaussian_spacing_pixels=0.0,
+            resolution=0.02,
+        ),
         backend=backend,
         model_class=lambda: None,
         merge_models_fn=lambda: None,

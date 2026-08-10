@@ -20,7 +20,7 @@ import json
 import os
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -71,6 +71,11 @@ from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
 from .partition import CellBounds
 from .scene_info import SceneInfo
 from .render_geometry import GaussianRenderGeometry
+from .capacity_planning import (
+    GaussianCapacityPlan,
+    detected_vram_bytes,
+    plan_gaussian_capacity,
+)
 
 if TYPE_CHECKING:
     from .facade_frame import FacadeFrame
@@ -250,6 +255,9 @@ class GaussianOrthoConfig:
     ortho_mip_filter_compensation: bool
     tile_mode: int
     cap_max: int
+    capacity_mode: str
+    capacity_floor: int
+    target_gaussian_spacing_pixels: float
     filter_enabled: bool
     filter_max_scale: float
     filter_min_retained_ratio: float
@@ -525,6 +533,7 @@ class GaussianTrainingPhaseState:
     training_state: GaussianTrainingState
     backend_name: str
     trainer_binary_sha256: str
+    capacity_plan: GaussianCapacityPlan | None = None
 
 
 def execute_gaussian_training_phase(
@@ -553,8 +562,46 @@ def execute_gaussian_training_phase(
         cupy_module = cp
     trainer_binary_sha256 = backend.binary_sha256()
     scene_state = prepare_gaussian_scene(config)
-    training_state = train_and_merge_gaussian_models(
+    if scene_state.point_cloud is None:
+        raise RuntimeError("Sparse point cloud is unavailable for capacity planning")
+    detected_vram = detected_vram_bytes(cupy_module)
+    capacity_plan = plan_gaussian_capacity(
+        mode=config.capacity_mode,
+        requested_cap=config.cap_max,
+        capacity_floor=config.capacity_floor,
+        target_spacing_pixels=config.target_gaussian_spacing_pixels,
+        points=scene_state.point_cloud.points,
+        meters_per_model_unit=scene_state.colmap_to_meters,
+        requested_gsd_m=config.resolution,
+        free_vram_bytes=detected_vram[0] if detected_vram else None,
+        total_vram_bytes=detected_vram[1] if detected_vram else None,
+        cell_count=len(scene_state.cells),
+    )
+    if capacity_plan.mode == "adaptive":
+        area = capacity_plan.robust_ground_area_m2 or 0.0
+        vram_cap = (
+            f"{capacity_plan.vram_cap:,}"
+            if capacity_plan.vram_cap is not None
+            else "unavailable"
+        )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            14,
+            "Adaptive capacity: "
+            f"{area:,.0f} m² at {config.resolution:.4f} m/px, "
+            f"surface target {capacity_plan.surface_target:,}, "
+            f"VRAM cap {vram_cap}, effective scene cap "
+            f"{capacity_plan.effective_scene_cap:,} "
+            f"({capacity_plan.effective_cell_cap:,} per active cell).",
+            config.report_fn,
+        )
+    training_config = replace(
         config,
+        cap_max=capacity_plan.effective_cell_cap,
+    )
+    training_state = train_and_merge_gaussian_models(
+        training_config,
         scene_state,
         backend=backend,
         trainer_binary_sha256=trainer_binary_sha256,
@@ -567,6 +614,7 @@ def execute_gaussian_training_phase(
         training_state=training_state,
         backend_name=backend.name,
         trainer_binary_sha256=trainer_binary_sha256,
+        capacity_plan=capacity_plan,
     )
 
 
@@ -1202,6 +1250,9 @@ def generate_gaussian_orthophoto(
     ortho_mip_filter_compensation: bool = True,
     tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
     cap_max: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
+    capacity_mode: str = "fixed",
+    capacity_floor: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
+    target_gaussian_spacing_pixels: float = 0.0,
     filter_enabled: bool = True,
     filter_max_scale: float = 5.0,
     filter_min_retained_ratio: float = 0.80,
@@ -1345,6 +1396,9 @@ def generate_gaussian_orthophoto(
         ortho_mip_filter_compensation=ortho_mip_filter_compensation,
         tile_mode=tile_mode,
         cap_max=cap_max,
+        capacity_mode=capacity_mode,
+        capacity_floor=capacity_floor,
+        target_gaussian_spacing_pixels=target_gaussian_spacing_pixels,
         filter_enabled=filter_enabled,
         filter_max_scale=filter_max_scale,
         filter_min_retained_ratio=filter_min_retained_ratio,

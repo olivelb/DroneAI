@@ -108,11 +108,8 @@ export default function AnalysisPanel({
                 const backend = event.target.value as AIBackend;
                 update({
                   backend,
-                  tile_size:
-                    backend === "sam3" &&
-                    form.tile_size > sam3MaximumTileSize
-                      ? sam3MaximumTileSize
-                      : form.tile_size,
+                  tile_size: backend === "sam3" ? Math.min(form.tile_size, sam3MaximumTileSize) : form.tile_size,
+                  confidence: backend === "sam3" ? Math.max(form.confidence, 0.75) : form.confidence,
                 });
               }}
               className="input-control"
@@ -176,7 +173,7 @@ export default function AnalysisPanel({
               <input
                 type="range"
                 min="0.05"
-                max="0.9"
+                max="0.99"
                 step="0.05"
                 value={form.confidence}
                 onChange={(event) =>

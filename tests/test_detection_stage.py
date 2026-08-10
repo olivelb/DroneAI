@@ -265,6 +265,11 @@ def test_detection_config_rejects_unbounded_prompt_and_confidence():
 def test_detection_config_enforces_sam3_effective_input_limit():
     context = _context()
 
+    defaulted = detection_stage.DetectionStageConfig.from_context(
+        replace(context, parameters={"ai": {"backend": "sam3"}})
+    )
+    assert defaulted.confidence == 0.75
+
     with pytest.raises(ValueError, match="must not exceed 1024 pixels"):
         detection_stage.DetectionStageConfig.from_context(
             replace(

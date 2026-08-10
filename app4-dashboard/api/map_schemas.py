@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.validation import validate_aerial_class_names
-from shared.sam3_capabilities import validate_sam3_tile_size
+from shared.sam3_capabilities import SAM3_DEFAULT_CONFIDENCE, validate_sam3_tile_size
 from shared.yolo_capabilities import yolo_model_manifest
 
 from shared.geospatial_workspace import (
@@ -58,6 +58,8 @@ class AnalysisCreate(BaseModel):
         else:
             self.model_variant = None
             validate_sam3_tile_size(self.tile_size)
+            if "confidence" not in self.model_fields_set:
+                self.confidence = SAM3_DEFAULT_CONFIDENCE
         return self
 
 

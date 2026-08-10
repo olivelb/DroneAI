@@ -26,6 +26,9 @@ class DroneGsRunConfig:
     data_factor: int
     iterations: int
     cap_max: int
+    capacity_mode: str
+    capacity_floor: int
+    target_gaussian_spacing_pixels: float
     sh_degree: int
     backend: str
     seed: int
@@ -74,6 +77,9 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "max_width": config.max_width,
         "tile_mode": config.tile_mode,
         "cap_max": config.cap_max,
+        "capacity_mode": config.capacity_mode,
+        "capacity_floor": config.capacity_floor,
+        "target_gaussian_spacing_pixels": config.target_gaussian_spacing_pixels,
         "sh_degree": config.sh_degree,
         "seed": config.seed,
         "optimizer_profile": config.optimizer_profile,
@@ -92,13 +98,34 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
 
 def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> dict[str, Any] | None:
     if profile_id == FACADE_DRONEGS_PROFILE_ID:
-        return dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
+        expected = dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
+        expected.update(
+            {
+                "capacity_mode": "fixed",
+                "capacity_floor": int(expected["cap_max"]),
+                "target_gaussian_spacing_pixels": 0.0,
+            }
+        )
+        return expected
     if profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
-        return {name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name) for name in fields}
+        expected = {
+            name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
+            for name in fields
+            if hasattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
+        }
+        expected.update(
+            {
+                "capacity_mode": "fixed",
+                "capacity_floor": DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
+                "target_gaussian_spacing_pixels": 0.0,
+            }
+        )
+        return expected
     if profile_id in QUALITY_PROFILE_BY_ID:
         expected = {
             name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
             for name in fields
+            if hasattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
         }
         parameters = QUALITY_PROFILE_BY_ID[
             cast(QualityProfileId, profile_id)
@@ -109,6 +136,11 @@ def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> di
                 "data_factor": int(parameters["gs_data_factor"]),
                 "max_width": int(parameters["gs_max_width"]),
                 "cap_max": int(parameters["gs_cap_max"]),
+                "capacity_mode": str(parameters["gs_capacity_mode"]),
+                "capacity_floor": int(parameters["gs_capacity_floor"]),
+                "target_gaussian_spacing_pixels": float(
+                    parameters["gs_target_gaussian_spacing_pixels"]
+                ),
             }
         )
         return expected
@@ -135,6 +167,9 @@ def resolve_dronegs_config(
     profile_id = str(
         params.get("gs_production_profile", DRONEGS_PRODUCTION_PROFILE_V1.profile_id)
     )
+    selected_profile = QUALITY_PROFILE_BY_ID.get(cast(QualityProfileId, profile_id))
+    selected_parameters = selected_profile.parameters if selected_profile else {}
+    cap_max = int(params.get("gs_cap_max", DRONEGS_PRODUCTION_PROFILE_V1.cap_max))
     qualification_policy_id = str(
         params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID)
     )
@@ -143,7 +178,25 @@ def resolve_dronegs_config(
         resolution=float(params.get("ortho_mesh_resolution", 0.02)),
         data_factor=data_factor,
         iterations=int(params.get("gs_iterations", DRONEGS_PRODUCTION_PROFILE_V1.iterations)),
-        cap_max=int(params.get("gs_cap_max", DRONEGS_PRODUCTION_PROFILE_V1.cap_max)),
+        cap_max=cap_max,
+        capacity_mode=str(
+            params.get(
+                "gs_capacity_mode",
+                selected_parameters.get("gs_capacity_mode", "fixed"),
+            )
+        ),
+        capacity_floor=int(
+            params.get(
+                "gs_capacity_floor",
+                selected_parameters.get("gs_capacity_floor", cap_max),
+            )
+        ),
+        target_gaussian_spacing_pixels=float(
+            params.get(
+                "gs_target_gaussian_spacing_pixels",
+                selected_parameters.get("gs_target_gaussian_spacing_pixels", 0.0),
+            )
+        ),
         sh_degree=int(params.get("gs_sh_degree", DRONEGS_PRODUCTION_PROFILE_V1.sh_degree)),
         backend=str(params.get("gs_backend", "dronegs")),
         seed=int(params.get("gs_seed", 42)),
@@ -240,6 +293,14 @@ def resolve_dronegs_config(
             )
         ),
     )
+    if config.capacity_mode not in {"fixed", "adaptive"}:
+        raise ValueError("gs_capacity_mode must be fixed or adaptive")
+    if not 1 <= config.capacity_floor <= config.cap_max:
+        raise ValueError("gs_capacity_floor must be positive and no greater than gs_cap_max")
+    if config.capacity_mode == "adaptive" and config.target_gaussian_spacing_pixels <= 0:
+        raise ValueError(
+            "adaptive Gaussian capacity requires a positive target pixel spacing"
+        )
 
     warnings: list[str] = []
     profile_identity = _profile_identity(config)

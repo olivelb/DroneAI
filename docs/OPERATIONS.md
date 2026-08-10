@@ -111,8 +111,8 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 - rendered resource-class node selectors, executor tolerations and selected
   node capability labels;
 - dataset identity, input count/size and permission to retain the evidence;
-- selected process, profile and effective overrides, including the exact
-  Gaussian cap (Fast 1.5M, Normal 3M or High Quality 5M);
+- selected process, profile and effective overrides, including the requested,
+  surface-derived, VRAM-derived and final Gaussian caps from stage provenance;
 - one run ID and artifact ID/checksum for every selected stage;
 - exact parent-artifact edges, model manifest and AI prompt/classes;
 - duration, peak CPU/RAM/VRAM and temporary/persistent storage use per stage;
@@ -227,6 +227,14 @@ batch size. Keep 8 GiB ineligible: the 12 GiB class provides headroom above the
 sampled 6,334 MiB total footprint. A 24 GiB override remains valid but does not
 increase batch size in this policy. Requalify any new revision, dtype, batch
 size or GPU architecture before changing that envelope.
+
+The default SAM3 confidence is 0.75 for new requests that omit a threshold.
+It is a conservative candidate filter, not an acceptance gate. Production AI
+qualification requires labelled truth and a threshold sweep reporting
+precision, recall and false positives; the exploratory 0.20 and 0.50
+Villesèque campaigns are not qualifying evidence. Do not claim vegetation
+classification from SAM3 until a dedicated semantic model benchmark has been
+accepted.
 
 `stageJobs.enabled=true` remains supported for controlled preproduction only
 after the target satisfies the current qualification gates. The generic chart

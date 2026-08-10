@@ -68,10 +68,12 @@ def test_normal_profile_matches_versioned_quality_envelope():
     profile = PROFILES["normal"]
 
     assert profile.iterations == 15_000
-    assert profile.cap_max == 3_000_000
+    assert profile.cap_max == 8_000_000
     assert profile.data_factor == 4
     assert profile.max_width == 2400
-    assert profile.profile_id == "normal-v1"
+    assert profile.profile_id == "normal-v2"
+    assert profile.capacity_mode == "adaptive"
+    assert profile.capacity_floor == 3_000_000
 
 
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():

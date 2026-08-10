@@ -1656,10 +1656,11 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 
 The table's `Default` column is the low-level validated DroneGS recipe used
 before an end-to-end quality envelope is applied. New Mission Studio missions
-default to `normal-v1`, which overrides width/cap to 2,400 px and 3,000,000
-Gaussians. Fast/Normal/High Quality are respectively 1.5M/3M/5M; the complete
-immutable envelopes are in
-[`docs/contracts/quality-profiles-v1.md`](docs/contracts/quality-profiles-v1.md).
+default to `normal-v2`. Fast remains a fixed 1.5 M preview; Normal and High
+Quality derive their effective capacity from robust scene area, requested GSD
+and detected VRAM, with respective operator ceilings of 8 M and 12 M. The
+complete immutable envelopes and the memory formula are in
+[`docs/contracts/quality-profiles-v2.md`](docs/contracts/quality-profiles-v2.md).
 
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |
@@ -1672,7 +1673,10 @@ immutable envelopes are in
 | Ortho Mip Filter Variance | `gs_ortho_mip_filter_variance` | float | 0.03 | 0.01–1.0 |
 | Ortho Mip Opacity Compensation | `gs_ortho_mip_filter_compensation` | bool | true | — |
 | GS Tile Mode | `gs_tile_mode` | select | 4 | 1/2/4 |
-| GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–10000000 |
+| GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–20000000 |
+| GS Capacity Mode | `gs_capacity_mode` | select | fixed | fixed/adaptive |
+| GS Capacity Floor | `gs_capacity_floor` | int | 1500000 | 1000000–20000000 |
+| GS Target Gaussian Spacing | `gs_target_gaussian_spacing_pixels` | float | 0 | 0–64 px |
 | GS Spherical Harmonics Degree | `gs_sh_degree` | select | 3 | 1/2/3 |
 | DroneGS Deterministic Seed | `gs_seed` | int | 42 | 0–2147483647 |
 | DroneGS Optimizer Profile | `gs_optimizer_profile` | select | reference-absolute | validated profiles |

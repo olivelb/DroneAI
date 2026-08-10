@@ -15,7 +15,7 @@ from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QualityProfileId,
 )
-from shared.sam3_capabilities import validate_sam3_tile_size
+from shared.sam3_capabilities import SAM3_DEFAULT_CONFIDENCE, validate_sam3_tile_size
 from shared.stage_contracts import STAGE_ORDER, StageId, validate_stage_selection
 from shared.yolo_capabilities import yolo_model_manifest
 
@@ -74,6 +74,8 @@ class MissionParams(BaseModel):
             yolo_model_manifest(self.ai_model_variant)
         else:
             validate_sam3_tile_size(self.tile_size)
+            if "ai_confidence" not in self.model_fields_set:
+                self.ai_confidence = SAM3_DEFAULT_CONFIDENCE
         return self
 
     @model_validator(mode="after")

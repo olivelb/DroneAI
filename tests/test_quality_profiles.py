@@ -18,12 +18,12 @@ from shared.yolo_capabilities import (
 def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     expected = {
         "fast-v1": ("1600", "2048", "7500", "1500000"),
-        "normal-v1": ("2400", "4096", "15000", "3000000"),
-        "high-quality-v1": ("4096", "16384", "30000", "5000000"),
+        "normal-v2": ("2400", "4096", "15000", "8000000"),
+        "high-quality-v2": ("4096", "16384", "30000", "12000000"),
     }
 
-    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v1"
-    assert set(QUALITY_PROFILE_BY_ID) == set(expected)
+    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v2"
+    assert set(expected) < set(QUALITY_PROFILE_BY_ID)
     for profile_id, values in expected.items():
         parameters = quality_profile(profile_id).parameters
         assert (
@@ -33,14 +33,18 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
             parameters["gs_cap_max"],
         ) == values
         assert parameters["gs_production_profile"] == profile_id
+    assert quality_profile("fast-v1").parameters["gs_capacity_mode"] == "fixed"
+    assert quality_profile("normal-v2").parameters["gs_capacity_mode"] == "adaptive"
+    assert quality_profile("high-quality-v2").parameters["gs_capacity_floor"] == "5000000"
+    assert quality_profile("normal-v2").version == 2
 
 
 def test_profile_overrides_only_records_changed_envelope_values():
     assert profile_overrides(
-        "normal-v1",
+        "normal-v2",
         {
             "gs_iterations": "20000",
-            "gs_cap_max": "3000000",
+            "gs_cap_max": "8000000",
             "projected_crs": "EPSG:2154",
         },
     ) == {"gs_iterations": "20000"}

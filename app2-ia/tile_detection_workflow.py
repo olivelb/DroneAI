@@ -13,6 +13,7 @@ from pyproj import Transformer
 
 from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import JsonObject, Sam3Backend
+from shared.sam3_capabilities import SAM3_DEFAULT_CONFIDENCE
 from shared import storage
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.json_io import atomic_write_json
@@ -114,7 +115,12 @@ class TileDetectionWorkflow:
         tile_info: JsonObject,
     ) -> tuple[list[DetectionRecord], JsonObject]:
         backend = normalize_ai_backend(cast(str | None, tile_info.get("ai_backend")))
-        requested_confidence = float(tile_info.get("ai_confidence", 0.3))
+        raw_confidence = tile_info.get("ai_confidence")
+        requested_confidence = float(
+            raw_confidence
+            if raw_confidence is not None
+            else (SAM3_DEFAULT_CONFIDENCE if backend == "sam3" else 0.3)
+        )
         requested_classes = cast(
             list[str],
             tile_info.get("classes") or ["car"],

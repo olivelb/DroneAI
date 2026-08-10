@@ -5,7 +5,12 @@ export type AIBackend = "yolo" | "sam3";
 export type YOLOModelVariant =
   | "yolo26l" | "yolo26m" | "yolo26s" | "yolo26n"
   | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
-export type QualityProfileId = "fast-v1" | "normal-v1" | "high-quality-v1";
+export type QualityProfileId =
+  | "fast-v1"
+  | "normal-v1"
+  | "high-quality-v1"
+  | "normal-v2"
+  | "high-quality-v2";
 export type ParamValue = string | boolean;
 export type ParameterOption = string | {
   value: string;
