@@ -7,6 +7,10 @@ type ApiOptions = {
   onMissionLaunch?: (payload: Record<string, unknown>) => void;
   onMissionCancel?: (volId: string) => void;
   onMapExport?: (url: string) => void;
+  onGcpPointUpdate?: (payload: Record<string, unknown>) => void;
+  onGcpObservationUpdate?: (payload: Record<string, unknown>) => void;
+  onGcpCandidateRefresh?: () => void;
+  onGcpBundle?: () => void;
 };
 
 const json = (body: unknown, status = 200) => ({
@@ -210,6 +214,114 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         type: "FeatureCollection",
         features: [],
       }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps" && request.method() === "GET") {
+      await route.fulfill(json({
+        type: "FeatureCollection",
+        gcp_sets: [{
+          set_id: "set-1",
+          name: "Survey control",
+          source_filename: "markers.csv",
+          source_format: "delimited-text",
+          source_crs: "EPSG:2154",
+          source_sha256: "a".repeat(64),
+          point_count: 1,
+          adjustment_count: 1,
+          checkpoint_count: 0,
+          marked_observation_count: 0,
+          version: 1,
+          created_at: "2026-08-10T12:00:00Z",
+          updated_at: "2026-08-10T12:00:00Z",
+        }],
+        features: [{
+          type: "Feature",
+          id: "point-1",
+          geometry: { type: "Point", coordinates: [2.05, 48.05] },
+          properties: {
+            point_id: "point-1",
+            set_id: "set-1",
+            set_name: "Survey control",
+            external_id: "P1",
+            altitude_m: 125,
+            source_coordinates: [652000, 6860000, 125],
+            role: "adjustment",
+            horizontal_accuracy_m: 0.02,
+            vertical_accuracy_m: 0.03,
+            image_accuracy_px: 1,
+            observation_summary: { candidate: 1, marked: 0, skipped: 0 },
+            observations: [{
+              observation_id: "obs-1",
+              image_name: "DJI_0001.JPG",
+              image_s3_key: "datasets/survey-set/DJI_0001.JPG",
+              status: "candidate",
+              pixel_x: null,
+              pixel_y: null,
+              candidate_distance_m: 18.5,
+              image_longitude: 2.0501,
+              image_latitude: 48.0501,
+              version: 1,
+              updated_at: "2026-08-10T12:00:00Z",
+            }],
+            properties: {},
+            version: 1,
+            updated_at: "2026-08-10T12:00:00Z",
+          },
+        }],
+      }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/points/point-1") {
+      const payload = request.postDataJSON() as Record<string, unknown>;
+      options.onGcpPointUpdate?.(payload);
+      await route.fulfill(json({ type: "Feature", id: "point-1" }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/observations/obs-1") {
+      const payload = request.postDataJSON() as Record<string, unknown>;
+      options.onGcpObservationUpdate?.(payload);
+      await route.fulfill(json({ observation_id: "obs-1", ...payload }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/set-1/candidates/refresh") {
+      options.onGcpCandidateRefresh?.();
+      await route.fulfill(json({
+        gcp_set: { type: "FeatureCollection", features: [] },
+        candidate_generation: { added_observation_count: 0 },
+      }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/set-1/bundle") {
+      options.onGcpBundle?.();
+      await route.fulfill(json({
+        schema_version: 1,
+        set_id: "set-1",
+        source_sha256: "a".repeat(64),
+        gcp_list: {
+          key: `blobs/sha256/aa/${"a".repeat(64)}`,
+          size: 10,
+          sha256: "a".repeat(64),
+        },
+        accuracy_csv: {
+          key: `blobs/sha256/bb/${"b".repeat(64)}`,
+          size: 10,
+          sha256: "b".repeat(64),
+        },
+        quality: {
+          adjustment_points: 3,
+          checkpoint_points: 1,
+          marked_observations: 8,
+          verification: "independent-checkpoints",
+        },
+      }));
+      return;
+    }
+    if (url.pathname === "/files/datasets/survey-set/DJI_0001.JPG") {
+      await route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="#526b62"/><circle cx="600" cy="400" r="28" fill="white"/><path d="M560 400h80M600 360v80" stroke="red" stroke-width="4"/></svg>',
+      });
       return;
     }
     if (url.pathname === "/maps/mission-existing/export/vectors") {
@@ -486,4 +598,48 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
     scope: "all",
     crs: "raster",
   });
+});
+
+test("an operator edits a GCP and marks its native image observation", async ({ page }) => {
+  let pointUpdate: Record<string, unknown> | undefined;
+  let observationUpdate: Record<string, unknown> | undefined;
+  let candidatesRefreshed = false;
+  let bundlePrepared = false;
+  await mockApi(page, {
+    onGcpPointUpdate: (payload) => { pointUpdate = payload; },
+    onGcpObservationUpdate: (payload) => { observationUpdate = payload; },
+    onGcpCandidateRefresh: () => { candidatesRefreshed = true; },
+    onGcpBundle: () => { bundlePrepared = true; },
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /5\. Explore/ }).click();
+  await page.getByRole("button", { name: "GCP", exact: true }).click();
+  await expect(page.getByText("Ground-control points")).toBeVisible();
+  await page.getByRole("button", { name: /P1/ }).click();
+  await page.getByRole("button", { name: "Refresh nearby photos" }).click();
+  await expect.poll(() => candidatesRefreshed).toBe(true);
+  await page.getByRole("button", { name: "Validate for reconstruction" }).click();
+  await expect.poll(() => bundlePrepared).toBe(true);
+  await page.getByLabel("Longitude (X, EPSG:4326)").fill("2.0505");
+  await page.getByLabel("Calculation role").selectOption("checkpoint");
+  await page.getByRole("button", { name: "Save coordinates and accuracy" }).click();
+  await expect.poll(() => pointUpdate).toMatchObject({
+    longitude: 2.0505,
+    role: "checkpoint",
+    version: 1,
+  });
+
+  await page.getByRole("button", { name: /DJI_0001\.JPG/ }).click();
+  await expect(page.getByText(/P1 · DJI_0001\.JPG/)).toBeVisible();
+  const sourceImage = page.getByAltText("DJI_0001.JPG");
+  await expect(sourceImage).toBeVisible();
+  await sourceImage.click({ position: { x: 150, y: 100 } });
+  await page.getByRole("button", { name: "Save mark · next" }).click();
+  await expect.poll(() => observationUpdate).toMatchObject({
+    status: "marked",
+    version: 1,
+  });
+  expect(Number(observationUpdate?.pixel_x)).toBeGreaterThan(0);
+  expect(Number(observationUpdate?.pixel_y)).toBeGreaterThan(0);
 });

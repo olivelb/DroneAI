@@ -195,6 +195,8 @@ MISSION_STAGE_RUN_STATUSES = (
 )
 MISSION_RESOURCE_CLASSES = tuple(RESOURCE_CLASSES)
 MAP_FEATURE_SOURCES = ("manual", "ai")
+GCP_ROLES = ("adjustment", "checkpoint", "disabled")
+GCP_OBSERVATION_STATUSES = ("candidate", "marked", "skipped")
 MAP_FEATURE_AUDIT_ACTIONS = (
     "created",
     "updated",
@@ -229,6 +231,18 @@ DATASET_UPLOAD_FILE_STATUSES = (
 def _values_check(column: str, values: tuple[str, ...]) -> str:
     quoted = ", ".join(f"'{value}'" for value in values)
     return f"{column} IN ({quoted})"
+
+
+def _uuid_identifier_column() -> Column[Any]:
+    """Define the common externally visible immutable UUID identifier."""
+
+    return Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -405,6 +419,11 @@ class Mission(Base):
     )
     map_features = relationship(
         "MapFeature",
+        back_populates="mission",
+        cascade="all, delete-orphan",
+    )
+    gcp_sets = relationship(
+        "GcpSet",
         back_populates="mission",
         cascade="all, delete-orphan",
     )
@@ -770,13 +789,7 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
+    run_id = _uuid_identifier_column()
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),
@@ -997,6 +1010,150 @@ class MapFeatureAuditEvent(Base):
 
     mission = relationship("Mission", back_populates="feature_audit_events")
     feature = relationship("MapFeature", back_populates="audit_events")
+
+
+class GcpSet(RequiredTimestampMixin, Base):
+    """One imported, provenance-preserving ground-control collection."""
+
+    __tablename__ = "gcp_sets"
+    __table_args__ = (
+        Index("ix_gcp_sets_mission_created", "mission_id", "created_at"),
+        UniqueConstraint("mission_id", "name", name="uq_gcp_set_mission_name"),
+        CheckConstraint("version >= 1", name="ck_gcp_sets_version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = _uuid_identifier_column()
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    vol_id = Column(String(256), nullable=False, index=True)
+    name = Column(String(160), nullable=False)
+    source_filename = Column(String(512), nullable=False)
+    source_format = Column(String(64), nullable=False)
+    source_crs = Column(String(128), nullable=False)
+    source_sha256 = Column(String(64), nullable=False)
+    created_by = Column(String(256), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+
+    mission = relationship("Mission", back_populates="gcp_sets")
+    points = relationship(
+        "GcpPoint",
+        back_populates="gcp_set",
+        cascade="all, delete-orphan",
+        order_by="GcpPoint.external_id",
+    )
+
+
+class GcpPoint(RequiredTimestampMixin, Base):
+    """Survey coordinate, role, covariance and map geometry for one GCP."""
+
+    __tablename__ = "gcp_points"
+    __table_args__ = (
+        UniqueConstraint("gcp_set_id", "external_id", name="uq_gcp_point_external_id"),
+        Index("ix_gcp_points_geometry", "geometry", postgresql_using="gist"),
+        Index("ix_gcp_points_mission_role", "mission_id", "role"),
+        CheckConstraint(
+            _values_check("role", GCP_ROLES),
+            name="ck_gcp_points_role",
+        ),
+        CheckConstraint(
+            "horizontal_accuracy_m > 0 AND vertical_accuracy_m > 0 "
+            "AND image_accuracy_px > 0",
+            name="ck_gcp_points_accuracy",
+        ),
+        CheckConstraint("version >= 1", name="ck_gcp_points_version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    point_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    gcp_set_id = Column(
+        Integer,
+        ForeignKey("gcp_sets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    external_id = Column(String(160), nullable=False)
+    geometry = Column(
+        Geometry("POINT", srid=4326, spatial_index=False),
+        nullable=False,
+    )
+    source_x = Column(Float, nullable=False)
+    source_y = Column(Float, nullable=False)
+    source_z = Column(Float, nullable=False)
+    altitude_m = Column(Float, nullable=False)
+    role = Column(String(32), nullable=False, default="adjustment")
+    horizontal_accuracy_m = Column(Float, nullable=False)
+    vertical_accuracy_m = Column(Float, nullable=False)
+    image_accuracy_px = Column(Float, nullable=False)
+    properties = Column(PORTABLE_JSON, nullable=False, default=dict)
+    version = Column(Integer, nullable=False, default=1)
+
+    gcp_set = relationship("GcpSet", back_populates="points")
+    observations = relationship(
+        "GcpObservation",
+        back_populates="point",
+        cascade="all, delete-orphan",
+        order_by="GcpObservation.image_name",
+    )
+
+
+class GcpObservation(RequiredTimestampMixin, Base):
+    """Candidate, marked or skipped image-space observation of a GCP."""
+
+    __tablename__ = "gcp_observations"
+    __table_args__ = (
+        UniqueConstraint("gcp_point_id", "image_name", name="uq_gcp_observation_image"),
+        Index("ix_gcp_observations_point_status", "gcp_point_id", "status"),
+        CheckConstraint(
+            _values_check("status", GCP_OBSERVATION_STATUSES),
+            name="ck_gcp_observations_status",
+        ),
+        CheckConstraint(
+            "(status != 'marked') OR (pixel_x IS NOT NULL AND pixel_y IS NOT NULL)",
+            name="ck_gcp_observations_marked_pixel",
+        ),
+        CheckConstraint("version >= 1", name="ck_gcp_observations_version"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    observation_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    gcp_point_id = Column(
+        Integer,
+        ForeignKey("gcp_points.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    image_name = Column(String(512), nullable=False)
+    image_s3_key = Column(String(1024), nullable=True)
+    status = Column(String(32), nullable=False, default="candidate")
+    pixel_x = Column(Float, nullable=True)
+    pixel_y = Column(Float, nullable=True)
+    candidate_distance_m = Column(Float, nullable=True)
+    image_longitude = Column(Float, nullable=True)
+    image_latitude = Column(Float, nullable=True)
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+    version = Column(Integer, nullable=False, default=1)
+
+    point = relationship("GcpPoint", back_populates="observations")
 
 
 class RasterLayerStyle(RequiredTimestampMixin, Base):

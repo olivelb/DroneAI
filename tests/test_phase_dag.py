@@ -35,6 +35,41 @@ stage_schemas = importlib.import_module("app4-dashboard.api.stage_schemas")
 PRINCIPAL = SimpleNamespace(subject="dag-operator", role="operator")
 
 
+def _gcp_bundle():
+    return {
+        "schema_version": 1,
+        "set_id": "00000000-0000-0000-0000-000000000001",
+        "source_sha256": "a" * 64,
+        "gcp_list": {
+            "key": f"blobs/sha256/{'b' * 2}/{'b' * 64}",
+            "size": 100,
+            "sha256": "b" * 64,
+        },
+        "accuracy_csv": {
+            "key": f"blobs/sha256/{'c' * 2}/{'c' * 64}",
+            "size": 80,
+            "sha256": "c" * 64,
+        },
+        "quality": {
+            "adjustment_points": 3,
+            "checkpoint_points": 0,
+            "marked_observations": 6,
+            "verification": "adjustment-only-unverified",
+        },
+    }
+
+
+def test_gcp_bundle_is_scoped_to_reconstruction_stage_parameters():
+    request = stage_schemas.StageRunCreate(parameters={"gcp_bundle": _gcp_bundle()})
+
+    parameters = stage_routes._stage_parameters("reconstruction", request)
+
+    assert parameters["gcp_bundle"]["set_id"] == "00000000-0000-0000-0000-000000000001"
+    with pytest.raises(HTTPException) as error:
+        stage_routes._stage_parameters("detection", request)
+    assert error.value.status_code == 422
+
+
 def _reconstruction_artifact_request(
     vol_id: str,
     run_id: str,

@@ -132,7 +132,10 @@ def run_reconstruction_stage(
             str(workspace),
             input_dataset,
             context.vol_id,
-            context.mission_parameters,
+            {
+                **context.mission_parameters,
+                "stage_parameters": context.parameters,
+            },
         )
         reconstruction = reconstruct_colmap_sparse(
             preparation,

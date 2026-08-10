@@ -88,12 +88,15 @@ class RouteSession(Protocol):
 
     def delete(self, instance: Any) -> None: ...
 
+    def expire(self, instance: Any, attribute_names: list[str] | None = None) -> None: ...
+
     def flush(self) -> None: ...
 
 
 class MissionRecord(Protocol):
     id: int
     owner_subject: str
+    input_dataset: str | None
     tiling_metadata: JsonObject | None
 
 

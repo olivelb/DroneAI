@@ -42,6 +42,7 @@ def _context(
     stage="reconstruction",
     *,
     input_kind=None,
+    parameters=None,
 ) -> StageExecutionContext:
     inputs = (
         (
@@ -65,7 +66,7 @@ def _context(
         stage=stage,
         attempt=0,
         mission_attempt=3,
-        parameters={},
+        parameters=parameters or {},
         mission_parameters={
             "input_dataset": "datasets/quarry-001",
             "pipeline": "modern",
@@ -88,6 +89,9 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
         calls.append("prepare")
         assert input_dataset == "datasets/quarry-001"
         assert mission_parameters["pipeline"] == "modern"
+        assert mission_parameters["stage_parameters"] == {
+            "gcp_bundle": {"schema_version": 1}
+        }
         Path(workspace, "dense", "sparse").mkdir(parents=True)
         Path(workspace, "dense", "sparse", "cameras.bin").write_bytes(b"model")
         return SimpleNamespace(feature_type="ALIKED_N32", matcher_type="LIGHTGLUE")
@@ -140,7 +144,10 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     )
     control = FakeControl()
 
-    result = stage_executor.run_reconstruction_stage(_context(), control)
+    result = stage_executor.run_reconstruction_stage(
+        _context(parameters={"gcp_bundle": {"schema_version": 1}}),
+        control,
+    )
 
     assert calls == ["prepare", "reconstruct", "rtk", "align", "publish"]
     assert published_prefix["value"].endswith(

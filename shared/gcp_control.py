@@ -17,6 +17,8 @@ from pyproj import CRS, Transformer
 
 from shared.geo_alignment import estimate_sim3, estimate_weighted_sim3
 from shared.checksums import sha256_file
+from shared.gcp_bundle import validate_gcp_bundle
+from shared import storage
 
 
 ADJUSTMENT_ROLES = {"adjustment", "adjust", "control", "gcp"}
@@ -95,6 +97,47 @@ def prepare_gcp_assets(
         "gcp_path": (str(destinations["gcp_path"]) if destinations["gcp_path"].is_file() else None),
         "accuracy_path": (str(destinations["accuracy_path"]) if destinations["accuracy_path"].is_file() else None),
         "changed": changed,
+    }
+
+
+def prepare_immutable_gcp_bundle(
+    bundle: object,
+    workspace_root: str | Path,
+) -> dict[str, Any]:
+    """Download and verify an immutable operator-marked GCP stage input."""
+
+    descriptors = validate_gcp_bundle(bundle)
+    workspace = Path(workspace_root) / "gcp"
+    workspace.mkdir(parents=True, exist_ok=True)
+    destinations = {
+        "gcp_list": workspace / "gcp_list.txt",
+        "accuracy_csv": workspace / "gcp_accuracy.csv",
+    }
+    changed = False
+    for name, destination in destinations.items():
+        descriptor = descriptors[name]
+        if (
+            destination.is_file()
+            and destination.stat().st_size == descriptor["size"]
+            and file_sha256(destination) == descriptor["sha256"]
+        ):
+            continue
+        temporary = destination.with_suffix(destination.suffix + ".tmp")
+        try:
+            storage.download_file(descriptor["key"], temporary)
+            if temporary.stat().st_size != descriptor["size"]:
+                raise OSError(f"Downloaded GCP {name} size does not match its descriptor")
+            if file_sha256(temporary) != descriptor["sha256"]:
+                raise OSError(f"Downloaded GCP {name} checksum does not match its descriptor")
+            os.replace(temporary, destination)
+            changed = True
+        finally:
+            temporary.unlink(missing_ok=True)
+    return {
+        "gcp_path": str(destinations["gcp_list"]),
+        "accuracy_path": str(destinations["accuracy_csv"]),
+        "changed": changed,
+        "immutable_bundle": True,
     }
 
 
