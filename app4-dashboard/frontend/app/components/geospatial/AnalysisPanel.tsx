@@ -46,7 +46,7 @@ export default function AnalysisPanel({
   const { parameterSchema } = useStore();
   const yoloModels = parameterSchema?.yolo_models ?? [];
   const sam3MaximumTileSize =
-    parameterSchema?.sam3.maximum_source_tile_size ?? 1024;
+    parameterSchema?.sam3?.maximum_source_tile_size ?? 1024;
   const tileSizes = [512, 1024, 2048].filter(
     (size) => form.backend !== "sam3" || size <= sam3MaximumTileSize,
   );

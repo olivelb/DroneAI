@@ -42,7 +42,7 @@ export default function PhaseDetection() {
     tilerService?.status === "success" || (tilerService?.progress ?? 0) >= 100;
   const yoloModels = parameterSchema?.yolo_models ?? [];
   const sam3MaximumTileSize =
-    parameterSchema?.sam3.maximum_source_tile_size ?? 1024;
+    parameterSchema?.sam3?.maximum_source_tile_size ?? 1024;
   const tileSizes = [512, 768, 1024, 1536, 2048].filter(
     (size) => aiBackend !== "sam3" || size <= sam3MaximumTileSize,
   );
