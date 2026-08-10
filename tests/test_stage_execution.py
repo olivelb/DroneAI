@@ -266,6 +266,34 @@ def test_one_shot_observes_durable_mission_cancellation(execution_sessions):
         assert session.query(MissionArtifact).count() == 0
 
 
+def test_one_shot_normalizes_domain_cancellation_errors(execution_sessions):
+    run_id = "c" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+
+    def handler(_context, _control):
+        with execution_sessions() as session:
+            session.query(Mission).one().status = "cancelled"
+        raise RuntimeError("Mission cancelled by user")
+
+    with pytest.raises(StageExecutionCancelled) as captured:
+        execute_one_shot_stage(
+            "reconstruction",
+            handler,
+            run_id=run_id,
+            heartbeat_interval_seconds=60,
+        )
+
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter(
+            MissionStageRun.stage == "reconstruction"
+        ).one()
+        assert run.status == "cancelled"
+        assert run.current_step == "CANCELLED"
+        assert run.error_message is None
+        assert session.query(MissionArtifact).count() == 0
+
+
 def test_stage_subtask_keeps_run_active_without_artifact_authority(
     execution_sessions,
 ):

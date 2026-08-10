@@ -240,12 +240,60 @@ feature isolation and queued-analysis cancellation on BIGZEN. It is not the
 production stage-Job interruption drill and does not replace the OVH-targeted
 Q3 and release-gate evidence.
 
+## Production interruption and recovery qualification
+
+The nine production drills were subsequently executed on the same BIGZEN K3s
+target. Their validated machine-readable record and rendered operator report
+are respectively
+[`bigzen-preprod-2026-08-10.qualification.json`](bigzen-preprod-2026-08-10.qualification.json)
+and
+[`bigzen-preprod-2026-08-10-qualification.md`](bigzen-preprod-2026-08-10-qualification.md).
+The record binds the observations to K3s `v1.36.3+k3s1`, the RTX 3090 target,
+the five executor image digests, chart `0.1.0` and the effective Helm values
+checksum. It contains no raw logs, credentials, URLs or private dataset data.
+
+| Drill | Observed recovery | Durable result |
+| --- | ---: | --- |
+| Complete five-stage chain | 411.192 s | five successful Jobs and five checksum-bound artifacts |
+| Active stage cancellation | 3.502 s | Job removed, no artifact, terminal timestamp stable across reconciliation |
+| Active deadline | 15.228 s | exact `DeadlineExceeded` reason and distinct retry identity |
+| Missing Job reconciliation | 2.541 s | exactly one replacement Job, dispatch count advanced once |
+| API restart after reservation | 14.158 s | same Job UID, one Job and one dispatch |
+| PostgreSQL interruption | 303.392 s end to end | failed attempt published nothing; retry published one artifact |
+| MinIO interruption | 250.495 s end to end | failed attempt published nothing; retry published one artifact |
+| Isolated backup/restore | 3.795 s restore | database counts, parent edges, migration head and checksums matched |
+| Helm rollback | 3.507 s | durable row survived rollback to the corrected baseline |
+
+The exercise exposed three control-plane defects before the final pass. A
+generic worker exception could overwrite a durable cancellation, a failed
+Kubernetes Job lost its specific condition reason, and cancelled runs were
+re-cleaned on every reconciliation while their terminal timestamps drifted.
+Commits `63b4f8b...`, `b20f4f8...` and `d643002...` correct those behaviours
+and add focused regression tests. The final cancellation attempt
+`29d50510-07fe-44a7-a256-517ff467da3b` kept both `completed_at` and its cleanup
+marker unchanged after repeated control-loop passes.
+
+The first rollback probe intentionally returned to revision 21, which predates
+the idempotent cancellation fix, and reproduced the timestamp drift while that
+old API was active. Revision 21 is therefore retired as a rollback target.
+Revisions 24 through 26 establish `d643002...` as the minimum safe baseline;
+the final drill created a durable analysis on revision 25, rolled back to the
+corrected revision 24 and verified the row on resulting revision 26. Future
+releases must retain a tested rollback revision at or above this baseline.
+
+All nine drill outcomes pass the configured 900-second RTO and zero-second RPO
+objectives. The automated gate remains deliberately blocked until the named
+operator reviews the generated report and supplies `attestation.reviewed_at`.
+BIGZEN results remain target-specific and do not qualify OVHcloud.
+
 ## Remaining release gates
 
 - Repeat scheduling and fan-out canaries on the exact OVH node pool and image
   digests before enabling the flags there.
-- Complete the production interruption, deadline, database/object-storage,
-  backup/restore and Helm rollback drills.
+- Repeat the nine production drills on OVHcloud and retain an OVH-specific
+  qualification record before production activation there.
+- Add the explicit BIGZEN operator review timestamp after reviewing the
+  rendered qualification report; automation must not infer that attestation.
 - Treat the fan-out run's ten SAM3 features and the requalification run's one
   feature as pipeline evidence only; neither run provided labelled
   precision/recall ground truth.

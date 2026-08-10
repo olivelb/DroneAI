@@ -192,25 +192,29 @@ OVHcloud production needs its own evidence against the exact promoted release.
 
 ## Activation status and gate for bounded Jobs
 
-The one-shot executor implementation and complete artifact chain are qualified
-on BIGZEN K3s/RTX 3090. The original mission
+The one-shot executor implementation, complete artifact chain and nine
+production drills are qualified on BIGZEN K3s/RTX 3090. The original mission
 `chapelle-q3-five-jobs-20260809` exercised retries, immutable hand-offs and the
-operator view. The current follow-up at full SHA `74b6d7a...` observed all
-three derived VRAM selectors across a successful five-Job chain, parsed a
-strict Manifest v2, then processed 4,160 SAM3 tiles through five Indexed shards,
-five durable receipts and a separate finalizer. The retained evidence is the
-[current scheduling/fan-out benchmark](benchmarks/bigzen-stage-jobs-fanout-2026-08-10.md)
+operator view. The current follow-up observed all three derived VRAM selectors
+across a successful five-Job chain, parsed a strict Manifest v2, then processed
+4,160 SAM3 tiles through five Indexed shards, five durable receipts and a
+separate finalizer. The retained evidence is the
+[current scheduling/fan-out benchmark](benchmarks/bigzen-stage-jobs-fanout-2026-08-10.md),
+the validated
+[BIGZEN production qualification](benchmarks/bigzen-preprod-2026-08-10-qualification.md)
 and the earlier
 [Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 
-The same benchmark now also records the BIGZEN operator multi-product gate.
-The mission catalogue and detail screens exposed scoped progress, logs and
-immutable product checksums; the map resolved Manifest v2/CAS rasters and
-detections; mission changes produced `1 → 10 → 0 → 1` scoped object counts; and
-a queued SAM3 analysis remained cancelled after reload without dispatching a
-GPU Job. This satisfies the BIGZEN operator-view portion of Q3. It does not
-satisfy the target-specific deadline, reconciliation, interruption,
-backup/restore or Helm rollback drills.
+The same benchmark records the BIGZEN operator multi-product gate. The mission
+catalogue and detail screens exposed scoped progress, logs and immutable
+product checksums; the map resolved Manifest v2/CAS rasters and detections;
+mission changes produced `1 → 10 → 0 → 1` scoped object counts; and a queued
+SAM3 analysis remained cancelled after reload without dispatching a GPU Job.
+The subsequent production exercise passed cancellation, deadline, missing-Job
+reconciliation, API restart, PostgreSQL and MinIO interruptions, isolated
+backup/restore and Helm rollback within the declared objectives. Its automated
+gate remains blocked only until the named operator supplies the review
+timestamp. None of these target-specific results qualifies OVHcloud.
 
 The focused requalification reused the existing CUDA/COLMAP base because its
 versions and GPU architecture were unchanged. It also found that the pinned
@@ -250,9 +254,11 @@ target environment must satisfy all of the following before activation:
 Enabling the flag is a reviewed deployment change, not a code-side default. On
 the single-node distributed installer, set `STAGE_JOBS_IMAGE_TAG` to the exact
 Git SHA; leaving it unset deliberately selects compatibility workers.
-Production promotion remains blocked until its own cancellation/deadline,
-backup/restore, rollback and interruption drills are recorded, even though the
-preproduction execution path is qualified.
+Production promotion remains blocked until the target environment has its own
+cancellation/deadline, backup/restore, rollback and interruption record, plus a
+named operator attestation, even though the BIGZEN preproduction execution path
+is qualified. Never roll back BIGZEN below Helm revision 24: revision 21
+predates idempotent cancellation cleanup and was retired during the drill.
 
 ## Backup and retention
 
