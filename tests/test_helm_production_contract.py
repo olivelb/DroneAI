@@ -89,4 +89,11 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in deployment
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_KEY" in deployment
     assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in deployment
+    assert "artifactManifestV2WriteEnabled: false" in defaults
+    assert "artifactSelectiveRestoreEnabled: false" in defaults
+    assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in deployment
+    assert (
+        "artifactSelectiveRestoreEnabled requires "
+        "stageJobs.artifactManifestV2WriteEnabled=true"
+    ) in deployment
     assert "automountServiceAccountToken: false" in deployment

@@ -35,6 +35,21 @@ an overwrite, verifies size/checksum and reuse, then deletes the probe and
 verifies cleanup. A failure blocks the v2 writer rollout; never replace the
 conditional completion with an unconditional fallback.
 
+Roll out incremental materialization in two independently reversible steps:
+
+1. set `stageJobs.artifactManifestV2WriteEnabled=true` while keeping
+   `stageJobs.artifactSelectiveRestoreEnabled=false`, then qualify a complete
+   five-Job product and its v1-reader rollback;
+2. set `stageJobs.artifactSelectiveRestoreEnabled=true` for the detection
+   canary, verify that restore transfer bytes contain only the declared
+   orthomosaic and that the resulting artifact still resolves every parent
+   file plus the detection products.
+
+The chart rejects step 2 without step 1. To roll back, disable selective
+restore first, verify one full detection restore, then disable the v2 writer.
+Do not enable selective restore for reconstruction, Gaussian training,
+filtering or rasterization without a separate contract and qualification.
+
 ## Q3 acceptance record
 
 Keep one dated Markdown report under `docs/benchmarks/` and record:
