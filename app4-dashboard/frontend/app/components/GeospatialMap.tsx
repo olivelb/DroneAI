@@ -41,6 +41,7 @@ import type {
 } from "../lib/types";
 
 export type MapTool =
+  | "select"
   | "navigate"
   | "point"
   | "line"
@@ -88,6 +89,53 @@ function ResizeController() {
     observer.observe(container);
     return () => observer.disconnect();
   }, [map]);
+  return null;
+}
+
+function InteractionController({ tool }: { tool: MapTool }) {
+  const map = useMap();
+  useEffect(() => {
+    if (tool === "navigate") map.dragging.enable();
+    else map.dragging.disable();
+    return () => {
+      map.dragging.enable();
+    };
+  }, [map, tool]);
+  return null;
+}
+
+function CoordinateReadout() {
+  const map = useMap();
+  useEffect(() => {
+    const control = new L.Control({ position: "bottomleft" });
+    const container = L.DomUtil.create("div", "droneai-coordinate-control");
+    container.textContent = "EPSG:4326  ·  X —  ·  Y —";
+    control.onAdd = () => container;
+    control.addTo(map);
+    const update = (event: L.LeafletMouseEvent) => {
+      container.textContent = `EPSG:4326  ·  X ${event.latlng.lng.toFixed(7)}  ·  Y ${event.latlng.lat.toFixed(7)}`;
+    };
+    map.on("mousemove", update);
+    return () => {
+      map.off("mousemove", update);
+      control.remove();
+    };
+  }, [map]);
+  return null;
+}
+
+function SelectionController({
+  tool,
+  onFeatureClear,
+}: {
+  tool: MapTool;
+  onFeatureClear: () => void;
+}) {
+  useMapEvents({
+    click: () => {
+      if (tool === "select") onFeatureClear();
+    },
+  });
   return null;
 }
 
@@ -220,7 +268,7 @@ function DrawController({
 
   useMapEvents({
     click: (event) => {
-      if (tool === "navigate") return;
+      if (tool === "navigate" || tool === "select") return;
       const point: [number, number] = [event.latlng.lat, event.latlng.lng];
       if (tool === "point") {
         const geometry: Point = {
@@ -283,6 +331,8 @@ function ViewportVectors({
   showManual,
   analyses,
   refreshToken,
+  tool,
+  selectedFeatureId,
   onFeatureSelect,
 }: {
   missionId: string;
@@ -290,6 +340,8 @@ function ViewportVectors({
   showManual: boolean;
   analyses: AnalysisRun[];
   refreshToken: number;
+  tool: MapTool;
+  selectedFeatureId: string;
   onFeatureSelect: (feature: Feature) => void;
 }) {
   const { t } = useI18n();
@@ -354,15 +406,22 @@ function ViewportVectors({
   const style = useCallback(
     (feature?: Feature): PathOptions => {
       const color = String(feature?.properties?.color || "#f43f5e");
+      const featureId = String(
+        feature?.properties?.feature_id ?? feature?.id ?? "",
+      );
+      const selected = Boolean(
+        selectedFeatureId && featureId === selectedFeatureId,
+      );
       return {
         color,
         fillColor: color,
-        fillOpacity: 0.26,
+        fillOpacity: selected ? 0.42 : 0.26,
         opacity: 0.95,
-        weight: 2.2,
+        weight: selected ? 4 : 2.2,
+        dashArray: selected ? "8 4" : undefined,
       };
     },
-    [],
+    [selectedFeatureId],
   );
 
   return (
@@ -375,7 +434,11 @@ function ViewportVectors({
           pointToLayer={(feature, point) =>
             L.circleMarker(point, {
               ...style(feature),
-              radius: 6,
+              radius:
+                String(feature.properties?.feature_id ?? feature.id ?? "") ===
+                selectedFeatureId
+                  ? 9
+                  : 6,
               fillOpacity: 0.8,
             })
           }
@@ -393,7 +456,10 @@ function ViewportVectors({
                   : "") +
                 confidence,
             );
-            layer.on("click", () => onFeatureSelect(feature));
+            layer.on("click", (event) => {
+              L.DomEvent.stopPropagation(event);
+              if (tool === "select") onFeatureSelect(feature);
+            });
           }}
         />
       ))}
@@ -411,8 +477,10 @@ export default function GeospatialMap({
   tool,
   focusBounds,
   refreshToken,
+  selectedFeatureId,
   onGeometryReady,
   onFeatureSelect,
+  onFeatureClear,
   onHint,
   onMetadata,
 }: {
@@ -425,8 +493,10 @@ export default function GeospatialMap({
   tool: MapTool;
   focusBounds: [number, number, number, number] | null;
   refreshToken: number;
+  selectedFeatureId: string;
   onGeometryReady: (geometry: Geometry, measurement?: string) => void;
   onFeatureSelect: (feature: Feature) => void;
+  onFeatureClear: () => void;
   onHint: (hint: string) => void;
   onMetadata: (metadata: RasterMetadata | null) => void;
 }) {
@@ -506,12 +576,15 @@ export default function GeospatialMap({
       bounds={bounds}
       minZoom={Math.max(0, metadata.min_zoom - 2)}
       maxZoom={Math.min(24, metadata.max_zoom + 2)}
-      className={`h-full w-full ${tool === "navigate" ? "" : "map-crosshair"}`}
+      className={`h-full w-full map-cursor-${tool}`}
       preferCanvas
       doubleClickZoom={false}
       zoomControl={false}
     >
       <ResizeController />
+      <InteractionController tool={tool} />
+      <CoordinateReadout />
+      <SelectionController tool={tool} onFeatureClear={onFeatureClear} />
       <FitBounds bounds={bounds} />
       {searchBounds && <FitBounds bounds={searchBounds} padding={42} />}
       <TileLayer
@@ -531,6 +604,8 @@ export default function GeospatialMap({
         showManual={showManual}
         analyses={analyses}
         refreshToken={refreshToken}
+        tool={tool}
+        selectedFeatureId={selectedFeatureId}
         onFeatureSelect={onFeatureSelect}
       />
       <DrawController

@@ -1,6 +1,7 @@
 import type { Geometry } from "geojson";
 import {
   CircleDot,
+  Hand,
   MousePointer2,
   Pentagon,
   Route,
@@ -41,7 +42,8 @@ export const TOOL_BUTTONS: Array<{
   labelKey: MessageKey;
   icon: typeof MousePointer2;
 }> = [
-  { id: "navigate", labelKey: "toolbar.navigate", icon: MousePointer2 },
+  { id: "select", labelKey: "toolbar.select", icon: MousePointer2 },
+  { id: "navigate", labelKey: "toolbar.navigate", icon: Hand },
   { id: "point", labelKey: "toolbar.point", icon: CircleDot },
   { id: "line", labelKey: "toolbar.line", icon: Route },
   { id: "polygon", labelKey: "toolbar.polygon", icon: Pentagon },
@@ -50,7 +52,8 @@ export const TOOL_BUTTONS: Array<{
 ];
 
 export const TOOL_SHORTCUTS: Record<MapTool, string> = {
-  navigate: "V",
+  select: "V",
+  navigate: "H",
   point: "P",
   line: "L",
   polygon: "G",

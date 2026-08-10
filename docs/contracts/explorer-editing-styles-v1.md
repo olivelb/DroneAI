@@ -10,6 +10,15 @@ explicit `owner_subject` boundary.
 
 ## Feature lifecycle
 
+The map exposes distinct professional interaction modes: selection uses the
+arrow (`V`), displacement uses the hand (`H`), and geometry creation and
+measurement use a precision crosshair. Selection is toggled by clicking an
+object, cleared by clicking empty map space or pressing Escape, and highlighted
+without changing the stored style. The coordinate status control reports the
+pointer in WGS84/EPSG:4326 with QGIS-style X/Y labels. Point, line and exterior
+polygon vertices can also be entered numerically as longitude/latitude; polygon
+ring closure is preserved by the geometry editor.
+
 Manual and persisted-AI rows in `map_features` can be edited with optimistic
 version checks. Removal is a tombstone (`deleted_at`, `deleted_by` and a
 reason), never a physical delete. Tombstoned features are hidden from search,

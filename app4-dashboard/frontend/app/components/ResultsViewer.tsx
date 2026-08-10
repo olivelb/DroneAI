@@ -55,6 +55,9 @@ const isTypingTarget = (target: EventTarget | null) =>
     target.tagName === "SELECT" ||
     target.isContentEditable);
 
+const isDrawingTool = (tool: MapTool) =>
+  !["select", "navigate"].includes(tool);
+
 export default function ResultsViewer() {
   const { t } = useI18n();
   const { activeMission, missions, setActiveMissionId } = useMissionRuntime();
@@ -89,7 +92,7 @@ export default function ResultsViewer() {
   const [showAnalysisForm, setShowAnalysisForm] = useState(false);
   const [submittingAnalysis, setSubmittingAnalysis] = useState(false);
 
-  const [tool, setTool] = useState<MapTool>("navigate");
+  const [tool, setTool] = useState<MapTool>("select");
   const [toolHint, setToolHint] = useState("");
   const [draftGeometry, setDraftGeometry] = useState<Geometry | null>(null);
   const [redrawingFeature, setRedrawingFeature] = useState(false);
@@ -206,7 +209,7 @@ export default function ResultsViewer() {
         const nextTool = shortcut[0] as MapTool;
         setTool(nextTool);
         setRedrawingFeature(false);
-        if (nextTool !== "navigate") {
+        if (isDrawingTool(nextTool)) {
           setSelectedFeature(null);
           setDraftGeometry(null);
           setMeasurement("");
@@ -226,9 +229,13 @@ export default function ResultsViewer() {
           setDraftGeometry(null);
           return;
         }
-        if (redrawingFeature || tool !== "navigate") {
+        if (redrawingFeature || tool !== "select") {
           setRedrawingFeature(false);
-          setTool("navigate");
+          setTool("select");
+          return;
+        }
+        if (selectedFeature) {
+          setSelectedFeature(null);
           return;
         }
         if (expanded) setExpanded(false);
@@ -236,7 +243,7 @@ export default function ResultsViewer() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [draftGeometry, expanded, redrawingFeature, setSelectedFeature, tool]);
+  }, [draftGeometry, expanded, redrawingFeature, selectedFeature, setSelectedFeature, tool]);
 
   const hasDepth = availableFiles.some((file) =>
     file.endsWith("orthomosaic.height.tif") ||
@@ -283,13 +290,13 @@ export default function ResultsViewer() {
     if (redrawingFeature && selectedFeature) {
       setSelectedFeature({ ...selectedFeature, geometry });
       setRedrawingFeature(false);
-      setTool("navigate");
+      setTool("select");
       setNotice(t("explorer.geometryReady"));
       return;
     }
     setDraftGeometry(geometry);
     setMeasurement(result ?? "");
-    setTool("navigate");
+    setTool("select");
     setAnnotationName(
       result
         ? t("explorer.measurementName", { measurement: result })
@@ -330,10 +337,18 @@ export default function ResultsViewer() {
   };
 
   const selectFeature = (feature: Feature) => {
+    const nextId = String(feature.properties?.feature_id ?? feature.id ?? "");
+    const currentId = String(
+      selectedFeature?.properties?.feature_id ?? selectedFeature?.id ?? "",
+    );
+    if (nextId && nextId === currentId) {
+      setSelectedFeature(null);
+      return;
+    }
     setSelectedFeature(feature);
     setDraftGeometry(null);
     setRedrawingFeature(false);
-    setTool("navigate");
+    setTool("select");
   };
 
   if (!missionId || sortedMissions.length === 0) {
@@ -484,7 +499,7 @@ export default function ResultsViewer() {
               onToolChange={(nextTool) => {
                 setTool(nextTool);
                 setRedrawingFeature(false);
-                if (nextTool !== "navigate") {
+                if (isDrawingTool(nextTool)) {
                   setSelectedFeature(null);
                   setDraftGeometry(null);
                   setMeasurement("");
@@ -502,13 +517,20 @@ export default function ResultsViewer() {
               tool={tool}
               focusBounds={focusBounds}
               refreshToken={refreshToken}
+              selectedFeatureId={String(
+                selectedFeature?.properties?.feature_id ??
+                  selectedFeature?.id ??
+                  "",
+              )}
               onGeometryReady={geometryReady}
               onFeatureSelect={selectFeature}
+              onFeatureClear={() => setSelectedFeature(null)}
               onHint={setToolHint}
               onMetadata={rasterStyles.handleMetadata}
             />
             {draftGeometry && (
               <DraftFeatureEditor
+                geometry={draftGeometry}
                 measurement={measurement}
                 name={annotationName}
                 description={annotationDescription}
@@ -518,6 +540,7 @@ export default function ResultsViewer() {
                 onDescriptionChange={setAnnotationDescription}
                 onColorChange={setAnnotationColor}
                 onTagsChange={setAnnotationTags}
+                onGeometryChange={setDraftGeometry}
                 onClose={() => setDraftGeometry(null)}
                 onSave={() => void saveAnnotation()}
               />
