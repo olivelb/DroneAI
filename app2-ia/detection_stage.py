@@ -18,6 +18,7 @@ from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import Sam3Backend
 from shared.artifact_manifest import ManifestParent
 from shared.detection_geometry import dedupe_mission_detections
+from shared.detection_shard_results import DetectionAggregate
 from shared.detection_sharding import DetectionShardPlan, build_detection_shard_plan
 from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
@@ -313,9 +314,37 @@ def _restore_raster_workspace(
     return raster_path, restored
 
 
+def _raster_metadata_for_plan(
+    raster_path: Path,
+    config: DetectionStageConfig,
+    plan: DetectionShardPlan,
+) -> dict[str, Any]:
+    if plan.tile_size != config.tile_size or plan.overlap != config.overlap:
+        raise ValueError("Detection shard plan does not match the stage configuration")
+    with rasterio.open(raster_path) as source:
+        if source.width != plan.width or source.height != plan.height:
+            raise ValueError("Detection shard plan does not match the raster dimensions")
+        return {
+            "width": source.width,
+            "height": source.height,
+            "crs": source.crs.to_string() if source.crs else None,
+            "transform": list(source.transform.to_gdal()),
+            "tile_size": plan.tile_size,
+            "tile_overlap": plan.overlap,
+            "tile_count": plan.tile_count,
+            "planned_inference_pixels": plan.planned_inference_pixels,
+            "pixel_amplification_ratio": plan.pixel_amplification_ratio,
+            "plan_checksum_sha256": plan.checksum_sha256,
+            "shard_count": plan.shard_count,
+        }
+
+
 def run_detection_stage(
     context: StageExecutionContext,
     control: StageExecutionControl,
+    *,
+    aggregate: DetectionAggregate | None = None,
+    plan: DetectionShardPlan | None = None,
 ) -> StageExecutionResult:
     workspace = _workspace_path(context.run_id)
     if workspace.exists():
@@ -330,12 +359,26 @@ def run_detection_stage(
             selective_restore=selective_restore,
         )
         config = DetectionStageConfig.from_context(context)
-        raw, model_manifest, raster_metadata = DetectionStageRunner(
-            context,
-            control,
-            workspace,
-            config,
-        ).run(raster_path)
+        if aggregate is None:
+            if plan is not None:
+                raise ValueError("Monolithic detection must not receive a shard plan")
+            raw, model_manifest, raster_metadata = DetectionStageRunner(
+                context,
+                control,
+                workspace,
+                config,
+            ).run(raster_path)
+        else:
+            if plan is None:
+                raise ValueError("Detection finalization requires its shard plan")
+            if (
+                aggregate.shard_count != plan.shard_count
+                or aggregate.tile_count != plan.tile_count
+            ):
+                raise ValueError("Detection aggregate does not match its shard plan")
+            raw = list(aggregate.raw_detections)
+            model_manifest = aggregate.model_manifest
+            raster_metadata = _raster_metadata_for_plan(raster_path, config, plan)
         detections = dedupe_mission_detections(raw)
         collection = detections_feature_collection(
             detections,
