@@ -78,12 +78,13 @@ Read routes require `viewer`; mutations require `operator`.
 | `GET` | `/maps/{vol_id}/features/{feature_id}/audit` | append-only correction history |
 | `GET/POST` | `/maps/{vol_id}/styles/{layer}` | list/create named raster recipes |
 | `PATCH` | `/maps/{vol_id}/styles/{layer}/{style_id}` | versioned named-style update |
-| `POST` | `/maps/{vol_id}/gcps/import` | import a surveyed GCP set and propose nearby photos |
+| `POST` | `/maps/{vol_id}/gcps/import` | import a surveyed GCP set and propose visible/nearby photos |
 | `GET` | `/maps/{vol_id}/gcps` | list GCP sets as a WGS84 vector layer |
 | `PATCH` | `/maps/{vol_id}/gcps/points/{point_id}` | edit coordinates, role and accuracy with optimistic locking |
 | `PATCH` | `/maps/{vol_id}/gcps/observations/{observation_id}` | mark or skip one source-photo observation |
-| `POST` | `/maps/{vol_id}/gcps/{set_id}/candidates/refresh` | add EXIF-nearby photos after preflight without replacing operator decisions |
+| `POST` | `/maps/{vol_id}/gcps/{set_id}/candidates/refresh` | add camera-visible photos, then EXIF-nearby fallbacks, without replacing operator decisions |
 | `POST` | `/maps/{vol_id}/gcps/{set_id}/bundle` | validate and publish immutable reconstruction inputs |
+| `GET` | `/maps/{vol_id}/gcps/{set_id}/audit` | read the append-only GCP operator history |
 
 Accepted manual geometries are Point, LineString, Polygon and their Multi
 variants in EPSG:4326. Coordinates, vertex count, color, tag count and text
@@ -167,20 +168,27 @@ omit tombstoned rows.
 
 ## Ground-control workflow
 
-The GCP workspace accepts CSV, TSV, whitespace-delimited TXT/XYZ, GeoJSON and
-ODM `gcp_list.txt`. Delimited tables recognise common `id/name/label`,
-`x/easting/lon`, `y/northing/lat`, `z/altitude`, role and accuracy columns. A
-projected input must declare its CRS (for example `EPSG:2154`); all map and
-manual coordinate controls use WGS84 (`EPSG:4326`) while the original survey
-coordinates remain available for calculation and provenance.
+The GCP workspace accepts CSV, TSV, whitespace-delimited TXT/XYZ, GeoJSON, KML,
+Metashape marker XML and ODM `gcp_list.txt`. Delimited tables recognise common
+`id/name/label`, `x/easting/lon`, `y/northing/lat`, `z/altitude`, role and
+accuracy columns. Leica and Trimble presets are available; an operator can map
+custom identifier/X/Y/Z column names without altering the source file. XML
+DOCTYPE/entity declarations are rejected. A projected input must declare its
+CRS (for example `EPSG:2154`); KML is WGS84, while GeoJSON, Metashape XML and
+ODM may declare a CRS. Map and manual coordinate controls use WGS84
+(`EPSG:4326`) while original survey coordinates remain available for
+calculation and provenance.
 
 The normal operator sequence is:
 
 1. import a named set, its CRS, default adjustment/checkpoint role and survey
    accuracies;
 2. run reconstruction preflight so `geo_data.txt` and its CRS are published;
-3. refresh candidates: photos are ranked by metric distance between GCP and
-   EXIF GPS, while existing marks and explicit skips remain untouched;
+3. refresh candidates: before a registered sparse model exists, photos are
+   ranked by metric EXIF distance; after geo-alignment, the worker publishes a
+   portable camera index and the API ranks only frames where the surveyed point
+   projects inside the calibrated image, using EXIF distance only to fill any
+   remaining slots. Existing marks and explicit skips remain untouched;
 4. select each point, correct coordinates if required, then mark the exact
    target in every useful original photo or skip photos where it is not
    visible;
@@ -188,13 +196,21 @@ The normal operator sequence is:
    accuracy controls as `checkpoint`, and set unusable points to `disabled`;
 6. validate the set for reconstruction.
 
-The photo editor preserves original image dimensions, supports 5–400% zoom
-and stores native pixel coordinates rather than screen coordinates. Point and
-observation mutations carry a version and reject concurrent overwrites. The
-current automatic candidate ranking is deliberately conservative: EXIF
-distance finds likely photos but does not claim target visibility. A later
-camera-pose projection can improve ordering after sparse reconstruction; the
-operator remains the authority on visibility and exact pixel placement.
+The photo editor preserves original image dimensions, supports 5–400% zoom, a
+high-magnification loupe and keyboard nudging (1 px, 0.1 px with Shift, 10 px
+with Alt). A camera projection seeds the marker when available, but the
+operator remains the authority on visibility and exact placement. Native pixel
+coordinates are checked again by the API against dimensions read incrementally
+from the original object; non-finite and out-of-frame annotations are rejected.
+Point and observation mutations carry a version and reject concurrent
+overwrites.
+
+Imports, coordinate/role edits, photo marks/skips, candidate refreshes and
+bundle materialisations are recorded in `gcp_audit_events` in the same database
+transaction as their mutation. The dashboard exposes human-readable event
+labels and retains expandable before/after JSON. PostgreSQL prevents direct
+updates or deletes of audit rows; parent mission/set lifecycle deletion remains
+possible through its declared cascade.
 
 Validation requires at least three adjustment points and at least two marked
 photos for every active adjustment or checkpoint. Disabled points and
@@ -271,9 +287,10 @@ containers wait for the configured schema head. No additional Kafka topic is req
 campaign events extend the existing versioned orthomosaic, image-tile,
 tile-detection and control contracts with `analysis_run_id`.
 
-GCP deployment requires migration `0019_ground_control_workspace`, API write
-access to the content-addressed object prefix and reconstruction-worker read
-access to that prefix. Apply the migration before rolling out the frontend or
-API. Existing missions remain valid and continue to use dataset GCP files
-unless an immutable `gcp_bundle` is explicitly supplied to a new
-reconstruction stage run.
+GCP deployment requires migrations `0019` through `0021`, API write access to
+the content-addressed object prefix and reconstruction-worker read/write access
+to the mission prefix for `camera_projection_index.json`. Apply `alembic
+upgrade head` before rolling out the frontend, API and reconstruction worker.
+Existing missions remain valid: candidate selection falls back to EXIF when no
+camera index exists, and dataset GCP files remain in use unless an immutable
+`gcp_bundle` is explicitly supplied to a new reconstruction stage run.

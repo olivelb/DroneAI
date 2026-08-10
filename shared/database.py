@@ -131,6 +131,27 @@ class RequiredTimestampMixin:
     )
 
 
+class AppendOnlyAuditMixin:
+    """Shared immutable event identity, actor, snapshots and timestamp."""
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    event_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    actor_subject = Column(String(256), nullable=False)
+    before_state = Column(PORTABLE_JSON, nullable=True)
+    after_state = Column(PORTABLE_JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mission statuses
 # ---------------------------------------------------------------------------
@@ -197,6 +218,13 @@ MISSION_RESOURCE_CLASSES = tuple(RESOURCE_CLASSES)
 MAP_FEATURE_SOURCES = ("manual", "ai")
 GCP_ROLES = ("adjustment", "checkpoint", "disabled")
 GCP_OBSERVATION_STATUSES = ("candidate", "marked", "skipped")
+GCP_AUDIT_ACTIONS = (
+    "imported",
+    "point_updated",
+    "observation_updated",
+    "candidates_refreshed",
+    "bundle_materialized",
+)
 MAP_FEATURE_AUDIT_ACTIONS = (
     "created",
     "updated",
@@ -426,6 +454,11 @@ class Mission(Base):
         "GcpSet",
         back_populates="mission",
         cascade="all, delete-orphan",
+    )
+    gcp_audit_events = relationship(
+        "GcpAuditEvent",
+        back_populates="mission",
+        passive_deletes=True,
     )
     feature_audit_events = relationship(
         "MapFeatureAuditEvent",
@@ -966,7 +999,7 @@ class MapFeature(RequiredTimestampMixin, Base):
     )
 
 
-class MapFeatureAuditEvent(Base):
+class MapFeatureAuditEvent(AppendOnlyAuditMixin, Base):
     """Append-only operator audit trail for feature corrections."""
 
     __tablename__ = "map_feature_audit_events"
@@ -979,14 +1012,6 @@ class MapFeatureAuditEvent(Base):
         ),
     )
 
-    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
-    event_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),
@@ -997,16 +1022,8 @@ class MapFeatureAuditEvent(Base):
         ForeignKey("map_features.id", ondelete="CASCADE"),
         nullable=False,
     )
-    actor_subject = Column(String(256), nullable=False)
     action = Column(String(32), nullable=False)
     reason = Column(Text, nullable=True)
-    before_state = Column(PORTABLE_JSON, nullable=True)
-    after_state = Column(PORTABLE_JSON, nullable=True)
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(UTC),
-    )
 
     mission = relationship("Mission", back_populates="feature_audit_events")
     feature = relationship("MapFeature", back_populates="audit_events")
@@ -1045,6 +1062,12 @@ class GcpSet(RequiredTimestampMixin, Base):
         cascade="all, delete-orphan",
         order_by="GcpPoint.external_id",
     )
+    audit_events = relationship(
+        "GcpAuditEvent",
+        back_populates="gcp_set",
+        passive_deletes=True,
+        order_by="GcpAuditEvent.created_at",
+    )
 
 
 class GcpPoint(RequiredTimestampMixin, Base):
@@ -1060,8 +1083,7 @@ class GcpPoint(RequiredTimestampMixin, Base):
             name="ck_gcp_points_role",
         ),
         CheckConstraint(
-            "horizontal_accuracy_m > 0 AND vertical_accuracy_m > 0 "
-            "AND image_accuracy_px > 0",
+            "horizontal_accuracy_m > 0 AND vertical_accuracy_m > 0 AND image_accuracy_px > 0",
             name="ck_gcp_points_accuracy",
         ),
         CheckConstraint("version >= 1", name="ck_gcp_points_version"),
@@ -1125,6 +1147,10 @@ class GcpObservation(RequiredTimestampMixin, Base):
             "(status != 'marked') OR (pixel_x IS NOT NULL AND pixel_y IS NOT NULL)",
             name="ck_gcp_observations_marked_pixel",
         ),
+        CheckConstraint(
+            "(image_width_px IS NULL AND image_height_px IS NULL) OR (image_width_px > 0 AND image_height_px > 0)",
+            name="ck_gcp_observations_image_dimensions",
+        ),
         CheckConstraint("version >= 1", name="ck_gcp_observations_version"),
     )
 
@@ -1147,6 +1173,11 @@ class GcpObservation(RequiredTimestampMixin, Base):
     pixel_x = Column(Float, nullable=True)
     pixel_y = Column(Float, nullable=True)
     candidate_distance_m = Column(Float, nullable=True)
+    candidate_method = Column(String(32), nullable=True)
+    projected_pixel_x = Column(Float, nullable=True)
+    projected_pixel_y = Column(Float, nullable=True)
+    image_width_px = Column(Integer, nullable=True)
+    image_height_px = Column(Integer, nullable=True)
     image_longitude = Column(Float, nullable=True)
     image_latitude = Column(Float, nullable=True)
     created_by = Column(String(256), nullable=False)
@@ -1154,6 +1185,47 @@ class GcpObservation(RequiredTimestampMixin, Base):
     version = Column(Integer, nullable=False, default=1)
 
     point = relationship("GcpPoint", back_populates="observations")
+
+
+class GcpAuditEvent(AppendOnlyAuditMixin, Base):
+    """Database-protected append-only history of GCP workspace actions."""
+
+    __tablename__ = "gcp_audit_events"
+    __table_args__ = (
+        Index("ix_gcp_audit_set_created", "gcp_set_id", "created_at"),
+        Index("ix_gcp_audit_mission_created", "mission_id", "created_at"),
+        CheckConstraint(
+            _values_check("action", GCP_AUDIT_ACTIONS),
+            name="ck_gcp_audit_action",
+        ),
+    )
+
+    mission_id = Column(
+        Integer,
+        ForeignKey("missions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    gcp_set_id = Column(
+        Integer,
+        ForeignKey("gcp_sets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    gcp_point_id = Column(
+        Integer,
+        ForeignKey("gcp_points.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    gcp_observation_id = Column(
+        Integer,
+        ForeignKey("gcp_observations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action = Column(String(48), nullable=False)
+
+    mission = relationship("Mission", back_populates="gcp_audit_events")
+    gcp_set = relationship("GcpSet", back_populates="audit_events")
+    point = relationship("GcpPoint")
+    observation = relationship("GcpObservation")
 
 
 class RasterLayerStyle(RequiredTimestampMixin, Base):

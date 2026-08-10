@@ -1,5 +1,6 @@
 import type {
   FeatureBulkAction,
+  GcpAuditEvent,
   GcpCollection,
   GcpBundle,
   GcpFeature,
@@ -507,6 +508,10 @@ export const importGroundControl = (
   body.set("image_accuracy_px", String(options.imageAccuracyPx));
   body.set("candidate_radius_m", String(options.candidateRadiusM));
   body.set("max_candidates", String(options.maxCandidates));
+  body.set("column_profile", options.columnProfile === "custom" ? "auto" : options.columnProfile);
+  if (options.columnMapping && Object.values(options.columnMapping).some(Boolean)) {
+    body.set("column_mapping", JSON.stringify(options.columnMapping));
+  }
   return api<{ gcp_set: GcpSetSummary; candidate_generation: Record<string, unknown> }>(
     `/maps/${encodeURIComponent(missionId)}/gcps/import`,
     { method: "POST", body },
@@ -568,6 +573,11 @@ export const refreshGroundControlCandidates = (
     { method: "POST" },
   );
 };
+
+export const fetchGroundControlAudit = (missionId: string, setId: string) =>
+  api<{ set_id: string; events: GcpAuditEvent[] }>(
+    `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/audit`,
+  );
 
 type SaveFilePickerType = {
   description: string;

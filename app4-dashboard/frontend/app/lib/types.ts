@@ -288,6 +288,11 @@ export type GcpObservation = {
   pixel_x?: number | null;
   pixel_y?: number | null;
   candidate_distance_m?: number | null;
+  candidate_method?: "camera-projection" | "exif-distance" | "imported-observation" | null;
+  projected_pixel_x?: number | null;
+  projected_pixel_y?: number | null;
+  image_width_px?: number | null;
+  image_height_px?: number | null;
   image_longitude?: number | null;
   image_latitude?: number | null;
   version: number;
@@ -347,6 +352,8 @@ export type GcpImportOptions = {
   imageAccuracyPx: number;
   candidateRadiusM: number;
   maxCandidates: number;
+  columnProfile: "auto" | "leica" | "trimble" | "custom";
+  columnMapping?: Partial<Record<"point_id" | "x" | "y" | "z", string>>;
 };
 
 export type GcpBundle = {
@@ -361,6 +368,22 @@ export type GcpBundle = {
     marked_observations: number;
     verification: "independent-checkpoints" | "adjustment-only-unverified";
   };
+};
+
+export type GcpAuditEvent = {
+  event_id: string;
+  action:
+    | "imported"
+    | "point_updated"
+    | "observation_updated"
+    | "candidates_refreshed"
+    | "bundle_materialized";
+  actor_subject: string;
+  point_id?: string | null;
+  observation_id?: string | null;
+  before_state?: Record<string, unknown> | null;
+  after_state?: Record<string, unknown> | null;
+  created_at: string;
 };
 
 export type RasterPalette = "none" | "gray" | "depth" | "terrain" | "viridis";

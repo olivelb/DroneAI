@@ -72,8 +72,9 @@ multipart URLs, then lets operators configure and launch missions, follow
 progress, inspect map layers and export results. Its FastAPI backend validates
 and journals upload sessions, stores mission state, publishes work to Kafka and
 serves datasets and results from S3-compatible storage and PostGIS. The map
-workspace also imports surveyed ground control, proposes photos from EXIF GPS,
-supports native-pixel marking, and binds validated adjustment/checkpoint data
+workspace also imports surveyed ground control, proposes photos from registered
+camera visibility with an EXIF fallback, supports bounded sub-pixel marking and
+an append-only operator history, and binds validated adjustment/checkpoint data
 to reconstruction through immutable checksum-addressed inputs. Production
 API replicas share raster rate-limit state in PostgreSQL and each receive the
 status stream needed for their own WebSocket clients.
