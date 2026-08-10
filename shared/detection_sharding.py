@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, cast
 
-from shared.detection_geometry import build_tile_starts
+from shared.detection_tile_planning import build_tile_starts
 
 MAX_DETECTION_TILES = 100_000
 MAX_DETECTION_SHARDS = 256

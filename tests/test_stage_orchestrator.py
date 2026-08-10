@@ -7,7 +7,14 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from shared.database import Mission, MissionStageRun
+from shared.artifact_manifest import content_addressed_blob_key
+from shared.database import (
+    DetectionShardReceipt,
+    Mission,
+    MissionArtifact,
+    MissionStageRun,
+)
+from shared.detection_sharding import parse_detection_shard_plan_descriptor
 from shared.stage_scheduler import SchedulingLimits
 
 orchestrator = importlib.import_module("app4-dashboard.api.stage_orchestrator")
@@ -49,6 +56,8 @@ def stage_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
+    DetectionShardReceipt.__table__.create(engine)
+    MissionArtifact.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
@@ -89,6 +98,54 @@ def _add_run(
                 status=status,
                 idempotency_key=run_id[0] * 64,
                 resource_class=resource_class,
+            )
+        )
+
+
+def _add_detection_run(scope, run_id, *, width, height, tile_size=1024):
+    artifact_id = f"raster-{run_id}"
+    with scope() as session:
+        mission = Mission(
+            vol_id=f"mission-{run_id}",
+            owner_subject="owner-detection",
+            status="pending",
+        )
+        session.add(mission)
+        session.flush()
+        raster_run = MissionStageRun(
+            run_id=f"raster-{run_id}",
+            mission_id=mission.id,
+            stage="rasterization",
+            attempt=0,
+            status="succeeded",
+            idempotency_key="1" * 64,
+            resource_class="gpu-standard",
+            quality_metrics={"width": width, "height": height},
+        )
+        session.add(raster_run)
+        session.flush()
+        session.add(
+            MissionArtifact(
+                artifact_id=artifact_id,
+                mission_id=mission.id,
+                stage_run_id=raster_run.id,
+                kind="raster_product_workspace",
+                uri="s3://drone-ai/raster/manifest.json",
+                checksum_sha256="2" * 64,
+                artifact_metadata={"ortho_file": "orthomosaic.tif"},
+            )
+        )
+        session.add(
+            MissionStageRun(
+                run_id=run_id,
+                mission_id=mission.id,
+                stage="detection",
+                attempt=0,
+                status="queued",
+                idempotency_key="3" * 64,
+                resource_class="gpu-standard",
+                parameters={"ai": {"tile_size": tile_size}},
+                upstream_artifact_ids=[artifact_id],
             )
         )
 
@@ -287,6 +344,177 @@ def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):
         "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED",
         "true",
     ) in settings.job_environment
+
+
+def test_detection_fanout_settings_fail_closed_without_manifest_v2(monkeypatch):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+    monkeypatch.setenv("DRONEAI_DETECTION_FANOUT_ENABLED", "true")
+
+    with pytest.raises(ValueError, match="Manifest v2 writes and selective restore"):
+        orchestrator.settings_from_environment()
+
+    monkeypatch.setenv("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_DETECTION_TILES_PER_SHARD", "64")
+    monkeypatch.setenv("DRONEAI_DETECTION_SHARD_PARALLELISM", "3")
+    settings = orchestrator.settings_from_environment()
+
+    assert settings.detection_fanout_enabled is True
+    assert settings.detection_tiles_per_shard == 64
+    assert settings.detection_shard_parallelism == 3
+
+
+def test_large_detection_reservation_persists_plan_and_builds_indexed_job(
+    stage_sessions,
+):
+    run_id = "7" * 32
+    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
+    settings = _settings(
+        detection_fanout_enabled=True,
+        detection_tiles_per_shard=1_024,
+        detection_shard_parallelism=2,
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        )
+
+    assert len(reserved) == 1
+    assert reserved[0].config.indexed is not None
+    assert reserved[0].config.indexed.completions == 5
+    assert reserved[0].config.indexed.parallelism == 2
+    assert ("DRONEAI_DETECTION_EXECUTION_MODE", "shard") in (
+        reserved[0].config.environment
+    )
+    manifest = orchestrator.build_stage_job(
+        reserved[0].request,
+        reserved[0].config,
+    )
+    assert manifest["spec"]["completionMode"] == "Indexed"
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        plan = parse_detection_shard_plan_descriptor(
+            run.provenance["detection_shard_plan"]
+        )
+        assert plan.shard_count == 5
+        assert run.provenance[orchestrator.DETECTION_PHASE_KEY] == "shards"
+
+
+def test_small_detection_reservation_remains_monolithic(stage_sessions):
+    run_id = "8" * 32
+    _add_detection_run(stage_sessions, run_id, width=2_000, height=2_000)
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(detection_fanout_enabled=True),
+            datetime.now(UTC),
+        )
+
+    assert len(reserved) == 1
+    assert reserved[0].config.indexed is None
+    assert not any(
+        name == "DRONEAI_DETECTION_EXECUTION_MODE"
+        for name, _value in reserved[0].config.environment
+    )
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.provenance["detection_execution_mode"] == "monolithic"
+        assert "detection_shard_plan" not in run.provenance
+
+
+def test_completed_detection_shards_dispatch_a_distinct_finalizer(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "6" * 32
+    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
+    settings = _settings(detection_fanout_enabled=True)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        )
+    shard_job_name = reserved[0].job_name
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        run.status = "running"
+        plan = parse_detection_shard_plan_descriptor(
+            run.provenance["detection_shard_plan"]
+        )
+        for shard in plan.shards:
+            checksum = f"{shard.shard_index + 1:064x}"
+            session.add(
+                DetectionShardReceipt(
+                    stage_run_id=run.id,
+                    plan_checksum_sha256=plan.checksum_sha256,
+                    shard_index=shard.shard_index,
+                    shard_count=plan.shard_count,
+                    tile_count=shard.tile_count,
+                    result_key=content_addressed_blob_key(checksum),
+                    result_checksum_sha256=checksum,
+                    result_size_bytes=100 + shard.shard_index,
+                )
+            )
+    client = FakeJobClient(
+        {shard_job_name: {"status": {"succeeded": plan.shard_count}}}
+    )
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, settings)
+
+    finalizer_name = orchestrator.stage_job_name(f"{run_id}-finalizer")
+    assert client.created[0]["metadata"]["name"] == finalizer_name
+    assert "completionMode" not in client.created[0]["spec"]
+    environment = {
+        item["name"]: item.get("value")
+        for item in client.created[0]["spec"]["template"]["spec"]["containers"][0][
+            "env"
+        ]
+    }
+    assert environment["DRONEAI_DETECTION_EXECUTION_MODE"] == "finalizer"
+    assert environment["DRONEAI_STAGE_RUN_ID"] == run_id
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.status == "running"
+        assert run.job_name == finalizer_name
+        assert run.current_step == "DETECTION_FINALIZING"
+        assert run.provenance[orchestrator.DETECTION_PHASE_KEY] == "finalizer"
+        assert run.provenance["detection_shard_job_name"] == shard_job_name
+
+
+def test_completed_indexed_job_fails_closed_when_a_receipt_is_missing(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "5" * 32
+    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
+    settings = _settings(detection_fanout_enabled=True)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        )
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        run.status = "running"
+    client = FakeJobClient(
+        {reserved[0].job_name: {"status": {"succeeded": 5}}}
+    )
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, settings)
+
+    assert client.created == []
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.status == "failed"
+        assert "complete durable receipt set" in run.error_message
+        assert "missing=" in run.error_message
 
 
 def test_detection_job_alone_receives_model_configuration_and_hf_token():

@@ -128,3 +128,37 @@ def test_indexed_job_rejects_unsafe_parallelism_and_reserved_environment():
             command=("run",),
             environment=(("DRONEAI_DETECTION_SHARD_INDEX", "0"),),
         )
+
+
+def test_job_name_suffix_creates_a_distinct_bounded_finalizer_identity():
+    request = jobs.StageJobRequest(
+        run_id="detection-run",
+        mission_id=1,
+        vol_id="mission-1",
+        owner_subject="owner",
+        stage="detection",
+        resource_class="gpu-standard",
+    )
+    config = jobs.StageJobConfig(
+        namespace="drone-ai",
+        image="image@sha256:" + "e" * 64,
+        command=("run",),
+        name_suffix="finalizer",
+    )
+
+    job = jobs.build_stage_job(request, config)
+
+    assert job["metadata"]["name"] == jobs.stage_job_name(
+        "detection-run-finalizer"
+    )
+    environment = job["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert next(
+        item["value"] for item in environment if item["name"] == "DRONEAI_STAGE_RUN_ID"
+    ) == "detection-run"
+    with pytest.raises(ValueError, match="canonical DNS label"):
+        jobs.StageJobConfig(
+            namespace="drone-ai",
+            image="image@sha256:" + "f" * 64,
+            command=("run",),
+            name_suffix="Not Safe",
+        )

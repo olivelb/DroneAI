@@ -1,9 +1,31 @@
 import pytest
 
+import subprocess
+import sys
+from pathlib import Path
+
 from shared.detection_sharding import (
     build_detection_shard_plan,
     parse_detection_shard_plan_descriptor,
 )
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_shard_planning_does_not_load_the_opencv_runtime() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import shared.detection_sharding; "
+                "assert 'cv2' not in sys.modules"
+            ),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
 
 
 def test_large_detection_plan_is_partitioned_deterministically() -> None:

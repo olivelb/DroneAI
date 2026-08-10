@@ -91,9 +91,18 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in deployment
     assert "artifactManifestV2WriteEnabled: false" in defaults
     assert "artifactSelectiveRestoreEnabled: false" in defaults
+    assert "detectionFanout:" in defaults
+    assert "DRONEAI_DETECTION_FANOUT_ENABLED" in deployment
+    assert "DRONEAI_DETECTION_TILES_PER_SHARD" in deployment
+    assert "DRONEAI_DETECTION_SHARD_PARALLELISM" in deployment
+    assert "DRONEAI_DETECTION_MAXIMUM_TILES" in deployment
     assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in deployment
     assert (
         "artifactSelectiveRestoreEnabled requires "
         "stageJobs.artifactManifestV2WriteEnabled=true"
+    ) in deployment
+    assert (
+        "detectionFanout.enabled requires "
+        "stageJobs.artifactSelectiveRestoreEnabled=true"
     ) in deployment
     assert "automountServiceAccountToken: false" in deployment
