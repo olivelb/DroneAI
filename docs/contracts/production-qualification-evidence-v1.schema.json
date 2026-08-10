@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://droneai.local/contracts/production-qualification-evidence-v1.schema.json",
+  "title": "DroneAI production qualification evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "qualification_id",
+    "generated_at",
+    "environment",
+    "release",
+    "objectives",
+    "drills",
+    "attestation"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "qualification_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "cluster", "namespace", "kubernetes_version", "node_type", "gpu"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "cluster": { "$ref": "#/$defs/nonEmptyString" },
+        "namespace": { "$ref": "#/$defs/nonEmptyString" },
+        "kubernetes_version": { "$ref": "#/$defs/nonEmptyString" },
+        "node_type": { "$ref": "#/$defs/nonEmptyString" },
+        "gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model", "vram_mb", "driver", "cuda_runtime"],
+          "properties": {
+            "model": { "$ref": "#/$defs/nonEmptyString" },
+            "vram_mb": { "type": "integer", "minimum": 1 },
+            "driver": { "$ref": "#/$defs/nonEmptyString" },
+            "cuda_runtime": { "$ref": "#/$defs/nonEmptyString" }
+          }
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_commit", "chart_version", "values_sha256", "images"],
+      "properties": {
+        "git_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "chart_version": { "$ref": "#/$defs/nonEmptyString" },
+        "values_sha256": { "$ref": "#/$defs/sha256" },
+        "images": {
+          "type": "object",
+          "required": [
+            "reconstruction",
+            "gaussian_training",
+            "gaussian_filtering",
+            "rasterization",
+            "detection"
+          ],
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "objectives": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rto_seconds", "rpo_seconds"],
+      "properties": {
+        "rto_seconds": { "type": "number", "minimum": 1 },
+        "rpo_seconds": { "type": "number", "minimum": 0 }
+      }
+    },
+    "drills": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "items": { "$ref": "#/$defs/drill" }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operator", "reviewed_at", "statement"],
+      "properties": {
+        "operator": { "$ref": "#/$defs/nonEmptyString" },
+        "reviewed_at": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "statement": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "dateTimeOrNull": {
+      "oneOf": [
+        { "type": "string", "format": "date-time" },
+        { "type": "null" }
+      ]
+    },
+    "numberOrNull": {
+      "oneOf": [
+        { "type": "number", "minimum": 0 },
+        { "type": "null" }
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonEmptyString" },
+      "uniqueItems": true
+    },
+    "drill": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "status",
+        "started_at",
+        "completed_at",
+        "observed_rto_seconds",
+        "observed_rpo_seconds",
+        "run_ids",
+        "artifact_ids",
+        "evidence_refs",
+        "notes"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "five_stage_chain",
+            "stage_cancellation",
+            "stage_deadline",
+            "missing_job_reconciliation",
+            "api_restart_after_reservation",
+            "database_interruption",
+            "object_storage_interruption",
+            "backup_restore",
+            "helm_rollback"
+          ]
+        },
+        "status": { "enum": ["not_run", "passed", "failed", "blocked"] },
+        "started_at": { "$ref": "#/$defs/dateTimeOrNull" },
+        "completed_at": { "$ref": "#/$defs/dateTimeOrNull" },
+        "observed_rto_seconds": { "$ref": "#/$defs/numberOrNull" },
+        "observed_rpo_seconds": { "$ref": "#/$defs/numberOrNull" },
+        "run_ids": { "$ref": "#/$defs/stringArray" },
+        "artifact_ids": { "$ref": "#/$defs/stringArray" },
+        "evidence_refs": { "$ref": "#/$defs/stringArray" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}

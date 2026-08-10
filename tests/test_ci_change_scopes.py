@@ -14,6 +14,12 @@ def _enabled(*paths: str) -> set[str]:
 
 def test_documentation_change_only_runs_link_validation() -> None:
     assert _enabled("README.md", "docs/OPERATIONS.md") == {"docs"}
+    assert _enabled("docs/benchmarks/release.qualification.json") == {"docs"}
+
+
+def test_qualification_contract_changes_run_cpu_and_docs_validation() -> None:
+    assert _enabled("tools/production_qualification.py") == {"python", "docs"}
+    assert _enabled("tests/test_production_qualification.py") == {"python", "docs"}
 
 
 def test_frontend_change_only_runs_frontend_job() -> None:

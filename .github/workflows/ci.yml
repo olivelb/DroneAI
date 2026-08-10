@@ -40,7 +40,7 @@ jobs:
         run: python3 scripts/ci/select_ci_jobs.py
 
   docs:
-    name: Markdown link contracts
+    name: Documentation and qualification contracts
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-latest
@@ -48,6 +48,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 tools/check_markdown_links.py
+      - name: Validate production qualification evidence
+        run: python3 tools/production_qualification.py check-tree docs/benchmarks
 
   dronegs-core:
     name: DroneGS native CPU contract tests

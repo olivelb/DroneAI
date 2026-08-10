@@ -69,9 +69,11 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         )
         if is_python or path in {"Makefile", "pyproject.toml"} or _under(path, "requirements"):
             selected["python"] = True
-        if path.endswith(".md") or path in {
+        if _under(path, "docs") or path.endswith(".md") or path in {
             "tools/check_markdown_links.py",
+            "tools/production_qualification.py",
             "tests/test_markdown_links.py",
+            "tests/test_production_qualification.py",
         }:
             selected["docs"] = True
         if _under(path, "app1-colmap/dronegs") and not path.endswith(".md"):
