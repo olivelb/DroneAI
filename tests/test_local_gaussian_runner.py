@@ -76,6 +76,18 @@ def test_normal_profile_matches_versioned_quality_envelope():
     assert profile.capacity_floor == 3_000_000
 
 
+def test_high_quality_profile_matches_versioned_quality_envelope():
+    profile = PROFILES["high-quality"]
+
+    assert profile.iterations == 30_000
+    assert profile.cap_max == 12_000_000
+    assert profile.data_factor == 1
+    assert profile.max_width == 4096
+    assert profile.profile_id == "high-quality-v2"
+    assert profile.capacity_mode == "adaptive"
+    assert profile.capacity_floor == 5_000_000
+
+
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     profile = PROFILES["facade-hd"]
 

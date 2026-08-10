@@ -54,6 +54,11 @@ Profiles:
   CUDA at 2400 px and 4096 features, 15,000 iterations, adaptive Gaussian
   capacity from 3M up to 8M according to surface/GSD/VRAM, image factor 4,
   and full YOLO detection
+- `high-quality`: all readable images with the versioned `high-quality-v2`
+  envelope: SIFT CUDA at 4096 px and 16,384 features, 30,000 iterations,
+  adaptive Gaussian capacity from 5M up to 12M according to surface/GSD/VRAM,
+  image factor 1, and full detection; this is the reproducible BIGZEN/24 GiB
+  qualification path, not a default laptop profile
 - `standard`: all readable images, bounded GPS matching, SIFT CUDA at 2400 px
   and 4096 features, two global BA passes with final retriangulation, Gaussian
   `low-memory`, and full YOLO detection
@@ -346,6 +351,7 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 | `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | 4 | 0.25 m |
 | `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | 4 | 0.05 m |
 | `normal` (`normal-v2`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | 4 | 0.05 m |
+| `high-quality` (`high-quality-v2`) | 30,000 | adaptive 5–12 M | 3 | 1 | 4,096 px | 1 | 0.015 m |
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
 | `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
 
