@@ -55,6 +55,14 @@ dashboardFrontend:
   service:
     type: ClusterIP
 
+stageJobs:
+  credentialSecrets:
+    reconstruction: drone-ai-stage-reconstruction-production
+    gaussian_training: drone-ai-stage-gaussian-training-production
+    gaussian_filtering: drone-ai-stage-gaussian-filtering-production
+    rasterization: drone-ai-stage-rasterization-production
+    detection: drone-ai-stage-detection-production
+
 iaWorker:
   tag: "REPLACE_GIT_SHA"
 

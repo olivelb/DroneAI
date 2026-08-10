@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -73,6 +73,9 @@ class StageOrchestratorSettings:
     executors: dict[StageId, StageExecutorConfig]
     job_environment: tuple[tuple[str, str], ...] = ()
     job_secret_environment: tuple[SecretEnvironment, ...] = ()
+    job_secret_environment_by_stage: dict[
+        StageId, tuple[SecretEnvironment, ...]
+    ] = field(default_factory=dict)
     detection_environment: tuple[tuple[str, str], ...] = ()
     detection_secret_environment: tuple[SecretEnvironment, ...] = ()
     service_account_name: str = "stage-job-sa"
@@ -159,6 +162,62 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
     return result
 
 
+def _storage_secret_environment(secret_name: str) -> tuple[SecretEnvironment, ...]:
+    return tuple(
+        SecretEnvironment(
+            environment_name,
+            secret_name,
+            os.getenv(key_variable, default_key),
+        )
+        for environment_name, key_variable, default_key in (
+            ("DATABASE_URL", "DRONEAI_STAGE_DATABASE_URL_SECRET_KEY", "database-url"),
+            ("S3_ACCESS_KEY", "DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY", "s3-access-key"),
+            ("S3_SECRET_KEY", "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY", "s3-secret-key"),
+        )
+    )
+
+
+def _scoped_stage_secret_environment(
+    raw: str,
+    *,
+    enabled: bool,
+) -> dict[StageId, tuple[SecretEnvironment, ...]]:
+    payload = json.loads(raw or "{}")
+    if not isinstance(payload, dict):
+        raise ValueError("DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON must be an object")
+    unknown = sorted(set(payload) - set(STAGE_ORDER))
+    if unknown:
+        raise ValueError(
+            "Unknown stage credential Secret entries: " + ", ".join(unknown)
+        )
+    environment = os.getenv("DRONEAI_ENV", "development").strip().lower()
+    protected = environment in {"staging", "production"}
+    if not payload:
+        if enabled and protected:
+            raise ValueError(
+                f"{environment} stage Jobs require one distinct credential Secret "
+                "for every stage"
+            )
+        return {}
+    missing = [stage for stage in STAGE_ORDER if stage not in payload]
+    if missing:
+        raise ValueError(
+            "Missing stage credential Secret entries: " + ", ".join(missing)
+        )
+    names: dict[StageId, str] = {}
+    for stage in STAGE_ORDER:
+        value = payload[stage]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"Credential Secret for {stage} must be a non-empty name")
+        names[stage] = value.strip()
+    if len(set(names.values())) != len(names):
+        raise ValueError("Every stage must use a distinct credential Secret")
+    return {
+        stage: _storage_secret_environment(secret_name)
+        for stage, secret_name in names.items()
+    }
+
+
 def settings_from_environment() -> StageOrchestratorSettings:
     enabled = stage_jobs_enabled()
     detection_fanout_enabled = _strict_bool(
@@ -186,6 +245,10 @@ def settings_from_environment() -> StageOrchestratorSettings:
         {str(key): int(value) for key, value in resource_limits_raw.items()},
     )
     storage_secret = os.getenv("DRONEAI_STAGE_STORAGE_SECRET_NAME", "drone-ai-storage")
+    scoped_secret_environment = _scoped_stage_secret_environment(
+        os.getenv("DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON", "{}"),
+        enabled=enabled,
+    )
     plain_environment = tuple(
         (name, os.environ[name])
         for name in (
@@ -199,14 +262,7 @@ def settings_from_environment() -> StageOrchestratorSettings:
         )
         if name in os.environ
     )
-    secret_environment = tuple(
-        SecretEnvironment(environment_name, storage_secret, os.getenv(key_variable, default_key))
-        for environment_name, key_variable, default_key in (
-            ("DATABASE_URL", "DRONEAI_STAGE_DATABASE_URL_SECRET_KEY", "database-url"),
-            ("S3_ACCESS_KEY", "DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY", "s3-access-key"),
-            ("S3_SECRET_KEY", "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY", "s3-secret-key"),
-        )
-    )
+    secret_environment = _storage_secret_environment(storage_secret)
     detection_environment = (
         ("HF_HOME", "/cache/huggingface"),
         ("HF_HUB_CACHE", "/cache/huggingface/hub"),
@@ -247,6 +303,7 @@ def settings_from_environment() -> StageOrchestratorSettings:
         ),
         job_environment=plain_environment,
         job_secret_environment=secret_environment,
+        job_secret_environment_by_stage=scoped_secret_environment,
         detection_environment=detection_environment,
         detection_secret_environment=detection_secret_environment,
         service_account_name=os.getenv("DRONEAI_STAGE_JOB_SERVICE_ACCOUNT", "stage-job-sa"),
@@ -380,6 +437,10 @@ def _reserved_job(
     detection_secret_environment = (
         settings.detection_secret_environment if stage == "detection" else ()
     )
+    scoped_secret_environment = settings.job_secret_environment_by_stage.get(
+        stage,
+        settings.job_secret_environment,
+    )
     indexed = None
     name_suffix = None
     phase_environment: tuple[tuple[str, str], ...] = ()
@@ -425,7 +486,7 @@ def _reserved_job(
                 + phase_environment
             ),
             secret_environment=(
-                settings.job_secret_environment + detection_secret_environment
+                scoped_secret_environment + detection_secret_environment
             ),
             indexed=indexed,
             name_suffix=name_suffix,

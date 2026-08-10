@@ -84,6 +84,9 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert 'resources: ["jobs"]' in deployment
     assert 'verbs: ["create", "get", "list", "watch", "delete"]' in deployment
     assert "DRONEAI_STAGE_JOBS_ENABLED" in deployment
+    assert "credentialSecrets: {}" in defaults
+    assert "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON" in deployment
+    assert "one distinct Secret per stage" in deployment
     assert "DRONEAI_STAGE_JOB_RUNTIME_CLASS" in deployment
     assert ".Values.gpu.runtimeClassName" in deployment
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in deployment

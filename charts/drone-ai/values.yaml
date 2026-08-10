@@ -256,6 +256,12 @@ dashboardApi:
 # --------------------------------------------------------------------------
 stageJobs:
   enabled: false
+  # Existing Secrets injected into each one-shot executor. Each Secret exposes
+  # database-url, s3-access-key and s3-secret-key (key names remain configurable
+  # through storage.*). A complete map with five distinct Secret names is
+  # mandatory when Jobs are enabled in staging or production. Development may
+  # omit it and reuse storage.existingSecret for local compatibility only.
+  credentialSecrets: {}
   # Reader-compatible CAS overlay rollout. Keep false until multipart CAS and
   # the target stage sequence have been qualified with rollback evidence.
   artifactManifestV2WriteEnabled: false
