@@ -104,13 +104,13 @@ def test_detection_stage_persists_sam_prompt_and_tile_size():
             "vol_id": "mission-sam",
             "ai_backend": "sam3",
             "sam_prompt": "construction vehicle",
-            "tile_size": 1536,
+            "tile_size": 1024,
         }
     )
 
     detection = next(spec for spec in specs if spec["stage"] == "detection")
     assert detection["parameters"]["ai"]["sam_prompt"] == "construction vehicle"
-    assert detection["parameters"]["ai"]["tile_size"] == 1536
+    assert detection["parameters"]["ai"]["tile_size"] == 1024
 
 
 def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
@@ -127,6 +127,21 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
     assert resource_class_for_stage(
         "detection",
         {"ai": {"backend": "sam3"}},
+    ) == "gpu-geometry"
+    with pytest.raises(ValueError, match="below the gpu-geometry"):
+        resource_class_for_stage(
+            "detection",
+            {
+                "ai": {"backend": "sam3"},
+                "resource_class": "gpu-standard",
+            },
+        )
+    assert resource_class_for_stage(
+        "detection",
+        {
+            "ai": {"backend": "sam3"},
+            "resource_class": "gpu-high-memory",
+        },
     ) == "gpu-high-memory"
     assert resource_class_for_stage(
         "detection",

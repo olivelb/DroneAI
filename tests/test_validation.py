@@ -332,3 +332,28 @@ def test_sam3_schemas_keep_free_form_semantic_prompts():
 
     assert mission.classes == ["roof defect"]
     assert analysis.classes == ["roof defect"]
+
+
+def test_sam3_schemas_reject_tiles_larger_than_effective_model_input():
+    with pytest.raises(ValueError, match="must not exceed 1024 pixels"):
+        MissionParams(
+            vol_id="mission-001",
+            input_dataset="datasets/banyuls",
+            ai_backend="sam3",
+            tile_size=1025,
+        )
+
+    with pytest.raises(ValueError, match="must not exceed 1024 pixels"):
+        AnalysisCreate(
+            name="oversized SAM3 tile",
+            backend="sam3",
+            tile_size=2048,
+        )
+
+    yolo = MissionParams(
+        vol_id="mission-001",
+        input_dataset="datasets/banyuls",
+        ai_backend="yolo",
+        tile_size=2048,
+    )
+    assert yolo.tile_size == 2048
