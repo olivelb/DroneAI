@@ -25,6 +25,10 @@ deselection, editable coordinates, GCP import/editing, candidate refresh,
 bundle validation and native-pixel image marking. The production Next.js build
 and bilingual catalogue are also checked.
 
+The final CPU-equivalent CI run completed with 813 tests passed and 14
+GPU/integration tests deliberately deselected. The zero-duplication gate,
+modular boundary checks, frontend build and all 10 Playwright scenarios passed.
+
 Commands used from the authoritative Ubuntu WSL checkout:
 
 ```bash

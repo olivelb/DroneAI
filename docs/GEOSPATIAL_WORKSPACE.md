@@ -243,7 +243,9 @@ normal immutable DAG contract.
 The layers, AI campaign, search, export and feature-editing interfaces live in
 focused components under `components/geospatial/`; CRS selection and vector
 export cards are separate from download orchestration, and shared defaults and
-geometry helpers live in `workspace-config.ts`. On the API side,
+geometry helpers live in `workspace-config.ts`. GCP and analysis lifecycle
+state live in dedicated controller hooks, while manual coordinate entry is a
+separate editor component. On the API side,
 `routers/maps.py` only composes the raster, export, campaign, feature-mutation
 and named-style routers. Request models and the framework-neutral
 GeoJSON/GeoPackage writer

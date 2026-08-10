@@ -13,6 +13,14 @@ import type { MapTool } from "../GeospatialMap";
 
 export type ViewerLayer = "ortho" | "depth";
 
+export const geometryTool = (geometry?: Geometry): MapTool => {
+  if (geometry?.type === "Point" || geometry?.type === "MultiPoint") return "point";
+  if (geometry?.type === "LineString" || geometry?.type === "MultiLineString") {
+    return "line";
+  }
+  return "polygon";
+};
+
 export const retainKnownRunIds = (
   visibleRunIds: string[],
   knownRunIds: string[],
