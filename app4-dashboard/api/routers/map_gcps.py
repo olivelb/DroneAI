@@ -695,7 +695,12 @@ def update_ground_control_observation(
                 stored_observation.image_width_px = width
                 stored_observation.image_height_px = height
             try:
-                validate_observation_pixels(request.pixel_x, request.pixel_y, width, height)
+                validate_observation_pixels(
+                    request.pixel_x,
+                    request.pixel_y,
+                    int(width),
+                    int(height),
+                )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         observation.status = request.status

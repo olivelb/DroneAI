@@ -58,7 +58,7 @@ export function useGcpWorkspace(
   const refreshAudit = useCallback(async (setId: string) => {
     if (!missionId) return;
     const payload = await fetchGroundControlAudit(missionId, setId);
-    setAuditEvents(payload.events);
+    setAuditEvents(Array.isArray(payload.events) ? payload.events : []);
   }, [missionId]);
 
   useEffect(() => {

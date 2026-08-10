@@ -72,7 +72,7 @@ def _finite_float(value: Any, label: str) -> float:
 def build_camera_projection_index(model_path: str | Path, crs: str) -> dict[str, Any]:
     """Serialize registered COLMAP cameras into a runtime-neutral index."""
 
-    import pycolmap  # type: ignore[import-not-found]
+    import pycolmap
 
     reconstruction = pycolmap.Reconstruction(str(model_path))
     images: list[dict[str, Any]] = []

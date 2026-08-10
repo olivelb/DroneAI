@@ -316,6 +316,22 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       }));
       return;
     }
+    if (url.pathname === "/maps/mission-existing/gcps/set-1/audit") {
+      await route.fulfill(json({
+        set_id: "set-1",
+        events: [{
+          event_id: "audit-1",
+          action: "imported",
+          actor_subject: "e2e-operator",
+          point_id: null,
+          observation_id: null,
+          before_state: null,
+          after_state: { point_count: 1 },
+          created_at: "2026-08-10T12:00:00Z",
+        }],
+      }));
+      return;
+    }
     if (url.pathname === "/files/datasets/survey-set/DJI_0001.JPG") {
       await route.fulfill({
         status: 200,
