@@ -10,6 +10,8 @@ const DESCRIPTION_KEYS: Record<QualityProfileId, MessageKey> = {
   "fast-v1": "profile.fast.description",
   "normal-v1": "profile.normal.description",
   "high-quality-v1": "profile.highQuality.description",
+  "normal-v2": "profile.normal.description",
+  "high-quality-v2": "profile.highQuality.description",
 };
 
 const formatInteger = (value: unknown) =>
@@ -63,7 +65,14 @@ export default function QualityProfileSelector() {
                 <span>{t("profile.imageSize", { value: formatInteger(profile.parameters.feature_max_image_size) })}</span>
                 <span>{t("profile.features", { value: formatInteger(profile.parameters.feature_max_num_features) })}</span>
                 <span>{t("profile.iterations", { value: formatInteger(profile.parameters.gs_iterations) })}</span>
-                <span>{t("profile.gaussians", { value: formatInteger(profile.parameters.gs_cap_max) })}</span>
+                <span>
+                  {t(
+                    profile.parameters.gs_capacity_mode === "adaptive"
+                      ? "profile.gaussiansAdaptive"
+                      : "profile.gaussians",
+                    { value: formatInteger(profile.parameters.gs_cap_max) },
+                  )}
+                </span>
               </span>
             </button>
           );

@@ -18,7 +18,7 @@ implemented system as it exists now.
 | HD facade workflow | [`FACADE_ORTHOPHOTO.md`](FACADE_ORTHOPHOTO.md) |
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
-| Quality profiles and YOLO capability catalog | [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md) |
+| Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
 | Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
@@ -40,6 +40,8 @@ dataset or machine. They are not operational instructions and do not describe
 the current release status:
 
 - [`benchmarks/`](benchmarks/) and [`dronegs/benchmarks/`](dronegs/benchmarks/)
+- superseded fixed-cap quality profile contract:
+  [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md)
 - machine-readable Helenenschacht sparse/RTK evidence:
   [`benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json`](benchmarks/helenenschacht-sparse-precision-ab-2026-07-31.json)
 - local CUDA 12.9.2 runtime qualification:
@@ -47,6 +49,8 @@ the current release status:
 - BIGZEN Villesèque P4 high-quality full E2E, Metashape comparison and
   YOLO/SAM3 qualification:
   [`benchmarks/villeseque-p4-hq-e2e-2026-08-09.md`](benchmarks/villeseque-p4-hq-e2e-2026-08-09.md)
+- BIGZEN native DroneGS 12–16 M Gaussian allocation probe:
+  [`benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md`](benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md)
 - BIGZEN Chapelle Banyuls P4 Fast local baseline plus the successful K3s
   five-Job/RTX 3090/SAM3 qualification addendum:
   [`benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md)

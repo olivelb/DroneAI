@@ -217,6 +217,11 @@ def prepare_gaussian_product_run(
         ortho_mip_filter_compensation=resolved.mip_filter_compensation,
         tile_mode=resolved.tile_mode,
         cap_max=resolved.cap_max,
+        capacity_mode=resolved.capacity_mode,
+        capacity_floor=resolved.capacity_floor,
+        target_gaussian_spacing_pixels=(
+            resolved.target_gaussian_spacing_pixels
+        ),
         filter_enabled=resolved.filter_enabled,
         filter_max_scale=resolved.filter_max_scale,
         filter_min_retained_ratio=resolved.filter_min_retained_ratio,
@@ -331,6 +336,11 @@ def run_gaussian_product(
             ortho_mip_filter_compensation=config.ortho_mip_filter_compensation,
             tile_mode=config.tile_mode,
             cap_max=config.cap_max,
+            capacity_mode=config.capacity_mode,
+            capacity_floor=config.capacity_floor,
+            target_gaussian_spacing_pixels=(
+                config.target_gaussian_spacing_pixels
+            ),
             filter_enabled=config.filter_enabled,
             filter_max_scale=config.filter_max_scale,
             filter_min_retained_ratio=config.filter_min_retained_ratio,

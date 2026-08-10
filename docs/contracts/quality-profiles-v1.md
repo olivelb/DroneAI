@@ -1,5 +1,9 @@
 # Quality profiles v1
 
+> Historical contract. New missions use
+> [`quality-profiles-v2.md`](quality-profiles-v2.md); these fixed-cap profiles
+> remain accepted only for stored mission replay.
+
 DroneAI exposes three immutable end-to-end envelopes through
 `GET /mission/parameters`. The profile ID, version, effective COLMAP/DroneGS
 parameters, explicit envelope overrides and the selected AI backend are
@@ -13,7 +17,8 @@ prompt/classes and resolve the deployment-pinned SAM3 revision at execution.
 | `normal-v1` | 2,400 px | 4,096 | 15,000 | 3,000,000 | 4 |
 | `high-quality-v1` | 4,096 px | 16,384 | 30,000 | 5,000,000 | 1 |
 
-`normal-v1` is the API and dashboard default. Selecting a profile applies its
+At the time of this contract, `normal-v1` was the API and dashboard default.
+Selecting a profile applied its
 values to feature extraction, MVS image preparation and DroneGS. Expert values
 remain allowed and are recorded under `quality_profile_overrides`; if they
 change the DroneGS training identity, the worker records the executed DroneGS

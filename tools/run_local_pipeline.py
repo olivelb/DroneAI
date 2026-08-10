@@ -25,7 +25,7 @@ MANIFEST_NAME = "pipeline_run.json"
 STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 FAST_DEFAULTS = quality_profile("fast-v1").parameters
-NORMAL_DEFAULTS = quality_profile("normal-v1").parameters
+NORMAL_DEFAULTS = quality_profile("normal-v2").parameters
 
 
 @dataclass(frozen=True)

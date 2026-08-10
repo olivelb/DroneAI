@@ -6,8 +6,14 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
-QualityProfileId = Literal["fast-v1", "normal-v1", "high-quality-v1"]
-DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v1"
+QualityProfileId = Literal[
+    "fast-v1",
+    "normal-v1",
+    "high-quality-v1",
+    "normal-v2",
+    "high-quality-v2",
+]
+DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v2"
 
 
 @dataclass(frozen=True)
@@ -21,7 +27,7 @@ class QualityProfile:
 
     @property
     def version(self) -> int:
-        return 1
+        return int(self.profile_id.rsplit("-v", 1)[1])
 
     def as_api_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +49,9 @@ def _profile(
     iterations: int,
     gaussians: int,
     data_factor: str,
+    capacity_mode: str = "fixed",
+    capacity_floor: int | None = None,
+    target_spacing_pixels: float = 0.0,
 ) -> QualityProfile:
     return QualityProfile(
         profile_id=profile_id,
@@ -57,10 +66,37 @@ def _profile(
                 "gs_data_factor": data_factor,
                 "gs_max_width": str(image_size),
                 "gs_cap_max": str(gaussians),
+                "gs_capacity_mode": capacity_mode,
+                "gs_capacity_floor": str(capacity_floor or gaussians),
+                "gs_target_gaussian_spacing_pixels": str(target_spacing_pixels),
                 "gs_production_profile": profile_id,
             }
         ),
     )
+
+
+_LEGACY_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
+    _profile(
+        "normal-v1",
+        "Normal (legacy)",
+        "Original fixed-cap routine profile retained for mission replay.",
+        image_size=2_400,
+        features=4_096,
+        iterations=15_000,
+        gaussians=3_000_000,
+        data_factor="4",
+    ),
+    _profile(
+        "high-quality-v1",
+        "High Quality (legacy)",
+        "Original fixed-cap high-quality profile retained for mission replay.",
+        image_size=4_096,
+        features=16_384,
+        iterations=30_000,
+        gaussians=5_000_000,
+        data_factor="1",
+    ),
+)
 
 
 QUALITY_PROFILES: tuple[QualityProfile, ...] = (
@@ -75,28 +111,37 @@ QUALITY_PROFILES: tuple[QualityProfile, ...] = (
         data_factor="8",
     ),
     _profile(
-        "normal-v1",
+        "normal-v2",
         "Normal",
-        "Balanced production profile for routine aerial missions.",
+        "Adaptive production profile sized from scene area, GSD and GPU memory.",
         image_size=2_400,
         features=4_096,
         iterations=15_000,
-        gaussians=3_000_000,
+        gaussians=8_000_000,
         data_factor="4",
+        capacity_mode="adaptive",
+        capacity_floor=3_000_000,
+        target_spacing_pixels=16.0,
     ),
     _profile(
-        "high-quality-v1",
+        "high-quality-v2",
         "High Quality",
-        "Maximum-detail profile for qualified hardware and deliberate long runs.",
+        "Adaptive maximum-detail profile for qualified high-memory GPUs.",
         image_size=4_096,
         features=16_384,
         iterations=30_000,
-        gaussians=5_000_000,
+        gaussians=12_000_000,
         data_factor="1",
+        capacity_mode="adaptive",
+        capacity_floor=5_000_000,
+        target_spacing_pixels=8.0,
     ),
 )
 QUALITY_PROFILE_BY_ID = MappingProxyType(
-    {profile.profile_id: profile for profile in QUALITY_PROFILES}
+    {
+        profile.profile_id: profile
+        for profile in (*_LEGACY_QUALITY_PROFILES, *QUALITY_PROFILES)
+    }
 )
 
 

@@ -153,6 +153,7 @@ guides for implementation and operational details:
 | Production boundary and release gates | [`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md) |
 | Reconstruction and RTK alignment | [`docs/FAST_ALIGNMENT.md`](docs/FAST_ALIGNMENT.md) |
 | Map workspace, measurements and exports | [`docs/GEOSPATIAL_WORKSPACE.md`](docs/GEOSPATIAL_WORKSPACE.md) |
+| Adaptive Normal/HQ capacity and SAM3 confidence policy | [`docs/contracts/quality-profiles-v2.md`](docs/contracts/quality-profiles-v2.md) |
 | Documentation index and dated validation evidence | [`docs/README.md`](docs/README.md) |
 | Third-party components and licenses | [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) |
 

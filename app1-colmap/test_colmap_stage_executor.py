@@ -274,6 +274,7 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     phase = SimpleNamespace(
         backend_name="dronegs",
         trainer_binary_sha256="d" * 64,
+        capacity_plan=None,
         training_state=SimpleNamespace(
             final_ply=str(checkpoint),
             merged_model=SimpleNamespace(num_gaussians=1_500_000),

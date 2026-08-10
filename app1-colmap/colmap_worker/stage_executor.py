@@ -264,6 +264,11 @@ def run_gaussian_training_stage(
                 model_path.relative_to(workspace).as_posix(): "gaussian-model",
             },
         )
+        capacity_plan = (
+            phase.capacity_plan.as_dict()
+            if phase.capacity_plan is not None
+            else None
+        )
         return StageExecutionResult(
             kind="gaussian_training_workspace",
             uri=published.uri,
@@ -275,6 +280,7 @@ def run_gaussian_training_stage(
                 "state_file": ".droneai/gaussian-training-state.json",
                 "model_file": model_path.relative_to(workspace).as_posix(),
                 "gaussian_count": phase.training_state.merged_model.num_gaussians,
+                "gaussian_capacity": capacity_plan,
             },
             quality_metrics={
                 "gaussian_count": phase.training_state.merged_model.num_gaussians,
@@ -284,6 +290,7 @@ def run_gaussian_training_stage(
                 "backend": phase.backend_name,
                 "trainer_binary_sha256": phase.trainer_binary_sha256,
                 "profile_id": product.config.dronegs_profile_id,
+                "gaussian_capacity": capacity_plan,
                 "workspace_transfer": workspace_transfer_provenance(
                     published,
                     restored,

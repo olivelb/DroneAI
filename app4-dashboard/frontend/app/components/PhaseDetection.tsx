@@ -70,6 +70,9 @@ export default function PhaseDetection() {
     if (backend === "sam3" && tileSize > sam3MaximumTileSize) {
       setTileSize(sam3MaximumTileSize);
     }
+    if (backend === "sam3" && aiConfidence < 0.75) {
+      setAiConfidence(0.75);
+    }
   };
 
   return (
@@ -183,7 +186,7 @@ export default function PhaseDetection() {
               aria-label="Detection confidence threshold"
               type="range"
               min="0.1"
-              max="0.9"
+              max="0.99"
               step="0.05"
               value={aiConfidence}
               onChange={(event) =>

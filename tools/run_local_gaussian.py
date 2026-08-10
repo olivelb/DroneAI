@@ -66,6 +66,9 @@ class GaussianProfile:
     test_guard_percent: int
     canary_min_psnr: float
     canary_min_ssim: float
+    capacity_mode: str = "fixed"
+    capacity_floor: int = 0
+    target_gaussian_spacing_pixels: float = 0.0
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
 
 
@@ -219,11 +222,16 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
         data_factor=int(parameters["gs_data_factor"]),
         max_width=int(parameters["gs_max_width"]),
         profile_id=profile_id,
+        capacity_mode=str(parameters["gs_capacity_mode"]),
+        capacity_floor=int(parameters["gs_capacity_floor"]),
+        target_gaussian_spacing_pixels=float(
+            parameters["gs_target_gaussian_spacing_pixels"]
+        ),
     )
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
-PROFILES["normal"] = versioned_quality_profile("normal-v1")
+PROFILES["normal"] = versioned_quality_profile("normal-v2")
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,6 +320,17 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
         raise ValueError("iterations must be positive")
     if resolved.cap_max <= 0:
         raise ValueError("cap-max must be positive")
+    if resolved.capacity_mode not in {"fixed", "adaptive"}:
+        raise ValueError("capacity-mode must be fixed or adaptive")
+    effective_floor = resolved.capacity_floor or resolved.cap_max
+    if not 1 <= effective_floor <= resolved.cap_max:
+        raise ValueError("capacity-floor must not exceed cap-max")
+    resolved = replace(resolved, capacity_floor=effective_floor)
+    if (
+        resolved.capacity_mode == "adaptive"
+        and resolved.target_gaussian_spacing_pixels <= 0
+    ):
+        raise ValueError("adaptive capacity requires a positive target spacing")
     if not 1 <= resolved.max_width <= 4096:
         raise ValueError("max-width must be between 1 and 4096")
     if resolved.resolution <= 0:
@@ -496,6 +515,11 @@ def main() -> int:
             max_width=profile.max_width,
             tile_mode=profile.tile_mode,
             cap_max=profile.cap_max,
+            capacity_mode=profile.capacity_mode,
+            capacity_floor=profile.capacity_floor or profile.cap_max,
+            target_gaussian_spacing_pixels=(
+                profile.target_gaussian_spacing_pixels
+            ),
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
             verbose=args.verbose,
