@@ -203,6 +203,15 @@ five durable receipts and a separate finalizer. The retained evidence is the
 and the earlier
 [Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 
+The same benchmark now also records the BIGZEN operator multi-product gate.
+The mission catalogue and detail screens exposed scoped progress, logs and
+immutable product checksums; the map resolved Manifest v2/CAS rasters and
+detections; mission changes produced `1 → 10 → 0 → 1` scoped object counts; and
+a queued SAM3 analysis remained cancelled after reload without dispatching a
+GPU Job. This satisfies the BIGZEN operator-view portion of Q3. It does not
+satisfy the target-specific deadline, reconciliation, interruption,
+backup/restore or Helm rollback drills.
+
 The focused requalification reused the existing CUDA/COLMAP base because its
 versions and GPU architecture were unchanged. It also found that the pinned
 SAM3 processor resizes inputs to 1,008 px while the sampled batch-one footprint
