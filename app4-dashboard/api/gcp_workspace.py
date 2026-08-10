@@ -15,6 +15,7 @@ from pyproj import Transformer
 from sqlalchemy import func
 
 from shared import storage
+from shared.camera_projection import CameraProjectionIndex, parse_camera_projection_index
 from shared.database import GcpObservation, GcpPoint, GcpSet, get_session
 from shared.gcp_candidates import PositionedImage, parse_positioned_images
 from shared.gcp_bundle import (
@@ -29,6 +30,7 @@ from .map_support import JsonObject, RouteSession
 
 MAX_GCP_UPLOAD_BYTES = 5 * 1024 * 1024
 MAX_POSITION_FILE_BYTES = 10 * 1024 * 1024
+MAX_CAMERA_INDEX_BYTES = 50 * 1024 * 1024
 GCP_FILE_SUFFIXES = {".csv", ".tsv", ".txt", ".xyz", ".geojson", ".json"}
 
 
@@ -87,6 +89,15 @@ def load_mission_image_positions(vol_id: str) -> MissionImagePositions | None:
         projected_crs,
     )
     return MissionImagePositions(projected_crs=projected_crs, images=images)
+
+
+def load_camera_projection_index(vol_id: str) -> CameraProjectionIndex | None:
+    """Load the portable registered-camera index produced after alignment."""
+
+    key = f"missions/{vol_id}/camera_projection_index.json"
+    if not storage.file_exists(key):
+        return None
+    return parse_camera_projection_index(read_bounded_object(key, MAX_CAMERA_INDEX_BYTES))
 
 
 def persist_imported_set(
@@ -157,6 +168,11 @@ def observation_json(observation: GcpObservation) -> JsonObject:
         "pixel_x": observation.pixel_x,
         "pixel_y": observation.pixel_y,
         "candidate_distance_m": observation.candidate_distance_m,
+        "candidate_method": observation.candidate_method,
+        "projected_pixel_x": observation.projected_pixel_x,
+        "projected_pixel_y": observation.projected_pixel_y,
+        "image_width_px": observation.image_width_px,
+        "image_height_px": observation.image_height_px,
         "image_longitude": observation.image_longitude,
         "image_latitude": observation.image_latitude,
         "version": observation.version,
@@ -289,9 +305,7 @@ def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
             "checkpoint_points": files.checkpoint_points,
             "marked_observations": files.observation_count,
             "verification": (
-                "independent-checkpoints"
-                if files.checkpoint_points > 0
-                else "adjustment-only-unverified"
+                "independent-checkpoints" if files.checkpoint_points > 0 else "adjustment-only-unverified"
             ),
         },
     }

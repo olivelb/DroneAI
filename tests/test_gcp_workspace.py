@@ -37,16 +37,12 @@ def test_read_bounded_object_closes_stream(monkeypatch):
 
 
 def test_observation_schema_requires_pixels_only_when_marked():
-    marked = gcp_schemas.GcpObservationUpdate(
-        status="marked", pixel_x=10, pixel_y=20, version=1
-    )
+    marked = gcp_schemas.GcpObservationUpdate(status="marked", pixel_x=10, pixel_y=20, version=1)
     assert marked.pixel_x == 10
     with pytest.raises(ValueError, match="require pixel"):
         gcp_schemas.GcpObservationUpdate(status="marked", version=1)
     with pytest.raises(ValueError, match="only marked"):
-        gcp_schemas.GcpObservationUpdate(
-            status="skipped", pixel_x=10, pixel_y=20, version=1
-        )
+        gcp_schemas.GcpObservationUpdate(status="skipped", pixel_x=10, pixel_y=20, version=1)
 
 
 def test_point_schema_requires_complete_manual_coordinates():
@@ -77,6 +73,11 @@ def test_observation_json_exposes_optimistic_lock_version():
             pixel_x=None,
             pixel_y=None,
             candidate_distance_m=12.5,
+            candidate_method="exif-distance",
+            projected_pixel_x=None,
+            projected_pixel_y=None,
+            image_width_px=None,
+            image_height_px=None,
             image_longitude=1.2,
             image_latitude=44.5,
             version=2,

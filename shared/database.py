@@ -1060,8 +1060,7 @@ class GcpPoint(RequiredTimestampMixin, Base):
             name="ck_gcp_points_role",
         ),
         CheckConstraint(
-            "horizontal_accuracy_m > 0 AND vertical_accuracy_m > 0 "
-            "AND image_accuracy_px > 0",
+            "horizontal_accuracy_m > 0 AND vertical_accuracy_m > 0 AND image_accuracy_px > 0",
             name="ck_gcp_points_accuracy",
         ),
         CheckConstraint("version >= 1", name="ck_gcp_points_version"),
@@ -1125,6 +1124,10 @@ class GcpObservation(RequiredTimestampMixin, Base):
             "(status != 'marked') OR (pixel_x IS NOT NULL AND pixel_y IS NOT NULL)",
             name="ck_gcp_observations_marked_pixel",
         ),
+        CheckConstraint(
+            "(image_width_px IS NULL AND image_height_px IS NULL) OR (image_width_px > 0 AND image_height_px > 0)",
+            name="ck_gcp_observations_image_dimensions",
+        ),
         CheckConstraint("version >= 1", name="ck_gcp_observations_version"),
     )
 
@@ -1147,6 +1150,11 @@ class GcpObservation(RequiredTimestampMixin, Base):
     pixel_x = Column(Float, nullable=True)
     pixel_y = Column(Float, nullable=True)
     candidate_distance_m = Column(Float, nullable=True)
+    candidate_method = Column(String(32), nullable=True)
+    projected_pixel_x = Column(Float, nullable=True)
+    projected_pixel_y = Column(Float, nullable=True)
+    image_width_px = Column(Integer, nullable=True)
+    image_height_px = Column(Integer, nullable=True)
     image_longitude = Column(Float, nullable=True)
     image_latitude = Column(Float, nullable=True)
     created_by = Column(String(256), nullable=False)

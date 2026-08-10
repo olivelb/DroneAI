@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol, cast
 
@@ -9,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.exc import IntegrityError
 
 from shared.database import GcpObservation, GcpPoint, GcpSet, get_session
+from shared.camera_projection import CameraProjectionIndex, rank_projected_image_candidates
 from shared.gcp_candidates import (
     PositionedImage,
     rank_image_candidates,
@@ -21,6 +23,7 @@ from ..gcp_workspace import (
     MAX_GCP_UPLOAD_BYTES,
     gcp_route_session,
     load_mission_image_positions,
+    load_camera_projection_index,
     materialize_gcp_bundle,
     observation_json,
     persist_imported_set,
@@ -65,6 +68,91 @@ class GcpObservationMutationRecord(Protocol):
     updated_at: datetime
 
 
+@dataclass(frozen=True)
+class CandidateSpec:
+    image_name: str
+    method: str
+    distance_m: float | None = None
+    projected_pixel_x: float | None = None
+    projected_pixel_y: float | None = None
+    image_width_px: int | None = None
+    image_height_px: int | None = None
+    positioned: PositionedImage | None = None
+
+
+def _rank_candidate_specs(
+    *,
+    longitude: float,
+    latitude: float,
+    altitude_m: float,
+    positions: Any,
+    camera_index: CameraProjectionIndex | None,
+    radius_m: float,
+    limit: int,
+    existing_image_names: set[str] | None = None,
+) -> tuple[CandidateSpec, ...]:
+    """Prefer registered-camera visibility and fill remaining slots by EXIF distance."""
+
+    excluded = set(existing_image_names or set())
+    positioned_by_name = {item.image_name: item for item in positions.images} if positions else {}
+    specs: list[CandidateSpec] = []
+    if camera_index is not None:
+        for candidate in rank_projected_image_candidates(
+            longitude=longitude,
+            latitude=latitude,
+            altitude_m=altitude_m,
+            camera_index=camera_index,
+            limit=limit,
+            existing_image_names=excluded,
+            border_margin_ratio=0.01,
+        ):
+            positioned = positioned_by_name.get(candidate.image_name)
+            distance = None
+            if positioned is not None:
+                transformer_candidates = rank_image_candidates(
+                    longitude=longitude,
+                    latitude=latitude,
+                    images=(positioned,),
+                    projected_crs=positions.projected_crs,
+                    radius_m=max(radius_m, 1.0e-6),
+                    limit=1,
+                )
+                if transformer_candidates:
+                    distance = transformer_candidates[0].distance_m
+            specs.append(
+                CandidateSpec(
+                    image_name=candidate.image_name,
+                    method="camera-projection",
+                    distance_m=distance,
+                    projected_pixel_x=candidate.pixel_x,
+                    projected_pixel_y=candidate.pixel_y,
+                    image_width_px=candidate.image_width_px,
+                    image_height_px=candidate.image_height_px,
+                    positioned=positioned,
+                )
+            )
+            excluded.add(candidate.image_name)
+    if positions is not None and len(specs) < limit:
+        for exif_candidate in rank_new_image_candidates(
+            longitude=longitude,
+            latitude=latitude,
+            images=positions.images,
+            projected_crs=positions.projected_crs,
+            radius_m=radius_m,
+            limit=limit - len(specs),
+            existing_image_names=excluded,
+        ):
+            specs.append(
+                CandidateSpec(
+                    image_name=exif_candidate.image.image_name,
+                    method="exif-distance",
+                    distance_m=exif_candidate.distance_m,
+                    positioned=exif_candidate.image,
+                )
+            )
+    return tuple(specs)
+
+
 def _image_key(dataset_prefix: str | None, image_name: str) -> str | None:
     if not dataset_prefix:
         return None
@@ -94,10 +182,12 @@ def _require_gcp_set(
 ) -> GcpSet:
     gcp_set = cast(
         GcpSet | None,
-        session.query(GcpSet).filter(
+        session.query(GcpSet)
+        .filter(
             GcpSet.mission_id == mission_id,
             GcpSet.set_id == set_id,
-        ).first(),
+        )
+        .first(),
     )
     if gcp_set is None:
         raise HTTPException(status_code=404, detail="GCP set not found")
@@ -138,13 +228,15 @@ async def import_ground_control(
 
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = _authorized_mission(
-            typed_session, vol_id, principal, owner_subject, "gcp_import"
+        mission = _authorized_mission(typed_session, vol_id, principal, owner_subject, "gcp_import")
+        existing = (
+            typed_session.query(GcpSet)
+            .filter(
+                GcpSet.mission_id == mission.id,
+                GcpSet.name == name.strip(),
+            )
+            .first()
         )
-        existing = typed_session.query(GcpSet).filter(
-            GcpSet.mission_id == mission.id,
-            GcpSet.name == name.strip(),
-        ).first()
         if existing is not None:
             raise HTTPException(status_code=409, detail="A GCP set with this name already exists")
         try:
@@ -159,49 +251,46 @@ async def import_ground_control(
                 actor_subject=principal.subject,
             )
             positions = load_mission_image_positions(vol_id)
-            positioned_by_name = (
-                {item.image_name: item for item in positions.images} if positions else {}
-            )
+            camera_index = load_camera_projection_index(vol_id)
+            positioned_by_name = {item.image_name: item for item in positions.images} if positions else {}
+            cameras_by_name = {item.image_name: item for item in camera_index.cameras} if camera_index else {}
             observation_count = 0
             for imported_point in imported.points:
                 point = stored_points[imported_point.external_id]
-                observation_specs: list[
-                    tuple[
-                        str,
-                        str,
-                        float | None,
-                        float | None,
-                        float | None,
-                        PositionedImage | None,
-                    ]
-                ]
+                observation_specs: list[tuple[CandidateSpec, str, float | None, float | None]]
                 if imported_point.observations:
                     observation_specs = [
                         (
-                            item.image_name,
+                            CandidateSpec(
+                                image_name=item.image_name,
+                                method="imported-observation",
+                                image_width_px=(
+                                    cameras_by_name[item.image_name].width
+                                    if item.image_name in cameras_by_name
+                                    else None
+                                ),
+                                image_height_px=(
+                                    cameras_by_name[item.image_name].height
+                                    if item.image_name in cameras_by_name
+                                    else None
+                                ),
+                                positioned=positioned_by_name.get(item.image_name),
+                            ),
                             "marked",
                             item.pixel_x,
                             item.pixel_y,
-                            None,
-                            positioned_by_name.get(item.image_name),
                         )
                         for item in imported_point.observations
                     ]
-                elif positions:
+                elif positions or camera_index:
                     observation_specs = [
-                        (
-                            candidate.image.image_name,
-                            "candidate",
-                            None,
-                            None,
-                            candidate.distance_m,
-                            candidate.image,
-                        )
-                        for candidate in rank_image_candidates(
+                        (candidate, "candidate", None, None)
+                        for candidate in _rank_candidate_specs(
                             longitude=imported_point.longitude,
                             latitude=imported_point.latitude,
-                            images=positions.images,
-                            projected_crs=positions.projected_crs,
+                            altitude_m=imported_point.altitude_m,
+                            positions=positions,
+                            camera_index=camera_index,
                             radius_m=candidate_radius_m,
                             limit=max_candidates,
                         )
@@ -209,22 +298,26 @@ async def import_ground_control(
                 else:
                     observation_specs = []
                 for (
-                    image_name,
+                    candidate,
                     observation_status,
                     pixel_x,
                     pixel_y,
-                    distance_m,
-                    positioned,
                 ) in observation_specs:
+                    positioned = candidate.positioned
                     typed_session.add(
                         GcpObservation(
                             gcp_point_id=point.id,
-                            image_name=image_name,
-                            image_s3_key=_image_key(mission.input_dataset, image_name),
+                            image_name=candidate.image_name,
+                            image_s3_key=_image_key(mission.input_dataset, candidate.image_name),
                             status=observation_status,
                             pixel_x=pixel_x,
                             pixel_y=pixel_y,
-                            candidate_distance_m=distance_m,
+                            candidate_distance_m=candidate.distance_m,
+                            candidate_method=candidate.method,
+                            projected_pixel_x=candidate.projected_pixel_x,
+                            projected_pixel_y=candidate.projected_pixel_y,
+                            image_width_px=candidate.image_width_px,
+                            image_height_px=candidate.image_height_px,
                             image_longitude=(positioned.longitude if positioned else None),
                             image_latitude=(positioned.latitude if positioned else None),
                             created_by=principal.subject,
@@ -238,14 +331,22 @@ async def import_ground_control(
         return {
             "gcp_set": set_json(typed_session, gcp_set, include_points=True),
             "candidate_generation": {
-                "available": positions is not None,
-                "method": "exif-distance" if positions else None,
+                "available": positions is not None or camera_index is not None,
+                "method": (
+                    "camera-projection+exif-distance"
+                    if camera_index and positions
+                    else "camera-projection"
+                    if camera_index
+                    else "exif-distance"
+                    if positions
+                    else None
+                ),
                 "radius_m": candidate_radius_m,
                 "max_candidates_per_point": max_candidates,
                 "observation_count": observation_count,
                 "message": (
                     None
-                    if positions
+                    if positions or camera_index
                     else "Image positions are not published yet; candidates can be refreshed after preflight"
                 ),
             },
@@ -262,16 +363,9 @@ def list_ground_control(
     mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_list")
     sets = cast(
         list[GcpSet],
-        session.query(GcpSet)
-        .filter(GcpSet.mission_id == mission.id)
-        .order_by(GcpSet.created_at.desc())
-        .all(),
+        session.query(GcpSet).filter(GcpSet.mission_id == mission.id).order_by(GcpSet.created_at.desc()).all(),
     )
-    features = [
-        point_json(session, point)
-        for gcp_set in sets
-        for point in cast(list[GcpPoint], gcp_set.points)
-    ]
+    features = [point_json(session, point) for gcp_set in sets for point in cast(list[GcpPoint], gcp_set.points)]
     return {
         "type": "FeatureCollection",
         "features": features,
@@ -300,9 +394,7 @@ def prepare_ground_control_bundle(
     session: GcpSessionDependency,
     owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    mission = _authorized_mission(
-        session, vol_id, principal, owner_subject, "gcp_bundle_create"
-    )
+    mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_bundle_create")
     gcp_set = _require_gcp_set(session, mission.id, set_id)
     try:
         return materialize_gcp_bundle(gcp_set)
@@ -324,7 +416,7 @@ def refresh_ground_control_candidates(
     max_candidates: Annotated[int, Query(ge=1, le=100)] = 20,
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    """Add newly available EXIF-nearby photos without replacing operator work."""
+    """Add visible/nearby photos without replacing operator decisions."""
 
     with get_session() as session:
         typed_session = cast(RouteSession, session)
@@ -338,15 +430,16 @@ def refresh_ground_control_candidates(
         gcp_set = _require_gcp_set(typed_session, mission.id, set_id)
         try:
             positions = load_mission_image_positions(vol_id)
+            camera_index = load_camera_projection_index(vol_id)
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise HTTPException(
                 status_code=422,
                 detail=f"Published image positions are invalid: {error}",
             ) from error
-        if positions is None:
+        if positions is None and camera_index is None:
             raise HTTPException(
                 status_code=409,
-                detail="Image positions are not published yet; run reconstruction preflight first",
+                detail="Image positions and registered cameras are not published yet; run reconstruction first",
             )
 
         added_count = 0
@@ -362,11 +455,12 @@ def refresh_ground_control_candidates(
             existing_names = {cast(str, item.image_name) for item in observations}
             longitude, latitude = point_longitude_latitude(typed_session, point)
             try:
-                new_candidates = rank_new_image_candidates(
+                new_candidates = _rank_candidate_specs(
                     longitude=longitude,
                     latitude=latitude,
-                    images=positions.images,
-                    projected_crs=positions.projected_crs,
+                    altitude_m=float(point.altitude_m),
+                    positions=positions,
+                    camera_index=camera_index,
                     radius_m=candidate_radius_m,
                     limit=max_candidates,
                     existing_image_names=existing_names,
@@ -377,18 +471,24 @@ def refresh_ground_control_candidates(
                     detail=f"Unable to rank GCP photo candidates: {error}",
                 ) from error
             for candidate in new_candidates:
+                positioned = candidate.positioned
                 typed_session.add(
                     GcpObservation(
                         gcp_point_id=point.id,
-                        image_name=candidate.image.image_name,
+                        image_name=candidate.image_name,
                         image_s3_key=_image_key(
                             mission.input_dataset,
-                            candidate.image.image_name,
+                            candidate.image_name,
                         ),
                         status="candidate",
                         candidate_distance_m=candidate.distance_m,
-                        image_longitude=candidate.image.longitude,
-                        image_latitude=candidate.image.latitude,
+                        candidate_method=candidate.method,
+                        projected_pixel_x=candidate.projected_pixel_x,
+                        projected_pixel_y=candidate.projected_pixel_y,
+                        image_width_px=candidate.image_width_px,
+                        image_height_px=candidate.image_height_px,
+                        image_longitude=(positioned.longitude if positioned else None),
+                        image_latitude=(positioned.latitude if positioned else None),
                         created_by=principal.subject,
                         updated_by=principal.subject,
                     )
@@ -399,7 +499,13 @@ def refresh_ground_control_candidates(
             "gcp_set": set_json(typed_session, gcp_set, include_points=True),
             "candidate_generation": {
                 "available": True,
-                "method": "exif-distance",
+                "method": (
+                    "camera-projection+exif-distance"
+                    if camera_index and positions
+                    else "camera-projection"
+                    if camera_index
+                    else "exif-distance"
+                ),
                 "radius_m": candidate_radius_m,
                 "max_candidates_per_point": max_candidates,
                 "added_observation_count": added_count,
@@ -417,15 +523,16 @@ def update_ground_control_point(
     session: GcpSessionDependency,
     owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    mission = _authorized_mission(
-        session, vol_id, principal, owner_subject, "gcp_point_update"
-    )
+    mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_point_update")
     stored_point = cast(
         GcpPoint | None,
-        session.query(GcpPoint).filter(
+        session.query(GcpPoint)
+        .filter(
             GcpPoint.mission_id == mission.id,
             GcpPoint.point_id == point_id,
-        ).with_for_update().first(),
+        )
+        .with_for_update()
+        .first(),
     )
     if stored_point is None:
         raise HTTPException(status_code=404, detail="GCP point not found")

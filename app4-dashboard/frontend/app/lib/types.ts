@@ -288,6 +288,11 @@ export type GcpObservation = {
   pixel_x?: number | null;
   pixel_y?: number | null;
   candidate_distance_m?: number | null;
+  candidate_method?: "camera-projection" | "exif-distance" | "imported-observation" | null;
+  projected_pixel_x?: number | null;
+  projected_pixel_y?: number | null;
+  image_width_px?: number | null;
+  image_height_px?: number | null;
   image_longitude?: number | null;
   image_latitude?: number | null;
   version: number;
