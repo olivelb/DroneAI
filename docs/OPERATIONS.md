@@ -39,6 +39,67 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 Never store credentials, signed URLs, bearer tokens, private datasets or raw
 Terraform state in the report.
 
+## Production drill evidence
+
+The production cancellation, deadline, interruption, restore and rollback
+drills use the machine-readable
+[`production-qualification-evidence-v1`](contracts/production-qualification-evidence-v1.schema.json)
+contract. The contract is stricter than a narrative report: it requires the
+exact release and target, all five executor image digests, RTO/RPO objectives,
+the nine mandatory drills and an operator attestation. It also rejects fields
+or text that look like credentials.
+
+Create one deliberately non-passing draft before the exercise:
+
+```bash
+python3 tools/production_qualification.py init \
+  --qualification-id ovh-preprod-2026-08-10 \
+  --environment ovh-preprod \
+  --cluster droneai-gra11 \
+  --namespace drone-ai-preprod \
+  --operator admin@olembo.fr \
+  --output docs/benchmarks/ovh-preprod-2026-08-10.qualification.json
+```
+
+Fill the target metadata, immutable digests, timestamps, observed RTO/RPO and
+bounded evidence references after each operator-run drill. Evidence references
+may identify retained Kubernetes captures or run/artifact records, but must not
+contain logs, URLs or secret values themselves. Then validate, render and apply
+the blocking gate:
+
+```bash
+python3 tools/production_qualification.py validate \
+  docs/benchmarks/ovh-preprod-2026-08-10.qualification.json
+python3 tools/production_qualification.py render \
+  docs/benchmarks/ovh-preprod-2026-08-10.qualification.json \
+  --output docs/benchmarks/ovh-preprod-2026-08-10-qualification.md
+python3 tools/production_qualification.py gate \
+  docs/benchmarks/ovh-preprod-2026-08-10.qualification.json
+```
+
+`validate` checks format and secret safety but permits an unfinished record.
+Only `gate` requires every drill to pass within the recorded objectives. CI
+validates every tracked `*.qualification.json`; it never executes the
+destructive drills, reserves a GPU or rebuilds CUDA/COLMAP.
+
+The operator performs drills from a dedicated test mission and records the
+following safe outcomes:
+
+| Drill | Required observation |
+|---|---|
+| Five-stage chain | Exact immutable parent chain and final products are present. |
+| Stage cancellation | Active Job disappears, mission remains terminal and no dependant is released. |
+| Stage deadline | Durable timeout reason is visible and a new immutable attempt can be created. |
+| Missing Job reconciliation | Tracked Job/pod removal is detected and recovered without an untracked pod. |
+| API restart after reservation | At most one Job owns the reserved attempt after restart. |
+| Database interruption | Writers stop safely and resume without duplicate completion. |
+| Object-storage interruption | Publication fails closed; no partial artifact is marked successful. |
+| Backup/restore | Isolated restore passes migrations, row/edge checks and artifact checksum reads. |
+| Helm rollback | Recorded revision and immutable images restore service without corrupting newer rows. |
+
+Do not reuse target-specific results: BIGZEN evidence qualifies BIGZEN, while
+OVHcloud production needs its own evidence against the exact promoted release.
+
 ## Activation status and gate for bounded Jobs
 
 The one-shot executor implementation and complete artifact chain are qualified

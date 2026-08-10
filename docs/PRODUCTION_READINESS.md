@@ -1,6 +1,6 @@
 # DroneAI production readiness
 
-Last verified: 2026-08-09
+Last verified: 2026-08-10
 
 ## Supported deployment boundary
 
@@ -23,7 +23,10 @@ The production example intentionally does not activate bounded stage Jobs.
 Those executors are qualified for controlled preproduction, but a production
 environment must first satisfy the environment-specific cancellation,
 deadline, backup/restore, interruption and rollback gates in
-[`OPERATIONS.md`](OPERATIONS.md). When approved, add the complete immutable
+[`OPERATIONS.md`](OPERATIONS.md). The promotion record must pass
+`python3 tools/production_qualification.py gate <evidence.qualification.json>`;
+a structurally valid draft or BIGZEN evidence for another target is not a
+production approval. When approved, add the complete immutable
 `stageJobs.executors` map, disable the fused COLMAP/IA Deployments, scale the
 compatibility processing worker to zero and review the resulting Job RBAC.
 
