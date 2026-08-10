@@ -23,6 +23,7 @@ from shared.stage_execution import (  # noqa: E402
 from shared.stage_workspace import (  # noqa: E402
     PublishedWorkspace,
     RestoredWorkspace,
+    WorkspaceSelection,
 )
 
 
@@ -210,16 +211,32 @@ def test_detection_config_rejects_unbounded_prompt_and_confidence():
         )
 
 
-@pytest.mark.parametrize("v2_enabled", [False, True])
+@pytest.mark.parametrize(
+    ("v2_enabled", "selective_restore"),
+    [(False, False), (True, False), (True, True)],
+)
 def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     tmp_path,
     monkeypatch,
     v2_enabled,
+    selective_restore,
 ):
     monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
 
-    def restore(_manifest, destination, _checksum, cancellation_check):
+    def restore(
+        _manifest,
+        destination,
+        _checksum,
+        cancellation_check,
+        **kwargs,
+    ):
         cancellation_check()
+        if selective_restore:
+            assert kwargs["selection"] == WorkspaceSelection(
+                paths=frozenset({"orthomosaic.tif"})
+            )
+        else:
+            assert "selection" not in kwargs
         path = Path(destination, "orthomosaic.tif")
         path.write_bytes(b"raster")
         return RestoredWorkspace(
@@ -266,6 +283,7 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
                 ".droneai/detection/detections.geojson": "detection-features",
             }
             assert kwargs["parents"][0].artifact_id == "raster-1"
+            assert kwargs["allow_partial_workspace"] is selective_restore
         return PublishedWorkspace(
             manifest_key=f"{prefix}/manifest.json",
             uri=f"s3://drone-ai/{prefix}/manifest.json",
@@ -278,6 +296,11 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
         detection_stage,
         "artifact_manifest_v2_write_enabled",
         lambda: v2_enabled,
+    )
+    monkeypatch.setattr(
+        detection_stage,
+        "artifact_selective_restore_enabled",
+        lambda: selective_restore,
     )
     monkeypatch.setattr(detection_stage, "publish_workspace", publish)
     monkeypatch.setattr(detection_stage, "publish_workspace_v2", publish)
@@ -297,6 +320,10 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     assert result.provenance["model_manifest"]["backend"] == "yolo"
     assert result.provenance["tile_plan"]["tile_count"] == 4
     assert result.provenance["workspace_transfer"]["restore"]["transferred_bytes"] == 140
+    assert result.provenance["workspace_materialization"] == {
+        "mode": "selective" if selective_restore else "full",
+        "selected_paths": ["orthomosaic.tif"] if selective_restore else [],
+    }
     assert '"feature_count": 1' in inspected["geojson"]
     assert '"detections"' in inspected["raw"]
     assert not (tmp_path / "work" / ("d" * 32)).exists()

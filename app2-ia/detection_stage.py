@@ -29,7 +29,9 @@ from shared.stage_execution import (
 )
 from shared.stage_workspace import (
     RestoredWorkspace,
+    WorkspaceSelection,
     artifact_manifest_v2_write_enabled,
+    artifact_selective_restore_enabled,
     publish_workspace,
     publish_workspace_v2,
     resolve_workspace_path,
@@ -275,6 +277,8 @@ def _restore_raster_workspace(
     context: StageExecutionContext,
     control: StageExecutionControl,
     workspace: Path,
+    *,
+    selective_restore: bool = False,
 ) -> tuple[Path, RestoredWorkspace]:
     if len(context.inputs) != 1 or context.inputs[0].kind != "raster_product_workspace":
         raise ValueError("Detection requires exactly one raster product workspace")
@@ -285,12 +289,21 @@ def _restore_raster_workspace(
         raise ValueError("Raster workspace artifact has no manifest key")
     if not isinstance(ortho_relative, str) or not ortho_relative:
         raise ValueError("Raster workspace artifact has no orthomosaic path")
-    restored = restore_workspace_measured(
-        manifest_key,
-        workspace,
-        source.checksum_sha256,
-        cancellation_check=control.raise_if_cancelled,
-    )
+    if selective_restore:
+        restored = restore_workspace_measured(
+            manifest_key,
+            workspace,
+            source.checksum_sha256,
+            cancellation_check=control.raise_if_cancelled,
+            selection=WorkspaceSelection(paths=frozenset({ortho_relative})),
+        )
+    else:
+        restored = restore_workspace_measured(
+            manifest_key,
+            workspace,
+            source.checksum_sha256,
+            cancellation_check=control.raise_if_cancelled,
+        )
     raster_path = resolve_workspace_path(workspace, ortho_relative)
     if not raster_path.is_file():
         raise FileNotFoundError(raster_path)
@@ -306,7 +319,13 @@ def run_detection_stage(
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True)
     try:
-        raster_path, restored = _restore_raster_workspace(context, control, workspace)
+        selective_restore = artifact_selective_restore_enabled()
+        raster_path, restored = _restore_raster_workspace(
+            context,
+            control,
+            workspace,
+            selective_restore=selective_restore,
+        )
         config = DetectionStageConfig.from_context(context)
         raw, model_manifest, raster_metadata = DetectionStageRunner(
             context,
@@ -370,6 +389,7 @@ def run_detection_stage(
                         checksum_sha256=source.checksum_sha256,
                     ),
                 ),
+                allow_partial_workspace=selective_restore,
                 cancellation_check=control.raise_if_cancelled,
             )
         else:
@@ -421,6 +441,14 @@ def run_detection_stage(
                     published,
                     restored,
                 ),
+                "workspace_materialization": {
+                    "mode": "selective" if selective_restore else "full",
+                    "selected_paths": [
+                        context.inputs[0].metadata["ortho_file"]
+                    ]
+                    if selective_restore
+                    else [],
+                },
             },
         )
     finally:

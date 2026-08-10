@@ -275,11 +275,16 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
 def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
     monkeypatch.setenv("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED", "true")
 
     settings = orchestrator.settings_from_environment()
 
     assert (
         "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED",
+        "true",
+    ) in settings.job_environment
+    assert (
+        "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED",
         "true",
     ) in settings.job_environment
 

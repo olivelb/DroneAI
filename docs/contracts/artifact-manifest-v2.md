@@ -66,7 +66,11 @@ The rollout is deliberately asymmetric:
    bounded stage adapters use `publish_workspace_v2` only when
    `DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED=true`; the Helm value
    `stageJobs.artifactManifestV2WriteEnabled` defaults to `false`.
-5. Qualify complete products and rollback before enabling another target.
+5. Add a detection-only selective-restore canary. **Done behind a second
+   disabled flag:** `DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED=true` restores
+   the exact orthomosaic path declared by the raster artifact and requires the
+   v2 writer flag to be enabled.
+6. Qualify complete products and rollback before enabling another target.
 
 The restore engine resolves parents before children, so a child file replaces
 an inherited file at the same logical path. Divergent definitions of one path
@@ -81,7 +85,10 @@ The deployed stage adapters still request a full restore and publish v1 under
 the default configuration. Existing v1 artifacts remain readable and no bulk
 rewrite is planned. When explicitly enabled, each adapter records exact parent
 manifests and assigns stable roles to its state, Gaussian model, raster and
-detection products. Selective restore requests remain a separate rollout step.
+detection products. Detection alone can additionally materialize only its
+declared orthomosaic. Its child manifest remains a complete logical product:
+the unmaterialized parent files stay inherited and only new detection files
+are written to CAS. All other stages continue to materialize their full input.
 
 The CAS publisher is intentionally not called by the v1 writer. Up to 5 GiB it
 uses conditional `PutObject`; larger blobs use bounded multipart upload and
@@ -93,10 +100,14 @@ not implement the conditional completion fails closed; there is no
 unconditional fallback. The absolute object bound remains 5 TiB.
 
 The v2 writer verifies and resolves every declared parent, inherits unchanged
-files, and rejects a missing inherited path because manifest v2 has no deletion
-tombstone. Existing CAS blobs count as reused bytes; only newly transferred
-blob bytes and the new manifest count as uploaded bytes. The configuration
-switch is intentionally off in every default environment. Provider
+files, and normally rejects a missing inherited path because manifest v2 has
+no deletion tombstone. Its explicit partial-workspace mode treats absent local
+files as inherited, never as deletions. Logical size and file count always
+describe the fully resolved overlay; inherited and pre-existing CAS bytes
+count as reused, while only newly transferred blob bytes and the new manifest
+count as uploaded bytes. Both configuration switches are intentionally off in
+every default environment, and Helm rejects selective restore unless the v2
+writer is enabled. Provider
 qualification must confirm conditional multipart completion before enabling
 the writer for a stage capable of producing a blob above 5 GiB. AWS documents
 the condition on

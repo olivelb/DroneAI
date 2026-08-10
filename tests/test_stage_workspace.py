@@ -106,6 +106,23 @@ def test_v2_writer_rollout_switch_is_strict_and_disabled_by_default(monkeypatch)
         stage_workspace.artifact_manifest_v2_write_enabled()
 
 
+def test_selective_restore_requires_v2_writer(monkeypatch):
+    monkeypatch.delenv(stage_workspace.ARTIFACT_SELECTIVE_RESTORE_ENV, raising=False)
+    monkeypatch.delenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, raising=False)
+    assert stage_workspace.artifact_selective_restore_enabled() is False
+
+    monkeypatch.setenv(stage_workspace.ARTIFACT_SELECTIVE_RESTORE_ENV, "true")
+    with pytest.raises(ValueError, match="requires"):
+        stage_workspace.artifact_selective_restore_enabled()
+
+    monkeypatch.setenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, "true")
+    assert stage_workspace.artifact_selective_restore_enabled() is True
+
+    monkeypatch.setenv(stage_workspace.ARTIFACT_SELECTIVE_RESTORE_ENV, "sometimes")
+    with pytest.raises(ValueError, match="explicit boolean"):
+        stage_workspace.artifact_selective_restore_enabled()
+
+
 def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s3):
     source = tmp_path / "source"
     source.mkdir()
@@ -200,6 +217,59 @@ def test_v2_writer_rejects_implicit_parent_file_deletion(tmp_path, fake_s3):
                 ),
             ),
         )
+
+
+def test_v2_writer_can_publish_partial_workspace_as_complete_parent_overlay(
+    tmp_path,
+    fake_s3,
+):
+    parent_workspace = tmp_path / "parent-partial"
+    parent_workspace.mkdir()
+    (parent_workspace / "base.bin").write_bytes(b"stable-parent")
+    (parent_workspace / "orthomosaic.tif").write_bytes(b"ortho")
+    parent = stage_workspace.publish_workspace_v2(
+        parent_workspace,
+        "missions/example/parent-partial",
+        default_role="raster-product",
+    )
+    child_workspace = tmp_path / "child-partial"
+    child_workspace.mkdir()
+    (child_workspace / "orthomosaic.tif").write_bytes(b"ortho")
+    (child_workspace / "detections.json").write_bytes(b"detections")
+
+    child = stage_workspace.publish_workspace_v2(
+        child_workspace,
+        "missions/example/child-partial",
+        default_role="detection-workspace",
+        role_overrides={"detections.json": "detection-records"},
+        parents=(
+            ManifestParent(
+                "parent-artifact",
+                parent.manifest_key,
+                parent.checksum_sha256,
+            ),
+        ),
+        allow_partial_workspace=True,
+    )
+
+    child_manifest = json.loads((fake_s3 / child.manifest_key).read_bytes())
+    assert [entry["path"] for entry in child_manifest["files"]] == [
+        "detections.json"
+    ]
+    assert child.file_count == 3
+    assert child.size_bytes == len(b"stable-parentorthodetections")
+    assert child.reused_bytes == len(b"stable-parentortho")
+
+    restored_root = tmp_path / "restored-partial"
+    restored = stage_workspace.restore_workspace_measured(
+        child.manifest_key,
+        restored_root,
+        child.checksum_sha256,
+    )
+    assert restored.file_count == 3
+    assert (restored_root / "base.bin").read_bytes() == b"stable-parent"
+    assert (restored_root / "orthomosaic.tif").read_bytes() == b"ortho"
+    assert (restored_root / "detections.json").read_bytes() == b"detections"
 
 
 def test_restore_dual_reader_materializes_content_addressed_v2_blob(tmp_path, fake_s3):

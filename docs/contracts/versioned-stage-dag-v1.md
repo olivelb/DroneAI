@@ -184,13 +184,15 @@ migration rather than a claim that deduplication already exists.
 
 The reader now normalizes deployed manifest v1 and strict
 [`Artifact Manifest v2`](artifact-manifest-v2.md). The shared restore engine
-now resolves checksum-verified v2 parent overlays and supports bounded
-selection by role and logical path. Stage adapters still request full restores,
-and the writer remains v1 by default. A disabled Helm flag can publish v2 CAS
-overlays with exact parents and stage-specific roles. Blobs above 5 GiB use
-conditional multipart completion and still require an endpoint qualification
-before activation. This reader-first order preserves rollback compatibility
-while selective restore requests are qualified.
+resolves checksum-verified v2 parent overlays and supports bounded selection by
+role and logical path. The writer remains v1 by default. A disabled Helm flag
+can publish v2 CAS overlays with exact parents and stage-specific roles. A
+second disabled flag lets only the detection adapter restore its exact declared
+orthomosaic; it is rejected unless the v2 writer is active, and its output
+continues to inherit every unmaterialized parent file. Other stage adapters
+still request full restores. Blobs above 5 GiB use conditional multipart
+completion and still require an endpoint qualification before activation. This
+reader-first order preserves rollback compatibility during the canary.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,

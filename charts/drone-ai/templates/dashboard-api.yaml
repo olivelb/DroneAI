@@ -1,3 +1,6 @@
+{{- if and .Values.stageJobs.artifactSelectiveRestoreEnabled (not .Values.stageJobs.artifactManifestV2WriteEnabled) }}
+{{- fail "stageJobs.artifactSelectiveRestoreEnabled requires stageJobs.artifactManifestV2WriteEnabled=true" }}
+{{- end }}
 # --- ServiceAccount ---
 apiVersion: v1
 kind: ServiceAccount
@@ -160,6 +163,8 @@ spec:
           value: {{ .Values.stageJobs.enabled | quote }}
         - name: DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED
           value: {{ .Values.stageJobs.artifactManifestV2WriteEnabled | quote }}
+        - name: DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED
+          value: {{ .Values.stageJobs.artifactSelectiveRestoreEnabled | quote }}
         - name: DRONEAI_STAGE_SCHEDULER_POLL_SECONDS
           value: {{ .Values.stageJobs.scheduler.pollSeconds | quote }}
         - name: DRONEAI_STAGE_GLOBAL_CONCURRENCY
