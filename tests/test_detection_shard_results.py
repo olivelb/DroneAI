@@ -91,6 +91,11 @@ def test_shard_result_rejects_wrong_plan_and_out_of_range_tile() -> None:
     with pytest.raises(ValueError, match="outside its declared shard"):
         parse_detection_shard_result(wrong_tile, plan)
 
+    wrong_shard = _payload(plan, 0, [])
+    wrong_shard["shard_index"] = plan.shard_count
+    with pytest.raises(ValueError, match="outside its declared plan"):
+        parse_detection_shard_result(wrong_shard, plan)
+
 
 def test_fan_in_rejects_missing_duplicate_and_changed_model_results() -> None:
     plan = build_detection_shard_plan(600, 500, 256, 64, tiles_per_shard=5)

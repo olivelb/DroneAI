@@ -126,7 +126,10 @@ def parse_detection_shard_result(
     shard_index = raw.get("shard_index")
     if isinstance(shard_index, bool) or not isinstance(shard_index, int):
         raise ValueError("Detection shard index must be an integer")
-    shard = plan.shard(shard_index)
+    try:
+        shard = plan.shard(shard_index)
+    except IndexError as error:
+        raise ValueError("Detection shard index is outside its declared plan") from error
     if raw.get("tile_count") != shard.tile_count:
         raise ValueError("Detection shard result tile count does not match its plan")
     raw_detections = raw.get("detections")
@@ -169,9 +172,8 @@ def aggregate_detection_shards(
     if not 1 <= maximum_raw_detections <= MAX_AGGREGATE_RAW_DETECTIONS:
         raise ValueError("Aggregate detection limit is outside its safety bound")
     result_by_index: dict[int, DetectionShardResult] = {}
-    for result in results:
-        if result.plan_checksum_sha256 != plan.checksum_sha256:
-            raise ValueError("Detection shard result does not match its plan checksum")
+    for supplied_result in results:
+        result = parse_detection_shard_result(supplied_result.payload(), plan)
         if result.shard_index in result_by_index:
             raise ValueError(f"Duplicate detection shard result: {result.shard_index}")
         result_by_index[result.shard_index] = result

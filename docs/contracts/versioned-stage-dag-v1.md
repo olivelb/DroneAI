@@ -225,6 +225,17 @@ pixels and the source raster. This makes overlap amplification and scenes above
 the current single-Job envelope measurable before detection is split into
 fan-out/fan-in shards.
 
+The first fan-out foundation is implemented without changing that deployment
+boundary. `shared.detection_sharding` partitions the complete row-major tile
+sequence into compact, contiguous, bounded shards and assigns the plan a stable
+SHA-256. It covers the 5,412-tile audit case with six shards at 1,024 tiles per
+shard. `shared.detection_shard_results` rejects results for another plan,
+out-of-range tile indices, missing or duplicate shards, model-provenance drift
+and aggregate detection overflow before applying the existing global spatial
+deduplication across shard boundaries. The current executor deliberately runs
+one such plan shard and retains the 4,096-tile limit until indexed child Jobs,
+their retry/cancellation lifecycle and the finalizer are durably orchestrated.
+
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
