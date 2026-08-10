@@ -112,6 +112,12 @@ class RasterProductObject:
     artifact_id: str | None = None
 
 
+@dataclass(frozen=True)
+class DetectionProductObject:
+    key: str
+    artifact_id: str
+
+
 class MapFeatureMutationRecord(Protocol):
     geometry: Any
     version: int
@@ -267,6 +273,45 @@ def resolve_raster_product(
         sidecar_key=artifact_sidecar_key,
         artifact_id=artifact.artifact_id,
     )
+
+
+def resolve_detection_product(
+    session: RouteSession,
+    mission: MissionRecord,
+) -> DetectionProductObject | None:
+    artifact = cast(
+        MissionArtifactRecord | None,
+        session.query(MissionArtifact)
+        .filter(
+            MissionArtifact.mission_id == mission.id,
+            MissionArtifact.kind == "detection_workspace",
+        )
+        .order_by(MissionArtifact.created_at.desc(), MissionArtifact.id.desc())
+        .first(),
+    )
+    if artifact is None:
+        return None
+    logical_path = artifact.artifact_metadata.get("geojson_file")
+    if not isinstance(logical_path, str) or not logical_path:
+        logical_path = ".droneai/detection/detections.geojson"
+    try:
+        object_keys = _workspace_object_keys(
+            _artifact_manifest_key(artifact),
+            artifact.checksum_sha256,
+        )
+    except (OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to resolve detection artifact manifest: {error}",
+        ) from error
+    key = object_keys.get(logical_path)
+    if key is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Detection artifact does not publish {logical_path}",
+        )
+    require_object(key)
+    return DetectionProductObject(key=key, artifact_id=artifact.artifact_id)
 
 
 def require_object(key: str) -> None:
@@ -475,6 +520,83 @@ def load_json_object(key: str) -> dict[str, Any]:
         return cast(JsonObject, payload)
     finally:
         stream.close()
+
+
+def pipeline_detection_features(
+    session: RouteSession,
+    mission: MissionRecord,
+    vol_id: str,
+    bounds: Bounds | None,
+    limit: int,
+) -> tuple[list[JsonObject], bool] | None:
+    """Load the authoritative immutable detection layer for a stage mission."""
+
+    product = resolve_detection_product(session, mission)
+    if product is None:
+        return None
+    payload = load_json_object(product.key)
+    if payload.get("type") != "FeatureCollection" or not isinstance(
+        payload.get("features"), list
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Detection artifact is not a GeoJSON FeatureCollection",
+        )
+    collection_properties = payload.get("properties")
+    if isinstance(collection_properties, dict):
+        recorded_vol_id = collection_properties.get("vol_id")
+        if recorded_vol_id is not None and recorded_vol_id != vol_id:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Detection artifact mission identity does not match",
+            )
+    selected: list[JsonObject] = []
+    truncated = False
+    for raw_feature in cast(list[object], payload["features"]):
+        if not isinstance(raw_feature, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Detection artifact contains an invalid feature",
+            )
+        feature = cast(JsonObject, raw_feature)
+        geometry = feature.get("geometry")
+        properties = feature.get("properties")
+        if not isinstance(geometry, dict) or not isinstance(properties, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Detection artifact contains an incomplete feature",
+            )
+        feature_vol_id = properties.get("vol_id")
+        if feature_vol_id is not None and feature_vol_id != vol_id:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Detection feature mission identity does not match",
+            )
+        if bounds:
+            try:
+                feature_bounds = geometry_bounds(cast(JsonObject, geometry))
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Detection artifact geometry is invalid: {error}",
+                ) from error
+            if not bounds_intersect(list(bounds), feature_bounds):
+                continue
+        if len(selected) >= limit:
+            truncated = True
+            break
+        selected.append(
+            {
+                **feature,
+                "properties": {
+                    **cast(JsonObject, properties),
+                    "source": "legacy",
+                    "name": properties.get("name") or properties.get("class_name"),
+                    "color": properties.get("color") or "#f43f5e",
+                },
+            }
+        )
+    return selected, truncated
 
 
 def object_store_analysis_features(

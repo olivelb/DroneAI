@@ -29,6 +29,7 @@ from ..map_support import (
     map_feature_geojson,
     mission_key,
     parse_bbox,
+    pipeline_detection_features,
     resolve_raster_product,
 )
 from ..map_schemas import RasterPalette
@@ -208,6 +209,15 @@ def _legacy_features(
     bounds: Bounds | None,
     limit: int,
 ) -> tuple[list[JsonObject], bool]:
+    immutable = pipeline_detection_features(
+        session,
+        mission,
+        vol_id,
+        bounds,
+        limit,
+    )
+    if immutable is not None:
+        return immutable
     query = session.query(Detection).filter(Detection.vol_id == vol_id)
     query = apply_detection_spatial_filter(query, bounds)
     records = query.order_by(Detection.id).limit(limit + 1).all()

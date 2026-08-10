@@ -132,3 +132,80 @@ def test_raster_product_fails_closed_for_incomplete_versioned_artifact(
 
     assert error.value.status_code == 502
     assert "orthomosaic.tif" in str(error.value.detail)
+
+
+def test_pipeline_detection_features_are_scoped_and_decorated(monkeypatch):
+    monkeypatch.setattr(
+        map_support,
+        "resolve_detection_product",
+        lambda _session, _mission: map_support.DetectionProductObject(
+            key="blobs/sha256/ee/detections",
+            artifact_id="detections-artifact-id",
+        ),
+    )
+    monkeypatch.setattr(
+        map_support,
+        "load_json_object",
+        lambda _key: {
+            "type": "FeatureCollection",
+            "properties": {"vol_id": "mission-1"},
+            "features": [
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [3.1, 42.4]},
+                    "properties": {
+                        "vol_id": "mission-1",
+                        "class_name": "car",
+                        "confidence": 0.9,
+                    },
+                }
+            ],
+        },
+    )
+
+    result = map_support.pipeline_detection_features(
+        _Session(None),
+        SimpleNamespace(id=7),
+        "mission-1",
+        (3.0, 42.0, 4.0, 43.0),
+        10,
+    )
+
+    assert result is not None
+    features, truncated = result
+    assert truncated is False
+    assert len(features) == 1
+    assert features[0]["properties"]["source"] == "legacy"
+    assert features[0]["properties"]["name"] == "car"
+
+
+def test_pipeline_detection_features_reject_cross_mission_artifact(monkeypatch):
+    monkeypatch.setattr(
+        map_support,
+        "resolve_detection_product",
+        lambda _session, _mission: map_support.DetectionProductObject(
+            key="blobs/sha256/ff/detections",
+            artifact_id="detections-artifact-id",
+        ),
+    )
+    monkeypatch.setattr(
+        map_support,
+        "load_json_object",
+        lambda _key: {
+            "type": "FeatureCollection",
+            "properties": {"vol_id": "another-mission"},
+            "features": [],
+        },
+    )
+
+    with pytest.raises(HTTPException) as error:
+        map_support.pipeline_detection_features(
+            _Session(None),
+            SimpleNamespace(id=7),
+            "mission-1",
+            None,
+            10,
+        )
+
+    assert error.value.status_code == 502
+    assert "identity" in str(error.value.detail)

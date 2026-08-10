@@ -29,6 +29,7 @@ from ..map_support import (
     RouteSession,
     get_mission,
     mission_key,
+    pipeline_detection_features,
     resolve_raster_product,
     stored_map_feature_geojson,
 )
@@ -75,6 +76,16 @@ def _legacy_features(
     mission: MissionRecord,
     vol_id: str,
 ) -> Iterator[JsonObject]:
+    immutable = pipeline_detection_features(
+        session,
+        mission,
+        vol_id,
+        None,
+        50_000,
+    )
+    if immutable is not None:
+        yield from immutable[0]
+        return
     metadata = mission.tiling_metadata or {}
     records = cast(
         Iterator[Detection],
