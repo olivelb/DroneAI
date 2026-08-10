@@ -10,6 +10,7 @@ from shared.artifact_manifest import (
     ArtifactManifest,
     ManifestBlob,
     ManifestFile,
+    ManifestParent,
     canonical_v2_bytes,
 )
 
@@ -129,6 +130,123 @@ def test_restore_dual_reader_materializes_content_addressed_v2_blob(tmp_path, fa
     assert restored.size_bytes == len(content)
     assert restored.manifest_schema_version == 2
     assert (tmp_path / "restored-v2" / "models" / "final.ply").read_bytes() == content
+
+
+def _store_blob(fake_s3: Path, content: bytes) -> ManifestBlob:
+    checksum = hashlib.sha256(content).hexdigest()
+    key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+    path = fake_s3 / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return ManifestBlob(key=key, size_bytes=len(content), checksum_sha256=checksum)
+
+
+def _store_manifest(fake_s3: Path, key: str, manifest: ArtifactManifest) -> str:
+    content = canonical_v2_bytes(manifest)
+    path = fake_s3 / key
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    return hashlib.sha256(content).hexdigest()
+
+
+def test_selective_overlay_restores_child_override_only(tmp_path, fake_s3):
+    old_model = _store_blob(fake_s3, b"old-model")
+    state = _store_blob(fake_s3, b"state")
+    new_model = _store_blob(fake_s3, b"new-model")
+    parent_key = "missions/example/parent/manifest.json"
+    parent_checksum = _store_manifest(
+        fake_s3,
+        parent_key,
+        ArtifactManifest(
+            2,
+            (
+                ManifestFile("model.ply", "gaussian-model", old_model),
+                ManifestFile("state.json", "stage-state", state),
+            ),
+        ),
+    )
+    child_key = "missions/example/child/manifest.json"
+    child_checksum = _store_manifest(
+        fake_s3,
+        child_key,
+        ArtifactManifest(
+            2,
+            (ManifestFile("model.ply", "gaussian-model", new_model),),
+            (ManifestParent("parent", parent_key, parent_checksum),),
+        ),
+    )
+
+    restored = stage_workspace.restore_workspace_measured(
+        child_key,
+        tmp_path / "selected",
+        child_checksum,
+        selection=stage_workspace.WorkspaceSelection(
+            roles=frozenset({"gaussian-model"})
+        ),
+    )
+
+    assert restored.file_count == 1
+    assert (tmp_path / "selected" / "model.ply").read_bytes() == b"new-model"
+    assert not (tmp_path / "selected" / "state.json").exists()
+    assert restored.manifest_size_bytes == (
+        (fake_s3 / parent_key).stat().st_size + (fake_s3 / child_key).stat().st_size
+    )
+
+
+def test_overlay_rejects_conflicting_sibling_parent_paths(tmp_path, fake_s3):
+    parents = []
+    for name, content in (("left", b"left"), ("right", b"right")):
+        key = f"missions/example/{name}/manifest.json"
+        checksum = _store_manifest(
+            fake_s3,
+            key,
+            ArtifactManifest(
+                2,
+                (ManifestFile("shared.bin", "stage-state", _store_blob(fake_s3, content)),),
+            ),
+        )
+        parents.append(ManifestParent(name, key, checksum))
+    child_key = "missions/example/conflict/manifest.json"
+    child_checksum = _store_manifest(
+        fake_s3,
+        child_key,
+        ArtifactManifest(2, (), tuple(parents)),
+    )
+
+    with pytest.raises(ValueError, match="Conflicting parent overlay path"):
+        stage_workspace.restore_workspace_measured(
+            child_key,
+            tmp_path / "conflict",
+            child_checksum,
+        )
+
+
+def test_selective_overlay_rejects_missing_explicit_path(tmp_path, fake_s3):
+    key = "missions/example/empty/manifest.json"
+    checksum = _store_manifest(fake_s3, key, ArtifactManifest(2, ()))
+
+    with pytest.raises(ValueError, match="selection paths are missing"):
+        stage_workspace.restore_workspace_measured(
+            key,
+            tmp_path / "missing",
+            checksum,
+            selection=stage_workspace.WorkspaceSelection(
+                paths=frozenset({"absent.bin"})
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        stage_workspace.WorkspaceSelection,
+        lambda: stage_workspace.WorkspaceSelection(roles=frozenset({"Invalid Role"})),
+        lambda: stage_workspace.WorkspaceSelection(paths=frozenset({"windows\\path"})),
+    ],
+)
+def test_workspace_selection_rejects_empty_or_noncanonical_values(selection):
+    with pytest.raises(ValueError):
+        selection()
 
 
 def test_restore_rejects_manifest_path_traversal(tmp_path, fake_s3):

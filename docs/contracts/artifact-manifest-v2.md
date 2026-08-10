@@ -59,15 +59,26 @@ The rollout is deliberately asymmetric:
 2. Add idempotent CAS blob publication and its concurrency tests. **Done:**
    `publish_content_addressed_file` uses `If-None-Match: *`, reuses a verified
    existing blob and verifies the winner of a concurrent 409/412 race.
-3. Add parent-overlay resolution and selective materialization.
+3. Add parent-overlay resolution and selective materialization. **Done for the
+   shared restore engine:** every parent checksum is verified recursively and
+   callers can select exact logical paths, roles, or their union.
 4. Enable the v2 writer behind a disabled-by-default environment flag.
 5. Qualify complete products and rollback before enabling another target.
 
-The current reader materializes every file explicitly listed by either
-manifest. It records the restored schema version in `workspace_transfer`
-provenance. It does not yet resolve inherited parent files; therefore manually
-publishing a delta-only v2 manifest is unsupported until step 3. Existing v1
-artifacts remain readable and no bulk rewrite is planned.
+The restore engine resolves parents before children, so a child file replaces
+an inherited file at the same logical path. Divergent definitions of one path
+from sibling parents are rejected; identical definitions are deduplicated.
+Resolution is bounded to 64 manifests and 100,000 logical files, and every
+downloaded manifest and blob is checksum-verified. A selective request fails
+closed if an explicit path is absent or if nothing matches. Legacy v1 files
+have the synthetic role `legacy`, so their useful selective key is the exact
+logical path.
+
+The deployed stage adapters still request a full restore and the writer still
+publishes v1. Consequently, this engine capability does not change production
+I/O yet. Existing v1 artifacts remain readable and no bulk rewrite is planned;
+role mappings and selective requests will be activated per adapter before the
+v2 writer rollout.
 
 The current CAS publisher is intentionally not called by the v1 writer. It
 uses a conditional single-part `PutObject` and fails closed above the S3 5 GiB

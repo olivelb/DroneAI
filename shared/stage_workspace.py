@@ -12,11 +12,18 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from shared import storage
-from shared.artifact_manifest import parse_artifact_manifest
+from shared.artifact_manifest import (
+    ROLE_PATTERN,
+    ArtifactManifest,
+    ManifestFile,
+    parse_artifact_manifest,
+)
 from shared.checksums import sha256_file
 from shared.config import S3_BUCKET
 
 WORKSPACE_MANIFEST_VERSION = 1
+MAX_OVERLAY_MANIFESTS = 64
+MAX_MATERIALIZED_FILES = 100_000
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,24 @@ class RestoredWorkspace:
     download_seconds: float
     manifest_size_bytes: int
     manifest_schema_version: int = WORKSPACE_MANIFEST_VERSION
+
+
+@dataclass(frozen=True)
+class WorkspaceSelection:
+    roles: frozenset[str] = frozenset()
+    paths: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if not self.roles and not self.paths:
+            raise ValueError("Workspace selection requires at least one role or path")
+        for role in self.roles:
+            if not isinstance(role, str) or not ROLE_PATTERN.fullmatch(role):
+                raise ValueError(f"Invalid workspace selection role: {role!r}")
+        for path in self.paths:
+            _safe_relative_path(path)
+
+    def includes(self, entry: ManifestFile) -> bool:
+        return entry.role in self.roles or entry.path in self.paths
 
 
 def workspace_transfer_provenance(
@@ -79,12 +104,14 @@ def _canonical(payload: dict[str, Any]) -> bytes:
 
 
 def _safe_relative_path(raw_path: str) -> Path:
+    if not isinstance(raw_path, str) or not raw_path or "\\" in raw_path:
+        raise ValueError(f"Unsafe workspace manifest path: {raw_path!r}")
     pure = PurePosixPath(raw_path)
     if (
-        not raw_path
-        or pure.is_absolute()
+        pure.is_absolute()
         or ".." in pure.parts
         or any(part in {"", "."} for part in pure.parts)
+        or pure.as_posix() != raw_path
     ):
         raise ValueError(f"Unsafe workspace manifest path: {raw_path!r}")
     return Path(*pure.parts)
@@ -173,30 +200,77 @@ def restore_workspace_measured(
     expected_checksum_sha256: str,
     *,
     cancellation_check: Callable[[], None] | None = None,
+    selection: WorkspaceSelection | None = None,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        prefix="droneai-workspace-",
-        suffix=".json",
-        delete=False,
-    ) as manifest_descriptor:
-        manifest_path = Path(manifest_descriptor.name)
-    try:
-        storage.download_file(manifest_key, manifest_path)
-        manifest_bytes = manifest_path.read_bytes()
-    finally:
-        manifest_path.unlink(missing_ok=True)
-    digest = hashlib.sha256(manifest_bytes).hexdigest()
-    if digest != expected_checksum_sha256:
-        raise OSError(
-            f"Workspace manifest checksum mismatch: {digest}/{expected_checksum_sha256}"
-        )
-    manifest = parse_artifact_manifest(manifest_bytes, manifest_key=manifest_key)
+    manifest_bytes_total = 0
+    loaded_count = 0
+    active: set[tuple[str, str]] = set()
+    cache: dict[tuple[str, str], tuple[ArtifactManifest, dict[str, ManifestFile]]] = {}
+
+    def load_overlay(key: str, checksum: str) -> tuple[ArtifactManifest, dict[str, ManifestFile]]:
+        nonlocal manifest_bytes_total, loaded_count
+        identity = (key, checksum)
+        if identity in active:
+            raise ValueError(f"Artifact manifest parent cycle includes {key}")
+        if identity in cache:
+            return cache[identity]
+        loaded_count += 1
+        if loaded_count > MAX_OVERLAY_MANIFESTS:
+            raise ValueError("Artifact manifest overlay exceeds its manifest limit")
+        if cancellation_check is not None:
+            cancellation_check()
+        with tempfile.NamedTemporaryFile(prefix="droneai-workspace-", suffix=".json", delete=False) as descriptor:
+            path = Path(descriptor.name)
+        try:
+            storage.download_file(key, path)
+            content = path.read_bytes()
+        finally:
+            path.unlink(missing_ok=True)
+        digest = hashlib.sha256(content).hexdigest()
+        if digest != checksum:
+            raise OSError(f"Workspace manifest checksum mismatch: {digest}/{checksum}")
+        manifest_bytes_total += len(content)
+        manifest = parse_artifact_manifest(content, manifest_key=key)
+        active.add(identity)
+        inherited: dict[str, ManifestFile] = {}
+        try:
+            for parent in manifest.parents:
+                _parent_manifest, parent_files = load_overlay(
+                    parent.manifest_key,
+                    parent.checksum_sha256,
+                )
+                for file_path, entry in parent_files.items():
+                    existing = inherited.get(file_path)
+                    if existing is not None and existing != entry:
+                        raise ValueError(f"Conflicting parent overlay path: {file_path}")
+                    inherited[file_path] = entry
+            for entry in manifest.files:
+                inherited[entry.path] = entry
+        finally:
+            active.remove(identity)
+        if len(inherited) > MAX_MATERIALIZED_FILES:
+            raise ValueError("Artifact manifest overlay exceeds its file limit")
+        cache[identity] = (manifest, inherited)
+        return cache[identity]
+
+    manifest, resolved_files = load_overlay(manifest_key, expected_checksum_sha256)
+    selected_files = [
+        entry
+        for entry in resolved_files.values()
+        if selection is None or selection.includes(entry)
+    ]
+    if selection is not None:
+        missing_paths = selection.paths - set(resolved_files)
+        if missing_paths:
+            raise ValueError(f"Workspace selection paths are missing: {sorted(missing_paths)}")
+        if not selected_files:
+            raise ValueError("Workspace selection matched no files")
     seen: set[str] = set()
     restored_bytes = 0
-    for entry in manifest.files:
+    for entry in sorted(selected_files, key=lambda item: item.path):
         if cancellation_check is not None:
             cancellation_check()
         relative_raw = entry.path
@@ -219,10 +293,10 @@ def restore_workspace_measured(
     return RestoredWorkspace(
         size_bytes=restored_bytes,
         file_count=len(seen),
-        downloaded_bytes=len(manifest_bytes) + restored_bytes,
+        downloaded_bytes=manifest_bytes_total + restored_bytes,
         reused_bytes=0,
         download_seconds=round(time.monotonic() - started_at, 6),
-        manifest_size_bytes=len(manifest_bytes),
+        manifest_size_bytes=manifest_bytes_total,
         manifest_schema_version=manifest.schema_version,
     )
 
@@ -233,6 +307,7 @@ def restore_workspace(
     expected_checksum_sha256: str,
     *,
     cancellation_check: Callable[[], None] | None = None,
+    selection: WorkspaceSelection | None = None,
 ) -> int:
     """Restore a v1 workspace and preserve the legacy file-count return value."""
 
@@ -241,4 +316,5 @@ def restore_workspace(
         destination,
         expected_checksum_sha256,
         cancellation_check=cancellation_check,
+        selection=selection,
     ).file_count
