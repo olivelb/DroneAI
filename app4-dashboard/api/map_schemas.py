@@ -24,7 +24,7 @@ class AnalysisCreate(BaseModel):
     color: str = "#f43f5e"
     tags: list[str] = Field(default_factory=list)
     backend: Literal["yolo", "sam3"] = "yolo"
-    model_variant: str = Field(default="yolo26l", max_length=128)
+    model_variant: str | None = Field(default=None, max_length=128)
     prompt: str = Field(default="car", max_length=256)
     classes: list[str] = Field(default_factory=lambda: ["car"])
     confidence: float = Field(default=0.3, ge=0.01, le=0.99)
@@ -53,8 +53,10 @@ class AnalysisCreate(BaseModel):
     def validate_ai_configuration(self) -> AnalysisCreate:
         if self.backend == "yolo":
             validate_aerial_class_names(self.classes)
+            self.model_variant = self.model_variant or "yolo26l"
             yolo_model_manifest(self.model_variant)
         else:
+            self.model_variant = None
             validate_sam3_tile_size(self.tile_size)
         return self
 

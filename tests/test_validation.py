@@ -327,11 +327,20 @@ def test_sam3_schemas_keep_free_form_semantic_prompts():
     analysis = AnalysisCreate(
         name="prompted segmentation",
         backend="sam3",
+        model_variant="yolo26l",
         classes=["roof defect"],
     )
 
     assert mission.classes == ["roof defect"]
     assert analysis.classes == ["roof defect"]
+    assert analysis.model_variant is None
+
+
+def test_yolo_analysis_applies_the_default_model_after_backend_validation():
+    analysis = AnalysisCreate(name="vehicle detection")
+
+    assert analysis.backend == "yolo"
+    assert analysis.model_variant == "yolo26l"
 
 
 def test_sam3_schemas_reject_tiles_larger_than_effective_model_input():

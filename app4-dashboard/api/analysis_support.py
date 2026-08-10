@@ -15,17 +15,19 @@ from .security import Principal
 
 
 def analysis_event(run: AnalysisRunRecord) -> JsonObject:
-    return {
+    event: JsonObject = {
         "vol_id": run.vol_id,
         "ortho_s3_key": run.ortho_s3_key,
         "analysis_run_id": run.run_id,
         "classes": run.classes or [],
         "ai_confidence": run.confidence,
         "ai_backend": run.backend,
-        "ai_model_variant": run.model_variant,
         "sam_prompt": run.prompt,
         "tile_size": run.tile_size,
     }
+    if run.backend == "yolo":
+        event["ai_model_variant"] = run.model_variant
+    return event
 
 
 def get_owned_run(
