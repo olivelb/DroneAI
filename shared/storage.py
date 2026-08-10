@@ -7,6 +7,7 @@ persistent data (datasets, mission artifacts, tiles, orthomosaics).
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
 from collections.abc import Iterable
@@ -16,6 +17,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 from shared.checksums import sha256_file
+from shared.artifact_manifest import content_addressed_blob_key
 from shared.config import (
     S3_ACCESS_KEY,
     S3_BUCKET,
@@ -25,6 +27,15 @@ from shared.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ContentAddressedUpload:
+    key: str
+    size_bytes: int
+    checksum_sha256: str
+    reused: bool
+    transferred_bytes: int
 
 
 class S3Paginator(Protocol):
@@ -71,6 +82,7 @@ class S3Client(Protocol):
 
 S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable MinIO URL
 S3_DELETE_MAX_ATTEMPTS = max(1, int(os.getenv("S3_DELETE_MAX_ATTEMPTS", "3")))
+S3_CAS_SINGLE_PUT_MAX_BYTES = 5 * 1024**3
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -198,6 +210,119 @@ def upload_verified_file(
         size,
     )
     return {"key": s3_key, "size": size, "sha256": digest}
+
+
+def _client_error_code(error: ClientError) -> str:
+    return str(error.response.get("Error", {}).get("Code", ""))
+
+
+def _verify_content_addressed_head(
+    client: S3Client,
+    *,
+    bucket: str,
+    key: str,
+    expected_size: int,
+    expected_sha256: str,
+) -> bool:
+    """Return false for a missing blob, otherwise verify its immutable identity."""
+
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+    except ClientError as error:
+        if _client_error_code(error) in {"404", "NoSuchKey", "NotFound"}:
+            return False
+        raise
+    remote_size = int(head.get("ContentLength", -1))
+    remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
+    if remote_size != expected_size or remote_digest != expected_sha256:
+        raise OSError(
+            f"Content-addressed object conflict for s3://{bucket}/{key}: "
+            f"size={remote_size}/{expected_size}, "
+            f"sha256={remote_digest}/{expected_sha256}"
+        )
+    return True
+
+
+def publish_content_addressed_file(
+    local_path: str | Path,
+    bucket: str | None = None,
+) -> ContentAddressedUpload:
+    """Publish one immutable CAS blob with an idempotent conditional PUT.
+
+    Existing matching objects are reused. A concurrent publisher losing the
+    ``If-None-Match: *`` race verifies the winner before reporting reuse. An
+    existing key with different size or digest fails closed and is never
+    overwritten.
+    """
+
+    selected_bucket = bucket or S3_BUCKET
+    path = Path(local_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Required local artifact not found: {path}")
+    size = path.stat().st_size
+    if size > S3_CAS_SINGLE_PUT_MAX_BYTES:
+        raise ValueError(
+            "CAS conditional publication currently supports files up to 5 GiB; "
+            "multipart CAS must be implemented before publishing this artifact"
+        )
+    digest = _sha256_file(path)
+    key = content_addressed_blob_key(digest)
+    client = _get_client()
+    if _verify_content_addressed_head(
+        client,
+        bucket=selected_bucket,
+        key=key,
+        expected_size=size,
+        expected_sha256=digest,
+    ):
+        return ContentAddressedUpload(key, size, digest, True, 0)
+
+    try:
+        with path.open("rb") as stream:
+            client.put_object(
+                Bucket=selected_bucket,
+                Key=key,
+                Body=stream,
+                ContentLength=size,
+                Metadata={"sha256": digest},
+                IfNoneMatch="*",
+            )
+    except ClientError as error:
+        if _client_error_code(error) not in {
+            "409",
+            "412",
+            "ConditionalRequestConflict",
+            "PreconditionFailed",
+        }:
+            raise
+        if not _verify_content_addressed_head(
+            client,
+            bucket=selected_bucket,
+            key=key,
+            expected_size=size,
+            expected_sha256=digest,
+        ):
+            raise OSError(
+                f"Concurrent CAS publication did not create s3://{selected_bucket}/{key}"
+            ) from error
+        return ContentAddressedUpload(key, size, digest, True, 0)
+
+    if not _verify_content_addressed_head(
+        client,
+        bucket=selected_bucket,
+        key=key,
+        expected_size=size,
+        expected_sha256=digest,
+    ):
+        raise OSError(f"CAS publication disappeared for s3://{selected_bucket}/{key}")
+    logger.info(
+        "Published immutable CAS blob %s -> s3://%s/%s (%d bytes)",
+        path,
+        selected_bucket,
+        key,
+        size,
+    )
+    return ContentAddressedUpload(key, size, digest, False, size)
 
 
 def verify_object_checksum(

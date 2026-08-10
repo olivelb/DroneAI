@@ -56,7 +56,9 @@ Rules enforced by `shared.artifact_manifest`:
 The rollout is deliberately asymmetric:
 
 1. Deploy the v1/v2 reader while continuing to publish v1.
-2. Add idempotent CAS blob publication and its concurrency tests.
+2. Add idempotent CAS blob publication and its concurrency tests. **Done:**
+   `publish_content_addressed_file` uses `If-None-Match: *`, reuses a verified
+   existing blob and verifies the winner of a concurrent 409/412 race.
 3. Add parent-overlay resolution and selective materialization.
 4. Enable the v2 writer behind a disabled-by-default environment flag.
 5. Qualify complete products and rollback before enabling another target.
@@ -66,3 +68,9 @@ manifest. It records the restored schema version in `workspace_transfer`
 provenance. It does not yet resolve inherited parent files; therefore manually
 publishing a delta-only v2 manifest is unsupported until step 3. Existing v1
 artifacts remain readable and no bulk rewrite is planned.
+
+The current CAS publisher is intentionally not called by the v1 writer. It
+uses a conditional single-part `PutObject` and fails closed above the S3 5 GiB
+single-object request limit. Multipart CAS publication for larger files must
+land before the v2 writer can accept such an artifact; silently falling back
+to a non-conditional overwrite is forbidden.
