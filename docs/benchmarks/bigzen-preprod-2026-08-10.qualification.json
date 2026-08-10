@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "qualification_id": "bigzen-preprod-2026-08-10",
+  "generated_at": "2026-08-10T14:53:05.520838Z",
+  "environment": {
+    "name": "bigzen-preprod",
+    "cluster": "bigzen-k3s",
+    "namespace": "drone-ai",
+    "kubernetes_version": "v1.36.3+k3s1",
+    "node_type": "single-node K3s on Ubuntu WSL2",
+    "gpu": {
+      "model": "NVIDIA GeForce RTX 3090",
+      "vram_mb": 24576,
+      "driver": "591.74",
+      "cuda_runtime": "13.1"
+    }
+  },
+  "release": {
+    "git_commit": "d643002bf21bf08086b143dadc04138838215100",
+    "chart_version": "0.1.0",
+    "values_sha256": "c288a19af9a61f07305655ac11016a6780ab4bd784f70587a27ae06fc444f395",
+    "images": {
+      "reconstruction": "sha256:c9d3f5a38d31c85ae58452385e0c416e2dc12e202d1b386707bf32b98ddf9897",
+      "gaussian_training": "sha256:c9d3f5a38d31c85ae58452385e0c416e2dc12e202d1b386707bf32b98ddf9897",
+      "gaussian_filtering": "sha256:c9d3f5a38d31c85ae58452385e0c416e2dc12e202d1b386707bf32b98ddf9897",
+      "rasterization": "sha256:c9d3f5a38d31c85ae58452385e0c416e2dc12e202d1b386707bf32b98ddf9897",
+      "detection": "sha256:533560bfbc8858a3de2370dbbc3cc8cd324e04ee9ad49a1cc555d521f5a9a29d"
+    }
+  },
+  "objectives": {
+    "rto_seconds": 900,
+    "rpo_seconds": 0
+  },
+  "drills": [
+    {
+      "id": "five_stage_chain",
+      "status": "passed",
+      "started_at": "2026-08-10T12:43:34.608509Z",
+      "completed_at": "2026-08-10T12:50:25.800216Z",
+      "observed_rto_seconds": 411.192,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "7ad4de6a-1ead-4709-b4a1-4fe0397e851f",
+        "fbf90614-59f6-4a1d-9665-2ed63556dab5",
+        "433c15d9-7531-4d4e-a387-411cfc093568",
+        "67295c5e-c1b3-4339-8bf3-8499273204a3",
+        "4b77be44-739c-41ca-96c8-c76df7c005a7"
+      ],
+      "artifact_ids": [
+        "a1000e6d-5a5b-5e4b-91b3-5c7430f74f47",
+        "c9d34767-66ab-5afc-82c1-2132cbf3cd57",
+        "f97d3fc4-a520-53bd-90fc-e4a0ec1e94f6",
+        "27e2361e-a7b6-5dcb-ad97-52a2b344bea9",
+        "7dc2d549-d7d8-5cca-80dd-ae30ba88233c"
+      ],
+      "evidence_refs": [
+        "mission:chapelle-d87-five-jobs-20260810",
+        "benchmark:bigzen-stage-jobs-fanout-2026-08-10#post-merge-five-job-requalification"
+      ],
+      "notes": "Five immutable Kubernetes Jobs completed the declared DAG and published the exact five-parent artifact chain."
+    },
+    {
+      "id": "stage_cancellation",
+      "status": "passed",
+      "started_at": "2026-08-10T14:51:10.454545Z",
+      "completed_at": "2026-08-10T14:51:40.504050Z",
+      "observed_rto_seconds": 3.502,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "29d50510-07fe-44a7-a256-517ff467da3b"
+      ],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "mission:bigzen-drill-cancel-final-20260810",
+        "kubernetes-job:droneai-29d50510-07fe-44a7-a256-517ff467da3b-9e8dd1c2db"
+      ],
+      "notes": "The active Job disappeared in 3.502 seconds. The mission remained terminal, published no artifact, and kept identical completion and cleanup timestamps across repeated reconciliation cycles."
+    },
+    {
+      "id": "stage_deadline",
+      "status": "passed",
+      "started_at": "2026-08-10T14:11:27.630795Z",
+      "completed_at": "2026-08-10T14:13:02.931997Z",
+      "observed_rto_seconds": 15.228,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "5a343dd2-8526-49e3-9713-4397412ca599",
+        "0f7a2c22-38cb-48c7-a532-8770a877f386"
+      ],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "mission:bigzen-drill-deadline-fixed-20260810",
+        "kubernetes-event:deadline-exceeded"
+      ],
+      "notes": "The bounded Job failed with the durable DeadlineExceeded reason, and attempt one was dispatched with a distinct immutable run identity."
+    },
+    {
+      "id": "missing_job_reconciliation",
+      "status": "passed",
+      "started_at": "2026-08-10T14:14:17.000000Z",
+      "completed_at": "2026-08-10T14:14:19.865104Z",
+      "observed_rto_seconds": 2.541,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "9e5d4435-95cd-4c18-8d5d-b6104d05432b"
+      ],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "mission:bigzen-drill-missing-job-20260810",
+        "kubernetes-event:bounded-job-recreation"
+      ],
+      "notes": "Deleting the tracked Job caused one idempotent recreation in 2.541 seconds. Dispatch attempts advanced to two and exactly one replacement Job existed."
+    },
+    {
+      "id": "api_restart_after_reservation",
+      "status": "passed",
+      "started_at": "2026-08-10T14:14:49.433025Z",
+      "completed_at": "2026-08-10T14:15:05.392100Z",
+      "observed_rto_seconds": 14.158,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "1e83bddf-d182-48ba-b0dd-10282d3502e9"
+      ],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "mission:bigzen-drill-api-restart-20260810",
+        "kubernetes-job-uid:934e4b8a-6c00-461a-80aa-88b657e0f86a"
+      ],
+      "notes": "The API rollout completed in 14.158 seconds. The reserved attempt retained one Job, the same Job UID, one dispatch attempt and no dispatch error."
+    },
+    {
+      "id": "database_interruption",
+      "status": "passed",
+      "started_at": "2026-08-10T14:16:46.039565Z",
+      "completed_at": "2026-08-10T14:21:49.431259Z",
+      "observed_rto_seconds": 303.392,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "481d69c5-c2ab-47e6-845b-61afd37514a7",
+        "f38b5496-8de8-44c7-a2bb-eb6f9122b9a8"
+      ],
+      "artifact_ids": [
+        "94ae57b7-f8c4-55d5-8dd6-b352c877e7fd"
+      ],
+      "evidence_refs": [
+        "mission:bigzen-drill-db-interruption-20260810",
+        "artifact-checksum:c2812011a96f493638ae0cc743b36bf8b59771823c27f22eb983847b88500274"
+      ],
+      "notes": "The first writer failed closed while PostgreSQL was unavailable and published no artifact. Service availability returned in 18.856 seconds; a new attempt completed with exactly one verified artifact."
+    },
+    {
+      "id": "object_storage_interruption",
+      "status": "passed",
+      "started_at": "2026-08-10T14:22:29.442506Z",
+      "completed_at": "2026-08-10T14:26:39.937537Z",
+      "observed_rto_seconds": 250.495,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "bbf66a77-e859-43db-b761-e6b382fcc6a5",
+        "a61c402e-706a-41e3-8dfe-6eeea9a23f67"
+      ],
+      "artifact_ids": [
+        "73528540-939c-5cb4-9ece-0bee6aa197b6"
+      ],
+      "evidence_refs": [
+        "mission:bigzen-drill-storage-interruption-20260810",
+        "artifact-checksum:e0889bb4f47167da77ca7f476ff970e67abcc427b861c1c542051fd6c61a5080"
+      ],
+      "notes": "Publication failed closed while object storage was unavailable. Metadata reads recovered in 13.710 seconds; a new attempt produced exactly one checksum-verified artifact."
+    },
+    {
+      "id": "backup_restore",
+      "status": "passed",
+      "started_at": "2026-08-10T14:27:31.000000Z",
+      "completed_at": "2026-08-10T14:29:56.000000Z",
+      "observed_rto_seconds": 3.795,
+      "observed_rpo_seconds": 0,
+      "run_ids": [],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "kubernetes-pod:postgres-restore-drill",
+        "database-counts:13-32-21-14-0018"
+      ],
+      "notes": "A custom-format dump restored into an isolated template0 database in 3.795 seconds. Mission, stage-run, artifact, parent-edge and migration counts matched; no orphan edge or malformed checksum remained."
+    },
+    {
+      "id": "helm_rollback",
+      "status": "passed",
+      "started_at": "2026-08-10T14:49:45.592620Z",
+      "completed_at": "2026-08-10T14:50:43.422053Z",
+      "observed_rto_seconds": 3.507,
+      "observed_rpo_seconds": 0,
+      "run_ids": [
+        "a352c067-0129-4d95-915b-698d3b49901e"
+      ],
+      "artifact_ids": [],
+      "evidence_refs": [
+        "helm-revisions:24-25-26",
+        "analysis:a352c067-0129-4d95-915b-698d3b49901e"
+      ],
+      "notes": "Revision 25 rolled back to the corrected d643002 baseline at revision 24 and created revision 26 in 3.507 seconds. The durable analysis row remained cancelled. Revision 21 is explicitly retired because it predates idempotent cancellation cleanup."
+    }
+  ],
+  "attestation": {
+    "operator": "admin@olembo.fr",
+    "reviewed_at": null,
+    "statement": "I confirm that this record contains no credentials, signed URLs, private dataset content or raw Terraform state."
+  }
+}
