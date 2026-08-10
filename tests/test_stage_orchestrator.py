@@ -295,6 +295,48 @@ def test_reconciliation_tracks_heartbeat_and_fails_artifactless_success(
         assert "immutable artifact" in run.error_message
 
 
+def test_reconciliation_persists_kubernetes_deadline_reason(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "6" * 32
+    _add_run(stage_sessions, "mission-deadline", "owner-a", run_id)
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+    client = FakeJobClient(
+        {
+            reserved[0].job_name: {
+                "status": {
+                    "failed": 1,
+                    "conditions": [
+                        {
+                            "type": "FailureTarget",
+                            "status": "True",
+                            "reason": "DeadlineExceeded",
+                            "message": "Job exceeded its active deadline",
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, _settings())
+
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.status == "failed"
+        assert run.error_message == (
+            "Kubernetes stage Job failed: DeadlineExceeded: "
+            "Job exceeded its active deadline"
+        )
+
+
 def test_reconciliation_deletes_jobs_for_cancelled_missions(stage_sessions, monkeypatch):
     run_id = "e" * 32
     _add_run(stage_sessions, "mission-cancelled", "owner-a", run_id)
