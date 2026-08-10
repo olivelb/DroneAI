@@ -29,19 +29,34 @@ WORKSPACE_MANIFEST_VERSION = 1
 MAX_OVERLAY_MANIFESTS = 64
 MAX_MATERIALIZED_FILES = 100_000
 ARTIFACT_MANIFEST_V2_WRITE_ENV = "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED"
+ARTIFACT_SELECTIVE_RESTORE_ENV = "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
+
+
+def _strict_boolean_environment(name: str) -> bool:
+    raw = os.getenv(name, "false").strip().lower()
+    if raw in {"false", "0", "no", "off"}:
+        return False
+    if raw in {"true", "1", "yes", "on"}:
+        return True
+    raise ValueError(f"{name} must be an explicit boolean, not {raw!r}")
 
 
 def artifact_manifest_v2_write_enabled() -> bool:
     """Return the strict, disabled-by-default v2 writer rollout switch."""
 
-    raw = os.getenv(ARTIFACT_MANIFEST_V2_WRITE_ENV, "false").strip().lower()
-    if raw in {"false", "0", "no", "off"}:
-        return False
-    if raw in {"true", "1", "yes", "on"}:
-        return True
-    raise ValueError(
-        f"{ARTIFACT_MANIFEST_V2_WRITE_ENV} must be an explicit boolean, not {raw!r}"
-    )
+    return _strict_boolean_environment(ARTIFACT_MANIFEST_V2_WRITE_ENV)
+
+
+def artifact_selective_restore_enabled() -> bool:
+    """Return the selective-restore canary switch and enforce its dependency."""
+
+    enabled = _strict_boolean_environment(ARTIFACT_SELECTIVE_RESTORE_ENV)
+    if enabled and not artifact_manifest_v2_write_enabled():
+        raise ValueError(
+            f"{ARTIFACT_SELECTIVE_RESTORE_ENV} requires "
+            f"{ARTIFACT_MANIFEST_V2_WRITE_ENV}=true"
+        )
+    return enabled
 
 
 @dataclass(frozen=True)
@@ -219,6 +234,7 @@ def publish_workspace_v2(
     default_role: str,
     role_overrides: dict[str, str] | None = None,
     parents: tuple[ManifestParent, ...] = (),
+    allow_partial_workspace: bool = False,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
     """Publish a verified incremental CAS overlay.
@@ -257,9 +273,8 @@ def publish_workspace_v2(
 
     files: list[ManifestFile] = []
     local_paths: set[str] = set()
-    logical_bytes = 0
     transferred_bytes = 0
-    reused_bytes = 0
+    cas_reused_bytes = 0
     for file_path in sorted(root.rglob("*")):
         if cancellation_check is not None:
             cancellation_check()
@@ -271,14 +286,12 @@ def publish_workspace_v2(
         local_paths.add(relative)
         size = file_path.stat().st_size
         digest = sha256_file(file_path)
-        logical_bytes += size
         parent_entry = inherited.get(relative)
         if (
             parent_entry is not None
             and parent_entry.blob.size_bytes == size
             and parent_entry.blob.checksum_sha256 == digest
         ):
-            reused_bytes += size
             continue
         uploaded = storage.publish_content_addressed_file(
             file_path,
@@ -286,25 +299,32 @@ def publish_workspace_v2(
         )
         transferred_bytes += uploaded.transferred_bytes
         if uploaded.reused:
-            reused_bytes += size
-        files.append(
-            ManifestFile(
-                path=relative,
-                role=overrides.get(relative, default_role),
-                blob=ManifestBlob(
-                    key=uploaded.key,
-                    size_bytes=uploaded.size_bytes,
-                    checksum_sha256=uploaded.checksum_sha256,
-                ),
-            )
+            cas_reused_bytes += size
+        entry = ManifestFile(
+            path=relative,
+            role=overrides.get(relative, default_role),
+            blob=ManifestBlob(
+                key=uploaded.key,
+                size_bytes=uploaded.size_bytes,
+                checksum_sha256=uploaded.checksum_sha256,
+            ),
         )
+        files.append(entry)
 
     missing_inherited = set(inherited) - local_paths
-    if missing_inherited:
+    if missing_inherited and not allow_partial_workspace:
         raise ValueError(
             "Artifact Manifest v2 cannot implicitly delete inherited files: "
             f"{sorted(missing_inherited)}"
         )
+    resolved = dict(inherited)
+    resolved.update((entry.path, entry) for entry in files)
+    changed_paths = {entry.path for entry in files}
+    inherited_reused_bytes = sum(
+        entry.blob.size_bytes
+        for relative, entry in inherited.items()
+        if relative not in changed_paths
+    )
     manifest = ArtifactManifest(2, tuple(files), parents)
     canonical = canonical_v2_bytes(manifest)
     digest = hashlib.sha256(canonical).hexdigest()
@@ -328,10 +348,10 @@ def publish_workspace_v2(
         manifest_key=manifest_key,
         uri=f"s3://{S3_BUCKET}/{manifest_key}",
         checksum_sha256=digest,
-        size_bytes=logical_bytes,
-        file_count=len(local_paths),
+        size_bytes=sum(entry.blob.size_bytes for entry in resolved.values()),
+        file_count=len(resolved),
         uploaded_bytes=transferred_bytes + manifest_size,
-        reused_bytes=reused_bytes,
+        reused_bytes=inherited_reused_bytes + cas_reused_bytes,
         upload_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=manifest_size,
     )
