@@ -131,6 +131,27 @@ class RequiredTimestampMixin:
     )
 
 
+class AppendOnlyAuditMixin:
+    """Shared immutable event identity, actor, snapshots and timestamp."""
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    event_id = Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+    actor_subject = Column(String(256), nullable=False)
+    before_state = Column(PORTABLE_JSON, nullable=True)
+    after_state = Column(PORTABLE_JSON, nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Mission statuses
 # ---------------------------------------------------------------------------
@@ -978,7 +999,7 @@ class MapFeature(RequiredTimestampMixin, Base):
     )
 
 
-class MapFeatureAuditEvent(Base):
+class MapFeatureAuditEvent(AppendOnlyAuditMixin, Base):
     """Append-only operator audit trail for feature corrections."""
 
     __tablename__ = "map_feature_audit_events"
@@ -991,14 +1012,6 @@ class MapFeatureAuditEvent(Base):
         ),
     )
 
-    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
-    event_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),
@@ -1009,16 +1022,8 @@ class MapFeatureAuditEvent(Base):
         ForeignKey("map_features.id", ondelete="CASCADE"),
         nullable=False,
     )
-    actor_subject = Column(String(256), nullable=False)
     action = Column(String(32), nullable=False)
     reason = Column(Text, nullable=True)
-    before_state = Column(PORTABLE_JSON, nullable=True)
-    after_state = Column(PORTABLE_JSON, nullable=True)
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(UTC),
-    )
 
     mission = relationship("Mission", back_populates="feature_audit_events")
     feature = relationship("MapFeature", back_populates="audit_events")
@@ -1182,7 +1187,7 @@ class GcpObservation(RequiredTimestampMixin, Base):
     point = relationship("GcpPoint", back_populates="observations")
 
 
-class GcpAuditEvent(Base):
+class GcpAuditEvent(AppendOnlyAuditMixin, Base):
     """Database-protected append-only history of GCP workspace actions."""
 
     __tablename__ = "gcp_audit_events"
@@ -1195,14 +1200,6 @@ class GcpAuditEvent(Base):
         ),
     )
 
-    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
-    event_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),
@@ -1223,15 +1220,7 @@ class GcpAuditEvent(Base):
         ForeignKey("gcp_observations.id", ondelete="SET NULL"),
         nullable=True,
     )
-    actor_subject = Column(String(256), nullable=False)
     action = Column(String(48), nullable=False)
-    before_state = Column(PORTABLE_JSON, nullable=True)
-    after_state = Column(PORTABLE_JSON, nullable=True)
-    created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        default=lambda: datetime.now(UTC),
-    )
 
     mission = relationship("Mission", back_populates="gcp_audit_events")
     gcp_set = relationship("GcpSet", back_populates="audit_events")

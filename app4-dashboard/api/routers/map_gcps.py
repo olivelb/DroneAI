@@ -163,6 +163,39 @@ def _image_key(dataset_prefix: str | None, image_name: str) -> str | None:
     return f"{dataset_prefix.rstrip('/')}/{image_name.lstrip('/')}"
 
 
+def _candidate_observation(
+    point: GcpPoint,
+    candidate: CandidateSpec,
+    *,
+    dataset_prefix: str | None,
+    actor_subject: str,
+    status: str = "candidate",
+    pixel_x: float | None = None,
+    pixel_y: float | None = None,
+) -> GcpObservation:
+    """Build one consistently-provenanced photo observation."""
+
+    positioned = candidate.positioned
+    return GcpObservation(
+        gcp_point_id=point.id,
+        image_name=candidate.image_name,
+        image_s3_key=_image_key(dataset_prefix, candidate.image_name),
+        status=status,
+        pixel_x=pixel_x,
+        pixel_y=pixel_y,
+        candidate_distance_m=candidate.distance_m,
+        candidate_method=candidate.method,
+        projected_pixel_x=candidate.projected_pixel_x,
+        projected_pixel_y=candidate.projected_pixel_y,
+        image_width_px=candidate.image_width_px,
+        image_height_px=candidate.image_height_px,
+        image_longitude=(positioned.longitude if positioned else None),
+        image_latitude=(positioned.latitude if positioned else None),
+        created_by=actor_subject,
+        updated_by=actor_subject,
+    )
+
+
 def _authorized_mission(
     session: RouteSession,
     vol_id: str,
@@ -314,25 +347,15 @@ async def import_ground_control(
                     pixel_x,
                     pixel_y,
                 ) in observation_specs:
-                    positioned = candidate.positioned
                     typed_session.add(
-                        GcpObservation(
-                            gcp_point_id=point.id,
-                            image_name=candidate.image_name,
-                            image_s3_key=_image_key(mission.input_dataset, candidate.image_name),
+                        _candidate_observation(
+                            point,
+                            candidate,
+                            dataset_prefix=mission.input_dataset,
+                            actor_subject=principal.subject,
                             status=observation_status,
                             pixel_x=pixel_x,
                             pixel_y=pixel_y,
-                            candidate_distance_m=candidate.distance_m,
-                            candidate_method=candidate.method,
-                            projected_pixel_x=candidate.projected_pixel_x,
-                            projected_pixel_y=candidate.projected_pixel_y,
-                            image_width_px=candidate.image_width_px,
-                            image_height_px=candidate.image_height_px,
-                            image_longitude=(positioned.longitude if positioned else None),
-                            image_latitude=(positioned.latitude if positioned else None),
-                            created_by=principal.subject,
-                            updated_by=principal.subject,
                         )
                     )
                     observation_count += 1
@@ -530,26 +553,12 @@ def refresh_ground_control_candidates(
                     detail=f"Unable to rank GCP photo candidates: {error}",
                 ) from error
             for candidate in new_candidates:
-                positioned = candidate.positioned
                 typed_session.add(
-                    GcpObservation(
-                        gcp_point_id=point.id,
-                        image_name=candidate.image_name,
-                        image_s3_key=_image_key(
-                            mission.input_dataset,
-                            candidate.image_name,
-                        ),
-                        status="candidate",
-                        candidate_distance_m=candidate.distance_m,
-                        candidate_method=candidate.method,
-                        projected_pixel_x=candidate.projected_pixel_x,
-                        projected_pixel_y=candidate.projected_pixel_y,
-                        image_width_px=candidate.image_width_px,
-                        image_height_px=candidate.image_height_px,
-                        image_longitude=(positioned.longitude if positioned else None),
-                        image_latitude=(positioned.latitude if positioned else None),
-                        created_by=principal.subject,
-                        updated_by=principal.subject,
+                    _candidate_observation(
+                        point,
+                        candidate,
+                        dataset_prefix=mission.input_dataset,
+                        actor_subject=principal.subject,
                     )
                 )
                 added_count += 1
