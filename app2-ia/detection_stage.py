@@ -17,7 +17,8 @@ from rasterio.windows import Window
 from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import Sam3Backend
 from shared.artifact_manifest import ManifestParent
-from shared.detection_geometry import build_tile_starts, dedupe_mission_detections
+from shared.detection_geometry import dedupe_mission_detections
+from shared.detection_sharding import DetectionShardPlan, build_detection_shard_plan
 from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
 from shared.model_provenance import validate_model_manifest
@@ -180,73 +181,58 @@ class DetectionStageRunner:
             "tile_index": tile_index,
         }
 
-    def run(
+    def run_shard(
         self,
         raster_path: Path,
+        plan: DetectionShardPlan,
+        shard_index: int,
     ) -> tuple[list[DetectionRecord], dict[str, Any], dict[str, Any]]:
-        tiles_dir = self.workspace / ".droneai" / "detection-tiles"
+        if plan.tile_size != self.config.tile_size or plan.overlap != self.config.overlap:
+            raise ValueError("Detection shard plan does not match the stage configuration")
+        shard = plan.shard(shard_index)
+        tiles_dir = (
+            self.workspace / ".droneai" / "detection-tiles" / f"shard-{shard_index:04d}"
+        )
         tiles_dir.mkdir(parents=True, exist_ok=True)
         raw_detections: list[DetectionRecord] = []
         model_manifest: dict[str, Any] | None = None
         with rasterio.open(raster_path) as source:
             if source.count < 1:
                 raise ValueError("Detection raster must expose at least one band")
-            x_starts = build_tile_starts(
-                source.width,
-                self.config.tile_size,
-                self.config.overlap,
-            )
-            y_starts = build_tile_starts(
-                source.height,
-                self.config.tile_size,
-                self.config.overlap,
-            )
-            tile_count = len(x_starts) * len(y_starts)
-            planned_inference_pixels = sum(
-                min(self.config.tile_size, source.width - x)
-                * min(self.config.tile_size, source.height - y)
-                for y in y_starts
-                for x in x_starts
-            )
-            if tile_count > self.config.maximum_tiles:
-                raise ValueError(
-                    f"Detection plan exceeds {self.config.maximum_tiles} tiles"
+            if source.width != plan.width or source.height != plan.height:
+                raise ValueError("Detection shard plan does not match the raster dimensions")
+            for tile in plan.tiles(shard_index):
+                self.control.raise_if_cancelled()
+                window = Window(
+                    tile.offset_x,
+                    tile.offset_y,
+                    tile.width,
+                    tile.height,
                 )
-            tile_index = 0
-            for y in y_starts:
-                for x in x_starts:
-                    self.control.raise_if_cancelled()
-                    window = Window(
-                        x,
-                        y,
-                        min(self.config.tile_size, source.width - x),
-                        min(self.config.tile_size, source.height - y),
+                tile_path = tiles_dir / f"tile-{tile.tile_index:06d}.jpg"
+                try:
+                    self._write_tile(source, window, tile_path)
+                    detections, attempt = self._infer(tile_path)
+                finally:
+                    tile_path.unlink(missing_ok=True)
+                current_manifest = validate_model_manifest(
+                    attempt.get("model_manifest")
+                )
+                if model_manifest is None:
+                    model_manifest = current_manifest
+                elif current_manifest != model_manifest:
+                    raise RuntimeError("AI model provenance changed between tiles")
+                raw_detections.extend(
+                    self._global_detection(
+                        detection,
+                        tile_index=tile.tile_index,
+                        offset_x=tile.offset_x,
+                        offset_y=tile.offset_y,
                     )
-                    tile_path = tiles_dir / f"tile-{tile_index:06d}.jpg"
-                    try:
-                        self._write_tile(source, window, tile_path)
-                        detections, attempt = self._infer(tile_path)
-                    finally:
-                        tile_path.unlink(missing_ok=True)
-                    current_manifest = validate_model_manifest(
-                        attempt.get("model_manifest")
-                    )
-                    if model_manifest is None:
-                        model_manifest = current_manifest
-                    elif current_manifest != model_manifest:
-                        raise RuntimeError("AI model provenance changed between tiles")
-                    raw_detections.extend(
-                        self._global_detection(
-                            detection,
-                            tile_index=tile_index,
-                            offset_x=x,
-                            offset_y=y,
-                        )
-                        for detection in detections
-                    )
-                    if len(raw_detections) > self.config.maximum_raw_detections:
-                        raise RuntimeError("Detection result exceeds its safety limit")
-                    tile_index += 1
+                    for detection in detections
+                )
+                if len(raw_detections) > self.config.maximum_raw_detections:
+                    raise RuntimeError("Detection result exceeds its safety limit")
             metadata = {
                 "width": source.width,
                 "height": source.height,
@@ -254,17 +240,34 @@ class DetectionStageRunner:
                 "transform": list(source.transform.to_gdal()),
                 "tile_size": self.config.tile_size,
                 "tile_overlap": self.config.overlap,
-                "tile_count": tile_count,
-                "planned_inference_pixels": planned_inference_pixels,
-                "pixel_amplification_ratio": round(
-                    planned_inference_pixels / max(1, source.width * source.height),
-                    6,
-                ),
+                "tile_count": plan.tile_count,
+                "planned_inference_pixels": plan.planned_inference_pixels,
+                "pixel_amplification_ratio": plan.pixel_amplification_ratio,
+                "plan_checksum_sha256": plan.checksum_sha256,
+                "shard_index": shard.shard_index,
+                "shard_tile_count": shard.tile_count,
+                "shard_count": plan.shard_count,
             }
-        shutil.rmtree(tiles_dir, ignore_errors=True)
+        shutil.rmtree(tiles_dir.parent, ignore_errors=True)
         if model_manifest is None:
             raise RuntimeError("Detection stage did not execute any tile")
         return raw_detections, model_manifest, metadata
+
+    def run(
+        self,
+        raster_path: Path,
+    ) -> tuple[list[DetectionRecord], dict[str, Any], dict[str, Any]]:
+        with rasterio.open(raster_path) as source:
+            plan = build_detection_shard_plan(
+                source.width,
+                source.height,
+                self.config.tile_size,
+                self.config.overlap,
+                tiles_per_shard=self.config.maximum_tiles,
+                maximum_tiles=self.config.maximum_tiles,
+                maximum_shards=1,
+            )
+        return self.run_shard(raster_path, plan, 0)
 
 
 def _workspace_path(run_id: str) -> Path:
@@ -427,6 +430,10 @@ def run_detection_stage(
                 "backend": config.backend,
                 "model_manifest": model_manifest,
                 "tile_plan": {
+                    "plan_checksum_sha256": raster_metadata[
+                        "plan_checksum_sha256"
+                    ],
+                    "shard_count": raster_metadata["shard_count"],
                     "tile_count": raster_metadata["tile_count"],
                     "tile_size": raster_metadata["tile_size"],
                     "tile_overlap": raster_metadata["tile_overlap"],
