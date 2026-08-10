@@ -1,6 +1,9 @@
 import pytest
 
-from shared.detection_sharding import build_detection_shard_plan
+from shared.detection_sharding import (
+    build_detection_shard_plan,
+    parse_detection_shard_plan_descriptor,
+)
 
 
 def test_large_detection_plan_is_partitioned_deterministically() -> None:
@@ -88,3 +91,18 @@ def test_detection_plan_rejects_invalid_bounds_and_shard_index() -> None:
     plan = build_detection_shard_plan(100, 100, 256, 64, tiles_per_shard=10)
     with pytest.raises(IndexError, match="out of range"):
         tuple(plan.tiles(1))
+
+
+def test_durable_plan_descriptor_round_trip_fails_closed_on_drift() -> None:
+    plan = build_detection_shard_plan(600, 500, 256, 64, tiles_per_shard=3)
+
+    restored = parse_detection_shard_plan_descriptor(plan.descriptor())
+
+    assert restored == plan
+    drifted = {**plan.descriptor(), "tile_count": plan.tile_count + 1}
+    with pytest.raises(ValueError, match="inconsistent"):
+        parse_detection_shard_plan_descriptor(drifted)
+    with pytest.raises(ValueError, match="invalid fields"):
+        parse_detection_shard_plan_descriptor(
+            {**plan.descriptor(), "unexpected": True}
+        )

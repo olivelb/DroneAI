@@ -15,6 +15,7 @@ from shared.stage_execution import (
     StageExecutionCancelled,
     StageExecutionResult,
     execute_one_shot_stage,
+    execute_stage_subtask,
 )
 
 
@@ -262,6 +263,58 @@ def test_one_shot_observes_durable_mission_cancellation(execution_sessions):
         ).one()
         assert run.status == "cancelled"
         assert run.error_message is None
+        assert session.query(MissionArtifact).count() == 0
+
+
+def test_stage_subtask_keeps_run_active_without_artifact_authority(
+    execution_sessions,
+):
+    run_id = "7" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+    observed = {}
+
+    def handler(context, control):
+        observed["run_id"] = context.run_id
+        assert control.heartbeat()
+
+    execute_stage_subtask(
+        "reconstruction",
+        handler,
+        run_id=run_id,
+        heartbeat_interval_seconds=60,
+    )
+
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter(
+            MissionStageRun.run_id == run_id
+        ).one()
+        assert observed["run_id"] == run_id
+        assert run.status == "running"
+        assert run.completed_at is None
+        assert session.query(MissionArtifact).count() == 0
+
+
+def test_stage_subtask_failure_marks_the_parent_run_failed(execution_sessions):
+    run_id = "8" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+
+    def fail(_context, _control):
+        raise RuntimeError("shard failed")
+
+    with pytest.raises(RuntimeError, match="shard failed"):
+        execute_stage_subtask(
+            "reconstruction",
+            fail,
+            run_id=run_id,
+            heartbeat_interval_seconds=60,
+        )
+
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter(
+            MissionStageRun.run_id == run_id
+        ).one()
+        assert run.status == "failed"
+        assert run.error_message == "shard failed"
         assert session.query(MissionArtifact).count() == 0
 
 

@@ -7,7 +7,7 @@ import json
 import math
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from shared.detection_geometry import build_tile_starts
 
@@ -187,3 +187,43 @@ def build_detection_shard_plan(
         planned_inference_pixels=planned_inference_pixels,
         checksum_sha256=_plan_checksum(checksum_payload),
     )
+
+
+def parse_detection_shard_plan_descriptor(payload: object) -> DetectionShardPlan:
+    """Rebuild and verify an untrusted durable plan descriptor."""
+
+    expected_keys = {
+        "schema_version",
+        "width",
+        "height",
+        "tile_size",
+        "overlap",
+        "tiles_per_shard",
+        "tile_count",
+        "shard_count",
+        "planned_inference_pixels",
+        "pixel_amplification_ratio",
+        "checksum_sha256",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError("Detection shard plan descriptor has invalid fields")
+    raw = cast(dict[str, Any], payload)
+    if raw["schema_version"] != 1:
+        raise ValueError("Unsupported detection shard plan schema version")
+
+    def integer(field: str) -> int:
+        value = raw[field]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"Detection shard plan {field} must be an integer")
+        return value
+
+    plan = build_detection_shard_plan(
+        integer("width"),
+        integer("height"),
+        integer("tile_size"),
+        integer("overlap"),
+        tiles_per_shard=integer("tiles_per_shard"),
+    )
+    if plan.descriptor() != raw:
+        raise ValueError("Detection shard plan descriptor is inconsistent")
+    return plan
