@@ -20,7 +20,10 @@ from shared.stage_execution import (  # noqa: E402
     StageArtifactInput,
     StageExecutionContext,
 )
-from shared.stage_workspace import PublishedWorkspace  # noqa: E402
+from shared.stage_workspace import (  # noqa: E402
+    PublishedWorkspace,
+    RestoredWorkspace,
+)
 
 
 class FakeControl:
@@ -148,6 +151,8 @@ def test_detection_runner_streams_bounded_tiles_and_cleans_jpegs(
     assert len(detections) == 4
     assert manifest["backend"] == "yolo"
     assert metadata["tile_count"] == 4
+    assert metadata["planned_inference_pixels"] == 262_144
+    assert metadata["pixel_amplification_ratio"] == 2.912711
     assert control.checks == 4
     assert not (tmp_path / ".droneai" / "detection-tiles").exists()
 
@@ -215,9 +220,16 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
         cancellation_check()
         path = Path(destination, "orthomosaic.tif")
         path.write_bytes(b"raster")
-        return 1
+        return RestoredWorkspace(
+            size_bytes=100,
+            file_count=1,
+            downloaded_bytes=140,
+            reused_bytes=0,
+            download_seconds=0.5,
+            manifest_size_bytes=40,
+        )
 
-    monkeypatch.setattr(detection_stage, "restore_workspace", restore)
+    monkeypatch.setattr(detection_stage, "restore_workspace_measured", restore)
     monkeypatch.setattr(
         detection_stage.DetectionStageRunner,
         "run",
@@ -232,6 +244,8 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
                 "tile_size": 256,
                 "tile_overlap": 64,
                 "tile_count": 4,
+                "planned_inference_pixels": 262_144,
+                "pixel_amplification_ratio": 2.912711,
             },
         ),
     )
@@ -262,8 +276,12 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
         "raw_detection_count": 2,
         "deduplicated_detection_count": 1,
         "geolocated_feature_count": 1,
+        "planned_inference_pixels": 262_144,
+        "pixel_amplification_ratio": 2.912711,
     }
     assert result.provenance["model_manifest"]["backend"] == "yolo"
+    assert result.provenance["tile_plan"]["tile_count"] == 4
+    assert result.provenance["workspace_transfer"]["restore"]["transferred_bytes"] == 140
     assert '"feature_count": 1' in inspected["geojson"]
     assert '"detections"' in inspected["raw"]
     assert not (tmp_path / "work" / ("d" * 32)).exists()

@@ -10,7 +10,7 @@ from colmap_worker.stages import gaussian as gaussian_stage
 from gaussian_ortho import phase_artifacts
 from gaussian_ortho import raster_product
 from shared.stage_execution import StageArtifactInput, StageExecutionContext
-from shared.stage_workspace import PublishedWorkspace
+from shared.stage_workspace import PublishedWorkspace, RestoredWorkspace
 
 
 class FakeControl:
@@ -151,6 +151,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     assert result.metadata["active_sparse_model"] == "dense/sparse"
     assert result.metadata["alignment_transform"] == "alignment_transform.json"
     assert result.metadata["state_file"] == ".droneai/reconstruction-state.json"
+    assert result.provenance["workspace_transfer"]["publish"]["logical_bytes"] == 123
     assert cancellation.started == [("quarry-001", 3)]
     assert cancellation.cleared == 1
     assert control.checks >= 3
@@ -183,7 +184,14 @@ def _mock_workspace_transfer(monkeypatch, calls):
         assert checksum == "b" * 64
         cancellation_check()
         Path(destination, ".droneai").mkdir(parents=True, exist_ok=True)
-        return 2
+        return RestoredWorkspace(
+            size_bytes=123,
+            file_count=2,
+            downloaded_bytes=200,
+            reused_bytes=0,
+            download_seconds=0.25,
+            manifest_size_bytes=77,
+        )
 
     def publish(workspace, prefix, cancellation_check):
         calls.append("publish")
@@ -196,7 +204,7 @@ def _mock_workspace_transfer(monkeypatch, calls):
             file_count=4,
         )
 
-    monkeypatch.setattr(stage_executor, "restore_workspace", restore)
+    monkeypatch.setattr(stage_executor, "restore_workspace_measured", restore)
     monkeypatch.setattr(stage_executor, "publish_workspace", publish)
 
 
@@ -254,6 +262,14 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     assert result.kind == "gaussian_training_workspace"
     assert result.metadata["gaussian_count"] == 1_500_000
     assert result.provenance["trainer_binary_sha256"] == "d" * 64
+    assert result.provenance["workspace_transfer"]["restore"] == {
+        "logical_bytes": 123,
+        "file_count": 2,
+        "transferred_bytes": 200,
+        "reused_bytes": 0,
+        "manifest_bytes": 77,
+        "duration_seconds": 0.25,
+    }
     assert not written["model"].exists()
     assert cancellation.cleared == 1
 
@@ -352,6 +368,7 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     assert calls == ["restore", "read", "hydrate", "write", "publish"]
     assert result.kind == "gaussian_filtering_workspace"
     assert result.quality_metrics["retained_ratio"] == 0.8
+    assert result.provenance["workspace_transfer"]["publish"]["logical_bytes"] == 456
     assert cancellation.cleared == 1
 
 
@@ -475,4 +492,5 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     assert result.metadata["ortho_file"] == "orthomosaic.tif"
     assert result.quality_metrics["gaussian_count"] == 1_200_000
     assert result.provenance["renderer_contract"] == "cupy-ortho-v2-sh-frame"
+    assert result.provenance["workspace_transfer"]["restore"]["file_count"] == 2
     assert cancellation.cleared == 1

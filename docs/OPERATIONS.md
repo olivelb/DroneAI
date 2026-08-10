@@ -31,6 +31,9 @@ Keep one dated Markdown report under `docs/benchmarks/` and record:
 - one run ID and artifact ID/checksum for every selected stage;
 - exact parent-artifact edges, model manifest and AI prompt/classes;
 - duration, peak CPU/RAM/VRAM and temporary/persistent storage use per stage;
+- workspace logical/file/manifest bytes, transferred/reused bytes and transfer
+  duration from the versioned `workspace_transfer` provenance block;
+- detection tile count, planned inference pixels and overlap amplification;
 - quality-gate reports, final RGB/height GeoTIFF checks and detection counts;
 - one new detection attempt against an existing raster and one cancelled or
   failed stage followed by a new immutable attempt;

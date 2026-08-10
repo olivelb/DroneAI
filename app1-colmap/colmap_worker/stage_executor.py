@@ -10,15 +10,16 @@ from typing import Any, cast
 
 from pipeline_support import inspect_sparse_quality
 from shared.stage_execution import (
-    StageArtifactInput,
     StageExecutionContext,
     StageExecutionControl,
     StageExecutionResult,
 )
 from shared.stage_workspace import (
     PublishedWorkspace,
+    RestoredWorkspace,
     publish_workspace,
-    restore_workspace,
+    restore_workspace_measured,
+    workspace_transfer_provenance,
 )
 from shared.validation import safe_child_path, validate_dataset_prefix
 
@@ -43,7 +44,7 @@ def _restore_input_workspace(
     workspace: Path,
     *,
     expected_kind: str,
-) -> StageArtifactInput:
+) -> RestoredWorkspace:
     if len(context.inputs) != 1 or context.inputs[0].kind != expected_kind:
         raise ValueError(
             f"{context.stage} requires exactly one {expected_kind} artifact"
@@ -52,13 +53,13 @@ def _restore_input_workspace(
     manifest_key = source.metadata.get("manifest_key")
     if not isinstance(manifest_key, str) or not manifest_key:
         raise ValueError("Upstream workspace artifact has no manifest key")
-    restore_workspace(
+    restored = restore_workspace_measured(
         manifest_key,
         workspace,
         source.checksum_sha256,
         cancellation_check=control.raise_if_cancelled,
     )
-    return source
+    return restored
 
 
 def _publish_stage_workspace(
@@ -167,6 +168,7 @@ def run_reconstruction_stage(
                 "stage_adapter": "colmap-reconstruction-v1",
                 "feature_type": preparation.feature_type,
                 "matcher_type": preparation.matcher_type,
+                "workspace_transfer": workspace_transfer_provenance(published),
             },
         )
     finally:
@@ -189,7 +191,7 @@ def run_gaussian_training_stage(
         context.mission_attempt,
     )
     try:
-        _restore_input_workspace(
+        restored = _restore_input_workspace(
             context,
             control,
             workspace,
@@ -250,6 +252,10 @@ def run_gaussian_training_stage(
                 "backend": phase.backend_name,
                 "trainer_binary_sha256": phase.trainer_binary_sha256,
                 "profile_id": product.config.dronegs_profile_id,
+                "workspace_transfer": workspace_transfer_provenance(
+                    published,
+                    restored,
+                ),
             },
         )
     finally:
@@ -272,7 +278,7 @@ def run_gaussian_filtering_stage(
         context.mission_attempt,
     )
     try:
-        _restore_input_workspace(
+        restored = _restore_input_workspace(
             context,
             control,
             workspace,
@@ -359,6 +365,10 @@ def run_gaussian_filtering_stage(
             provenance={
                 "stage_adapter": "gaussian-filtering-v1",
                 "profile_id": product.config.dronegs_profile_id,
+                "workspace_transfer": workspace_transfer_provenance(
+                    published,
+                    restored,
+                ),
             },
         )
     finally:
@@ -381,7 +391,7 @@ def run_rasterization_stage(
         context.mission_attempt,
     )
     try:
-        _restore_input_workspace(
+        restored = _restore_input_workspace(
             context,
             control,
             workspace,
@@ -474,6 +484,10 @@ def run_rasterization_stage(
                 "profile_id": product.config.dronegs_profile_id,
                 "renderer_contract": result["renderer_contract"],
                 "cupy_version": result["cupy_version"],
+                "workspace_transfer": workspace_transfer_provenance(
+                    published,
+                    restored,
+                ),
             },
         )
     finally:
