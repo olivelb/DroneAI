@@ -42,6 +42,7 @@ from .kubernetes_jobs import (
     SecretEnvironment,
     StageJobConfig,
     StageJobRequest,
+    StageJobToleration,
     build_stage_job,
     stage_job_name,
 )
@@ -62,6 +63,7 @@ class StageExecutorConfig:
     command: tuple[str, ...]
     gpu_architecture: str | None = None
     node_selector: tuple[tuple[str, str], ...] = ()
+    tolerations: tuple[StageJobToleration, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,7 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
         command = item.get("command")
         architecture = item.get("gpu_architecture")
         selector = item.get("node_selector") or {}
+        tolerations = item.get("tolerations") or []
         if not isinstance(image, str) or not (
             re.search(r"@sha256:[0-9a-f]{64}$", image)
             or re.search(r":[0-9a-f]{7,40}$", image)
@@ -153,11 +156,26 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
             for key, value in selector.items()
         ):
             raise ValueError(f"Node selector for {stage} must contain string pairs")
+        if not isinstance(tolerations, list) or not all(
+            isinstance(toleration, dict) for toleration in tolerations
+        ):
+            raise ValueError(f"Tolerations for {stage} must be a list of objects")
+        parsed_tolerations = tuple(
+            StageJobToleration(
+                key=toleration.get("key", ""),
+                operator=toleration.get("operator", "Equal"),
+                value=toleration.get("value"),
+                effect=toleration.get("effect"),
+                toleration_seconds=toleration.get("toleration_seconds"),
+            )
+            for toleration in tolerations
+        )
         result[stage] = StageExecutorConfig(
             image=image,
             command=tuple(command),
             gpu_architecture=architecture,
             node_selector=tuple(sorted(selector.items())),
+            tolerations=parsed_tolerations,
         )
     return result
 
@@ -480,6 +498,7 @@ def _reserved_job(
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
             runtime_class_name=settings.runtime_class_name,
             node_selector=executor.node_selector,
+            tolerations=executor.tolerations,
             environment=(
                 settings.job_environment
                 + detection_environment

@@ -21,6 +21,15 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
             image="registry.example/drone-colmap@sha256:" + "a" * 64,
             command=("python", "-m", "stage_executor"),
             runtime_class_name="nvidia",
+            node_selector=(("droneai.io/gpu-architecture", "ampere"),),
+            tolerations=(
+                jobs.StageJobToleration(
+                    key="nvidia.com/gpu",
+                    operator="Equal",
+                    value="present",
+                    effect="NoSchedule",
+                ),
+            ),
             environment=(("S3_ENDPOINT", "https://s3.example"),),
             secret_environment=(
                 jobs.SecretEnvironment("DATABASE_URL", "drone-ai-storage", "database-url"),
@@ -40,6 +49,19 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
     pod = job["spec"]["template"]["spec"]
     assert pod["restartPolicy"] == "Never"
     assert pod["runtimeClassName"] == "nvidia"
+    assert pod["nodeSelector"] == {
+        "nvidia.com/gpu.present": "true",
+        "droneai.io/gpu-vram-at-least-24gb": "true",
+        "droneai.io/gpu-architecture": "ampere",
+    }
+    assert pod["tolerations"] == [
+        {
+            "key": "nvidia.com/gpu",
+            "operator": "Equal",
+            "value": "present",
+            "effect": "NoSchedule",
+        }
+    ]
     container = pod["containers"][0]
     assert container["resources"]["requests"]["memory"] == "24Gi"
     assert container["resources"]["limits"]["memory"] == "64Gi"
@@ -79,6 +101,32 @@ def test_cpu_job_does_not_request_a_gpu():
     limits = job["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]
     assert "nvidia.com/gpu" not in limits
     assert "runtimeClassName" not in job["spec"]["template"]["spec"]
+    assert "nodeSelector" not in job["spec"]["template"]["spec"]
+
+
+def test_job_rejects_resource_selector_conflicts_and_invalid_tolerations():
+    request = jobs.StageJobRequest(
+        run_id="run-selector-conflict",
+        mission_id=1,
+        vol_id="mission-1",
+        owner_subject="owner",
+        stage="detection",
+        resource_class="gpu-standard",
+    )
+    config = jobs.StageJobConfig(
+        namespace="drone-ai",
+        image="image@sha256:" + "c" * 64,
+        command=("run",),
+        node_selector=(("nvidia.com/gpu.present", "false"),),
+    )
+    with pytest.raises(ValueError, match="conflicts with resource class"):
+        jobs.build_stage_job(request, config)
+    with pytest.raises(ValueError, match="Exists tolerations"):
+        jobs.StageJobToleration(
+            key="nvidia.com/gpu",
+            operator="Exists",
+            value="present",
+        )
 
 
 def test_indexed_job_injects_a_bounded_completion_index():

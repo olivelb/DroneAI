@@ -12,7 +12,12 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, cast
 
-from shared.stage_contracts import RESOURCE_CLASSES, ResourceClassId, StageId
+from shared.stage_contracts import (
+    RESOURCE_CLASSES,
+    ResourceClassId,
+    StageId,
+    resource_class_node_selector,
+)
 
 JsonObject = dict[str, Any]
 
@@ -32,6 +37,49 @@ class SecretEnvironment:
     name: str
     secret_name: str
     secret_key: str
+
+
+@dataclass(frozen=True)
+class StageJobToleration:
+    key: str
+    operator: str = "Equal"
+    value: str | None = None
+    effect: str | None = None
+    toleration_seconds: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or not self.key.strip():
+            raise ValueError("Stage Job toleration key must not be blank")
+        if not isinstance(self.operator, str) or self.operator not in {
+            "Equal",
+            "Exists",
+        }:
+            raise ValueError("Stage Job toleration operator must be Equal or Exists")
+        if self.value is not None and not isinstance(self.value, str):
+            raise ValueError("Stage Job toleration value must be a string")
+        if self.operator == "Exists" and self.value is not None:
+            raise ValueError("Exists tolerations must not declare a value")
+        if self.effect not in {None, "NoSchedule", "PreferNoSchedule", "NoExecute"}:
+            raise ValueError("Stage Job toleration effect is invalid")
+        if self.toleration_seconds is not None and (
+            isinstance(self.toleration_seconds, bool)
+            or not isinstance(self.toleration_seconds, int)
+            or self.effect != "NoExecute"
+            or self.toleration_seconds < 0
+        ):
+            raise ValueError(
+                "Stage Job toleration seconds require a non-negative NoExecute toleration"
+            )
+
+    def manifest(self) -> JsonObject:
+        result: JsonObject = {"key": self.key, "operator": self.operator}
+        if self.value is not None:
+            result["value"] = self.value
+        if self.effect is not None:
+            result["effect"] = self.effect
+        if self.toleration_seconds is not None:
+            result["tolerationSeconds"] = self.toleration_seconds
+        return result
 
 
 @dataclass(frozen=True)
@@ -56,6 +104,7 @@ class StageJobConfig:
     ttl_seconds_after_finished: int = 3_600
     runtime_class_name: str | None = None
     node_selector: tuple[tuple[str, str], ...] = ()
+    tolerations: tuple[StageJobToleration, ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     secret_environment: tuple[SecretEnvironment, ...] = ()
     indexed: IndexedJobConfig | None = None
@@ -211,8 +260,18 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
             },
         ],
     }
-    if config.node_selector:
-        pod_spec["nodeSelector"] = dict(config.node_selector)
+    node_selector = resource_class_node_selector(request.resource_class)
+    for key, value in config.node_selector:
+        existing = node_selector.get(key)
+        if existing is not None and existing != value:
+            raise ValueError(
+                f"Stage Job node selector conflicts with resource class for {key}"
+            )
+        node_selector[key] = value
+    if node_selector:
+        pod_spec["nodeSelector"] = node_selector
+    if config.tolerations:
+        pod_spec["tolerations"] = [item.manifest() for item in config.tolerations]
     if resources["gpu_count"] and config.runtime_class_name:
         pod_spec["runtimeClassName"] = config.runtime_class_name
     job_spec: JsonObject = {

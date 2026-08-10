@@ -24,8 +24,11 @@ def test_distributed_stage_job_mode_is_explicit_immutable_and_bounded() -> None:
     assert "colmapWorker.enabled=false" in distributed
     assert "iaWorker.enabled=false" in distributed
     assert "processingWorker.replicaCount=0" in distributed
-    assert distributed.count("stageJobs.executors.") == 20
     assert distributed.count("gpu_architecture=ampere") == 5
+    assert distributed.count("stageJobs.executors.") == 20
+    assert distributed.count(".tolerations=") == 5
+    assert "droneai.io/gpu-vram-at-least-24gb" in distributed
+    assert "DRONEAI_GPU_VRAM_CLASS_GB" in distributed
     assert "--version 0.19.3" in distributed
 
 
