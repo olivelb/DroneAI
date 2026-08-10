@@ -46,6 +46,7 @@ class StageExecutionContext:
     parameters: dict[str, Any]
     mission_parameters: dict[str, Any]
     inputs: tuple[StageArtifactInput, ...]
+    run_provenance: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ def load_stage_execution_context(
             mission_attempt=cast(int, mission.retry_count or 0),
             parameters=cast(dict[str, Any], run.parameters or {}),
             mission_parameters=cast(dict[str, Any], mission.params or {}),
+            run_provenance=cast(dict[str, Any], run.provenance or {}),
             inputs=tuple(
                 StageArtifactInput(
                     artifact_id=artifact_id,

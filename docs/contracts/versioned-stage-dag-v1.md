@@ -266,6 +266,17 @@ descriptors are reconstructed from their dimensions and rejected unless every
 derived count, cost and SHA-256 matches exactly. The later finalizer alone will
 retain `execute_one_shot_stage` publication authority.
 
+The detection image now exposes three explicit execution modes through the
+same immutable entry point: `monolithic` (the unchanged default), `shard` and
+`finalizer`. A shard verifies the indexed Job count and its Downward-API index,
+selectively restores the exact orthomosaic, executes only its planned windows
+and publishes only a CAS receipt through `execute_stage_subtask`. The finalizer
+requires all ordered receipts, verifies and aggregates them, selectively
+restores the raster for georeferencing, then reuses the existing detection
+workspace/GeoJSON publisher through `execute_one_shot_stage`. The orchestrator
+still emits only `monolithic`; therefore these modes remain unreachable in a
+deployment until the next guarded scheduling phase.
+
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
