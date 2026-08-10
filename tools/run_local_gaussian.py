@@ -232,6 +232,7 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
 PROFILES["normal"] = versioned_quality_profile("normal-v2")
+PROFILES["high-quality"] = versioned_quality_profile("high-quality-v2")
 
 
 def parse_args() -> argparse.Namespace:

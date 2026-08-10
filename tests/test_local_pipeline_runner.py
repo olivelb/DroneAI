@@ -120,6 +120,32 @@ def test_normal_pipeline_uses_full_dataset_and_versioned_quality_envelope():
     assert profile.detection_profile == "full"
 
 
+def test_high_quality_pipeline_uses_full_dataset_and_versioned_quality_envelope():
+    profile = MODULE.PROFILES["high-quality"]
+    colmap = MODULE.stage_command(
+        "colmap",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+    gaussian = MODULE.stage_command(
+        "gaussian",
+        dataset=Path("/data"),
+        workspace=Path("/work"),
+        profile=profile,
+        forced=False,
+        keep_detection_tiles=False,
+    )
+
+    assert "--max-images" not in colmap
+    assert colmap[colmap.index("--feature-max-image-size") + 1] == "4096"
+    assert colmap[colmap.index("--feature-max-num-features") + 1] == "16384"
+    assert gaussian[gaussian.index("--profile") + 1] == "high-quality"
+    assert profile.detection_profile == "full"
+
+
 def test_colmap_completion_requires_model_alignment_and_images(tmp_path):
     workspace = tmp_path / "workspace"
     for name in ("cameras.bin", "images.bin", "points3D.bin"):

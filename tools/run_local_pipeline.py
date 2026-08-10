@@ -26,6 +26,7 @@ STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 FAST_DEFAULTS = quality_profile("fast-v1").parameters
 NORMAL_DEFAULTS = quality_profile("normal-v2").parameters
+HIGH_QUALITY_DEFAULTS = quality_profile("high-quality-v2").parameters
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,17 @@ PROFILES = {
             ),
         ),
         gaussian_profile="normal",
+        gaussian_backend="dronegs",
+        detection_profile="full",
+    ),
+    "high-quality": PipelineProfile(
+        colmap_args=production_colmap_args(
+            image_size=str(HIGH_QUALITY_DEFAULTS["feature_max_image_size"]),
+            maximum_features=str(
+                HIGH_QUALITY_DEFAULTS["feature_max_num_features"]
+            ),
+        ),
+        gaussian_profile="high-quality",
         gaussian_backend="dronegs",
         detection_profile="full",
     ),
