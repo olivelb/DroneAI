@@ -14,6 +14,7 @@ from shared.database import (
     DatasetUploadFile,
     DatasetUploadSession,
     GcpObservation,
+    GcpAuditEvent,
     GcpPoint,
     GcpSet,
     InboxEvent,
@@ -59,6 +60,7 @@ EXPECTED_CHECKS = {
         "ck_gcp_observations_marked_pixel",
         "ck_gcp_observations_version",
     },
+    GcpAuditEvent: {"ck_gcp_audit_action"},
     MissionLog: {"ck_mission_logs_status"},
     InboxEvent: {"ck_inbox_events_status"},
     OutboxEvent: {"ck_outbox_events_status"},
@@ -70,9 +72,7 @@ EXPECTED_CHECKS = {
 def test_every_durable_state_column_has_a_named_check_constraint():
     for model, expected_names in EXPECTED_CHECKS.items():
         actual_names = {
-            constraint.name
-            for constraint in model.__table__.constraints
-            if isinstance(constraint, CheckConstraint)
+            constraint.name for constraint in model.__table__.constraints if isinstance(constraint, CheckConstraint)
         }
         assert expected_names <= actual_names
 

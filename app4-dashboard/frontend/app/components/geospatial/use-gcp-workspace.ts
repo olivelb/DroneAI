@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchGroundControl,
+  fetchGroundControlAudit,
   importGroundControl,
   prepareGroundControlBundle,
   refreshGroundControlCandidates,
@@ -12,6 +13,7 @@ import {
 import { useI18n } from "../../lib/i18n/provider";
 import type {
   GcpCollection,
+  GcpAuditEvent,
   GcpFeature,
   GcpImportOptions,
   GcpObservation,
@@ -31,6 +33,7 @@ export function useGcpWorkspace(
   const [collection, setCollection] = useState<GcpCollection | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<GcpFeature | null>(null);
   const [busy, setBusy] = useState(false);
+  const [auditEvents, setAuditEvents] = useState<GcpAuditEvent[]>([]);
   const [photoMarker, setPhotoMarker] = useState<{
     point: GcpFeature;
     observation: GcpObservation;
@@ -52,6 +55,12 @@ export function useGcpWorkspace(
     [missionId],
   );
 
+  const refreshAudit = useCallback(async (setId: string) => {
+    if (!missionId) return;
+    const payload = await fetchGroundControlAudit(missionId, setId);
+    setAuditEvents(payload.events);
+  }, [missionId]);
+
   useEffect(() => {
     if (!missionId) return;
     let active = true;
@@ -61,6 +70,7 @@ export function useGcpWorkspace(
         setCollection(payload);
         setSelectedPoint(null);
         setPhotoMarker(null);
+        setAuditEvents([]);
       })
       .catch(() => {
         if (active) setCollection(null);
@@ -74,12 +84,14 @@ export function useGcpWorkspace(
     (point: GcpFeature) => {
       if (selectedPoint?.properties.point_id === point.properties.point_id) {
         setSelectedPoint(null);
+        setAuditEvents([]);
         return;
       }
       setSelectedPoint(point);
+      void refreshAudit(point.properties.set_id).catch(() => setAuditEvents([]));
       onPointActivated();
     },
-    [onPointActivated, selectedPoint?.properties.point_id],
+    [onPointActivated, refreshAudit, selectedPoint?.properties.point_id],
   );
 
   const importSet = async (file: File, options: GcpImportOptions) => {
@@ -107,6 +119,7 @@ export function useGcpWorkspace(
     try {
       await updateGroundControlPoint(missionId, point.properties.point_id, request);
       await refresh(point.properties.point_id);
+      await refreshAudit(point.properties.set_id);
       setNotice(t("gcp.pointSaved"));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("gcp.pointSaveFailed"));
@@ -129,6 +142,7 @@ export function useGcpWorkspace(
         checkpoints: bundle.quality.checkpoint_points,
         observations: bundle.quality.marked_observations,
       }));
+      await refreshAudit(point.properties.set_id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : t("gcp.bundleFailed"));
     } finally {
@@ -146,6 +160,7 @@ export function useGcpWorkspace(
         point.properties.set_id,
       );
       await refresh(point.properties.point_id);
+      await refreshAudit(point.properties.set_id);
       setNotice(t("gcp.candidatesRefreshed", {
         count: result.candidate_generation.added_observation_count,
       }));
@@ -176,6 +191,7 @@ export function useGcpWorkspace(
         },
       );
       const refreshed = await refresh(photoMarker.point.properties.point_id);
+      await refreshAudit(photoMarker.point.properties.set_id);
       const nextObservation = refreshed?.properties.observations.find(
         (item) =>
           item.status === "candidate" &&
@@ -199,6 +215,7 @@ export function useGcpWorkspace(
     selectedPoint,
     setSelectedPoint,
     busy,
+    auditEvents,
     photoMarker,
     setPhotoMarker,
     selectPoint,

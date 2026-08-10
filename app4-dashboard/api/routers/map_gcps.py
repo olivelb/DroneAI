@@ -10,7 +10,7 @@ from typing import Annotated, Any, Protocol, cast
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy.exc import IntegrityError
 
-from shared.database import GcpObservation, GcpPoint, GcpSet, get_session
+from shared.database import GcpAuditEvent, GcpObservation, GcpPoint, GcpSet, get_session
 from shared.camera_projection import CameraProjectionIndex, rank_projected_image_candidates
 from shared.gcp_candidates import (
     PositionedImage,
@@ -20,6 +20,7 @@ from shared.gcp_candidates import (
 from shared.gcp_import import import_gcp_bytes
 
 from ..gcp_schemas import GcpObservationUpdate, GcpPointUpdate
+from ..gcp_audit import audit_event_json, record_gcp_audit
 from ..gcp_workspace import (
     MAX_GCP_UPLOAD_BYTES,
     gcp_route_session,
@@ -336,6 +337,22 @@ async def import_ground_control(
                     )
                     observation_count += 1
             typed_session.flush()
+            record_gcp_audit(
+                typed_session,
+                gcp_set,
+                actor_subject=principal.subject,
+                action="imported",
+                before_state=None,
+                after_state={
+                    "set_id": gcp_set.set_id,
+                    "source_filename": filename,
+                    "source_format": imported.source_format,
+                    "source_sha256": source_checksum(payload),
+                    "point_count": len(stored_points),
+                    "observation_count": observation_count,
+                },
+            )
+            typed_session.flush()
         except IntegrityError as error:
             raise HTTPException(status_code=409, detail="GCP import conflicts with stored data") from error
         return {
@@ -407,7 +424,7 @@ def prepare_ground_control_bundle(
     mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_bundle_create")
     gcp_set = _require_gcp_set(session, mission.id, set_id)
     try:
-        return materialize_gcp_bundle(gcp_set)
+        bundle = materialize_gcp_bundle(gcp_set)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:
@@ -415,6 +432,16 @@ def prepare_ground_control_bundle(
             status_code=502,
             detail=f"Unable to publish immutable GCP bundle: {error}",
         ) from error
+    record_gcp_audit(
+        session,
+        gcp_set,
+        actor_subject=principal.subject,
+        action="bundle_materialized",
+        before_state=None,
+        after_state=bundle,
+    )
+    session.flush()
+    return bundle
 
 
 @router.post("/{vol_id}/gcps/{set_id}/candidates/refresh")
@@ -453,11 +480,33 @@ def refresh_ground_control_candidates(
             )
 
         added_count = 0
+        removed_candidate_count = 0
         for point in cast(list[GcpPoint], gcp_set.points):
             observations = cast(list[GcpObservation], point.observations)
             for observation in observations:
                 if observation.status == "candidate":
                     typed_session.delete(observation)
+                    removed_candidate_count += 1
+        typed_session.flush()
+        record_gcp_audit(
+            typed_session,
+            gcp_set,
+            actor_subject=principal.subject,
+            action="candidates_refreshed",
+            before_state={"candidate_count": removed_candidate_count},
+            after_state={
+                "candidate_count": added_count,
+                "method": (
+                    "camera-projection+exif-distance"
+                    if camera_index and positions
+                    else "camera-projection"
+                    if camera_index
+                    else "exif-distance"
+                ),
+                "radius_m": candidate_radius_m,
+                "max_candidates_per_point": max_candidates,
+            },
+        )
         typed_session.flush()
         for point in cast(list[GcpPoint], gcp_set.points):
             typed_session.expire(point, ["observations"])
@@ -553,6 +602,7 @@ def update_ground_control_point(
             detail={"message": "GCP point changed", "current_version": point.version},
         )
     gcp_set = point.gcp_set
+    before_state = point_json(session, stored_point)
     changes = request.model_dump(exclude_unset=True, exclude={"version"})
     longitude = changes.pop("longitude", None)
     latitude = changes.pop("latitude", None)
@@ -570,7 +620,18 @@ def update_ground_control_point(
     point.version += 1
     point.updated_at = datetime.now(UTC)
     session.flush()
-    return point_json(session, stored_point)
+    after_state = point_json(session, stored_point)
+    record_gcp_audit(
+        session,
+        gcp_set,
+        actor_subject=principal.subject,
+        action="point_updated",
+        before_state=before_state,
+        after_state=after_state,
+        point=stored_point,
+    )
+    session.flush()
+    return after_state
 
 
 @router.patch("/{vol_id}/gcps/observations/{observation_id}")
@@ -612,6 +673,7 @@ def update_ground_control_observation(
                     "current_version": observation.version,
                 },
             )
+        before_state = observation_json(stored_observation)
         if request.status == "marked":
             if request.pixel_x is None or request.pixel_y is None:
                 raise HTTPException(status_code=422, detail="Marked GCP pixels are required")
@@ -643,4 +705,41 @@ def update_ground_control_observation(
         observation.version += 1
         observation.updated_at = datetime.now(UTC)
         typed_session.flush()
-        return observation_json(stored_observation)
+        after_state = observation_json(stored_observation)
+        record_gcp_audit(
+            typed_session,
+            stored_observation.point.gcp_set,
+            actor_subject=principal.subject,
+            action="observation_updated",
+            before_state=before_state,
+            after_state=after_state,
+            point=stored_observation.point,
+            observation=stored_observation,
+        )
+        typed_session.flush()
+        return after_state
+
+
+@router.get("/{vol_id}/gcps/{set_id}/audit")
+def ground_control_audit(
+    vol_id: str,
+    set_id: str,
+    principal: ViewerPrincipal,
+    session: GcpSessionDependency,
+    owner_subject: OwnerSubjectQuery = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+) -> JsonObject:
+    mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_audit")
+    gcp_set = _require_gcp_set(session, mission.id, set_id)
+    events = cast(
+        list[GcpAuditEvent],
+        session.query(GcpAuditEvent)
+        .filter(GcpAuditEvent.gcp_set_id == gcp_set.id)
+        .order_by(GcpAuditEvent.created_at.desc(), GcpAuditEvent.id.desc())
+        .limit(limit)
+        .all(),
+    )
+    return {
+        "set_id": set_id,
+        "events": [audit_event_json(event) for event in events],
+    }

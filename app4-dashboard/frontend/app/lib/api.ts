@@ -1,5 +1,6 @@
 import type {
   FeatureBulkAction,
+  GcpAuditEvent,
   GcpCollection,
   GcpBundle,
   GcpFeature,
@@ -572,6 +573,11 @@ export const refreshGroundControlCandidates = (
     { method: "POST" },
   );
 };
+
+export const fetchGroundControlAudit = (missionId: string, setId: string) =>
+  api<{ set_id: string; events: GcpAuditEvent[] }>(
+    `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/audit`,
+  );
 
 type SaveFilePickerType = {
   description: string;

@@ -370,6 +370,22 @@ export type GcpBundle = {
   };
 };
 
+export type GcpAuditEvent = {
+  event_id: string;
+  action:
+    | "imported"
+    | "point_updated"
+    | "observation_updated"
+    | "candidates_refreshed"
+    | "bundle_materialized";
+  actor_subject: string;
+  point_id?: string | null;
+  observation_id?: string | null;
+  before_state?: Record<string, unknown> | null;
+  after_state?: Record<string, unknown> | null;
+  created_at: string;
+};
+
 export type RasterPalette = "none" | "gray" | "depth" | "terrain" | "viridis";
 
 export type RasterStyleRecipe = {

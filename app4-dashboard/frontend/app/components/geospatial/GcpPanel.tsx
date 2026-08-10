@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { Crosshair, Eye, MapPin, Upload } from "lucide-react";
+import { Clock3, Crosshair, Eye, MapPin, Upload } from "lucide-react";
 import type { MessageKey } from "../../lib/i18n/catalog";
 import { useI18n } from "../../lib/i18n/provider";
 import type {
   GcpCollection,
+  GcpAuditEvent,
   GcpFeature,
   GcpImportOptions,
   GcpObservation,
@@ -17,6 +18,7 @@ interface GcpPanelProps {
   selectedPoint: GcpFeature | null;
   visible: boolean;
   busy: boolean;
+  auditEvents: GcpAuditEvent[];
   onVisibilityChange: (visible: boolean) => void;
   onImport: (file: File, options: GcpImportOptions) => Promise<void>;
   onPointSelect: (point: GcpFeature) => void;
@@ -51,6 +53,7 @@ function GcpPointEditor({
   onObservationOpen,
   onPrepareBundle,
   onRefreshCandidates,
+  auditEvents,
 }: {
   point: GcpFeature;
   busy: boolean;
@@ -58,6 +61,7 @@ function GcpPointEditor({
   onObservationOpen: (point: GcpFeature, observation: GcpObservation) => void;
   onPrepareBundle: (point: GcpFeature) => Promise<void>;
   onRefreshCandidates: (point: GcpFeature) => Promise<void>;
+  auditEvents: GcpAuditEvent[];
 }) {
   const { t } = useI18n();
   const [pointLongitude, pointLatitude] = point.geometry.coordinates;
@@ -187,6 +191,30 @@ function GcpPointEditor({
           </button>
         ))}
       </div>
+      <div className="space-y-2 border-t border-[#dce4e1] pt-3">
+        <div className="eyebrow flex items-center gap-2">
+          <Clock3 size={12} /> {t("gcp.auditTitle")}
+        </div>
+        {auditEvents.slice(0, 20).map((event) => (
+          <details key={event.event_id} className="rounded-lg border border-[#dce4e1] bg-white p-2">
+            <summary className="cursor-pointer text-xs font-semibold text-[#45524e]">
+              {t(`gcp.audit.${event.action}` as MessageKey)}
+              <span className="ml-2 font-normal text-[#87938f]">
+                {new Date(event.created_at).toLocaleString()}
+              </span>
+            </summary>
+            <div className="mt-2 text-[10px] text-[#76827e]">
+              {t("gcp.auditActor", { actor: event.actor_subject })}
+            </div>
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-[#f5f7f6] p-2 text-[10px] text-[#45524e]">
+              {JSON.stringify({ before: event.before_state, after: event.after_state }, null, 2)}
+            </pre>
+          </details>
+        ))}
+        {!auditEvents.length && (
+          <p className="text-xs text-[#87938f]">{t("gcp.auditEmpty")}</p>
+        )}
+      </div>
     </section>
   );
 }
@@ -196,6 +224,7 @@ export default function GcpPanel({
   selectedPoint,
   visible,
   busy,
+  auditEvents,
   onVisibilityChange,
   onImport,
   onPointSelect,
@@ -366,6 +395,7 @@ export default function GcpPanel({
           key={`${selectedPoint.properties.point_id}:${selectedPoint.properties.version}`}
           point={selectedPoint}
           busy={busy}
+          auditEvents={auditEvents}
           onUpdate={onPointUpdate}
           onPrepareBundle={onPrepareBundle}
           onRefreshCandidates={onRefreshCandidates}
