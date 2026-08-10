@@ -28,6 +28,13 @@ def _executors():
             image=image,
             command=("python", "-m", f"{stage}_executor"),
             gpu_architecture="ampere",
+            tolerations=(
+                orchestrator.StageJobToleration(
+                    key="nvidia.com/gpu",
+                    value="present",
+                    effect="NoSchedule",
+                ),
+            ),
         )
         for stage in (
             "reconstruction",
@@ -165,6 +172,10 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
 
     assert {item.request.owner_subject for item in reserved} == {"owner-a", "owner-b"}
     assert all(item.config.runtime_class_name == "nvidia" for item in reserved)
+    assert all(
+        item.config.tolerations == _executors()[item.request.stage].tolerations
+        for item in reserved
+    )
     with stage_sessions() as session:
         scheduled = session.query(MissionStageRun).filter(
             MissionStageRun.executor == "kubernetes-job"
@@ -328,6 +339,36 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
 
     with pytest.raises(ValueError, match="Missing one-shot executor"):
         orchestrator.settings_from_environment()
+
+
+def test_executor_catalog_parses_stage_tolerations():
+    payload = {
+        stage: {
+            "image": "registry.example/worker@sha256:" + "a" * 64,
+            "command": ["python", "-m", f"{stage}_executor"],
+            "gpu_architecture": "ampere",
+            "tolerations": [
+                {
+                    "key": "nvidia.com/gpu",
+                    "operator": "Equal",
+                    "value": "present",
+                    "effect": "NoSchedule",
+                }
+            ],
+        }
+        for stage in _executors()
+    }
+
+    catalog = orchestrator._executor_catalog(json.dumps(payload))
+
+    assert catalog["detection"].tolerations == (
+        orchestrator.StageJobToleration(
+            key="nvidia.com/gpu",
+            operator="Equal",
+            value="present",
+            effect="NoSchedule",
+        ),
+    )
 
 
 def test_protected_stage_jobs_require_distinct_scoped_credential_secrets(

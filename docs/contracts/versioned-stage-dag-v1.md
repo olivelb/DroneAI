@@ -144,9 +144,12 @@ publication atomically marks the run succeeded before releasing dependants.
 
 Activation requires a complete `stageJobs.executors` map for all five stages.
 Every entry supplies an immutable image, a non-empty one-shot command, optional
-node selectors and (for GPU stages) the selected GPU architecture recorded in
-provenance. Job pods receive only run/mission identity plus S3/Kafka settings
-and Secret references for database/S3 credentials; they use bounded writable
+additional node selectors, validated tolerations and (for GPU stages) the
+selected GPU architecture recorded in provenance. The renderer derives GPU
+presence and minimum-VRAM capability selectors from the run's resource class;
+executor selectors may narrow but never contradict them. Job pods receive only
+run/mission identity plus S3/Kafka settings and their stage-specific Secret
+references for database/S3 credentials; they use bounded writable
 `/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
 dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
 

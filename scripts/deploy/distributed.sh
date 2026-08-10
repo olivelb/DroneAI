@@ -40,8 +40,44 @@ install_gpu_plugin() {
     kube get runtimeclass nvidia >/dev/null 2>&1 \
         || fatal "K3s did not detect the NVIDIA runtime. Check nvidia-container-runtime and restart K3s."
 
+    local minimum_vram_mib advertised_vram_gb
+    local vram_at_least_8gb=false
+    local vram_at_least_12gb=false
+    local vram_at_least_24gb=false
+    minimum_vram_mib="$(nvidia-smi \
+        --query-gpu=memory.total \
+        --format=csv,noheader,nounits \
+        | awk '
+            NR == 1 {minimum = $1}
+            $1 < minimum {minimum = $1}
+            END {if (minimum != "") printf "%d", minimum}
+        ')"
+    [[ "$minimum_vram_mib" =~ ^[1-9][0-9]*$ ]] \
+        || fatal "Unable to determine the minimum physical GPU VRAM."
+    advertised_vram_gb="${DRONEAI_GPU_VRAM_CLASS_GB:-$((
+        (minimum_vram_mib * 1048576 + 500000000) / 1000000000
+    ))}"
+    [[ "$advertised_vram_gb" =~ ^[1-9][0-9]*$ ]] \
+        || fatal "DRONEAI_GPU_VRAM_CLASS_GB must be a positive integer."
+    if ((advertised_vram_gb >= 8)); then
+        vram_at_least_8gb=true
+    fi
+    if ((advertised_vram_gb >= 12)); then
+        vram_at_least_12gb=true
+    fi
+    if ((advertised_vram_gb >= 24)); then
+        vram_at_least_24gb=true
+    fi
+
+    info "Labelling GPU node capabilities (${advertised_vram_gb} GB VRAM class)"
+    kube label node --all \
+        nvidia.com/gpu.present=true \
+        "droneai.io/gpu-vram-at-least-8gb=$vram_at_least_8gb" \
+        "droneai.io/gpu-vram-at-least-12gb=$vram_at_least_12gb" \
+        "droneai.io/gpu-vram-at-least-24gb=$vram_at_least_24gb" \
+        --overwrite >/dev/null
+
     info "Installing the NVIDIA Kubernetes device plugin"
-    kube label node --all nvidia.com/gpu.present=true --overwrite >/dev/null
     helm_root repo add nvdp https://nvidia.github.io/k8s-device-plugin \
         --force-update >/dev/null
     helm_root repo update >/dev/null
@@ -202,23 +238,23 @@ deploy_distributed() {
             --set-string "stageJobs.executors.reconstruction.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.reconstruction.command=["python3","app1-colmap/stage_executor.py","reconstruction"]'
             --set-string stageJobs.executors.reconstruction.gpu_architecture=ampere
-            --set-json 'stageJobs.executors.reconstruction.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-json 'stageJobs.executors.reconstruction.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
             --set-string "stageJobs.executors.gaussian_training.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.gaussian_training.command=["python3","app1-colmap/stage_executor.py","gaussian_training"]'
             --set-string stageJobs.executors.gaussian_training.gpu_architecture=ampere
-            --set-json 'stageJobs.executors.gaussian_training.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-json 'stageJobs.executors.gaussian_training.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
             --set-string "stageJobs.executors.gaussian_filtering.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.gaussian_filtering.command=["python3","app1-colmap/stage_executor.py","gaussian_filtering"]'
             --set-string stageJobs.executors.gaussian_filtering.gpu_architecture=ampere
-            --set-json 'stageJobs.executors.gaussian_filtering.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-json 'stageJobs.executors.gaussian_filtering.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
             --set-string "stageJobs.executors.rasterization.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.rasterization.command=["python3","app1-colmap/stage_executor.py","rasterization"]'
             --set-string stageJobs.executors.rasterization.gpu_architecture=ampere
-            --set-json 'stageJobs.executors.rasterization.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-json 'stageJobs.executors.rasterization.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
             --set-string "stageJobs.executors.detection.image=drone-ia:$STAGE_JOBS_IMAGE_TAG"
             --set-json 'stageJobs.executors.detection.command=["python3","app2-ia/stage_executor.py"]'
             --set-string stageJobs.executors.detection.gpu_architecture=ampere
-            --set-json 'stageJobs.executors.detection.node_selector={"nvidia.com/gpu.present":"true"}'
+            --set-json 'stageJobs.executors.detection.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
         )
     fi
 

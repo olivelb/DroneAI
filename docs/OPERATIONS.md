@@ -79,12 +79,37 @@ Development deployments may omit the map and retain the shared
 reproducible. That fallback is intentionally rejected when stage Jobs are
 enabled with `dashboardApi.environment=staging` or `production`.
 
+## GPU capability scheduling gate
+
+Bounded Jobs derive node selectors from their resource class. GPU classes
+require `nvidia.com/gpu.present=true` plus exactly one cumulative capability
+label: `droneai.io/gpu-vram-at-least-8gb`, `-12gb` or `-24gb`. A 24 GB node
+must carry all three labels so it remains eligible for smaller classes. These
+are operator assertions about the physical node SKU, not arbitrary mission
+parameters; verify them against the provider inventory and `nvidia-smi` before
+labelling a node.
+
+The BIGZEN distributed installer labels all applicable thresholds from the
+smallest physical GPU it observes and logs the resulting advertised GB class.
+`DRONEAI_GPU_VRAM_CLASS_GB` is an explicit operator override for hardware whose
+reported usable MiB does not map cleanly to its reviewed SKU; never use it to
+overstate capacity.
+
+Executor-specific `node_selector` entries may further restrict a pool or GPU
+architecture, but cannot contradict the resource-class selectors. Executor
+`tolerations` accept only explicit non-empty taint keys and validated Kubernetes
+operators/effects. Match the real GPU-pool taint; do not use a broad empty-key
+`Exists` toleration. During Q3, retain the rendered Job selector/tolerations and
+the selected node labels as scheduling evidence.
+
 ## Q3 acceptance record
 
 Keep one dated Markdown report under `docs/benchmarks/` and record:
 
 - Git commit and immutable image digests for every stage executor;
 - Kubernetes version, node type, GPU model, VRAM, driver and CUDA runtime;
+- rendered resource-class node selectors, executor tolerations and selected
+  node capability labels;
 - dataset identity, input count/size and permission to retain the evidence;
 - selected process, profile and effective overrides, including the exact
   Gaussian cap (Fast 1.5M, Normal 3M or High Quality 5M);
@@ -175,8 +200,16 @@ SAM3 CUDA inference and the multi-product operator view. The retained evidence
 is the
 [Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 
-`stageJobs.enabled=true` is therefore supported for controlled preproduction.
-The generic chart default remains `false` so a deployment cannot acquire Job
+That record predates resource-derived VRAM selectors, executor tolerations and
+detection fan-out. Before the next stage-Job activation, run a focused BIGZEN
+requalification that observes all three resource-class selectors across the
+five-stage chain, then a raster exceeding 4,096 detection tiles through its
+Indexed shards and finalizer. This scheduling/fan-out gate does not require a
+new CUDA/COLMAP build when their versions and GPU architecture are unchanged.
+
+`stageJobs.enabled=true` remains supported for controlled preproduction only
+after the target satisfies the current qualification gates. The generic chart
+default remains `false` so a deployment cannot acquire Job
 RBAC or dispatch GPU work without an explicit immutable executor map. Each new
 target environment must satisfy all of the following before activation:
 
@@ -185,15 +218,17 @@ target environment must satisfy all of the following before activation:
 2. All five credential Secrets and their distinct least-privilege principals
    have been provisioned and reviewed.
 3. The Q3 record demonstrates the complete artifact chain on the target GPU.
-4. Resource requests/limits fit the live quota and one active Job cannot force
+4. Resource-class capability labels and executor tolerations match the reviewed
+   GPU node pool and have been observed on the scheduled Jobs.
+5. Resource requests/limits fit the live quota and one active Job cannot force
    an unreviewed second GPU node.
-5. Database backup and isolated restore have succeeded after the latest schema
+6. Database backup and isolated restore have succeeded after the latest schema
    migration.
-6. Job cancellation, deadline expiry, missing-Job reconciliation and a retry
+7. Job cancellation, deadline expiry, missing-Job reconciliation and a retry
    with a new attempt identity have been observed.
-7. The operator can find stage status, heartbeat age, artifact checksum,
+8. The operator can find stage status, heartbeat age, artifact checksum,
    quality metrics and exact failure reason from the mission detail view.
-8. A rollback revision and deep-sleep procedure have been reviewed.
+9. A rollback revision and deep-sleep procedure have been reviewed.
 
 Enabling the flag is a reviewed deployment change, not a code-side default. On
 the single-node distributed installer, set `STAGE_JOBS_IMAGE_TAG` to the exact

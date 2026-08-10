@@ -641,6 +641,38 @@ kubectl get nodes -L droneai.io/pool,droneai.io/gpu
 kubectl get nodes -o custom-columns=NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu
 ```
 
+Then assert the reviewed L4 24 GB capability cumulatively. Do not apply these
+labels to an unverified flavor or to a heterogeneous node containing a smaller
+GPU:
+
+```bash
+GPU_NODE="$(kubectl get nodes -l droneai.io/gpu=nvidia \
+  -o jsonpath='{.items[0].metadata.name}')"
+test -n "$GPU_NODE"
+kubectl label node "$GPU_NODE" --overwrite \
+  nvidia.com/gpu.present=true \
+  droneai.io/gpu-vram-at-least-8gb=true \
+  droneai.io/gpu-vram-at-least-12gb=true \
+  droneai.io/gpu-vram-at-least-24gb=true
+kubectl get node "$GPU_NODE" \
+  -L nvidia.com/gpu.present,droneai.io/gpu-vram-at-least-8gb,droneai.io/gpu-vram-at-least-12gb,droneai.io/gpu-vram-at-least-24gb
+```
+
+When bounded Jobs replace the compatibility Deployments, add to each immutable
+executor entry only the toleration matching the actual GPU-pool taint, for
+example:
+
+```yaml
+tolerations:
+  - key: nvidia.com/gpu
+    operator: Equal
+    value: present
+    effect: NoSchedule
+```
+
+The rendered Job adds the VRAM selector itself. An executor may add a stricter
+pool/architecture selector but cannot weaken this resource-class requirement.
+
 Set both `colmapWorker.enabled` and `iaWorker.enabled` to `true` in the local
 values file and upgrade Helm. With one GPU node, immediately keep just one
 worker active:

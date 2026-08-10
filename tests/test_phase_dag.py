@@ -25,6 +25,7 @@ from shared.stage_contracts import (
     RESOURCE_CLASSES,
     STAGE_ORDER,
     resource_class_for_stage,
+    resource_class_node_selector,
     stage_dag_catalog,
     validate_stage_selection,
 )
@@ -136,6 +137,19 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
             "gaussian_training",
             {"resource_class": "gpu-standard"},
         )
+    assert resource_class_node_selector("cpu-standard") == {}
+    assert resource_class_node_selector("gpu-standard") == {
+        "nvidia.com/gpu.present": "true",
+        "droneai.io/gpu-vram-at-least-8gb": "true",
+    }
+    assert resource_class_node_selector("gpu-geometry") == {
+        "nvidia.com/gpu.present": "true",
+        "droneai.io/gpu-vram-at-least-12gb": "true",
+    }
+    assert resource_class_node_selector("gpu-high-memory") == {
+        "nvidia.com/gpu.present": "true",
+        "droneai.io/gpu-vram-at-least-24gb": "true",
+    }
 
 
 def test_partial_stage_requires_an_exact_upstream_artifact():

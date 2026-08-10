@@ -120,6 +120,23 @@ def resource_class_meets_gpu_envelope(
     )
 
 
+def resource_class_node_selector(
+    resource_class: ResourceClassId,
+) -> dict[str, str]:
+    """Derive cumulative GPU capability labels required by a resource class."""
+
+    spec = RESOURCE_CLASSES[resource_class]
+    if spec["gpu_count"] < 1:
+        return {}
+    selector = {"nvidia.com/gpu.present": "true"}
+    minimum_vram_gib = spec["minimum_vram_gib"]
+    if minimum_vram_gib > 0:
+        selector[
+            f"droneai.io/gpu-vram-at-least-{minimum_vram_gib}gb"
+        ] = "true"
+    return selector
+
+
 def resource_class_for_stage(
     stage: StageId,
     parameters: dict[str, Any] | None = None,
