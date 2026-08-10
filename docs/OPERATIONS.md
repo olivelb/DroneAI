@@ -193,19 +193,22 @@ OVHcloud production needs its own evidence against the exact promoted release.
 ## Activation status and gate for bounded Jobs
 
 The one-shot executor implementation and complete artifact chain are qualified
-on BIGZEN K3s/RTX 3090. Mission `chapelle-q3-five-jobs-20260809` exercised all
-five Jobs, immutable S3 hand-offs, missing-Job reconciliation, a failed
-rasterization followed by an exact-parent retry, automatic dependant release,
-SAM3 CUDA inference and the multi-product operator view. The retained evidence
-is the
+on BIGZEN K3s/RTX 3090. The original mission
+`chapelle-q3-five-jobs-20260809` exercised retries, immutable hand-offs and the
+operator view. The current follow-up at full SHA `74b6d7a...` observed all
+three derived VRAM selectors across a successful five-Job chain, parsed a
+strict Manifest v2, then processed 4,160 SAM3 tiles through five Indexed shards,
+five durable receipts and a separate finalizer. The retained evidence is the
+[current scheduling/fan-out benchmark](benchmarks/bigzen-stage-jobs-fanout-2026-08-10.md)
+and the earlier
 [Chapelle Q3 addendum](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md#q3-kubernetes-five-job-qualification-addendum).
 
-That record predates resource-derived VRAM selectors, executor tolerations and
-detection fan-out. Before the next stage-Job activation, run a focused BIGZEN
-requalification that observes all three resource-class selectors across the
-five-stage chain, then a raster exceeding 4,096 detection tiles through its
-Indexed shards and finalizer. This scheduling/fan-out gate does not require a
-new CUDA/COLMAP build when their versions and GPU architecture are unchanged.
+The focused requalification reused the existing CUDA/COLMAP base because its
+versions and GPU architecture were unchanged. It also found that the pinned
+SAM3 processor resizes inputs to 1,008 px while the sampled batch-one footprint
+was about 6.3 GiB. Keep the current conservative resource class until peak
+memory, effective resolution and bounded batching are encoded and qualified;
+do not infer a smaller production envelope from one sampled run.
 
 `stageJobs.enabled=true` remains supported for controlled preproduction only
 after the target satisfies the current qualification gates. The generic chart

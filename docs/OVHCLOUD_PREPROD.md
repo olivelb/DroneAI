@@ -452,6 +452,21 @@ The Helm defaults pin `facebook/sam3` to a full Hugging Face commit in
 upgrading it is a reviewed model change and creates a different provenance
 manifest in analysis results.
 
+BIGZEN qualification at commit `74b6d7a...` proved the cumulative 8/12/24 GB
+selectors, Manifest v2, selective restore and a 4,160-tile Indexed SAM3 Job with
+five receipts and a finalizer. This is implementation evidence, not an OVH
+waiver. Before enabling the same flags on OVH, label the actual GPU node pool,
+deploy the exact promoted image digests and repeat a target canary. No
+CUDA/COLMAP rebuild is required unless their versions or the target GPU
+architecture changed. See the
+[BIGZEN qualification record](benchmarks/bigzen-stage-jobs-fanout-2026-08-10.md).
+
+The same run sampled about 6.3 GiB VRAM at SAM3 batch one, while the pinned
+processor resized every tile to 1,008 × 1,008. Do not size the OVH node from
+that instantaneous value alone. Keep the conservative envelope until the
+runtime records peak allocation and the model-resolution/batch policy has a
+focused GPU qualification.
+
 For the in-cluster PostgreSQL preproduction option, create or reconcile the
 external Secrets without printing their values:
 
