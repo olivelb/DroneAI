@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from collections.abc import Callable
 
@@ -45,10 +45,11 @@ class RetryPolicy:
 
 @dataclass
 class ConsumerAssignmentWatchdog:
-    """Detect a consumer that stopped rejoining its subscribed group."""
+    """Detect a previously assigned consumer that stopped rejoining its group."""
 
     timeout_seconds: float = 60.0
-    _unassigned_since: float | None = None
+    _had_assignment: bool = field(default=False, init=False, repr=False)
+    _unassigned_since: float | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_environment(cls) -> ConsumerAssignmentWatchdog:
@@ -71,7 +72,10 @@ class ConsumerAssignmentWatchdog:
         now: float | None = None,
     ) -> bool:
         if consumer.assignment():
+            self._had_assignment = True
             self._unassigned_since = None
+            return False
+        if not self._had_assignment:
             return False
         observed_at = time.monotonic() if now is None else now
         if self._unassigned_since is None:
@@ -80,6 +84,7 @@ class ConsumerAssignmentWatchdog:
         return observed_at - self._unassigned_since >= self.timeout_seconds
 
     def reset(self) -> None:
+        self._had_assignment = False
         self._unassigned_since = None
 
 
@@ -97,7 +102,7 @@ def recreate_unassigned_consumer(
     if not watchdog.should_recreate(consumer, now=now):
         return consumer, False
     logger.warning(
-        "Kafka %s consumer remained unassigned; recreating it",
+        "Kafka %s consumer lost its assignment and did not rejoin; recreating it",
         consumer_name,
     )
     consumer.close()

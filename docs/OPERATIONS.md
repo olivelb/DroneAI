@@ -245,6 +245,15 @@ can still reference an older product.
 | S3 object is missing | Stop downstream retries and recover the exact version/checksum; do not substitute a similarly named object. |
 | Deployment regression | Roll back to the recorded Helm revision and immutable image digests; schema rollback requires its own tested procedure. |
 
+For compatibility Kafka workers, an unassigned consumer is not necessarily
+lost: replicas may legitimately outnumber topic partitions. The assignment
+watchdog therefore recycles only a consumer that was previously assigned, lost
+all assignments, and did not rejoin within
+`KAFKA_CONSUMER_UNASSIGNED_TIMEOUT_SECONDS` (60 seconds by default). A consumer
+that has never received a partition remains idle without causing group
+rebalances. Investigate repeated assignment-loss warnings and consumer lag
+before scaling or restarting workers manually.
+
 ## Cost and capacity controls
 
 Before a Q2/Q3 run, record the current quotas and price-bearing resources. Keep

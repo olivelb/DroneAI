@@ -95,27 +95,42 @@ def test_consumer_config_disables_automatic_offset_management():
     assert config["max.poll.interval.ms"] == 123
 
 
-def test_assignment_watchdog_recovers_only_after_continuous_timeout():
+def test_assignment_watchdog_never_recycles_a_legitimately_idle_consumer():
     consumer = FakeConsumer()
     watchdog = ConsumerAssignmentWatchdog(timeout_seconds=60)
 
     assert watchdog.should_recreate(consumer, now=100) is False
-    assert watchdog.should_recreate(consumer, now=159) is False
-    assert watchdog.should_recreate(consumer, now=160) is True
+    assert watchdog.should_recreate(consumer, now=10_000) is False
+
+
+def test_assignment_watchdog_recovers_only_after_assignment_loss_timeout():
+    consumer = FakeConsumer()
+    watchdog = ConsumerAssignmentWatchdog(timeout_seconds=60)
 
     consumer.assignments = [object()]
-    assert watchdog.should_recreate(consumer, now=161) is False
+    assert watchdog.should_recreate(consumer, now=100) is False
+
+    consumer.assignments = []
+    assert watchdog.should_recreate(consumer, now=101) is False
+    assert watchdog.should_recreate(consumer, now=160) is False
+    assert watchdog.should_recreate(consumer, now=161) is True
+
+    consumer.assignments = [object()]
+    assert watchdog.should_recreate(consumer, now=162) is False
 
     consumer.assignments = []
     assert watchdog.should_recreate(consumer, now=200) is False
     watchdog.reset()
-    assert watchdog.should_recreate(consumer, now=300) is False
+    assert watchdog.should_recreate(consumer, now=10_000) is False
 
 
 def test_recreate_unassigned_consumer_closes_and_replaces_stalled_member():
     consumer = FakeConsumer()
     replacement = FakeConsumer()
     watchdog = ConsumerAssignmentWatchdog(timeout_seconds=0)
+    consumer.assignments = [object()]
+    watchdog.should_recreate(consumer, now=100)
+    consumer.assignments = []
     watchdog.should_recreate(consumer, now=100)
 
     result, recreated = recreate_unassigned_consumer(
@@ -130,6 +145,16 @@ def test_recreate_unassigned_consumer_closes_and_replaces_stalled_member():
     assert recreated is True
     assert result is replacement
     assert consumer.closed is True
+    result, recreated = recreate_unassigned_consumer(
+        replacement,
+        watchdog,
+        lambda: FakeConsumer(),
+        logger=type("Logger", (), {"warning": lambda *_args: None})(),
+        consumer_name="tile",
+        now=10_000,
+    )
+    assert recreated is False
+    assert result is replacement
 
 
 def test_publish_json_confirms_only_its_delivery_with_poll():
