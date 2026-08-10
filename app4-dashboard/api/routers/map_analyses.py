@@ -30,10 +30,9 @@ from ..map_support import (
     feature_collection,
     get_mission,
     map_feature_geojson,
-    mission_key,
     object_store_analysis_features as _object_store_features,
     parse_bbox,
-    require_object,
+    resolve_raster_product,
     serialize_run,
 )
 from ..security import Principal, require_authenticated, require_operator
@@ -76,14 +75,18 @@ def create_analysis(
     principal: Annotated[Principal, Depends(require_operator)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    key, _ = mission_key(vol_id, "ortho")
     run_id = str(uuid4())
     with get_session() as session:
         typed_session = cast(RouteSession, session)
         mission = get_mission(
             typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_create"
         )
-        require_object(key)
+        key = resolve_raster_product(
+            typed_session,
+            mission,
+            vol_id,
+            "ortho",
+        ).key
         run_model = AIAnalysisRun(
             run_id=run_id,
             mission_id=mission.id,

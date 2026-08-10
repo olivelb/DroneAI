@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Protocol, Self, cast
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, or_, select
 
 from shared import storage
-from shared.database import Detection, MapFeature
+from shared.config import S3_BUCKET
+from shared.database import Detection, MapFeature, MissionArtifact
 from shared.geospatial_assets import detections_feature_collection
 from shared.geospatial_workspace import bounds_intersect, geometry_bounds
+from shared.stage_workspace import resolve_workspace_files
 
 from .mission_access import get_owned_mission
 from .security import Principal
@@ -93,6 +97,21 @@ class MissionRecord(Protocol):
     tiling_metadata: JsonObject | None
 
 
+class MissionArtifactRecord(Protocol):
+    artifact_id: str
+    uri: str
+    checksum_sha256: str
+    artifact_metadata: JsonObject
+
+
+@dataclass(frozen=True)
+class RasterProductObject:
+    key: str
+    default_colormap: str
+    sidecar_key: str | None = None
+    artifact_id: str | None = None
+
+
 class MapFeatureMutationRecord(Protocol):
     geometry: Any
     version: int
@@ -152,6 +171,102 @@ def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
             detail="Unknown raster layer",
         ) from error
     return f"missions/{vol_id}/{suffix}", colormap
+
+
+def _artifact_manifest_key(artifact: MissionArtifactRecord) -> str:
+    metadata_key = artifact.artifact_metadata.get("manifest_key")
+    if isinstance(metadata_key, str) and metadata_key:
+        return metadata_key
+    prefix = f"s3://{S3_BUCKET}/"
+    if artifact.uri.startswith(prefix):
+        return artifact.uri.removeprefix(prefix)
+    raise ValueError("Raster artifact has no canonical manifest key")
+
+
+@lru_cache(maxsize=64)
+def _workspace_object_keys(
+    manifest_key: str,
+    checksum_sha256: str,
+) -> dict[str, str]:
+    return {
+        path: entry.blob.key
+        for path, entry in resolve_workspace_files(
+            manifest_key,
+            checksum_sha256,
+        ).items()
+    }
+
+
+def resolve_raster_product(
+    session: RouteSession,
+    mission: MissionRecord,
+    vol_id: str,
+    layer: str,
+) -> RasterProductObject:
+    """Resolve a map layer from the newest immutable raster artifact.
+
+    Compatibility missions may still expose the historical root-level object.
+    Once a versioned raster artifact exists, it is authoritative and failures
+    are not hidden by falling back to a potentially stale legacy object.
+    """
+
+    legacy_key, colormap = mission_key(vol_id, layer)
+    artifact = cast(
+        MissionArtifactRecord | None,
+        session.query(MissionArtifact)
+        .filter(
+            MissionArtifact.mission_id == mission.id,
+            MissionArtifact.kind == "raster_product_workspace",
+        )
+        .order_by(MissionArtifact.created_at.desc(), MissionArtifact.id.desc())
+        .first(),
+    )
+    if artifact is None:
+        require_object(legacy_key)
+        legacy_sidecar_key = f"{legacy_key}.cog.json"
+        return RasterProductObject(
+            key=legacy_key,
+            default_colormap=colormap,
+            sidecar_key=(
+                legacy_sidecar_key
+                if storage.file_exists(legacy_sidecar_key)
+                else None
+            ),
+        )
+
+    logical_path = RASTER_LAYERS[layer][0]
+    metadata_name = "ortho_file" if layer == "ortho" else "height_file"
+    configured_path = artifact.artifact_metadata.get(metadata_name)
+    if isinstance(configured_path, str) and configured_path:
+        logical_path = configured_path
+    try:
+        object_keys = _workspace_object_keys(
+            _artifact_manifest_key(artifact),
+            artifact.checksum_sha256,
+        )
+    except (OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Unable to resolve raster artifact manifest: {error}",
+        ) from error
+    key = object_keys.get(logical_path)
+    if key is None:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Raster artifact does not publish {logical_path}",
+        )
+    require_object(key)
+    artifact_sidecar_key = object_keys.get(f"{logical_path}.cog.json")
+    if artifact_sidecar_key is not None and not storage.file_exists(
+        artifact_sidecar_key
+    ):
+        artifact_sidecar_key = None
+    return RasterProductObject(
+        key=key,
+        default_colormap=colormap,
+        sidecar_key=artifact_sidecar_key,
+        artifact_id=artifact.artifact_id,
+    )
 
 
 def require_object(key: str) -> None:
