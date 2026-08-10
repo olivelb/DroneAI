@@ -78,7 +78,20 @@ class StageHandler(Protocol):
     ) -> StageExecutionResult: ...
 
 
-def _load_context(run_id: str, expected_stage: StageId) -> StageExecutionContext:
+class StageSubtaskHandler(Protocol):
+    def __call__(
+        self,
+        context: StageExecutionContext,
+        control: StageExecutionControl,
+    ) -> None: ...
+
+
+def load_stage_execution_context(
+    run_id: str,
+    expected_stage: StageId,
+) -> StageExecutionContext:
+    """Claim or rejoin one durable Kubernetes stage execution."""
+
     with get_session() as session:
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == run_id
@@ -323,7 +336,7 @@ def execute_one_shot_stage(
     durable_run_id = run_id or os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
     if not durable_run_id:
         raise ValueError("DRONEAI_STAGE_RUN_ID is required")
-    context = _load_context(durable_run_id, expected_stage)
+    context = load_stage_execution_context(durable_run_id, expected_stage)
     interval = heartbeat_interval_seconds
     if interval is None:
         interval = float(os.getenv("DRONEAI_STAGE_HEARTBEAT_SECONDS", "15"))
@@ -332,6 +345,34 @@ def execute_one_shot_stage(
             result = handler(context, control)
             control.raise_if_cancelled()
         return _publish_result(context, result)
+    except StageExecutionCancelled:
+        _mark_terminal(durable_run_id, "cancelled", None)
+        raise
+    except Exception as error:
+        _mark_terminal(durable_run_id, "failed", str(error)[:4000])
+        raise
+
+
+def execute_stage_subtask(
+    expected_stage: StageId,
+    handler: StageSubtaskHandler,
+    *,
+    run_id: str | None = None,
+    heartbeat_interval_seconds: float | None = None,
+) -> None:
+    """Execute one bounded child task without authority to publish an artifact."""
+
+    durable_run_id = run_id or os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
+    if not durable_run_id:
+        raise ValueError("DRONEAI_STAGE_RUN_ID is required")
+    context = load_stage_execution_context(durable_run_id, expected_stage)
+    interval = heartbeat_interval_seconds
+    if interval is None:
+        interval = float(os.getenv("DRONEAI_STAGE_HEARTBEAT_SECONDS", "15"))
+    try:
+        with StageExecutionControl(durable_run_id, interval) as control:
+            handler(context, control)
+            control.raise_if_cancelled()
     except StageExecutionCancelled:
         _mark_terminal(durable_run_id, "cancelled", None)
         raise

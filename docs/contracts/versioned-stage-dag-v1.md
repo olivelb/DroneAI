@@ -258,6 +258,14 @@ checksum-derived `blobs/sha256/...` key. Finalization downloads every ordered
 receipt, verifies byte size and SHA-256 before parsing, rechecks the result
 against the persisted plan, then passes only validated results to fan-in.
 
+The common execution boundary now separates stage authority from shard work.
+`execute_stage_subtask` claims the same exact durable inputs and maintains the
+same heartbeat/cancellation/failure semantics, but has no code path that can
+create a `MissionArtifact` or release downstream stages. Durable plan
+descriptors are reconstructed from their dimensions and rejected unless every
+derived count, cost and SHA-256 matches exactly. The later finalizer alone will
+retain `execute_one_shot_stage` publication authority.
+
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
