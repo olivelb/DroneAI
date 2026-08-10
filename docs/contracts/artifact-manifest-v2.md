@@ -116,3 +116,7 @@ overwrite of the same key, verifies the original size and checksum metadata,
 confirms CAS reuse, deletes the object and verifies its absence. It prints no
 credentials. A passing local or mocked test is not a substitute for this
 provider check.
+
+The first real OVH GRA provider run passed on 10 August 2026; its non-sensitive
+evidence is retained in
+[`ovh-s3-conditional-multipart-2026-08-10.md`](../benchmarks/ovh-s3-conditional-multipart-2026-08-10.md).
