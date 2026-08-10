@@ -29,7 +29,8 @@ from ..map_support import (
     map_feature_geojson,
     mission_key,
     parse_bbox,
-    require_object,
+    pipeline_detection_features,
+    resolve_raster_product,
 )
 from ..map_schemas import RasterPalette
 from ..raster_style_contract import parse_band_indexes, parse_display_ranges
@@ -46,16 +47,22 @@ def raster_layer_metadata(
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     with get_session() as session:
-        get_mission(
-            cast(RouteSession, session),
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(
+            typed_session,
             vol_id,
             principal,
             owner_subject=owner_subject,
         )
-    key, _ = mission_key(vol_id, layer)
-    require_object(key)
-    sidecar_key = f"{key}.cog.json"
-    if storage.file_exists(sidecar_key):
+        product = resolve_raster_product(
+            typed_session,
+            mission,
+            vol_id,
+            layer,
+        )
+    key = product.key
+    if product.sidecar_key is not None:
+        sidecar_key = product.sidecar_key
         stream, content_length, _ = storage.get_object_stream(sidecar_key)
         if content_length > 1_000_000:
             stream.close()
@@ -116,14 +123,21 @@ def raster_tile(
     palette: Annotated[RasterPalette | None, Query()] = None,
 ) -> StreamingResponse:
     with get_session() as session:
-        get_mission(
-            cast(RouteSession, session),
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(
+            typed_session,
             vol_id,
             principal,
             owner_subject=owner_subject,
         )
-    key, default_colormap = mission_key(vol_id, layer)
-    require_object(key)
+        product = resolve_raster_product(
+            typed_session,
+            mission,
+            vol_id,
+            layer,
+        )
+    key = product.key
+    default_colormap = product.default_colormap
     if (display_min is None) != (display_max is None):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -195,6 +209,15 @@ def _legacy_features(
     bounds: Bounds | None,
     limit: int,
 ) -> tuple[list[JsonObject], bool]:
+    immutable = pipeline_detection_features(
+        session,
+        mission,
+        vol_id,
+        bounds,
+        limit,
+    )
+    if immutable is not None:
+        return immutable
     query = session.query(Detection).filter(Detection.vol_id == vol_id)
     query = apply_detection_spatial_filter(query, bounds)
     records = query.order_by(Detection.id).limit(limit + 1).all()

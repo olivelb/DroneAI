@@ -430,6 +430,25 @@ def _load_manifest_overlay(
     return manifest, resolved, manifest_bytes_total
 
 
+def resolve_workspace_files(
+    manifest_key: str,
+    expected_checksum_sha256: str,
+) -> dict[str, ManifestFile]:
+    """Resolve an immutable workspace overlay without materializing its blobs.
+
+    Read-only consumers such as the map API need the verified object key for a
+    small number of published products.  Reusing the same overlay validation as
+    stage restoration keeps parent traversal, checksum verification and path
+    conflict handling identical without copying a complete workspace.
+    """
+
+    _manifest, resolved, _manifest_bytes = _load_manifest_overlay(
+        manifest_key,
+        expected_checksum_sha256,
+    )
+    return dict(resolved)
+
+
 def restore_workspace_measured(
     manifest_key: str,
     destination: str | Path,

@@ -430,6 +430,7 @@ export default function GeospatialMap({
   onHint: (hint: string) => void;
   onMetadata: (metadata: RasterMetadata | null) => void;
 }) {
+  const { t } = useI18n();
   const requestKey = `${missionId}:${layer}`;
   const [metadataState, setMetadataState] = useState<{
     key: string;
@@ -488,7 +489,7 @@ export default function GeospatialMap({
   if (error) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center text-sm text-gray-300">
-        Carte indisponible : {error}
+        {t("map.unavailable", { error })}
       </div>
     );
   }

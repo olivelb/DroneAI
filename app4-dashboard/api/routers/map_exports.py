@@ -29,7 +29,8 @@ from ..map_support import (
     RouteSession,
     get_mission,
     mission_key,
-    require_object,
+    pipeline_detection_features,
+    resolve_raster_product,
     stored_map_feature_geojson,
 )
 from ..security import Principal, require_authenticated
@@ -75,6 +76,16 @@ def _legacy_features(
     mission: MissionRecord,
     vol_id: str,
 ) -> Iterator[JsonObject]:
+    immutable = pipeline_detection_features(
+        session,
+        mission,
+        vol_id,
+        None,
+        50_000,
+    )
+    if immutable is not None:
+        yield from immutable[0]
+        return
     metadata = mission.tiling_metadata or {}
     records = cast(
         Iterator[Detection],
@@ -177,15 +188,21 @@ def export_raster(
     output_format: Annotated[RasterFormat, Query(alias="format")] = "cog",
 ) -> StreamingResponse:
     with get_session() as session:
-        get_mission(
-            cast(RouteSession, session),
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(
+            typed_session,
             vol_id,
             principal,
             owner_subject=owner_subject,
             action="raster_export",
         )
-    key, _ = mission_key(vol_id, layer)
-    require_object(key)
+        product = resolve_raster_product(
+            typed_session,
+            mission,
+            vol_id,
+            layer,
+        )
+    key = product.key
     body, content_length, content_type = storage.get_object_stream(key)
     suffix = "cog.tif" if output_format == "cog" else "tif"
     filename = f"{vol_id}_{layer}.{suffix}"

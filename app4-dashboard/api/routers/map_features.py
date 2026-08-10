@@ -22,6 +22,7 @@ from ..map_support import (
     get_mission,
     map_feature_geojson,
     parse_bbox,
+    pipeline_detection_features,
 )
 from ..security import Principal, require_authenticated
 
@@ -133,6 +134,63 @@ def _legacy_geojson(
     return features
 
 
+def _search_pipeline_artifact(
+    session: RouteSession,
+    mission: MissionRecord,
+    *,
+    vol_id: str,
+    text: str,
+    class_name: str | None,
+    min_confidence: float | None,
+    bounds: Bounds | None,
+    reviewed: bool | None,
+    deleted: bool,
+    limit: int,
+) -> tuple[list[JsonObject], bool] | None:
+    immutable = pipeline_detection_features(
+        session,
+        mission,
+        vol_id,
+        bounds,
+        50_000,
+    )
+    if immutable is None:
+        return None
+    if deleted or reviewed is True:
+        return [], False
+    needle = text.casefold()
+    filtered: list[JsonObject] = []
+    for feature in immutable[0]:
+        properties = cast(JsonObject, feature.get("properties") or {})
+        feature_class = str(properties.get("class_name") or "")
+        if class_name and feature_class != class_name:
+            continue
+        confidence = properties.get("confidence")
+        if min_confidence is not None and (
+            not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or float(confidence) < min_confidence
+        ):
+            continue
+        if needle:
+            raw_tags = properties.get("tags")
+            tags = raw_tags if isinstance(raw_tags, list) else []
+            searchable = " ".join(
+                [
+                    feature_class,
+                    str(properties.get("name") or ""),
+                    str(properties.get("description") or ""),
+                    " ".join(str(tag) for tag in tags),
+                ]
+            ).casefold()
+            if needle not in searchable:
+                continue
+        filtered.append(feature)
+        if len(filtered) > limit:
+            break
+    return filtered[:limit], len(filtered) > limit or immutable[1]
+
+
 def _aggregate_bounds(features: list[JsonObject]) -> list[float] | None:
     if not features:
         return None
@@ -188,17 +246,33 @@ def search_map_features(
         features.extend(map_feature_geojson(typed_session, item) for item in records)
         remaining = max(0, limit - len(features))
         if remaining and source in {None, "", "legacy"} and not run_id:
-            legacy, legacy_truncated = _search_legacy_records(
+            immutable = _search_pipeline_artifact(
                 typed_session,
+                mission,
                 vol_id=vol_id,
                 text=text,
                 class_name=class_name,
                 min_confidence=min_confidence,
                 bounds=bounds,
+                reviewed=reviewed,
+                deleted=deleted,
                 limit=remaining,
             )
-            features.extend(_legacy_geojson(legacy, mission, vol_id))
-            truncated = truncated or legacy_truncated
+            if immutable is not None:
+                features.extend(immutable[0])
+                truncated = truncated or immutable[1]
+            else:
+                legacy, legacy_truncated = _search_legacy_records(
+                    typed_session,
+                    vol_id=vol_id,
+                    text=text,
+                    class_name=class_name,
+                    min_confidence=min_confidence,
+                    bounds=bounds,
+                    limit=remaining,
+                )
+                features.extend(_legacy_geojson(legacy, mission, vol_id))
+                truncated = truncated or legacy_truncated
     return {
         **feature_collection(features, vol_id=vol_id, truncated=truncated),
         "bounds": _aggregate_bounds(features),

@@ -28,5 +28,11 @@ describe("translation catalog", () => {
     expect(formatMessage("fr", "search.results", { count: 3 })).toBe(
       "3 résultat(s)",
     );
+    expect(
+      formatMessage("en", "map.unavailable", { error: "missing" }),
+    ).toBe("Map unavailable: missing");
+    expect(
+      formatMessage("fr", "map.unavailable", { error: "absente" }),
+    ).toBe("Carte indisponible : absente");
   });
 });

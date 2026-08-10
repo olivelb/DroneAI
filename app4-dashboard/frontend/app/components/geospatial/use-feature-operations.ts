@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Feature } from "geojson";
 import {
   deleteMapFeature,
@@ -30,6 +30,48 @@ export function useFeatureOperations(
     [number, number, number, number] | null
   >(null);
   const [busySearch, setBusySearch] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setSelectedFeature(null);
+      setSelectedSearchIds([]);
+      setSearchResults([]);
+      setFocusBounds(null);
+      setSearchText("");
+      setSearchSource("");
+      setSearchRun("");
+      setSearchReviewed("");
+      setSearchDeleted("false");
+      onError("");
+      if (!missionId) {
+        setBusySearch(false);
+        return;
+      }
+      setBusySearch(true);
+      void searchMapFeatures(missionId, { deleted: false })
+        .then((response) => {
+          if (!active) return;
+          setSearchResults(response.features);
+          if (response.bounds) setFocusBounds(response.bounds);
+        })
+        .catch((reason) => {
+          if (!active) return;
+          onError(
+            reason instanceof Error
+              ? reason.message
+              : t("explorer.searchFailed"),
+          );
+        })
+        .finally(() => {
+          if (active) setBusySearch(false);
+        });
+    });
+    return () => {
+      active = false;
+    };
+  }, [missionId, onError, t]);
 
   const runSearch = useCallback(async () => {
     if (!missionId) return;

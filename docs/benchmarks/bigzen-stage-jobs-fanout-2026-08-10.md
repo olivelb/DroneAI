@@ -192,12 +192,58 @@ This run qualifies the merged five-Job implementation on BIGZEN. It does not
 replace the existing greater-than-4,096-tile fan-out run, and neither result
 automatically qualifies a different OVH node pool, driver or image digest.
 
+## Operator multi-product qualification
+
+The operator gate was exercised against the retained BIGZEN products after the
+five-Job run. The focused rollout used Helm revisions 9 through 13, API image
+`drone-dashboard-api:3d06968ee4db414e26f89bd22e0b3ab277883e1b` and frontend
+image
+`drone-dashboard-frontend:29ebc6c3e2b05ed10ce4d905dba4b989f5eaa4a1`.
+The stage executor images remained at `d87ea780...`; no CUDA or COLMAP image was
+rebuilt and no completed GPU stage was replayed.
+
+The exercise found that the map compatibility API still assumed legacy
+mission-root GeoTIFF and database-feature paths. The correction now resolves
+the newest mission-scoped `raster_product_workspace` and
+`detection_workspace`, verifies their Manifest v2 checksums, overlays their
+content-addressed parents, and exposes the immutable raster and GeoJSON
+products to map metadata, tiles, exports and object search. Legacy paths remain
+a fallback only when no versioned product exists. The frontend also clears and
+refetches search state when the displayed mission changes, with stale response
+suppression.
+
+The browser-visible results were mission-scoped without manual filter refresh:
+
+| Operator selection | Monitor | Products / objects observed |
+| --- | --- | --- |
+| `chapelle-d87-five-jobs-20260810` | success, 100% | five immutable products, Leaflet COG and 1 `car` feature |
+| `villeseque-reference-fanout-4160-20260810` | success, 100% | raster plus detection products and 10 `car` features |
+| `villeseque-reference-fanout-20260810` | cancelled, 0% | no stale map object; 0 features |
+
+Switching Chapelle → Villesèque → cancelled → Chapelle changed the object count
+`1 → 10 → 0 → 1` automatically. Mission detail pages showed only the selected
+mission's stage durations, immutable product checksums and logs. The full
+Chapelle page exposed all five stages and products; the Villesèque page exposed
+only its retained raster and detection products and its own detection logs.
+
+An operator created a SAM3 map analysis, cancelled it while the compatibility
+worker was deliberately scaled to zero, and observed the durable `cancelled`
+state both immediately and after a browser reload. No GPU Job was dispatched.
+That drill also exposed and corrected irrelevant YOLO provenance on SAM3 map
+analyses. The post-fix run
+`d4c13a40-e166-46ec-942d-5c299b33de29` persisted `backend=sam3`, a null
+`model_variant`, and terminal `cancelled` status even when the incoming request
+contained the default YOLO variant.
+
+This qualifies mission navigation, progress, logs, immutable product selection,
+feature isolation and queued-analysis cancellation on BIGZEN. It is not the
+production stage-Job interruption drill and does not replace the OVH-targeted
+Q3 and release-gate evidence.
+
 ## Remaining release gates
 
 - Repeat scheduling and fan-out canaries on the exact OVH node pool and image
   digests before enabling the flags there.
-- Exercise the operator workflow with multiple products and confirm that
-  cancellation, progress, logs and product selection remain mission-scoped.
 - Complete the production interruption, deadline, database/object-storage,
   backup/restore and Helm rollback drills.
 - Treat the fan-out run's ten SAM3 features and the requalification run's one
