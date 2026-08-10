@@ -235,6 +235,12 @@ and aggregate detection overflow before applying the existing global spatial
 deduplication across shard boundaries. The current executor deliberately runs
 one such plan shard and retains the 4,096-tile limit until indexed child Jobs,
 their retry/cancellation lifecycle and the finalizer are durably orchestrated.
+The Kubernetes manifest builder can now express an indexed Job with 2 to 256
+completions, bounded parallelism and a shard index injected from the standard
+`batch.kubernetes.io/job-completion-index` pod annotation. The ordinary Job
+manifest remains unchanged. The orchestrator does not request indexed mode yet:
+activation remains blocked on an idempotent durable shard receipt and explicit
+finalizer lifecycle, rather than relying on successful pod exit alone.
 
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of

@@ -33,6 +33,9 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
     assert job["metadata"]["labels"]["droneai.run-id-hash"].isalnum()
     assert "unsafe" not in job["metadata"]["labels"]["droneai.run-id-hash"]
     assert job["spec"]["backoffLimit"] == 0
+    assert "completionMode" not in job["spec"]
+    assert "completions" not in job["spec"]
+    assert "parallelism" not in job["spec"]
     assert job["spec"]["ttlSecondsAfterFinished"] == 3600
     pod = job["spec"]["template"]["spec"]
     assert pod["restartPolicy"] == "Never"
