@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Minus, Plus, SkipForward, X } from "lucide-react";
 import { getFileUrl } from "../../lib/api";
 import { useI18n } from "../../lib/i18n/provider";
@@ -31,7 +31,20 @@ export default function PhotoMarkerEditor({
     observation.pixel_x !== null && observation.pixel_x !== undefined &&
       observation.pixel_y !== null && observation.pixel_y !== undefined
       ? { x: observation.pixel_x, y: observation.pixel_y }
-      : null,
+      : observation.projected_pixel_x !== null && observation.projected_pixel_x !== undefined &&
+          observation.projected_pixel_y !== null && observation.projected_pixel_y !== undefined
+        ? { x: observation.projected_pixel_x, y: observation.projected_pixel_y }
+        : null,
+  );
+  const [pointerPixel, setPointerPixel] = useState<{ x: number; y: number } | null>(null);
+  const imageUrl = observation.image_s3_key ? getFileUrl(observation.image_s3_key) : "";
+
+  const clampPixel = useCallback(
+    (value: { x: number; y: number }) => ({
+      x: Math.max(0, Math.min(Math.max(0, naturalSize.width - 0.001), value.x)),
+      y: Math.max(0, Math.min(Math.max(0, naturalSize.height - 0.001), value.y)),
+    }),
+    [naturalSize.height, naturalSize.width],
   );
 
   useEffect(() => {
@@ -40,19 +53,33 @@ export default function PhotoMarkerEditor({
       if (event.key === "Enter" && pixel && !busy) {
         void onSave(pixel.x, pixel.y);
       }
+      if (pixel && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        event.preventDefault();
+        const step = event.altKey ? 10 : event.shiftKey ? 0.1 : 1;
+        const delta = {
+          x: event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0,
+          y: event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0,
+        };
+        setPixel(clampPixel({ x: pixel.x + delta.x, y: pixel.y + delta.y }));
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, onClose, onSave, pixel]);
+  }, [busy, clampPixel, onClose, onSave, pixel]);
+
+  const imagePixel = (event: React.MouseEvent<HTMLImageElement>) => {
+    const image = imageRef.current;
+    if (!image) return null;
+    const bounds = image.getBoundingClientRect();
+    return clampPixel({
+      x: (event.clientX - bounds.left) * image.naturalWidth / bounds.width,
+      y: (event.clientY - bounds.top) * image.naturalHeight / bounds.height,
+    });
+  };
 
   const placeMarker = (event: React.MouseEvent<HTMLImageElement>) => {
-    const image = imageRef.current;
-    if (!image) return;
-    const bounds = image.getBoundingClientRect();
-    setPixel({
-      x: Math.max(0, Math.min(image.naturalWidth, (event.clientX - bounds.left) * image.naturalWidth / bounds.width)),
-      y: Math.max(0, Math.min(image.naturalHeight, (event.clientY - bounds.top) * image.naturalHeight / bounds.height)),
-    });
+    const next = imagePixel(event);
+    if (next) setPixel(next);
   };
 
   return (
@@ -89,6 +116,7 @@ export default function PhotoMarkerEditor({
         <span className="ml-3 text-white/60">
           {naturalSize.width} × {naturalSize.height} px
         </span>
+        <span className="text-white/45">{t("gcp.nudgeHelp")}</span>
         <span className="ml-auto font-mono">
           X {pixel ? pixel.x.toFixed(1) : "—"} · Y {pixel ? pixel.y.toFixed(1) : "—"}
         </span>
@@ -105,7 +133,7 @@ export default function PhotoMarkerEditor({
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               ref={imageRef}
-              src={getFileUrl(observation.image_s3_key)}
+              src={imageUrl}
               alt={observation.image_name}
               draggable={false}
               onLoad={(event) => {
@@ -114,6 +142,8 @@ export default function PhotoMarkerEditor({
                 setZoom(Math.min(1, 1100 / image.naturalWidth, 650 / image.naturalHeight));
               }}
               onClick={placeMarker}
+              onMouseMove={(event) => setPointerPixel(imagePixel(event))}
+              onMouseLeave={() => setPointerPixel(null)}
               className="block max-w-none cursor-crosshair select-none"
               style={{ width: naturalSize.width ? naturalSize.width * zoom : "auto" }}
             />
@@ -125,6 +155,23 @@ export default function PhotoMarkerEditor({
                   top: `${(pixel.y / naturalSize.height) * 100}%`,
                 }}
               />
+            )}
+            {pointerPixel && naturalSize.width > 0 && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute z-10 h-36 w-36 overflow-hidden rounded-full border-2 border-white bg-black shadow-2xl"
+                style={{
+                  left: pointerPixel.x * zoom + 18,
+                  top: pointerPixel.y * zoom + 18,
+                  backgroundImage: `url(${imageUrl})`,
+                  backgroundRepeat: "no-repeat",
+                  backgroundSize: `${naturalSize.width * 2}px ${naturalSize.height * 2}px`,
+                  backgroundPosition: `${72 - pointerPixel.x * 2}px ${72 - pointerPixel.y * 2}px`,
+                }}
+              >
+                <span className="absolute left-1/2 top-0 h-full w-px bg-red-500/90" />
+                <span className="absolute left-0 top-1/2 h-px w-full bg-red-500/90" />
+              </span>
             )}
           </div>
         )}

@@ -29,10 +29,12 @@ from ..gcp_workspace import (
     persist_imported_set,
     point_longitude_latitude,
     point_json,
+    read_image_dimensions,
     safe_upload_name,
     set_json,
     source_checksum,
     update_point_coordinates,
+    validate_observation_pixels,
 )
 from ..map_support import JsonObject, MissionRecord, RouteSession, get_mission
 from ..security import Principal, require_authenticated, require_operator
@@ -602,6 +604,30 @@ def update_ground_control_observation(
                     "current_version": observation.version,
                 },
             )
+        if request.status == "marked":
+            if request.pixel_x is None or request.pixel_y is None:
+                raise HTTPException(status_code=422, detail="Marked GCP pixels are required")
+            width = stored_observation.image_width_px
+            height = stored_observation.image_height_px
+            if width is None or height is None:
+                if not stored_observation.image_s3_key:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="The source image is unavailable for pixel-bound validation",
+                    )
+                try:
+                    width, height = read_image_dimensions(stored_observation.image_s3_key)
+                except (OSError, ValueError) as error:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Unable to validate source image dimensions: {error}",
+                    ) from error
+                stored_observation.image_width_px = width
+                stored_observation.image_height_px = height
+            try:
+                validate_observation_pixels(request.pixel_x, request.pixel_y, width, height)
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
         observation.status = request.status
         observation.pixel_x = request.pixel_x
         observation.pixel_y = request.pixel_y

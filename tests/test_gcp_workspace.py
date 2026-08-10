@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
+from PIL import Image
 
 from importlib import import_module
 
@@ -36,6 +37,26 @@ def test_read_bounded_object_closes_stream(monkeypatch):
     assert stream.closed
 
 
+def test_reads_image_dimensions_incrementally_and_closes_stream(monkeypatch):
+    raw = BytesIO()
+    Image.new("RGB", (320, 240)).save(raw, format="JPEG")
+    stream = BytesIO(raw.getvalue())
+    monkeypatch.setattr(
+        gcp_workspace.storage,
+        "get_object_stream",
+        lambda _key: (stream, len(raw.getvalue()), "image/jpeg"),
+    )
+
+    assert gcp_workspace.read_image_dimensions("datasets/image.jpg") == (320, 240)
+    assert stream.closed
+
+
+def test_rejects_gcp_pixels_outside_original_image():
+    gcp_workspace.validate_observation_pixels(319.999, 239.999, 320, 240)
+    with pytest.raises(ValueError, match="outside"):
+        gcp_workspace.validate_observation_pixels(320, 100, 320, 240)
+
+
 def test_observation_schema_requires_pixels_only_when_marked():
     marked = gcp_schemas.GcpObservationUpdate(status="marked", pixel_x=10, pixel_y=20, version=1)
     assert marked.pixel_x == 10
@@ -43,6 +64,8 @@ def test_observation_schema_requires_pixels_only_when_marked():
         gcp_schemas.GcpObservationUpdate(status="marked", version=1)
     with pytest.raises(ValueError, match="only marked"):
         gcp_schemas.GcpObservationUpdate(status="skipped", pixel_x=10, pixel_y=20, version=1)
+    with pytest.raises(ValueError):
+        gcp_schemas.GcpObservationUpdate(status="marked", pixel_x=float("inf"), pixel_y=20, version=1)
 
 
 def test_point_schema_requires_complete_manual_coordinates():

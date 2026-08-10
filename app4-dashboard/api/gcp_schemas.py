@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-class GcpPointUpdate(BaseModel):
+class FiniteRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
+class GcpPointUpdate(FiniteRequest):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     altitude_m: float | None = None
@@ -29,7 +33,7 @@ class GcpPointUpdate(BaseModel):
         return self
 
 
-class GcpObservationUpdate(BaseModel):
+class GcpObservationUpdate(FiniteRequest):
     status: Literal["candidate", "marked", "skipped"]
     pixel_x: float | None = Field(default=None, ge=0)
     pixel_y: float | None = Field(default=None, ge=0)
