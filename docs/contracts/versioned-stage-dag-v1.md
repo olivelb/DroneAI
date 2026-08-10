@@ -183,11 +183,12 @@ measurements are the baseline for the incremental/content-addressed manifest
 migration rather than a claim that deduplication already exists.
 
 The reader now normalizes deployed manifest v1 and strict
-[`Artifact Manifest v2`](artifact-manifest-v2.md). The writer remains v1 and
-v2 parent overlays are not resolved yet, so no v2 write flag exists in the
-current release. This reader-first order preserves rollback compatibility and
-prevents a delta manifest from being activated before selective
-materialization exists.
+[`Artifact Manifest v2`](artifact-manifest-v2.md). The shared restore engine
+now resolves checksum-verified v2 parent overlays and supports bounded
+selection by role and logical path. Stage adapters still request full restores,
+the writer remains v1, and no v2 write flag exists in the current release.
+This reader-first order preserves rollback compatibility while adapter role
+mappings and selective restore requests are qualified.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,
