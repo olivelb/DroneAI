@@ -56,6 +56,29 @@ one full detection restore, and finally disable the v2 writer.
 Do not enable selective restore for reconstruction, Gaussian training,
 filtering or rasterization without a separate contract and qualification.
 
+## Scoped credential gate for stage Jobs
+
+Every one-shot executor in `staging` or `production` must use its own existing
+Kubernetes Secret. Configure all five names under
+`stageJobs.credentialSecrets`; Helm and the API both fail closed if an entry is
+missing or if two stages share a Secret. Each Secret exposes the standard
+`database-url`, `s3-access-key` and `s3-secret-key` keys. Detection receives its
+separate read-only Hugging Face token in addition to its stage credentials.
+
+The distinct Secret names are only the enforceable deployment boundary. Before
+activation, verify that their values identify distinct database and object
+storage principals: database roles must have no schema, role or database
+administration privilege, and S3 policies must be limited to the DroneAI bucket
+and the exact read/write/delete operations needed by the executor. Account for
+immutable upstream manifests and shared `blobs/sha256/` CAS objects when writing
+those policies. Do not claim credential isolation merely by copying the same
+principal into five differently named Secrets.
+
+Development deployments may omit the map and retain the shared
+`storage.existingSecret` fallback so the single-node BIGZEN workflow remains
+reproducible. That fallback is intentionally rejected when stage Jobs are
+enabled with `dashboardApi.environment=staging` or `production`.
+
 ## Q3 acceptance record
 
 Keep one dated Markdown report under `docs/benchmarks/` and record:
@@ -159,16 +182,18 @@ target environment must satisfy all of the following before activation:
 
 1. All five executor entries use OCI digests or commit-derived immutable tags
    and the reviewed one-shot commands.
-2. The Q3 record demonstrates the complete artifact chain on the target GPU.
-3. Resource requests/limits fit the live quota and one active Job cannot force
+2. All five credential Secrets and their distinct least-privilege principals
+   have been provisioned and reviewed.
+3. The Q3 record demonstrates the complete artifact chain on the target GPU.
+4. Resource requests/limits fit the live quota and one active Job cannot force
    an unreviewed second GPU node.
-4. Database backup and isolated restore have succeeded after the latest schema
+5. Database backup and isolated restore have succeeded after the latest schema
    migration.
-5. Job cancellation, deadline expiry, missing-Job reconciliation and a retry
+6. Job cancellation, deadline expiry, missing-Job reconciliation and a retry
    with a new attempt identity have been observed.
-6. The operator can find stage status, heartbeat age, artifact checksum,
+7. The operator can find stage status, heartbeat age, artifact checksum,
    quality metrics and exact failure reason from the mission detail view.
-7. A rollback revision and deep-sleep procedure have been reviewed.
+8. A rollback revision and deep-sleep procedure have been reviewed.
 
 Enabling the flag is a reviewed deployment change, not a code-side default. On
 the single-node distributed installer, set `STAGE_JOBS_IMAGE_TAG` to the exact

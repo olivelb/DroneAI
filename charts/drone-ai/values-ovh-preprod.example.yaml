@@ -112,6 +112,14 @@ dashboardFrontend:
   service:
     type: ClusterIP
 
+stageJobs:
+  credentialSecrets:
+    reconstruction: drone-ai-stage-reconstruction-preprod
+    gaussian_training: drone-ai-stage-gaussian-training-preprod
+    gaussian_filtering: drone-ai-stage-gaussian-filtering-preprod
+    rasterization: drone-ai-stage-rasterization-preprod
+    detection: drone-ai-stage-detection-preprod
+
 ingress:
   enabled: true
   className: traefik

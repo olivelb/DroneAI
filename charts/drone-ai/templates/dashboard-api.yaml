@@ -4,6 +4,20 @@
 {{- if and .Values.stageJobs.detectionFanout.enabled (not .Values.stageJobs.artifactSelectiveRestoreEnabled) }}
 {{- fail "stageJobs.detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true" }}
 {{- end }}
+{{- $protectedStageJobEnvironment := or (eq .Values.dashboardApi.environment "staging") (eq .Values.dashboardApi.environment "production") }}
+{{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
+{{- $seenCredentialSecrets := dict }}
+{{- range $stage := list "reconstruction" "gaussian_training" "gaussian_filtering" "rasterization" "detection" }}
+{{- $secretName := index $.Values.stageJobs.credentialSecrets $stage | default "" }}
+{{- if not $secretName }}
+{{- fail (printf "stageJobs.credentialSecrets.%s is required when stage Jobs are enabled in %s" $stage $.Values.dashboardApi.environment) }}
+{{- end }}
+{{- if hasKey $seenCredentialSecrets $secretName }}
+{{- fail "stageJobs.credentialSecrets must use one distinct Secret per stage" }}
+{{- end }}
+{{- $_ := set $seenCredentialSecrets $secretName true }}
+{{- end }}
+{{- end }}
 # --- ServiceAccount ---
 apiVersion: v1
 kind: ServiceAccount
@@ -188,6 +202,8 @@ spec:
           value: {{ .Values.stageJobs.scheduler.resourceConcurrency | toJson | quote }}
         - name: DRONEAI_STAGE_EXECUTORS_JSON
           value: {{ .Values.stageJobs.executors | toJson | quote }}
+        - name: DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON
+          value: {{ .Values.stageJobs.credentialSecrets | toJson | quote }}
         - name: DRONEAI_STAGE_JOB_SERVICE_ACCOUNT
           value: {{ .Values.stageJobs.serviceAccountName | quote }}
         - name: DRONEAI_STAGE_JOB_ACTIVE_DEADLINE_SECONDS

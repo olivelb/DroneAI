@@ -1,4 +1,5 @@
 import importlib
+import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -327,6 +328,75 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
 
     with pytest.raises(ValueError, match="Missing one-shot executor"):
         orchestrator.settings_from_environment()
+
+
+def test_protected_stage_jobs_require_distinct_scoped_credential_secrets(
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_ENV", "staging")
+
+    with pytest.raises(ValueError, match="one distinct credential Secret"):
+        orchestrator.settings_from_environment()
+
+
+def test_stage_credential_secret_map_is_complete_and_never_shared(monkeypatch):
+    incomplete = {stage: f"credentials-{stage}" for stage in _executors()}
+    incomplete.pop("detection")
+    monkeypatch.setenv(
+        "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON",
+        json.dumps(incomplete),
+    )
+    with pytest.raises(ValueError, match="Missing stage credential Secret entries"):
+        orchestrator.settings_from_environment()
+
+    shared = {stage: "shared-credentials" for stage in _executors()}
+    monkeypatch.setenv(
+        "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON",
+        json.dumps(shared),
+    )
+    with pytest.raises(ValueError, match="distinct credential Secret"):
+        orchestrator.settings_from_environment()
+
+
+@pytest.mark.parametrize("stage", tuple(_executors()))
+def test_reserved_jobs_receive_only_their_stage_credential_secret(
+    stage_sessions,
+    monkeypatch,
+    stage,
+):
+    secret_names = {stage: f"credentials-{stage}" for stage in _executors()}
+    monkeypatch.setenv(
+        "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON",
+        json.dumps(secret_names),
+    )
+    parsed = orchestrator.settings_from_environment()
+    _add_run(
+        stage_sessions,
+        "mission-scoped",
+        "owner-a",
+        "6" * 32,
+        stage=stage,
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(
+                job_secret_environment_by_stage=(
+                    parsed.job_secret_environment_by_stage
+                ),
+            ),
+            datetime.now(UTC),
+        )
+
+    secrets = reserved[0].config.secret_environment
+    assert {item.secret_name for item in secrets} == {f"credentials-{stage}"}
+    assert {item.name for item in secrets} == {
+        "DATABASE_URL",
+        "S3_ACCESS_KEY",
+        "S3_SECRET_KEY",
+    }
 
 
 def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):

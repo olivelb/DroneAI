@@ -430,6 +430,15 @@ kubectl -n drone-ai-preprod create secret generic drone-ai-api-auth \
   --from-literal=session-secret='<RANDOM_32_PLUS_CHAR_SESSION_SECRET>'
 ```
 
+The shared storage Secret is sufficient only while bounded stage Jobs remain
+disabled. Before setting `stageJobs.enabled=true`, provision the five existing
+Secrets named by `stageJobs.credentialSecrets` in the preproduction values.
+Each must contain `database-url`, `s3-access-key` and `s3-secret-key`, using a
+distinct least-privilege database and object-storage principal. Helm rejects a
+missing entry or a reused Secret name; the activation review must additionally
+verify that the underlying principals are not copies of the same credentials.
+See the [scoped credential gate](OPERATIONS.md#scoped-credential-gate-for-stage-jobs).
+
 Do not reuse examples or local-development passwords. Create `hf-token` only
 before enabling a SAM3 detection Job (or the compatibility IA worker):
 
