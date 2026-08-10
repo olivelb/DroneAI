@@ -62,9 +62,10 @@ The rollout is deliberately asymmetric:
 3. Add parent-overlay resolution and selective materialization. **Done for the
    shared restore engine:** every parent checksum is verified recursively and
    callers can select exact logical paths, roles, or their union.
-4. Enable the v2 writer behind a disabled-by-default environment flag. **Writer
-   engine done:** `publish_workspace_v2` publishes only new or changed CAS
-   blobs and a delta manifest, but no stage adapter calls it yet.
+4. Enable the v2 writer behind a disabled-by-default environment flag. **Done:**
+   bounded stage adapters use `publish_workspace_v2` only when
+   `DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED=true`; the Helm value
+   `stageJobs.artifactManifestV2WriteEnabled` defaults to `false`.
 5. Qualify complete products and rollback before enabling another target.
 
 The restore engine resolves parents before children, so a child file replaces
@@ -76,11 +77,11 @@ closed if an explicit path is absent or if nothing matches. Legacy v1 files
 have the synthetic role `legacy`, so their useful selective key is the exact
 logical path.
 
-The deployed stage adapters still request a full restore and the writer still
-publishes v1. Consequently, this engine capability does not change production
-I/O yet. Existing v1 artifacts remain readable and no bulk rewrite is planned;
-role mappings and selective requests will be activated per adapter before the
-v2 writer rollout.
+The deployed stage adapters still request a full restore and publish v1 under
+the default configuration. Existing v1 artifacts remain readable and no bulk
+rewrite is planned. When explicitly enabled, each adapter records exact parent
+manifests and assigns stable roles to its state, Gaussian model, raster and
+detection products. Selective restore requests remain a separate rollout step.
 
 The current CAS publisher is intentionally not called by the v1 writer. It
 uses a conditional single-part `PutObject` and fails closed above the S3 5 GiB
@@ -91,5 +92,7 @@ to a non-conditional overwrite is forbidden.
 The v2 writer verifies and resolves every declared parent, inherits unchanged
 files, and rejects a missing inherited path because manifest v2 has no deletion
 tombstone. Existing CAS blobs count as reused bytes; only newly transferred
-blob bytes and the new manifest count as uploaded bytes. This API is currently
-an inactive rollout primitive, not a production configuration switch.
+blob bytes and the new manifest count as uploaded bytes. The configuration
+switch is intentionally off in every default environment. It must not be
+enabled for a stage capable of producing a blob above 5 GiB until multipart
+CAS publication is implemented and qualified.

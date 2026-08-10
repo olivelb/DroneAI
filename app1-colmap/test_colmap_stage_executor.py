@@ -177,6 +177,49 @@ def test_reconstruction_adapter_cleans_workspace_after_failure(tmp_path, monkeyp
     assert not (tmp_path / "work" / ("a" * 32)).exists()
 
 
+def test_v2_workspace_publication_preserves_exact_parent_and_roles(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    captured = {}
+
+    def publish_v2(workspace, prefix, **kwargs):
+        captured.update(kwargs)
+        return PublishedWorkspace(
+            manifest_key=f"{prefix}/manifest.json",
+            uri=f"s3://drone-ai/{prefix}/manifest.json",
+            checksum_sha256="c" * 64,
+            size_bytes=1,
+            file_count=1,
+        )
+
+    monkeypatch.setattr(
+        stage_executor,
+        "artifact_manifest_v2_write_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(stage_executor, "publish_workspace_v2", publish_v2)
+    context = _context(
+        stage="gaussian_training",
+        input_kind="reconstruction_workspace",
+    )
+
+    stage_executor._publish_stage_workspace(
+        context,
+        FakeControl(),
+        workspace,
+        stage="gaussian-training",
+        role_overrides={"model.ply": "gaussian-model"},
+    )
+
+    assert captured["default_role"] == "gaussian-training-workspace"
+    assert captured["role_overrides"] == {"model.ply": "gaussian-model"}
+    assert captured["parents"][0].artifact_id == "artifact-1"
+    assert captured["parents"][0].manifest_key == "upstream/manifest.json"
+
+
 def _mock_workspace_transfer(monkeypatch, calls):
     def restore(manifest_key, destination, checksum, cancellation_check):
         calls.append("restore")

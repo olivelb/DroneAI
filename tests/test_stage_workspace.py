@@ -94,6 +94,16 @@ def test_workspace_round_trip_is_manifested_and_checksum_verified(tmp_path, fake
     assert (destination / "sparse" / "0" / "cameras.bin").read_bytes() == b"cameras"
 
 
+def test_v2_writer_rollout_switch_is_strict_and_disabled_by_default(monkeypatch):
+    monkeypatch.delenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, raising=False)
+    assert stage_workspace.artifact_manifest_v2_write_enabled() is False
+    monkeypatch.setenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, "true")
+    assert stage_workspace.artifact_manifest_v2_write_enabled() is True
+    monkeypatch.setenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, "sometimes")
+    with pytest.raises(ValueError, match="explicit boolean"):
+        stage_workspace.artifact_manifest_v2_write_enabled()
+
+
 def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s3):
     source = tmp_path / "source"
     source.mkdir()

@@ -147,6 +147,7 @@ def settings_from_environment() -> StageOrchestratorSettings:
             "S3_BUCKET",
             "S3_REGION",
             "S3_PUBLIC_ENDPOINT",
+            "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED",
         )
         if name in os.environ
     )

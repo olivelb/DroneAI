@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import time
 from collections.abc import Callable
@@ -27,6 +28,20 @@ from shared.config import S3_BUCKET
 WORKSPACE_MANIFEST_VERSION = 1
 MAX_OVERLAY_MANIFESTS = 64
 MAX_MATERIALIZED_FILES = 100_000
+ARTIFACT_MANIFEST_V2_WRITE_ENV = "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED"
+
+
+def artifact_manifest_v2_write_enabled() -> bool:
+    """Return the strict, disabled-by-default v2 writer rollout switch."""
+
+    raw = os.getenv(ARTIFACT_MANIFEST_V2_WRITE_ENV, "false").strip().lower()
+    if raw in {"false", "0", "no", "off"}:
+        return False
+    if raw in {"true", "1", "yes", "on"}:
+        return True
+    raise ValueError(
+        f"{ARTIFACT_MANIFEST_V2_WRITE_ENV} must be an explicit boolean, not {raw!r}"
+    )
 
 
 @dataclass(frozen=True)

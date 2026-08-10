@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from pipeline_support import inspect_sparse_quality
+from shared.artifact_manifest import ManifestParent
 from shared.stage_execution import (
     StageExecutionContext,
     StageExecutionControl,
@@ -17,7 +18,9 @@ from shared.stage_execution import (
 from shared.stage_workspace import (
     PublishedWorkspace,
     RestoredWorkspace,
+    artifact_manifest_v2_write_enabled,
     publish_workspace,
+    publish_workspace_v2,
     restore_workspace_measured,
     workspace_transfer_provenance,
 )
@@ -68,14 +71,36 @@ def _publish_stage_workspace(
     workspace: Path,
     *,
     stage: str,
+    role_overrides: dict[str, str] | None = None,
 ) -> PublishedWorkspace:
     prefix = (
         f"missions/{context.vol_id}/stage-runs/"
         f"{context.run_id}/{stage}-workspace"
     )
-    return publish_workspace(
+    if not artifact_manifest_v2_write_enabled():
+        return publish_workspace(
+            workspace,
+            prefix,
+            cancellation_check=control.raise_if_cancelled,
+        )
+    parents: list[ManifestParent] = []
+    for source in context.inputs:
+        manifest_key = source.metadata.get("manifest_key")
+        if not isinstance(manifest_key, str) or not manifest_key:
+            raise ValueError("Upstream workspace artifact has no manifest key")
+        parents.append(
+            ManifestParent(
+                artifact_id=source.artifact_id,
+                manifest_key=manifest_key,
+                checksum_sha256=source.checksum_sha256,
+            )
+        )
+    return publish_workspace_v2(
         workspace,
         prefix,
+        default_role=f"{stage}-workspace",
+        role_overrides=role_overrides,
+        parents=tuple(parents),
         cancellation_check=control.raise_if_cancelled,
     )
 
@@ -139,6 +164,9 @@ def run_reconstruction_stage(
             control,
             workspace,
             stage="reconstruction",
+            role_overrides={
+                STATE_RELATIVE_PATH.as_posix(): "reconstruction-state",
+            },
         )
         quality = cast(
             dict[str, Any],
@@ -231,6 +259,10 @@ def run_gaussian_training_stage(
             control,
             workspace,
             stage="gaussian-training",
+            role_overrides={
+                ".droneai/gaussian-training-state.json": "gaussian-training-state",
+                model_path.relative_to(workspace).as_posix(): "gaussian-model",
+            },
         )
         return StageExecutionResult(
             kind="gaussian_training_workspace",
@@ -340,6 +372,12 @@ def run_gaussian_filtering_stage(
             control,
             workspace,
             stage="gaussian-filtering",
+            role_overrides={
+                ".droneai/gaussian-filtering-state.json": "gaussian-filtering-state",
+                filtered_model_path.relative_to(workspace).as_posix(): (
+                    "filtered-gaussian-model"
+                ),
+            },
         )
         return StageExecutionResult(
             kind="gaussian_filtering_workspace",
@@ -440,11 +478,27 @@ def run_rasterization_stage(
             final_ply=str(artifact.model_path),
             cupy_version=cp.__version__,
         )
+        ortho_relative = Path(result["ortho_file"]).relative_to(workspace).as_posix()
+        height_relative = Path(result["height_file"]).relative_to(workspace).as_posix()
+        coverage_relative = (
+            Path(result["gaussian_coverage_report"])
+            .relative_to(workspace)
+            .as_posix()
+            if result.get("gaussian_coverage_report")
+            else None
+        )
+        raster_roles = {
+            ortho_relative: "raster-orthomosaic",
+            height_relative: "raster-height",
+        }
+        if coverage_relative is not None:
+            raster_roles[coverage_relative] = "raster-coverage-report"
         published = _publish_stage_workspace(
             context,
             control,
             workspace,
             stage="rasterization",
+            role_overrides=raster_roles,
         )
         coverage = cast(dict[str, Any] | None, result.get("gaussian_coverage"))
         quality_metrics: dict[str, Any] = {
@@ -462,19 +516,9 @@ def run_rasterization_stage(
             metadata={
                 "manifest_key": published.manifest_key,
                 "file_count": published.file_count,
-                "ortho_file": Path(result["ortho_file"])
-                .relative_to(workspace)
-                .as_posix(),
-                "height_file": Path(result["height_file"])
-                .relative_to(workspace)
-                .as_posix(),
-                "coverage_report": (
-                    Path(result["gaussian_coverage_report"])
-                    .relative_to(workspace)
-                    .as_posix()
-                    if result.get("gaussian_coverage_report")
-                    else None
-                ),
+                "ortho_file": ortho_relative,
+                "height_file": height_relative,
+                "coverage_report": coverage_relative,
                 "crs": result["coordinate_system"],
                 "raster_extent": result["raster_extent"],
             },
