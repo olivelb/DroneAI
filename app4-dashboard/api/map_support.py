@@ -94,6 +94,7 @@ class RouteSession(Protocol):
 class MissionRecord(Protocol):
     id: int
     owner_subject: str
+    input_dataset: str | None
     tiling_metadata: JsonObject | None
 
 
