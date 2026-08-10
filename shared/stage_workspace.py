@@ -15,7 +15,10 @@ from shared import storage
 from shared.artifact_manifest import (
     ROLE_PATTERN,
     ArtifactManifest,
+    ManifestBlob,
     ManifestFile,
+    ManifestParent,
+    canonical_v2_bytes,
     parse_artifact_manifest,
 )
 from shared.checksums import sha256_file
@@ -194,23 +197,140 @@ def publish_workspace(
     )
 
 
-def restore_workspace_measured(
+def publish_workspace_v2(
+    workspace: str | Path,
+    s3_prefix: str,
+    *,
+    default_role: str,
+    role_overrides: dict[str, str] | None = None,
+    parents: tuple[ManifestParent, ...] = (),
+    cancellation_check: Callable[[], None] | None = None,
+) -> PublishedWorkspace:
+    """Publish a verified incremental CAS overlay.
+
+    Unchanged parent files remain inherited. Deletion is deliberately
+    unsupported until the manifest contract gains explicit tombstones.
+    """
+
+    started_at = time.monotonic()
+    root = Path(workspace).resolve(strict=True)
+    if not root.is_dir():
+        raise NotADirectoryError(root)
+    prefix = s3_prefix.strip("/")
+    if not prefix:
+        raise ValueError("Workspace S3 prefix cannot be empty")
+    overrides = role_overrides or {}
+    for override_path, role in overrides.items():
+        _safe_relative_path(override_path)
+        if not ROLE_PATTERN.fullmatch(role):
+            raise ValueError(f"Invalid workspace artifact role: {role!r}")
+    if not ROLE_PATTERN.fullmatch(default_role):
+        raise ValueError(f"Invalid workspace artifact role: {default_role!r}")
+
+    inherited: dict[str, ManifestFile] = {}
+    for parent in parents:
+        _manifest, parent_files, _manifest_bytes = _load_manifest_overlay(
+            parent.manifest_key,
+            parent.checksum_sha256,
+            cancellation_check=cancellation_check,
+        )
+        for relative, entry in parent_files.items():
+            existing = inherited.get(relative)
+            if existing is not None and existing != entry:
+                raise ValueError(f"Conflicting parent overlay path: {relative}")
+            inherited[relative] = entry
+
+    files: list[ManifestFile] = []
+    local_paths: set[str] = set()
+    logical_bytes = 0
+    transferred_bytes = 0
+    reused_bytes = 0
+    for file_path in sorted(root.rglob("*")):
+        if cancellation_check is not None:
+            cancellation_check()
+        if file_path.is_symlink():
+            raise ValueError(f"Workspace cannot publish symbolic link: {file_path}")
+        if not file_path.is_file():
+            continue
+        relative = file_path.relative_to(root).as_posix()
+        local_paths.add(relative)
+        size = file_path.stat().st_size
+        digest = sha256_file(file_path)
+        logical_bytes += size
+        parent_entry = inherited.get(relative)
+        if (
+            parent_entry is not None
+            and parent_entry.blob.size_bytes == size
+            and parent_entry.blob.checksum_sha256 == digest
+        ):
+            reused_bytes += size
+            continue
+        uploaded = storage.publish_content_addressed_file(file_path)
+        transferred_bytes += uploaded.transferred_bytes
+        if uploaded.reused:
+            reused_bytes += size
+        files.append(
+            ManifestFile(
+                path=relative,
+                role=overrides.get(relative, default_role),
+                blob=ManifestBlob(
+                    key=uploaded.key,
+                    size_bytes=uploaded.size_bytes,
+                    checksum_sha256=uploaded.checksum_sha256,
+                ),
+            )
+        )
+
+    missing_inherited = set(inherited) - local_paths
+    if missing_inherited:
+        raise ValueError(
+            "Artifact Manifest v2 cannot implicitly delete inherited files: "
+            f"{sorted(missing_inherited)}"
+        )
+    manifest = ArtifactManifest(2, tuple(files), parents)
+    canonical = canonical_v2_bytes(manifest)
+    digest = hashlib.sha256(canonical).hexdigest()
+    manifest_key = f"{prefix}/manifest.json"
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix="droneai-workspace-v2-",
+        suffix=".json",
+        delete=False,
+    ) as descriptor:
+        manifest_path = Path(descriptor.name)
+        descriptor.write(canonical)
+    try:
+        verified_manifest = storage.upload_verified_file(manifest_path, manifest_key)
+        if verified_manifest["sha256"] != digest:
+            raise OSError("Workspace manifest changed before S3 publication")
+    finally:
+        manifest_path.unlink(missing_ok=True)
+    manifest_size = int(verified_manifest["size"])
+    return PublishedWorkspace(
+        manifest_key=manifest_key,
+        uri=f"s3://{S3_BUCKET}/{manifest_key}",
+        checksum_sha256=digest,
+        size_bytes=logical_bytes,
+        file_count=len(local_paths),
+        uploaded_bytes=transferred_bytes + manifest_size,
+        reused_bytes=reused_bytes,
+        upload_seconds=round(time.monotonic() - started_at, 6),
+        manifest_size_bytes=manifest_size,
+    )
+
+
+def _load_manifest_overlay(
     manifest_key: str,
-    destination: str | Path,
     expected_checksum_sha256: str,
     *,
     cancellation_check: Callable[[], None] | None = None,
-    selection: WorkspaceSelection | None = None,
-) -> RestoredWorkspace:
-    started_at = time.monotonic()
-    destination_root = Path(destination).resolve()
-    destination_root.mkdir(parents=True, exist_ok=True)
+) -> tuple[ArtifactManifest, dict[str, ManifestFile], int]:
     manifest_bytes_total = 0
     loaded_count = 0
     active: set[tuple[str, str]] = set()
     cache: dict[tuple[str, str], tuple[ArtifactManifest, dict[str, ManifestFile]]] = {}
 
-    def load_overlay(key: str, checksum: str) -> tuple[ArtifactManifest, dict[str, ManifestFile]]:
+    def load(key: str, checksum: str) -> tuple[ArtifactManifest, dict[str, ManifestFile]]:
         nonlocal manifest_bytes_total, loaded_count
         identity = (key, checksum)
         if identity in active:
@@ -222,7 +342,11 @@ def restore_workspace_measured(
             raise ValueError("Artifact manifest overlay exceeds its manifest limit")
         if cancellation_check is not None:
             cancellation_check()
-        with tempfile.NamedTemporaryFile(prefix="droneai-workspace-", suffix=".json", delete=False) as descriptor:
+        with tempfile.NamedTemporaryFile(
+            prefix="droneai-workspace-",
+            suffix=".json",
+            delete=False,
+        ) as descriptor:
             path = Path(descriptor.name)
         try:
             storage.download_file(key, path)
@@ -238,7 +362,7 @@ def restore_workspace_measured(
         inherited: dict[str, ManifestFile] = {}
         try:
             for parent in manifest.parents:
-                _parent_manifest, parent_files = load_overlay(
+                _parent_manifest, parent_files = load(
                     parent.manifest_key,
                     parent.checksum_sha256,
                 )
@@ -256,7 +380,26 @@ def restore_workspace_measured(
         cache[identity] = (manifest, inherited)
         return cache[identity]
 
-    manifest, resolved_files = load_overlay(manifest_key, expected_checksum_sha256)
+    manifest, resolved = load(manifest_key, expected_checksum_sha256)
+    return manifest, resolved, manifest_bytes_total
+
+
+def restore_workspace_measured(
+    manifest_key: str,
+    destination: str | Path,
+    expected_checksum_sha256: str,
+    *,
+    cancellation_check: Callable[[], None] | None = None,
+    selection: WorkspaceSelection | None = None,
+) -> RestoredWorkspace:
+    started_at = time.monotonic()
+    destination_root = Path(destination).resolve()
+    destination_root.mkdir(parents=True, exist_ok=True)
+    manifest, resolved_files, manifest_bytes_total = _load_manifest_overlay(
+        manifest_key,
+        expected_checksum_sha256,
+        cancellation_check=cancellation_check,
+    )
     selected_files = [
         entry
         for entry in resolved_files.values()

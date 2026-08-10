@@ -62,7 +62,9 @@ The rollout is deliberately asymmetric:
 3. Add parent-overlay resolution and selective materialization. **Done for the
    shared restore engine:** every parent checksum is verified recursively and
    callers can select exact logical paths, roles, or their union.
-4. Enable the v2 writer behind a disabled-by-default environment flag.
+4. Enable the v2 writer behind a disabled-by-default environment flag. **Writer
+   engine done:** `publish_workspace_v2` publishes only new or changed CAS
+   blobs and a delta manifest, but no stage adapter calls it yet.
 5. Qualify complete products and rollback before enabling another target.
 
 The restore engine resolves parents before children, so a child file replaces
@@ -85,3 +87,9 @@ uses a conditional single-part `PutObject` and fails closed above the S3 5 GiB
 single-object request limit. Multipart CAS publication for larger files must
 land before the v2 writer can accept such an artifact; silently falling back
 to a non-conditional overwrite is forbidden.
+
+The v2 writer verifies and resolves every declared parent, inherits unchanged
+files, and rejects a missing inherited path because manifest v2 has no deletion
+tombstone. Existing CAS blobs count as reused bytes; only newly transferred
+blob bytes and the new manifest count as uploaded bytes. This API is currently
+an inactive rollout primitive, not a production configuration switch.
