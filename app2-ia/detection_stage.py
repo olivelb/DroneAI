@@ -27,9 +27,11 @@ from shared.stage_execution import (
     StageExecutionResult,
 )
 from shared.stage_workspace import (
+    RestoredWorkspace,
     publish_workspace,
     resolve_workspace_path,
-    restore_workspace,
+    restore_workspace_measured,
+    workspace_transfer_provenance,
 )
 from shared.validation import safe_child_path
 
@@ -195,6 +197,12 @@ class DetectionStageRunner:
                 self.config.overlap,
             )
             tile_count = len(x_starts) * len(y_starts)
+            planned_inference_pixels = sum(
+                min(self.config.tile_size, source.width - x)
+                * min(self.config.tile_size, source.height - y)
+                for y in y_starts
+                for x in x_starts
+            )
             if tile_count > self.config.maximum_tiles:
                 raise ValueError(
                     f"Detection plan exceeds {self.config.maximum_tiles} tiles"
@@ -242,6 +250,11 @@ class DetectionStageRunner:
                 "tile_size": self.config.tile_size,
                 "tile_overlap": self.config.overlap,
                 "tile_count": tile_count,
+                "planned_inference_pixels": planned_inference_pixels,
+                "pixel_amplification_ratio": round(
+                    planned_inference_pixels / max(1, source.width * source.height),
+                    6,
+                ),
             }
         shutil.rmtree(tiles_dir, ignore_errors=True)
         if model_manifest is None:
@@ -259,7 +272,7 @@ def _restore_raster_workspace(
     context: StageExecutionContext,
     control: StageExecutionControl,
     workspace: Path,
-) -> Path:
+) -> tuple[Path, RestoredWorkspace]:
     if len(context.inputs) != 1 or context.inputs[0].kind != "raster_product_workspace":
         raise ValueError("Detection requires exactly one raster product workspace")
     source = context.inputs[0]
@@ -269,7 +282,7 @@ def _restore_raster_workspace(
         raise ValueError("Raster workspace artifact has no manifest key")
     if not isinstance(ortho_relative, str) or not ortho_relative:
         raise ValueError("Raster workspace artifact has no orthomosaic path")
-    restore_workspace(
+    restored = restore_workspace_measured(
         manifest_key,
         workspace,
         source.checksum_sha256,
@@ -278,7 +291,7 @@ def _restore_raster_workspace(
     raster_path = resolve_workspace_path(workspace, ortho_relative)
     if not raster_path.is_file():
         raise FileNotFoundError(raster_path)
-    return cast(Path, raster_path)
+    return raster_path, restored
 
 
 def run_detection_stage(
@@ -290,7 +303,7 @@ def run_detection_stage(
         shutil.rmtree(workspace)
     workspace.mkdir(parents=True)
     try:
-        raster_path = _restore_raster_workspace(context, control, workspace)
+        raster_path, restored = _restore_raster_workspace(context, control, workspace)
         config = DetectionStageConfig.from_context(context)
         raw, model_manifest, raster_metadata = DetectionStageRunner(
             context,
@@ -354,11 +367,32 @@ def run_detection_stage(
                 "raw_detection_count": len(raw),
                 "deduplicated_detection_count": len(detections),
                 "geolocated_feature_count": len(collection["features"]),
+                "planned_inference_pixels": raster_metadata[
+                    "planned_inference_pixels"
+                ],
+                "pixel_amplification_ratio": raster_metadata[
+                    "pixel_amplification_ratio"
+                ],
             },
             provenance={
                 "stage_adapter": "detection-v1",
                 "backend": config.backend,
                 "model_manifest": model_manifest,
+                "tile_plan": {
+                    "tile_count": raster_metadata["tile_count"],
+                    "tile_size": raster_metadata["tile_size"],
+                    "tile_overlap": raster_metadata["tile_overlap"],
+                    "planned_inference_pixels": raster_metadata[
+                        "planned_inference_pixels"
+                    ],
+                    "pixel_amplification_ratio": raster_metadata[
+                        "pixel_amplification_ratio"
+                    ],
+                },
+                "workspace_transfer": workspace_transfer_provenance(
+                    published,
+                    restored,
+                ),
             },
         )
     finally:

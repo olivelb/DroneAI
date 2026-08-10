@@ -174,7 +174,13 @@ verified files. Publication rejects symbolic links, records relative path,
 size and SHA-256 for every file, and uses the manifest SHA-256 as the stage
 artifact checksum. Restoration rejects absolute/traversal/duplicate paths and
 removes any file whose downloaded size or digest differs. Both directions call
-the cooperative cancellation hook between files.
+the cooperative cancellation hook between files. Every bounded adapter records
+a versioned `workspace_transfer` provenance block for publication and, when
+applicable, restoration: logical bytes, file count, transferred bytes, reused
+bytes, manifest bytes and elapsed time. The v1 transfer still republishes and
+restores the complete workspace, so `reused_bytes` is intentionally zero; these
+measurements are the baseline for the incremental/content-addressed manifest
+migration rather than a claim that deduplication already exists.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,
@@ -200,6 +206,12 @@ what prevents a later raster Job from applying Sim3/PCA transforms twice.
 state and produces raw RGB, height and extent buffers with explicit dimensions.
 It cannot invoke training or filtering. The legacy workflow calls the same
 function before its unchanged coverage gates and GeoTIFF writer.
+
+The bounded detection adapter also records its deterministic tile-plan cost:
+tile count, size, overlap, planned inference pixels and the ratio between those
+pixels and the source raster. This makes overlap amplification and scenes above
+the current single-Job envelope measurable before detection is split into
+fan-out/fan-in shards.
 
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -24,6 +25,50 @@ class PublishedWorkspace:
     checksum_sha256: str
     size_bytes: int
     file_count: int
+    uploaded_bytes: int = 0
+    reused_bytes: int = 0
+    upload_seconds: float = 0.0
+    manifest_size_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class RestoredWorkspace:
+    size_bytes: int
+    file_count: int
+    downloaded_bytes: int
+    reused_bytes: int
+    download_seconds: float
+    manifest_size_bytes: int
+
+
+def workspace_transfer_provenance(
+    published: PublishedWorkspace,
+    restored: RestoredWorkspace | None = None,
+) -> dict[str, Any]:
+    """Return the stable v1 transfer measurement stored in stage provenance."""
+
+    transfer: dict[str, Any] = {
+        "schema_version": 1,
+        "manifest_schema_version": WORKSPACE_MANIFEST_VERSION,
+        "publish": {
+            "logical_bytes": published.size_bytes,
+            "file_count": published.file_count,
+            "transferred_bytes": published.uploaded_bytes,
+            "reused_bytes": published.reused_bytes,
+            "manifest_bytes": published.manifest_size_bytes,
+            "duration_seconds": published.upload_seconds,
+        },
+    }
+    if restored is not None:
+        transfer["restore"] = {
+            "logical_bytes": restored.size_bytes,
+            "file_count": restored.file_count,
+            "transferred_bytes": restored.downloaded_bytes,
+            "reused_bytes": restored.reused_bytes,
+            "manifest_bytes": restored.manifest_size_bytes,
+            "duration_seconds": restored.download_seconds,
+        }
+    return transfer
 
 
 def _canonical(payload: dict[str, Any]) -> bytes:
@@ -58,6 +103,7 @@ def publish_workspace(
     *,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
+    started_at = time.monotonic()
     root = Path(workspace).resolve(strict=True)
     if not root.is_dir():
         raise NotADirectoryError(root)
@@ -108,16 +154,24 @@ def publish_workspace(
         checksum_sha256=digest,
         size_bytes=sum(cast(int, entry["size"]) for entry in entries),
         file_count=len(entries),
+        uploaded_bytes=(
+            sum(cast(int, entry["size"]) for entry in entries)
+            + int(verified_manifest["size"])
+        ),
+        reused_bytes=0,
+        upload_seconds=round(time.monotonic() - started_at, 6),
+        manifest_size_bytes=int(verified_manifest["size"]),
     )
 
 
-def restore_workspace(
+def restore_workspace_measured(
     manifest_key: str,
     destination: str | Path,
     expected_checksum_sha256: str,
     *,
     cancellation_check: Callable[[], None] | None = None,
-) -> int:
+) -> RestoredWorkspace:
+    started_at = time.monotonic()
     destination_root = Path(destination).resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
@@ -144,6 +198,7 @@ def restore_workspace(
         raise ValueError("Workspace manifest files must be a list")
     prefix = manifest_key.removesuffix("/manifest.json").rstrip("/")
     seen: set[str] = set()
+    restored_bytes = 0
     for raw_entry in raw_entries:
         if cancellation_check is not None:
             cancellation_check()
@@ -175,4 +230,29 @@ def restore_workspace(
                 f"Workspace file verification failed for {relative_raw}: "
                 f"size={actual_size}/{expected_size}, sha256={actual_digest}/{expected_digest}"
             )
-    return len(seen)
+        restored_bytes += actual_size
+    return RestoredWorkspace(
+        size_bytes=restored_bytes,
+        file_count=len(seen),
+        downloaded_bytes=len(manifest_bytes) + restored_bytes,
+        reused_bytes=0,
+        download_seconds=round(time.monotonic() - started_at, 6),
+        manifest_size_bytes=len(manifest_bytes),
+    )
+
+
+def restore_workspace(
+    manifest_key: str,
+    destination: str | Path,
+    expected_checksum_sha256: str,
+    *,
+    cancellation_check: Callable[[], None] | None = None,
+) -> int:
+    """Restore a v1 workspace and preserve the legacy file-count return value."""
+
+    return restore_workspace_measured(
+        manifest_key,
+        destination,
+        expected_checksum_sha256,
+        cancellation_check=cancellation_check,
+    ).file_count
