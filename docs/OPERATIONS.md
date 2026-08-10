@@ -273,7 +273,8 @@ predates idempotent cancellation cleanup and was retired during the drill.
 The durable recovery set is:
 
 - PostgreSQL/PostGIS backup containing mission, stage, artifact and audit rows;
-- versioned S3 mission objects and checksum manifests;
+- versioned S3 mission objects, GCP source/marking rows, content-addressed GCP
+  bundles and checksum manifests;
 - remote versioned Terraform state plus its lock configuration;
 - Git commit, image digests and the applicable Q3 report.
 

@@ -1,6 +1,7 @@
 import type {
   FeatureBulkAction,
   GcpCollection,
+  GcpBundle,
   GcpFeature,
   GcpImportOptions,
   GcpObservation,
@@ -542,6 +543,31 @@ export const updateGroundControlObservation = (
     body: JSON.stringify(request),
   },
 );
+
+export const prepareGroundControlBundle = (missionId: string, setId: string) =>
+  api<GcpBundle>(
+    `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/bundle`,
+    { method: "POST" },
+  );
+
+export const refreshGroundControlCandidates = (
+  missionId: string,
+  setId: string,
+  candidateRadiusM = 250,
+  maxCandidates = 20,
+) => {
+  const query = new URLSearchParams({
+    candidate_radius_m: String(candidateRadiusM),
+    max_candidates: String(maxCandidates),
+  });
+  return api<{
+    gcp_set: GcpCollection;
+    candidate_generation: { added_observation_count: number };
+  }>(
+    `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/candidates/refresh?${query}`,
+    { method: "POST" },
+  );
+};
 
 type SaveFilePickerType = {
   description: string;

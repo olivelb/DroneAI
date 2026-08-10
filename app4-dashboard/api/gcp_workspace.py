@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import cast
@@ -15,6 +16,12 @@ from sqlalchemy import func
 from shared import storage
 from shared.database import GcpObservation, GcpPoint, GcpSet
 from shared.gcp_candidates import PositionedImage, parse_positioned_images
+from shared.gcp_bundle import (
+    BundleObservation,
+    BundlePoint,
+    build_gcp_bundle_files,
+    bundle_blob,
+)
 from shared.gcp_import import ImportedGcpSet
 
 from .map_support import JsonObject, RouteSession
@@ -158,6 +165,8 @@ def point_json(session: RouteSession, point: GcpPoint) -> JsonObject:
         "geometry": {"type": "Point", "coordinates": [longitude, latitude]},
         "properties": {
             "point_id": point.point_id,
+            "set_id": point.gcp_set.set_id,
+            "set_name": point.gcp_set.name,
             "external_id": point.external_id,
             "altitude_m": point.altitude_m,
             "source_coordinates": [point.source_x, point.source_y, point.source_z],
@@ -220,3 +229,61 @@ def update_point_coordinates(
     point.source_y = float(source_y)
     point.source_z = altitude_m
     point.altitude_m = altitude_m
+
+
+def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
+    """Publish a reproducible CAS bundle for a reconstruction stage run."""
+
+    points = [
+        BundlePoint(
+            external_id=point.external_id,
+            source_xyz=(point.source_x, point.source_y, point.source_z),
+            role=point.role,
+            horizontal_accuracy_m=point.horizontal_accuracy_m,
+            vertical_accuracy_m=point.vertical_accuracy_m,
+            image_accuracy_px=point.image_accuracy_px,
+            observations=tuple(
+                BundleObservation(
+                    image_name=observation.image_name,
+                    pixel_x=cast(float, observation.pixel_x),
+                    pixel_y=cast(float, observation.pixel_y),
+                )
+                for observation in cast(list[GcpObservation], point.observations)
+                if observation.status == "marked"
+            ),
+        )
+        for point in cast(list[GcpPoint], gcp_set.points)
+    ]
+    files = build_gcp_bundle_files(gcp_set.source_crs, points)
+
+    def publish(data: bytes) -> JsonObject:
+        expected = cast(JsonObject, bundle_blob(data))
+        with tempfile.NamedTemporaryFile() as temporary:
+            temporary.write(data)
+            temporary.flush()
+            uploaded = storage.publish_content_addressed_file(temporary.name)
+        if (
+            uploaded.key != expected["key"]
+            or uploaded.size_bytes != expected["size"]
+            or uploaded.checksum_sha256 != expected["sha256"]
+        ):
+            raise OSError("Published GCP blob identity does not match its content")
+        return expected
+
+    return {
+        "schema_version": 1,
+        "set_id": gcp_set.set_id,
+        "source_sha256": gcp_set.source_sha256,
+        "gcp_list": publish(files.gcp_list),
+        "accuracy_csv": publish(files.accuracy_csv),
+        "quality": {
+            "adjustment_points": files.adjustment_points,
+            "checkpoint_points": files.checkpoint_points,
+            "marked_observations": files.observation_count,
+            "verification": (
+                "independent-checkpoints"
+                if files.checkpoint_points > 0
+                else "adjustment-only-unverified"
+            ),
+        },
+    }

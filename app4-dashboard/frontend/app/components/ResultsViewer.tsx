@@ -12,6 +12,8 @@ import {
   fetchBrowse,
   fetchGroundControl,
   importGroundControl,
+  prepareGroundControlBundle,
+  refreshGroundControlCandidates,
   retryAnalysis,
   updateGroundControlObservation,
   updateGroundControlPoint,
@@ -463,6 +465,51 @@ export default function ResultsViewer() {
     }
   };
 
+  const prepareGcpBundle = async (point: GcpFeature) => {
+    if (!missionId) return;
+    setGcpBusy(true);
+    setError("");
+    try {
+      const bundle = await prepareGroundControlBundle(
+        missionId,
+        point.properties.set_id,
+      );
+      setNotice(
+        t("gcp.bundleReady", {
+          adjustment: bundle.quality.adjustment_points,
+          checkpoints: bundle.quality.checkpoint_points,
+          observations: bundle.quality.marked_observations,
+        }),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("gcp.bundleFailed"));
+    } finally {
+      setGcpBusy(false);
+    }
+  };
+
+  const refreshGcpCandidates = async (point: GcpFeature) => {
+    if (!missionId) return;
+    setGcpBusy(true);
+    setError("");
+    try {
+      const result = await refreshGroundControlCandidates(
+        missionId,
+        point.properties.set_id,
+      );
+      await refreshGcps(point.properties.point_id);
+      setNotice(
+        t("gcp.candidatesRefreshed", {
+          count: result.candidate_generation.added_observation_count,
+        }),
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("gcp.candidateRefreshFailed"));
+    } finally {
+      setGcpBusy(false);
+    }
+  };
+
   const finishPhotoObservation = async (
     status: "marked" | "skipped",
     pixel?: { x: number; y: number },
@@ -611,6 +658,8 @@ export default function ResultsViewer() {
                 onImport: importGcps,
                 onPointSelect: selectGcp,
                 onPointUpdate: updateGcp,
+                onPrepareBundle: prepareGcpBundle,
+                onRefreshCandidates: refreshGcpCandidates,
                 onObservationOpen: (point, observation) =>
                   setPhotoMarker({ point, observation }),
               }}

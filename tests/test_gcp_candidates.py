@@ -1,6 +1,10 @@
 import pytest
 
-from shared.gcp_candidates import parse_positioned_images, rank_image_candidates
+from shared.gcp_candidates import (
+    parse_positioned_images,
+    rank_image_candidates,
+    rank_new_image_candidates,
+)
 
 
 def test_parses_positioned_images_and_preserves_names_with_spaces():
@@ -39,3 +43,36 @@ def test_rejects_duplicate_image_names():
             b"same.JPG 1 2 3\nsame.JPG 4 5 6\n",
             "EPSG:4326",
         )
+
+
+def test_refresh_adds_only_missing_candidates_up_to_requested_limit():
+    images = parse_positioned_images(
+        b"first.JPG 500000 4800000 125\nsecond.JPG 500010 4800000 130\nthird.JPG 500020 4800000 130\n",
+        "EPSG:32631",
+    )
+
+    candidates = rank_new_image_candidates(
+        longitude=images[0].longitude,
+        latitude=images[0].latitude,
+        images=images,
+        projected_crs="EPSG:32631",
+        radius_m=100,
+        limit=2,
+        existing_image_names={"first.JPG"},
+    )
+
+    assert [item.image.image_name for item in candidates] == ["second.JPG", "third.JPG"]
+
+
+def test_refresh_does_nothing_when_only_nearby_photo_was_already_reviewed():
+    images = parse_positioned_images(b"first.JPG 1 2 3\n", "EPSG:32631")
+
+    assert rank_new_image_candidates(
+        longitude=images[0].longitude,
+        latitude=images[0].latitude,
+        images=images,
+        projected_crs="EPSG:32631",
+        radius_m=100,
+        limit=1,
+        existing_image_names={"first.JPG"},
+    ) == ()

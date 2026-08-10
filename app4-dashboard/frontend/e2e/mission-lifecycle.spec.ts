@@ -9,6 +9,8 @@ type ApiOptions = {
   onMapExport?: (url: string) => void;
   onGcpPointUpdate?: (payload: Record<string, unknown>) => void;
   onGcpObservationUpdate?: (payload: Record<string, unknown>) => void;
+  onGcpCandidateRefresh?: () => void;
+  onGcpBundle?: () => void;
 };
 
 const json = (body: unknown, status = 200) => ({
@@ -238,6 +240,8 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
           geometry: { type: "Point", coordinates: [2.05, 48.05] },
           properties: {
             point_id: "point-1",
+            set_id: "set-1",
+            set_name: "Survey control",
             external_id: "P1",
             altitude_m: 125,
             source_coordinates: [652000, 6860000, 125],
@@ -277,6 +281,39 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       const payload = request.postDataJSON() as Record<string, unknown>;
       options.onGcpObservationUpdate?.(payload);
       await route.fulfill(json({ observation_id: "obs-1", ...payload }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/set-1/candidates/refresh") {
+      options.onGcpCandidateRefresh?.();
+      await route.fulfill(json({
+        gcp_set: { type: "FeatureCollection", features: [] },
+        candidate_generation: { added_observation_count: 0 },
+      }));
+      return;
+    }
+    if (url.pathname === "/maps/mission-existing/gcps/set-1/bundle") {
+      options.onGcpBundle?.();
+      await route.fulfill(json({
+        schema_version: 1,
+        set_id: "set-1",
+        source_sha256: "a".repeat(64),
+        gcp_list: {
+          key: `blobs/sha256/aa/${"a".repeat(64)}`,
+          size: 10,
+          sha256: "a".repeat(64),
+        },
+        accuracy_csv: {
+          key: `blobs/sha256/bb/${"b".repeat(64)}`,
+          size: 10,
+          sha256: "b".repeat(64),
+        },
+        quality: {
+          adjustment_points: 3,
+          checkpoint_points: 1,
+          marked_observations: 8,
+          verification: "independent-checkpoints",
+        },
+      }));
       return;
     }
     if (url.pathname === "/files/datasets/survey-set/DJI_0001.JPG") {
@@ -566,9 +603,13 @@ test("a completed mission exports its vectors as a projected GeoPackage", async 
 test("an operator edits a GCP and marks its native image observation", async ({ page }) => {
   let pointUpdate: Record<string, unknown> | undefined;
   let observationUpdate: Record<string, unknown> | undefined;
+  let candidatesRefreshed = false;
+  let bundlePrepared = false;
   await mockApi(page, {
     onGcpPointUpdate: (payload) => { pointUpdate = payload; },
     onGcpObservationUpdate: (payload) => { observationUpdate = payload; },
+    onGcpCandidateRefresh: () => { candidatesRefreshed = true; },
+    onGcpBundle: () => { bundlePrepared = true; },
   });
 
   await page.goto("/");
@@ -576,6 +617,10 @@ test("an operator edits a GCP and marks its native image observation", async ({ 
   await page.getByRole("button", { name: "GCP", exact: true }).click();
   await expect(page.getByText("Ground-control points")).toBeVisible();
   await page.getByRole("button", { name: /P1/ }).click();
+  await page.getByRole("button", { name: "Refresh nearby photos" }).click();
+  await expect.poll(() => candidatesRefreshed).toBe(true);
+  await page.getByRole("button", { name: "Validate for reconstruction" }).click();
+  await expect.poll(() => bundlePrepared).toBe(true);
   await page.getByLabel("Longitude (X, EPSG:4326)").fill("2.0505");
   await page.getByLabel("Calculation role").selectOption("checkpoint");
   await page.getByRole("button", { name: "Save coordinates and accuracy" }).click();

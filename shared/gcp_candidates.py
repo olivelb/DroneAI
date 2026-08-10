@@ -94,3 +94,30 @@ def rank_image_candidates(
         for candidate in sorted(candidates, key=lambda item: item.distance_m)
         if candidate.distance_m <= radius_m
     )[:limit]
+
+
+def rank_new_image_candidates(
+    *,
+    longitude: float,
+    latitude: float,
+    images: tuple[PositionedImage, ...],
+    projected_crs: str,
+    radius_m: float,
+    limit: int,
+    existing_image_names: set[str],
+) -> tuple[GcpImageCandidate, ...]:
+    """Return unseen candidates while preserving prior operator decisions."""
+
+    ranked = rank_image_candidates(
+        longitude=longitude,
+        latitude=latitude,
+        images=images,
+        projected_crs=projected_crs,
+        radius_m=radius_m,
+        limit=limit + len(existing_image_names),
+    )
+    return tuple(
+        candidate
+        for candidate in ranked
+        if candidate.image.image_name not in existing_image_names
+    )[:limit]

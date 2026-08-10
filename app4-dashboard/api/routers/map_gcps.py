@@ -9,15 +9,21 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from sqlalchemy.exc import IntegrityError
 
 from shared.database import GcpObservation, GcpPoint, GcpSet, get_session
-from shared.gcp_candidates import PositionedImage, rank_image_candidates
+from shared.gcp_candidates import (
+    PositionedImage,
+    rank_image_candidates,
+    rank_new_image_candidates,
+)
 from shared.gcp_import import import_gcp_bytes
 
 from ..gcp_schemas import GcpObservationUpdate, GcpPointUpdate
 from ..gcp_workspace import (
     MAX_GCP_UPLOAD_BYTES,
     load_mission_image_positions,
+    materialize_gcp_bundle,
     observation_json,
     persist_imported_set,
+    point_longitude_latitude,
     point_json,
     safe_upload_name,
     set_json,
@@ -272,6 +278,143 @@ def ground_control_detail(
         if gcp_set is None:
             raise HTTPException(status_code=404, detail="GCP set not found")
         return set_json(typed_session, gcp_set, include_points=True)
+
+
+@router.post("/{vol_id}/gcps/{set_id}/bundle")
+def prepare_ground_control_bundle(
+    vol_id: str,
+    set_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> JsonObject:
+    with get_session() as session:
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(
+            typed_session,
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+            action="gcp_bundle_create",
+        )
+        gcp_set = cast(
+            GcpSet | None,
+            typed_session.query(GcpSet).filter(
+                GcpSet.mission_id == mission.id,
+                GcpSet.set_id == set_id,
+            ).first(),
+        )
+        if gcp_set is None:
+            raise HTTPException(status_code=404, detail="GCP set not found")
+        try:
+            return materialize_gcp_bundle(gcp_set)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except OSError as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Unable to publish immutable GCP bundle: {error}",
+            ) from error
+
+
+@router.post("/{vol_id}/gcps/{set_id}/candidates/refresh")
+def refresh_ground_control_candidates(
+    vol_id: str,
+    set_id: str,
+    principal: Annotated[Principal, Depends(require_operator)],
+    candidate_radius_m: Annotated[float, Query(gt=0, le=10_000)] = 250.0,
+    max_candidates: Annotated[int, Query(ge=1, le=100)] = 20,
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> JsonObject:
+    """Add newly available EXIF-nearby photos without replacing operator work."""
+
+    with get_session() as session:
+        typed_session = cast(RouteSession, session)
+        mission = get_mission(
+            typed_session,
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+            action="gcp_candidate_refresh",
+        )
+        gcp_set = cast(
+            GcpSet | None,
+            typed_session.query(GcpSet).filter(
+                GcpSet.mission_id == mission.id,
+                GcpSet.set_id == set_id,
+            ).first(),
+        )
+        if gcp_set is None:
+            raise HTTPException(status_code=404, detail="GCP set not found")
+        try:
+            positions = load_mission_image_positions(vol_id)
+        except (OSError, UnicodeDecodeError, ValueError) as error:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Published image positions are invalid: {error}",
+            ) from error
+        if positions is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Image positions are not published yet; run reconstruction preflight first",
+            )
+
+        added_count = 0
+        for point in cast(list[GcpPoint], gcp_set.points):
+            observations = cast(list[GcpObservation], point.observations)
+            for observation in observations:
+                if observation.status == "candidate":
+                    typed_session.delete(observation)
+        typed_session.flush()
+        for point in cast(list[GcpPoint], gcp_set.points):
+            typed_session.expire(point, ["observations"])
+            observations = cast(list[GcpObservation], point.observations)
+            existing_names = {cast(str, item.image_name) for item in observations}
+            longitude, latitude = point_longitude_latitude(typed_session, point)
+            try:
+                new_candidates = rank_new_image_candidates(
+                    longitude=longitude,
+                    latitude=latitude,
+                    images=positions.images,
+                    projected_crs=positions.projected_crs,
+                    radius_m=candidate_radius_m,
+                    limit=max_candidates,
+                    existing_image_names=existing_names,
+                )
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unable to rank GCP photo candidates: {error}",
+                ) from error
+            for candidate in new_candidates:
+                typed_session.add(
+                    GcpObservation(
+                        gcp_point_id=point.id,
+                        image_name=candidate.image.image_name,
+                        image_s3_key=_image_key(
+                            mission.input_dataset,
+                            candidate.image.image_name,
+                        ),
+                        status="candidate",
+                        candidate_distance_m=candidate.distance_m,
+                        image_longitude=candidate.image.longitude,
+                        image_latitude=candidate.image.latitude,
+                        created_by=principal.subject,
+                        updated_by=principal.subject,
+                    )
+                )
+                added_count += 1
+        typed_session.flush()
+        return {
+            "gcp_set": set_json(typed_session, gcp_set, include_points=True),
+            "candidate_generation": {
+                "available": True,
+                "method": "exif-distance",
+                "radius_m": candidate_radius_m,
+                "max_candidates_per_point": max_candidates,
+                "added_observation_count": added_count,
+                "preserved_operator_observations": True,
+            },
+        }
 
 
 @router.patch("/{vol_id}/gcps/points/{point_id}")

@@ -296,6 +296,8 @@ export type GcpObservation = {
 
 export type GcpPointProperties = {
   point_id: string;
+  set_id: string;
+  set_name: string;
   external_id: string;
   altitude_m: number;
   source_coordinates: [number, number, number];
@@ -345,6 +347,20 @@ export type GcpImportOptions = {
   imageAccuracyPx: number;
   candidateRadiusM: number;
   maxCandidates: number;
+};
+
+export type GcpBundle = {
+  schema_version: 1;
+  set_id: string;
+  source_sha256: string;
+  gcp_list: { key: string; size: number; sha256: string };
+  accuracy_csv: { key: string; size: number; sha256: string };
+  quality: {
+    adjustment_points: number;
+    checkpoint_points: number;
+    marked_observations: number;
+    verification: "independent-checkpoints" | "adjustment-only-unverified";
+  };
 };
 
 export type RasterPalette = "none" | "gray" | "depth" | "terrain" | "viridis";

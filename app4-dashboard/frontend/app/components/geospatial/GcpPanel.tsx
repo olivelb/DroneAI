@@ -24,6 +24,8 @@ interface GcpPanelProps {
     point: GcpFeature,
     request: Record<string, unknown>,
   ) => Promise<void>;
+  onPrepareBundle: (point: GcpFeature) => Promise<void>;
+  onRefreshCandidates: (point: GcpFeature) => Promise<void>;
   onObservationOpen: (point: GcpFeature, observation: GcpObservation) => void;
 }
 
@@ -45,11 +47,15 @@ function GcpPointEditor({
   busy,
   onUpdate,
   onObservationOpen,
+  onPrepareBundle,
+  onRefreshCandidates,
 }: {
   point: GcpFeature;
   busy: boolean;
   onUpdate: (point: GcpFeature, request: Record<string, unknown>) => Promise<void>;
   onObservationOpen: (point: GcpFeature, observation: GcpObservation) => void;
+  onPrepareBundle: (point: GcpFeature) => Promise<void>;
+  onRefreshCandidates: (point: GcpFeature) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [pointLongitude, pointLatitude] = point.geometry.coordinates;
@@ -134,11 +140,33 @@ function GcpPointEditor({
       <button
         type="button"
         disabled={busy}
+        onClick={() => void onRefreshCandidates(point)}
+        className="secondary-button w-full disabled:opacity-40"
+      >
+        {t("gcp.refreshCandidates")}
+      </button>
+      <p className="text-[11px] leading-4 text-[#76827e]">
+        {t("gcp.refreshCandidatesHelp")}
+      </p>
+      <button
+        type="button"
+        disabled={busy}
         onClick={() => void save()}
         className="primary-button w-full disabled:opacity-40"
       >
         {t("gcp.savePoint")}
       </button>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void onPrepareBundle(point)}
+        className="secondary-button w-full disabled:opacity-40"
+      >
+        {t("gcp.prepareBundle")}
+      </button>
+      <p className="text-[11px] leading-4 text-[#76827e]">
+        {t("gcp.prepareBundleHelp")}
+      </p>
       <div className="space-y-2 border-t border-[#dce4e1] pt-3">
         <div className="eyebrow">{t("gcp.photoObservations")}</div>
         {point.properties.observations.map((observation) => (
@@ -170,6 +198,8 @@ export default function GcpPanel({
   onImport,
   onPointSelect,
   onPointUpdate,
+  onPrepareBundle,
+  onRefreshCandidates,
   onObservationOpen,
 }: GcpPanelProps) {
   const { t } = useI18n();
@@ -298,6 +328,8 @@ export default function GcpPanel({
           point={selectedPoint}
           busy={busy}
           onUpdate={onPointUpdate}
+          onPrepareBundle={onPrepareBundle}
+          onRefreshCandidates={onRefreshCandidates}
           onObservationOpen={onObservationOpen}
         />
       )}
