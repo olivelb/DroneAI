@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 map_support = importlib.import_module("app4-dashboard.api.map_support")
+map_features = importlib.import_module("app4-dashboard.api.routers.map_features")
 
 
 class _Query:
@@ -209,3 +210,48 @@ def test_pipeline_detection_features_reject_cross_mission_artifact(monkeypatch):
 
     assert error.value.status_code == 502
     assert "identity" in str(error.value.detail)
+
+
+def test_pipeline_artifact_search_applies_operator_filters(monkeypatch):
+    features = [
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [3.1, 42.4]},
+            "properties": {
+                "class_name": "car",
+                "name": "car",
+                "confidence": 0.91,
+                "source": "legacy",
+            },
+        },
+        {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [3.2, 42.5]},
+            "properties": {
+                "class_name": "building",
+                "name": "building",
+                "confidence": 0.7,
+                "source": "legacy",
+            },
+        },
+    ]
+    monkeypatch.setattr(
+        map_features,
+        "pipeline_detection_features",
+        lambda *_args: (features, False),
+    )
+
+    selected = map_features._search_pipeline_artifact(
+        _Session(None),
+        SimpleNamespace(id=7),
+        vol_id="mission-1",
+        text="CAR",
+        class_name="car",
+        min_confidence=0.8,
+        bounds=None,
+        reviewed=False,
+        deleted=False,
+        limit=10,
+    )
+
+    assert selected == ([features[0]], False)
