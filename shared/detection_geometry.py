@@ -9,7 +9,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from shared.detection_tile_planning import build_tile_starts
+from shared.detection_tile_planning import build_tile_starts as build_tile_starts
 
 
 DetectionRecord = dict[str, Any]
