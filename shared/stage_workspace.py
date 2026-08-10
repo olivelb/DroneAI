@@ -280,7 +280,10 @@ def publish_workspace_v2(
         ):
             reused_bytes += size
             continue
-        uploaded = storage.publish_content_addressed_file(file_path)
+        uploaded = storage.publish_content_addressed_file(
+            file_path,
+            cancellation_check=cancellation_check,
+        )
         transferred_bytes += uploaded.transferred_bytes
         if uploaded.reused:
             reused_bytes += size

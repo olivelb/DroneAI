@@ -174,20 +174,186 @@ def test_content_addressed_publish_rejects_conflicting_existing_object(
     assert client.put_calls == []
 
 
-def test_content_addressed_publish_fails_closed_above_single_put_limit(
+class _MultipartCasClient(_CasClient):
+    def __init__(self):
+        super().__init__()
+        self.uploads = {}
+        self.upload_parts = []
+        self.complete_calls = []
+        self.abort_calls = []
+        self.fail_part = None
+        self.conflict_after_publishing = False
+        self.complete_error_code = None
+
+    def create_multipart_upload(self, **kwargs):
+        upload_id = f"upload-{len(self.uploads) + 1}"
+        self.uploads[upload_id] = {
+            "key": kwargs["Key"],
+            "metadata": kwargs["Metadata"],
+            "parts": {},
+        }
+        return {"UploadId": upload_id}
+
+    def upload_part(self, **kwargs):
+        part_number = kwargs["PartNumber"]
+        if self.fail_part == part_number:
+            raise _client_error("InternalError", "UploadPart")
+        body = bytes(kwargs["Body"])
+        assert kwargs["ContentLength"] == len(body)
+        self.uploads[kwargs["UploadId"]]["parts"][part_number] = body
+        self.upload_parts.append((part_number, body))
+        return {"ETag": f'"part-{part_number}"'}
+
+    def complete_multipart_upload(self, **kwargs):
+        self.complete_calls.append(kwargs)
+        upload = self.uploads[kwargs["UploadId"]]
+        content = b"".join(upload["parts"][index] for index in sorted(upload["parts"]))
+        if self.complete_error_code is not None:
+            raise _client_error(self.complete_error_code, "CompleteMultipartUpload")
+        if self.conflict_after_publishing:
+            self.objects[kwargs["Key"]] = (content, upload["metadata"])
+            raise _client_error("PreconditionFailed", "CompleteMultipartUpload")
+        assert kwargs["IfNoneMatch"] == "*"
+        if kwargs["Key"] in self.objects:
+            raise _client_error("PreconditionFailed", "CompleteMultipartUpload")
+        self.objects[kwargs["Key"]] = (content, upload["metadata"])
+        return {"ETag": '"complete"'}
+
+    def abort_multipart_upload(self, **kwargs):
+        self.abort_calls.append(kwargs)
+        self.uploads.pop(kwargs["UploadId"], None)
+        return {}
+
+
+def _force_test_multipart(monkeypatch):
+    monkeypatch.setattr(storage, "S3_CAS_SINGLE_PUT_MAX_BYTES", 3)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MIN_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_PART_BYTES", 3)
+
+
+def test_content_addressed_multipart_publish_is_conditional_and_verified(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "large.bin"
+    artifact.write_bytes(b"abcdefgh")
+    client = _MultipartCasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    _force_test_multipart(monkeypatch)
+    cancellations = []
+
+    result = storage.publish_content_addressed_file(
+        artifact,
+        cancellation_check=lambda: cancellations.append(True),
+    )
+
+    assert result.reused is False
+    assert result.transferred_bytes == 8
+    assert client.upload_parts == [(1, b"abc"), (2, b"def"), (3, b"gh")]
+    assert client.complete_calls[0]["IfNoneMatch"] == "*"
+    assert client.abort_calls == []
+    assert len(cancellations) == 5
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert next(iter(client.objects.values()))[1] == {"sha256": digest}
+
+
+def test_content_addressed_multipart_conflict_verifies_winner_and_aborts(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "concurrent-large.bin"
+    artifact.write_bytes(b"same-winner")
+    client = _MultipartCasClient()
+    client.conflict_after_publishing = True
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    _force_test_multipart(monkeypatch)
+
+    result = storage.publish_content_addressed_file(artifact)
+
+    assert result.reused is True
+    assert result.transferred_bytes == 0
+    assert len(client.abort_calls) == 1
+
+
+def test_content_addressed_multipart_failure_aborts_without_publication(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "failed-large.bin"
+    artifact.write_bytes(b"abcdefgh")
+    client = _MultipartCasClient()
+    client.fail_part = 2
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    _force_test_multipart(monkeypatch)
+
+    with pytest.raises(ClientError):
+        storage.publish_content_addressed_file(artifact)
+
+    assert len(client.abort_calls) == 1
+    assert client.objects == {}
+
+
+def test_content_addressed_multipart_unsupported_condition_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "unsupported-condition.bin"
+    artifact.write_bytes(b"abcdefgh")
+    client = _MultipartCasClient()
+    client.complete_error_code = "NotImplemented"
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    _force_test_multipart(monkeypatch)
+
+    with pytest.raises(ClientError) as error:
+        storage.publish_content_addressed_file(artifact)
+
+    assert error.value.response["Error"]["Code"] == "NotImplemented"
+    assert len(client.abort_calls) == 1
+    assert client.objects == {}
+
+
+def test_content_addressed_multipart_missing_conflict_winner_retries_bounded(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "missing-winner.bin"
+    artifact.write_bytes(b"abcdefgh")
+    client = _MultipartCasClient()
+    client.complete_error_code = "ConditionalRequestConflict"
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    _force_test_multipart(monkeypatch)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MAX_ATTEMPTS", 2)
+
+    with pytest.raises(OSError, match="did not create"):
+        storage.publish_content_addressed_file(artifact)
+
+    assert len(client.complete_calls) == 2
+    assert len(client.abort_calls) == 2
+    assert client.objects == {}
+
+
+def test_multipart_part_size_respects_maximum_part_count(monkeypatch):
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MIN_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MAX_PARTS", 3)
+
+    assert storage._multipart_part_size(10) == 4
+
+
+def test_content_addressed_publish_rejects_above_s3_object_limit(
     tmp_path,
     monkeypatch,
 ):
     artifact = tmp_path / "oversized.bin"
     artifact.write_bytes(b"four")
-    client = _CasClient()
+    client = _MultipartCasClient()
     monkeypatch.setattr(storage, "_get_client", lambda: client)
-    monkeypatch.setattr(storage, "S3_CAS_SINGLE_PUT_MAX_BYTES", 3)
+    monkeypatch.setattr(storage, "S3_CAS_MAX_OBJECT_BYTES", 3)
 
-    with pytest.raises(ValueError, match="multipart CAS"):
+    with pytest.raises(ValueError, match="5 TiB"):
         storage.publish_content_addressed_file(artifact)
 
-    assert client.put_calls == []
+    assert client.uploads == {}
 
 
 class _ConcurrentCasClient(_CasClient):

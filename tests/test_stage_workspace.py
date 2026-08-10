@@ -37,7 +37,9 @@ def fake_s3(tmp_path, monkeypatch):
         shutil.copy2(root / key, target)
         return target
 
-    def publish_cas(local_path):
+    def publish_cas(local_path, *, cancellation_check=None):
+        if cancellation_check is not None:
+            cancellation_check()
         source = Path(local_path)
         content = source.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
