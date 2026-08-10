@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
 from shared import storage
+from shared.artifact_manifest import parse_artifact_manifest
 from shared.checksums import sha256_file
 from shared.config import S3_BUCKET
 
@@ -39,6 +40,7 @@ class RestoredWorkspace:
     reused_bytes: int
     download_seconds: float
     manifest_size_bytes: int
+    manifest_schema_version: int = WORKSPACE_MANIFEST_VERSION
 
 
 def workspace_transfer_provenance(
@@ -61,6 +63,7 @@ def workspace_transfer_provenance(
     }
     if restored is not None:
         transfer["restore"] = {
+            "manifest_schema_version": restored.manifest_schema_version,
             "logical_bytes": restored.size_bytes,
             "file_count": restored.file_count,
             "transferred_bytes": restored.downloaded_bytes,
@@ -190,38 +193,20 @@ def restore_workspace_measured(
         raise OSError(
             f"Workspace manifest checksum mismatch: {digest}/{expected_checksum_sha256}"
         )
-    payload = json.loads(manifest_bytes)
-    if not isinstance(payload, dict) or payload.get("schema_version") != WORKSPACE_MANIFEST_VERSION:
-        raise ValueError("Unsupported workspace manifest schema")
-    raw_entries = payload.get("files")
-    if not isinstance(raw_entries, list):
-        raise ValueError("Workspace manifest files must be a list")
-    prefix = manifest_key.removesuffix("/manifest.json").rstrip("/")
+    manifest = parse_artifact_manifest(manifest_bytes, manifest_key=manifest_key)
     seen: set[str] = set()
     restored_bytes = 0
-    for raw_entry in raw_entries:
+    for entry in manifest.files:
         if cancellation_check is not None:
             cancellation_check()
-        if not isinstance(raw_entry, dict):
-            raise ValueError("Workspace manifest entry must be an object")
-        relative_raw = raw_entry.get("path")
-        expected_size = raw_entry.get("size")
-        expected_digest = raw_entry.get("sha256")
-        if (
-            not isinstance(relative_raw, str)
-            or not isinstance(expected_size, int)
-            or expected_size < 0
-            or not isinstance(expected_digest, str)
-            or len(expected_digest) != 64
-        ):
-            raise ValueError("Workspace manifest entry is invalid")
+        relative_raw = entry.path
+        expected_size = entry.blob.size_bytes
+        expected_digest = entry.blob.checksum_sha256
         relative = _safe_relative_path(relative_raw)
-        if relative_raw in seen:
-            raise ValueError(f"Duplicate workspace manifest path: {relative_raw}")
         seen.add(relative_raw)
         local_path = destination_root / relative
         local_path.parent.mkdir(parents=True, exist_ok=True)
-        storage.download_file(f"{prefix}/files/{relative_raw}", local_path)
+        storage.download_file(entry.blob.key, local_path)
         actual_size = local_path.stat().st_size
         actual_digest = str(sha256_file(local_path))
         if actual_size != expected_size or actual_digest != expected_digest:
@@ -238,6 +223,7 @@ def restore_workspace_measured(
         reused_bytes=0,
         download_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=len(manifest_bytes),
+        manifest_schema_version=manifest.schema_version,
     )
 
 

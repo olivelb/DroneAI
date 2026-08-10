@@ -21,6 +21,7 @@ implemented system as it exists now.
 | Quality profiles and YOLO capability catalog | [`contracts/quality-profiles-v1.md`](contracts/quality-profiles-v1.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
+| Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
 | Machine-readable production drill evidence | [`contracts/production-qualification-evidence-v1.schema.json`](contracts/production-qualification-evidence-v1.schema.json) |
 | Audited feature corrections and named raster styles | [`contracts/explorer-editing-styles-v1.md`](contracts/explorer-editing-styles-v1.md) |
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |
