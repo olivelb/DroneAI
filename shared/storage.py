@@ -10,7 +10,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Protocol, cast
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -65,6 +65,8 @@ class S3Client(Protocol):
 
     def put_object(self, **kwargs: Any) -> dict[str, Any]: ...
 
+    def upload_part(self, **kwargs: Any) -> dict[str, Any]: ...
+
     def create_multipart_upload(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def complete_multipart_upload(self, **kwargs: Any) -> dict[str, Any]: ...
@@ -83,6 +85,17 @@ class S3Client(Protocol):
 S3_PUBLIC_ENDPOINT = os.getenv("S3_PUBLIC_ENDPOINT", "")  # browser-reachable MinIO URL
 S3_DELETE_MAX_ATTEMPTS = max(1, int(os.getenv("S3_DELETE_MAX_ATTEMPTS", "3")))
 S3_CAS_SINGLE_PUT_MAX_BYTES = 5 * 1024**3
+S3_CAS_MULTIPART_MIN_PART_BYTES = 5 * 1024**2
+S3_CAS_MULTIPART_PART_BYTES = max(
+    S3_CAS_MULTIPART_MIN_PART_BYTES,
+    int(os.getenv("S3_CAS_MULTIPART_PART_BYTES", str(64 * 1024**2))),
+)
+S3_CAS_MULTIPART_MAX_PARTS = 10_000
+S3_CAS_MULTIPART_MAX_ATTEMPTS = max(
+    1,
+    min(3, int(os.getenv("S3_CAS_MULTIPART_MAX_ATTEMPTS", "2"))),
+)
+S3_CAS_MAX_OBJECT_BYTES = 5 * 1024**4
 
 # ---------------------------------------------------------------------------
 # Client singleton
@@ -246,8 +259,10 @@ def _verify_content_addressed_head(
 def publish_content_addressed_file(
     local_path: str | Path,
     bucket: str | None = None,
+    *,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> ContentAddressedUpload:
-    """Publish one immutable CAS blob with an idempotent conditional PUT.
+    """Publish one immutable CAS blob with a conditional single or multipart PUT.
 
     Existing matching objects are reused. A concurrent publisher losing the
     ``If-None-Match: *`` race verifies the winner before reporting reuse. An
@@ -260,10 +275,9 @@ def publish_content_addressed_file(
     if not path.is_file():
         raise FileNotFoundError(f"Required local artifact not found: {path}")
     size = path.stat().st_size
-    if size > S3_CAS_SINGLE_PUT_MAX_BYTES:
+    if size > S3_CAS_MAX_OBJECT_BYTES:
         raise ValueError(
-            "CAS conditional publication currently supports files up to 5 GiB; "
-            "multipart CAS must be implemented before publishing this artifact"
+            "CAS publication exceeds the 5 TiB S3 object limit"
         )
     digest = _sha256_file(path)
     key = content_addressed_blob_key(digest)
@@ -277,35 +291,63 @@ def publish_content_addressed_file(
     ):
         return ContentAddressedUpload(key, size, digest, True, 0)
 
-    try:
-        with path.open("rb") as stream:
-            client.put_object(
-                Bucket=selected_bucket,
-                Key=key,
-                Body=stream,
-                ContentLength=size,
-                Metadata={"sha256": digest},
-                IfNoneMatch="*",
-            )
-    except ClientError as error:
-        if _client_error_code(error) not in {
-            "409",
-            "412",
-            "ConditionalRequestConflict",
-            "PreconditionFailed",
-        }:
-            raise
-        if not _verify_content_addressed_head(
-            client,
-            bucket=selected_bucket,
-            key=key,
-            expected_size=size,
-            expected_sha256=digest,
-        ):
-            raise OSError(
-                f"Concurrent CAS publication did not create s3://{selected_bucket}/{key}"
-            ) from error
-        return ContentAddressedUpload(key, size, digest, True, 0)
+    if cancellation_check is not None:
+        cancellation_check()
+    if size <= S3_CAS_SINGLE_PUT_MAX_BYTES:
+        try:
+            with path.open("rb") as stream:
+                client.put_object(
+                    Bucket=selected_bucket,
+                    Key=key,
+                    Body=stream,
+                    ContentLength=size,
+                    Metadata={"sha256": digest},
+                    IfNoneMatch="*",
+                )
+        except ClientError as error:
+            if not _is_conditional_write_conflict(error):
+                raise
+            if not _verify_content_addressed_head(
+                client,
+                bucket=selected_bucket,
+                key=key,
+                expected_size=size,
+                expected_sha256=digest,
+            ):
+                raise OSError(
+                    "Concurrent CAS publication did not create "
+                    f"s3://{selected_bucket}/{key}"
+                ) from error
+            return ContentAddressedUpload(key, size, digest, True, 0)
+    else:
+        for attempt in range(1, S3_CAS_MULTIPART_MAX_ATTEMPTS + 1):
+            try:
+                _publish_content_addressed_multipart(
+                    client,
+                    path=path,
+                    bucket=selected_bucket,
+                    key=key,
+                    size=size,
+                    digest=digest,
+                    cancellation_check=cancellation_check,
+                )
+                break
+            except ClientError as error:
+                if not _is_conditional_write_conflict(error):
+                    raise
+                if _verify_content_addressed_head(
+                    client,
+                    bucket=selected_bucket,
+                    key=key,
+                    expected_size=size,
+                    expected_sha256=digest,
+                ):
+                    return ContentAddressedUpload(key, size, digest, True, 0)
+                if attempt == S3_CAS_MULTIPART_MAX_ATTEMPTS:
+                    raise OSError(
+                        "Concurrent multipart CAS publication did not create "
+                        f"s3://{selected_bucket}/{key}"
+                    ) from error
 
     if not _verify_content_addressed_head(
         client,
@@ -323,6 +365,111 @@ def publish_content_addressed_file(
         size,
     )
     return ContentAddressedUpload(key, size, digest, False, size)
+
+
+def _is_conditional_write_conflict(error: ClientError) -> bool:
+    return _client_error_code(error) in {
+        "409",
+        "412",
+        "ConditionalRequestConflict",
+        "PreconditionFailed",
+    }
+
+
+def _multipart_part_size(size: int) -> int:
+    required_for_part_limit = (
+        size + S3_CAS_MULTIPART_MAX_PARTS - 1
+    ) // S3_CAS_MULTIPART_MAX_PARTS
+    return max(
+        S3_CAS_MULTIPART_MIN_PART_BYTES,
+        S3_CAS_MULTIPART_PART_BYTES,
+        required_for_part_limit,
+    )
+
+
+def _abort_multipart_quietly(
+    client: S3Client,
+    *,
+    bucket: str,
+    key: str,
+    upload_id: str,
+) -> None:
+    try:
+        client.abort_multipart_upload(
+            Bucket=bucket,
+            Key=key,
+            UploadId=upload_id,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to abort multipart CAS upload s3://%s/%s (%s)",
+            bucket,
+            key,
+            upload_id,
+            exc_info=True,
+        )
+
+
+def _publish_content_addressed_multipart(
+    client: S3Client,
+    *,
+    path: Path,
+    bucket: str,
+    key: str,
+    size: int,
+    digest: str,
+    cancellation_check: Callable[[], None] | None,
+) -> None:
+    response = client.create_multipart_upload(
+        Bucket=bucket,
+        Key=key,
+        Metadata={"sha256": digest},
+    )
+    upload_id = response.get("UploadId")
+    if not isinstance(upload_id, str) or not upload_id:
+        raise OSError("S3 did not return a multipart upload ID")
+    completed = False
+    try:
+        part_size = _multipart_part_size(size)
+        parts: list[dict[str, int | str]] = []
+        with path.open("rb") as stream:
+            part_number = 1
+            while body := stream.read(part_size):
+                if cancellation_check is not None:
+                    cancellation_check()
+                uploaded = client.upload_part(
+                    Bucket=bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=body,
+                    ContentLength=len(body),
+                )
+                etag = uploaded.get("ETag")
+                if not isinstance(etag, str) or not etag:
+                    raise OSError(f"S3 multipart part {part_number} has no ETag")
+                parts.append({"ETag": etag, "PartNumber": part_number})
+                part_number += 1
+        if len(parts) > S3_CAS_MULTIPART_MAX_PARTS:
+            raise ValueError("CAS multipart upload exceeds the S3 part limit")
+        if cancellation_check is not None:
+            cancellation_check()
+        client.complete_multipart_upload(
+            Bucket=bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+            IfNoneMatch="*",
+        )
+        completed = True
+    finally:
+        if not completed:
+            _abort_multipart_quietly(
+                client,
+                bucket=bucket,
+                key=key,
+                upload_id=upload_id,
+            )
 
 
 def verify_object_checksum(

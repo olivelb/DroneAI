@@ -187,10 +187,10 @@ The reader now normalizes deployed manifest v1 and strict
 now resolves checksum-verified v2 parent overlays and supports bounded
 selection by role and logical path. Stage adapters still request full restores,
 and the writer remains v1 by default. A disabled Helm flag can publish v2 CAS
-overlays with exact parents and stage-specific roles; its 5 GiB per-blob limit
-prevents broad activation until multipart CAS is qualified. This reader-first
-order preserves rollback compatibility while selective restore requests are
-qualified.
+overlays with exact parents and stage-specific roles. Blobs above 5 GiB use
+conditional multipart completion and still require an endpoint qualification
+before activation. This reader-first order preserves rollback compatibility
+while selective restore requests are qualified.
 
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,

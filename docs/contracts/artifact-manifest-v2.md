@@ -83,16 +83,23 @@ rewrite is planned. When explicitly enabled, each adapter records exact parent
 manifests and assigns stable roles to its state, Gaussian model, raster and
 detection products. Selective restore requests remain a separate rollout step.
 
-The current CAS publisher is intentionally not called by the v1 writer. It
-uses a conditional single-part `PutObject` and fails closed above the S3 5 GiB
-single-object request limit. Multipart CAS publication for larger files must
-land before the v2 writer can accept such an artifact; silently falling back
-to a non-conditional overwrite is forbidden.
+The CAS publisher is intentionally not called by the v1 writer. Up to 5 GiB it
+uses conditional `PutObject`; larger blobs use bounded multipart upload and
+conditional `CompleteMultipartUpload`. Parts default to 64 MiB and grow when
+needed to remain below 10,000 parts. Every failure or cancellation attempts an
+abort, a concurrent 409/412 verifies the winning object, and the completed
+object is always verified by size and SHA-256 metadata. An endpoint that does
+not implement the conditional completion fails closed; there is no
+unconditional fallback. The absolute object bound remains 5 TiB.
 
 The v2 writer verifies and resolves every declared parent, inherits unchanged
 files, and rejects a missing inherited path because manifest v2 has no deletion
 tombstone. Existing CAS blobs count as reused bytes; only newly transferred
 blob bytes and the new manifest count as uploaded bytes. The configuration
-switch is intentionally off in every default environment. It must not be
-enabled for a stage capable of producing a blob above 5 GiB until multipart
-CAS publication is implemented and qualified.
+switch is intentionally off in every default environment. Provider
+qualification must confirm conditional multipart completion before enabling
+the writer for a stage capable of producing a blob above 5 GiB. AWS documents
+the condition on
+[`CompleteMultipartUpload`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
+while the OVHcloud compatibility matrix confirms the multipart operations but
+does not separately specify conditional headers.
