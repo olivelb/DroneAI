@@ -262,6 +262,36 @@ def test_detection_config_rejects_unbounded_prompt_and_confidence():
         )
 
 
+def test_detection_config_enforces_sam3_effective_input_limit():
+    context = _context()
+
+    with pytest.raises(ValueError, match="must not exceed 1024 pixels"):
+        detection_stage.DetectionStageConfig.from_context(
+            replace(
+                context,
+                parameters={
+                    "ai": {
+                        "backend": "sam3",
+                        "tile_size": 1025,
+                    }
+                },
+            )
+        )
+
+    yolo = detection_stage.DetectionStageConfig.from_context(
+        replace(
+            context,
+            parameters={
+                "ai": {
+                    "backend": "yolo",
+                    "tile_size": 2048,
+                }
+            },
+        )
+    )
+    assert yolo.tile_size == 2048
+
+
 @pytest.mark.parametrize(
     ("v2_enabled", "selective_restore"),
     [(False, False), (True, False), (True, True)],

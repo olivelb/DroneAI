@@ -328,13 +328,11 @@ def _mark_terminal(run_id: str, status: str, message: str | None) -> None:
         record.completed_at = record.heartbeat_at
 
 
-def execute_one_shot_stage(
+def _prepare_execution(
     expected_stage: StageId,
-    handler: StageHandler,
-    *,
-    run_id: str | None = None,
-    heartbeat_interval_seconds: float | None = None,
-) -> str:
+    run_id: str | None,
+    heartbeat_interval_seconds: float | None,
+) -> tuple[str, StageExecutionContext, float]:
     durable_run_id = run_id or os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
     if not durable_run_id:
         raise ValueError("DRONEAI_STAGE_RUN_ID is required")
@@ -342,6 +340,21 @@ def execute_one_shot_stage(
     interval = heartbeat_interval_seconds
     if interval is None:
         interval = float(os.getenv("DRONEAI_STAGE_HEARTBEAT_SECONDS", "15"))
+    return durable_run_id, context, interval
+
+
+def execute_one_shot_stage(
+    expected_stage: StageId,
+    handler: StageHandler,
+    *,
+    run_id: str | None = None,
+    heartbeat_interval_seconds: float | None = None,
+) -> str:
+    durable_run_id, context, interval = _prepare_execution(
+        expected_stage,
+        run_id,
+        heartbeat_interval_seconds,
+    )
     try:
         with StageExecutionControl(durable_run_id, interval) as control:
             result = handler(context, control)
@@ -364,13 +377,11 @@ def execute_stage_subtask(
 ) -> None:
     """Execute one bounded child task without authority to publish an artifact."""
 
-    durable_run_id = run_id or os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
-    if not durable_run_id:
-        raise ValueError("DRONEAI_STAGE_RUN_ID is required")
-    context = load_stage_execution_context(durable_run_id, expected_stage)
-    interval = heartbeat_interval_seconds
-    if interval is None:
-        interval = float(os.getenv("DRONEAI_STAGE_HEARTBEAT_SECONDS", "15"))
+    durable_run_id, context, interval = _prepare_execution(
+        expected_stage,
+        run_id,
+        heartbeat_interval_seconds,
+    )
     try:
         with StageExecutionControl(durable_run_id, interval) as control:
             handler(context, control)

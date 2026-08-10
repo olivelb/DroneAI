@@ -232,6 +232,14 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities():
     ]
     assert len(response["yolo_models"]) == 8
     assert all(model["selectable_classes"] for model in response["yolo_models"])
+    assert response["sam3"] == {
+        "model_id": "facebook/sam3",
+        "model_revision": "3c879f39826c281e95690f02c7821c4de09afae7",
+        "processor_target_size": 1008,
+        "maximum_source_tile_size": 1024,
+        "inference_batch_size": 1,
+        "minimum_vram_gib": 12,
+    }
 
 
 def test_sam3_mission_payload_does_not_persist_an_irrelevant_yolo_model():

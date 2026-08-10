@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict, cast
 
+from shared.sam3_capabilities import SAM3_MINIMUM_VRAM_GIB
+
 StageId = Literal[
     "reconstruction",
     "gaussian_training",
@@ -145,7 +147,18 @@ def resource_class_for_stage(
     baseline_id = DEFAULT_STAGE_RESOURCE_CLASSES[stage]
     ai = parameters.get("ai") or {}
     if stage == "detection" and ai.get("backend") == "sam3":
-        baseline_id = "gpu-high-memory"
+        compatible_classes = [
+            resource_class
+            for resource_class, spec in RESOURCE_CLASSES.items()
+            if spec["gpu_count"] >= 1
+            and spec["minimum_vram_gib"] >= SAM3_MINIMUM_VRAM_GIB
+        ]
+        baseline_id = min(
+            compatible_classes,
+            key=lambda resource_class: RESOURCE_CLASSES[resource_class][
+                "minimum_vram_gib"
+            ],
+        )
     requested = parameters.get("resource_class")
     if requested is not None:
         if requested not in RESOURCE_CLASSES:

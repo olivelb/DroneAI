@@ -21,6 +21,12 @@ from shared.model_provenance import (
     installed_versions,
     sha256_file,
 )
+from shared.sam3_capabilities import (
+    SAM3_DEFAULT_MODEL_ID,
+    SAM3_DEFAULT_MODEL_REVISION,
+    SAM3_INFERENCE_BATCH_SIZE,
+    SAM3_PROCESSOR_TARGET_SIZE,
+)
 
 
 JsonObject = dict[str, Any]
@@ -38,10 +44,13 @@ class Sam3Backend:
         mask_threshold: float | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
-        self.model_id = model_id or os.getenv("SAM3_MODEL_ID", "facebook/sam3")
+        self.model_id = model_id or os.getenv(
+            "SAM3_MODEL_ID",
+            SAM3_DEFAULT_MODEL_ID,
+        )
         configured_revision = model_revision or os.getenv(
             "SAM3_MODEL_REVISION",
-            "3c879f39826c281e95690f02c7821c4de09afae7",
+            SAM3_DEFAULT_MODEL_REVISION,
         )
         self.model_revision = immutable_revision(configured_revision)
         self.default_prompt: str = (
@@ -100,6 +109,20 @@ class Sam3Backend:
             self.model_id,
             revision=self.model_revision,
         )
+        image_processor = getattr(self._processor, "image_processor", None)
+        processor_size = cast(
+            JsonObject,
+            getattr(image_processor, "size", {}),
+        )
+        if processor_size != {
+            "height": SAM3_PROCESSOR_TARGET_SIZE,
+            "width": SAM3_PROCESSOR_TARGET_SIZE,
+        }:
+            raise RuntimeError(
+                "Pinned SAM3 processor target changed: expected "
+                f"{SAM3_PROCESSOR_TARGET_SIZE}x{SAM3_PROCESSOR_TARGET_SIZE}, "
+                f"got {processor_size!r}"
+            )
         return self._model, self._processor
 
     def resolve_prompt(self, tile_info: JsonObject) -> str:
@@ -196,6 +219,11 @@ class Sam3Backend:
                 runtime={
                     "device": self.device_type,
                     "autocast_dtype": str(self.autocast_dtype),
+                    "inference_batch_size": SAM3_INFERENCE_BATCH_SIZE,
+                    "processor_target_size": [
+                        SAM3_PROCESSOR_TARGET_SIZE,
+                        SAM3_PROCESSOR_TARGET_SIZE,
+                    ],
                 },
                 inference={
                     "prompt": prompt,

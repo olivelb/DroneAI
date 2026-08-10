@@ -15,6 +15,7 @@ from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QualityProfileId,
 )
+from shared.sam3_capabilities import validate_sam3_tile_size
 from shared.stage_contracts import STAGE_ORDER, StageId, validate_stage_selection
 from shared.yolo_capabilities import yolo_model_manifest
 
@@ -67,10 +68,12 @@ class MissionParams(BaseModel):
         return validate_class_names(values)
 
     @model_validator(mode="after")
-    def validate_yolo_classes(self) -> MissionParams:
+    def validate_ai_configuration(self) -> MissionParams:
         if self.ai_backend == "yolo":
             validate_aerial_class_names(self.classes)
             yolo_model_manifest(self.ai_model_variant)
+        else:
+            validate_sam3_tile_size(self.tile_size)
         return self
 
     @model_validator(mode="after")

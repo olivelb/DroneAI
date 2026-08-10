@@ -332,6 +332,14 @@ export type ParameterConfigResponse = {
   quality_profiles: QualityProfile[];
   quality_profile_default: QualityProfileId;
   yolo_models: YoloModelCapability[];
+  sam3: {
+    model_id: string;
+    model_revision: string;
+    processor_target_size: number;
+    maximum_source_tile_size: number;
+    inference_batch_size: number;
+    minimum_vram_gib: number;
+  };
   stage_dag: {
     version: number;
     stages: Array<{

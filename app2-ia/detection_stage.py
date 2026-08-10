@@ -24,6 +24,7 @@ from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
 from shared.model_provenance import validate_model_manifest
 from shared.pipeline_params import normalize_ai_backend
+from shared.sam3_capabilities import validate_sam3_tile_size
 from shared.stage_execution import (
     StageExecutionContext,
     StageExecutionControl,
@@ -84,6 +85,8 @@ class DetectionStageConfig:
         )
         if not 256 <= tile_size <= 4096:
             raise ValueError("Detection tile size must be between 256 and 4096")
+        if backend == "sam3":
+            validate_sam3_tile_size(tile_size)
         if not 0 <= overlap < tile_size:
             raise ValueError("Detection tile overlap must be smaller than tile size")
         model_variant = str(ai.get("model_variant") or "yolo26l").strip()

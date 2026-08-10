@@ -41,6 +41,11 @@ export default function PhaseDetection() {
   const hasOrthomosaic =
     tilerService?.status === "success" || (tilerService?.progress ?? 0) >= 100;
   const yoloModels = parameterSchema?.yolo_models ?? [];
+  const sam3MaximumTileSize =
+    parameterSchema?.sam3?.maximum_source_tile_size ?? 1024;
+  const tileSizes = [512, 768, 1024, 1536, 2048].filter(
+    (size) => aiBackend !== "sam3" || size <= sam3MaximumTileSize,
+  );
   const selectedModel = yoloModels.find(
     (model) => model.id === aiModelVariant,
   );
@@ -58,6 +63,13 @@ export default function PhaseDetection() {
         ? selectedClasses.filter((entry) => entry !== className)
         : [...selectedClasses, className],
     );
+  };
+
+  const selectBackend = (backend: AIBackend) => {
+    setAiBackend(backend);
+    if (backend === "sam3" && tileSize > sam3MaximumTileSize) {
+      setTileSize(sam3MaximumTileSize);
+    }
   };
 
   return (
@@ -130,7 +142,7 @@ export default function PhaseDetection() {
             <button
               key={backend.value}
               type="button"
-              onClick={() => setAiBackend(backend.value as AIBackend)}
+              onClick={() => selectBackend(backend.value as AIBackend)}
               className={`min-h-[96px] rounded-2xl border p-4 text-left transition ${
                 aiBackend === backend.value
                   ? "border-[#7f9bd4] bg-[#f0f4fc]"
@@ -298,7 +310,7 @@ export default function PhaseDetection() {
               onChange={(event) => setTileSize(Number(event.target.value))}
               className="input-control mt-4 min-h-11"
             >
-              {[512, 768, 1024, 1536, 2048].map((size) => (
+              {tileSizes.map((size) => (
                 <option key={size} value={size}>
                   {size} × {size} px
                 </option>

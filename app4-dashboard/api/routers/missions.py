@@ -25,6 +25,7 @@ from shared.quality_profiles import (
 )
 from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
+from shared.sam3_capabilities import Sam3Capability, sam3_capability
 
 from ..kubernetes_status import KubernetesStatus, get_pod_states
 from ..mission_access import mission_query, resolve_owner_subject
@@ -91,6 +92,7 @@ class MissionParametersResponse(TypedDict):
     quality_profiles: list[dict[str, Any]]
     quality_profile_default: str
     yolo_models: list[dict[str, object]]
+    sam3: Sam3Capability
     stage_dag: dict[str, Any]
 
 
@@ -378,6 +380,7 @@ def mission_parameters() -> MissionParametersResponse:
         "quality_profiles": [profile.as_api_dict() for profile in QUALITY_PROFILES],
         "quality_profile_default": DEFAULT_QUALITY_PROFILE_ID,
         "yolo_models": yolo_model_catalog(),
+        "sam3": sam3_capability(),
         "stage_dag": stage_dag_catalog(),
     }
 

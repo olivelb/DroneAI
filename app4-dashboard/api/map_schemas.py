@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from shared.validation import validate_aerial_class_names
+from shared.sam3_capabilities import validate_sam3_tile_size
 from shared.yolo_capabilities import yolo_model_manifest
 
 from shared.geospatial_workspace import (
@@ -49,10 +50,12 @@ class AnalysisCreate(BaseModel):
         return classes
 
     @model_validator(mode="after")
-    def validate_yolo_classes(self) -> AnalysisCreate:
+    def validate_ai_configuration(self) -> AnalysisCreate:
         if self.backend == "yolo":
             validate_aerial_class_names(self.classes)
             yolo_model_manifest(self.model_variant)
+        else:
+            validate_sam3_tile_size(self.tile_size)
         return self
 
 

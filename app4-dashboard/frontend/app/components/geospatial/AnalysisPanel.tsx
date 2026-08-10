@@ -45,6 +45,11 @@ export default function AnalysisPanel({
   const { t } = useI18n();
   const { parameterSchema } = useStore();
   const yoloModels = parameterSchema?.yolo_models ?? [];
+  const sam3MaximumTileSize =
+    parameterSchema?.sam3?.maximum_source_tile_size ?? 1024;
+  const tileSizes = [512, 1024, 2048].filter(
+    (size) => form.backend !== "sam3" || size <= sam3MaximumTileSize,
+  );
   const modelAvailable =
     form.backend !== "yolo" ||
     yoloModels.some(
@@ -99,9 +104,17 @@ export default function AnalysisPanel({
           <div className="grid grid-cols-2 gap-2">
             <select
               value={form.backend}
-              onChange={(event) =>
-                update({ backend: event.target.value as AIBackend })
-              }
+              onChange={(event) => {
+                const backend = event.target.value as AIBackend;
+                update({
+                  backend,
+                  tile_size:
+                    backend === "sam3" &&
+                    form.tile_size > sam3MaximumTileSize
+                      ? sam3MaximumTileSize
+                      : form.tile_size,
+                });
+              }}
               className="input-control"
             >
               <option value="yolo">YOLO OBB</option>
@@ -150,9 +163,11 @@ export default function AnalysisPanel({
               }
               className="input-control"
             >
-              <option value={512}>512 px</option>
-              <option value={1024}>1024 px</option>
-              <option value={2048}>2048 px</option>
+              {tileSizes.map((size) => (
+                <option key={size} value={size}>
+                  {size} px
+                </option>
+              ))}
             </select>
             <label className="text-xs text-[#66736f]">
               {t("analysis.confidence", {
