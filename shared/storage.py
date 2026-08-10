@@ -261,6 +261,7 @@ def publish_content_addressed_file(
     bucket: str | None = None,
     *,
     cancellation_check: Callable[[], None] | None = None,
+    force_multipart: bool = False,
 ) -> ContentAddressedUpload:
     """Publish one immutable CAS blob with a conditional single or multipart PUT.
 
@@ -293,7 +294,7 @@ def publish_content_addressed_file(
 
     if cancellation_check is not None:
         cancellation_check()
-    if size <= S3_CAS_SINGLE_PUT_MAX_BYTES:
+    if size <= S3_CAS_SINGLE_PUT_MAX_BYTES and not force_multipart:
         try:
             with path.open("rb") as stream:
                 client.put_object(
@@ -576,7 +577,7 @@ def file_exists(s3_key: str, bucket: str | None = None) -> bool:
         client.head_object(Bucket=bucket, Key=s3_key)
         return True
     except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
+        if _client_error_code(e) in {"404", "NoSuchKey", "NotFound"}:
             return False
         raise
 

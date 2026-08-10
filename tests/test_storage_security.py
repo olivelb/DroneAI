@@ -257,6 +257,27 @@ def test_content_addressed_multipart_publish_is_conditional_and_verified(
     assert next(iter(client.objects.values()))[1] == {"sha256": digest}
 
 
+def test_content_addressed_publish_can_force_provider_qualification_multipart(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "forced-multipart.bin"
+    artifact.write_bytes(b"small-but-forced")
+    client = _MultipartCasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MIN_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_PART_BYTES", 3)
+
+    result = storage.publish_content_addressed_file(
+        artifact,
+        force_multipart=True,
+    )
+
+    assert result.reused is False
+    assert client.put_calls == []
+    assert len(client.complete_calls) == 1
+
+
 def test_content_addressed_multipart_conflict_verifies_winner_and_aborts(
     tmp_path,
     monkeypatch,

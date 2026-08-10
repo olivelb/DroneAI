@@ -103,3 +103,20 @@ the condition on
 [`CompleteMultipartUpload`](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CompleteMultipartUpload.html),
 while the OVHcloud compatibility matrix confirms the multipart operations but
 does not separately specify conditional headers.
+
+Qualify the actual OVH endpoint with a random, automatically deleted 6 MiB
+probe before changing the Helm flag:
+
+```bash
+scripts/deploy/qualify-ovh-s3-multipart.sh
+```
+
+The probe forces the production multipart code path, attempts a conditional
+overwrite of the same key, verifies the original size and checksum metadata,
+confirms CAS reuse, deletes the object and verifies its absence. It prints no
+credentials. A passing local or mocked test is not a substitute for this
+provider check.
+
+The first real OVH GRA provider run passed on 10 August 2026; its non-sensitive
+evidence is retained in
+[`ovh-s3-conditional-multipart-2026-08-10.md`](../benchmarks/ovh-s3-conditional-multipart-2026-08-10.md).

@@ -19,6 +19,22 @@ merge with no relevant CUDA, COLMAP, GPU-architecture or CTest change must not
 repeat those long tests. The CI selector and its skipped result are part of the
 evidence.
 
+## Conditional multipart storage gate
+
+Before enabling `stageJobs.artifactManifestV2WriteEnabled` on an S3-compatible
+provider, qualify its real endpoint:
+
+```bash
+scripts/deploy/qualify-ovh-s3-multipart.sh
+```
+
+The command obtains the existing scoped OVH Object Storage credentials from
+the Terraform outputs without printing them. It uploads one random 6 MiB CAS
+object through multipart completion, confirms that `If-None-Match: *` rejects
+an overwrite, verifies size/checksum and reuse, then deletes the probe and
+verifies cleanup. A failure blocks the v2 writer rollout; never replace the
+conditional completion with an unconditional fallback.
+
 ## Q3 acceptance record
 
 Keep one dated Markdown report under `docs/benchmarks/` and record:
