@@ -315,17 +315,25 @@ def _publish_result(
     return artifact_id
 
 
-def _mark_terminal(run_id: str, status: str, message: str | None) -> None:
+def _mark_terminal(run_id: str, status: str, message: str | None) -> str:
     with get_session() as session:
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == run_id
         ).with_for_update().one()
+        mission = session.query(Mission).filter(Mission.id == run.mission_id).one()
+        effective_status = (
+            "cancelled"
+            if status == "failed"
+            and (mission.status == "cancelled" or run.status == "cancelled")
+            else status
+        )
         record = cast(Any, run)
-        record.status = status
-        record.current_step = status.upper()
-        record.error_message = message
+        record.status = effective_status
+        record.current_step = effective_status.upper()
+        record.error_message = None if effective_status == "cancelled" else message
         record.heartbeat_at = datetime.now(UTC)
         record.completed_at = record.heartbeat_at
+        return effective_status
 
 
 def _prepare_execution(
@@ -364,7 +372,15 @@ def execute_one_shot_stage(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
-        _mark_terminal(durable_run_id, "failed", str(error)[:4000])
+        terminal_status = _mark_terminal(
+            durable_run_id,
+            "failed",
+            str(error)[:4000],
+        )
+        if terminal_status == "cancelled":
+            raise StageExecutionCancelled(
+                f"Stage run {durable_run_id} was cancelled"
+            ) from error
         raise
 
 
@@ -390,5 +406,13 @@ def execute_stage_subtask(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
-        _mark_terminal(durable_run_id, "failed", str(error)[:4000])
+        terminal_status = _mark_terminal(
+            durable_run_id,
+            "failed",
+            str(error)[:4000],
+        )
+        if terminal_status == "cancelled":
+            raise StageExecutionCancelled(
+                f"Stage run {durable_run_id} was cancelled"
+            ) from error
         raise
