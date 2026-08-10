@@ -352,6 +352,8 @@ export type GcpImportOptions = {
   imageAccuracyPx: number;
   candidateRadiusM: number;
   maxCandidates: number;
+  columnProfile: "auto" | "leica" | "trimble" | "custom";
+  columnMapping?: Partial<Record<"point_id" | "x" | "y" | "z", string>>;
 };
 
 export type GcpBundle = {

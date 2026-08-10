@@ -34,7 +34,16 @@ MAX_POSITION_FILE_BYTES = 10 * 1024 * 1024
 MAX_CAMERA_INDEX_BYTES = 50 * 1024 * 1024
 MAX_IMAGE_HEADER_BYTES = 8 * 1024 * 1024
 MAX_GCP_IMAGE_DIMENSION = 100_000
-GCP_FILE_SUFFIXES = {".csv", ".tsv", ".txt", ".xyz", ".geojson", ".json"}
+GCP_FILE_SUFFIXES = {
+    ".csv",
+    ".tsv",
+    ".txt",
+    ".xyz",
+    ".geojson",
+    ".json",
+    ".xml",
+    ".kml",
+}
 
 
 @dataclass(frozen=True)
@@ -55,7 +64,7 @@ def safe_upload_name(filename: str | None) -> str:
     if not name or PurePosixPath(name).suffix.lower() not in GCP_FILE_SUFFIXES:
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail="Unsupported GCP file; use CSV, TSV, TXT, XYZ, GeoJSON or ODM gcp_list.txt",
+            detail=("Unsupported GCP file; use CSV, TSV, TXT, XYZ, GeoJSON, KML, Metashape XML or ODM gcp_list.txt"),
         )
     return name
 

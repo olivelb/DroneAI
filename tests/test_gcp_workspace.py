@@ -17,11 +17,13 @@ def test_safe_upload_name_strips_paths_and_allows_common_formats():
     assert gcp_workspace.safe_upload_name(r"C:\survey\markers.csv") == "markers.csv"
     assert gcp_workspace.safe_upload_name("gcp_list.txt") == "gcp_list.txt"
     assert gcp_workspace.safe_upload_name("points.geojson") == "points.geojson"
+    assert gcp_workspace.safe_upload_name("markers.xml") == "markers.xml"
+    assert gcp_workspace.safe_upload_name("points.kml") == "points.kml"
 
 
 def test_safe_upload_name_rejects_unsupported_format():
     with pytest.raises(HTTPException) as error:
-        gcp_workspace.safe_upload_name("markers.xml")
+        gcp_workspace.safe_upload_name("markers.las")
     assert error.value.status_code == 415
 
 

@@ -7,6 +7,7 @@ import io
 import json
 import math
 import re
+import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,31 @@ V_ACCURACY_ALIASES = (
     "sigma_z",
 )
 IMAGE_ACCURACY_ALIASES = ("image_accuracy_px", "accuracy_px", "sigma_px")
+COLUMN_PROFILES: dict[str, dict[str, str]] = {
+    "auto": {},
+    "leica": {
+        "point_id": "pointid",
+        "x": "easting",
+        "y": "northing",
+        "z": "elevation",
+    },
+    "trimble": {
+        "point_id": "point name",
+        "x": "easting",
+        "y": "northing",
+        "z": "elevation",
+    },
+}
+MAPPABLE_COLUMNS = {
+    "point_id",
+    "x",
+    "y",
+    "z",
+    "role",
+    "horizontal_accuracy_m",
+    "vertical_accuracy_m",
+    "image_accuracy_px",
+}
 
 
 def _positive(value: Any, fallback: float, label: str) -> float:
@@ -82,6 +108,18 @@ def _first(row: dict[str, Any], aliases: tuple[str, ...]) -> Any:
         if alias in normalized and normalized[alias] not in (None, ""):
             return normalized[alias]
     return None
+
+
+def _mapped_row(row: dict[str, Any], mapping: dict[str, str]) -> dict[str, Any]:
+    if not mapping:
+        return row
+    normalized = {str(key).strip().lower(): value for key, value in row.items()}
+    result = dict(row)
+    for target, source in mapping.items():
+        value = normalized.get(source.strip().lower())
+        if value not in (None, ""):
+            result[target] = value
+    return result
 
 
 def _transformer(source_crs: str) -> tuple[str, Transformer]:
@@ -151,9 +189,7 @@ def _parse_geojson(
     if payload.get("type") != "FeatureCollection":
         raise ValueError("GCP GeoJSON must be a FeatureCollection")
     declared = (
-        payload.get("crs", {}).get("properties", {}).get("name")
-        if isinstance(payload.get("crs"), dict)
-        else None
+        payload.get("crs", {}).get("properties", {}).get("name") if isinstance(payload.get("crs"), dict) else None
     )
     canonical, transformer = _transformer(source_crs or declared or "EPSG:4326")
     points: list[ImportedGcpPoint] = []
@@ -201,11 +237,128 @@ def _parse_odm(
         observations.setdefault(point.external_id, []).append(
             ImportedGcpObservation(fields[5], float(fields[3]), float(fields[4]))
         )
-    merged = [
-        replace(point, observations=tuple(observations[point_id]))
-        for point_id, point in points.items()
-    ]
+    merged = [replace(point, observations=tuple(observations[point_id])) for point_id, point in points.items()]
     return ImportedGcpSet("odm-gcp-list", canonical, _unique_points(merged))
+
+
+def _safe_xml_root(text: str) -> ElementTree.Element:
+    if re.search(r"<!\s*(?:DOCTYPE|ENTITY)", text, flags=re.IGNORECASE):
+        raise ValueError("XML document type and entity declarations are not allowed")
+    try:
+        return ElementTree.fromstring(text)
+    except ElementTree.ParseError as error:
+        raise ValueError(f"invalid XML: {error}") from error
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _parse_kml(text: str, defaults: dict[str, Any]) -> ImportedGcpSet:
+    root = _safe_xml_root(text)
+    canonical, transformer = _transformer("EPSG:4326")
+    points: list[ImportedGcpPoint] = []
+    placemarks = [element for element in root.iter() if _local_name(element.tag) == "Placemark"]
+    for index, placemark in enumerate(placemarks, start=1):
+        name = next(
+            ((child.text or "").strip() for child in placemark if _local_name(child.tag) == "name"),
+            "",
+        )
+        coordinate_text = next(
+            ((element.text or "").strip() for element in placemark.iter() if _local_name(element.tag) == "coordinates"),
+            "",
+        )
+        if not coordinate_text:
+            continue
+        coordinate = coordinate_text.split()[0].split(",")
+        if len(coordinate) < 2:
+            raise ValueError(f"KML placemark {index}: invalid Point coordinates")
+        row = {
+            "point_id": name or f"GCP-{index}",
+            "x": coordinate[0],
+            "y": coordinate[1],
+            "z": coordinate[2] if len(coordinate) > 2 and coordinate[2] else 0,
+        }
+        points.append(_point(row, transformer=transformer, **defaults))
+    return ImportedGcpSet("kml", canonical, _unique_points(points))
+
+
+def _metashape_crs(root: ElementTree.Element, override: str | None) -> str:
+    if override:
+        return override
+    for element in root.iter():
+        if _local_name(element.tag) in {"wkt", "crs"} and (element.text or "").strip():
+            return (element.text or "").strip()
+        declared = element.attrib.get("crs")
+        if declared:
+            return declared
+    raise ValueError("source_crs is required when Metashape XML does not declare a CRS")
+
+
+def _parse_metashape_xml(
+    text: str,
+    source_crs: str | None,
+    defaults: dict[str, Any],
+) -> ImportedGcpSet:
+    root = _safe_xml_root(text)
+    canonical, transformer = _transformer(_metashape_crs(root, source_crs))
+    cameras = {
+        element.attrib["id"]: element.attrib.get("label", element.attrib["id"])
+        for element in root.iter()
+        if _local_name(element.tag) == "camera" and "id" in element.attrib
+    }
+    marker_labels: dict[str, str] = {}
+    raw_points: dict[str, ImportedGcpPoint] = {}
+    raw_observations: dict[str, list[ImportedGcpObservation]] = {}
+    for marker in (element for element in root.iter() if _local_name(element.tag) == "marker"):
+        marker_id = marker.attrib.get("id")
+        label = marker.attrib.get("label")
+        reference = next(
+            (
+                child
+                for child in marker
+                if _local_name(child.tag) == "reference" and "x" in child.attrib and "y" in child.attrib
+            ),
+            None,
+        )
+        if marker_id and label:
+            marker_labels[marker_id] = label
+        if reference is None:
+            continue
+        external_id = label or marker_id or f"GCP-{len(raw_points) + 1}"
+        point = _point(
+            {
+                "point_id": external_id,
+                "x": reference.attrib["x"],
+                "y": reference.attrib["y"],
+                "z": reference.attrib.get("z", 0),
+            },
+            transformer=transformer,
+            **defaults,
+        )
+        raw_points[marker_id or external_id] = point
+    for marker in (element for element in root.iter() if _local_name(element.tag) == "marker"):
+        marker_id = marker.attrib.get("marker_id") or marker.attrib.get("id")
+        if not marker_id or marker_id not in raw_points:
+            continue
+        for location in (
+            element for element in marker.iter() if _local_name(element.tag) in {"location", "projection"}
+        ):
+            camera_id = location.attrib.get("camera_id")
+            if not camera_id or "x" not in location.attrib or "y" not in location.attrib:
+                continue
+            raw_observations.setdefault(marker_id, []).append(
+                ImportedGcpObservation(
+                    cameras.get(camera_id, camera_id),
+                    float(location.attrib["x"]),
+                    float(location.attrib["y"]),
+                )
+            )
+    points = [
+        replace(point, observations=tuple(raw_observations.get(marker_id, [])))
+        for marker_id, point in raw_points.items()
+    ]
+    return ImportedGcpSet("metashape-xml", canonical, _unique_points(points))
 
 
 def _unique_points(points: list[ImportedGcpPoint]) -> tuple[ImportedGcpPoint, ...]:
@@ -223,6 +376,7 @@ def _parse_delimited(
     text: str,
     source_crs: str | None,
     defaults: dict[str, Any],
+    column_mapping: dict[str, str],
 ) -> ImportedGcpSet:
     if not source_crs:
         raise ValueError("source_crs is required for CSV/TSV and plain-text GCP files")
@@ -236,7 +390,9 @@ def _parse_delimited(
     if not rows:
         raise ValueError("empty GCP file")
     normalized_header = {cell.strip().lower() for cell in rows[0]}
-    has_header = bool(normalized_header.intersection(ID_ALIASES + X_ALIASES + Y_ALIASES))
+    known_headers = set(ID_ALIASES + X_ALIASES + Y_ALIASES)
+    known_headers.update(value.strip().lower() for value in column_mapping.values())
+    has_header = bool(normalized_header.intersection(known_headers))
     dictionaries: list[dict[str, Any]] = []
     if has_header:
         reader = csv.DictReader(io.StringIO(text), dialect=dialect)
@@ -246,15 +402,11 @@ def _parse_delimited(
             if len(row) < 4:
                 raise ValueError(f"line {line_number}: expected id X Y Z or X Y Z id")
             if re.fullmatch(r"[-+0-9.eE]+", row[0].strip()):
-                dictionaries.append(
-                    {"x": row[0], "y": row[1], "z": row[2], "point_id": row[3]}
-                )
+                dictionaries.append({"x": row[0], "y": row[1], "z": row[2], "point_id": row[3]})
             else:
-                dictionaries.append(
-                    {"point_id": row[0], "x": row[1], "y": row[2], "z": row[3]}
-                )
+                dictionaries.append({"point_id": row[0], "x": row[1], "y": row[2], "z": row[3]})
     points = [
-        _point(row, transformer=transformer, **defaults)
+        _point(_mapped_row(row, column_mapping), transformer=transformer, **defaults)
         for row in dictionaries
         if any(str(value).strip() for value in row.values())
     ]
@@ -270,6 +422,8 @@ def import_gcp_bytes(
     horizontal_accuracy_m: float = 0.02,
     vertical_accuracy_m: float = 0.03,
     image_accuracy_px: float = 1.0,
+    column_profile: str = "auto",
+    column_mapping: dict[str, str] | None = None,
 ) -> ImportedGcpSet:
     """Parse a bounded upload into canonical WGS84 GCP records."""
 
@@ -284,13 +438,21 @@ def import_gcp_bytes(
     }
     suffix = Path(filename).suffix.lower()
     stripped = text.lstrip()
+    profile = column_profile.strip().lower()
+    if profile not in COLUMN_PROFILES:
+        raise ValueError(f"unsupported GCP column profile: {column_profile}")
+    custom_mapping = column_mapping or {}
+    unknown_columns = set(custom_mapping) - MAPPABLE_COLUMNS
+    if unknown_columns:
+        raise ValueError("unsupported GCP column mapping keys: " + ", ".join(sorted(unknown_columns)))
+    mapping = {**COLUMN_PROFILES[profile], **custom_mapping}
+    if suffix == ".kml":
+        return _parse_kml(text, defaults)
+    if suffix == ".xml":
+        return _parse_metashape_xml(text, source_crs, defaults)
     if suffix in {".geojson", ".json"} or stripped.startswith("{"):
         return _parse_geojson(text, source_crs, defaults)
-    lines = [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith("#")]
     if lines:
         try:
             CRS.from_user_input(lines[0])
@@ -299,4 +461,4 @@ def import_gcp_bytes(
         else:
             if len(lines) == 1 or len(lines[1].split()) >= 7:
                 return _parse_odm(lines, defaults)
-    return _parse_delimited(text, source_crs, defaults)
+    return _parse_delimited(text, source_crs, defaults, mapping)

@@ -24,6 +24,7 @@ describe("ground-control API", () => {
       expect(body.get("source_crs")).toBe("EPSG:2154");
       expect(body.get("default_role")).toBe("checkpoint");
       expect(body.get("candidate_radius_m")).toBe("300");
+      expect(body.get("column_profile")).toBe("trimble");
       return jsonResponse({ gcp_set: {}, candidate_generation: {} }, 201);
     }));
 
@@ -36,6 +37,7 @@ describe("ground-control API", () => {
       imageAccuracyPx: 1,
       candidateRadiusM: 300,
       maxCandidates: 12,
+      columnProfile: "trimble",
     });
   });
 

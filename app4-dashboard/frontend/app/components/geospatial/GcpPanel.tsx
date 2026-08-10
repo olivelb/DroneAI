@@ -38,6 +38,8 @@ const DEFAULT_IMPORT: GcpImportOptions = {
   imageAccuracyPx: 1,
   candidateRadiusM: 250,
   maxCandidates: 20,
+  columnProfile: "auto",
+  columnMapping: {},
 };
 
 const numberValue = (value: string) => Number.parseFloat(value);
@@ -229,7 +231,7 @@ export default function GcpPanel({
         </div>
         <input
           type="file"
-          accept=".csv,.tsv,.txt,.xyz,.json,.geojson"
+          accept=".csv,.tsv,.txt,.xyz,.json,.geojson,.xml,.kml"
           onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           className="block w-full text-xs text-[#5d6965] file:mr-2 file:rounded-lg file:border-0 file:bg-[#e8f5f1] file:px-3 file:py-2 file:text-[#0f766e]"
         />
@@ -250,6 +252,43 @@ export default function GcpPanel({
             className="input-control mt-1 w-full"
           />
         </label>
+        <label className="block text-xs text-[#5d6965]">
+          {t("gcp.columnProfile")}
+          <select
+            value={options.columnProfile}
+            onChange={(event) => setOptions({
+              ...options,
+              columnProfile: event.target.value as GcpImportOptions["columnProfile"],
+            })}
+            className="input-control mt-1 w-full"
+          >
+            <option value="auto">{t("gcp.columnProfile.auto")}</option>
+            <option value="leica">Leica</option>
+            <option value="trimble">Trimble</option>
+            <option value="custom">{t("gcp.columnProfile.custom")}</option>
+          </select>
+        </label>
+        {options.columnProfile === "custom" && (
+          <div className="grid grid-cols-2 gap-2 rounded-lg bg-[#f5fbf9] p-2">
+            {(["point_id", "x", "y", "z"] as const).map((column) => (
+              <label key={column} className="text-[10px] text-[#5d6965]">
+                {t(`gcp.column.${column}` as MessageKey)}
+                <input
+                  value={options.columnMapping?.[column] ?? ""}
+                  onChange={(event) => setOptions({
+                    ...options,
+                    columnMapping: {
+                      ...options.columnMapping,
+                      [column]: event.target.value,
+                    },
+                  })}
+                  className="input-control mt-1 w-full"
+                  placeholder={column === "point_id" ? "Station" : column.toUpperCase()}
+                />
+              </label>
+            ))}
+          </div>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <label className="text-xs text-[#5d6965]">
             {t("gcp.defaultRole")}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import json
 from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -209,6 +210,8 @@ async def import_ground_control(
     image_accuracy_px: Annotated[float, Form(gt=0)] = 1.0,
     candidate_radius_m: Annotated[float, Form(gt=0, le=10_000)] = 250.0,
     max_candidates: Annotated[int, Form(ge=1, le=100)] = 20,
+    column_profile: Annotated[str, Form(max_length=32)] = "auto",
+    column_mapping: Annotated[str | None, Form(max_length=4096)] = None,
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
     filename = safe_upload_name(upload.filename)
@@ -216,6 +219,9 @@ async def import_ground_control(
     if len(payload) > MAX_GCP_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="GCP upload exceeds 5 MiB")
     try:
+        parsed_column_mapping = json.loads(column_mapping) if column_mapping else None
+        if parsed_column_mapping is not None and not isinstance(parsed_column_mapping, dict):
+            raise ValueError("column_mapping must be a JSON object")
         imported = import_gcp_bytes(
             payload,
             filename,
@@ -224,6 +230,8 @@ async def import_ground_control(
             horizontal_accuracy_m=horizontal_accuracy_m,
             vertical_accuracy_m=vertical_accuracy_m,
             image_accuracy_px=image_accuracy_px,
+            column_profile=column_profile,
+            column_mapping=parsed_column_mapping,
         )
     except (UnicodeDecodeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
