@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from shared.artifact_manifest import content_addressed_blob_key
 from shared.database import DetectionShardReceipt, MissionStageRun
 from shared.detection_sharding import DetectionShardPlan
 
@@ -24,7 +25,7 @@ def _lower_sha256(value: str, field: str) -> str:
     return value
 
 
-def _result_key(value: str) -> str:
+def _result_key(value: str, checksum_sha256: str) -> str:
     if not value or "\\" in value:
         raise ValueError("Detection shard result key must be a canonical S3 key")
     path = PurePosixPath(value)
@@ -33,9 +34,10 @@ def _result_key(value: str) -> str:
         or ".." in path.parts
         or any(part in {"", "."} for part in path.parts)
         or path.as_posix() != value
-        or not value.endswith(".json")
     ):
-        raise ValueError("Detection shard result key must be a canonical S3 JSON key")
+        raise ValueError("Detection shard result key must be a canonical S3 key")
+    if value != content_addressed_blob_key(checksum_sha256):
+        raise ValueError("Detection shard result key must match its content checksum")
     return value
 
 
@@ -80,8 +82,8 @@ def record_detection_shard_receipt(
     if plan.shard_count < 2:
         raise ValueError("Detection shard receipts require a multi-shard plan")
     shard = plan.shard(shard_index)
-    canonical_key = _result_key(result_key)
     checksum = _lower_sha256(result_checksum_sha256, "Shard result checksum")
+    canonical_key = _result_key(result_key, checksum)
     if result_size_bytes <= 0:
         raise ValueError("Shard result size must be positive")
     run = (
@@ -173,11 +175,11 @@ def complete_detection_shard_receipts(
             or receipt.tile_count != shard.tile_count
         ):
             raise ValueError("Durable detection shard receipt contradicts its plan")
-        _result_key(cast(str, receipt.result_key))
-        _lower_sha256(
+        checksum = _lower_sha256(
             cast(str, receipt.result_checksum_sha256),
             "Durable shard result checksum",
         )
+        _result_key(cast(str, receipt.result_key), checksum)
         if cast(int, receipt.result_size_bytes) <= 0:
             raise ValueError("Durable shard result size must be positive")
     return tuple(receipts)

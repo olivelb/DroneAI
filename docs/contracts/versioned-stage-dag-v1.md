@@ -252,6 +252,12 @@ key and digest still matches the durable plan. The orchestrator still does not
 dispatch indexed detection until the S3 publication and finalizer executables
 use this boundary end to end.
 
+Shard-result JSON is serialized canonically and published through the same
+conditional CAS writer as artifact blobs. Its receipt key must equal the
+checksum-derived `blobs/sha256/...` key. Finalization downloads every ordered
+receipt, verifies byte size and SHA-256 before parsing, rechecks the result
+against the persisted plan, then passes only validated results to fan-in.
+
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
