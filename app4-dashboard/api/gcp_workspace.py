@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import cast
@@ -14,7 +15,7 @@ from pyproj import Transformer
 from sqlalchemy import func
 
 from shared import storage
-from shared.database import GcpObservation, GcpPoint, GcpSet
+from shared.database import GcpObservation, GcpPoint, GcpSet, get_session
 from shared.gcp_candidates import PositionedImage, parse_positioned_images
 from shared.gcp_bundle import (
     BundleObservation,
@@ -35,6 +36,13 @@ GCP_FILE_SUFFIXES = {".csv", ".tsv", ".txt", ".xyz", ".geojson", ".json"}
 class MissionImagePositions:
     projected_crs: str
     images: tuple[PositionedImage, ...]
+
+
+def gcp_route_session() -> Iterator[RouteSession]:
+    """Provide one committing/rolling-back session to a GCP API request."""
+
+    with get_session() as session:
+        yield cast(RouteSession, session)
 
 
 def safe_upload_name(filename: str | None) -> str:

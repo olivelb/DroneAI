@@ -233,6 +233,18 @@ def _values_check(column: str, values: tuple[str, ...]) -> str:
     return f"{column} IN ({quoted})"
 
 
+def _uuid_identifier_column() -> Column[Any]:
+    """Define the common externally visible immutable UUID identifier."""
+
+    return Column(
+        String(36),
+        unique=True,
+        nullable=False,
+        default=lambda: str(uuid4()),
+        index=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -777,13 +789,7 @@ class AIAnalysisRun(RequiredTimestampMixin, Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
+    run_id = _uuid_identifier_column()
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),
@@ -1017,13 +1023,7 @@ class GcpSet(RequiredTimestampMixin, Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    set_id = Column(
-        String(36),
-        unique=True,
-        nullable=False,
-        default=lambda: str(uuid4()),
-        index=True,
-    )
+    set_id = _uuid_identifier_column()
     mission_id = Column(
         Integer,
         ForeignKey("missions.id", ondelete="CASCADE"),

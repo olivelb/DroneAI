@@ -19,6 +19,7 @@ from shared.gcp_import import import_gcp_bytes
 from ..gcp_schemas import GcpObservationUpdate, GcpPointUpdate
 from ..gcp_workspace import (
     MAX_GCP_UPLOAD_BYTES,
+    gcp_route_session,
     load_mission_image_positions,
     materialize_gcp_bundle,
     observation_json,
@@ -30,10 +31,14 @@ from ..gcp_workspace import (
     source_checksum,
     update_point_coordinates,
 )
-from ..map_support import JsonObject, RouteSession, get_mission
+from ..map_support import JsonObject, MissionRecord, RouteSession, get_mission
 from ..security import Principal, require_authenticated, require_operator
 
 router = APIRouter()
+OperatorPrincipal = Annotated[Principal, Depends(require_operator)]
+ViewerPrincipal = Annotated[Principal, Depends(require_authenticated)]
+GcpSessionDependency = Annotated[RouteSession, Depends(gcp_route_session)]
+OwnerSubjectQuery = Annotated[str | None, Query(max_length=256)]
 
 
 class GcpPointMutationRecord(Protocol):
@@ -64,6 +69,39 @@ def _image_key(dataset_prefix: str | None, image_name: str) -> str | None:
     if not dataset_prefix:
         return None
     return f"{dataset_prefix.rstrip('/')}/{image_name.lstrip('/')}"
+
+
+def _authorized_mission(
+    session: RouteSession,
+    vol_id: str,
+    principal: Principal,
+    owner_subject: str | None,
+    action: str,
+) -> MissionRecord:
+    return get_mission(
+        session,
+        vol_id,
+        principal,
+        owner_subject=owner_subject,
+        action=action,
+    )
+
+
+def _require_gcp_set(
+    session: RouteSession,
+    mission_id: int,
+    set_id: str,
+) -> GcpSet:
+    gcp_set = cast(
+        GcpSet | None,
+        session.query(GcpSet).filter(
+            GcpSet.mission_id == mission_id,
+            GcpSet.set_id == set_id,
+        ).first(),
+    )
+    if gcp_set is None:
+        raise HTTPException(status_code=404, detail="GCP set not found")
+    return gcp_set
 
 
 @router.post("/{vol_id}/gcps/import", status_code=status.HTTP_201_CREATED)
@@ -100,12 +138,8 @@ async def import_ground_control(
 
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session,
-            vol_id,
-            principal,
-            owner_subject=owner_subject,
-            action="gcp_import",
+        mission = _authorized_mission(
+            typed_session, vol_id, principal, owner_subject, "gcp_import"
         )
         existing = typed_session.query(GcpSet).filter(
             GcpSet.mission_id == mission.id,
@@ -221,99 +255,64 @@ async def import_ground_control(
 @router.get("/{vol_id}/gcps")
 def list_ground_control(
     vol_id: str,
-    principal: Annotated[Principal, Depends(require_authenticated)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+    principal: ViewerPrincipal,
+    session: GcpSessionDependency,
+    owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session,
-            vol_id,
-            principal,
-            owner_subject=owner_subject,
-            action="gcp_list",
-        )
-        sets = cast(
-            list[GcpSet],
-            typed_session.query(GcpSet)
-            .filter(GcpSet.mission_id == mission.id)
-            .order_by(GcpSet.created_at.desc())
-            .all(),
-        )
-        features = [
-            point_json(typed_session, point)
-            for gcp_set in sets
-            for point in cast(list[GcpPoint], gcp_set.points)
-        ]
-        return {
-            "type": "FeatureCollection",
-            "features": features,
-            "gcp_sets": [set_json(typed_session, item, include_points=False) for item in sets],
-        }
+    mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_list")
+    sets = cast(
+        list[GcpSet],
+        session.query(GcpSet)
+        .filter(GcpSet.mission_id == mission.id)
+        .order_by(GcpSet.created_at.desc())
+        .all(),
+    )
+    features = [
+        point_json(session, point)
+        for gcp_set in sets
+        for point in cast(list[GcpPoint], gcp_set.points)
+    ]
+    return {
+        "type": "FeatureCollection",
+        "features": features,
+        "gcp_sets": [set_json(session, item, include_points=False) for item in sets],
+    }
 
 
 @router.get("/{vol_id}/gcps/{set_id}")
 def ground_control_detail(
     vol_id: str,
     set_id: str,
-    principal: Annotated[Principal, Depends(require_authenticated)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+    principal: ViewerPrincipal,
+    session: GcpSessionDependency,
+    owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session,
-            vol_id,
-            principal,
-            owner_subject=owner_subject,
-            action="gcp_detail",
-        )
-        gcp_set = cast(
-            GcpSet | None,
-            typed_session.query(GcpSet).filter(
-                GcpSet.mission_id == mission.id,
-                GcpSet.set_id == set_id,
-            ).first(),
-        )
-        if gcp_set is None:
-            raise HTTPException(status_code=404, detail="GCP set not found")
-        return set_json(typed_session, gcp_set, include_points=True)
+    mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_detail")
+    gcp_set = _require_gcp_set(session, mission.id, set_id)
+    return set_json(session, gcp_set, include_points=True)
 
 
 @router.post("/{vol_id}/gcps/{set_id}/bundle")
 def prepare_ground_control_bundle(
     vol_id: str,
     set_id: str,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+    principal: OperatorPrincipal,
+    session: GcpSessionDependency,
+    owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session,
-            vol_id,
-            principal,
-            owner_subject=owner_subject,
-            action="gcp_bundle_create",
-        )
-        gcp_set = cast(
-            GcpSet | None,
-            typed_session.query(GcpSet).filter(
-                GcpSet.mission_id == mission.id,
-                GcpSet.set_id == set_id,
-            ).first(),
-        )
-        if gcp_set is None:
-            raise HTTPException(status_code=404, detail="GCP set not found")
-        try:
-            return materialize_gcp_bundle(gcp_set)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
-        except OSError as error:
-            raise HTTPException(
-                status_code=502,
-                detail=f"Unable to publish immutable GCP bundle: {error}",
-            ) from error
+    mission = _authorized_mission(
+        session, vol_id, principal, owner_subject, "gcp_bundle_create"
+    )
+    gcp_set = _require_gcp_set(session, mission.id, set_id)
+    try:
+        return materialize_gcp_bundle(gcp_set)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    except OSError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to publish immutable GCP bundle: {error}",
+        ) from error
 
 
 @router.post("/{vol_id}/gcps/{set_id}/candidates/refresh")
@@ -329,22 +328,14 @@ def refresh_ground_control_candidates(
 
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(
+        mission = _authorized_mission(
             typed_session,
             vol_id,
             principal,
-            owner_subject=owner_subject,
-            action="gcp_candidate_refresh",
+            owner_subject,
+            "gcp_candidate_refresh",
         )
-        gcp_set = cast(
-            GcpSet | None,
-            typed_session.query(GcpSet).filter(
-                GcpSet.mission_id == mission.id,
-                GcpSet.set_id == set_id,
-            ).first(),
-        )
-        if gcp_set is None:
-            raise HTTPException(status_code=404, detail="GCP set not found")
+        gcp_set = _require_gcp_set(typed_session, mission.id, set_id)
         try:
             positions = load_mission_image_positions(vol_id)
         except (OSError, UnicodeDecodeError, ValueError) as error:
@@ -422,52 +413,47 @@ def update_ground_control_point(
     vol_id: str,
     point_id: str,
     request: GcpPointUpdate,
-    principal: Annotated[Principal, Depends(require_operator)],
-    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+    principal: OperatorPrincipal,
+    session: GcpSessionDependency,
+    owner_subject: OwnerSubjectQuery = None,
 ) -> JsonObject:
-    with get_session() as session:
-        typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session,
-            vol_id,
-            principal,
-            owner_subject=owner_subject,
-            action="gcp_point_update",
+    mission = _authorized_mission(
+        session, vol_id, principal, owner_subject, "gcp_point_update"
+    )
+    stored_point = cast(
+        GcpPoint | None,
+        session.query(GcpPoint).filter(
+            GcpPoint.mission_id == mission.id,
+            GcpPoint.point_id == point_id,
+        ).with_for_update().first(),
+    )
+    if stored_point is None:
+        raise HTTPException(status_code=404, detail="GCP point not found")
+    point = cast(GcpPointMutationRecord, stored_point)
+    if point.version != request.version:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "GCP point changed", "current_version": point.version},
         )
-        stored_point = cast(
-            GcpPoint | None,
-            typed_session.query(GcpPoint).filter(
-                GcpPoint.mission_id == mission.id,
-                GcpPoint.point_id == point_id,
-            ).with_for_update().first(),
+    gcp_set = point.gcp_set
+    changes = request.model_dump(exclude_unset=True, exclude={"version"})
+    longitude = changes.pop("longitude", None)
+    latitude = changes.pop("latitude", None)
+    altitude_m = changes.pop("altitude_m", None)
+    if longitude is not None and latitude is not None and altitude_m is not None:
+        update_point_coordinates(
+            stored_point,
+            gcp_set,
+            longitude=longitude,
+            latitude=latitude,
+            altitude_m=altitude_m,
         )
-        if stored_point is None:
-            raise HTTPException(status_code=404, detail="GCP point not found")
-        point = cast(GcpPointMutationRecord, stored_point)
-        if point.version != request.version:
-            raise HTTPException(
-                status_code=409,
-                detail={"message": "GCP point changed", "current_version": point.version},
-            )
-        gcp_set = point.gcp_set
-        changes = request.model_dump(exclude_unset=True, exclude={"version"})
-        longitude = changes.pop("longitude", None)
-        latitude = changes.pop("latitude", None)
-        altitude_m = changes.pop("altitude_m", None)
-        if longitude is not None and latitude is not None and altitude_m is not None:
-            update_point_coordinates(
-                stored_point,
-                gcp_set,
-                longitude=longitude,
-                latitude=latitude,
-                altitude_m=altitude_m,
-            )
-        for field, value in changes.items():
-            setattr(point, field, value)
-        point.version += 1
-        point.updated_at = datetime.now(UTC)
-        typed_session.flush()
-        return point_json(typed_session, stored_point)
+    for field, value in changes.items():
+        setattr(point, field, value)
+    point.version += 1
+    point.updated_at = datetime.now(UTC)
+    session.flush()
+    return point_json(session, stored_point)
 
 
 @router.patch("/{vol_id}/gcps/observations/{observation_id}")
@@ -480,12 +466,12 @@ def update_ground_control_observation(
 ) -> JsonObject:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(
+        mission = _authorized_mission(
             typed_session,
             vol_id,
             principal,
-            owner_subject=owner_subject,
-            action="gcp_observation_update",
+            owner_subject,
+            "gcp_observation_update",
         )
         stored_observation = cast(
             GcpObservation | None,
