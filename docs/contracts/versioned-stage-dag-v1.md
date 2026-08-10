@@ -225,22 +225,19 @@ pixels and the source raster. This makes overlap amplification and scenes above
 the current single-Job envelope measurable before detection is split into
 fan-out/fan-in shards.
 
-The first fan-out foundation is implemented without changing that deployment
-boundary. `shared.detection_sharding` partitions the complete row-major tile
+`shared.detection_sharding` partitions the complete row-major tile
 sequence into compact, contiguous, bounded shards and assigns the plan a stable
 SHA-256. It covers the 5,412-tile audit case with six shards at 1,024 tiles per
 shard. `shared.detection_shard_results` rejects results for another plan,
 out-of-range tile indices, missing or duplicate shards, model-provenance drift
 and aggregate detection overflow before applying the existing global spatial
-deduplication across shard boundaries. The current executor deliberately runs
-one such plan shard and retains the 4,096-tile limit until indexed child Jobs,
-their retry/cancellation lifecycle and the finalizer are durably orchestrated.
+deduplication across shard boundaries. The monolithic executor deliberately
+retains its 4,096-tile safety limit; the separately gated fan-out path removes
+that deployment ceiling by partitioning a larger validated plan.
 The Kubernetes manifest builder can now express an indexed Job with 2 to 256
 completions, bounded parallelism and a shard index injected from the standard
 `batch.kubernetes.io/job-completion-index` pod annotation. The ordinary Job
-manifest remains unchanged. The orchestrator does not request indexed mode yet:
-activation remains blocked on an idempotent durable shard receipt and explicit
-finalizer lifecycle, rather than relying on successful pod exit alone.
+manifest remains unchanged.
 
 Migration `0018` adds that durable receipt boundary. Each successful indexed
 pod must record exactly one immutable result key, checksum and size for the
@@ -248,9 +245,8 @@ exact persisted plan and shard index. The stage-run row lock serializes
 concurrent publications; an identical retry is idempotent, while a different
 result for an existing index fails closed. A finalizer can obtain receipts only
 when every index is present in order and every stored shard count, tile count,
-key and digest still matches the durable plan. The orchestrator still does not
-dispatch indexed detection until the S3 publication and finalizer executables
-use this boundary end to end.
+key and digest still matches the durable plan. A successful Indexed Job without
+the complete exact receipt set fails closed before finalization.
 
 Shard-result JSON is serialized canonically and published through the same
 conditional CAS writer as artifact blobs. Its receipt key must equal the
@@ -273,9 +269,18 @@ selectively restores the exact orthomosaic, executes only its planned windows
 and publishes only a CAS receipt through `execute_stage_subtask`. The finalizer
 requires all ordered receipts, verifies and aggregates them, selectively
 restores the raster for georeferencing, then reuses the existing detection
-workspace/GeoJSON publisher through `execute_one_shot_stage`. The orchestrator
-still emits only `monolithic`; therefore these modes remain unreachable in a
-deployment until the next guarded scheduling phase.
+workspace/GeoJSON publisher through `execute_one_shot_stage`.
+
+The guarded scheduling phase is now implemented. At reservation time the
+orchestrator resolves the exact raster artifact, reads its immutable width and
+height metrics, builds and persists the complete plan, and keeps a one-shard
+mission monolithic. A multi-shard plan creates an Indexed Job in `shard` mode.
+Only after Kubernetes completion and durable receipt validation does the same
+stage run move to a separately named non-indexed Job in `finalizer` mode. Both
+the phase and previous Job identity remain in provenance, and deterministic
+names make recreation idempotent. `stageJobs.detectionFanout.enabled` remains
+`false` by default and the chart rejects it unless Manifest v2 writes and
+detection selective restore are already enabled.
 
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of

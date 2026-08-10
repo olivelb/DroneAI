@@ -262,6 +262,14 @@ stageJobs:
   # Detection-only canary: materialize its declared orthomosaic instead of the
   # complete parent overlay. Requires artifactManifestV2WriteEnabled=true.
   artifactSelectiveRestoreEnabled: false
+  # Full-raster fan-out/fan-in remains a separate canary. Small rasters stay
+  # monolithic; larger plans use an Indexed Job and a distinct finalizer Job.
+  # Requires artifactSelectiveRestoreEnabled=true.
+  detectionFanout:
+    enabled: false
+    tilesPerShard: 1024
+    parallelism: 2
+    maximumTiles: 100000
   # All five one-shot commands are implemented and Q3-qualified. Enabling still
   # requires every entry so a generic Helm install cannot dispatch mutable or
   # partially configured workloads. Images use an OCI digest or Git-SHA tag.

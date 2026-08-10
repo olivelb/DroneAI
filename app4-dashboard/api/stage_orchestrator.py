@@ -13,7 +13,14 @@ from typing import Any, cast
 
 from sqlalchemy import text
 
-from shared.database import Mission, MissionStageRun, get_session
+from shared.database import Mission, MissionArtifact, MissionStageRun, get_session
+from shared.detection_shard_receipts import complete_detection_shard_receipts
+from shared.detection_sharding import (
+    MAX_DETECTION_TILES,
+    DetectionShardPlan,
+    build_detection_shard_plan,
+    parse_detection_shard_plan_descriptor,
+)
 from shared.stage_contracts import (
     STAGE_ORDER,
     ResourceClassId,
@@ -29,6 +36,7 @@ from shared.stage_scheduler import (
 )
 
 from .kubernetes_jobs import (
+    IndexedJobConfig,
     KubernetesApiError,
     KubernetesJobClient,
     SecretEnvironment,
@@ -43,6 +51,9 @@ EXECUTOR_NAME = "kubernetes-job"
 ACTIVE_STATUSES = ("queued", "running")
 SCHEDULER_LOCK_NAMESPACE = 0x44524F4E  # "DRON"
 SCHEDULER_LOCK_KEY = 1
+DETECTION_PHASE_KEY = "detection_execution_phase"
+DETECTION_SHARDS_PHASE = "shards"
+DETECTION_FINALIZER_PHASE = "finalizer"
 
 
 @dataclass(frozen=True)
@@ -69,6 +80,10 @@ class StageOrchestratorSettings:
     ttl_seconds_after_finished: int = 3_600
     runtime_class_name: str | None = None
     maximum_dispatch_attempts: int = 3
+    detection_fanout_enabled: bool = False
+    detection_tiles_per_shard: int = 1_024
+    detection_shard_parallelism: int = 2
+    detection_maximum_tiles: int = MAX_DETECTION_TILES
 
 
 @dataclass(frozen=True)
@@ -86,6 +101,23 @@ def _positive_int(name: str, default: int) -> int:
     value = int(os.getenv(name, str(default)))
     if value < 1:
         raise ValueError(f"{name} must be positive")
+    return value
+
+
+def _strict_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise ValueError(f"{name} must be true or false")
+    return normalized == "true"
+
+
+def _bounded_positive_int(name: str, default: int, maximum: int) -> int:
+    value = _positive_int(name, default)
+    if value > maximum:
+        raise ValueError(f"{name} must not exceed {maximum}")
     return value
 
 
@@ -129,6 +161,21 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
 
 def settings_from_environment() -> StageOrchestratorSettings:
     enabled = stage_jobs_enabled()
+    detection_fanout_enabled = _strict_bool(
+        "DRONEAI_DETECTION_FANOUT_ENABLED"
+    )
+    manifest_v2_enabled = _strict_bool(
+        "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED"
+    )
+    selective_restore_enabled = _strict_bool(
+        "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
+    )
+    if detection_fanout_enabled and not (
+        manifest_v2_enabled and selective_restore_enabled
+    ):
+        raise ValueError(
+            "Detection fan-out requires Manifest v2 writes and selective restore"
+        )
     resource_limits_raw = json.loads(
         os.getenv("DRONEAI_STAGE_RESOURCE_CONCURRENCY_JSON", "{}")
     )
@@ -211,7 +258,113 @@ def settings_from_environment() -> StageOrchestratorSettings:
             os.getenv("DRONEAI_STAGE_JOB_RUNTIME_CLASS", "").strip() or None
         ),
         maximum_dispatch_attempts=_positive_int("DRONEAI_STAGE_MAX_DISPATCH_ATTEMPTS", 3),
+        detection_fanout_enabled=detection_fanout_enabled,
+        detection_tiles_per_shard=_positive_int(
+            "DRONEAI_DETECTION_TILES_PER_SHARD",
+            1_024,
+        ),
+        detection_shard_parallelism=_positive_int(
+            "DRONEAI_DETECTION_SHARD_PARALLELISM",
+            2,
+        ),
+        detection_maximum_tiles=_bounded_positive_int(
+            "DRONEAI_DETECTION_MAXIMUM_TILES",
+            MAX_DETECTION_TILES,
+            MAX_DETECTION_TILES,
+        ),
     )
+
+
+def _detection_phase(run: MissionStageRun) -> str | None:
+    provenance = cast(dict[str, Any], getattr(run, "provenance", None) or {})
+    value = provenance.get(DETECTION_PHASE_KEY)
+    return value if isinstance(value, str) else None
+
+
+def _detection_job_name(run: MissionStageRun) -> str:
+    identity = cast(str, run.run_id)
+    if _detection_phase(run) == DETECTION_FINALIZER_PHASE:
+        identity = f"{identity}-finalizer"
+    return stage_job_name(identity)
+
+
+def _integer_value(value: object, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer")
+    try:
+        result = int(cast(Any, value))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{field} must be an integer") from error
+    return result
+
+
+def _prepare_detection_fanout(
+    session: Any,
+    run: MissionStageRun,
+    settings: StageOrchestratorSettings,
+) -> DetectionShardPlan | None:
+    if run.stage != "detection" or not settings.detection_fanout_enabled:
+        return None
+    upstream_ids = cast(list[Any], run.upstream_artifact_ids or [])
+    if (
+        len(upstream_ids) != 1
+        or not isinstance(upstream_ids[0], str)
+        or not upstream_ids[0]
+    ):
+        raise ValueError(
+            "Detection fan-out requires exactly one immutable upstream artifact"
+        )
+    artifact = session.query(MissionArtifact).filter(
+        MissionArtifact.artifact_id == upstream_ids[0],
+        MissionArtifact.mission_id == run.mission_id,
+    ).one_or_none()
+    if (
+        artifact is None
+        or artifact.kind != "raster_product_workspace"
+        or artifact.stage_run.stage != "rasterization"
+        or artifact.stage_run.status != "succeeded"
+    ):
+        raise ValueError(
+            "Detection fan-out requires its exact raster product artifact"
+        )
+    metrics = cast(dict[str, Any], artifact.stage_run.quality_metrics or {})
+    width = _integer_value(metrics.get("width"), "Raster width")
+    height = _integer_value(metrics.get("height"), "Raster height")
+    parameters = cast(dict[str, Any], run.parameters or {})
+    raw_ai = parameters.get("ai") or {}
+    if not isinstance(raw_ai, dict):
+        raise ValueError("Detection stage AI parameters must be an object")
+    ai = cast(dict[str, Any], raw_ai)
+    tile_size = _integer_value(ai.get("tile_size") or 1_024, "Detection tile size")
+    overlap = _integer_value(
+        ai.get("tile_overlap")
+        if ai.get("tile_overlap") is not None
+        else tile_size // 4,
+        "Detection tile overlap",
+    )
+    plan = build_detection_shard_plan(
+        width,
+        height,
+        tile_size,
+        overlap,
+        tiles_per_shard=settings.detection_tiles_per_shard,
+        maximum_tiles=settings.detection_maximum_tiles,
+    )
+    provenance = cast(dict[str, Any], run.provenance or {})
+    if plan.shard_count < 2:
+        run.provenance = {
+            **provenance,
+            "detection_execution_mode": "monolithic",
+            "detection_planned_tile_count": plan.tile_count,
+        }
+        return None
+    run.provenance = {
+        **provenance,
+        "detection_execution_mode": "fanout-fanin",
+        "detection_shard_plan": plan.descriptor(),
+        DETECTION_PHASE_KEY: DETECTION_SHARDS_PHASE,
+    }
+    return plan
 
 
 def _reserved_job(
@@ -227,6 +380,26 @@ def _reserved_job(
     detection_secret_environment = (
         settings.detection_secret_environment if stage == "detection" else ()
     )
+    indexed = None
+    name_suffix = None
+    phase_environment: tuple[tuple[str, str], ...] = ()
+    phase = _detection_phase(run)
+    if stage == "detection" and phase == DETECTION_SHARDS_PHASE:
+        provenance = cast(dict[str, Any], run.provenance or {})
+        plan = parse_detection_shard_plan_descriptor(
+            provenance.get("detection_shard_plan")
+        )
+        indexed = IndexedJobConfig(
+            completions=plan.shard_count,
+            parallelism=min(
+                settings.detection_shard_parallelism,
+                plan.shard_count,
+            ),
+        )
+        phase_environment = (("DRONEAI_DETECTION_EXECUTION_MODE", "shard"),)
+    elif stage == "detection" and phase == DETECTION_FINALIZER_PHASE:
+        name_suffix = "finalizer"
+        phase_environment = (("DRONEAI_DETECTION_EXECUTION_MODE", "finalizer"),)
     request = StageJobRequest(
         run_id=cast(str, run.run_id),
         mission_id=cast(int, mission.id),
@@ -246,12 +419,18 @@ def _reserved_job(
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
             runtime_class_name=settings.runtime_class_name,
             node_selector=executor.node_selector,
-            environment=settings.job_environment + detection_environment,
+            environment=(
+                settings.job_environment
+                + detection_environment
+                + phase_environment
+            ),
             secret_environment=(
                 settings.job_secret_environment + detection_secret_environment
             ),
+            indexed=indexed,
+            name_suffix=name_suffix,
         ),
-        job_name=stage_job_name(request.run_id),
+        job_name=_detection_job_name(run),
     )
 
 
@@ -350,8 +529,15 @@ def reserve_ready_jobs(
         if run.run_id not in selected_ids:
             continue
         executor = settings.executors[cast(StageId, run.stage)]
+        try:
+            _prepare_detection_fanout(session, run, settings)
+        except ValueError as error:
+            run.status = "failed"
+            run.error_message = f"Invalid detection fan-out plan: {error}"
+            run.completed_at = now
+            continue
         run.executor = EXECUTOR_NAME
-        run.job_name = stage_job_name(cast(str, run.run_id))
+        run.job_name = _detection_job_name(run)
         run.scheduled_at = now
         run.dispatch_attempts = cast(int, run.dispatch_attempts) + 1
         run.dispatch_error = None
@@ -379,8 +565,11 @@ def _record_dispatch_error(run_id: str, error: Exception, maximum_attempts: int)
 
 
 def _create_job(client: KubernetesJobClient, reserved: ReservedStageJob) -> None:
+    job = build_stage_job(reserved.request, reserved.config)
+    if job["metadata"]["name"] != reserved.job_name:
+        raise RuntimeError("Reserved stage Job identity does not match its manifest")
     try:
-        client.create(build_stage_job(reserved.request, reserved.config))
+        client.create(job)
     except KubernetesApiError as error:
         if error.status_code != 409:
             raise
@@ -444,9 +633,6 @@ def reconcile_stage_jobs(
                         run.status = "failed"
                         run.error_message = "Stage Job recreation failed after bounded retries"
                         run.completed_at = now
-                    else:
-                        run.executor = None
-                        run.scheduled_at = None
                 continue
             status = cast(dict[str, Any], job.get("status") or {})
             run.heartbeat_at = now
@@ -458,6 +644,55 @@ def reconcile_stage_jobs(
                 run.error_message = "Kubernetes stage Job failed"
                 run.completed_at = now
             elif int(status.get("succeeded") or 0) > 0:
+                if (
+                    run.stage == "detection"
+                    and _detection_phase(run) == DETECTION_SHARDS_PHASE
+                ):
+                    provenance = cast(dict[str, Any], run.provenance or {})
+                    try:
+                        plan = parse_detection_shard_plan_descriptor(
+                            provenance.get("detection_shard_plan")
+                        )
+                        complete_detection_shard_receipts(
+                            session,
+                            run_id=cast(str, run.run_id),
+                            plan=plan,
+                        )
+                    except ValueError as error:
+                        run.status = "failed"
+                        run.error_message = (
+                            "Detection shards exited without a complete durable "
+                            f"receipt set: {error}"
+                        )
+                        run.completed_at = now
+                        continue
+                    shard_job_name = cast(str, run.job_name)
+                    shard_dispatch_attempts = cast(int, run.dispatch_attempts)
+                    run.provenance = {
+                        **provenance,
+                        DETECTION_PHASE_KEY: DETECTION_FINALIZER_PHASE,
+                        "detection_shard_job_name": shard_job_name,
+                        "detection_shard_dispatch_attempts": shard_dispatch_attempts,
+                    }
+                    run.job_name = _detection_job_name(run)
+                    run.dispatch_attempts = 1
+                    run.dispatch_error = None
+                    run.current_step = "DETECTION_FINALIZING"
+                    try:
+                        _create_job(client, _reserved_job(run, mission, settings))
+                    except Exception as create_error:
+                        run.dispatch_error = str(create_error)[:4000]
+                        if (
+                            cast(int, run.dispatch_attempts)
+                            >= settings.maximum_dispatch_attempts
+                        ):
+                            run.status = "failed"
+                            run.error_message = (
+                                "Detection finalizer dispatch failed after "
+                                "bounded retries"
+                            )
+                            run.completed_at = now
+                    continue
                 run.status = "failed"
                 run.error_message = "Stage Job exited without publishing its immutable artifact"
                 run.completed_at = now

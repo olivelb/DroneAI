@@ -59,6 +59,7 @@ class StageJobConfig:
     environment: tuple[tuple[str, str], ...] = ()
     secret_environment: tuple[SecretEnvironment, ...] = ()
     indexed: IndexedJobConfig | None = None
+    name_suffix: str | None = None
 
     def __post_init__(self) -> None:
         if not self.image or not self.command:
@@ -67,6 +68,11 @@ class StageJobConfig:
             raise ValueError("Stage Job deadlines must be non-negative")
         if self.runtime_class_name is not None and not self.runtime_class_name.strip():
             raise ValueError("Stage Job runtime class must not be blank")
+        if self.name_suffix is not None and not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?",
+            self.name_suffix,
+        ):
+            raise ValueError("Stage Job name suffix must be a canonical DNS label")
         reserved = {
             "DRONEAI_STAGE_RUN_ID",
             "DRONEAI_MISSION_ID",
@@ -109,7 +115,12 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
     }
     if resources["gpu_count"]:
         limits["nvidia.com/gpu"] = str(resources["gpu_count"])
-    name = stage_job_name(request.run_id)
+    name_identity = (
+        f"{request.run_id}-{config.name_suffix}"
+        if config.name_suffix is not None
+        else request.run_id
+    )
+    name = stage_job_name(name_identity)
     run_id_hash = hashlib.sha256(request.run_id.encode()).hexdigest()[:16]
     environment: list[JsonObject] = [
         {"name": "DRONEAI_STAGE_RUN_ID", "value": request.run_id},
