@@ -340,18 +340,26 @@ def test_reconciliation_persists_kubernetes_deadline_reason(
 def test_reconciliation_deletes_jobs_for_cancelled_missions(stage_sessions, monkeypatch):
     run_id = "e" * 32
     _add_run(stage_sessions, "mission-cancelled", "owner-a", run_id)
+    completed_at = datetime(2026, 8, 10, 12, 30)
     with stage_sessions() as session:
         reserved = orchestrator.reserve_ready_jobs(session, _settings(), datetime.now(UTC))
         mission = session.query(Mission).one()
         mission.status = "cancelled"
+        run = session.query(MissionStageRun).one()
+        run.status = "cancelled"
+        run.completed_at = completed_at
     client = FakeJobClient({reserved[0].job_name: {"status": {"active": 1}}})
     monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
 
     orchestrator.reconcile_stage_jobs(client, _settings())
+    orchestrator.reconcile_stage_jobs(client, _settings())
 
     assert client.deleted == [reserved[0].job_name]
     with stage_sessions() as session:
-        assert session.query(MissionStageRun).one().status == "cancelled"
+        run = session.query(MissionStageRun).one()
+        assert run.status == "cancelled"
+        assert run.completed_at == completed_at
+        assert run.provenance[orchestrator.CANCELLATION_JOB_CLEANUP_AT_KEY]
 
 
 def test_reconciliation_idempotently_recreates_a_disappeared_job(

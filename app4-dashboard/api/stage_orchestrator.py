@@ -55,6 +55,7 @@ SCHEDULER_LOCK_KEY = 1
 DETECTION_PHASE_KEY = "detection_execution_phase"
 DETECTION_SHARDS_PHASE = "shards"
 DETECTION_FINALIZER_PHASE = "finalizer"
+CANCELLATION_JOB_CLEANUP_AT_KEY = "cancellation_job_cleanup_at"
 
 
 @dataclass(frozen=True)
@@ -706,14 +707,20 @@ def reconcile_stage_jobs(
         for run, mission in rows:
             name = cast(str, run.job_name)
             if mission.status == "cancelled" or run.status == "cancelled":
-                try:
-                    client.delete(name)
-                except KubernetesApiError as error:
-                    if error.status_code != 404:
-                        raise
+                provenance = cast(dict[str, Any], run.provenance or {})
+                if CANCELLATION_JOB_CLEANUP_AT_KEY not in provenance:
+                    try:
+                        client.delete(name)
+                    except KubernetesApiError as error:
+                        if error.status_code != 404:
+                            raise
+                    run.provenance = {
+                        **provenance,
+                        CANCELLATION_JOB_CLEANUP_AT_KEY: now.isoformat(),
+                    }
                 run.status = "cancelled"
-                run.completed_at = now
-                run.heartbeat_at = now
+                run.completed_at = run.completed_at or now
+                run.heartbeat_at = run.heartbeat_at or now
                 continue
             try:
                 job = client.get(name)
