@@ -1,8 +1,19 @@
+import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from botocore.exceptions import ClientError
 
 from shared import storage
+
+
+def _client_error(code: str, operation: str = "HeadObject") -> ClientError:
+    return ClientError(
+        {"Error": {"Code": code, "Message": "test error"}},
+        operation,
+    )
 
 
 def test_s3_client_uses_compatible_optional_response_checksums(monkeypatch):
@@ -105,6 +116,126 @@ def test_verified_upload_checks_size_and_sha256(tmp_path, monkeypatch):
 
     assert result["size"] == artifact.stat().st_size
     assert result["sha256"] == client.metadata["sha256"]
+
+
+class _CasClient:
+    def __init__(self):
+        self.objects = {}
+        self.put_calls = []
+
+    def head_object(self, *, Bucket, Key):
+        del Bucket
+        if Key not in self.objects:
+            raise _client_error("404")
+        content, metadata = self.objects[Key]
+        return {"ContentLength": len(content), "Metadata": metadata}
+
+    def put_object(self, **kwargs):
+        self.put_calls.append(kwargs)
+        content = kwargs["Body"].read()
+        self.objects[kwargs["Key"]] = (content, kwargs["Metadata"])
+        return {}
+
+
+def test_content_addressed_publish_uploads_once_then_reuses(tmp_path, monkeypatch):
+    artifact = tmp_path / "model.ply"
+    artifact.write_bytes(b"immutable-gaussian-model")
+    client = _CasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    first = storage.publish_content_addressed_file(artifact)
+    second = storage.publish_content_addressed_file(artifact)
+
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert first.key == f"blobs/sha256/{digest[:2]}/{digest}"
+    assert first.reused is False
+    assert first.transferred_bytes == artifact.stat().st_size
+    assert second.reused is True
+    assert second.transferred_bytes == 0
+    assert len(client.put_calls) == 1
+    assert client.put_calls[0]["IfNoneMatch"] == "*"
+
+
+def test_content_addressed_publish_rejects_conflicting_existing_object(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "model.ply"
+    artifact.write_bytes(b"expected-content")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    key = f"blobs/sha256/{digest[:2]}/{digest}"
+    client = _CasClient()
+    client.objects[key] = (b"wrong", {"sha256": "f" * 64})
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    with pytest.raises(OSError, match="Content-addressed object conflict"):
+        storage.publish_content_addressed_file(artifact)
+
+    assert client.put_calls == []
+
+
+def test_content_addressed_publish_fails_closed_above_single_put_limit(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "oversized.bin"
+    artifact.write_bytes(b"four")
+    client = _CasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "S3_CAS_SINGLE_PUT_MAX_BYTES", 3)
+
+    with pytest.raises(ValueError, match="multipart CAS"):
+        storage.publish_content_addressed_file(artifact)
+
+    assert client.put_calls == []
+
+
+class _ConcurrentCasClient(_CasClient):
+    def __init__(self):
+        super().__init__()
+        self.initial_heads = threading.Barrier(2)
+        self.lock = threading.Lock()
+
+    def head_object(self, *, Bucket, Key):
+        with self.lock:
+            existing = self.objects.get(Key)
+        if existing is not None:
+            content, metadata = existing
+            return {"ContentLength": len(content), "Metadata": metadata}
+        self.initial_heads.wait(timeout=5)
+        raise _client_error("404")
+
+    def put_object(self, **kwargs):
+        content = kwargs["Body"].read()
+        with self.lock:
+            self.put_calls.append(kwargs)
+            if kwargs["Key"] in self.objects:
+                raise _client_error("PreconditionFailed", "PutObject")
+            self.objects[kwargs["Key"]] = (content, kwargs["Metadata"])
+        return {}
+
+
+def test_concurrent_content_addressed_publishers_converge_on_one_blob(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = tmp_path / "large-model.ply"
+    artifact.write_bytes(b"same-model-from-two-stage-jobs")
+    client = _ConcurrentCasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                storage.publish_content_addressed_file,
+                (artifact, artifact),
+            )
+        )
+
+    assert {result.key for result in results} == {results[0].key}
+    assert sorted(result.reused for result in results) == [False, True]
+    assert len(client.objects) == 1
+    assert len(client.put_calls) == 2
 
 
 def test_remote_object_checksum_verification(monkeypatch):

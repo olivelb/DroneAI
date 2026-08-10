@@ -16,6 +16,13 @@ SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 ROLE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
+def content_addressed_blob_key(checksum_sha256: str) -> str:
+    """Return the only valid v2 object key for a SHA-256 blob."""
+
+    checksum = _sha256(checksum_sha256, "checksum_sha256")
+    return f"blobs/sha256/{checksum[:2]}/{checksum}"
+
+
 @dataclass(frozen=True)
 class ManifestBlob:
     key: str
@@ -128,7 +135,7 @@ def _v2_blob(value: object, path: str) -> ManifestBlob:
     _exact_keys(blob, {"key", "size", "sha256"}, path)
     checksum = _sha256(blob.get("sha256"), f"{path}.sha256")
     key = _safe_object_key(blob.get("key"), f"{path}.key")
-    expected_key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+    expected_key = content_addressed_blob_key(checksum)
     if key != expected_key:
         raise ValueError(f"{path}.key is not content-addressed by its SHA-256")
     return ManifestBlob(
