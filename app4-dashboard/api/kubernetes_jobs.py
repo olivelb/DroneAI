@@ -35,6 +35,18 @@ class SecretEnvironment:
 
 
 @dataclass(frozen=True)
+class IndexedJobConfig:
+    completions: int
+    parallelism: int
+
+    def __post_init__(self) -> None:
+        if not 2 <= self.completions <= 256:
+            raise ValueError("Indexed Job completions must be between 2 and 256")
+        if not 1 <= self.parallelism <= self.completions:
+            raise ValueError("Indexed Job parallelism must be within its completions")
+
+
+@dataclass(frozen=True)
 class StageJobConfig:
     namespace: str
     image: str
@@ -46,6 +58,7 @@ class StageJobConfig:
     node_selector: tuple[tuple[str, str], ...] = ()
     environment: tuple[tuple[str, str], ...] = ()
     secret_environment: tuple[SecretEnvironment, ...] = ()
+    indexed: IndexedJobConfig | None = None
 
     def __post_init__(self) -> None:
         if not self.image or not self.command:
@@ -61,6 +74,8 @@ class StageJobConfig:
             "DRONEAI_STAGE",
             "DRONEAI_OWNER_SUBJECT",
             "DRONEAI_RESOURCE_CLASS",
+            "DRONEAI_DETECTION_SHARD_INDEX",
+            "DRONEAI_DETECTION_SHARD_COUNT",
         }
         names = [name for name, _value in self.environment]
         names.extend(item.name for item in self.secret_environment)
@@ -119,6 +134,26 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
         }
         for item in config.secret_environment
     )
+    if config.indexed is not None:
+        environment.extend(
+            (
+                {
+                    "name": "DRONEAI_DETECTION_SHARD_INDEX",
+                    "valueFrom": {
+                        "fieldRef": {
+                            "fieldPath": (
+                                "metadata.annotations['batch.kubernetes.io/"
+                                "job-completion-index']"
+                            )
+                        }
+                    },
+                },
+                {
+                    "name": "DRONEAI_DETECTION_SHARD_COUNT",
+                    "value": str(config.indexed.completions),
+                },
+            )
+        )
     labels = {
         "app.kubernetes.io/name": "droneai-stage",
         "app.kubernetes.io/part-of": "drone-ai",
@@ -169,19 +204,28 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
         pod_spec["nodeSelector"] = dict(config.node_selector)
     if resources["gpu_count"] and config.runtime_class_name:
         pod_spec["runtimeClassName"] = config.runtime_class_name
+    job_spec: JsonObject = {
+        "backoffLimit": 0,
+        "activeDeadlineSeconds": config.active_deadline_seconds,
+        "ttlSecondsAfterFinished": config.ttl_seconds_after_finished,
+        "template": {
+            "metadata": {"labels": labels},
+            "spec": pod_spec,
+        },
+    }
+    if config.indexed is not None:
+        job_spec.update(
+            {
+                "completionMode": "Indexed",
+                "completions": config.indexed.completions,
+                "parallelism": config.indexed.parallelism,
+            }
+        )
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": name, "namespace": config.namespace, "labels": labels},
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": config.active_deadline_seconds,
-            "ttlSecondsAfterFinished": config.ttl_seconds_after_finished,
-            "template": {
-                "metadata": {"labels": labels},
-                "spec": pod_spec,
-            },
-        },
+        "spec": job_spec,
     }
 
 

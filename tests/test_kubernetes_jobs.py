@@ -1,5 +1,7 @@
 import importlib
 
+import pytest
+
 jobs = importlib.import_module("app4-dashboard.api.kubernetes_jobs")
 
 
@@ -74,3 +76,52 @@ def test_cpu_job_does_not_request_a_gpu():
     limits = job["spec"]["template"]["spec"]["containers"][0]["resources"]["limits"]
     assert "nvidia.com/gpu" not in limits
     assert "runtimeClassName" not in job["spec"]["template"]["spec"]
+
+
+def test_indexed_job_injects_a_bounded_completion_index():
+    job = jobs.build_stage_job(
+        jobs.StageJobRequest(
+            run_id="detection-run",
+            mission_id=1,
+            vol_id="mission-1",
+            owner_subject="owner",
+            stage="detection",
+            resource_class="gpu-standard",
+        ),
+        jobs.StageJobConfig(
+            namespace="drone-ai",
+            image="image@sha256:" + "c" * 64,
+            command=("run-shard",),
+            indexed=jobs.IndexedJobConfig(completions=6, parallelism=2),
+        ),
+    )
+
+    assert job["spec"]["completionMode"] == "Indexed"
+    assert job["spec"]["completions"] == 6
+    assert job["spec"]["parallelism"] == 2
+    environment = {
+        item["name"]: item
+        for item in job["spec"]["template"]["spec"]["containers"][0]["env"]
+    }
+    assert environment["DRONEAI_DETECTION_SHARD_INDEX"]["valueFrom"] == {
+        "fieldRef": {
+            "fieldPath": (
+                "metadata.annotations['batch.kubernetes.io/job-completion-index']"
+            )
+        }
+    }
+    assert environment["DRONEAI_DETECTION_SHARD_COUNT"]["value"] == "6"
+
+
+def test_indexed_job_rejects_unsafe_parallelism_and_reserved_environment():
+    with pytest.raises(ValueError, match="completions"):
+        jobs.IndexedJobConfig(completions=1, parallelism=1)
+    with pytest.raises(ValueError, match="parallelism"):
+        jobs.IndexedJobConfig(completions=4, parallelism=5)
+    with pytest.raises(ValueError, match="non-reserved"):
+        jobs.StageJobConfig(
+            namespace="drone-ai",
+            image="image@sha256:" + "d" * 64,
+            command=("run",),
+            environment=(("DRONEAI_DETECTION_SHARD_INDEX", "0"),),
+        )
