@@ -16,6 +16,7 @@ if str(APP2_ROOT) not in sys.path:
 
 import detection_stage  # noqa: E402
 from shared.model_provenance import build_model_manifest  # noqa: E402
+from shared.detection_sharding import build_detection_shard_plan  # noqa: E402
 from shared.stage_execution import (  # noqa: E402
     StageArtifactInput,
     StageExecutionContext,
@@ -158,6 +159,56 @@ def test_detection_runner_streams_bounded_tiles_and_cleans_jpegs(
     assert not (tmp_path / ".droneai" / "detection-tiles").exists()
 
 
+def test_detection_runner_executes_only_the_selected_shard(tmp_path, monkeypatch):
+    raster_path = tmp_path / "orthomosaic.tif"
+    with rasterio.open(
+        raster_path,
+        "w",
+        driver="GTiff",
+        width=600,
+        height=500,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:32631",
+        transform=from_origin(500_000, 4_800_000, 0.1, 0.1),
+    ) as destination:
+        destination.write(np.zeros((3, 500, 600), dtype=np.uint8))
+    context = _context()
+    runner = detection_stage.DetectionStageRunner(
+        context,
+        FakeControl(),
+        tmp_path,
+        detection_stage.DetectionStageConfig.from_context(context),
+    )
+    plan = build_detection_shard_plan(
+        600,
+        500,
+        256,
+        64,
+        tiles_per_shard=3,
+    )
+    calls = []
+
+    def infer(tile_path):
+        calls.append(Path(tile_path).stem)
+        return [], {"model_manifest": _manifest()}
+
+    monkeypatch.setattr(runner, "_infer", infer)
+
+    detections, _manifest_result, metadata = runner.run_shard(
+        raster_path,
+        plan,
+        1,
+    )
+
+    assert detections == []
+    assert calls == ["tile-000003", "tile-000004", "tile-000005"]
+    assert metadata["shard_index"] == 1
+    assert metadata["shard_tile_count"] == 3
+    assert metadata["shard_count"] == 2
+    assert metadata["plan_checksum_sha256"] == plan.checksum_sha256
+
+
 def test_detection_runner_rejects_model_provenance_change(tmp_path, monkeypatch):
     raster_path = tmp_path / "orthomosaic.tif"
     with rasterio.open(
@@ -263,6 +314,8 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
                 "tile_size": 256,
                 "tile_overlap": 64,
                 "tile_count": 4,
+                "plan_checksum_sha256": "e" * 64,
+                "shard_count": 1,
                 "planned_inference_pixels": 262_144,
                 "pixel_amplification_ratio": 2.912711,
             },
@@ -319,6 +372,7 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     }
     assert result.provenance["model_manifest"]["backend"] == "yolo"
     assert result.provenance["tile_plan"]["tile_count"] == 4
+    assert result.provenance["tile_plan"]["shard_count"] == 1
     assert result.provenance["workspace_transfer"]["restore"]["transferred_bytes"] == 140
     assert result.provenance["workspace_materialization"] == {
         "mode": "selective" if selective_restore else "full",
