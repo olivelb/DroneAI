@@ -263,6 +263,7 @@ def test_gaussian_training_adapter_publishes_unfiltered_model(tmp_path, monkeypa
     assert result.metadata["gaussian_count"] == 1_500_000
     assert result.provenance["trainer_binary_sha256"] == "d" * 64
     assert result.provenance["workspace_transfer"]["restore"] == {
+        "manifest_schema_version": 1,
         "logical_bytes": 123,
         "file_count": 2,
         "transferred_bytes": 200,

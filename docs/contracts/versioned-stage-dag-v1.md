@@ -182,6 +182,13 @@ restores the complete workspace, so `reused_bytes` is intentionally zero; these
 measurements are the baseline for the incremental/content-addressed manifest
 migration rather than a claim that deduplication already exists.
 
+The reader now normalizes deployed manifest v1 and strict
+[`Artifact Manifest v2`](artifact-manifest-v2.md). The writer remains v1 and
+v2 parent overlays are not resolved yet, so no v2 write flag exists in the
+current release. This reader-first order preserves rollback compatibility and
+prevents a delta manifest from being activated before selective
+materialization exists.
+
 The first bundled adapter now executes `reconstruction` in the COLMAP image:
 it downloads the immutable dataset prefix, runs preparation, sparse mapping,
 optional RTK refinement, undistortion/alignment, writes a versioned portable

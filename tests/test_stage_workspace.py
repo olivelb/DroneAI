@@ -6,6 +6,12 @@ from pathlib import Path
 import pytest
 
 from shared import stage_workspace
+from shared.artifact_manifest import (
+    ArtifactManifest,
+    ManifestBlob,
+    ManifestFile,
+    canonical_v2_bytes,
+)
 
 
 @pytest.fixture
@@ -85,6 +91,46 @@ def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s
     assert provenance["manifest_schema_version"] == 1
 
 
+def test_restore_dual_reader_materializes_content_addressed_v2_blob(tmp_path, fake_s3):
+    content = b"content-addressed-model"
+    checksum = hashlib.sha256(content).hexdigest()
+    blob_key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+    blob_path = fake_s3 / blob_key
+    blob_path.parent.mkdir(parents=True, exist_ok=True)
+    blob_path.write_bytes(content)
+    manifest_bytes = canonical_v2_bytes(
+        ArtifactManifest(
+            schema_version=2,
+            files=(
+                ManifestFile(
+                    path="models/final.ply",
+                    role="gaussian-model",
+                    blob=ManifestBlob(
+                        key=blob_key,
+                        size_bytes=len(content),
+                        checksum_sha256=checksum,
+                    ),
+                ),
+            ),
+        )
+    )
+    manifest_key = "missions/example/v2/manifest.json"
+    manifest_path = fake_s3 / manifest_key
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_bytes(manifest_bytes)
+
+    restored = stage_workspace.restore_workspace_measured(
+        manifest_key,
+        tmp_path / "restored-v2",
+        hashlib.sha256(manifest_bytes).hexdigest(),
+    )
+
+    assert restored.file_count == 1
+    assert restored.size_bytes == len(content)
+    assert restored.manifest_schema_version == 2
+    assert (tmp_path / "restored-v2" / "models" / "final.ply").read_bytes() == content
+
+
 def test_restore_rejects_manifest_path_traversal(tmp_path, fake_s3):
     manifest_key = "missions/example/manifest.json"
     payload = {
@@ -96,7 +142,7 @@ def test_restore_rejects_manifest_path_traversal(tmp_path, fake_s3):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
 
-    with pytest.raises(ValueError, match="Unsafe"):
+    with pytest.raises(ValueError, match="unsafe"):
         stage_workspace.restore_workspace(
             manifest_key,
             tmp_path / "destination",
