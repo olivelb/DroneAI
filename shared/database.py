@@ -528,6 +528,78 @@ class MissionStageRun(RequiredTimestampMixin, Base):
         back_populates="stage_run",
         cascade="all, delete-orphan",
     )
+    detection_shard_receipts = relationship(
+        "DetectionShardReceipt",
+        back_populates="stage_run",
+        cascade="all, delete-orphan",
+    )
+
+
+class DetectionShardReceipt(Base):
+    """Immutable proof that one indexed detection shard published its result."""
+
+    __tablename__ = "detection_shard_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "stage_run_id",
+            "plan_checksum_sha256",
+            "shard_index",
+            name="uq_detection_shard_receipt_identity",
+        ),
+        CheckConstraint(
+            "length(plan_checksum_sha256) = 64",
+            name="ck_detection_shard_receipts_plan_checksum_length",
+        ),
+        CheckConstraint(
+            "length(result_checksum_sha256) = 64",
+            name="ck_detection_shard_receipts_result_checksum_length",
+        ),
+        CheckConstraint(
+            "shard_count >= 2 AND shard_count <= 256",
+            name="ck_detection_shard_receipts_shard_count",
+        ),
+        CheckConstraint(
+            "shard_index >= 0 AND shard_index < shard_count",
+            name="ck_detection_shard_receipts_shard_index",
+        ),
+        CheckConstraint(
+            "tile_count > 0",
+            name="ck_detection_shard_receipts_tile_count",
+        ),
+        CheckConstraint(
+            "result_size_bytes > 0",
+            name="ck_detection_shard_receipts_result_size",
+        ),
+        Index(
+            "ix_detection_shard_receipts_run_plan",
+            "stage_run_id",
+            "plan_checksum_sha256",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    stage_run_id = Column(
+        Integer,
+        ForeignKey("mission_stage_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    plan_checksum_sha256 = Column(String(64), nullable=False)
+    shard_index = Column(Integer, nullable=False)
+    shard_count = Column(Integer, nullable=False)
+    tile_count = Column(Integer, nullable=False)
+    result_key = Column(String(1024), nullable=False)
+    result_checksum_sha256 = Column(String(64), nullable=False)
+    result_size_bytes = Column(PORTABLE_BIGINT, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+    stage_run = relationship(
+        "MissionStageRun",
+        back_populates="detection_shard_receipts",
+    )
 
 
 class MissionArtifact(Base):

@@ -242,6 +242,22 @@ manifest remains unchanged. The orchestrator does not request indexed mode yet:
 activation remains blocked on an idempotent durable shard receipt and explicit
 finalizer lifecycle, rather than relying on successful pod exit alone.
 
+Migration `0018` adds that durable receipt boundary. Each successful indexed
+pod must record exactly one immutable result key, checksum and size for the
+exact persisted plan and shard index. The stage-run row lock serializes
+concurrent publications; an identical retry is idempotent, while a different
+result for an existing index fails closed. A finalizer can obtain receipts only
+when every index is present in order and every stored shard count, tile count,
+key and digest still matches the durable plan. The orchestrator still does not
+dispatch indexed detection until the S3 publication and finalizer executables
+use this boundary end to end.
+
+Shard-result JSON is serialized canonically and published through the same
+conditional CAS writer as artifact blobs. Its receipt key must equal the
+checksum-derived `blobs/sha256/...` key. Finalization downloads every ordered
+receipt, verifies byte size and SHA-256 before parsing, rechecks the result
+against the persisted plan, then passes only validated results to fan-in.
+
 The corresponding handoffs use versioned JSON sidecars plus a PLY kept inside
 the checksum-verified workspace. Each sidecar binds the model to the SHA-256 of
 all deterministic product parameters while excluding Job-local paths and
