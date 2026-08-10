@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "qualification_id": "bigzen-preprod-2026-08-10",
-  "generated_at": "2026-08-10T14:53:05.520838Z",
+  "generated_at": "2026-08-10T15:06:33.263730Z",
   "environment": {
     "name": "bigzen-preprod",
     "cluster": "bigzen-k3s",
@@ -203,7 +203,7 @@
   ],
   "attestation": {
     "operator": "admin@olembo.fr",
-    "reviewed_at": null,
+    "reviewed_at": "2026-08-10T15:06:33.263730Z",
     "statement": "I confirm that this record contains no credentials, signed URLs, private dataset content or raw Terraform state."
   }
 }

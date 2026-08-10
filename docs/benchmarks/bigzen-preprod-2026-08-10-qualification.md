@@ -2,9 +2,9 @@
 
 > Generated from the machine-readable qualification record. Edit the JSON source, not this report.
 
-- Gate: **BLOCKED**
+- Gate: **PASSED**
 - Evidence source: `bigzen-preprod-2026-08-10.qualification.json`
-- Generated at: `2026-08-10T14:53:05.520838Z`
+- Generated at: `2026-08-10T15:06:33.263730Z`
 - Environment: `bigzen-preprod` / `bigzen-k3s`
 - Namespace: `drone-ai`
 - Kubernetes: `v1.36.3+k3s1`
@@ -39,11 +39,11 @@
 
 ## Gate findings
 
-- attestation.reviewed_at: production gate requires a review timestamp
+All required production drills passed within the recorded objectives.
 
 ## Attestation
 
 Operator: `admin@olembo.fr`  
-Reviewed at: `not reviewed`
+Reviewed at: `2026-08-10T15:06:33.263730Z`
 
 I confirm that this record contains no credentials, signed URLs, private dataset content or raw Terraform state.
