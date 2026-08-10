@@ -206,9 +206,14 @@ and the earlier
 The focused requalification reused the existing CUDA/COLMAP base because its
 versions and GPU architecture were unchanged. It also found that the pinned
 SAM3 processor resizes inputs to 1,008 px while the sampled batch-one footprint
-was about 6.3 GiB. Keep the current conservative resource class until peak
-memory, effective resolution and bounded batching are encoded and qualified;
-do not infer a smaller production envelope from one sampled run.
+was about 6.3 GiB. Commit `745e681...` then encoded the immutable revision,
+effective resolution and batch-one policy and passed a focused 81-tile GPU
+rerun using the 12 GiB `gpu-geometry` class. SAM3 source tiles are capped at
+1,024 px, and the runtime manifest records the 1,008 px processor target and
+batch size. Keep 8 GiB ineligible: the 12 GiB class provides headroom above the
+sampled 6,334 MiB total footprint. A 24 GiB override remains valid but does not
+increase batch size in this policy. Requalify any new revision, dtype, batch
+size or GPU architecture before changing that envelope.
 
 `stageJobs.enabled=true` remains supported for controlled preproduction only
 after the target satisfies the current qualification gates. The generic chart

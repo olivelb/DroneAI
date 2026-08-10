@@ -112,6 +112,32 @@ and avoid small tiles that are merely upscaled. That change needs a focused
 SAM3 GPU E2E on BIGZEN; it does not require replaying reconstruction or Gaussian
 training.
 
+### Batch-one policy requalification
+
+Commit `745e6815a444aad1db9dd3d37149bb8264d0e50a` implemented the safe
+batch-one part of that follow-up. The shared capability contract pins model
+revision `3c879f39826c281e95690f02c7821c4de09afae7`, a 1,008 px processor
+target, a maximum 1,024 px source tile, batch size one and a 12 GiB minimum
+VRAM envelope. Both API validation and the stage worker reject larger SAM3
+source tiles; YOLO keeps its independent 4,096 px upper bound. The worker also
+refuses a pinned processor whose runtime size no longer matches the contract.
+
+Detection attempt `8486f140-780d-42d6-b9dc-6ee502c1b57f` reused the existing
+Chapelle raster artifact and immutable executor image `drone-ia:745e6815...`.
+The generated Job requested `gpu-geometry`, selected
+`droneai.io/gpu-vram-at-least-12gb=true` and completed all 81 tiles in 92.125
+seconds of stage execution (102 seconds including Job startup). External
+500 ms sampling observed a 6,334 MiB maximum for total GPU memory. The
+published model manifest recorded CUDA BF16, batch one and 1,008 × 1,008
+processor input. Selective restore transferred 121,080,082 bytes and publish
+transferred 3,199 bytes while reusing 1,585,346,824 logical bytes.
+
+This qualifies the conservative 12 GiB batch-one class on Ampere without
+claiming that an 8 GiB device is safe. CUDA allocated/reserved peak telemetry
+and an explicitly bounded multi-image batch remain separate optimizations; a
+24 GiB class can still be requested, but batch one intentionally does not
+consume the extra memory.
+
 ## Remaining release gates
 
 - Repeat scheduling and fan-out canaries on the exact OVH node pool and image

@@ -462,10 +462,14 @@ architecture changed. See the
 [BIGZEN qualification record](benchmarks/bigzen-stage-jobs-fanout-2026-08-10.md).
 
 The same run sampled about 6.3 GiB VRAM at SAM3 batch one, while the pinned
-processor resized every tile to 1,008 × 1,008. Do not size the OVH node from
-that instantaneous value alone. Keep the conservative envelope until the
-runtime records peak allocation and the model-resolution/batch policy has a
-focused GPU qualification.
+processor resized every tile to 1,008 × 1,008. Commit `745e681...` encoded a
+12 GiB minimum, batch one and a 1,024 px source-tile cap, then passed a focused
+81-tile BIGZEN rerun on the exact immutable model revision. For a detection-only
+pool, an OVH GPU with at least 12 GiB can therefore be canaried against this
+contract. The complete five-Job pipeline still requires a 24 GiB-capable pool
+for Gaussian training and filtering; this SAM3 change does not reduce those
+independent envelopes. Repeat the focused canary on the chosen OVH SKU and
+architecture before activation.
 
 For the in-cluster PostgreSQL preproduction option, create or reconcile the
 external Secrets without printing their values:

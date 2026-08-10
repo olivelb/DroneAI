@@ -30,9 +30,10 @@ Migration `0016` adds the scheduling envelope: `resource_class`, bounded Job
 identity, dispatch count/error and scheduling timestamp. The v1 catalogue
 declares four portable classes (`cpu-standard`, `gpu-standard`,
 `gpu-geometry`, `gpu-high-memory`) with explicit CPU, memory, ephemeral storage,
-GPU and minimum-VRAM requirements. Detection with SAM3 is promoted to the
-high-memory GPU class, and a request may strengthen but never reduce its
-stage's GPU envelope.
+GPU and minimum-VRAM requirements. Detection with the pinned SAM3 revision,
+1,008 px processor input and batch size one is promoted to the 12 GiB
+`gpu-geometry` class. A request may strengthen but never reduce that envelope;
+using the 24 GiB class does not implicitly increase the bounded batch size.
 
 `mission_artifacts` assigns a UUID, kind, URI, SHA-256, optional size and
 metadata to an output from exactly one stage run. An existing UUID can only be
