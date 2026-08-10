@@ -136,6 +136,30 @@ def _canonical(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
+def _upload_workspace_manifest(
+    canonical: bytes,
+    manifest_key: str,
+    expected_digest: str,
+    *,
+    temporary_prefix: str,
+) -> dict[str, int | str]:
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        prefix=temporary_prefix,
+        suffix=".json",
+        delete=False,
+    ) as descriptor:
+        manifest_path = Path(descriptor.name)
+        descriptor.write(canonical)
+    try:
+        verified = storage.upload_verified_file(manifest_path, manifest_key)
+        if verified["sha256"] != expected_digest:
+            raise OSError("Workspace manifest changed before S3 publication")
+        return verified
+    finally:
+        manifest_path.unlink(missing_ok=True)
+
+
 def _safe_relative_path(raw_path: str) -> Path:
     if not isinstance(raw_path, str) or not raw_path or "\\" in raw_path:
         raise ValueError(f"Unsafe workspace manifest path: {raw_path!r}")
@@ -197,20 +221,12 @@ def publish_workspace(
     canonical = _canonical(payload)
     digest = hashlib.sha256(canonical).hexdigest()
     manifest_key = f"{prefix}/manifest.json"
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        prefix="droneai-workspace-",
-        suffix=".json",
-        delete=False,
-    ) as descriptor:
-        manifest_path = Path(descriptor.name)
-        descriptor.write(canonical)
-    try:
-        verified_manifest = storage.upload_verified_file(manifest_path, manifest_key)
-        if verified_manifest["sha256"] != digest:
-            raise OSError("Workspace manifest changed before S3 publication")
-    finally:
-        manifest_path.unlink(missing_ok=True)
+    verified_manifest = _upload_workspace_manifest(
+        canonical,
+        manifest_key,
+        digest,
+        temporary_prefix="droneai-workspace-",
+    )
     return PublishedWorkspace(
         manifest_key=manifest_key,
         uri=f"s3://{S3_BUCKET}/{manifest_key}",
@@ -329,20 +345,12 @@ def publish_workspace_v2(
     canonical = canonical_v2_bytes(manifest)
     digest = hashlib.sha256(canonical).hexdigest()
     manifest_key = f"{prefix}/manifest.json"
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        prefix="droneai-workspace-v2-",
-        suffix=".json",
-        delete=False,
-    ) as descriptor:
-        manifest_path = Path(descriptor.name)
-        descriptor.write(canonical)
-    try:
-        verified_manifest = storage.upload_verified_file(manifest_path, manifest_key)
-        if verified_manifest["sha256"] != digest:
-            raise OSError("Workspace manifest changed before S3 publication")
-    finally:
-        manifest_path.unlink(missing_ok=True)
+    verified_manifest = _upload_workspace_manifest(
+        canonical,
+        manifest_key,
+        digest,
+        temporary_prefix="droneai-workspace-v2-",
+    )
     manifest_size = int(verified_manifest["size"])
     return PublishedWorkspace(
         manifest_key=manifest_key,
