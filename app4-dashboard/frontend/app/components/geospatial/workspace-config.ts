@@ -21,7 +21,7 @@ export const retainKnownRunIds = (
   return visibleRunIds.filter((runId) => known.has(runId));
 };
 
-export type WorkspacePanel = "layers" | "analysis" | "search" | "export";
+export type WorkspacePanel = "layers" | "gcp" | "analysis" | "search" | "export";
 
 export const DEFAULT_ANALYSIS: AnalysisCreate = {
   name: "Vehicle detection",

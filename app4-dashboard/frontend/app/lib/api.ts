@@ -1,5 +1,10 @@
 import type {
   FeatureBulkAction,
+  GcpCollection,
+  GcpFeature,
+  GcpImportOptions,
+  GcpObservation,
+  GcpSetSummary,
   MissionCatalogResponse,
   MissionDetail,
   RasterLayerStyle,
@@ -478,6 +483,61 @@ export const createRasterStyle = (
   `/maps/${encodeURIComponent(missionId)}/styles/${layer}`,
   {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
+
+export const fetchGroundControl = (missionId: string) =>
+  api<GcpCollection>(`/maps/${encodeURIComponent(missionId)}/gcps`);
+
+export const importGroundControl = (
+  missionId: string,
+  file: File,
+  options: GcpImportOptions,
+) => {
+  const body = new FormData();
+  body.set("upload", file, file.name);
+  body.set("name", options.name);
+  if (options.sourceCrs) body.set("source_crs", options.sourceCrs);
+  body.set("default_role", options.defaultRole);
+  body.set("horizontal_accuracy_m", String(options.horizontalAccuracyM));
+  body.set("vertical_accuracy_m", String(options.verticalAccuracyM));
+  body.set("image_accuracy_px", String(options.imageAccuracyPx));
+  body.set("candidate_radius_m", String(options.candidateRadiusM));
+  body.set("max_candidates", String(options.maxCandidates));
+  return api<{ gcp_set: GcpSetSummary; candidate_generation: Record<string, unknown> }>(
+    `/maps/${encodeURIComponent(missionId)}/gcps/import`,
+    { method: "POST", body },
+  );
+};
+
+export const updateGroundControlPoint = (
+  missionId: string,
+  pointId: string,
+  request: Record<string, unknown>,
+) => api<GcpFeature>(
+  `/maps/${encodeURIComponent(missionId)}/gcps/points/${encodeURIComponent(pointId)}`,
+  {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  },
+);
+
+export const updateGroundControlObservation = (
+  missionId: string,
+  observationId: string,
+  request: {
+    status: "candidate" | "marked" | "skipped";
+    pixel_x?: number;
+    pixel_y?: number;
+    version: number;
+  },
+) => api<GcpObservation>(
+  `/maps/${encodeURIComponent(missionId)}/gcps/observations/${encodeURIComponent(observationId)}`,
+  {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(request),
   },

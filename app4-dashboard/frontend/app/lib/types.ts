@@ -277,6 +277,76 @@ export type AnalysisCreate = {
   persist_results: boolean;
 };
 
+export type GcpRole = "adjustment" | "checkpoint" | "disabled";
+export type GcpObservationStatus = "candidate" | "marked" | "skipped";
+
+export type GcpObservation = {
+  observation_id: string;
+  image_name: string;
+  image_s3_key?: string | null;
+  status: GcpObservationStatus;
+  pixel_x?: number | null;
+  pixel_y?: number | null;
+  candidate_distance_m?: number | null;
+  image_longitude?: number | null;
+  image_latitude?: number | null;
+  version: number;
+  updated_at: string;
+};
+
+export type GcpPointProperties = {
+  point_id: string;
+  external_id: string;
+  altitude_m: number;
+  source_coordinates: [number, number, number];
+  role: GcpRole;
+  horizontal_accuracy_m: number;
+  vertical_accuracy_m: number;
+  image_accuracy_px: number;
+  observation_summary: Record<GcpObservationStatus, number>;
+  observations: GcpObservation[];
+  properties: Record<string, unknown>;
+  version: number;
+  updated_at: string;
+};
+
+export type GcpFeature = import("geojson").Feature<
+  import("geojson").Point,
+  GcpPointProperties
+>;
+
+export type GcpSetSummary = {
+  set_id: string;
+  name: string;
+  source_filename: string;
+  source_format: string;
+  source_crs: string;
+  source_sha256: string;
+  point_count: number;
+  adjustment_count: number;
+  checkpoint_count: number;
+  marked_observation_count: number;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GcpCollection = import("geojson").FeatureCollection<
+  import("geojson").Point,
+  GcpPointProperties
+> & { gcp_sets: GcpSetSummary[] };
+
+export type GcpImportOptions = {
+  name: string;
+  sourceCrs?: string;
+  defaultRole: GcpRole;
+  horizontalAccuracyM: number;
+  verticalAccuracyM: number;
+  imageAccuracyPx: number;
+  candidateRadiusM: number;
+  maxCandidates: number;
+};
+
 export type RasterPalette = "none" | "gray" | "depth" | "terrain" | "viridis";
 
 export type RasterStyleRecipe = {

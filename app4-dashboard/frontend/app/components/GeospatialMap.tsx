@@ -36,6 +36,8 @@ import {
 import { useI18n } from "../lib/i18n/provider";
 import type {
   AnalysisRun,
+  GcpCollection,
+  GcpFeature,
   RasterMetadata,
   RasterStyleRecipe,
 } from "../lib/types";
@@ -467,19 +469,81 @@ function ViewportVectors({
   );
 }
 
+function GroundControlVectors({
+  collection,
+  tool,
+  selectedPointId,
+  onPointSelect,
+}: {
+  collection: GcpCollection;
+  tool: MapTool;
+  selectedPointId: string;
+  onPointSelect: (point: GcpFeature) => void;
+}) {
+  const { t } = useI18n();
+  const style = useCallback(
+    (feature?: Feature): PathOptions => {
+      const role = feature?.properties?.role;
+      const color =
+        role === "checkpoint" ? "#f59e0b" : role === "disabled" ? "#94a3b8" : "#0ea5e9";
+      const pointId = String(feature?.properties?.point_id ?? feature?.id ?? "");
+      const selected = pointId === selectedPointId;
+      return {
+        color: selected ? "#ffffff" : color,
+        fillColor: color,
+        fillOpacity: role === "disabled" ? 0.35 : 0.9,
+        opacity: 1,
+        weight: selected ? 4 : 2,
+      };
+    },
+    [selectedPointId],
+  );
+  return (
+    <GeoJSON
+      key={`${collection.features.length}:${selectedPointId}`}
+      data={collection}
+      style={style}
+      pointToLayer={(feature, point) =>
+        L.circleMarker(point, {
+          ...style(feature),
+          radius:
+            String(feature.properties?.point_id ?? feature.id ?? "") === selectedPointId
+              ? 10
+              : 7,
+        })
+      }
+      onEachFeature={(feature, layer) => {
+        const properties = feature.properties ?? {};
+        layer.bindTooltip(
+          `<strong>${escapeHtml(properties.external_id)}</strong><br/>${escapeHtml(t("gcp.role"))}: ${escapeHtml(properties.role)}`,
+          { direction: "top" },
+        );
+        layer.on("click", (event) => {
+          L.DomEvent.stopPropagation(event);
+          if (tool === "select") onPointSelect(feature as GcpFeature);
+        });
+      }}
+    />
+  );
+}
+
 export default function GeospatialMap({
   missionId,
   layer,
   rasterStyle,
   showLegacy,
   showManual,
+  showGcps,
+  gcpCollection,
   analyses,
   tool,
   focusBounds,
   refreshToken,
   selectedFeatureId,
+  selectedGcpId,
   onGeometryReady,
   onFeatureSelect,
+  onGcpSelect,
   onFeatureClear,
   onHint,
   onMetadata,
@@ -489,13 +553,17 @@ export default function GeospatialMap({
   rasterStyle: RasterStyleRecipe;
   showLegacy: boolean;
   showManual: boolean;
+  showGcps: boolean;
+  gcpCollection: GcpCollection | null;
   analyses: AnalysisRun[];
   tool: MapTool;
   focusBounds: [number, number, number, number] | null;
   refreshToken: number;
   selectedFeatureId: string;
+  selectedGcpId: string;
   onGeometryReady: (geometry: Geometry, measurement?: string) => void;
   onFeatureSelect: (feature: Feature) => void;
+  onGcpSelect: (point: GcpFeature) => void;
   onFeatureClear: () => void;
   onHint: (hint: string) => void;
   onMetadata: (metadata: RasterMetadata | null) => void;
@@ -608,6 +676,14 @@ export default function GeospatialMap({
         selectedFeatureId={selectedFeatureId}
         onFeatureSelect={onFeatureSelect}
       />
+      {showGcps && gcpCollection && (
+        <GroundControlVectors
+          collection={gcpCollection}
+          tool={tool}
+          selectedPointId={selectedGcpId}
+          onPointSelect={onGcpSelect}
+        />
+      )}
       <DrawController
         key={tool}
         tool={tool}
