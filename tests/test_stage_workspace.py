@@ -37,8 +37,33 @@ def fake_s3(tmp_path, monkeypatch):
         shutil.copy2(root / key, target)
         return target
 
+    def publish_cas(local_path):
+        source = Path(local_path)
+        content = source.read_bytes()
+        checksum = hashlib.sha256(content).hexdigest()
+        key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+        target = root / key
+        reused = target.exists()
+        if reused:
+            assert target.read_bytes() == content
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        return stage_workspace.storage.ContentAddressedUpload(
+            key=key,
+            size_bytes=len(content),
+            checksum_sha256=checksum,
+            reused=reused,
+            transferred_bytes=0 if reused else len(content),
+        )
+
     monkeypatch.setattr(stage_workspace.storage, "upload_verified_file", upload)
     monkeypatch.setattr(stage_workspace.storage, "download_file", download)
+    monkeypatch.setattr(
+        stage_workspace.storage,
+        "publish_content_addressed_file",
+        publish_cas,
+    )
     return root
 
 
@@ -69,6 +94,16 @@ def test_workspace_round_trip_is_manifested_and_checksum_verified(tmp_path, fake
     assert (destination / "sparse" / "0" / "cameras.bin").read_bytes() == b"cameras"
 
 
+def test_v2_writer_rollout_switch_is_strict_and_disabled_by_default(monkeypatch):
+    monkeypatch.delenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, raising=False)
+    assert stage_workspace.artifact_manifest_v2_write_enabled() is False
+    monkeypatch.setenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, "true")
+    assert stage_workspace.artifact_manifest_v2_write_enabled() is True
+    monkeypatch.setenv(stage_workspace.ARTIFACT_MANIFEST_V2_WRITE_ENV, "sometimes")
+    with pytest.raises(ValueError, match="explicit boolean"):
+        stage_workspace.artifact_manifest_v2_write_enabled()
+
+
 def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s3):
     source = tmp_path / "source"
     source.mkdir()
@@ -90,6 +125,79 @@ def test_measured_restore_reports_logical_and_transferred_bytes(tmp_path, fake_s
     assert provenance["publish"]["logical_bytes"] == 5
     assert provenance["restore"]["transferred_bytes"] == restored.downloaded_bytes
     assert provenance["manifest_schema_version"] == 1
+
+
+def test_v2_writer_publishes_only_incremental_files_and_restores_overlay(
+    tmp_path,
+    fake_s3,
+):
+    parent_workspace = tmp_path / "parent"
+    parent_workspace.mkdir()
+    (parent_workspace / "base.bin").write_bytes(b"stable-parent")
+    parent = stage_workspace.publish_workspace_v2(
+        parent_workspace,
+        "missions/example/parent-v2",
+        default_role="reconstruction-workspace",
+    )
+    child_workspace = tmp_path / "child"
+    shutil.copytree(parent_workspace, child_workspace)
+    (child_workspace / "model.ply").write_bytes(b"new-model")
+    child = stage_workspace.publish_workspace_v2(
+        child_workspace,
+        "missions/example/child-v2",
+        default_role="gaussian-training-workspace",
+        role_overrides={"model.ply": "gaussian-model"},
+        parents=(
+            ManifestParent(
+                "parent-artifact",
+                parent.manifest_key,
+                parent.checksum_sha256,
+            ),
+        ),
+    )
+
+    child_manifest = json.loads((fake_s3 / child.manifest_key).read_bytes())
+    assert [entry["path"] for entry in child_manifest["files"]] == ["model.ply"]
+    assert child_manifest["files"][0]["role"] == "gaussian-model"
+    assert child.file_count == 2
+    assert child.size_bytes == len(b"stable-parentnew-model")
+    assert child.reused_bytes == len(b"stable-parent")
+
+    restored = stage_workspace.restore_workspace_measured(
+        child.manifest_key,
+        tmp_path / "restored-child",
+        child.checksum_sha256,
+    )
+    assert restored.manifest_schema_version == 2
+    assert (tmp_path / "restored-child" / "base.bin").read_bytes() == b"stable-parent"
+    assert (tmp_path / "restored-child" / "model.ply").read_bytes() == b"new-model"
+
+
+def test_v2_writer_rejects_implicit_parent_file_deletion(tmp_path, fake_s3):
+    parent_workspace = tmp_path / "parent-delete"
+    parent_workspace.mkdir()
+    (parent_workspace / "required.bin").write_bytes(b"required")
+    parent = stage_workspace.publish_workspace_v2(
+        parent_workspace,
+        "missions/example/parent-delete",
+        default_role="stage-workspace",
+    )
+    child_workspace = tmp_path / "child-delete"
+    child_workspace.mkdir()
+
+    with pytest.raises(ValueError, match="cannot implicitly delete"):
+        stage_workspace.publish_workspace_v2(
+            child_workspace,
+            "missions/example/child-delete",
+            default_role="stage-workspace",
+            parents=(
+                ManifestParent(
+                    "parent-artifact",
+                    parent.manifest_key,
+                    parent.checksum_sha256,
+                ),
+            ),
+        )
 
 
 def test_restore_dual_reader_materializes_content_addressed_v2_blob(tmp_path, fake_s3):

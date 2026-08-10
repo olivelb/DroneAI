@@ -158,6 +158,8 @@ spec:
           value: {{ .Values.dashboardApi.tiles.rateLimitMaxClients | quote }}
         - name: DRONEAI_STAGE_JOBS_ENABLED
           value: {{ .Values.stageJobs.enabled | quote }}
+        - name: DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED
+          value: {{ .Values.stageJobs.artifactManifestV2WriteEnabled | quote }}
         - name: DRONEAI_STAGE_SCHEDULER_POLL_SECONDS
           value: {{ .Values.stageJobs.scheduler.pollSeconds | quote }}
         - name: DRONEAI_STAGE_GLOBAL_CONCURRENCY

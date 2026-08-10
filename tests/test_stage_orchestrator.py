@@ -272,6 +272,18 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
         orchestrator.settings_from_environment()
 
 
+def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+    monkeypatch.setenv("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED", "true")
+
+    settings = orchestrator.settings_from_environment()
+
+    assert (
+        "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED",
+        "true",
+    ) in settings.job_environment
+
+
 def test_detection_job_alone_receives_model_configuration_and_hf_token():
     model_environment = (
         ("SAM3_MODEL_ID", "facebook/sam3"),

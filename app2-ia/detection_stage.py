@@ -16,6 +16,7 @@ from rasterio.windows import Window
 
 from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import Sam3Backend
+from shared.artifact_manifest import ManifestParent
 from shared.detection_geometry import build_tile_starts, dedupe_mission_detections
 from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
@@ -28,7 +29,9 @@ from shared.stage_execution import (
 )
 from shared.stage_workspace import (
     RestoredWorkspace,
+    artifact_manifest_v2_write_enabled,
     publish_workspace,
+    publish_workspace_v2,
     resolve_workspace_path,
     restore_workspace_measured,
     workspace_transfer_provenance,
@@ -345,11 +348,36 @@ def run_detection_stage(
             f"missions/{context.vol_id}/stage-runs/"
             f"{context.run_id}/detection-workspace"
         )
-        published = publish_workspace(
-            workspace,
-            prefix,
-            cancellation_check=control.raise_if_cancelled,
-        )
+        if artifact_manifest_v2_write_enabled():
+            source = context.inputs[0]
+            manifest_key = source.metadata.get("manifest_key")
+            if not isinstance(manifest_key, str) or not manifest_key:
+                raise ValueError("Raster workspace artifact has no manifest key")
+            published = publish_workspace_v2(
+                workspace,
+                prefix,
+                default_role="detection-workspace",
+                role_overrides={
+                    raw_path.relative_to(workspace).as_posix(): "detection-records",
+                    geojson_path.relative_to(workspace).as_posix(): (
+                        "detection-features"
+                    ),
+                },
+                parents=(
+                    ManifestParent(
+                        artifact_id=source.artifact_id,
+                        manifest_key=manifest_key,
+                        checksum_sha256=source.checksum_sha256,
+                    ),
+                ),
+                cancellation_check=control.raise_if_cancelled,
+            )
+        else:
+            published = publish_workspace(
+                workspace,
+                prefix,
+                cancellation_check=control.raise_if_cancelled,
+            )
         return StageExecutionResult(
             kind="detection_workspace",
             uri=published.uri,

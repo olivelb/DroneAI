@@ -210,9 +210,11 @@ def test_detection_config_rejects_unbounded_prompt_and_confidence():
         )
 
 
+@pytest.mark.parametrize("v2_enabled", [False, True])
 def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     tmp_path,
     monkeypatch,
+    v2_enabled,
 ):
     monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
 
@@ -251,12 +253,19 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
     )
     inspected = {}
 
-    def publish(workspace, prefix, cancellation_check):
+    def publish(workspace, prefix, cancellation_check, **kwargs):
         cancellation_check()
         geojson = Path(workspace, ".droneai", "detection", "detections.geojson")
         raw = Path(workspace, ".droneai", "detection", "detections.json")
         inspected["geojson"] = geojson.read_text(encoding="utf-8")
         inspected["raw"] = raw.read_text(encoding="utf-8")
+        if v2_enabled:
+            assert kwargs["default_role"] == "detection-workspace"
+            assert kwargs["role_overrides"] == {
+                ".droneai/detection/detections.json": "detection-records",
+                ".droneai/detection/detections.geojson": "detection-features",
+            }
+            assert kwargs["parents"][0].artifact_id == "raster-1"
         return PublishedWorkspace(
             manifest_key=f"{prefix}/manifest.json",
             uri=f"s3://drone-ai/{prefix}/manifest.json",
@@ -265,7 +274,13 @@ def test_detection_stage_publishes_deduplicated_geojson_and_provenance(
             file_count=4,
         )
 
+    monkeypatch.setattr(
+        detection_stage,
+        "artifact_manifest_v2_write_enabled",
+        lambda: v2_enabled,
+    )
     monkeypatch.setattr(detection_stage, "publish_workspace", publish)
+    monkeypatch.setattr(detection_stage, "publish_workspace_v2", publish)
 
     result = detection_stage.run_detection_stage(_context(), FakeControl())
 
