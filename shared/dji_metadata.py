@@ -19,8 +19,8 @@ from typing import Any, cast
 from collections.abc import Iterable
 
 SEQUENCE_PATTERNS = (
-    re.compile(r"_(\d{4,6})_[A-Za-z0-9-]+\.[^.]+$"),
-    re.compile(r"_(\d{4,6})\.[^.]+$"),
+    re.compile(r"_(\d{3,6})_[A-Za-z0-9-]+\.[^.]+$"),
+    re.compile(r"_(\d{3,6})\.[^.]+$"),
 )
 XMP_APP1_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"
 RTK_FLAG_STATES = {
