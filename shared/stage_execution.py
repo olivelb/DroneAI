@@ -24,6 +24,21 @@ class StageExecutionCancelled(RuntimeError):
     """Raised cooperatively after mission cancellation is persisted."""
 
 
+class StageQualityGateRejected(RuntimeError):
+    """Fail a stage while preserving its quality evidence for operators."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        quality_metrics: dict[str, Any],
+        evidence: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.quality_metrics = quality_metrics
+        self.evidence = evidence or {}
+
+
 @dataclass(frozen=True)
 class StageArtifactInput:
     artifact_id: str
@@ -315,7 +330,14 @@ def _publish_result(
     return artifact_id
 
 
-def _mark_terminal(run_id: str, status: str, message: str | None) -> str:
+def _mark_terminal(
+    run_id: str,
+    status: str,
+    message: str | None,
+    *,
+    quality_metrics: dict[str, Any] | None = None,
+    rejection_evidence: dict[str, Any] | None = None,
+) -> str:
     with get_session() as session:
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == run_id
@@ -331,6 +353,13 @@ def _mark_terminal(run_id: str, status: str, message: str | None) -> str:
         record.status = effective_status
         record.current_step = effective_status.upper()
         record.error_message = None if effective_status == "cancelled" else message
+        if quality_metrics is not None:
+            record.quality_metrics = quality_metrics
+        if rejection_evidence:
+            record.provenance = {
+                **cast(dict[str, Any], run.provenance or {}),
+                "quality_gate_rejection": rejection_evidence,
+            }
         record.heartbeat_at = datetime.now(UTC)
         record.completed_at = record.heartbeat_at
         return effective_status
@@ -372,10 +401,19 @@ def execute_one_shot_stage(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
+        rejection = (
+            error if isinstance(error, StageQualityGateRejected) else None
+        )
         terminal_status = _mark_terminal(
             durable_run_id,
             "failed",
             str(error)[:4000],
+            quality_metrics=(
+                rejection.quality_metrics if rejection is not None else None
+            ),
+            rejection_evidence=(
+                rejection.evidence if rejection is not None else None
+            ),
         )
         if terminal_status == "cancelled":
             raise StageExecutionCancelled(
@@ -406,10 +444,19 @@ def execute_stage_subtask(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
+        rejection = (
+            error if isinstance(error, StageQualityGateRejected) else None
+        )
         terminal_status = _mark_terminal(
             durable_run_id,
             "failed",
             str(error)[:4000],
+            quality_metrics=(
+                rejection.quality_metrics if rejection is not None else None
+            ),
+            rejection_evidence=(
+                rejection.evidence if rejection is not None else None
+            ),
         )
         if terminal_status == "cancelled":
             raise StageExecutionCancelled(
