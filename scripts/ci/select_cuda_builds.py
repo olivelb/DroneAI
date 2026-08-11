@@ -10,9 +10,16 @@ from typing import Any, Final
 
 CUDA_VERSION_LINE: Final = re.compile(r"^([+-])FROM\s+nvidia/cuda:([^\s]+)")
 COLMAP_VERSION_LINE: Final = re.compile(r"^([+-])\s*COLMAP_TAG\s*=\s*['\"]([^'\"]+)['\"]")
+CUDA_PYTHON_VERSION_LINE: Final = re.compile(
+    r"^([+-])(cuda-toolkit|cupy-cuda12x|nvidia-(?:cublas|cuda-nvrtc|cuda-runtime|cufft|curand|cusolver|cusparse|nvjitlink)-cu12)"
+    r"(?:\[[^]]+\])?==([^\s\\]+)"
+)
 VERSION_FILES: Final = (
     "app1-colmap/Dockerfile.base",
     "app1-colmap/Dockerfile.local-gaussian",
+    "requirements/colmap.in",
+    "requirements/colmap.txt",
+    "requirements/local-gaussian.txt",
     "setup_deps.sh",
 )
 
@@ -24,6 +31,8 @@ def version_change_reason(diff_lines: list[str]) -> str | None:
     new_cuda: set[str] = set()
     old_colmap: set[str] = set()
     new_colmap: set[str] = set()
+    old_cuda_python: set[tuple[str, str]] = set()
+    new_cuda_python: set[tuple[str, str]] = set()
     for line in diff_lines:
         cuda_match = CUDA_VERSION_LINE.match(line)
         if cuda_match:
@@ -31,11 +40,17 @@ def version_change_reason(diff_lines: list[str]) -> str | None:
         colmap_match = COLMAP_VERSION_LINE.match(line)
         if colmap_match:
             (old_colmap if colmap_match.group(1) == "-" else new_colmap).add(colmap_match.group(2))
+        cuda_python_match = CUDA_PYTHON_VERSION_LINE.match(line)
+        if cuda_python_match:
+            package_version = cuda_python_match.group(2), cuda_python_match.group(3)
+            (old_cuda_python if cuda_python_match.group(1) == "-" else new_cuda_python).add(package_version)
 
     if old_cuda != new_cuda:
         return "cuda-version-change"
     if old_colmap != new_colmap:
         return "colmap-version-change"
+    if old_cuda_python != new_cuda_python:
+        return "cuda-python-version-change"
     return None
 
 

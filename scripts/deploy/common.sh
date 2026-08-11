@@ -199,7 +199,7 @@ host_nvidia_smi() {
 
 docker_gpu_smoke() {
     "${DOCKER[@]}" run --rm --gpus all \
-        nvidia/cuda:12.8.1-base-ubuntu24.04 \
+        nvidia/cuda:12.9.2-base-ubuntu24.04 \
         nvidia-smi --query-gpu=name --format=csv,noheader >/dev/null 2>&1
 }
 

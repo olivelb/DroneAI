@@ -147,10 +147,10 @@ sudo systemctl restart docker
 
 # Validate
 nvidia-smi
-sudo docker run --rm --gpus all nvidia/cuda:12.8.1-runtime-ubuntu24.04 nvidia-smi
+sudo docker run --rm --gpus all nvidia/cuda:12.9.2-runtime-ubuntu24.04 nvidia-smi
 ```
 
-Use a host driver that is compatible with the CUDA 12.8.1 container images and
+Use a host driver that is compatible with the CUDA 12.9.2 container images and
 validate it with the container command above.
 
 ## Step 3: Install K3s cluster

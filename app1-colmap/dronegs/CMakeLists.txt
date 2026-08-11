@@ -13,7 +13,7 @@ if(DRONEGS_CUDA_ARCHITECTURES STREQUAL "native")
     # CMake asks nvcc to detect every GPU visible while configuring.
     set(_dronegs_cuda_architectures_resolved "native")
 elseif(DRONEGS_CUDA_ARCHITECTURES STREQUAL "portable")
-    # CUDA 12.8 cubins for Turing through Blackwell, including datacenter
+    # CUDA 12.9 cubins for Turing through Blackwell, including datacenter
     # and embedded variants.
     set(
         _dronegs_cuda_architectures_resolved
@@ -42,6 +42,13 @@ endif()
 unset(_dronegs_cuda_architectures_resolved)
 
 project(DroneGS VERSION 0.5.0 LANGUAGES CXX CUDA)
+
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)" _dronegs_cuda_version "${CMAKE_CUDA_COMPILER_VERSION}")
+if(NOT _dronegs_cuda_version)
+    message(FATAL_ERROR "Cannot derive the CUDA runtime version from ${CMAKE_CUDA_COMPILER_VERSION}")
+endif()
+set(DRONEGS_CUDA_RUNTIME_VERSION "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}")
+unset(_dronegs_cuda_version)
 
 option(DRONEGS_BUILD_TESTS "Build DroneGS native tests" ON)
 option(DRONEGS_BUILD_BENCHMARKS "Build DroneGS native benchmarks" OFF)
@@ -94,7 +101,9 @@ add_library(dronegs_core
 target_include_directories(dronegs_core PUBLIC include)
 target_link_libraries(dronegs_core PUBLIC JPEG::JPEG Threads::Threads)
 target_compile_definitions(
-    dronegs_core PRIVATE DRONEGS_GIT_REVISION="${DRONEGS_GIT_REVISION}")
+    dronegs_core PRIVATE
+    DRONEGS_GIT_REVISION="${DRONEGS_GIT_REVISION}"
+    DRONEGS_CUDA_RUNTIME_VERSION="${DRONEGS_CUDA_RUNTIME_VERSION}")
 target_compile_options(dronegs_core PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Werror>
 )
