@@ -7,8 +7,10 @@ import os
 import shutil
 
 from runtime_support import run_command
+from shared import storage
 from shared.gcp_control import build_weighted_gcp_alignment, write_transformed_reconstruction
 from shared.json_io import atomic_write_json
+from shared.stage_execution import StageQualityGateRejected
 
 from .. import runtime
 from ..contracts import (
@@ -129,7 +131,46 @@ def _run_weighted_gcp_alignment(
         failed_checks = ", ".join(
             check["name"] for check in quality_gate["checks"] if not check["passed"]
         )
-        raise RuntimeError("GCP alignment rejected by the promotion gate: " + failed_checks)
+        stage_run_id = os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
+        evidence: dict[str, object] = {"persisted": False}
+        if stage_run_id:
+            evidence_key = (
+                f"missions/{vol_id}/stage-runs/{stage_run_id}/"
+                "diagnostics/gcp_alignment_report.json"
+            )
+            try:
+                published = storage.upload_verified_file(
+                    gcp_report_file,
+                    evidence_key,
+                )
+                evidence = {
+                    **published,
+                    "persisted": True,
+                    "uri": f"s3://{storage.S3_BUCKET}/{evidence_key}",
+                }
+            except Exception as error:
+                evidence = {
+                    "persisted": False,
+                    "key": evidence_key,
+                    "publish_error": str(error)[:1000],
+                }
+        runtime.report_mission_progress(
+            vol_id,
+            "ALIGNING",
+            93,
+            status="error",
+            log="GCP alignment rejected by the promotion gate: " + failed_checks,
+            details={
+                "event": "gcp_alignment_rejected",
+                "quality_gate": quality_gate,
+                "evidence": evidence,
+            },
+        )
+        raise StageQualityGateRejected(
+            "GCP alignment rejected by the promotion gate: " + failed_checks,
+            quality_metrics={"gcp_alignment": gcp_report},
+            evidence=evidence,
+        )
 
     from shared.geo_alignment import write_alignment_transform
 
@@ -292,8 +333,6 @@ def undistort_and_align_colmap(
     workspace_dir: str,
     vol_id: str,
 ) -> PipelineAlignmentState:
-    _undistort_images(preparation, rtk_state, vol_id)
-
     if preparation.facade_mode:
         runtime.report_mission_progress(
             vol_id,
@@ -318,5 +357,10 @@ def undistort_and_align_colmap(
             vol_id,
             reconstruction.alignment_transform_path,
         )
+
+    # Reject invalid geographic control before the comparatively expensive
+    # image-undistortion pass. The undistorted imagery is independent from the
+    # global similarity transform, so accepted missions retain identical data.
+    _undistort_images(preparation, rtk_state, vol_id)
 
     return PipelineAlignmentState(alignment_transform_path=alignment_transform_path)

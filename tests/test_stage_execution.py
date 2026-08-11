@@ -13,6 +13,7 @@ from shared.database import (
 from shared import stage_execution
 from shared.stage_execution import (
     StageExecutionCancelled,
+    StageQualityGateRejected,
     StageExecutionResult,
     execute_one_shot_stage,
     execute_stage_subtask,
@@ -145,6 +146,41 @@ def test_one_shot_failure_is_terminal_and_keeps_dependants_blocked(
         assert runs["reconstruction"].status == "failed"
         assert runs["reconstruction"].error_message == "mapping failed"
         assert runs["gaussian_training"].status == "blocked"
+        assert session.query(MissionArtifact).count() == 0
+
+
+def test_quality_gate_failure_persists_metrics_and_evidence(execution_sessions):
+    run_id = "4" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+    metrics = {"gcp_alignment": {"quality_gate": {"accepted": False}}}
+    evidence = {
+        "persisted": True,
+        "uri": "s3://drone-ai/gcp_alignment_report.json",
+        "sha256": "a" * 64,
+    }
+
+    def handler(_context, _control):
+        raise StageQualityGateRejected(
+            "GCP quality gate rejected",
+            quality_metrics=metrics,
+            evidence=evidence,
+        )
+
+    with pytest.raises(StageQualityGateRejected, match="GCP quality gate rejected"):
+        execute_one_shot_stage(
+            "reconstruction",
+            handler,
+            run_id=run_id,
+            heartbeat_interval_seconds=60,
+        )
+
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter(
+            MissionStageRun.run_id == run_id
+        ).one()
+        assert run.status == "failed"
+        assert run.quality_metrics == metrics
+        assert run.provenance["quality_gate_rejection"] == evidence
         assert session.query(MissionArtifact).count() == 0
 
 

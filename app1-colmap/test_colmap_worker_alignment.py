@@ -16,6 +16,7 @@ for module_path in (APP_DIR, ROOT_DIR):
 
 from colmap_worker import runtime as worker_runtime
 from colmap_worker.stages import alignment as alignment_stage
+from shared.stage_execution import StageQualityGateRejected
 
 
 def _gcp_preparation(gcp_path: str) -> SimpleNamespace:
@@ -230,6 +231,99 @@ def test_rejected_gcp_alignment_writes_report_without_promoting(tmp_path):
         report,
     )
     promote.assert_not_called()
+
+
+def test_rejected_gcp_alignment_publishes_verified_stage_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_RUN_ID", "stage-run-123")
+    preparation = _gcp_preparation(str(tmp_path / "gcp_list.txt"))
+    reconstruction = SimpleNamespace(utm_crs="EPSG:32631")
+    rtk_state = SimpleNamespace(
+        active_sparse_model_path=str(tmp_path / "sparse" / "0")
+    )
+    report = {
+        "fit": {"rmse": 0.12},
+        "quality_gate": {
+            "accepted": False,
+            "checks": [
+                {"name": "checkpoint_vertical_rmse_m", "passed": False}
+            ],
+        },
+    }
+    published = {"key": "evidence-key", "size": 321, "sha256": "a" * 64}
+
+    with (
+        patch.object(
+            alignment_stage,
+            "build_weighted_gcp_alignment",
+            return_value=({}, report),
+        ),
+        patch.object(
+            alignment_stage.storage,
+            "upload_verified_file",
+            return_value=published,
+        ) as upload,
+        patch.object(worker_runtime, "report_mission_progress") as progress,
+        patch.object(alignment_stage, "write_transformed_reconstruction") as promote,
+    ):
+        with pytest.raises(StageQualityGateRejected) as captured:
+            alignment_stage._run_weighted_gcp_alignment(
+                preparation,
+                reconstruction,
+                rtk_state,
+                str(tmp_path),
+                "vol-rejected-gcp",
+            )
+
+    report_path = os.path.join(tmp_path, "gcp_alignment_report.json")
+    expected_key = (
+        "missions/vol-rejected-gcp/stage-runs/stage-run-123/"
+        "diagnostics/gcp_alignment_report.json"
+    )
+    upload.assert_called_once_with(report_path, expected_key)
+    assert json.loads(Path(report_path).read_text(encoding="utf-8")) == report
+    assert captured.value.quality_metrics == {"gcp_alignment": report}
+    assert captured.value.evidence == {
+        **published,
+        "persisted": True,
+        "uri": f"s3://{alignment_stage.storage.S3_BUCKET}/{expected_key}",
+    }
+    assert progress.call_args.kwargs["details"]["event"] == "gcp_alignment_rejected"
+    promote.assert_not_called()
+
+
+def test_rejected_gcp_alignment_skips_image_undistortion(tmp_path):
+    preparation = SimpleNamespace(
+        facade_mode=False,
+        params={"gcp_adjustment_enabled": True},
+    )
+    reconstruction = SimpleNamespace(alignment_transform_path=None)
+    rtk_state = SimpleNamespace()
+    rejection = StageQualityGateRejected(
+        "rejected",
+        quality_metrics={"gcp_alignment": {}},
+    )
+
+    with (
+        patch.object(
+            alignment_stage,
+            "_run_weighted_gcp_alignment",
+            side_effect=rejection,
+        ),
+        patch.object(alignment_stage, "_undistort_images") as undistort,
+    ):
+        with pytest.raises(StageQualityGateRejected):
+            alignment_stage.undistort_and_align_colmap(
+                preparation,
+                reconstruction,
+                rtk_state,
+                str(tmp_path),
+                "vol-rejected-gcp",
+            )
+
+    undistort.assert_not_called()
 
 
 def test_accepted_gcp_alignment_promotes_transform_and_sparse_model(tmp_path):
