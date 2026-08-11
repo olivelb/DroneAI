@@ -250,12 +250,13 @@ def parse_gcp_accuracy_file(path: str | Path) -> dict[str, GcpAccuracy]:
 
 
 def build_image_lookup(reconstruction: Any) -> dict[str, Any]:
-    """Index unambiguous reconstruction images by full name and basename."""
+    """Index images by full name, basename and unambiguous basename stem."""
 
     lookup: dict[str, Any] = {}
     ambiguous: set[str] = set()
     for image in reconstruction.images.values():
-        for key in (image.name, Path(image.name).name):
+        image_path = Path(image.name)
+        for key in (image.name, image_path.name, image_path.stem):
             if key in lookup and lookup[key].image_id != image.image_id:
                 ambiguous.add(key)
             else:
