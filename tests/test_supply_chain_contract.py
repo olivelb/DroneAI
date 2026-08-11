@@ -97,6 +97,9 @@ def test_cuda_builds_require_manual_dispatch_or_authoritative_version_change() -
     assert "workflow_dispatch" in workflow
     assert 'CUDA_VERSION_LINE: Final = re.compile(r"^([+-])FROM\\s+nvidia/cuda:' in selector
     assert "COLMAP_VERSION_LINE: Final" in selector
+    assert "CUDA_PYTHON_VERSION_LINE: Final" in selector
+    assert '"requirements/colmap.txt"' in selector
+    assert '"requirements/local-gaussian.txt"' in selector
     assert 'reason = "manual-dispatch"' in selector
 
 

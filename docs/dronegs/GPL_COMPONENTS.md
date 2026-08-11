@@ -26,7 +26,7 @@ level. This is an engineering inventory, not legal advice.
 | gsplat AbsGrad and anti-aliasing reference | Official `nerfstudio-project/gsplat` at `2b902ff1891fc7f73f0f9b8c8bfc932cef2b198c`; `gsplat/cuda/csrc/RasterizeToPixels3DGSDevice.cuh`, `gsplat/strategy/default.py`, `gsplat/cuda/include/Utils.cuh`, and `gsplat/cuda/csrc/ProjectionEWA3DGSFused.cu` inspected 2026-07-26 | Apache-2.0 | Dev.36 algorithmic validation of per-pixel absolute projected-mean gradients; dev.37 validation of determinant compensation and its VJP | No gsplat source is linked or vendored. DroneGS independently adapts the published mechanisms to its existing GPL rasterizer, retains this exact reference revision, and must retain the Apache notice if source is copied later |
 | INRIA 3DGS code | Reference implementation; revision not selected | Custom research license | Algorithmic reference only | Do not copy source until separately approved |
 | ImprovedGS+ | Revision and license not audited | To be determined | Post-parity experiment candidate | No source import until audited |
-| NVIDIA CUB | 2.7.0 from CUDA Toolkit 12.8.1 | BSD-3-Clause | Header-only radix sort and scan in the native raster pipeline | Retain NVIDIA copyright and BSD notice with binary distributions |
+| NVIDIA CUB | 2.8.2 from CUDA Toolkit 12.9.2 | BSD-3-Clause | Header-only radix sort and scan in the native raster pipeline | Retain NVIDIA copyright and BSD notice with binary distributions |
 | NVIDIA CUDA/images | NVIDIA distributions | NVIDIA terms | Build/runtime | Preserve redistribution notices and terms |
 | COLMAP | Pinned by DroneAI | BSD-3-Clause | Reconstruction/input format | Preserve license and attribution |
 

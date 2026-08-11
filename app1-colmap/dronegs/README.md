@@ -57,7 +57,7 @@ PLY models for direct same-split renderer/model cross-evaluation. A
 balanced local KD tree gives each COLMAP point an isotropic scale adapted to
 its local density and bounded by robust scene extents. A local build detects
 its visible NVIDIA GPU through CMake's `native` mode; the `portable` preset
-emits a CUDA 12.8 runtime-selected fat binary for Turing through Blackwell. It:
+emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 
 - parses trainer CLI contract v1;
 - reads COLMAP binary cameras, poses, images, and sparse points;

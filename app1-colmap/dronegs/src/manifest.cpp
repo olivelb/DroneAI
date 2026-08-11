@@ -14,6 +14,10 @@
 #define DRONEGS_GIT_REVISION "unknown"
 #endif
 
+#ifndef DRONEGS_CUDA_RUNTIME_VERSION
+#define DRONEGS_CUDA_RUNTIME_VERSION "unknown"
+#endif
+
 namespace dronegs {
 namespace {
 
@@ -207,7 +211,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"source_pixels\": null\n"
            << "  },\n"
            << "  \"hardware\": {\n"
-           << "    \"gpu\": null, \"driver\": null, \"cuda_runtime\": \"12.8\",\n"
+           << "    \"gpu\": null, \"driver\": null, \"cuda_runtime\": \""
+           << DRONEGS_CUDA_RUNTIME_VERSION << "\",\n"
            << "    \"peak_vram_mib\": null\n"
            << "  },\n"
            << "  \"parameters\": {\n"

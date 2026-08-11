@@ -103,7 +103,7 @@ internals.
 
 ## Technology choices
 
-- C++23 control plane and CUDA 12.8 or newer.
+- C++23 control plane and CUDA 12.9 or newer.
 - CMake and Ninja.
 - Purpose-built structure-of-arrays buffers rather than a general tensor API.
 - CTest-driven native unit, finite-difference, and convergence checks.
@@ -246,9 +246,9 @@ the blend equation, gradient equation, stable ordering, or public contract.
 Version 0.5.0-dev.30 makes that generic batching the portable CUDA baseline.
 It removes the internal Ada-only CUB Policy610 dispatch and 64-register
 ceiling. Local builds use CMake `native` GPU detection; distributable builds
-can emit real CUDA 12.8 cubins for Turing through Blackwell in one fat binary.
+can emit real CUDA 12.9 cubins for Turing through Blackwell in one fat binary.
 Stable radix ordering and the renderer contract remain unchanged.
-Architectures introduced after CUDA 12.8 require rebuilding with a toolkit
+Architectures introduced after CUDA 12.9 require rebuilding with a toolkit
 that supports them.
 Version 0.5.0-dev.15 preallocates parameter, gradient, statistic, and Adam
 capacity to `max_cap`. During backward it accumulates each Gaussian's alpha
