@@ -1,5 +1,6 @@
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -8,6 +9,7 @@ from scipy.spatial.transform import Rotation
 from shared.gcp_control import (
     _robust_observation_mask,
     assess_gcp_alignment_quality,
+    build_image_lookup,
     intersect_rays,
     parse_gcp_accuracy_file,
     parse_gcp_file,
@@ -75,6 +77,30 @@ def test_prepare_gcp_assets_copies_and_removes_stale_files(tmp_path: Path) -> No
     (dataset / "gcp_accuracy.csv").unlink()
     removed = prepare_gcp_assets(dataset.parent, workspace)
     assert removed == {"gcp_path": None, "accuracy_path": None, "changed": True}
+
+
+def test_image_lookup_accepts_unambiguous_extensionless_metashape_labels() -> None:
+    image = SimpleNamespace(
+        image_id=1,
+        name="survey/IMG_0001.JPG",
+    )
+
+    lookup = build_image_lookup(SimpleNamespace(images={1: image}))
+
+    assert lookup["survey/IMG_0001.JPG"] is image
+    assert lookup["IMG_0001.JPG"] is image
+    assert lookup["IMG_0001"] is image
+
+
+def test_image_lookup_rejects_ambiguous_extensionless_labels() -> None:
+    jpeg = SimpleNamespace(image_id=1, name="a/IMG_0001.JPG")
+    tiff = SimpleNamespace(image_id=2, name="b/IMG_0001.tif")
+
+    lookup = build_image_lookup(SimpleNamespace(images={1: jpeg, 2: tiff}))
+
+    assert "IMG_0001" not in lookup
+    assert lookup["IMG_0001.JPG"] is jpeg
+    assert lookup["IMG_0001.tif"] is tiff
 
 
 def test_weighted_sim3_downweights_unreliable_control() -> None:

@@ -78,6 +78,12 @@ def test_mrk_records_are_mapped_to_images_in_the_same_flight(tmp_path):
     assert overrides["flight/DJI_20230601171232_0001_V.JPG"]["source"] == "dji_mrk"
 
 
+def test_three_digit_survey_image_sequence_is_recognized():
+    assert image_sequence_number(
+        "2019_08_06_PUTI_SonyRX1_g201b20286_f001_002.JPG"
+    ) == 2
+
+
 def test_autel_sequence_and_xmp_rtk_covariance_are_recognized(tmp_path):
     image = tmp_path / "MAX_0002.JPG"
     _write_xmp_jpeg(image)
