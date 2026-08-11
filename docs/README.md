@@ -52,6 +52,9 @@ the current release status:
   [`benchmarks/villeseque-p4-hq-e2e-2026-08-09.md`](benchmarks/villeseque-p4-hq-e2e-2026-08-09.md)
 - BIGZEN native DroneGS 12–16 M Gaussian allocation probe:
   [`benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md`](benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md)
+- BIGZEN full-scene `high-quality-v2` qualification at 12 M Gaussians and
+  0.015 m/px:
+  [`benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md`](benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md)
 - BIGZEN Chapelle Banyuls P4 Fast local baseline plus the successful K3s
   five-Job/RTX 3090/SAM3 qualification addendum:
   [`benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md)
