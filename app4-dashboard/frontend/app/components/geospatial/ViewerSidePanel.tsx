@@ -1,11 +1,12 @@
 "use client";
 
 import type { ComponentProps } from "react";
-import { Download, Layers, Search, Sparkles } from "lucide-react";
+import { Download, Layers, MapPinCheck, Search, Sparkles } from "lucide-react";
 import type { MessageKey } from "../../lib/i18n/catalog";
 import { useI18n } from "../../lib/i18n/provider";
 import AnalysisPanel from "./AnalysisPanel";
 import ExportPanel from "./ExportPanel";
+import GcpPanel from "./GcpPanel";
 import LayersPanel from "./LayersPanel";
 import SearchPanel from "./SearchPanel";
 import type { WorkspacePanel } from "./workspace-config";
@@ -15,6 +16,7 @@ interface ViewerSidePanelProps {
   activePanel: WorkspacePanel;
   onPanelChange: (panel: WorkspacePanel) => void;
   layers: ComponentProps<typeof LayersPanel>;
+  gcp: ComponentProps<typeof GcpPanel>;
   analysis: ComponentProps<typeof AnalysisPanel>;
   search: ComponentProps<typeof SearchPanel>;
   exportPanel: ComponentProps<typeof ExportPanel>;
@@ -22,6 +24,7 @@ interface ViewerSidePanelProps {
 
 const PANELS = [
   ["layers", Layers, "explorer.panel.layers"],
+  ["gcp", MapPinCheck, "explorer.panel.gcp"],
   ["analysis", Sparkles, "explorer.panel.analysis"],
   ["search", Search, "explorer.panel.objects"],
   ["export", Download, "explorer.panel.export"],
@@ -34,6 +37,7 @@ export default function ViewerSidePanel({
   activePanel,
   onPanelChange,
   layers,
+  gcp,
   analysis,
   search,
   exportPanel,
@@ -47,7 +51,7 @@ export default function ViewerSidePanel({
           : "order-2 max-h-[520px] xl:order-none xl:max-h-none"
       }`}
     >
-      <div className="grid grid-cols-4 border-b border-[#e1e8e5] p-2">
+      <div className="grid grid-cols-5 border-b border-[#e1e8e5] p-2">
         {PANELS.map(([id, Icon, labelKey]) => (
           <button
             type="button"
@@ -65,6 +69,7 @@ export default function ViewerSidePanel({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {activePanel === "layers" && <LayersPanel {...layers} />}
+        {activePanel === "gcp" && <GcpPanel {...gcp} />}
         {activePanel === "analysis" && <AnalysisPanel {...analysis} />}
         {activePanel === "search" && <SearchPanel {...search} />}
         {activePanel === "export" && <ExportPanel {...exportPanel} />}

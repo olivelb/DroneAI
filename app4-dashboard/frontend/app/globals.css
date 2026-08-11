@@ -1,8 +1,43 @@
 @import "tailwindcss";
 
-.map-crosshair,
-.map-crosshair .leaflet-interactive {
+.map-cursor-point,
+.map-cursor-line,
+.map-cursor-polygon,
+.map-cursor-measure-distance,
+.map-cursor-measure-area,
+.map-cursor-point .leaflet-interactive,
+.map-cursor-line .leaflet-interactive,
+.map-cursor-polygon .leaflet-interactive,
+.map-cursor-measure-distance .leaflet-interactive,
+.map-cursor-measure-area .leaflet-interactive {
   cursor: crosshair;
+}
+
+.map-cursor-select,
+.map-cursor-select .leaflet-interactive {
+  cursor: default;
+}
+
+.map-cursor-navigate,
+.map-cursor-navigate .leaflet-interactive {
+  cursor: grab;
+}
+
+.map-cursor-navigate.leaflet-dragging,
+.map-cursor-navigate.leaflet-dragging .leaflet-interactive {
+  cursor: grabbing;
+}
+
+.droneai-coordinate-control {
+  min-width: 260px;
+  border: 1px solid rgba(255, 255, 255, 0.34);
+  border-radius: 0.6rem;
+  background: rgba(23, 32, 30, 0.9);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  color: white;
+  font: 600 11px/1.2 var(--font-geist-mono), monospace;
+  padding: 0.5rem 0.65rem;
+  pointer-events: none;
 }
 
 :root {

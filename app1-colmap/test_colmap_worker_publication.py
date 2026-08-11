@@ -170,6 +170,58 @@ def test_optional_recovery_uploads_are_counted_but_remain_best_effort(tmp_path):
     assert "optional recovery/debug artifact" in progress.call_args.kwargs["log"]
 
 
+def test_camera_projection_index_is_best_effort(tmp_path):
+    sparse_geo = tmp_path / "sparse_geo"
+    sparse_geo.mkdir()
+    (sparse_geo / "images.bin").write_bytes(b"model")
+
+    with (
+        patch.object(publication_stage, "write_camera_projection_index") as write_index,
+        patch.object(publication_stage.storage, "upload_file") as upload,
+    ):
+        published = publication_stage._publish_camera_projection_index(
+            workspace_dir=str(tmp_path),
+            projected_crs="EPSG:2154",
+            mission_s3_prefix="missions/vol",
+            vol_id="vol",
+        )
+
+    assert published is True
+    write_index.assert_called_once_with(
+        str(sparse_geo),
+        "EPSG:2154",
+        str(tmp_path / "camera_projection_index.json"),
+    )
+    upload.assert_called_once_with(
+        str(tmp_path / "camera_projection_index.json"),
+        "missions/vol/camera_projection_index.json",
+    )
+
+
+def test_camera_projection_index_failure_does_not_fail_product(tmp_path):
+    sparse_geo = tmp_path / "sparse_geo"
+    sparse_geo.mkdir()
+    (sparse_geo / "images.bin").write_bytes(b"model")
+
+    with (
+        patch.object(
+            publication_stage,
+            "write_camera_projection_index",
+            side_effect=ValueError("unsupported camera"),
+        ),
+        patch.object(worker_runtime, "report_mission_progress") as progress,
+    ):
+        published = publication_stage._publish_camera_projection_index(
+            workspace_dir=str(tmp_path),
+            projected_crs="EPSG:2154",
+            mission_s3_prefix="missions/vol",
+            vol_id="vol",
+        )
+
+    assert published is False
+    assert "could not be published" in progress.call_args.kwargs["log"]
+
+
 def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_path):
     checkpoint_root = tmp_path / "checkpoints"
     trainer = checkpoint_root / "full" / "trainer_run.json"
@@ -192,7 +244,7 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
         geo_data_file=str(tmp_path / "geo_data.txt"),
         dense_path=str(tmp_path / "dense"),
     )
-    reconstruction = SimpleNamespace()
+    reconstruction = SimpleNamespace(utm_crs="EPSG:2154")
     rtk_state = SimpleNamespace()
     alignment_state = SimpleNamespace()
     gaussian_state = SimpleNamespace(
@@ -216,6 +268,11 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
             "_upload_optional_recovery_artifacts",
             return_value=(10, True),
         ) as optional_upload,
+        patch.object(
+            publication_stage,
+            "_publish_camera_projection_index",
+            return_value=False,
+        ),
         patch.object(worker_runtime, "report_mission_progress"),
     ):
         state = publication_stage.publish_colmap_products(

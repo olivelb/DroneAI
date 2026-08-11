@@ -13,6 +13,10 @@ from shared.database import (
     AIAnalysisTile,
     DatasetUploadFile,
     DatasetUploadSession,
+    GcpObservation,
+    GcpAuditEvent,
+    GcpPoint,
+    GcpSet,
     InboxEvent,
     MapFeature,
     MapFeatureAuditEvent,
@@ -45,6 +49,18 @@ EXPECTED_CHECKS = {
     MapFeature: {"ck_map_features_source"},
     MapFeatureAuditEvent: {"ck_map_feature_audit_action"},
     RasterLayerStyle: {"ck_raster_layer_styles_version"},
+    GcpSet: {"ck_gcp_sets_version"},
+    GcpPoint: {
+        "ck_gcp_points_role",
+        "ck_gcp_points_accuracy",
+        "ck_gcp_points_version",
+    },
+    GcpObservation: {
+        "ck_gcp_observations_status",
+        "ck_gcp_observations_marked_pixel",
+        "ck_gcp_observations_version",
+    },
+    GcpAuditEvent: {"ck_gcp_audit_action"},
     MissionLog: {"ck_mission_logs_status"},
     InboxEvent: {"ck_inbox_events_status"},
     OutboxEvent: {"ck_outbox_events_status"},
@@ -56,9 +72,7 @@ EXPECTED_CHECKS = {
 def test_every_durable_state_column_has_a_named_check_constraint():
     for model, expected_names in EXPECTED_CHECKS.items():
         actual_names = {
-            constraint.name
-            for constraint in model.__table__.constraints
-            if isinstance(constraint, CheckConstraint)
+            constraint.name for constraint in model.__table__.constraints if isinstance(constraint, CheckConstraint)
         }
         assert expected_names <= actual_names
 

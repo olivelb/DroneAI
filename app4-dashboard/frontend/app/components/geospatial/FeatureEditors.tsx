@@ -1,11 +1,13 @@
 "use client";
 
-import type { Feature } from "geojson";
+import type { Feature, Geometry } from "geojson";
 import { CheckCircle2, PenLine, Save, Trash2, Undo2, X } from "lucide-react";
 import { useI18n } from "../../lib/i18n/provider";
+import GeometryCoordinateEditor from "./GeometryCoordinateEditor";
 import { splitTags } from "./workspace-config";
 
 interface DraftFeatureEditorProps {
+  geometry: Geometry;
   measurement: string;
   name: string;
   description: string;
@@ -15,11 +17,13 @@ interface DraftFeatureEditorProps {
   onDescriptionChange: (value: string) => void;
   onColorChange: (value: string) => void;
   onTagsChange: (value: string) => void;
+  onGeometryChange: (geometry: Geometry) => void;
   onClose: () => void;
   onSave: () => void;
 }
 
 export function DraftFeatureEditor({
+  geometry,
   measurement,
   name,
   description,
@@ -29,6 +33,7 @@ export function DraftFeatureEditor({
   onDescriptionChange,
   onColorChange,
   onTagsChange,
+  onGeometryChange,
   onClose,
   onSave,
 }: DraftFeatureEditorProps) {
@@ -57,6 +62,10 @@ export function DraftFeatureEditor({
           onChange={(event) => onDescriptionChange(event.target.value)}
           className="input-control min-h-16"
           placeholder={t("editor.description")}
+        />
+        <GeometryCoordinateEditor
+          geometry={geometry}
+          onChange={onGeometryChange}
         />
         <div className="grid grid-cols-[1fr_50px] gap-2">
           <input
@@ -156,6 +165,12 @@ export function SelectedFeatureEditor({
           }
           className="input-control min-h-16 disabled:bg-slate-50"
         />
+        {editable && feature.geometry && (
+          <GeometryCoordinateEditor
+            geometry={feature.geometry}
+            onChange={(geometry) => onChange({ ...feature, geometry })}
+          />
+        )}
         {editable && (
           <div className="grid grid-cols-[1fr_50px] gap-2">
             <input

@@ -18,6 +18,7 @@ implemented system as it exists now.
 | HD facade workflow | [`FACADE_ORTHOPHOTO.md`](FACADE_ORTHOPHOTO.md) |
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
+| GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
 | Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
@@ -51,6 +52,9 @@ the current release status:
   [`benchmarks/villeseque-p4-hq-e2e-2026-08-09.md`](benchmarks/villeseque-p4-hq-e2e-2026-08-09.md)
 - BIGZEN native DroneGS 12–16 M Gaussian allocation probe:
   [`benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md`](benchmarks/bigzen-gaussian-capacity-probe-2026-08-10.md)
+- BIGZEN full-scene `high-quality-v2` qualification at 12 M Gaussians and
+  0.015 m/px:
+  [`benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md`](benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md)
 - BIGZEN Chapelle Banyuls P4 Fast local baseline plus the successful K3s
   five-Job/RTX 3090/SAM3 qualification addendum:
   [`benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md)

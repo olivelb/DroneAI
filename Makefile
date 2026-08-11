@@ -56,6 +56,7 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/stage_orchestrator.py \
 	app4-dashboard/api/image_preview.py
 API_FRAMEWORK_TYPED_PATHS := \
+	app4-dashboard/api/gcp_schemas.py \
 	app4-dashboard/api/schemas.py \
 	app4-dashboard/api/map_schemas.py \
 	app4-dashboard/api/stage_schemas.py
@@ -63,6 +64,8 @@ API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_uploads.py \
 	app4-dashboard/api/feature_audit.py \
+	app4-dashboard/api/gcp_audit.py \
+	app4-dashboard/api/gcp_workspace.py \
 	app4-dashboard/api/mission_detail.py \
 	app4-dashboard/api/mission_access.py \
 	app4-dashboard/api/mission_state.py \
@@ -75,6 +78,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/map_exports.py \
 	app4-dashboard/api/routers/map_feature_mutations.py \
 	app4-dashboard/api/routers/map_features.py \
+	app4-dashboard/api/routers/map_gcps.py \
 	app4-dashboard/api/routers/map_rasters.py \
 	app4-dashboard/api/routers/map_styles.py \
 	app4-dashboard/api/routers/maps.py \

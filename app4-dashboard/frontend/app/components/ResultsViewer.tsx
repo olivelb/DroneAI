@@ -4,30 +4,24 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Feature, Geometry } from "geojson";
 import { AlertTriangle, CheckCircle2, Map as MapIcon, X } from "lucide-react";
-import {
-  cancelAnalysis,
-  createAnalysis,
-  createMapFeature,
-  fetchAnalyses,
-  fetchBrowse,
-  retryAnalysis,
-} from "../lib/api";
+import { createMapFeature } from "../lib/api";
 import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
-import type { AnalysisCreate, AnalysisRun } from "../lib/types";
 import type { MapTool } from "./GeospatialMap";
 import {
   DraftFeatureEditor,
   SelectedFeatureEditor,
 } from "./geospatial/FeatureEditors";
 import ViewerHeader from "./geospatial/ViewerHeader";
+import PhotoMarkerEditor from "./geospatial/PhotoMarkerEditor";
 import ViewerSidePanel from "./geospatial/ViewerSidePanel";
 import ViewerToolbar from "./geospatial/ViewerToolbar";
 import { useRasterStyles } from "./geospatial/use-raster-styles";
 import { useFeatureOperations } from "./geospatial/use-feature-operations";
+import { useAnalysisWorkspace } from "./geospatial/use-analysis-workspace";
+import { useGcpWorkspace } from "./geospatial/use-gcp-workspace";
 import {
-  DEFAULT_ANALYSIS,
-  retainKnownRunIds,
+  geometryTool,
   splitTags,
   TOOL_SHORTCUTS,
   type ViewerLayer,
@@ -38,22 +32,15 @@ const GeospatialMap = dynamic(() => import("./GeospatialMap"), {
   ssr: false,
 });
 
-const geometryTool = (geometry?: Geometry): MapTool => {
-  if (geometry?.type === "Point" || geometry?.type === "MultiPoint") {
-    return "point";
-  }
-  if (geometry?.type === "LineString" || geometry?.type === "MultiLineString") {
-    return "line";
-  }
-  return "polygon";
-};
-
 const isTypingTarget = (target: EventTarget | null) =>
   target instanceof HTMLElement &&
   (target.tagName === "INPUT" ||
     target.tagName === "TEXTAREA" ||
     target.tagName === "SELECT" ||
     target.isContentEditable);
+
+const isDrawingTool = (tool: MapTool) =>
+  !["select", "navigate"].includes(tool);
 
 export default function ResultsViewer() {
   const { t } = useI18n();
@@ -81,15 +68,8 @@ export default function ResultsViewer() {
   const [activeLayer, setActiveLayer] = useState<ViewerLayer>("ortho");
   const [showLegacy, setShowLegacy] = useState(true);
   const [showManual, setShowManual] = useState(true);
-  const [availableFiles, setAvailableFiles] = useState<string[]>([]);
-  const [analyses, setAnalyses] = useState<AnalysisRun[]>([]);
-  const [visibleRuns, setVisibleRuns] = useState<string[]>([]);
-  const [analysisForm, setAnalysisForm] =
-    useState<AnalysisCreate>(DEFAULT_ANALYSIS);
-  const [showAnalysisForm, setShowAnalysisForm] = useState(false);
-  const [submittingAnalysis, setSubmittingAnalysis] = useState(false);
-
-  const [tool, setTool] = useState<MapTool>("navigate");
+  const [showGcps, setShowGcps] = useState(true);
+  const [tool, setTool] = useState<MapTool>("select");
   const [toolHint, setToolHint] = useState("");
   const [draftGeometry, setDraftGeometry] = useState<Geometry | null>(null);
   const [redrawingFeature, setRedrawingFeature] = useState(false);
@@ -133,6 +113,48 @@ export default function ResultsViewer() {
     setFocusBounds,
     busySearch,
   } = featureOperations;
+  const onGcpPointActivated = useCallback(() => {
+    setSelectedFeature(null);
+    setDraftGeometry(null);
+    setRedrawingFeature(false);
+    setTool("select");
+    setActivePanel("gcp");
+    setPanelOpen(true);
+  }, [setSelectedFeature]);
+  const gcp = useGcpWorkspace(missionId, {
+    setNotice,
+    setError,
+    onPointActivated: onGcpPointActivated,
+  });
+  const {
+    collection: gcpCollection,
+    selectedPoint: selectedGcp,
+    setSelectedPoint: setSelectedGcp,
+    busy: gcpBusy,
+    auditEvents: gcpAuditEvents,
+    photoMarker,
+    setPhotoMarker,
+    selectPoint: selectGcp,
+    importSet: importGcps,
+    updatePoint: updateGcp,
+    prepareBundle: prepareGcpBundle,
+    refreshCandidates: refreshGcpCandidates,
+    finishPhoto: finishPhotoObservation,
+  } = gcp;
+  const analysis = useAnalysisWorkspace(missionId, { setNotice, setError });
+  const {
+    availableFiles,
+    analyses,
+    visibleRuns,
+    setVisibleRuns,
+    form: analysisForm,
+    setForm: setAnalysisForm,
+    formVisible: showAnalysisForm,
+    setFormVisible: setShowAnalysisForm,
+    submitting: submittingAnalysis,
+    visibleAnalyses,
+    hasDepth,
+  } = analysis;
   const setRasterError = useCallback((message: string) => setError(message), []);
   const announceRasterStyleSaved = useCallback(
     () => setNotice(t("explorer.rasterStyleSaved")),
@@ -144,47 +166,6 @@ export default function ResultsViewer() {
     setRasterError,
     announceRasterStyleSaved,
   );
-
-  const refreshAnalyses = useCallback(async () => {
-    if (!missionId) return;
-    const payload = await fetchAnalyses(missionId);
-    setAnalyses(payload.runs);
-    setVisibleRuns((current) =>
-      retainKnownRunIds(
-        current,
-        payload.runs.map((run) => run.run_id),
-      ),
-    );
-  }, [missionId]);
-
-  useEffect(() => {
-    if (!missionId) return;
-    let cancelled = false;
-    Promise.all([
-      fetchBrowse(`missions/${missionId}/`).catch(() => []),
-      fetchAnalyses(missionId).catch(() => ({ runs: [] })),
-    ]).then(([files, runs]) => {
-      if (cancelled) return;
-      setAvailableFiles(
-        (files as Record<string, string>[]).map(
-          (item) => item.path ?? item.name ?? "",
-        ),
-      );
-      setAnalyses(runs.runs);
-      setVisibleRuns(
-        runs.runs
-          .filter((run) => run.status === "completed")
-          .map((run) => run.run_id),
-      );
-    });
-    const timer = window.setInterval(() => {
-      void refreshAnalyses().catch(() => undefined);
-    }, 4_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [missionId, refreshAnalyses]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -206,8 +187,9 @@ export default function ResultsViewer() {
         const nextTool = shortcut[0] as MapTool;
         setTool(nextTool);
         setRedrawingFeature(false);
-        if (nextTool !== "navigate") {
+        if (isDrawingTool(nextTool)) {
           setSelectedFeature(null);
+          setSelectedGcp(null);
           setDraftGeometry(null);
           setMeasurement("");
         }
@@ -226,9 +208,17 @@ export default function ResultsViewer() {
           setDraftGeometry(null);
           return;
         }
-        if (redrawingFeature || tool !== "navigate") {
+        if (redrawingFeature || tool !== "select") {
           setRedrawingFeature(false);
-          setTool("navigate");
+          setTool("select");
+          return;
+        }
+        if (selectedFeature) {
+          setSelectedFeature(null);
+          return;
+        }
+        if (selectedGcp) {
+          setSelectedGcp(null);
           return;
         }
         if (expanded) setExpanded(false);
@@ -236,42 +226,7 @@ export default function ResultsViewer() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [draftGeometry, expanded, redrawingFeature, setSelectedFeature, tool]);
-
-  const hasDepth = availableFiles.some((file) =>
-    file.endsWith("orthomosaic.height.tif") ||
-    file.endsWith("facade_orthophoto.height.tif"),
-  );
-  const visibleAnalyses = useMemo(
-    () =>
-      analyses.filter(
-        (run) =>
-          visibleRuns.includes(run.run_id) &&
-          (run.status === "completed" || run.tiles_completed > 0),
-      ),
-    [analyses, visibleRuns],
-  );
-
-  const submitAnalysis = async () => {
-    if (!missionId) return;
-    setSubmittingAnalysis(true);
-    setError("");
-    try {
-      const created = await createAnalysis(missionId, analysisForm);
-      setAnalyses((current) => [created, ...current]);
-      setVisibleRuns((current) => [...current, created.run_id]);
-      setShowAnalysisForm(false);
-      setNotice(t("explorer.analysisQueued"));
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : t("explorer.analysisLaunchFailed"),
-      );
-    } finally {
-      setSubmittingAnalysis(false);
-    }
-  };
+  }, [draftGeometry, expanded, redrawingFeature, selectedFeature, selectedGcp, setSelectedFeature, setSelectedGcp, tool]);
 
   const showSearch = async () => {
     await featureOperations.runSearch();
@@ -283,13 +238,13 @@ export default function ResultsViewer() {
     if (redrawingFeature && selectedFeature) {
       setSelectedFeature({ ...selectedFeature, geometry });
       setRedrawingFeature(false);
-      setTool("navigate");
+      setTool("select");
       setNotice(t("explorer.geometryReady"));
       return;
     }
     setDraftGeometry(geometry);
     setMeasurement(result ?? "");
-    setTool("navigate");
+    setTool("select");
     setAnnotationName(
       result
         ? t("explorer.measurementName", { measurement: result })
@@ -330,10 +285,19 @@ export default function ResultsViewer() {
   };
 
   const selectFeature = (feature: Feature) => {
+    const nextId = String(feature.properties?.feature_id ?? feature.id ?? "");
+    const currentId = String(
+      selectedFeature?.properties?.feature_id ?? selectedFeature?.id ?? "",
+    );
+    if (nextId && nextId === currentId) {
+      setSelectedFeature(null);
+      return;
+    }
     setSelectedFeature(feature);
+    setSelectedGcp(null);
     setDraftGeometry(null);
     setRedrawingFeature(false);
-    setTool("navigate");
+    setTool("select");
   };
 
   if (!missionId || sortedMissions.length === 0) {
@@ -439,6 +403,21 @@ export default function ResultsViewer() {
                       : current.filter((id) => id !== runId),
                   ),
               }}
+              gcp={{
+                collection: gcpCollection,
+                selectedPoint: selectedGcp,
+                visible: showGcps,
+                busy: gcpBusy,
+                auditEvents: gcpAuditEvents,
+                onVisibilityChange: setShowGcps,
+                onImport: importGcps,
+                onPointSelect: selectGcp,
+                onPointUpdate: updateGcp,
+                onPrepareBundle: prepareGcpBundle,
+                onRefreshCandidates: refreshGcpCandidates,
+                onObservationOpen: (point, observation) =>
+                  setPhotoMarker({ point, observation }),
+              }}
               analysis={{
                 analyses,
                 form: analysisForm,
@@ -446,11 +425,9 @@ export default function ResultsViewer() {
                 submitting: submittingAnalysis,
                 onFormChange: setAnalysisForm,
                 onFormVisibilityChange: setShowAnalysisForm,
-                onSubmit: () => void submitAnalysis(),
-                onRetry: (runId) =>
-                  void retryAnalysis(missionId, runId).then(refreshAnalyses),
-                onCancel: (runId) =>
-                  void cancelAnalysis(missionId, runId).then(refreshAnalyses),
+                onSubmit: () => void analysis.submit(),
+                onRetry: (runId) => void analysis.retry(runId),
+                onCancel: (runId) => void analysis.cancel(runId),
               }}
               search={{
                 source: searchSource,
@@ -484,8 +461,9 @@ export default function ResultsViewer() {
               onToolChange={(nextTool) => {
                 setTool(nextTool);
                 setRedrawingFeature(false);
-                if (nextTool !== "navigate") {
+                if (isDrawingTool(nextTool)) {
                   setSelectedFeature(null);
+                  setSelectedGcp(null);
                   setDraftGeometry(null);
                   setMeasurement("");
                 }
@@ -498,17 +476,31 @@ export default function ResultsViewer() {
               rasterStyle={rasterStyles.recipe}
               showLegacy={showLegacy}
               showManual={showManual}
+              showGcps={showGcps}
+              gcpCollection={gcpCollection}
               analyses={visibleAnalyses}
               tool={tool}
               focusBounds={focusBounds}
               refreshToken={refreshToken}
+              selectedFeatureId={String(
+                selectedFeature?.properties?.feature_id ??
+                  selectedFeature?.id ??
+                  "",
+              )}
+              selectedGcpId={selectedGcp?.properties.point_id ?? ""}
               onGeometryReady={geometryReady}
               onFeatureSelect={selectFeature}
+              onGcpSelect={selectGcp}
+              onFeatureClear={() => {
+                setSelectedFeature(null);
+                setSelectedGcp(null);
+              }}
               onHint={setToolHint}
               onMetadata={rasterStyles.handleMetadata}
             />
             {draftGeometry && (
               <DraftFeatureEditor
+                geometry={draftGeometry}
                 measurement={measurement}
                 name={annotationName}
                 description={annotationDescription}
@@ -518,6 +510,7 @@ export default function ResultsViewer() {
                 onDescriptionChange={setAnnotationDescription}
                 onColorChange={setAnnotationColor}
                 onTagsChange={setAnnotationTags}
+                onGeometryChange={setDraftGeometry}
                 onClose={() => setDraftGeometry(null)}
                 onSave={() => void saveAnnotation()}
               />
@@ -531,6 +524,18 @@ export default function ResultsViewer() {
                 onRedraw={beginRedraw}
                 onSave={() => void featureOperations.saveSelected()}
                 onReview={(reviewed) => void featureOperations.reviewSelected(reviewed)}
+              />
+            )}
+            {photoMarker && (
+              <PhotoMarkerEditor
+                point={photoMarker.point}
+                observation={photoMarker.observation}
+                busy={gcpBusy}
+                onClose={() => setPhotoMarker(null)}
+                onSave={(pixelX, pixelY) =>
+                  finishPhotoObservation("marked", { x: pixelX, y: pixelY })
+                }
+                onSkip={() => finishPhotoObservation("skipped")}
               />
             )}
           </main>

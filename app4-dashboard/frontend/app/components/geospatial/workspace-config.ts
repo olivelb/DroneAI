@@ -1,6 +1,7 @@
 import type { Geometry } from "geojson";
 import {
   CircleDot,
+  Hand,
   MousePointer2,
   Pentagon,
   Route,
@@ -12,6 +13,14 @@ import type { MapTool } from "../GeospatialMap";
 
 export type ViewerLayer = "ortho" | "depth";
 
+export const geometryTool = (geometry?: Geometry): MapTool => {
+  if (geometry?.type === "Point" || geometry?.type === "MultiPoint") return "point";
+  if (geometry?.type === "LineString" || geometry?.type === "MultiLineString") {
+    return "line";
+  }
+  return "polygon";
+};
+
 export const retainKnownRunIds = (
   visibleRunIds: string[],
   knownRunIds: string[],
@@ -20,7 +29,7 @@ export const retainKnownRunIds = (
   return visibleRunIds.filter((runId) => known.has(runId));
 };
 
-export type WorkspacePanel = "layers" | "analysis" | "search" | "export";
+export type WorkspacePanel = "layers" | "gcp" | "analysis" | "search" | "export";
 
 export const DEFAULT_ANALYSIS: AnalysisCreate = {
   name: "Vehicle detection",
@@ -41,7 +50,8 @@ export const TOOL_BUTTONS: Array<{
   labelKey: MessageKey;
   icon: typeof MousePointer2;
 }> = [
-  { id: "navigate", labelKey: "toolbar.navigate", icon: MousePointer2 },
+  { id: "select", labelKey: "toolbar.select", icon: MousePointer2 },
+  { id: "navigate", labelKey: "toolbar.navigate", icon: Hand },
   { id: "point", labelKey: "toolbar.point", icon: CircleDot },
   { id: "line", labelKey: "toolbar.line", icon: Route },
   { id: "polygon", labelKey: "toolbar.polygon", icon: Pentagon },
@@ -50,7 +60,8 @@ export const TOOL_BUTTONS: Array<{
 ];
 
 export const TOOL_SHORTCUTS: Record<MapTool, string> = {
-  navigate: "V",
+  select: "V",
+  navigate: "H",
   point: "P",
   line: "L",
   polygon: "G",
