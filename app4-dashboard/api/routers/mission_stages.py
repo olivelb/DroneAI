@@ -20,6 +20,7 @@ from shared.database import (
     get_session,
 )
 from shared.inbox_outbox import enqueue_outbox
+from shared.gcp_bundle import validate_gcp_bundle
 from shared.stage_artifacts import (
     mark_stage_run_succeeded,
     release_ready_stage_runs,
@@ -67,10 +68,25 @@ def _request_key(principal: Principal, raw_key: str) -> str:
 
 
 def _stage_parameters(stage: StageId, request: StageRunCreate) -> dict[str, Any]:
-    return {
+    parameters = {
         "dag_version": STAGE_DAG_VERSION,
         **request.parameters,
     }
+    bundle = parameters.get("gcp_bundle")
+    if bundle is not None:
+        if stage != "reconstruction":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="A GCP bundle is only valid for the reconstruction stage",
+            )
+        try:
+            validate_gcp_bundle(bundle)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(error),
+            ) from error
+    return parameters
 
 
 def _artifacts_for_request(

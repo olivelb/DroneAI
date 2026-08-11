@@ -14,7 +14,7 @@ from shared.facade_selection import (
     exclude_basename_ranges,
     select_facade_images,
 )
-from shared.gcp_control import prepare_gcp_assets
+from shared.gcp_control import prepare_gcp_assets, prepare_immutable_gcp_bundle
 from shared.json_io import atomic_write_json
 from shared.pipeline_params import normalize_feature_type, normalize_matcher_type
 from pipeline_support import (
@@ -301,11 +301,19 @@ def prepare_colmap_pipeline_run(
     sparse_path = os.path.join(workspace_dir, "sparse")
     geo_data_file = os.path.join(workspace_dir, "geo_data.txt")
     dense_path = os.path.join(workspace_dir, "dense")
-    gcp_assets = (
-        {"gcp_path": None, "accuracy_path": None, "changed": False}
-        if facade_mode
-        else prepare_gcp_assets(raw_image_dir, workspace_dir)
+    stage_parameters = mission_params.get("stage_parameters")
+    stage_gcp_bundle = (
+        stage_parameters.get("gcp_bundle")
+        if isinstance(stage_parameters, dict)
+        else None
     )
+    if facade_mode:
+        gcp_assets = {"gcp_path": None, "accuracy_path": None, "changed": False}
+    elif stage_gcp_bundle is not None:
+        gcp_assets = prepare_immutable_gcp_bundle(stage_gcp_bundle, workspace_dir)
+        params["gcp_adjustment_enabled"] = True
+    else:
+        gcp_assets = prepare_gcp_assets(raw_image_dir, workspace_dir)
     raw_gcp_path = gcp_assets["gcp_path"]
     raw_gcp_accuracy_path = gcp_assets["accuracy_path"]
     gcp_path = str(raw_gcp_path) if raw_gcp_path else None
@@ -327,6 +335,7 @@ def prepare_colmap_pipeline_run(
                 "event": "gcp_assets_prepared",
                 "accuracy_file": bool(gcp_accuracy_path),
                 "changed": bool(gcp_assets["changed"]),
+                "immutable_bundle": bool(gcp_assets.get("immutable_bundle", False)),
             },
         )
 

@@ -39,22 +39,28 @@ map one Metashape dense point to one Gaussian. Dense multi-view points and
 optimized anisotropic Gaussians represent different primitives and have very
 different training-memory costs.
 
-## Villesèque reference calculation
+## Villesèque reference calculation and qualification
 
-The 2026-08-09 Villesèque product measured 32,438 x 33,582 pixels at 0.015
-m/px, approximately 245,100 m² and 1.089 billion output pixels. On a 24 GiB
-RTX 3090 the v2 calculation gives:
+The current robust Villesèque reconstruction footprint measures 209,414 m².
+At 0.015 m/px it represents approximately 930.7 million requested output
+pixels. On a 24 GiB RTX 3090 the v2 calculation gives:
 
 | Profile | Surface target | VRAM ceiling | Effective operator-bounded cap |
 |---|---:|---:|---:|
-| `normal-v2` | 4.3 M | 13.7 M | 4.3 M |
-| `high-quality-v2` | 17.1 M | 13.7 M | 12.0 M |
+| `normal-v2` | 3.7 M | 13.7 M | 3.7 M |
+| `high-quality-v2` | 14.6 M | 13.7 M | 12.0 M |
 
-The earlier accepted run reached 2,706,676 Gaussians with a 3 M cap and used
-about 7.1 GiB VRAM. A real Normal/HQ rerun must still measure peak VRAM,
-runtime, final Gaussian count and native-resolution sharpness before these v2
-profiles become production-qualified. OVHcloud remains unqualified until the
-project has a real GPU quota and the exact GPU SKU passes the same run.
+The full-scene BIGZEN qualification reached the 12 M training cap, finished
+with 10,282,571 Gaussians (10,272,114 after filtering), and used 18,290 MiB
+peak VRAM. Its 30,000-iteration training took 14,401 seconds and produced a
+32,283 x 33,543 raster at 0.015 m/px. Held-out PSNR was 24.3634 and SSIM was
+0.6524. This qualifies the HQ capacity and isolated DroneGS execution envelope
+on the RTX 3090; it does not qualify survey accuracy or eliminate visible
+low-texture smoothing. See the
+[15 mm Villesèque HQ v2 benchmark](../benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md).
+
+OVHcloud remains unqualified until the project has a real GPU quota and the
+exact GPU SKU passes the same run.
 
 A focused native allocation probe subsequently passed 12.0 M, 13.7 M and
 16.0 M capacities on BIGZEN. The documented result keeps the production
