@@ -605,6 +605,34 @@ class GaussianTrainingPhaseState:
     capacity_plan: GaussianCapacityPlan | None = None
 
 
+def _plan_scene_capacity(
+    config: GaussianOrthoConfig,
+    scene_state: GaussianSceneState,
+    *,
+    vram_bytes: tuple[int, int] | None,
+    overlap: float,
+    cell_count: int,
+) -> GaussianCapacityPlan:
+    if scene_state.point_cloud is None:
+        raise RuntimeError("Sparse point cloud is unavailable for capacity planning")
+    return plan_gaussian_capacity(
+        mode=config.capacity_mode,
+        requested_cap=config.cap_max,
+        capacity_floor=config.capacity_floor,
+        target_spacing_pixels=config.target_gaussian_spacing_pixels,
+        points=scene_state.point_cloud.points,
+        meters_per_model_unit=scene_state.colmap_to_meters,
+        requested_gsd_m=config.resolution,
+        free_vram_bytes=vram_bytes[0] if vram_bytes else None,
+        total_vram_bytes=vram_bytes[1] if vram_bytes else None,
+        cell_count=cell_count,
+        partition_overlap=overlap,
+        resident_partitioning=bool(
+            getattr(config, "resident_partitioning", False)
+        ),
+    )
+
+
 def execute_gaussian_training_phase(
     config: GaussianOrthoConfig,
     *,
@@ -631,46 +659,26 @@ def execute_gaussian_training_phase(
         cupy_module = cp
     trainer_binary_sha256 = backend.binary_sha256()
     scene_state = prepare_gaussian_scene(config)
-    if scene_state.point_cloud is None:
-        raise RuntimeError("Sparse point cloud is unavailable for capacity planning")
     detected_vram = detected_vram_bytes(cupy_module)
     overlap = float(getattr(config, "partition_overlap", 0.20))
-    preliminary_plan = plan_gaussian_capacity(
-        mode=config.capacity_mode,
-        requested_cap=config.cap_max,
-        capacity_floor=config.capacity_floor,
-        target_spacing_pixels=config.target_gaussian_spacing_pixels,
-        points=scene_state.point_cloud.points,
-        meters_per_model_unit=scene_state.colmap_to_meters,
-        requested_gsd_m=config.resolution,
-        free_vram_bytes=detected_vram[0] if detected_vram else None,
-        total_vram_bytes=detected_vram[1] if detected_vram else None,
+    preliminary_plan = _plan_scene_capacity(
+        config,
+        scene_state,
+        vram_bytes=detected_vram,
+        overlap=overlap,
         cell_count=1,
-        partition_overlap=overlap,
-        resident_partitioning=bool(
-            getattr(config, "resident_partitioning", False)
-        ),
     )
     _apply_required_geographic_partition(
         scene_state,
         config,
         required_cell_count=preliminary_plan.required_cell_count,
     )
-    capacity_plan = plan_gaussian_capacity(
-        mode=config.capacity_mode,
-        requested_cap=config.cap_max,
-        capacity_floor=config.capacity_floor,
-        target_spacing_pixels=config.target_gaussian_spacing_pixels,
-        points=scene_state.point_cloud.points,
-        meters_per_model_unit=scene_state.colmap_to_meters,
-        requested_gsd_m=config.resolution,
-        free_vram_bytes=detected_vram[0] if detected_vram else None,
-        total_vram_bytes=detected_vram[1] if detected_vram else None,
+    capacity_plan = _plan_scene_capacity(
+        config,
+        scene_state,
+        vram_bytes=detected_vram,
+        overlap=overlap,
         cell_count=len(scene_state.cells),
-        partition_overlap=overlap,
-        resident_partitioning=bool(
-            getattr(config, "resident_partitioning", False)
-        ),
     )
     if not capacity_plan.cells_sufficient:
         raise RuntimeError(

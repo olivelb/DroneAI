@@ -54,6 +54,17 @@ def _render_geometry(
     return render
 
 
+def _write_json_report(report_path: str, report: object) -> None:
+    path = Path(report_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def _write_coverage_report(
     config: GaussianOrthoConfig,
     filtering_phase: GaussianFilteringPhaseState,
@@ -80,14 +91,7 @@ def _write_coverage_report(
         enforced=config.coverage_gate_enabled,
     )
     report_path = str(Path(config.ortho_file).with_name("gaussian_coverage_report.json"))
-    path = Path(report_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    _write_json_report(report_path, report)
     _report(
         config.vol_id,
         "GAUSS",
@@ -133,14 +137,7 @@ def _write_seam_report(
     report_path = str(
         Path(config.ortho_file).with_name("gaussian_seam_report.json")
     )
-    path = Path(report_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    _write_json_report(report_path, report)
     _report(
         config.vol_id,
         "GAUSS",
