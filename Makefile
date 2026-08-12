@@ -70,6 +70,7 @@ API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/feature_audit.py \
 	app4-dashboard/api/gcp_audit.py \
 	app4-dashboard/api/gcp_workspace.py \
+	app4-dashboard/api/identity_api.py \
 	app4-dashboard/api/mission_detail.py \
 	app4-dashboard/api/mission_access.py \
 	app4-dashboard/api/mission_state.py \
@@ -78,6 +79,9 @@ API_DOMAIN_TYPED_PATHS := \
 API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
+	app4-dashboard/api/routers/identity.py \
+	app4-dashboard/api/routers/identity_credentials.py \
+	app4-dashboard/api/routers/identity_members.py \
 	app4-dashboard/api/routers/map_analyses.py \
 	app4-dashboard/api/routers/map_exports.py \
 	app4-dashboard/api/routers/map_feature_mutations.py \

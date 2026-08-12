@@ -15,8 +15,8 @@ from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready
 from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
-from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
+from .routers.identity import router as identity_router
 from .routers.maps import router as maps_router
 from .routers.missions import router as missions_router
 from .routers.operations import router as operations_router
@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
         return await call_next(request)
 
-    application.include_router(auth_router)
+    application.include_router(identity_router)
     application.include_router(missions_router)
     application.include_router(datasets_router)
     application.include_router(maps_router)

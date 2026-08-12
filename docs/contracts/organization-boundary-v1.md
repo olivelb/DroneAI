@@ -15,14 +15,22 @@ access.
 
 ## Authentication contract
 
-Each staging or production entry in `DRONEAI_API_KEYS_JSON` must contain:
+PostgreSQL is authoritative for normal members and credentials. The complete
+lifecycle, hashing and bootstrap rules are defined in
+[`identity-control-plane-v1.md`](identity-control-plane-v1.md).
+
+Each transitional staging or production bootstrap entry in
+`DRONEAI_API_KEYS_JSON` must contain:
 
 - a random key of at least 32 characters;
 - a non-empty `subject`;
 - a cumulative `viewer`, `operator` or `admin` role;
 - an explicit lower-case DNS-like `organization_id` of at most 64 characters.
 
-The signed browser session carries all three identity fields. The frontend
+Durable credentials store only a peppered digest and support organization-
+scoped creation, rotation and revocation. The signed browser session carries
+the durable member, credential and authorization-version references in addition
+to the three public identity fields. The frontend
 rejects a session response without `organization_id` instead of silently
 falling back to a global tenant. Development with authentication disabled uses
 the fixed `local-development` organization.
@@ -67,8 +75,9 @@ for attribution.
 
 ## Deliberate limits
 
-- API keys still come from a Kubernetes Secret; self-service membership,
-  hashed credentials, rotation UI and revocation records are not implemented.
+- A Kubernetes Secret may still provide a transitional bootstrap key; normal
+  members and hashed credentials are durable. Invitations, OIDC, a management
+  UI and a distinct platform-support role are not implemented.
 - PostgreSQL row-level security is not yet a second enforcement layer; the API
   query boundary is authoritative in v1.
 - Mission IDs remain globally unique in the database.

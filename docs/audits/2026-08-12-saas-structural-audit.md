@@ -23,11 +23,12 @@ dataset qualification.
 | Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
 | Integration | one test crosses a real Postgres outbox transaction, Kafka delivery/consumption and verified MinIO round trip | isolated Compose integration CI job |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
+| Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
 | Storage evolution | new organizations use versioned namespaced keys while historical keys remain readable | tenancy helper and upload recovery tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 884 non-GPU/non-integration
-Python tests, two real-service integration tests, 29 frontend unit tests and 10
+The qualified local baseline after these changes is 892 non-GPU/non-integration
+Python tests, four real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
 
@@ -35,10 +36,10 @@ sync, shellcheck and actionlint also pass.
 
 ### P1 — SaaS control plane
 
-1. **Membership and credential lifecycle.** Organization claims are explicit,
-   but provisioning still edits a Kubernetes Secret. Add durable users,
-   memberships, invitations, hashed API credentials, rotation/revocation and a
-   distinct platform-support role.
+1. **Identity federation and platform support.** Durable memberships, hashed
+   credentials and rotation/revocation are implemented. Add invitations, OIDC
+   federation, recovery flows and a distinct platform-support role without
+   widening the organization `admin` role.
 2. **Defense-in-depth tenancy.** Add PostgreSQL row-level-security policies and
    set a transaction-local organization identity. Keep application filters and
    add negative tests proving both layers reject cross-organization access.

@@ -59,6 +59,10 @@ def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
         "DRONEAI_SESSION_SECRET",
         "session-signing-secret-with-at-least-32-bytes",
     )
+    monkeypatch.setenv(
+        "DRONEAI_CREDENTIAL_PEPPER",
+        "credential-pepper-with-at-least-32-bytes",
+    )
 
     client = TestClient(api_main.app)
     response = client.post(
@@ -85,6 +89,8 @@ def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
     assert principal.subject == "operations"
     assert principal.organization_id == "acme-survey"
     assert security.authenticate_token(f"{session_token}tampered") is None
+    monkeypatch.delenv("DRONEAI_API_KEYS_JSON")
+    assert security.authenticate_token(session_token) is None
 
     response = client.delete("/auth/session")
     assert response.status_code == 200
@@ -100,6 +106,10 @@ def test_production_configuration_rejects_wildcard_and_local_secrets(
     monkeypatch.setenv(
         "DRONEAI_SESSION_SECRET",
         "session-signing-secret-with-at-least-32-bytes",
+    )
+    monkeypatch.setenv(
+        "DRONEAI_CREDENTIAL_PEPPER",
+        "credential-pepper-with-at-least-32-bytes",
     )
     monkeypatch.setenv("CORS_ORIGINS", "*")
     with pytest.raises(RuntimeError, match="CORS_ORIGINS"):
@@ -124,6 +134,21 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
     monkeypatch.delenv("DRONEAI_SESSION_SECRET", raising=False)
 
     with pytest.raises(RuntimeError, match="DRONEAI_SESSION_SECRET"):
+        security.validate_production_configuration()
+
+
+def test_production_configuration_requires_a_credential_pepper(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+    monkeypatch.setenv(
+        "DRONEAI_SESSION_SECRET",
+        "session-signing-secret-with-at-least-32-bytes",
+    )
+    monkeypatch.delenv("DRONEAI_CREDENTIAL_PEPPER", raising=False)
+
+    with pytest.raises(RuntimeError, match="DRONEAI_CREDENTIAL_PEPPER"):
         security.validate_production_configuration()
 
 

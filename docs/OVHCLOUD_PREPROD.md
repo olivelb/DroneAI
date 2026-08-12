@@ -427,8 +427,14 @@ kubectl -n drone-ai-preprod create secret generic drone-ai-storage-preprod \
 
 kubectl -n drone-ai-preprod create secret generic drone-ai-api-auth \
   --from-literal=api-keys.json='[{"key":"<RANDOM_32_PLUS_CHAR_KEY>","subject":"preprod-admin","role":"admin","organization_id":"ovh-preprod"}]' \
-  --from-literal=session-secret='<RANDOM_32_PLUS_CHAR_SESSION_SECRET>'
+  --from-literal=session-secret='<RANDOM_32_PLUS_CHAR_SESSION_SECRET>' \
+  --from-literal=credential-pepper='<DISTINCT_RANDOM_32_PLUS_CHAR_PEPPER>'
 ```
+
+After migration `0025`, bootstrap `ovh-preprod`, issue and verify at least one
+durable admin credential, then remove `api-keys.json`. Keep `session-secret` and
+`credential-pepper`; rotating the pepper intentionally invalidates every
+durable credential.
 
 The shared storage Secret is sufficient only while bounded stage Jobs remain
 disabled. Before setting `stageJobs.enabled=true`, provision the five existing

@@ -24,12 +24,24 @@ from shared.database import (
     Mission,
     MissionStageRun,
     MissionLog,
+    Organization,
+    OrganizationMember,
+    ApiCredential,
+    IdentityAuditEvent,
     OutboxEvent,
     RasterLayerStyle,
 )
 
 
 EXPECTED_CHECKS = {
+    Organization: {"ck_organizations_status"},
+    OrganizationMember: {
+        "ck_organization_members_status",
+        "ck_organization_members_role",
+        "ck_organization_members_auth_version",
+    },
+    ApiCredential: {"ck_api_credentials_status"},
+    IdentityAuditEvent: {"ck_identity_audit_action"},
     Mission: {
         "ck_missions_status",
         "ck_missions_aggregation_status",

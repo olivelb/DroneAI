@@ -151,7 +151,11 @@ jobs:
       - run: python -m pip install --require-hashes --requirement requirements/dev.txt
       - name: Upgrade, downgrade and re-upgrade schema
         run: |
+          alembic upgrade 0024
+          python scripts/ci/verify_identity_migration.py seed
           alembic upgrade head
+          python scripts/ci/verify_identity_migration.py verify
+          python -m pytest -q -m integration tests/integration/test_identity_postgres.py
           alembic downgrade base
           alembic upgrade head
       - name: Exercise PostgreSQL scheduler transaction boundary

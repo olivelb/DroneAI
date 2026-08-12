@@ -61,6 +61,19 @@ def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
     assert "fieldPath: metadata.name" in deployment
 
 
+def test_production_identity_uses_database_credentials_and_rotatable_secrets() -> None:
+    defaults = _read(CHART / "values.yaml")
+    production = _read(CHART / "values-production.example.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+
+    assert "databaseAuthEnabled: false" in defaults
+    assert "databaseAuthEnabled: true" in production
+    assert "credentialPepperSecretKey: credential-pepper" in production
+    assert "DRONEAI_DATABASE_AUTH_ENABLED" in deployment
+    assert "DRONEAI_CREDENTIAL_PEPPER" in deployment
+    assert "optional: true" in deployment
+
+
 def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
     defaults = _read(CHART / "values.yaml")
     ia_deployment = _read(CHART / "templates" / "ia-worker.yaml")

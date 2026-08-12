@@ -102,9 +102,11 @@ dashboardApi:
     origins: "https://droneai-preprod.olembo.fr"
   auth:
     disabled: false
+    databaseAuthEnabled: true
     existingSecret: drone-ai-api-auth
     secretKey: api-keys.json
     sessionSecretKey: session-secret
+    credentialPepperSecretKey: credential-pepper
 
 dashboardFrontend:
   tag: "REPLACE_GIT_SHA"
