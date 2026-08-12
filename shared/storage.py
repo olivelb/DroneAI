@@ -5,6 +5,7 @@ All services use this module instead of direct filesystem I/O for
 persistent data (datasets, mission artifacts, tiles, orthomosaics).
 """
 
+import hashlib
 import logging
 import os
 from dataclasses import dataclass
@@ -77,6 +78,8 @@ class S3Client(Protocol):
     def head_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
 
     def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
+
+    def upload_part_copy(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
 class _ObservedS3Paginator:
@@ -663,6 +666,233 @@ def get_object_info(
         "etag": str(response.get("ETag") or ""),
         "content_type": str(response.get("ContentType") or ""),
         "metadata": metadata,
+    }
+
+
+def get_object_bytes(
+    s3_key: str,
+    bucket: str | None = None,
+    *,
+    max_bytes: int = 16 * 1024 * 1024,
+) -> bytes:
+    """Read one bounded control object and reject unexpectedly large payloads."""
+
+    if max_bytes < 1:
+        raise ValueError("max_bytes must be positive")
+    stream, size, _content_type = get_object_stream(s3_key, bucket)
+    try:
+        if size > max_bytes:
+            raise ValueError(
+                f"S3 control object exceeds {max_bytes} bytes: {s3_key}"
+            )
+        payload = stream.read(max_bytes + 1)
+    finally:
+        stream.close()
+    if len(payload) != size:
+        raise OSError(
+            f"S3 object size changed while reading {s3_key}: "
+            f"read={len(payload)}, expected={size}"
+        )
+    return bytes(payload)
+
+
+def put_verified_bytes(
+    s3_key: str,
+    data: bytes,
+    bucket: str | None = None,
+) -> dict[str, int | str | bool]:
+    """Publish immutable control bytes or reuse an identical existing object."""
+
+    selected_bucket = bucket or S3_BUCKET
+    digest = hashlib.sha256(data).hexdigest()
+    existing = get_object_info(s3_key, selected_bucket)
+    if existing is not None:
+        metadata = cast(dict[str, str], existing["metadata"])
+        if (
+            int(cast(int, existing["size"])) != len(data)
+            or metadata.get("sha256") != digest
+        ):
+            raise OSError(
+                f"S3 immutable object conflict for s3://{selected_bucket}/{s3_key}"
+            )
+        return {
+            "key": s3_key,
+            "size": len(data),
+            "sha256": digest,
+            "reused": True,
+        }
+    reused = False
+    try:
+        _get_client().put_object(
+            Bucket=selected_bucket,
+            Key=s3_key,
+            Body=data,
+            ContentLength=len(data),
+            Metadata={"sha256": digest},
+            IfNoneMatch="*",
+        )
+    except ClientError as error:
+        if not _is_conditional_write_conflict(error):
+            raise
+        reused = True
+    verified = get_object_info(s3_key, selected_bucket)
+    if verified is None:
+        raise OSError(f"S3 publication disappeared: {s3_key}")
+    metadata = cast(dict[str, str], verified["metadata"])
+    if (
+        int(cast(int, verified["size"])) != len(data)
+        or metadata.get("sha256") != digest
+    ):
+        raise OSError(f"S3 publication verification failed: {s3_key}")
+    return {
+        "key": s3_key,
+        "size": len(data),
+        "sha256": digest,
+        "reused": reused,
+    }
+
+
+def copy_verified_object(
+    source_key: str,
+    target_key: str,
+    bucket: str | None = None,
+) -> dict[str, int | str | bool]:
+    """Copy one object idempotently and bind the target to its source identity."""
+
+    if source_key == target_key:
+        raise ValueError("Source and target object keys must differ")
+    selected_bucket = bucket or S3_BUCKET
+    source = get_object_info(source_key, selected_bucket)
+    if source is None:
+        raise FileNotFoundError(f"Missing S3 adoption source: {source_key}")
+    source_size = int(cast(int, source["size"]))
+    if source_size > S3_CAS_MAX_OBJECT_BYTES:
+        raise ValueError("S3 adoption source exceeds the 5 TiB object limit")
+    source_etag = str(source["etag"])
+    source_metadata = cast(dict[str, str], source["metadata"])
+    source_key_digest = hashlib.sha256(source_key.encode()).hexdigest()
+    adoption_metadata = {
+        **source_metadata,
+        "droneai-adoption-source-key-sha256": source_key_digest,
+        "droneai-adoption-source-etag": source_etag,
+    }
+
+    def matches(value: dict[str, int | str | dict[str, str]]) -> bool:
+        metadata = cast(dict[str, str], value["metadata"])
+        return (
+            int(cast(int, value["size"])) == source_size
+            and metadata.get("droneai-adoption-source-key-sha256")
+            == source_key_digest
+            and metadata.get("droneai-adoption-source-etag") == source_etag
+            and (
+                not source_metadata.get("sha256")
+                or metadata.get("sha256") == source_metadata["sha256"]
+            )
+        )
+
+    existing = get_object_info(target_key, selected_bucket)
+    if existing is not None:
+        if not matches(existing):
+            raise OSError(
+                f"S3 adoption target conflicts with its source: {target_key}"
+            )
+        return {
+            "key": target_key,
+            "size": source_size,
+            "etag": source_etag,
+            "reused": True,
+        }
+    client = _get_client()
+    if source_size == 0:
+        stream, _size, _content_type = get_object_stream(
+            source_key,
+            selected_bucket,
+        )
+        try:
+            try:
+                client.put_object(
+                    Bucket=selected_bucket,
+                    Key=target_key,
+                    Body=stream,
+                    ContentLength=0,
+                    ContentType=str(source["content_type"] or ""),
+                    Metadata=adoption_metadata,
+                    IfNoneMatch="*",
+                )
+            except ClientError as error:
+                if not _is_conditional_write_conflict(error):
+                    raise
+        finally:
+            stream.close()
+    else:
+        part_size = _multipart_part_size(source_size)
+        creation: dict[str, Any] = {
+            "Bucket": selected_bucket,
+            "Key": target_key,
+            "Metadata": adoption_metadata,
+        }
+        if source["content_type"]:
+            creation["ContentType"] = source["content_type"]
+        upload = client.create_multipart_upload(**creation)
+        upload_id = str(upload["UploadId"])
+        completed = False
+        try:
+            parts: list[dict[str, int | str]] = []
+            for part_number, start in enumerate(
+                range(0, source_size, part_size),
+                start=1,
+            ):
+                end = min(
+                    start + part_size,
+                    source_size,
+                ) - 1
+                copied = client.upload_part_copy(
+                    Bucket=selected_bucket,
+                    Key=target_key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    CopySource={
+                        "Bucket": selected_bucket,
+                        "Key": source_key,
+                    },
+                    CopySourceRange=f"bytes={start}-{end}",
+                    CopySourceIfMatch=source_etag,
+                )
+                result = copied.get("CopyPartResult") or {}
+                etag = result.get("ETag")
+                if not isinstance(etag, str) or not etag:
+                    raise OSError(
+                        f"S3 adoption copy part {part_number} has no ETag"
+                    )
+                parts.append({"ETag": etag, "PartNumber": part_number})
+            try:
+                client.complete_multipart_upload(
+                    Bucket=selected_bucket,
+                    Key=target_key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                    IfNoneMatch="*",
+                )
+                completed = True
+            except ClientError as error:
+                if not _is_conditional_write_conflict(error):
+                    raise
+        finally:
+            if not completed:
+                _abort_multipart_quietly(
+                    client,
+                    bucket=selected_bucket,
+                    key=target_key,
+                    upload_id=upload_id,
+                )
+    verified = get_object_info(target_key, selected_bucket)
+    if verified is None or not matches(verified):
+        raise OSError(f"S3 adoption copy verification failed: {target_key}")
+    return {
+        "key": target_key,
+        "size": source_size,
+        "etag": source_etag,
+        "reused": False,
     }
 
 

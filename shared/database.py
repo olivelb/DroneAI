@@ -402,6 +402,10 @@ ORGANIZATION_USAGE_ACTIONS = (
     "request_throttled",
     "retention_deleted",
     "retention_failed",
+    "legacy_adoption_started",
+    "legacy_adoption_resource",
+    "legacy_adoption_completed",
+    "legacy_adoption_failed",
 )
 
 

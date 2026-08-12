@@ -31,6 +31,11 @@ def test_legacy_resources_keep_the_v1_layout_during_migration() -> None:
     )
 
 
+def test_dataset_prefix_rejects_unsafe_object_key_components() -> None:
+    with pytest.raises(ValueError, match="safe object-key component"):
+        dataset_prefix("acme-survey", "../another-tenant")
+
+
 def test_mission_namespace_builds_only_tenant_bound_object_keys() -> None:
     namespace = MissionObjectNamespace.from_binding(
         "acme-survey",

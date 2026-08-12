@@ -1,4 +1,5 @@
 import hashlib
+import io
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -165,6 +166,211 @@ def test_recovery_storage_reads_identity_and_lists_only_exact_key(monkeypatch):
         "upload-1",
         "upload-3",
     ]
+
+
+class _AdoptionStorageClient:
+    def __init__(self):
+        self.objects: dict[str, tuple[bytes, dict[str, str], str]] = {}
+        self.copy_calls = 0
+        self.uploads: dict[str, dict[str, object]] = {}
+
+    def head_object(self, *, Bucket, Key):
+        del Bucket
+        if Key not in self.objects:
+            raise _client_error("404")
+        content, metadata, content_type = self.objects[Key]
+        return {
+            "ContentLength": len(content),
+            "ETag": f'"{hashlib.sha256(content).hexdigest()}"',
+            "ContentType": content_type,
+            "Metadata": metadata,
+        }
+
+    def get_object(self, *, Bucket, Key):
+        head = self.head_object(Bucket=Bucket, Key=Key)
+        content, _metadata, _content_type = self.objects[Key]
+        return {**head, "Body": io.BytesIO(content)}
+
+    def put_object(self, *, Bucket, Key, Body, Metadata, **_kwargs):
+        del Bucket
+        content = Body if isinstance(Body, bytes) else Body.read()
+        self.objects[Key] = (bytes(content), dict(Metadata), "")
+        return {}
+
+    def create_multipart_upload(self, *, Bucket, Key, Metadata, **kwargs):
+        del Bucket
+        upload_id = f"upload-{len(self.uploads) + 1}"
+        self.uploads[upload_id] = {
+            "key": Key,
+            "metadata": dict(Metadata),
+            "content_type": str(kwargs.get("ContentType") or ""),
+            "parts": {},
+        }
+        return {"UploadId": upload_id}
+
+    def upload_part_copy(
+        self,
+        *,
+        Bucket,
+        Key,
+        UploadId,
+        PartNumber,
+        CopySource,
+        CopySourceRange,
+        CopySourceIfMatch,
+    ):
+        del Bucket, Key
+        self.copy_calls += 1
+        content, _metadata, _content_type = self.objects[CopySource["Key"]]
+        assert CopySourceIfMatch == f'"{hashlib.sha256(content).hexdigest()}"'
+        start, end = (
+            int(value)
+            for value in CopySourceRange.removeprefix("bytes=").split("-")
+        )
+        self.uploads[UploadId]["parts"][PartNumber] = content[start : end + 1]
+        return {"CopyPartResult": {"ETag": f'"part-{PartNumber}"'}}
+
+    def complete_multipart_upload(
+        self,
+        *,
+        Bucket,
+        Key,
+        UploadId,
+        MultipartUpload,
+        IfNoneMatch,
+    ):
+        del Bucket, MultipartUpload
+        assert IfNoneMatch == "*"
+        upload = self.uploads.pop(UploadId)
+        assert upload["key"] == Key
+        content = b"".join(upload["parts"][index] for index in sorted(upload["parts"]))
+        self.objects[Key] = (
+            content,
+            upload["metadata"],
+            upload["content_type"],
+        )
+        return {}
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):
+        del Bucket, Key
+        self.uploads.pop(UploadId, None)
+        return {}
+
+
+def test_adoption_copy_is_verified_resumable_and_conflict_safe(monkeypatch):
+    client = _AdoptionStorageClient()
+    client.objects["missions/legacy/result.bin"] = (
+        b"immutable-result",
+        {"sha256": hashlib.sha256(b"immutable-result").hexdigest()},
+        "application/octet-stream",
+    )
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    first = storage.copy_verified_object(
+        "missions/legacy/result.bin",
+        "organizations/acme/missions/legacy/result.bin",
+    )
+    second = storage.copy_verified_object(
+        "missions/legacy/result.bin",
+        "organizations/acme/missions/legacy/result.bin",
+    )
+
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert client.copy_calls == 1
+
+    content, _metadata, content_type = client.objects[
+        "organizations/acme/missions/legacy/result.bin"
+    ]
+    client.objects["organizations/acme/missions/legacy/result.bin"] = (
+        content + b"tampered",
+        {},
+        content_type,
+    )
+    with pytest.raises(OSError, match="conflicts"):
+        storage.copy_verified_object(
+            "missions/legacy/result.bin",
+            "organizations/acme/missions/legacy/result.bin",
+        )
+
+
+def test_adoption_copy_scales_parts_to_the_s3_part_limit(monkeypatch):
+    client = _AdoptionStorageClient()
+    client.objects["missions/legacy/large.bin"] = (
+        b"0123456789",
+        {},
+        "application/octet-stream",
+    )
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MIN_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_PART_BYTES", 2)
+    monkeypatch.setattr(storage, "S3_CAS_MULTIPART_MAX_PARTS", 3)
+
+    storage.copy_verified_object(
+        "missions/legacy/large.bin",
+        "organizations/acme/missions/legacy/large.bin",
+    )
+
+    assert client.copy_calls == 3
+
+
+def test_control_objects_are_bounded_immutable_and_verified(monkeypatch):
+    client = _AdoptionStorageClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    first = storage.put_verified_bytes("plans/run.json", b'{"run":1}')
+    second = storage.put_verified_bytes("plans/run.json", b'{"run":1}')
+
+    assert first["reused"] is False
+    assert second["reused"] is True
+    assert storage.get_object_bytes("plans/run.json") == b'{"run":1}'
+    with pytest.raises(OSError, match="conflict"):
+        storage.put_verified_bytes("plans/run.json", b'{"run":2}')
+    with pytest.raises(ValueError, match="exceeds"):
+        storage.get_object_bytes("plans/run.json", max_bytes=2)
+
+
+class _ConcurrentAdoptionStorageClient(_AdoptionStorageClient):
+    def __init__(self):
+        super().__init__()
+        self.initial_heads = threading.Barrier(2)
+        self.lock = threading.Lock()
+
+    def head_object(self, *, Bucket, Key):
+        with self.lock:
+            exists = Key in self.objects
+        if exists:
+            return super().head_object(Bucket=Bucket, Key=Key)
+        self.initial_heads.wait(timeout=5)
+        raise _client_error("404")
+
+    def put_object(self, *, Bucket, Key, Body, Metadata, **kwargs):
+        del Bucket, kwargs
+        content = Body if isinstance(Body, bytes) else Body.read()
+        with self.lock:
+            if Key in self.objects:
+                raise _client_error("PreconditionFailed", "PutObject")
+            self.objects[Key] = (bytes(content), dict(Metadata), "")
+        return {}
+
+
+def test_concurrent_identical_control_object_publishers_converge(monkeypatch):
+    client = _ConcurrentAdoptionStorageClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda _index: storage.put_verified_bytes(
+                    "plans/concurrent.json",
+                    b'{"run":1}',
+                ),
+                range(2),
+            )
+        )
+
+    assert sorted(result["reused"] for result in results) == [False, True]
+    assert storage.get_object_bytes("plans/concurrent.json") == b'{"run":1}'
 
 
 class _CasClient:

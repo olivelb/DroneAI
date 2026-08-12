@@ -22,7 +22,7 @@ dataset qualification.
 | API lifecycle | durable outbox, upload reconciliation and stage scheduling run in a dedicated control worker | lifecycle tests, Compose config, Helm render and least-privilege RBAC |
 | Control-worker availability | protected overlays run two rolling replicas with PostgreSQL session-lock leadership and a disruption budget | real two-connection exclusion, forced-connection-loss takeover and Helm render tests |
 | Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
-| Integration | fifteen focused tests collectively cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
+| Integration | sixteen focused tests collectively cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
 | HTTP control plane | a black-box journey bootstraps an organization, uploads to MinIO, launches/cancels a mission and observes published outbox delivery | GPU-free Compose profile with migration, authenticated API and control worker |
 | SaaS policy | storage, logical stage concurrency, shared request rate and terminal-mission retention are explicit per-organization controls, separate from science | PostgreSQL policy/RLS, append-only usage ledger, scheduler/upload/middleware/retention tests and operator-only provisioning CLI |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
@@ -34,6 +34,7 @@ dataset qualification.
 | Delegated access audit | explicit admin access to another member's mission or dataset is tenant-scoped, fail-closed and durably append-only | API filtering tests, real PostgreSQL immutability and non-owner RLS denial |
 | Operational observability | API and control processes expose low-cardinality request, outbox, scheduler, reconciliation, Kafka and S3 metrics on a private pod port with explicit alert thresholds | metric boundary tests, protected Helm contracts and Prometheus rules |
 | Fault/concurrency qualification | duplicate delivery, terminated outbox claims, upload finalization races, S3 timeouts and one-revision rolling upgrades converge without duplicated durable effects | real PostgreSQL race campaign and Alembic `head-1` drill |
+| Legacy adoption | selected historical datasets and terminal missions are inventoried, copied, source-revalidated and transactionally rebound with durable append-only evidence | dry-run/idempotency/conflict tests plus real PostgreSQL/S3 Manifest v2-to-v3 adoption |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
@@ -44,8 +45,8 @@ dataset qualification.
 | GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 1014 non-GPU/non-integration
-Python tests, fifteen focused real-service integration tests (including one
+The qualified local baseline after these changes is 1030 non-GPU/non-integration
+Python tests, sixteen focused real-service integration tests (including one
 real HTTP control-plane journey), 32 frontend unit tests and 10 Playwright
 journeys. The full Python static gate, documentation links, schema sync,
 shellcheck and actionlint also pass.
@@ -99,9 +100,9 @@ deliberately separate from scientific qualification.
    `app3-processing/analysis_workflow.py` (campaign, aggregation, publication),
    `shared/storage.py` (client, CAS, multipart) and
    `app4-dashboard/api/routers/map_gcps.py` (read/write/audit routes).
-2. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
-   legacy storage into organizations and eventually make mission identifiers
-   unique within an organization rather than globally.
+2. **Mission identifier scope.** Once deployed legacy resources have been
+   inventoried and adopted, replace global mission-name uniqueness and all
+   remaining single-key lookups with `(organization_id, vol_id)`.
 
 ## Scientific qualification remains separate
 
