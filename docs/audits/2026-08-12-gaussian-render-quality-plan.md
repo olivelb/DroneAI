@@ -135,12 +135,17 @@ that the two empty cells were the right-hand corners; the worst interior cell
 was 23.0%. `GAUSSIAN_MAP_COVERAGE_V2` therefore applies the strict localized-hole
 minimum only to cells surrounded by the expected footprint. Boundary cells
 remain protected by the aggregate covered-cell and camera-cell checks. A
-raster-only BIGZEN replay from the retained model is the acceptance gate for
-this correction.
+raster-only BIGZEN replay from the retained model accepted V2: 87.0% global
+validity, 93.4% covered cells, 23.0% worst interior cell and 80.0% camera-cell
+p10. The uniquely published core is 99.986% valid and its worst cell is 99.65%.
+The replay reused the canary-approved model, completed in 60.57 seconds and
+published both 10,978 x 13,331 GeoTIFFs at 2 cm in `EPSG:32636`. Reproducible
+evidence and product hashes are recorded in
+`docs/benchmarks/aerial-gcp-hq-representative-block-2026-08-12.md`.
 
-The next gate is a raster-only replay from the retained model, followed by a
-repeat coverage check. AbsGrad A/B runs start only after the reference raster
-passes; they must not obscure this independent product-coverage defect.
+The next gate is a multi-block run exercising the seam report. Controlled
+AbsGrad A/B work may proceed on this accepted reference block, but neither it
+nor the single-block result qualifies multi-block seams or a full mission.
 
 ## Phase 3 — Densification A/B
 
