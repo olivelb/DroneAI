@@ -16,6 +16,8 @@ from shared.database import (
     Mission,
     MissionArtifact,
     MissionStageRun,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
 )
 from shared.detection_sharding import parse_detection_shard_plan_descriptor
 from shared.stage_scheduler import SchedulingLimits
@@ -69,6 +71,8 @@ def stage_sessions():
     MissionStageRun.__table__.create(engine)
     DetectionShardReceipt.__table__.create(engine)
     MissionArtifact.__table__.create(engine)
+    OrganizationSaasPolicy.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
@@ -97,12 +101,14 @@ def _add_run(
     resource_class="gpu-geometry",
     mission_params=None,
     run_parameters=None,
+    organization_id="legacy-unassigned",
 ):
     with scope() as session:
         mission = Mission(
             vol_id=vol_id,
             owner_subject=owner,
-            workspace_prefix=f"missions/{vol_id}",
+            organization_id=organization_id,
+            workspace_prefix=mission_prefix(organization_id, vol_id),
             status="pending",
             params=mission_params,
         )
@@ -214,6 +220,61 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
         assert all(run.dispatch_attempts == 1 for run in scheduled)
         assert all(run.job_name.startswith("droneai-") for run in scheduled)
         assert all(run.provenance["gpu_architecture"] == "ampere" for run in scheduled)
+
+
+def test_reservation_enforces_organization_policy_and_audits_usage(stage_sessions):
+    _add_run(
+        stage_sessions,
+        "mission-a1",
+        "member-a",
+        "1" * 32,
+        organization_id="tenant-a",
+    )
+    _add_run(
+        stage_sessions,
+        "mission-a2",
+        "member-a",
+        "2" * 32,
+        organization_id="tenant-a",
+    )
+    _add_run(
+        stage_sessions,
+        "mission-b1",
+        "member-b",
+        "3" * 32,
+        organization_id="tenant-b",
+    )
+    with stage_sessions() as session:
+        session.add(
+            OrganizationSaasPolicy(
+                organization_id="tenant-a",
+                concurrent_stage_runs_limit=1,
+                version=1,
+                created_by="platform-support",
+                updated_by="platform-support",
+            )
+        )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(
+                limits=SchedulingLimits(
+                    global_active=3,
+                    per_owner_active=3,
+                )
+            ),
+            datetime.now(UTC),
+        )
+
+    assert {item.request.organization_id for item in reserved} == {
+        "tenant-a",
+        "tenant-b",
+    }
+    with stage_sessions() as session:
+        assert session.query(OrganizationUsageEvent).filter_by(
+            action="stage_scheduled"
+        ).count() == 2
 
 
 def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sessions):

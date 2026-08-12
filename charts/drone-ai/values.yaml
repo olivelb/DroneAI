@@ -266,6 +266,12 @@ dashboardApi:
     maxFiles: "2500"
     maxFileBytes: "2147483648"
     maxBatchBytes: "53687091200"
+  saas:
+    # Organization policies are provisioned through the operator-only CLI.
+    # Protected overlays enable the shared database request token bucket.
+    organizationRequestQuotasEnabled: false
+    retentionCleanupSeconds: "900"
+    retentionFailureRetrySeconds: "3600"
   tiles:
     # auto selects PostgreSQL in staging/production and local memory in dev.
     rateLimitBackend: auto

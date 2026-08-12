@@ -16,6 +16,9 @@ PROTECTED_TABLES = {
     "organization_members",
     "api_credentials",
     "identity_audit_events",
+    "organization_saas_policies",
+    "organization_request_buckets",
+    "organization_usage_events",
     "dataset_upload_sessions",
     "dataset_upload_files",
     "datasets",
@@ -106,6 +109,16 @@ def verify() -> None:
             raise RuntimeError(
                 "tenant policies are missing for: " + ", ".join(sorted(missing))
             )
+        append_only = connection.execute(
+            text(
+                "SELECT EXISTS ("
+                "SELECT 1 FROM pg_trigger "
+                "WHERE tgname = 'trg_organization_usage_append_only' "
+                "AND NOT tgisinternal)"
+            )
+        ).scalar_one()
+        if not append_only:
+            raise RuntimeError("organization usage append-only trigger is missing")
         audience = connection.execute(
             text(
                 "SELECT audience_organization_id, audience_owner_subject "

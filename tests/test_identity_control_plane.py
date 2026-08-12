@@ -276,6 +276,10 @@ def test_production_can_run_without_static_bootstrap_keys(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_CREDENTIAL_PEPPER", PEPPER)

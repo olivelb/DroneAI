@@ -20,6 +20,8 @@ from shared.database import (
     MissionStageRun,
     Organization,
     OrganizationMember,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
     OutboxEvent,
 )
 from shared.identity import issue_credential
@@ -34,6 +36,9 @@ PROTECTED_TABLES = (
     "organization_members",
     "api_credentials",
     "identity_audit_events",
+    "organization_saas_policies",
+    "organization_request_buckets",
+    "organization_usage_events",
     "dataset_upload_sessions",
     "dataset_upload_files",
     "datasets",
@@ -150,6 +155,42 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         )
         session.add_all([first_mission, second_mission])
         session.flush()
+        session.add_all(
+            [
+                OrganizationSaasPolicy(
+                    organization_id=organization_a,
+                    storage_limit_bytes=1_000,
+                    version=1,
+                    created_by="integration",
+                    updated_by="integration",
+                ),
+                OrganizationSaasPolicy(
+                    organization_id=organization_b,
+                    storage_limit_bytes=2_000,
+                    version=1,
+                    created_by="integration",
+                    updated_by="integration",
+                ),
+                OrganizationUsageEvent(
+                    organization_id=organization_a,
+                    action="policy_updated",
+                    resource_type="organization_policy",
+                    resource_id=organization_a,
+                    actor_subject="integration",
+                    quantity=1,
+                    unit="policy_version",
+                ),
+                OrganizationUsageEvent(
+                    organization_id=organization_b,
+                    action="policy_updated",
+                    resource_type="organization_policy",
+                    resource_id=organization_b,
+                    actor_subject="integration",
+                    quantity=1,
+                    unit="policy_version",
+                ),
+            ]
+        )
         session.add_all(
             [
                 MissionStageRun(
@@ -276,6 +317,8 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             assert session.query(MissionLog).count() == 1
             assert session.query(OutboxEvent).count() == 1
             assert session.query(ApiCredential).count() == 1
+            assert session.query(OrganizationSaasPolicy).count() == 1
+            assert session.query(OrganizationUsageEvent).count() == 1
 
         with database.get_session() as session:
             assert session.query(Mission).count() == 0
@@ -357,6 +400,11 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
 
         database.reset_engine()
         database.DATABASE_URL = api_url.render_as_string(hide_password=False)
+        with pytest.raises(DBAPIError):
+            with database.get_session(organization_id=organization_a) as session:
+                usage_event = session.query(OrganizationUsageEvent).one()
+                usage_event.quantity = 999
+                session.flush()
         with pytest.raises(DBAPIError):
             with database.get_session(organization_id=organization_a) as session:
                 session.add(

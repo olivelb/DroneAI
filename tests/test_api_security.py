@@ -35,6 +35,10 @@ def _keys():
 def _enable_production_rls(monkeypatch):
     monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
 
 
 def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
@@ -170,6 +174,10 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
 def test_production_configuration_requires_rls(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
@@ -177,6 +185,26 @@ def test_production_configuration_requires_rls(monkeypatch):
     monkeypatch.delenv("DRONEAI_RLS_REQUIRED", raising=False)
 
     with pytest.raises(RuntimeError, match="DRONEAI_RLS_REQUIRED"):
+        security.validate_production_configuration()
+
+
+def test_production_configuration_requires_organization_request_quotas(
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+    monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+    monkeypatch.delenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        raising=False,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+    ):
         security.validate_production_configuration()
 
 
@@ -374,3 +402,39 @@ def test_rate_limit_identity_uses_authenticated_subject(monkeypatch):
     assert response.json() == {
         "key": "organization:legacy-unassigned:subject:operator-1"
     }
+
+
+def test_organization_request_quota_middleware_is_tenant_wide(monkeypatch):
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
+    monkeypatch.setattr(
+        security,
+        "authenticate_request",
+        lambda _request: security.Principal(
+            "operator-1",
+            "operator",
+            "tenant-a",
+        ),
+    )
+    observed = []
+
+    def deny(organization_id, actor_subject):
+        observed.append((organization_id, actor_subject))
+        return rate_limit.RequestQuotaDecision(60, 1.2)
+
+    monkeypatch.setattr(rate_limit, "_consume_organization_request", deny)
+    application = FastAPI()
+    application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
+
+    @application.get("/missions")
+    def missions():
+        return []
+
+    response = TestClient(application).get("/missions")
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "2"
+    assert response.headers["X-RateLimit-Scope"] == "organization"
+    assert observed == [("tenant-a", "operator-1")]

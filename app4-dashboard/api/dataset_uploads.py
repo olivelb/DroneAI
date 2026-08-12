@@ -24,6 +24,12 @@ from shared.database import (
     DatasetUploadSession,
     get_session,
 )
+from shared.organization_saas import (
+    StorageQuotaExceeded,
+    check_storage_reservation,
+    record_storage_release,
+    record_storage_reservation,
+)
 from shared.tenancy import dataset_prefix
 
 from .security import Principal, upload_limits
@@ -451,6 +457,23 @@ def create_upload_session(
     if storage.list_objects(f"{prefix}/"):
         raise HTTPException(status_code=409, detail="Dataset already exists")
 
+    try:
+        check_storage_reservation(
+            session,
+            organization_id=principal.organization_id,
+            requested_bytes=total_size,
+        )
+    except StorageQuotaExceeded as error:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={
+                "message": "Organization storage quota exceeded",
+                "current_bytes": error.current_bytes,
+                "requested_bytes": error.requested_bytes,
+                "limit_bytes": error.limit_bytes,
+            },
+        ) from error
+
     part_size = configured_part_size(max(item.size for item in request.files))
     record = DatasetUploadSession(
         dataset_name=safe_name,
@@ -476,6 +499,14 @@ def create_upload_session(
             )
         )
     try:
+        session.flush()
+        record_storage_reservation(
+            session,
+            organization_id=principal.organization_id,
+            upload_session_id=str(record.session_id),
+            requested_bytes=total_size,
+            actor_subject=principal.subject,
+        )
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -1041,6 +1072,15 @@ def abort_upload_session(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Upload cleanup incomplete: {error}",
         ) from error
+    record_storage_release(
+        session,
+        organization_id=str(record.organization_id),
+        resource_type="dataset_upload",
+        resource_id=str(record.session_id),
+        released_bytes=int(record.total_bytes),
+        actor_subject=principal.subject,
+        idempotency_key=f"storage-released:upload:{record.session_id}",
+    )
     session.commit()
     return {"session_id": str(record.session_id), "status": "aborted"}
 
@@ -1144,6 +1184,17 @@ def cleanup_expired_uploads() -> int:
         for record in records:
             try:
                 _abort_record(record)
+                record_storage_release(
+                    session,
+                    organization_id=str(record.organization_id),
+                    resource_type="dataset_upload",
+                    resource_id=str(record.session_id),
+                    released_bytes=int(record.total_bytes),
+                    actor_subject="system:upload-cleanup",
+                    idempotency_key=(
+                        f"storage-released:upload:{record.session_id}"
+                    ),
+                )
                 cleaned += 1
             except RuntimeError:
                 logger.exception(

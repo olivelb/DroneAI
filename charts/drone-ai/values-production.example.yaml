@@ -42,6 +42,8 @@ dashboardApi:
   environment: production
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
+  saas:
+    organizationRequestQuotasEnabled: true
   controlWorker:
     replicaCount: 2
     leaderElection:

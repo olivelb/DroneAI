@@ -117,6 +117,22 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
         assert dataset["path"].startswith(
             f"organizations/{ORGANIZATION_ID}/datasets/"
         )
+        capacity = _api(
+            "GET",
+            "/operations/organization/capacity",
+        ).json()
+        assert capacity["organization_id"] == ORGANIZATION_ID
+        assert capacity["policy"]["configured"] is False
+        assert capacity["usage"]["storage_bytes"] == len(content)
+        usage_events = _api(
+            "GET",
+            "/operations/organization/usage-events",
+        ).json()
+        assert any(
+            item["action"] == "storage_reserved"
+            and item["quantity"] == len(content)
+            for item in usage_events
+        )
 
         started = _api(
             "POST",

@@ -12,6 +12,7 @@ from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.inbox_outbox import run_outbox_dispatcher
 
 from . import dataset_uploads
+from .retention import run_retention_cleanup
 from .messaging import publish_outbox_event
 from .stage_orchestrator import start_stage_orchestrator
 
@@ -68,9 +69,16 @@ def start_control_loops(
         daemon=True,
         name="dataset-upload-reconciler",
     )
+    retention_thread = threading.Thread(
+        target=run_retention_cleanup,
+        args=(event,),
+        daemon=True,
+        name="organization-retention",
+    )
     outbox_thread.start()
     upload_cleanup_thread.start()
-    threads = [outbox_thread, upload_cleanup_thread]
+    retention_thread.start()
+    threads = [outbox_thread, upload_cleanup_thread, retention_thread]
     stage_thread = start_stage_orchestrator(event)
     if stage_thread is not None:
         threads.append(stage_thread)

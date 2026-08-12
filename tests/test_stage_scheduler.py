@@ -82,6 +82,33 @@ def test_scheduler_enforces_active_owner_and_resource_limits():
     assert [item.run_id for item in selected] == ["cpu-ready"]
 
 
+def test_scheduler_applies_commercial_owner_override_below_platform_limit():
+    active = [
+        StageAllocation(
+            run_id="active-a",
+            mission_id=10,
+            owner_subject="tenant-a",
+            stage="reconstruction",
+            resource_class="gpu-geometry",
+        )
+    ]
+
+    selected = select_stage_candidates(
+        [
+            _candidate("tenant-a-blocked", "tenant-a", 11),
+            _candidate("tenant-b-ready", "tenant-b", 12),
+        ],
+        active,
+        SchedulingLimits(
+            global_active=3,
+            per_owner_active=3,
+            owner_active={"tenant-a": 1},
+        ),
+    )
+
+    assert [item.run_id for item in selected] == ["tenant-b-ready"]
+
+
 def test_resource_head_of_line_does_not_block_same_owner_cpu_work():
     active = [
         StageAllocation(

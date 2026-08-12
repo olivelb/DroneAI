@@ -183,6 +183,19 @@ def validate_production_configuration() -> None:
         )
     if os.getenv("DRONEAI_RLS_REQUIRED", "").strip().lower() != "true":
         raise RuntimeError("DRONEAI_RLS_REQUIRED must be enabled in production")
+    if (
+        os.getenv(
+            "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+            "",
+        )
+        .strip()
+        .lower()
+        != "true"
+    ):
+        raise RuntimeError(
+            "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED must be enabled "
+            "in production"
+        )
     configured_keys = _configured_keys()
     if any(
         principal.organization_id == LEGACY_ORGANIZATION_ID

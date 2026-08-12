@@ -19,6 +19,7 @@ from sqlalchemy import and_, or_
 
 from shared import storage
 from shared.database import Dataset, Mission, get_session
+from shared.organization_saas import record_storage_release
 
 from .. import dataset_uploads
 from ..dataset_access import (
@@ -331,6 +332,16 @@ def delete_dataset(
         mutable_dataset = cast(Any, dataset)
         mutable_dataset.status = "deleted"
         mutable_dataset.deleted_at = datetime.now(UTC)
+        record_storage_release(
+            session,
+            organization_id=str(dataset.organization_id),
+            resource_type="dataset",
+            resource_id=str(dataset.dataset_id),
+            released_bytes=int(dataset.total_bytes),
+            actor_subject=principal.subject,
+            idempotency_key=f"storage-released:dataset:{dataset.dataset_id}",
+            details={"objects_deleted": deleted},
+        )
     return {
         "status": "success",
         "message": f"Dataset '{safe_name}' deleted.",
