@@ -158,6 +158,27 @@ def test_dataset_uploads_separate_contract_storage_and_recovery_boundaries():
     assert "from . import dataset_uploads" not in recovery_source
 
 
+def test_pipeline_parameter_contract_separates_catalogue_from_merge_rules():
+    facade = "shared/pipeline_params.py"
+    catalogue = "shared/pipeline_param_catalog.py"
+    normalization = "shared/pipeline_param_normalization.py"
+    facade_source = _source(facade)
+    catalogue_source = _source(catalogue)
+    normalization_source = _source(normalization)
+
+    assert _line_count(facade) < 30
+    assert _line_count(normalization) < 100
+    assert "pipeline_param_catalog" in facade_source
+    assert "pipeline_param_normalization" in facade_source
+    assert "PIPELINE_DEFAULTS" in catalogue_source
+    assert "PARAMETER_METADATA" in catalogue_source
+    assert "def " not in catalogue_source
+    assert "PARAMETER_METADATA" not in normalization_source
+    assert "merge_pipeline_params" in normalization_source
+    assert "from shared.pipeline_params" not in catalogue_source
+    assert "from shared.pipeline_params" not in normalization_source
+
+
 def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
     composition = "app2-ia/main.py"
     sam_backend = "app2-ia/sam3_backend.py"
