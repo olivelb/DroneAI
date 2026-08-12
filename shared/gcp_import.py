@@ -102,6 +102,30 @@ def _positive(value: Any, fallback: float, label: str) -> float:
     return parsed
 
 
+def _observation(
+    image_name: str,
+    raw_pixel_x: Any,
+    raw_pixel_y: Any,
+    *,
+    context: str,
+) -> ImportedGcpObservation:
+    """Parse imported image coordinates without trusting float edge cases."""
+
+    normalized_image_name = str(image_name or "").strip()
+    if not normalized_image_name:
+        raise ValueError(f"{context}: image name is missing")
+    try:
+        pixel_x = float(raw_pixel_x)
+        pixel_y = float(raw_pixel_y)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{context}: invalid image pixel coordinate") from error
+    if not math.isfinite(pixel_x) or not math.isfinite(pixel_y):
+        raise ValueError(f"{context}: image pixel coordinates must be finite")
+    if pixel_x < 0 or pixel_y < 0:
+        raise ValueError(f"{context}: image pixel coordinates must be non-negative")
+    return ImportedGcpObservation(normalized_image_name, pixel_x, pixel_y)
+
+
 def _first(row: dict[str, Any], aliases: tuple[str, ...]) -> Any:
     normalized = {str(key).strip().lower(): value for key, value in row.items()}
     for alias in aliases:
@@ -235,7 +259,12 @@ def _parse_odm(
             raise ValueError(f"GCP {point.external_id}: inconsistent ODM coordinates")
         points.setdefault(point.external_id, point)
         observations.setdefault(point.external_id, []).append(
-            ImportedGcpObservation(fields[5], float(fields[3]), float(fields[4]))
+            _observation(
+                fields[5],
+                fields[3],
+                fields[4],
+                context=f"line {line_number} GCP {point.external_id}",
+            )
         )
     merged = [replace(point, observations=tuple(observations[point_id])) for point_id, point in points.items()]
     return ImportedGcpSet("odm-gcp-list", canonical, _unique_points(merged))
@@ -348,10 +377,14 @@ def _parse_metashape_xml(
             if not camera_id or "x" not in location.attrib or "y" not in location.attrib:
                 continue
             raw_observations.setdefault(marker_id, []).append(
-                ImportedGcpObservation(
+                _observation(
                     cameras.get(camera_id, camera_id),
-                    float(location.attrib["x"]),
-                    float(location.attrib["y"]),
+                    location.attrib["x"],
+                    location.attrib["y"],
+                    context=(
+                        "Metashape marker "
+                        f"{raw_points[marker_id].external_id} camera {camera_id}"
+                    ),
                 )
             )
     points = [

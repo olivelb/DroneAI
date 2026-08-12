@@ -205,6 +205,16 @@ from the original object; non-finite and out-of-frame annotations are rejected.
 Point and observation mutations carry a version and reject concurrent
 overwrites.
 
+ODM and Metashape imports apply the same trust boundary. Their projection
+coordinates must be finite and non-negative. When a published camera index
+provides the original image dimensions, the import checks the pixel bounds
+before accepting the observation as marked. Without those dimensions, the
+imported pixel is retained as a `candidate` seed and requires explicit operator
+confirmation in the photo editor. Bundle materialisation independently repeats
+the finite and bounds checks for every marked observation and refuses historical
+or malformed marks that have no validated image dimensions or available source
+image.
+
 Imports, coordinate/role edits, photo marks/skips, candidate refreshes and
 bundle materialisations are recorded in `gcp_audit_events` in the same database
 transaction as their mutation. The dashboard exposes human-readable event
@@ -220,20 +230,22 @@ residuals. A set without checkpoints is labelled
 `adjustment-only-unverified`, not independently accurate.
 
 `POST /maps/{vol_id}/gcps/{set_id}/bundle` does not launch computation. It
-returns schema-v1 descriptors for an ODM-compatible `gcp_list.txt` and an
-accuracy/role CSV, both published under content-addressed S3 keys. Supply that
-exact response as `parameters.gcp_bundle` when creating the new reconstruction
-stage run:
+returns descriptors for an ODM-compatible `gcp_list.txt` and an accuracy/role
+CSV, both published under content-addressed S3 keys. Tenant missions use schema
+v2 and organization-scoped CAS; historical `legacy-unassigned` missions retain
+schema v1 global CAS. Supply that exact response as `parameters.gcp_bundle`
+when creating the new reconstruction stage run:
 
 ```json
 {
   "parameters": {
     "gcp_bundle": {
-      "schema_version": 1,
+      "schema_version": 2,
+      "organization_id": "acme-survey",
       "set_id": "<set UUID>",
       "source_sha256": "<source SHA-256>",
-      "gcp_list": {"key": "blobs/sha256/ab/<SHA-256>", "size": 123, "sha256": "<SHA-256>"},
-      "accuracy_csv": {"key": "blobs/sha256/cd/<SHA-256>", "size": 456, "sha256": "<SHA-256>"},
+      "gcp_list": {"key": "organizations/acme-survey/blobs/sha256/ab/<SHA-256>", "size": 123, "sha256": "<SHA-256>"},
+      "accuracy_csv": {"key": "organizations/acme-survey/blobs/sha256/cd/<SHA-256>", "size": 456, "sha256": "<SHA-256>"},
       "quality": {
         "adjustment_points": 6,
         "checkpoint_points": 3,

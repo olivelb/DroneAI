@@ -27,6 +27,7 @@ from ..gcp_workspace import (
     gcp_route_session,
     load_mission_image_positions,
     load_camera_projection_index,
+    imported_observation_status,
     materialize_gcp_bundle,
     observation_json,
     persist_imported_set,
@@ -305,33 +306,39 @@ async def import_ground_control(
             positioned_by_name = {item.image_name: item for item in positions.images} if positions else {}
             cameras_by_name = {item.image_name: item for item in camera_index.cameras} if camera_index else {}
             observation_count = 0
+            imported_marked_count = 0
+            imported_unverified_count = 0
             for imported_point in imported.points:
                 point = stored_points[imported_point.external_id]
                 observation_specs: list[tuple[CandidateSpec, str, float | None, float | None]]
                 if imported_point.observations:
-                    observation_specs = [
-                        (
+                    observation_specs = []
+                    for item in imported_point.observations:
+                        camera = cameras_by_name.get(item.image_name)
+                        width = camera.width if camera else None
+                        height = camera.height if camera else None
+                        imported_status = imported_observation_status(
+                            item.pixel_x,
+                            item.pixel_y,
+                            width,
+                            height,
+                        )
+                        if imported_status == "marked":
+                            imported_marked_count += 1
+                        else:
+                            imported_unverified_count += 1
+                        observation_specs.append((
                             CandidateSpec(
                                 image_name=item.image_name,
                                 method="imported-observation",
-                                image_width_px=(
-                                    cameras_by_name[item.image_name].width
-                                    if item.image_name in cameras_by_name
-                                    else None
-                                ),
-                                image_height_px=(
-                                    cameras_by_name[item.image_name].height
-                                    if item.image_name in cameras_by_name
-                                    else None
-                                ),
+                                image_width_px=width,
+                                image_height_px=height,
                                 positioned=positioned_by_name.get(item.image_name),
                             ),
-                            "marked",
+                            imported_status,
                             item.pixel_x,
                             item.pixel_y,
-                        )
-                        for item in imported_point.observations
-                    ]
+                        ))
                 elif positions or camera_index:
                     observation_specs = [
                         (candidate, "candidate", None, None)
@@ -379,11 +386,27 @@ async def import_ground_control(
                     "source_sha256": source_checksum(payload),
                     "point_count": len(stored_points),
                     "observation_count": observation_count,
+                    "imported_marked_count": imported_marked_count,
+                    "imported_unverified_count": imported_unverified_count,
                 },
             )
             typed_session.flush()
         except IntegrityError as error:
             raise HTTPException(status_code=409, detail="GCP import conflicts with stored data") from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if imported_unverified_count:
+            import_message = (
+                f"{imported_unverified_count} imported observations "
+                "require operator pixel confirmation"
+            )
+        elif positions or camera_index:
+            import_message = None
+        else:
+            import_message = (
+                "Image positions are not published yet; candidates can be "
+                "refreshed after preflight"
+            )
         return {
             "gcp_set": set_json(typed_session, gcp_set, include_points=True),
             "candidate_generation": {
@@ -400,11 +423,9 @@ async def import_ground_control(
                 "radius_m": candidate_radius_m,
                 "max_candidates_per_point": max_candidates,
                 "observation_count": observation_count,
-                "message": (
-                    None
-                    if positions or camera_index
-                    else "Image positions are not published yet; candidates can be refreshed after preflight"
-                ),
+                "imported_marked_count": imported_marked_count,
+                "imported_unverified_count": imported_unverified_count,
+                "message": import_message,
             },
         }
 
