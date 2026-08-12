@@ -258,6 +258,15 @@ dashboardApi:
     # Transitional local/development registry. Protected deployments should
     # disable it after issuing the first durable administrator credential.
     allowStaticBootstrap: true
+    # auto selects PostgreSQL in staging/production and local memory in dev.
+    # The peer bucket limits rotating identifiers; the credential bucket
+    # limits targeted attempts against one public credential UUID.
+    rateLimitBackend: auto
+    peerRateLimitPerMinute: "600"
+    peerRateLimitBurst: "120"
+    credentialRateLimitPerMinute: "60"
+    credentialRateLimitBurst: "10"
+    rateLimitMaxClients: "100000"
     existingSecret: ""
     secretKey: api-keys.json
     sessionSecretKey: session-secret

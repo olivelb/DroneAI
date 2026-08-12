@@ -59,6 +59,17 @@ exposing credential material. After a durable admin credential is tested,
 remove `api-keys.json` and restore the flag to `false`. A production process
 fails at startup if a static registry is still present while the flag is off.
 
+All `/auth` and `/platform` identity requests cross a pre-authentication token
+bucket before their authentication dependency can query PostgreSQL. Protected
+deployments require the shared database backend. One higher-capacity bucket is
+keyed by the direct network peer to bound rotating credential identifiers; a
+second bucket is keyed by the parsed public tenant/platform/capability UUID to
+bound targeted attempts. The limiter never authenticates or persists a token:
+only SHA-256 hashes of scope-prefixed peer/public-ID keys reach the shared
+bucket table. Anonymous JSON credentials are limited immediately before their
+first database lookup. Backend failure returns `503`; exhaustion returns `429`
+with `Retry-After`.
+
 ## Authorization invariants
 
 - Member and credential queries always include `organization_id`.

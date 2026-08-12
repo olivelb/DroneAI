@@ -131,7 +131,54 @@ def build_tile_rate_limiter() -> RateLimiter:
     )
 
 
+def build_identity_rate_limiter(*, scope: str) -> RateLimiter:
+    """Build one pre-authentication limiter without authenticating a request."""
+
+    if scope not in {"peer", "credential"}:
+        raise ValueError("identity rate-limit scope must be peer or credential")
+    backend = os.getenv(
+        "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND",
+        "",
+    ).strip().lower()
+    if not backend or backend == "auto":
+        backend = "database" if is_production() else "local"
+    if is_production() and backend == "local":
+        raise RuntimeError(
+            "Production requires database-backed identity rate limiting"
+        )
+    prefix = f"DRONEAI_IDENTITY_{scope.upper()}_RATE_LIMIT"
+    default_rate = "600" if scope == "peer" else "60"
+    default_burst = "120" if scope == "peer" else "10"
+    requests_per_minute = int(
+        os.getenv(f"{prefix}_PER_MINUTE", default_rate)
+    )
+    burst = int(os.getenv(f"{prefix}_BURST", default_burst))
+    max_keys = int(
+        os.getenv("DRONEAI_IDENTITY_RATE_LIMIT_MAX_CLIENTS", "100000")
+    )
+    if backend == "database":
+        return DatabaseTokenBucketRateLimiter(
+            session_scope=get_session,
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    if backend == "local":
+        return TokenBucketRateLimiter(
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    raise RuntimeError(
+        "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND must be 'database' or 'local'"
+    )
+
+
 tile_rate_limiter = build_tile_rate_limiter()
+identity_peer_rate_limiter = build_identity_rate_limiter(scope="peer")
+identity_credential_rate_limiter = build_identity_rate_limiter(
+    scope="credential"
+)
 
 
 def static_bootstrap_allowed() -> bool:

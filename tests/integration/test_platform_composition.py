@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import importlib
 import time
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -12,9 +13,41 @@ from confluent_kafka import Consumer
 
 from shared import storage
 from shared.config import KAFKA_BROKER, TOPIC_STATUS
-from shared.database import OutboxEvent, get_session
+from shared.database import APIRateLimitBucket, OutboxEvent, get_session
 from shared.event_contracts import make_event, validate_event
 from shared.inbox_outbox import dispatch_outbox_batch, enqueue_outbox
+from shared.rate_limiting import DatabaseTokenBucketRateLimiter
+
+
+@pytest.mark.integration
+def test_identity_rate_limit_is_shared_across_real_api_replicas() -> None:
+    """Prove PostgreSQL serializes one identity bucket across API replicas."""
+
+    identity = f"identity-integration-{uuid4().hex}"
+    key_hash = DatabaseTokenBucketRateLimiter._key_hash(identity)
+    now = datetime(2026, 8, 12, tzinfo=UTC)
+    replica_a = DatabaseTokenBucketRateLimiter(
+        session_scope=get_session,
+        requests_per_minute=2,
+        burst=2,
+        clock=lambda: now,
+    )
+    replica_b = DatabaseTokenBucketRateLimiter(
+        session_scope=get_session,
+        requests_per_minute=2,
+        burst=2,
+        clock=lambda: now,
+    )
+
+    try:
+        assert replica_a.consume(identity) is None
+        assert replica_b.consume(identity) is None
+        assert replica_a.consume(identity) == 30.0
+    finally:
+        with get_session() as session:
+            session.query(APIRateLimitBucket).filter(
+                APIRateLimitBucket.key_hash == key_hash
+            ).delete()
 
 
 @pytest.mark.integration
