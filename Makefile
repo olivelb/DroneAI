@@ -76,6 +76,9 @@ API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/access_audit.py \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_access.py \
+	app4-dashboard/api/dataset_upload_contracts.py \
+	app4-dashboard/api/dataset_upload_recovery.py \
+	app4-dashboard/api/dataset_upload_storage.py \
 	app4-dashboard/api/dataset_uploads.py \
 	app4-dashboard/api/feature_audit.py \
 	app4-dashboard/api/gcp_audit.py \

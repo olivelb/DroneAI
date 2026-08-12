@@ -134,6 +134,30 @@ def test_processing_worker_delegates_long_running_workflows():
     assert all(len(call.args) == 3 for call in write_calls)
 
 
+def test_dataset_uploads_separate_contract_storage_and_recovery_boundaries():
+    commands = "app4-dashboard/api/dataset_uploads.py"
+    contracts = "app4-dashboard/api/dataset_upload_contracts.py"
+    storage_boundary = "app4-dashboard/api/dataset_upload_storage.py"
+    recovery = "app4-dashboard/api/dataset_upload_recovery.py"
+    command_source = _source(commands)
+    contract_source = _source(contracts)
+    storage_source = _source(storage_boundary)
+    recovery_source = _source(recovery)
+
+    assert _line_count(commands) < 550
+    assert _line_count(contracts) < 400
+    assert _line_count(storage_boundary) < 450
+    assert _line_count(recovery) < 200
+    assert "storage_transitions.initialize_pending_files(" in command_source
+    assert "storage_transitions.complete_file_from_intent(" in command_source
+    assert "recovery.reconcile_pending_uploads(" in command_source
+    assert "recovery.cleanup_expired_uploads(" in command_source
+    assert "from shared import storage" not in contract_source
+    assert "get_session" not in storage_source
+    assert "from . import dataset_uploads" not in storage_source
+    assert "from . import dataset_uploads" not in recovery_source
+
+
 def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
     composition = "app2-ia/main.py"
     sam_backend = "app2-ia/sam3_backend.py"
