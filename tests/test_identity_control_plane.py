@@ -13,6 +13,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from shared.database import (
+    AccessAuditEvent,
     ApiCredential,
     IdentityCapability,
     IdentityAuditEvent,
@@ -24,6 +25,9 @@ from shared.identity import issue_credential
 security = importlib.import_module("app4-dashboard.api.security")
 identity_routes = importlib.import_module("app4-dashboard.api.routers.identity")
 member_routes = importlib.import_module("app4-dashboard.api.routers.identity_members")
+access_audit_routes = importlib.import_module(
+    "app4-dashboard.api.routers.identity_access_audit"
+)
 credential_routes = importlib.import_module(
     "app4-dashboard.api.routers.identity_credentials"
 )
@@ -49,6 +53,7 @@ def identity_platform(monkeypatch):
         ApiCredential.__table__,
         IdentityAuditEvent.__table__,
         IdentityCapability.__table__,
+        AccessAuditEvent.__table__,
     ):
         table.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -67,6 +72,7 @@ def identity_platform(monkeypatch):
 
     monkeypatch.setattr(security, "get_session", session_scope)
     monkeypatch.setattr(member_routes, "get_session", session_scope)
+    monkeypatch.setattr(access_audit_routes, "get_session", session_scope)
     monkeypatch.setattr(credential_routes, "get_session", session_scope)
     monkeypatch.setattr(capability_routes, "get_session", session_scope)
     monkeypatch.setenv("DRONEAI_ENV", "development")
@@ -160,6 +166,51 @@ def test_bootstrap_issues_only_one_time_hashed_credentials_and_rotates_sessions(
     }
     assert token not in audit.text
     assert replacement not in audit.text
+
+
+def test_admin_can_filter_durable_cross_member_access_events(identity_platform):
+    client, session_scope = identity_platform
+    _bootstrap(client)
+    with session_scope() as session:
+        session.add_all(
+            [
+                AccessAuditEvent(
+                    organization_id="acme-survey",
+                    actor_subject="bootstrap-admin",
+                    actor_role="admin",
+                    actor_realm="tenant",
+                    action="detail",
+                    target_owner_subject="field-operator",
+                    resource_type="mission",
+                    resource_id="flight-42",
+                    outcome="authorized",
+                ),
+                AccessAuditEvent(
+                    organization_id="acme-survey",
+                    actor_subject="bootstrap-admin",
+                    actor_role="admin",
+                    actor_realm="tenant",
+                    action="list",
+                    target_owner_subject="other-operator",
+                    resource_type="dataset",
+                    outcome="authorized",
+                ),
+            ]
+        )
+
+    response = client.get(
+        "/auth/access-audit-events",
+        headers=_admin_headers(),
+        params={
+            "owner_subject": "field-operator",
+            "resource_type": "mission",
+        },
+    )
+
+    assert response.status_code == 200
+    assert [event["resource_id"] for event in response.json()] == ["flight-42"]
+    assert response.json()[0]["target_owner_subject"] == "field-operator"
+    assert response.json()[0]["outcome"] == "authorized"
 
 
 def test_member_permissions_suspension_and_last_admin_invariant(identity_platform):

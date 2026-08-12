@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from shared.database import Mission
 from shared.tenancy import LEGACY_ORGANIZATION_ID
 
+from .access_audit import record_authorized_cross_member_access
 from .security import Principal
 
 audit_logger = logging.getLogger("droneai.audit.mission_access")
@@ -33,8 +34,9 @@ def resolve_owner_subject(
     *,
     action: str,
     vol_id: str | None = None,
+    audit_session: Any | None = None,
 ) -> str:
-    """Resolve one tenant boundary; cross-owner admin access must be explicit."""
+    """Resolve mission ownership inside one tenant with explicit delegation."""
 
     owner = (requested_owner or principal.subject).strip()
     if not owner:
@@ -48,8 +50,20 @@ def resolve_owner_subject(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Mission not found",
             )
+        if audit_session is None:
+            raise RuntimeError(
+                "Cross-member mission access requires a durable audit session"
+            )
+        record_authorized_cross_member_access(
+            audit_session,
+            principal,
+            action=action,
+            target_owner_subject=owner,
+            resource_type="mission",
+            resource_id=vol_id,
+        )
         audit_logger.warning(
-            "admin_cross_tenant_mission_access principal=%s owner=%s action=%s vol_id=%s",
+            "admin_cross_member_mission_access principal=%s owner=%s action=%s vol_id=%s",
             principal.subject,
             owner,
             action,
@@ -71,6 +85,7 @@ def mission_query(
         requested_owner,
         action=action,
         vol_id=vol_id,
+        audit_session=session,
     )
     organization_id = getattr(
         principal,

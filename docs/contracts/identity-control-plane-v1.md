@@ -70,6 +70,17 @@ bucket table. Anonymous JSON credentials are limited immediately before their
 first database lookup. Backend failure returns `503`; exhaustion returns `429`
 with `Retry-After`.
 
+Explicit organization-admin delegation to another member's mission or dataset
+is written to `access_audit_events` before the data access proceeds. Each event
+records the tenant, actor subject/role/realm and public member/credential IDs,
+the requested action, target owner and resource identifier. It never records a
+credential token. PostgreSQL RLS keeps the ledger tenant-scoped, an append-only
+trigger rejects updates and deletes even through an owner connection, and a
+failed insert blocks the delegated request. Organization admins can inspect and
+filter the evidence through `GET /auth/access-audit-events`. Platform support
+still has metadata-only access and cannot read or write this tenant data-plane
+ledger.
+
 ## Authorization invariants
 
 - Member and credential queries always include `organization_id`.

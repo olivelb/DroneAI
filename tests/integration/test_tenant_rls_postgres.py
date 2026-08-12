@@ -14,6 +14,7 @@ from sqlalchemy.orm.exc import NoResultFound
 
 import shared.database as database
 from shared.database import (
+    AccessAuditEvent,
     ApiCredential,
     IdentityCapability,
     Mission,
@@ -29,6 +30,7 @@ from shared.database import (
     PlatformCredential,
     PlatformMember,
 )
+from shared.access_audit import append_access_audit_event
 from shared.identity import append_audit_event, issue_credential
 from shared.identity_capabilities import (
     authenticate_capability,
@@ -51,6 +53,7 @@ PROTECTED_TABLES = (
     "organization_members",
     "api_credentials",
     "identity_audit_events",
+    "access_audit_events",
     "identity_capabilities",
     "organization_saas_policies",
     "organization_request_buckets",
@@ -213,6 +216,32 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         )
         session.add_all([first_mission, second_mission, historical_mission])
         session.flush()
+        append_access_audit_event(
+            session,
+            organization_id=organization_a,
+            actor_subject=member_a.subject,
+            actor_role="admin",
+            actor_realm="tenant",
+            actor_member_id=member_a.id,
+            actor_credential_id=credential_a,
+            action="detail",
+            target_owner_subject=f"other-member-a-{suffix}",
+            resource_type="mission",
+            resource_id=mission_a,
+        )
+        append_access_audit_event(
+            session,
+            organization_id=organization_b,
+            actor_subject=member_b.subject,
+            actor_role="admin",
+            actor_realm="tenant",
+            actor_member_id=member_b.id,
+            actor_credential_id=credential_b,
+            action="list",
+            target_owner_subject=f"other-member-b-{suffix}",
+            resource_type="dataset",
+            resource_id=None,
+        )
         session.add_all(
             [
                 OrganizationSaasPolicy(
@@ -377,6 +406,7 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             assert session.query(ApiCredential).count() == 1
             assert session.query(OrganizationSaasPolicy).count() == 1
             assert session.query(OrganizationUsageEvent).count() == 1
+            assert session.query(AccessAuditEvent).count() == 1
 
         with database.get_session() as session:
             assert session.query(Mission).count() == 0
@@ -411,6 +441,7 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             assert session.query(ApiCredential).count() == 0
             assert session.query(OrganizationSaasPolicy).count() == 0
             assert session.query(OrganizationUsageEvent).count() == 0
+            assert session.query(AccessAuditEvent).count() == 0
             assert session.query(OutboxEvent).count() == 0
             target = session.get(Organization, organization_b)
             assert target is not None

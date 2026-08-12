@@ -8,7 +8,7 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from shared.database import Mission
+from shared.database import AccessAuditEvent, Mission
 
 mission_access = importlib.import_module("app4-dashboard.api.mission_access")
 mission_state = importlib.import_module("app4-dashboard.api.mission_state")
@@ -19,6 +19,7 @@ realtime = importlib.import_module("app4-dashboard.api.realtime")
 def mission_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Mission.__table__.create(engine)
+    AccessAuditEvent.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
@@ -51,7 +52,7 @@ def test_owner_scoped_lookup_does_not_disclose_another_subject(mission_sessions)
     assert error.value.status_code == 404
 
 
-def test_admin_cross_tenant_scope_must_be_explicit_and_is_audited(
+def test_admin_cross_member_scope_must_be_explicit_and_is_audited(
     mission_sessions,
     caplog,
 ):
@@ -68,8 +69,33 @@ def test_admin_cross_tenant_scope_must_be_explicit_and_is_audited(
         )
 
     assert mission.vol_id == "alice-flight"
-    assert "admin_cross_tenant_mission_access" in caplog.text
+    assert "admin_cross_member_mission_access" in caplog.text
     assert "principal=platform-admin" in caplog.text
+    with mission_sessions() as session:
+        event = session.query(AccessAuditEvent).one()
+        assert event.actor_subject == "platform-admin"
+        assert event.actor_role == "admin"
+        assert event.target_owner_subject == "alice"
+        assert event.action == "support_detail"
+        assert event.resource_type == "mission"
+        assert event.resource_id == "alice-flight"
+        assert event.outcome == "authorized"
+
+
+def test_cross_member_access_fails_closed_when_audit_cannot_persist():
+    class UnavailableAuditSession:
+        @staticmethod
+        def add(_event):
+            raise RuntimeError("audit database unavailable")
+
+    with pytest.raises(RuntimeError, match="audit database unavailable"):
+        mission_access.resolve_owner_subject(
+            SimpleNamespace(subject="admin", role="admin"),
+            "alice",
+            action="detail",
+            vol_id="alice-flight",
+            audit_session=UnavailableAuditSession(),
+        )
 
 
 def test_status_summary_only_contains_the_requested_owner(

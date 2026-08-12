@@ -11,6 +11,7 @@ from fastapi import HTTPException, status
 from shared.database import Dataset
 from shared.tenancy import LEGACY_ORGANIZATION_ID
 
+from .access_audit import record_authorized_cross_member_access
 from .mission_access import get_owned_mission
 from .security import Principal
 
@@ -23,8 +24,9 @@ def resolve_dataset_owner(
     *,
     action: str,
     dataset_name: str | None = None,
+    audit_session: Any | None = None,
 ) -> str:
-    """Resolve a dataset tenant boundary with explicit audited admin delegation."""
+    """Resolve dataset ownership inside one tenant with audited delegation."""
 
     owner = (requested_owner or principal.subject).strip()
     if not owner:
@@ -38,8 +40,20 @@ def resolve_dataset_owner(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Dataset not found",
             )
+        if audit_session is None:
+            raise RuntimeError(
+                "Cross-member dataset access requires a durable audit session"
+            )
+        record_authorized_cross_member_access(
+            audit_session,
+            principal,
+            action=action,
+            target_owner_subject=owner,
+            resource_type="dataset",
+            resource_id=dataset_name,
+        )
         audit_logger.warning(
-            "admin_cross_tenant_dataset_access principal=%s owner=%s action=%s dataset=%s",
+            "admin_cross_member_dataset_access principal=%s owner=%s action=%s dataset=%s",
             principal.subject,
             owner,
             action,
@@ -62,6 +76,7 @@ def dataset_query(
         requested_owner,
         action=action,
         dataset_name=dataset_name,
+        audit_session=session,
     )
     organization_id = getattr(
         principal,
@@ -138,7 +153,9 @@ def authorize_storage_path(
 
     normalized = normalize_storage_path(path)
     if not normalized:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Path not found"
+        )
     datasets = dataset_query(
         session,
         principal,

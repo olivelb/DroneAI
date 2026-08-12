@@ -66,6 +66,7 @@ API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/map_schemas.py \
 	app4-dashboard/api/stage_schemas.py
 API_DOMAIN_TYPED_PATHS := \
+	app4-dashboard/api/access_audit.py \
 	app4-dashboard/api/analysis_support.py \
 	app4-dashboard/api/dataset_access.py \
 	app4-dashboard/api/dataset_uploads.py \
@@ -82,6 +83,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/identity.py \
+	app4-dashboard/api/routers/identity_access_audit.py \
 	app4-dashboard/api/routers/identity_capabilities.py \
 	app4-dashboard/api/routers/identity_credentials.py \
 	app4-dashboard/api/routers/identity_members.py \

@@ -3,12 +3,14 @@
 from fastapi import APIRouter
 
 from .auth import router as session_router
-from .identity_credentials import router as credential_router
+from .identity_access_audit import router as access_audit_router
 from .identity_capabilities import router as capability_router
+from .identity_credentials import router as credential_router
 from .identity_members import router as member_router
 
 router = APIRouter()
 router.include_router(session_router)
+router.include_router(access_audit_router)
 router.include_router(member_router)
 router.include_router(credential_router)
 router.include_router(capability_router)
