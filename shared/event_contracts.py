@@ -15,6 +15,7 @@ from shared.event_schemas import (
     EVENT_TYPES,
     PIPELINE_STATUSES,
 )
+from shared.tenancy import validate_organization_id
 
 SCHEMA_VERSION = 1
 
@@ -36,6 +37,26 @@ def deterministic_event_id(event_type: str, *identity: object) -> str:
     return f"{event_type}:{digest[:32]}"
 
 
+def deterministic_tenant_event_id(
+    event_type: str,
+    organization_id: str,
+    *identity: object,
+) -> str:
+    """Build an idempotency identity that cannot collide across tenants."""
+
+    return deterministic_event_id(
+        event_type,
+        validate_organization_id(organization_id),
+        *identity,
+    )
+
+
+def tenant_correlation_id(organization_id: str, subject_id: str) -> str:
+    """Build a trace correlation that is unambiguous across tenants."""
+
+    return f"{validate_organization_id(organization_id)}:{subject_id}"
+
+
 def make_event(
     event_type: str,
     payload: dict[str, Any],
@@ -46,11 +67,17 @@ def make_event(
     attempt: int = 0,
 ) -> dict[str, Any]:
     event = dict(payload)
+    organization_id = payload.get("organization_id")
+    default_correlation_id = (
+        f"{organization_id}:{payload['vol_id']}"
+        if organization_id and payload.get("vol_id")
+        else str(payload.get("vol_id") or uuid4())
+    )
     event.update(
         schema_version=SCHEMA_VERSION,
         event_type=event_type,
         event_id=event_id or f"{event_type}:{uuid4()}",
-        correlation_id=correlation_id or event_id or str(payload.get("vol_id") or uuid4()),
+        correlation_id=correlation_id or event_id or default_correlation_id,
         causation_id=causation_id,
         attempt=attempt,
         emitted_at=datetime.now(UTC).isoformat(),
@@ -82,13 +109,18 @@ def validate_event(
     normalized["schema_version"] = version
     normalized["event_type"] = event_type
     if not normalized.get("event_id"):
-        identity = [
-            normalized.get("vol_id"),
-            normalized.get("tile_index"),
-            normalized.get("command"),
-        ]
+        identity = [normalized.get("vol_id"), normalized.get("tile_index"), normalized.get("command")]
+        if normalized.get("organization_id"):
+            identity.insert(0, normalized["organization_id"])
         normalized["event_id"] = deterministic_event_id(event_type, *identity)
-    normalized.setdefault("correlation_id", normalized.get("vol_id") or normalized["event_id"])
+    organization_id = normalized.get("organization_id")
+    vol_id = normalized.get("vol_id")
+    normalized.setdefault(
+        "correlation_id",
+        f"{organization_id}:{vol_id}"
+        if organization_id and vol_id
+        else vol_id or normalized["event_id"],
+    )
     normalized.setdefault("causation_id", None)
     normalized.setdefault("attempt", 0)
     normalized.setdefault("emitted_at", datetime.now(UTC).isoformat())

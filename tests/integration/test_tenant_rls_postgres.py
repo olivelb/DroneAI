@@ -302,6 +302,11 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             organization_b,
             member_b.subject,
         )
+        assert database.get_mission_audience(mission_b, organization_b) == (
+            organization_b,
+            member_b.subject,
+        )
+        assert database.get_mission_audience(mission_b, organization_a) is None
 
         database.reset_engine()
         database.DATABASE_URL = stage_url.render_as_string(hide_password=False)

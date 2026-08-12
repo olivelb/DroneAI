@@ -7,12 +7,14 @@ from collections.abc import Callable
 
 from confluent_kafka import Consumer
 
-from shared.event_contracts import make_event
+from shared.event_contracts import make_event, tenant_correlation_id
+from shared.kafka_partitioning import tenant_mission_key
 from shared.kafka_reliability import (
     process_message,
     publish_json,
     reliable_consumer_config,
 )
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 
 def make_cancellation_handler(
@@ -28,7 +30,12 @@ def make_cancellation_handler(
         if not vol_id:
             return
         run_id = data.get("analysis_run_id")
-        registry.cancel(vol_id, run_id, data.get("attempt", 0))
+        registry.cancel(
+            vol_id,
+            run_id,
+            data.get("attempt", 0),
+            organization_id=data.get("organization_id"),
+        )
         logger.info(
             "Cancellation requested for %s analysis=%s",
             vol_id,
@@ -51,6 +58,7 @@ def make_progress_publisher(
         status: str = "processing",
         log: str | None = None,
         details: dict[str, Any] | None = None,
+        organization_id: str = LEGACY_ORGANIZATION_ID,
     ) -> None:
         event = make_event(
             "status",
@@ -60,13 +68,20 @@ def make_progress_publisher(
                 "progress": progress,
                 "status": status,
                 "service": service_name,
+                "organization_id": organization_id,
             },
+            correlation_id=tenant_correlation_id(organization_id, vol_id),
         )
         if log:
             event["log"] = log
         if details is not None:
             event["details"] = details
-        publish_json(producer, topic, event, key=vol_id)
+        publish_json(
+            producer,
+            topic,
+            event,
+            key=tenant_mission_key(organization_id, vol_id),
+        )
 
     return publish
 

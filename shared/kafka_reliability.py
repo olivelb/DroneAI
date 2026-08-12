@@ -12,6 +12,7 @@ from collections.abc import Callable
 from confluent_kafka import TopicPartition
 
 from shared.event_contracts import decode_event, make_event
+from shared.tenancy import validate_organization_id
 
 
 class MessageDeferredError(RuntimeError):
@@ -214,6 +215,19 @@ def dead_letter_event(
     location = message_location(message)
     if isinstance(original_value, bytes):
         original_value = original_value.decode("utf-8", errors="replace")
+    organization_id: str | None = None
+    try:
+        original_payload = json.loads(original_value)
+        if isinstance(original_payload, dict) and isinstance(
+            original_payload.get("organization_id"), str
+        ):
+            organization_id = validate_organization_id(
+                original_payload["organization_id"]
+            )
+    except (json.JSONDecodeError, ValueError):
+        # Invalid poison messages still need to reach the DLQ. Only propagate a
+        # tenant binding when it satisfies the canonical organization contract.
+        pass
     payload = {
         "source_topic": location["topic"],
         "source_partition": location["partition"],
@@ -224,6 +238,8 @@ def dead_letter_event(
         "error": f"{type(error).__name__}: {error}",
         "original_value": original_value,
     }
+    if organization_id is not None:
+        payload["organization_id"] = organization_id
     return make_event(
         "dead_letter",
         payload,

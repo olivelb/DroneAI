@@ -14,6 +14,7 @@ from shared.config import TOPIC_CONTROL, TOPIC_MISSION
 from shared.database import Mission, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
+from shared.kafka_partitioning import tenant_mission_key
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.phase_dag import initialize_stage_runs
 from shared.stage_contracts import stage_dag_catalog
@@ -218,6 +219,7 @@ def _cancel_mission(
             session,
             vol_id=vol_id,
             attempt=attempt,
+            organization_id=mission.organization_id,
         ):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -228,9 +230,10 @@ def _cancel_mission(
             topic=TOPIC_CONTROL,
             event=build_cancel_event(
                 vol_id,
+                organization_id=mission.organization_id,
                 attempt=attempt,
             ),
-            key=vol_id,
+            key=tenant_mission_key(mission.organization_id, vol_id),
         )
     return {
         "status": "success",
@@ -361,7 +364,7 @@ def _resume_mission(
                     session,
                     topic=TOPIC_MISSION,
                     event=build_resume_event(payload),
-                    key=vol_id,
+                    key=tenant_mission_key(principal.organization_id, vol_id),
                 )
     except Exception as error:
         raise HTTPException(
@@ -480,7 +483,7 @@ def _start_mission(
                     session,
                     topic=TOPIC_MISSION,
                     event=build_new_mission_event(payload),
-                    key=params.vol_id,
+                    key=tenant_mission_key(organization_id, params.vol_id),
                 )
     except HTTPException:
         raise

@@ -108,6 +108,31 @@ def _publish_stage_workspace(
     )
 
 
+def _prepare_stage_workspace(context: StageExecutionContext) -> Path:
+    workspace = _workspace_path(context.run_id)
+    if workspace.exists():
+        shutil.rmtree(workspace)
+    workspace.mkdir(parents=True)
+    try:
+        runtime.cancellation_state.start_mission(
+            context.vol_id,
+            context.mission_attempt,
+            organization_id=context.organization_id,
+        )
+    except Exception:
+        shutil.rmtree(workspace, ignore_errors=True)
+        raise
+    return workspace
+
+
+def _cleanup_stage_workspace(workspace: Path) -> None:
+    try:
+        runtime.cancellation_state.clear()
+    finally:
+        if workspace.exists():
+            shutil.rmtree(workspace)
+
+
 def run_reconstruction_stage(
     context: StageExecutionContext,
     control: StageExecutionControl,
@@ -116,14 +141,7 @@ def run_reconstruction_stage(
     input_dataset = validate_dataset_prefix(
         str(context.mission_parameters.get("input_dataset") or "")
     )
-    workspace = _workspace_path(context.run_id)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
-    runtime.cancellation_state.start_mission(
-        context.vol_id,
-        context.mission_attempt,
-    )
+    workspace = _prepare_stage_workspace(context)
 
     def ensure_active() -> None:
         control.raise_if_cancelled()
@@ -208,9 +226,7 @@ def run_reconstruction_stage(
             },
         )
     finally:
-        runtime.cancellation_state.clear()
-        if workspace.exists():
-            shutil.rmtree(workspace)
+        _cleanup_stage_workspace(workspace)
 
 
 def run_gaussian_training_stage(
@@ -218,14 +234,7 @@ def run_gaussian_training_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Train and publish an unfiltered Gaussian model from reconstruction."""
-    workspace = _workspace_path(context.run_id)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
-    runtime.cancellation_state.start_mission(
-        context.vol_id,
-        context.mission_attempt,
-    )
+    workspace = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -306,9 +315,7 @@ def run_gaussian_training_stage(
             },
         )
     finally:
-        runtime.cancellation_state.clear()
-        if workspace.exists():
-            shutil.rmtree(workspace)
+        _cleanup_stage_workspace(workspace)
 
 
 def run_gaussian_filtering_stage(
@@ -316,14 +323,7 @@ def run_gaussian_filtering_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Filter a verified training model once and persist raster geometry."""
-    workspace = _workspace_path(context.run_id)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
-    runtime.cancellation_state.start_mission(
-        context.vol_id,
-        context.mission_attempt,
-    )
+    workspace = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -425,9 +425,7 @@ def run_gaussian_filtering_stage(
             },
         )
     finally:
-        runtime.cancellation_state.clear()
-        if workspace.exists():
-            shutil.rmtree(workspace)
+        _cleanup_stage_workspace(workspace)
 
 
 def run_rasterization_stage(
@@ -435,14 +433,7 @@ def run_rasterization_stage(
     control: StageExecutionControl,
 ) -> StageExecutionResult:
     """Render and qualify GeoTIFF products from an already filtered model."""
-    workspace = _workspace_path(context.run_id)
-    if workspace.exists():
-        shutil.rmtree(workspace)
-    workspace.mkdir(parents=True)
-    runtime.cancellation_state.start_mission(
-        context.vol_id,
-        context.mission_attempt,
-    )
+    workspace = _prepare_stage_workspace(context)
     try:
         restored = _restore_input_workspace(
             context,
@@ -550,6 +541,4 @@ def run_rasterization_stage(
             },
         )
     finally:
-        runtime.cancellation_state.clear()
-        if workspace.exists():
-            shutil.rmtree(workspace)
+        _cleanup_stage_workspace(workspace)

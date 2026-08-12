@@ -42,7 +42,7 @@ class FakeCancellationRegistry:
         self.cancelled = cancelled
         self.cleared = []
 
-    def is_cancelled(self, *_args):
+    def is_cancelled(self, *_args, **_kwargs):
         return self.cancelled
 
     def clear(self, *args):
@@ -199,9 +199,10 @@ def test_workflow_downloads_detects_and_publishes_one_tile(
     topic, key, event = producer.messages[0]
     assert (topic, key, event["event_type"]) == (
         "tile-detections",
-        "mission-1:run-1:tile:4",
+        "legacy-unassigned:mission-1:run-1:tile:4",
         "tile_detection",
     )
+    assert event["organization_id"] == "legacy-unassigned"
     assert "detections" not in event
     assert event["result_schema_version"] == 1
     assert event["detection_count"] == 1

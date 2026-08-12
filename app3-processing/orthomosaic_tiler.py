@@ -30,7 +30,11 @@ from shared.database import (
     get_or_create_mission,
     get_session,
 )
-from shared.event_contracts import deterministic_event_id, make_event
+from shared.event_contracts import (
+    deterministic_tenant_event_id,
+    make_event,
+    tenant_correlation_id,
+)
 from shared.kafka_partitioning import tile_work_key
 from shared.pipeline_params import normalize_ai_backend
 from shared.tenancy import (
@@ -58,6 +62,8 @@ class CancellationCheck(Protocol):
         vol_id: str,
         analysis_run_id: str | None,
         analysis_attempt: int,
+        *,
+        organization_id: str | None = None,
     ) -> bool: ...
 
 
@@ -70,6 +76,7 @@ class ProgressReporter(Protocol):
         *,
         status: str = "processing",
         log: str | None = None,
+        organization_id: str = LEGACY_ORGANIZATION_ID,
     ) -> None: ...
 
 
@@ -131,7 +138,13 @@ class OrthomosaicTiler:
                     error,
                 )
 
-    def _download(self, ortho_s3_key: str, local_ortho: Path, vol_id: str) -> None:
+    def _download(
+        self,
+        ortho_s3_key: str,
+        local_ortho: Path,
+        vol_id: str,
+        organization_id: str,
+    ) -> None:
         try:
             storage.download_file(ortho_s3_key, local_ortho)
         except Exception as error:
@@ -141,6 +154,7 @@ class OrthomosaicTiler:
                 0,
                 status="error",
                 log=f"Failed to download orthomosaic from S3: {error}",
+                organization_id=organization_id,
             )
             raise
 
@@ -340,14 +354,18 @@ class OrthomosaicTiler:
             make_event(
                 "image_tile",
                 payload,
-                event_id=deterministic_event_id(
+                event_id=deterministic_tenant_event_id(
                     "image_tile",
+                    namespace.organization_id,
                     vol_id,
                     analysis_run_id or "pipeline",
                     tile_index,
                     analysis_attempt,
                 ),
-                correlation_id=analysis_run_id or vol_id,
+                correlation_id=tenant_correlation_id(
+                    namespace.organization_id,
+                    analysis_run_id or vol_id,
+                ),
                 attempt=analysis_attempt,
             ),
         )
@@ -408,7 +426,12 @@ class OrthomosaicTiler:
         )
         self.producer.produce(
             self.tile_topic,
-            key=tile_work_key(vol_id, analysis_run_id, tile_index),
+            key=tile_work_key(
+                vol_id,
+                analysis_run_id,
+                tile_index,
+                organization_id=namespace.organization_id,
+            ),
             value=json.dumps(event),
         )
         return True
@@ -447,6 +470,7 @@ class OrthomosaicTiler:
         vol_id: str,
         analysis_run_id: str | None,
         analysis_attempt: int,
+        organization_id: str,
         error: Exception,
     ) -> None:
         self.logger.exception("Failed to tile orthomosaic for %s", vol_id)
@@ -457,6 +481,7 @@ class OrthomosaicTiler:
             0,
             status="error",
             log=message,
+            organization_id=organization_id,
         )
         if not analysis_run_id:
             return
@@ -498,6 +523,7 @@ class OrthomosaicTiler:
                 "TILING_START",
                 0,
                 log=(f"Writing {plan['total_tiles']} overlapping tiles (size={tile_size}, overlap={plan['overlap']})"),
+                organization_id=namespace.organization_id,
             )
             tile_count = 0
             coordinates = product(plan["y_starts"], plan["x_starts"])
@@ -506,6 +532,7 @@ class OrthomosaicTiler:
                     vol_id,
                     analysis_run_id,
                     analysis_attempt,
+                    organization_id=namespace.organization_id,
                 ):
                     self.logger.info(
                         "Tiling cancelled mid-loop for %s",
@@ -534,6 +561,7 @@ class OrthomosaicTiler:
                         vol_id,
                         "TILING_IN_PROGRESS",
                         progress,
+                        organization_id=namespace.organization_id,
                     )
         return tile_count
 
@@ -568,7 +596,12 @@ class OrthomosaicTiler:
         tiles_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_tiles(tiles_dir)
         try:
-            self._download(ortho_s3_key, local_ortho, vol_id)
+            self._download(
+                ortho_s3_key,
+                local_ortho,
+                vol_id,
+                namespace.organization_id,
+            )
             tiles_s3_prefix = (
                 namespace.key("analyses", analysis_run_id, "tiles")
                 if analysis_run_id
@@ -581,7 +614,12 @@ class OrthomosaicTiler:
                 "classes": classes or ["car"],
                 "ai_confidence": ai_confidence,
             }
-            self.report_progress(vol_id, "TILING_START", 0)
+            self.report_progress(
+                vol_id,
+                "TILING_START",
+                0,
+                organization_id=namespace.organization_id,
+            )
             tile_count = self._publish_tiles(
                 local_ortho=local_ortho,
                 tiles_dir=tiles_dir,
@@ -610,6 +648,7 @@ class OrthomosaicTiler:
                 "TILING_DONE",
                 100,
                 status="success",
+                organization_id=namespace.organization_id,
             )
             self.logger.info(
                 "Orthomosaic tiled into %s images for %s",
@@ -621,6 +660,7 @@ class OrthomosaicTiler:
                 vol_id,
                 analysis_run_id,
                 analysis_attempt,
+                namespace.organization_id,
                 error,
             )
             raise

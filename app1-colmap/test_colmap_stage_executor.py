@@ -26,8 +26,8 @@ class FakeCancellationState:
         self.started = []
         self.cleared = 0
 
-    def start_mission(self, vol_id, attempt):
-        self.started.append((vol_id, attempt))
+    def start_mission(self, vol_id, attempt, *, organization_id=None):
+        self.started.append((organization_id, vol_id, attempt))
 
     def clear(self):
         self.cleared += 1
@@ -166,7 +166,7 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     assert result.metadata["alignment_transform"] == "alignment_transform.json"
     assert result.metadata["state_file"] == ".droneai/reconstruction-state.json"
     assert result.provenance["workspace_transfer"]["publish"]["logical_bytes"] == 123
-    assert cancellation.started == [("quarry-001", 3)]
+    assert cancellation.started == [("acme-survey", "quarry-001", 3)]
     assert cancellation.cleared == 1
     assert control.checks >= 3
     assert not (tmp_path / "work" / ("a" * 32)).exists()

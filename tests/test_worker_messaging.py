@@ -54,13 +54,14 @@ def test_progress_publisher_builds_the_common_status_contract():
 
     topic, key, event = producer.messages[0]
     assert topic == "pipeline-status"
-    assert key == "mission-1"
+    assert key == "legacy-unassigned:mission-1"
     assert event["event_type"] == "status"
     assert event["service"] == "IA"
     assert event["step"] == "DETECTING"
     assert event["progress"] == 50
     assert event["log"] == "halfway"
     assert event["details"] == {"tiles": 4}
+    assert event["organization_id"] == "legacy-unassigned"
 
 
 def test_cancellation_handler_shares_attempt_scoping_across_workers():
@@ -76,10 +77,16 @@ def test_cancellation_handler_shares_attempt_scoping_across_workers():
             "vol_id": "mission-1",
             "analysis_run_id": "run-2",
             "attempt": 3,
+            "organization_id": "tenant-a",
         }
     )
 
-    assert registry.is_cancelled("mission-1", "run-2", 3)
+    assert registry.is_cancelled(
+        "mission-1",
+        "run-2",
+        3,
+        organization_id="tenant-a",
+    )
     assert not registry.is_cancelled("mission-1", "run-2", 2)
     logger.info.assert_called_once_with(
         "Cancellation requested for %s analysis=%s",

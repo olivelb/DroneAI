@@ -9,6 +9,11 @@ from typing import cast
 from fastapi import HTTPException
 
 from shared.database import AIAnalysisRun, get_session
+from shared.event_contracts import (
+    deterministic_tenant_event_id,
+    make_event,
+    tenant_correlation_id,
+)
 from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .map_support import AnalysisRunRecord, JsonObject, RouteSession, get_mission
@@ -38,6 +43,67 @@ def analysis_event(
     if run.backend == "yolo":
         event["ai_model_variant"] = run.model_variant
     return event
+
+
+def build_analysis_pipeline_event(
+    run: AnalysisRunRecord,
+    namespace: MissionObjectNamespace,
+    *,
+    attempt: int = 0,
+) -> JsonObject:
+    """Build one tenant-qualified orthomosaic analysis command."""
+
+    return cast(
+        JsonObject,
+        make_event(
+            "orthomosaic",
+            analysis_event(run, namespace),
+            event_id=deterministic_tenant_event_id(
+                "orthomosaic",
+                namespace.organization_id,
+                run.vol_id,
+                run.run_id,
+                attempt,
+            ),
+            correlation_id=tenant_correlation_id(
+                namespace.organization_id,
+                run.run_id,
+            ),
+            attempt=attempt,
+        ),
+    )
+
+
+def build_analysis_cancel_event(
+    vol_id: str,
+    run_id: str,
+    organization_id: str,
+    attempt: int,
+) -> JsonObject:
+    """Build one tenant-qualified analysis cancellation command."""
+
+    return cast(
+        JsonObject,
+        make_event(
+            "control",
+            {
+                "vol_id": vol_id,
+                "organization_id": organization_id,
+                "command": "cancel",
+                "analysis_run_id": run_id,
+            },
+            event_id=deterministic_tenant_event_id(
+                "control",
+                organization_id,
+                vol_id,
+                "cancel",
+                run_id,
+                attempt,
+            ),
+            correlation_id=tenant_correlation_id(organization_id, run_id),
+            attempt=attempt,
+        ),
+    )
 
 
 def get_owned_run(

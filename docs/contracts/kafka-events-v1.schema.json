@@ -64,6 +64,21 @@
           "title": "Event Type",
           "type": "string"
         },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
+        },
         "schema_version": {
           "const": 1,
           "title": "Schema Version",
@@ -155,6 +170,21 @@
           "minLength": 1,
           "title": "Expected Event Type",
           "type": "string"
+        },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
         },
         "original_value": {
           "maxLength": 2000000,
@@ -344,6 +374,21 @@
           ],
           "default": null,
           "title": "Offset Y"
+        },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
         },
         "ortho_crs": {
           "anyOf": [
@@ -942,6 +987,21 @@
           "title": "Event Type",
           "type": "string"
         },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
+        },
         "ortho_path": {
           "anyOf": [
             {
@@ -1088,6 +1148,21 @@
           ],
           "default": null,
           "title": "Log"
+        },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
         },
         "progress": {
           "anyOf": [
@@ -1277,6 +1352,21 @@
           ],
           "default": null,
           "title": "Model Manifest"
+        },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
         },
         "result_s3_key": {
           "anyOf": [

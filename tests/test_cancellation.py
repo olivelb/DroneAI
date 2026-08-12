@@ -61,6 +61,14 @@ def test_mission_cancel_does_not_cancel_independent_analysis():
     assert not registry.is_cancelled("mission-1", "analysis-1")
 
 
+def test_cancellation_is_isolated_by_organization():
+    registry = AttemptCancellationRegistry()
+    registry.cancel("mission-1", organization_id="tenant-a")
+
+    assert registry.is_cancelled("mission-1", organization_id="tenant-a")
+    assert not registry.is_cancelled("mission-1", organization_id="tenant-b")
+
+
 def test_durable_mission_cancellation_propagates_between_replicas(session_scope):
     with session_scope() as session:
         session.add(Mission(vol_id="mission-1", status="processing", retry_count=0))

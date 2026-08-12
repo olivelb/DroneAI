@@ -14,6 +14,8 @@ class CancellationRegistry(Protocol):
         vol_id: str,
         run_id: str | None = None,
         attempt: int = 0,
+        *,
+        organization_id: str | None = None,
     ) -> None: ...
 
     def is_cancelled(
@@ -21,6 +23,8 @@ class CancellationRegistry(Protocol):
         vol_id: str,
         run_id: str | None = None,
         attempt: int = 0,
+        *,
+        organization_id: str | None = None,
     ) -> bool: ...
 
 
@@ -91,6 +95,7 @@ class ProcessingDispatcher:
             vol_id,
             analysis_run_id,
             analysis_attempt,
+            organization_id=cast(str | None, data.get("organization_id")),
         ):
             return
         namespace_options: MissionNamespaceOptions = {}
@@ -131,6 +136,7 @@ class ProcessingDispatcher:
             vol_id,
             analysis_run_id,
             int(data.get("attempt", 0)),
+            organization_id=cast(str | None, data.get("organization_id")),
         ):
             return
         if analysis_run_id:

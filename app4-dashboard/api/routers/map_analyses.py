@@ -16,11 +16,16 @@ from shared.database import (
     MapFeature,
     get_session,
 )
-from shared.event_contracts import deterministic_event_id, make_event
 from shared.inbox_outbox import enqueue_outbox
+from shared.kafka_partitioning import tenant_mission_key
 from shared.tenancy import MissionObjectNamespace
 
-from ..analysis_support import analysis_event, get_owned_run, owned_run_scope
+from ..analysis_support import (
+    build_analysis_cancel_event,
+    build_analysis_pipeline_event,
+    get_owned_run,
+    owned_run_scope,
+)
 from ..map_schemas import AnalysisCreate
 from ..map_support import (
     AnalysisRunRecord,
@@ -108,22 +113,20 @@ def create_analysis(
         )
         run = cast(AnalysisRunRecord, run_model)
         typed_session.add(run_model)
-        event = make_event(
-            "orthomosaic",
-            analysis_event(
-                run,
-                MissionObjectNamespace.from_binding(
-                    mission.organization_id,
-                    mission.vol_id,
-                    mission.workspace_prefix,
-                ),
+        event = build_analysis_pipeline_event(
+            run,
+            MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
             ),
-            event_id=deterministic_event_id(
-                "orthomosaic", vol_id, run_id, 0
-            ),
-            correlation_id=run_id,
         )
-        enqueue_outbox(typed_session, topic=TOPIC_ORTHO, event=event, key=vol_id)
+        enqueue_outbox(
+            typed_session,
+            topic=TOPIC_ORTHO,
+            event=event,
+            key=tenant_mission_key(mission.organization_id, vol_id),
+        )
         typed_session.flush()
         return serialize_run(run)
 
@@ -173,23 +176,21 @@ def retry_analysis(
                 synchronize_session=False,
             )
         )
-        event = make_event(
-            "orthomosaic",
-            analysis_event(
-                run,
-                MissionObjectNamespace.from_binding(
-                    mission.organization_id,
-                    mission.vol_id,
-                    mission.workspace_prefix,
-                ),
+        event = build_analysis_pipeline_event(
+            run,
+            MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
             ),
-            event_id=deterministic_event_id(
-                "orthomosaic", vol_id, run_id, run.retry_count
-            ),
-            correlation_id=run_id,
             attempt=run.retry_count,
         )
-        enqueue_outbox(typed_session, topic=TOPIC_ORTHO, event=event, key=vol_id)
+        enqueue_outbox(
+            typed_session,
+            topic=TOPIC_ORTHO,
+            event=event,
+            key=tenant_mission_key(mission.organization_id, vol_id),
+        )
         return serialize_run(run)
 
 
@@ -216,25 +217,24 @@ def cancel_analysis(
             vol_id=vol_id,
             run_id=run_id,
             attempt=run.retry_count,
+            organization_id=principal.organization_id,
         ):
             raise HTTPException(
                 status_code=409,
                 detail="Analysis generation changed before cancellation",
             )
-        event = make_event(
-            "control",
-            {
-                "vol_id": vol_id,
-                "command": "cancel",
-                "analysis_run_id": run_id,
-            },
-            event_id=deterministic_event_id(
-                "control", vol_id, "cancel", run_id, run.retry_count
-            ),
-            correlation_id=run_id,
-            attempt=run.retry_count,
+        event = build_analysis_cancel_event(
+            vol_id,
+            run_id,
+            principal.organization_id,
+            run.retry_count,
         )
-        enqueue_outbox(typed_session, topic=TOPIC_CONTROL, event=event, key=vol_id)
+        enqueue_outbox(
+            typed_session,
+            topic=TOPIC_CONTROL,
+            event=event,
+            key=tenant_mission_key(principal.organization_id, vol_id),
+        )
         return serialize_run(run)
 
 

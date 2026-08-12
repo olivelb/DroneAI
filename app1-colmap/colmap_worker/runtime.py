@@ -66,6 +66,7 @@ def report_mission_progress(
             status=status,
             log=log,
             details=details,
+            organization_id=mission_state_tracker.active_organization_id(vol_id),
         )
 
 

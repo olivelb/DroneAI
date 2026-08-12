@@ -33,6 +33,7 @@ from shared.kafka_reliability import (
     recreate_unassigned_consumer,
     reliable_consumer_config,
 )
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 from shared.worker_inbox import make_inbox_work_handler
 from shared.worker_messaging import (
     make_cancellation_handler,
@@ -66,6 +67,7 @@ def report_progress(
     progress: int,
     status: str = "processing",
     log: str | None = None,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
 ) -> None:
     if log:
         print(f"[{step}] {log}")
@@ -75,6 +77,7 @@ def report_progress(
         progress,
         status=status,
         log=log,
+        organization_id=organization_id,
     )
 
 

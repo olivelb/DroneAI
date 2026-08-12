@@ -1794,7 +1794,10 @@ def get_mission_detections(session: Session, vol_id: str) -> list[Detection]:
     )
 
 
-def get_mission_audience(vol_id: str) -> tuple[str, str] | None:
+def get_mission_audience(
+    vol_id: str,
+    organization_id: str | None = None,
+) -> tuple[str, str] | None:
     """Resolve only the tenant audience needed by the realtime consumer.
 
     PostgreSQL uses a narrow ``SECURITY DEFINER`` function so the low-privilege
@@ -1813,10 +1816,14 @@ def get_mission_audience(vol_id: str) -> tuple[str, str] | None:
             ).first()
             if row is None:
                 return None
-            return str(row[0]), str(row[1])
-        mission = (
-            session.query(Mission).filter(Mission.vol_id == vol_id).first()
-        )
+            audience = str(row[0]), str(row[1])
+            if organization_id is not None and audience[0] != organization_id:
+                return None
+            return audience
+        query = session.query(Mission).filter(Mission.vol_id == vol_id)
+        if organization_id is not None:
+            query = query.filter(Mission.organization_id == organization_id)
+        mission = query.first()
         if mission is None:
             return None
         return str(mission.organization_id), str(mission.owner_subject)

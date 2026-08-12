@@ -175,7 +175,7 @@ def test_tiler_removes_workspace_after_success(tmp_path, monkeypatch):
     tiler = orthomosaic_tiler.OrthomosaicTiler(
         producer=SimpleNamespace(flush=lambda: 0),
         tile_topic="tiles",
-        is_cancelled=lambda *_args: False,
+        is_cancelled=lambda *_args, **_kwargs: False,
         report_progress=lambda *args, **kwargs: progress.append((args, kwargs)),
         logger=SimpleNamespace(
             info=lambda *_args: None,
@@ -188,7 +188,7 @@ def test_tiler_removes_workspace_after_success(tmp_path, monkeypatch):
         lambda *_args: workspace,
     )
 
-    def fake_download(_key, destination, _vol_id):
+    def fake_download(_key, destination, _vol_id, _organization_id):
         destination.write_bytes(b"orthomosaic")
 
     monkeypatch.setattr(tiler, "_download", fake_download)

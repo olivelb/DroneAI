@@ -30,7 +30,7 @@ class FakeCancellationRegistry:
     def clear(self, *args):
         self.cleared.append(args)
 
-    def is_cancelled(self, *_args):
+    def is_cancelled(self, *_args, **_kwargs):
         return self.cancelled
 
 
@@ -297,10 +297,11 @@ def test_legacy_completion_publishes_durable_ia_terminal(monkeypatch):
     assert ia_progress == [
         (
             (vol_id, "DETECTING", 100),
-            {
-                "status": "success",
-                "log": "IA durably completed all tiles with 0 vector detections (0 raw)",
-            },
+                {
+                    "status": "success",
+                    "log": "IA durably completed all tiles with 0 vector detections (0 raw)",
+                    "organization_id": "legacy-unassigned",
+                },
         )
     ]
     assert tiler_progress[0][0] == (vol_id, "DONE", 100)

@@ -247,6 +247,11 @@ because their local wall-frame selection has a separate quality contract.
 - Kafka publications use per-record delivery callbacks and bounded polling.
   Consumed offsets and poison-message offsets are committed only after the
   corresponding output or dead-letter record is confirmed by the broker.
+- Every new pipeline, status and control event carries the organization in its
+  validated envelope. Deterministic IDs, correlations and Kafka keys are
+  tenant-qualified; cancellation and realtime fan-out reject a different
+  durable mission organization. Historical organization-less v1 records remain
+  readable during migration.
 - Staging and production use PostgreSQL-backed raster token buckets shared by
   every API replica; process-local limiting is rejected in those environments.
 - Buckets use the authenticated subject, hashed before database storage, rather

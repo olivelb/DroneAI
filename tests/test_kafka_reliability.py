@@ -69,16 +69,17 @@ class FakeProducer:
         return 0
 
 
-def tile_message(*, attempt=0):
+def tile_message(*, attempt=0, organization_id=None):
+    payload = {
+        "vol_id": "mission-1",
+        "tile_index": 3,
+        "tile_s3_key": "missions/mission-1/tile_3.jpg",
+        "attempt": attempt,
+    }
+    if organization_id is not None:
+        payload["organization_id"] = organization_id
     return FakeMessage(
-        json.dumps(
-            {
-                "vol_id": "mission-1",
-                "tile_index": 3,
-                "tile_s3_key": "missions/mission-1/tile_3.jpg",
-                "attempt": attempt,
-            }
-        ).encode()
+        json.dumps(payload).encode()
     )
 
 
@@ -221,7 +222,7 @@ def test_process_message_dead_letters_poison_event_then_commits():
     result = process_message(
         consumer=consumer,
         producer=producer,
-        message=tile_message(),
+        message=tile_message(organization_id="tenant-a"),
         consumer_group="ia-workers",
         expected_type="image_tile",
         dead_letter_topic="pipeline-dead-letter",
@@ -240,6 +241,7 @@ def test_process_message_dead_letters_poison_event_then_commits():
     assert dead_letter["attempts"] == 2
     assert dead_letter["source_partition"] == 2
     assert dead_letter["source_offset"] == 42
+    assert dead_letter["organization_id"] == "tenant-a"
     assert "RuntimeError: permanent" in dead_letter["error"]
 
 
