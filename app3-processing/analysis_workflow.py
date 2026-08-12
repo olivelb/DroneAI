@@ -28,7 +28,11 @@ from shared.database import (
     Mission,
     get_session,
 )
-from shared.event_contracts import deterministic_event_id, make_event
+from shared.event_contracts import (
+    deterministic_tenant_event_id,
+    make_event,
+    tenant_correlation_id,
+)
 from shared.geospatial_assets import detections_feature_collection
 from shared.json_io import atomic_write_json
 from shared.kafka_partitioning import tile_work_key
@@ -863,13 +867,17 @@ class AnalysisWorkflow:
                     "sam_prompt": run.prompt,
                     "tile_size": run.tile_size,
                 },
-                event_id=deterministic_event_id(
+                event_id=deterministic_tenant_event_id(
                     "orthomosaic",
+                    namespace.organization_id,
                     run.vol_id,
                     run.run_id,
                     run.retry_count,
                 ),
-                correlation_id=run.run_id,
+                correlation_id=tenant_correlation_id(
+                    namespace.organization_id,
+                    run.run_id,
+                ),
                 attempt=run.retry_count,
             ),
         )
@@ -903,14 +911,18 @@ class AnalysisWorkflow:
                     "ortho_transform": metadata.get("transform"),
                     "ortho_crs": metadata.get("crs"),
                 },
-                event_id=deterministic_event_id(
+                event_id=deterministic_tenant_event_id(
                     "image_tile",
+                    namespace.organization_id,
                     run.vol_id,
                     run.run_id,
                     tile.tile_index,
                     run.retry_count,
                 ),
-                correlation_id=run.run_id,
+                correlation_id=tenant_correlation_id(
+                    namespace.organization_id,
+                    run.run_id,
+                ),
                 attempt=run.retry_count,
             ),
         )
@@ -1013,6 +1025,7 @@ class AnalysisWorkflow:
                     event["vol_id"],
                     event.get("analysis_run_id"),
                     event["tile_index"],
+                    organization_id=event.get("organization_id"),
                 ),
                 value=json.dumps(event),
             )

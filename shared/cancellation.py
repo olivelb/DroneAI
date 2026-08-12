@@ -25,7 +25,9 @@ class AttemptCancellationRegistry:
     """
 
     def __init__(self) -> None:
-        self._cancelled: set[tuple[Hashable, Hashable | None, int]] = set()
+        self._cancelled: set[
+            tuple[Hashable | None, Hashable, Hashable | None, int]
+        ] = set()
         self._lock = threading.Lock()
 
     @staticmethod
@@ -33,35 +35,49 @@ class AttemptCancellationRegistry:
         vol_id: Hashable,
         run_id: Hashable | None,
         attempt: int,
-    ) -> tuple[Hashable, Hashable | None, int]:
-        return vol_id, run_id, int(attempt)
+        organization_id: Hashable | None = None,
+    ) -> tuple[Hashable | None, Hashable, Hashable | None, int]:
+        return organization_id, vol_id, run_id, int(attempt)
 
     def cancel(
         self,
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> None:
         with self._lock:
-            self._cancelled.add(self._key(vol_id, run_id, attempt))
+            self._cancelled.add(
+                self._key(vol_id, run_id, attempt, organization_id)
+            )
 
     def clear(
         self,
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> None:
         with self._lock:
-            self._cancelled.discard(self._key(vol_id, run_id, attempt))
+            self._cancelled.discard(
+                self._key(vol_id, run_id, attempt, organization_id)
+            )
 
     def is_cancelled(
         self,
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> bool:
         with self._lock:
-            return self._key(vol_id, run_id, attempt) in self._cancelled
+            return (
+                self._key(vol_id, run_id, attempt, organization_id)
+                in self._cancelled
+            )
 
 
 def _cancellation_record(
@@ -69,6 +85,7 @@ def _cancellation_record(
     *,
     vol_id: str,
     run_id: str | None,
+    organization_id: str | None = None,
     for_update: bool = False,
 ) -> Any | None:
     if run_id is None:
@@ -78,6 +95,13 @@ def _cancellation_record(
             AIAnalysisRun.vol_id == vol_id,
             AIAnalysisRun.run_id == run_id,
         )
+    if organization_id is not None:
+        if run_id is None:
+            query = query.filter(Mission.organization_id == organization_id)
+        else:
+            query = query.join(Mission, AIAnalysisRun.mission_id == Mission.id).filter(
+                Mission.organization_id == organization_id
+            )
     if for_update:
         query = query.with_for_update()
     return query.first()
@@ -89,6 +113,7 @@ def mark_cancellation_requested(
     vol_id: str,
     run_id: str | None = None,
     attempt: int = 0,
+    organization_id: str | None = None,
 ) -> bool:
     """Persist cancellation when it still targets the current generation."""
 
@@ -96,6 +121,7 @@ def mark_cancellation_requested(
         session,
         vol_id=vol_id,
         run_id=run_id,
+        organization_id=organization_id,
         for_update=True,
     )
     if record is None or int(record.retry_count or 0) != int(attempt):
@@ -130,7 +156,9 @@ class DurableCancellationRegistry:
             configured_poll = float(os.getenv("CANCELLATION_POLL_SECONDS", "2"))
         self._poll_seconds = max(0.0, configured_poll)
         self._clock = clock
-        self._last_checks: dict[tuple[Hashable, Hashable | None, int], float] = {}
+        self._last_checks: dict[
+            tuple[Hashable | None, Hashable, Hashable | None, int], float
+        ] = {}
         self._checks_lock = threading.Lock()
 
     def cancel(
@@ -138,6 +166,8 @@ class DurableCancellationRegistry:
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> None:
         mission_id = str(vol_id)
         analysis_id = str(run_id) if run_id is not None else None
@@ -147,16 +177,31 @@ class DurableCancellationRegistry:
                 vol_id=mission_id,
                 run_id=analysis_id,
                 attempt=attempt,
+                organization_id=(
+                    str(organization_id)
+                    if organization_id is not None
+                    else None
+                ),
             )
         if not persisted:
             raise LookupError(
                 "cancellation target is missing or no longer on attempt "
                 f"{attempt}: {mission_id}/{analysis_id or 'mission'}"
             )
-        self._local.cancel(vol_id, run_id, attempt)
+        self._local.cancel(
+            vol_id,
+            run_id,
+            attempt,
+            organization_id=organization_id,
+        )
         with self._checks_lock:
             self._last_checks.pop(
-                AttemptCancellationRegistry._key(vol_id, run_id, attempt),
+                AttemptCancellationRegistry._key(
+                    vol_id,
+                    run_id,
+                    attempt,
+                    organization_id,
+                ),
                 None,
             )
 
@@ -165,13 +210,25 @@ class DurableCancellationRegistry:
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> None:
         # Durable cancellation is immutable for one attempt. A retry increments
         # the generation, so clearing only the process-local cache is safe.
-        self._local.clear(vol_id, run_id, attempt)
+        self._local.clear(
+            vol_id,
+            run_id,
+            attempt,
+            organization_id=organization_id,
+        )
         with self._checks_lock:
             self._last_checks.pop(
-                AttemptCancellationRegistry._key(vol_id, run_id, attempt),
+                AttemptCancellationRegistry._key(
+                    vol_id,
+                    run_id,
+                    attempt,
+                    organization_id,
+                ),
                 None,
             )
 
@@ -180,10 +237,22 @@ class DurableCancellationRegistry:
         vol_id: Hashable,
         run_id: Hashable | None = None,
         attempt: int = 0,
+        *,
+        organization_id: Hashable | None = None,
     ) -> bool:
-        if self._local.is_cancelled(vol_id, run_id, attempt):
+        if self._local.is_cancelled(
+            vol_id,
+            run_id,
+            attempt,
+            organization_id=organization_id,
+        ):
             return True
-        key = AttemptCancellationRegistry._key(vol_id, run_id, attempt)
+        key = AttemptCancellationRegistry._key(
+            vol_id,
+            run_id,
+            attempt,
+            organization_id,
+        )
         checked_at = self._clock()
         with self._checks_lock:
             last_check = self._last_checks.get(key)
@@ -199,6 +268,11 @@ class DurableCancellationRegistry:
                 session,
                 vol_id=mission_id,
                 run_id=analysis_id,
+                organization_id=(
+                    str(organization_id)
+                    if organization_id is not None
+                    else None
+                ),
             )
             cancelled = (
                 record is not None
@@ -208,5 +282,10 @@ class DurableCancellationRegistry:
         with self._checks_lock:
             self._last_checks[key] = checked_at
         if cancelled:
-            self._local.cancel(vol_id, run_id, attempt)
+            self._local.cancel(
+                vol_id,
+                run_id,
+                attempt,
+                organization_id=organization_id,
+            )
         return cancelled

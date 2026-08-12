@@ -7,6 +7,7 @@ from shared.event_contracts import (
     EventValidationError,
     decode_event,
     deterministic_event_id,
+    deterministic_tenant_event_id,
     make_event,
 )
 from shared.event_schemas import EVENT_TYPES, kafka_event_json_schema
@@ -23,6 +24,17 @@ def test_deterministic_event_id_is_stable_and_namespaced():
     assert first == second
     assert first != other
     assert first.startswith("image_tile:")
+
+
+def test_deterministic_event_id_is_isolated_by_organization():
+    first = deterministic_tenant_event_id(
+        "mission", "tenant-a", "mission-1", "start"
+    )
+    second = deterministic_tenant_event_id(
+        "mission", "tenant-b", "mission-1", "start"
+    )
+
+    assert first != second
 
 
 def test_make_event_adds_versioned_trace_metadata():
@@ -185,13 +197,14 @@ def test_event_path_identifiers_reject_unsafe_segments(unsafe_value):
 
 
 @pytest.mark.parametrize("organization_id", ["../escape", "Upper", "a/b"])
-def test_mission_events_reject_unsafe_organization_identifiers(organization_id):
+def test_events_reject_unsafe_organization_identifiers(organization_id):
     with pytest.raises(EventValidationError, match="organization_id"):
         make_event(
-            "mission",
+            "status",
             {
                 "vol_id": "mission-safe",
                 "organization_id": organization_id,
+                "status": "processing",
             },
         )
 

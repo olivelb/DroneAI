@@ -61,6 +61,7 @@ class ProgressReporter(Protocol):
         progress: int,
         status: str = "processing",
         log: str | None = None,
+        organization_id: str = "legacy-unassigned",
     ) -> None: ...
 
 
@@ -382,6 +383,7 @@ class LegacyAggregationWorkflow:
                 100,
                 status="success",
                 log=summary,
+                organization_id=namespace.organization_id,
             )
             self.report_progress(
                 vol_id,
@@ -392,6 +394,7 @@ class LegacyAggregationWorkflow:
                     f"COG ready with {len(feature_collection['features'])} "
                     f"vector detections ({len(raw_detections)} raw)"
                 ),
+                organization_id=namespace.organization_id,
             )
         finally:
             shutil.rmtree(output_directory, ignore_errors=True)
@@ -434,12 +437,18 @@ class LegacyAggregationWorkflow:
                 "DETECTING",
                 progress,
                 log=f"Durably received {tiles_received}/{total_tiles} IA tile results",
+                organization_id=namespace.organization_id,
             )
 
         finalize_mission = persistence["finalize_mission"]
         if finalize_mission is None:
             return
-        self.report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+        self.report_progress(
+            vol_id,
+            "AGGREGATING_DETECTIONS",
+            80,
+            organization_id=namespace.organization_id,
+        )
         try:
             self.generate_vector_results(vol_id, finalize_mission)
         except Exception as error:
@@ -450,6 +459,7 @@ class LegacyAggregationWorkflow:
                 0,
                 status="error",
                 log=f"IA aggregation failed: {error}",
+                organization_id=namespace.organization_id,
             )
             raise
 
@@ -490,8 +500,17 @@ class LegacyAggregationWorkflow:
                     )
                 )
         for vol_id, descriptor in ready:
+            organization_id = descriptor.get(
+                "organization_id",
+                "legacy-unassigned",
+            )
             try:
-                self.report_progress(vol_id, "AGGREGATING_DETECTIONS", 80)
+                self.report_progress(
+                    vol_id,
+                    "AGGREGATING_DETECTIONS",
+                    80,
+                    organization_id=organization_id,
+                )
                 self.generate_vector_results(vol_id, descriptor)
             except Exception as error:
                 self.logger.exception(
@@ -505,4 +524,5 @@ class LegacyAggregationWorkflow:
                     0,
                     status="error",
                     log=f"IA aggregation recovery failed: {error}",
+                    organization_id=organization_id,
                 )

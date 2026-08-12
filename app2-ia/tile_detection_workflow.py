@@ -15,7 +15,11 @@ from detection_core import DetectionRecord, run_yolo_detection
 from sam3_backend import JsonObject, Sam3Backend
 from shared.sam3_capabilities import SAM3_DEFAULT_CONFIDENCE
 from shared import storage
-from shared.event_contracts import deterministic_event_id, make_event
+from shared.event_contracts import (
+    deterministic_tenant_event_id,
+    make_event,
+    tenant_correlation_id,
+)
 from shared.json_io import atomic_write_json
 from shared.kafka_partitioning import tile_work_key
 from shared.kafka_reliability import publish_json
@@ -41,6 +45,8 @@ class CancellationRegistry(Protocol):
         vol_id: str,
         run_id: str | None = None,
         attempt: int = 0,
+        *,
+        organization_id: str | None = None,
     ) -> bool: ...
 
 class ProgressReporter(Protocol):
@@ -51,6 +57,7 @@ class ProgressReporter(Protocol):
         progress: int,
         status: str = "processing",
         log: str | None = None,
+        organization_id: str = "legacy-unassigned",
     ) -> None: ...
 
 
@@ -165,12 +172,14 @@ class TileDetectionWorkflow:
         vol_id: str,
         analysis_run_id: str | None,
         analysis_attempt: int,
+        organization_id: str,
         workspace: Path,
     ) -> bool:
         if not self.cancellation_registry.is_cancelled(
             vol_id,
             analysis_run_id,
             analysis_attempt,
+            organization_id=organization_id,
         ):
             return False
         shutil.rmtree(workspace, ignore_errors=True)
@@ -307,14 +316,18 @@ class TileDetectionWorkflow:
                 "detection_count": len(detections),
                 "result_schema_version": TILE_RESULT_SCHEMA_VERSION,
             },
-            event_id=deterministic_event_id(
+            event_id=deterministic_tenant_event_id(
                 "tile_detection",
+                namespace.organization_id,
                 vol_id,
                 analysis_run_id or "pipeline",
                 tile_index,
                 analysis_attempt,
             ),
-            correlation_id=cast(str | None, tile_info.get("correlation_id")),
+            correlation_id=tenant_correlation_id(
+                namespace.organization_id,
+                analysis_run_id or vol_id,
+            ),
             causation_id=cast(str | None, tile_info.get("event_id")),
             attempt=analysis_attempt,
         )
@@ -322,7 +335,12 @@ class TileDetectionWorkflow:
             self.producer,
             self.output_topic,
             tile_result,
-            key=tile_work_key(vol_id, analysis_run_id, tile_index),
+            key=tile_work_key(
+                vol_id,
+                analysis_run_id,
+                tile_index,
+                organization_id=namespace.organization_id,
+            ),
         )
 
     def process_tile(self, tile_info: JsonObject) -> None:
@@ -332,12 +350,14 @@ class TileDetectionWorkflow:
             tile_info.get("analysis_run_id"),
         )
         analysis_attempt = int(tile_info.get("attempt", 0))
+        namespace = mission_event_namespace(tile_info)
         workspace = self._workspace(vol_id, analysis_run_id)
         workspace.mkdir(parents=True, exist_ok=True)
         if self._cancelled(
             vol_id=vol_id,
             analysis_run_id=analysis_run_id,
             analysis_attempt=analysis_attempt,
+            organization_id=namespace.organization_id,
             workspace=workspace,
         ):
             return
@@ -354,6 +374,7 @@ class TileDetectionWorkflow:
                     0,
                     status="error",
                     log=(f"Failed to download tile from S3: {tile_s3_key} — {error}"),
+                    organization_id=namespace.organization_id,
                 )
                 raise
 

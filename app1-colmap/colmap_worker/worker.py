@@ -71,6 +71,7 @@ def worker_main() -> None:
             runtime.cancellation_state.start_mission(
                 mission_context.vol_id,
                 int(mission.get("attempt", 0)),
+                organization_id=mission.get("organization_id"),
             )
             previous_state = runtime.mission_state_tracker.start_mission(mission_context)
 

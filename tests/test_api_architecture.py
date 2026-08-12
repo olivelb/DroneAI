@@ -149,6 +149,18 @@ def test_new_mission_event_is_deterministic_for_one_mission_id():
     assert first["event_id"] == second["event_id"]
 
 
+def test_mission_event_identity_is_isolated_by_organization():
+    first = messaging.build_new_mission_event(
+        {"vol_id": "mission-1", "organization_id": "tenant-a"}
+    )
+    second = messaging.build_new_mission_event(
+        {"vol_id": "mission-1", "organization_id": "tenant-b"}
+    )
+
+    assert first["event_id"] != second["event_id"]
+    assert first["correlation_id"] == "tenant-a:mission-1"
+
+
 def test_start_mission_rejects_an_existing_id(monkeypatch):
     existing = SimpleNamespace(vol_id="mission-1")
 
@@ -845,11 +857,12 @@ def test_messaging_gateway_adds_contract_metadata():
 
     topic, key, published = producer.messages[0]
     assert topic == "vols-bruts"
-    assert key == "mission-1"
+    assert key == "legacy-unassigned:mission-1"
     assert published == event
     assert published["schema_version"] == 1
     assert published["event_type"] == "mission"
-    assert published["correlation_id"] == "mission-1"
+    assert published["organization_id"] == "legacy-unassigned"
+    assert published["correlation_id"] == "legacy-unassigned:mission-1"
 
 
 def test_stored_feature_serialization_has_one_canonical_shape():

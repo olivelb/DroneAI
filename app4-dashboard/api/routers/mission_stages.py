@@ -20,6 +20,7 @@ from shared.database import (
     get_session,
 )
 from shared.inbox_outbox import enqueue_outbox
+from shared.kafka_partitioning import tenant_mission_key
 from shared.gcp_bundle import validate_gcp_bundle
 from shared.stage_artifacts import (
     mark_stage_run_succeeded,
@@ -254,7 +255,10 @@ def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
                 session,
                 topic=TOPIC_MISSION,
                 event=build_stage_mission_event(payload),
-                key=cast(str, mission.vol_id),
+                key=tenant_mission_key(
+                    cast(str, mission.organization_id),
+                    cast(str, mission.vol_id),
+                ),
             )
         queued.append(cast(str, run.run_id))
     return queued
@@ -370,6 +374,8 @@ def create_stage_run(
             payload = {
                 **cast(dict[str, Any], mission.params or {}),
                 "vol_id": vol_id,
+                "organization_id": cast(str, mission.organization_id),
+                "workspace_prefix": cast(str, mission.workspace_prefix),
                 "attempt": attempt,
                 "phases": [stage],
                 "stage_run_id": run.run_id,
@@ -381,7 +387,10 @@ def create_stage_run(
                     session,
                     topic=TOPIC_MISSION,
                     event=build_stage_mission_event(payload),
-                    key=vol_id,
+                    key=tenant_mission_key(
+                        cast(str, mission.organization_id),
+                        vol_id,
+                    ),
                 )
             return _serialize_stage_run(run)
     except HTTPException:

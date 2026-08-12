@@ -76,7 +76,7 @@ class TestWorkerSupport(unittest.TestCase):
     def test_worker_cancellation_state_lifecycle(self):
         state = worker_support.WorkerCancellationState()
 
-        state.start_mission("vol-1")
+        state.start_mission("vol-1", organization_id="tenant-a")
         self.assertTrue(state.should_cancel("vol-1"))
         self.assertFalse(state.should_cancel("vol-2"))
 
@@ -122,6 +122,7 @@ class TestWorkerSupport(unittest.TestCase):
             status="processing",
             log=None,
             details={"source": "unit-test"},
+            organization_id="legacy-unassigned",
         )
 
     def test_build_mission_context_uses_s3_input_and_contained_work_path(self):
@@ -188,7 +189,7 @@ class TestWorkerSupport(unittest.TestCase):
 
         kwargs = producer.produce.call_args.kwargs
         payload = json.loads(kwargs["value"])
-        self.assertEqual(kwargs["key"], "vol-3")
+        self.assertEqual(kwargs["key"], "legacy-unassigned:vol-3")
         self.assertEqual(payload["vol_id"], "vol-3")
         self.assertEqual(payload["ortho_s3_key"], "missions/vol-3/orthomosaic.tif")
         self.assertEqual(payload["classes"], ["truck"])
@@ -200,7 +201,7 @@ class TestWorkerSupport(unittest.TestCase):
         self.assertEqual(payload["attempt"], 3)
         self.assertEqual(payload["schema_version"], 1)
         self.assertEqual(payload["event_type"], "orthomosaic")
-        self.assertEqual(payload["correlation_id"], "vol-3")
+        self.assertEqual(payload["correlation_id"], "legacy-unassigned:vol-3")
         self.assertTrue(payload["event_id"].startswith("orthomosaic:"))
         producer.poll.assert_called_once()
         producer.flush.assert_not_called()

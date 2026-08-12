@@ -8,7 +8,12 @@ from confluent_kafka import Consumer, Producer
 
 from shared.cancellation import AttemptCancellationRegistry
 from shared.config import DEFAULT_WORKSPACE_DIR
-from shared.event_contracts import deterministic_event_id, make_event
+from shared.event_contracts import (
+    deterministic_tenant_event_id,
+    make_event,
+    tenant_correlation_id,
+)
+from shared.kafka_partitioning import tenant_mission_key
 from shared.kafka_reliability import publish_json, reliable_consumer_config
 from shared.tenancy import mission_event_namespace
 from shared.worker_messaging import (
@@ -34,28 +39,38 @@ class WorkerCancellationState:
         self._lock = threading.Lock()
         self._registry = registry or AttemptCancellationRegistry()
         self._current_mission_id = None
+        self._current_organization_id = None
         self._current_attempt = 0
         self._cancel_requested = False
 
-    def start_mission(self, vol_id, attempt=0):
+    def start_mission(self, vol_id, attempt=0, organization_id=None):
         with self._lock:
             self._current_mission_id = vol_id
+            self._current_organization_id = organization_id
             self._current_attempt = int(attempt)
             self._cancel_requested = self._registry.is_cancelled(
                 vol_id,
                 None,
                 attempt,
+                organization_id=organization_id,
             )
 
     def clear(self):
         with self._lock:
             vol_id = self._current_mission_id
             attempt = self._current_attempt
+            organization_id = self._current_organization_id
             self._current_mission_id = None
+            self._current_organization_id = None
             self._current_attempt = 0
             self._cancel_requested = False
         if vol_id is not None:
-            self._registry.clear(vol_id, None, attempt)
+            self._registry.clear(
+                vol_id,
+                None,
+                attempt,
+                organization_id=organization_id,
+            )
 
     def should_cancel(self, vol_id):
         with self._lock:
@@ -64,15 +79,27 @@ class WorkerCancellationState:
     def on_cancel(self, vol_id):
         with self._lock:
             attempt = self._current_attempt
-        self.cancel(vol_id, None, attempt)
+            organization_id = self._current_organization_id
+        self.cancel(
+            vol_id,
+            None,
+            attempt,
+            organization_id=organization_id,
+        )
 
-    def cancel(self, vol_id, run_id=None, attempt=0):
-        self._registry.cancel(vol_id, run_id, attempt)
+    def cancel(self, vol_id, run_id=None, attempt=0, *, organization_id=None):
+        self._registry.cancel(
+            vol_id,
+            run_id,
+            attempt,
+            organization_id=organization_id,
+        )
         with self._lock:
             if (
                 run_id is None
                 and self._current_mission_id == vol_id
                 and self._current_attempt == int(attempt)
+                and self._current_organization_id == organization_id
             ):
                 self._cancel_requested = True
         print(f"⚠️ Cancel requested for {vol_id}")
@@ -83,9 +110,15 @@ class WorkerCancellationState:
                 return True
             vol_id = self._current_mission_id
             attempt = self._current_attempt
+            organization_id = self._current_organization_id
         if vol_id is None:
             return False
-        cancelled = self._registry.is_cancelled(vol_id, None, attempt)
+        cancelled = self._registry.is_cancelled(
+            vol_id,
+            None,
+            attempt,
+            organization_id=organization_id,
+        )
         if cancelled:
             with self._lock:
                 if (
@@ -114,11 +147,14 @@ class MissionStateTracker:
     def _now_iso():
         return datetime.now(timezone.utc).isoformat()
 
-    def load_state(self, vol_id):
+    def load_state(self, vol_id, organization_id=None):
         """Load mission state from database."""
         try:
             with get_session() as session:
-                mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+                query = session.query(Mission).filter(Mission.vol_id == vol_id)
+                if organization_id is not None:
+                    query = query.filter(Mission.organization_id == organization_id)
+                mission = query.first()
                 if not mission:
                     return None
                 return {
@@ -136,9 +172,12 @@ class MissionStateTracker:
             return None
 
     def start_mission(self, mission_context):
-        previous_state = self.load_state(mission_context.vol_id)
         namespace = mission_event_namespace(
             {**mission_context.mission, "vol_id": mission_context.vol_id}
+        )
+        previous_state = self.load_state(
+            mission_context.vol_id,
+            namespace.organization_id,
         )
 
         try:
@@ -193,8 +232,16 @@ class MissionStateTracker:
         with self._lock:
             self._active[mission_context.vol_id] = {
                 "work_dir": mission_context.work_dir,
+                "organization_id": namespace.organization_id,
             }
         return previous_state
+
+    def active_organization_id(self, vol_id):
+        with self._lock:
+            entry = self._active.get(vol_id)
+            if not entry:
+                return "legacy-unassigned"
+            return entry["organization_id"]
 
     def clear_mission(self, vol_id):
         with self._lock:
@@ -205,10 +252,18 @@ class MissionStateTracker:
             entry = self._active.get(vol_id)
             if not entry:
                 return
+            organization_id = entry["organization_id"]
 
         try:
             with get_session() as session:
-                mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
+                mission = (
+                    session.query(Mission)
+                    .filter(
+                        Mission.vol_id == vol_id,
+                        Mission.organization_id == organization_id,
+                    )
+                    .first()
+                )
                 if not mission:
                     return
 
@@ -318,6 +373,7 @@ def make_progress_reporter(producer, topic_status, service_name="COLMAP"):
         status="processing",
         log=None,
         details=None,
+        organization_id="legacy-unassigned",
     ):
         if log:
             print(f"[{step}] {log}")
@@ -328,6 +384,7 @@ def make_progress_reporter(producer, topic_status, service_name="COLMAP"):
             status=status,
             log=log,
             details=details,
+            organization_id=organization_id,
         )
 
     return report_progress
@@ -335,14 +392,15 @@ def make_progress_reporter(producer, topic_status, service_name="COLMAP"):
 
 def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, mission_params, normalize_ai_backend_fn):
     attempt = int(mission_params.get("attempt", 0))
+    organization_id = mission_params.get(
+        "organization_id",
+        "legacy-unassigned",
+    )
     message = make_event(
         "orthomosaic",
         {
             "vol_id": vol_id,
-            "organization_id": mission_params.get(
-                "organization_id",
-                "legacy-unassigned",
-            ),
+            "organization_id": organization_id,
             "workspace_prefix": mission_params.get("workspace_prefix"),
             "ortho_s3_key": ortho_s3_key,
             "classes": mission_params.get("classes", ["car"]),
@@ -352,12 +410,19 @@ def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, missio
             "sam_prompt": mission_params.get("sam_prompt", "car"),
             "tile_size": mission_params.get("tile_size", 1024),
         },
-        event_id=deterministic_event_id("orthomosaic", vol_id, attempt),
-        correlation_id=mission_params.get("correlation_id") or vol_id,
+        event_id=deterministic_tenant_event_id(
+            "orthomosaic", organization_id, vol_id, attempt
+        ),
+        correlation_id=tenant_correlation_id(organization_id, vol_id),
         causation_id=mission_params.get("event_id"),
         attempt=attempt,
     )
-    publish_json(producer, topic_out, message, key=vol_id)
+    publish_json(
+        producer,
+        topic_out,
+        message,
+        key=tenant_mission_key(organization_id, vol_id),
+    )
 
 
 def control_consumer_loop(
@@ -374,6 +439,7 @@ def control_consumer_loop(
                 data["vol_id"],
                 data.get("analysis_run_id"),
                 int(data.get("attempt", 0)),
+                organization_id=data.get("organization_id"),
             )
 
     run_control_consumer(

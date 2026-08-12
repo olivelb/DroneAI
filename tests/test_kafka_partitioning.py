@@ -1,6 +1,6 @@
 import pytest
 
-from shared.kafka_partitioning import tile_work_key
+from shared.kafka_partitioning import tenant_mission_key, tile_work_key
 
 
 def test_tile_work_key_is_stable_for_campaign_and_pipeline_work():
@@ -13,6 +13,21 @@ def test_tile_work_key_distributes_logically_distinct_tiles():
         "mission-1",
         "run-1",
         8,
+    )
+
+
+def test_kafka_keys_are_isolated_by_organization():
+    assert tenant_mission_key("tenant-a", "mission-1") == "tenant-a:mission-1"
+    assert tile_work_key(
+        "mission-1",
+        "run-1",
+        7,
+        organization_id="tenant-a",
+    ) != tile_work_key(
+        "mission-1",
+        "run-1",
+        7,
+        organization_id="tenant-b",
     )
 
 

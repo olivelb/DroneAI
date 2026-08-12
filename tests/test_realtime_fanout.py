@@ -1,6 +1,8 @@
 import importlib
 from types import SimpleNamespace
 
+import pytest
+
 
 realtime = importlib.import_module("app4-dashboard.api.realtime")
 
@@ -9,6 +11,21 @@ def test_status_consumer_group_is_unique_per_api_pod():
     assert realtime.status_consumer_group("dashboard-api-a") == (
         "dashboard-api-realtime-dashboard-api-a"
     )
+
+
+def test_status_audience_rejects_cross_organization_event(monkeypatch):
+    observed = []
+
+    def audience(vol_id, organization_id):
+        observed.append((vol_id, organization_id))
+        return None
+
+    monkeypatch.setattr(realtime, "get_mission_audience", audience)
+
+    with pytest.raises(LookupError, match="does not match"):
+        realtime.mission_owner_subject("mission-1", "tenant-b")
+
+    assert observed == [("mission-1", "tenant-b")]
     assert realtime.status_consumer_group("dashboard-api-b") != (
         realtime.status_consumer_group("dashboard-api-a")
     )
@@ -44,7 +61,11 @@ def test_duplicate_state_receipts_are_still_fanned_out_locally(monkeypatch):
 
     monkeypatch.setattr(realtime, "process_inbox_transaction", process_inbox)
     monkeypatch.setattr(realtime, "process_message", process_message)
-    monkeypatch.setattr(realtime, "mission_owner_subject", lambda _vol_id: "owner-1")
+    monkeypatch.setattr(
+        realtime,
+        "mission_owner_subject",
+        lambda _vol_id, _organization_id=None: "owner-1",
+    )
     monkeypatch.setattr(realtime.asyncio, "run_coroutine_threadsafe", submit)
 
     succeeded = realtime.handle_status_message(

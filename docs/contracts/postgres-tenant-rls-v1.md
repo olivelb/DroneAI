@@ -75,9 +75,12 @@ status, expiry and authorization version. It does not expose missions,
 datasets, outbox records or another credential.
 
 The realtime Kafka consumer needs an organization before applying one status
-event. It calls `droneai_mission_audience(vol_id)`, a stable `SECURITY DEFINER`
-function with a fixed search path that returns only organization and owner.
-Persistence then runs in the resulting tenant transaction. The request-serving
+event. New status events carry that organization. The consumer calls
+`droneai_mission_audience(vol_id)`, a stable `SECURITY DEFINER` function with a
+fixed search path that returns only organization and owner, and rejects the
+event if the returned organization differs. Persistence then runs in the
+resulting tenant transaction. Historical version-one events without an
+organization use the same narrow lookup for compatibility. The request-serving
 container never receives the operator database URL for this path.
 
 The dashboard API schema-wait init container also uses `api-database-url`; no

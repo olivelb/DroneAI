@@ -73,11 +73,20 @@ continues safely across the v1-to-v2 transition.
 
 ## Cross-process propagation
 
-Mission events include `organization_id`, and their JSON Schema rejects unsafe
-path-like values. Legacy events remain readable. Realtime audience keys combine
-organization and subject, and API rate-limit keys do the same. Stage scheduler
-capacity is counted per organization; executor Jobs retain the member subject
-for attribution.
+Every new mission, orthomosaic, image-tile, detection, status and control event
+includes `organization_id`; dead-letter events preserve a valid organization
+from their source record. The shared JSON Schema rejects unsafe path-like
+values. Deterministic IDs, trace correlations and Kafka mission/tile keys all
+include the organization, so equal mission and run identifiers in two tenants
+cannot share idempotency or ordering state. Cancellation caches use the same
+tenant-qualified identity.
+
+Historical version-one events without an organization remain readable. A
+tenant-bearing status event must match the durable mission organization before
+database persistence or WebSocket fan-out; mismatches fail closed. Realtime
+audience keys combine organization and subject, and API rate-limit keys do the
+same. Stage scheduler capacity is counted per organization; executor Jobs
+retain the member subject for attribution.
 
 ## Deliberate limits
 

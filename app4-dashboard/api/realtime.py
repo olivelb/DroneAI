@@ -84,11 +84,18 @@ class StatusHub:
 status_hub = StatusHub()
 
 
-def mission_owner_subject(vol_id: str) -> str:
+def mission_owner_subject(
+    vol_id: str,
+    organization_id: str | None = None,
+) -> str:
     if not vol_id:
         return "legacy-unassigned"
-    audience = get_mission_audience(vol_id)
+    audience = get_mission_audience(vol_id, organization_id)
     if audience is None:
+        if organization_id is not None:
+            raise LookupError(
+                "Status event organization does not match its durable mission"
+            )
         return "legacy-unassigned:legacy-unassigned"
     return f"{audience[0]}:{audience[1]}"
 
@@ -104,8 +111,18 @@ def handle_status_message(
 ) -> bool:
     def persist_and_broadcast(event: JsonObject) -> None:
         vol_id = str(event.get("vol_id") or "")
-        owner_subject = mission_owner_subject(vol_id)
-        organization_id = owner_subject.partition(":")[0] or "legacy-unassigned"
+        event_organization_id = event.get("organization_id")
+        organization_id = (
+            str(event_organization_id)
+            if event_organization_id is not None
+            else None
+        )
+        owner_subject = mission_owner_subject(vol_id, organization_id)
+        organization_id = (
+            organization_id
+            or owner_subject.partition(":")[0]
+            or "legacy-unassigned"
+        )
         process_inbox_transaction(
             partial(get_session, organization_id=organization_id),
             consumer_group=STATUS_STATE_INBOX_GROUP,
