@@ -380,6 +380,30 @@ def _prepare_execution(
     return durable_run_id, context, interval
 
 
+def _record_execution_failure(
+    durable_run_id: str,
+    error: Exception,
+) -> None:
+    """Persist the shared terminal failure policy for every stage executor."""
+
+    rejection = error if isinstance(error, StageQualityGateRejected) else None
+    terminal_status = _mark_terminal(
+        durable_run_id,
+        "failed",
+        str(error)[:4000],
+        quality_metrics=(
+            rejection.quality_metrics if rejection is not None else None
+        ),
+        rejection_evidence=(
+            rejection.evidence if rejection is not None else None
+        ),
+    )
+    if terminal_status == "cancelled":
+        raise StageExecutionCancelled(
+            f"Stage run {durable_run_id} was cancelled"
+        ) from error
+
+
 def execute_one_shot_stage(
     expected_stage: StageId,
     handler: StageHandler,
@@ -401,24 +425,7 @@ def execute_one_shot_stage(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
-        rejection = (
-            error if isinstance(error, StageQualityGateRejected) else None
-        )
-        terminal_status = _mark_terminal(
-            durable_run_id,
-            "failed",
-            str(error)[:4000],
-            quality_metrics=(
-                rejection.quality_metrics if rejection is not None else None
-            ),
-            rejection_evidence=(
-                rejection.evidence if rejection is not None else None
-            ),
-        )
-        if terminal_status == "cancelled":
-            raise StageExecutionCancelled(
-                f"Stage run {durable_run_id} was cancelled"
-            ) from error
+        _record_execution_failure(durable_run_id, error)
         raise
 
 
@@ -444,22 +451,5 @@ def execute_stage_subtask(
         _mark_terminal(durable_run_id, "cancelled", None)
         raise
     except Exception as error:
-        rejection = (
-            error if isinstance(error, StageQualityGateRejected) else None
-        )
-        terminal_status = _mark_terminal(
-            durable_run_id,
-            "failed",
-            str(error)[:4000],
-            quality_metrics=(
-                rejection.quality_metrics if rejection is not None else None
-            ),
-            rejection_evidence=(
-                rejection.evidence if rejection is not None else None
-            ),
-        )
-        if terminal_status == "cancelled":
-            raise StageExecutionCancelled(
-                f"Stage run {durable_run_id} was cancelled"
-            ) from error
+        _record_execution_failure(durable_run_id, error)
         raise

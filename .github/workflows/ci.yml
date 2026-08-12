@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -18,6 +19,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       python: ${{ steps.scopes.outputs.python }}
+      duplication: ${{ steps.scopes.outputs.duplication }}
       docs: ${{ steps.scopes.outputs.docs }}
       dronegs: ${{ steps.scopes.outputs.dronegs }}
       migrations: ${{ steps.scopes.outputs.migrations }}
@@ -156,6 +158,25 @@ jobs:
           python -m pytest -q -m integration
           tests/integration/test_stage_scheduler_postgres.py
 
+  duplication:
+    name: Python production duplication
+    needs: changes
+    if: needs.changes.outputs.duplication == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: app4-dashboard/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app4-dashboard/frontend/package-lock.json
+      - run: corepack npm ci --ignore-scripts
+      - run: corepack npm run duplication
+
   frontend:
     name: Frontend lint and build
     needs: changes
@@ -175,8 +196,6 @@ jobs:
       - run: corepack npm ci
       - name: Audit production dependencies
         run: corepack npm audit --omit=dev --audit-level=high
-      - name: Reject duplicated Python production code
-        run: corepack npm run duplication
       - run: corepack npm run test
       - run: corepack npm run lint
       - run: corepack npm run build
@@ -284,6 +303,14 @@ jobs:
               assert os.getuid() == 10001;
               sys.path.insert(0, '/app/app3-processing');
               import analysis_workflow, orthomosaic_tiler
+          - image: drone-ia:ci
+            artifact: ia-worker
+            dockerfile: app2-ia/Dockerfile
+            command: >-
+              import os, sys;
+              assert os.getuid() == 10001;
+              sys.path.insert(0, '/app/app2-ia');
+              import detection_core, tile_detection_workflow
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build ${{ matrix.image }}
@@ -421,6 +448,7 @@ jobs:
       - docs
       - dronegs-core
       - python
+      - duplication
       - migrations
       - frontend
       - frontend-container
@@ -438,6 +466,7 @@ jobs:
             "${{ needs.docs.result }}" \
             "${{ needs.dronegs-core.result }}" \
             "${{ needs.python.result }}" \
+            "${{ needs.duplication.result }}" \
             "${{ needs.migrations.result }}" \
             "${{ needs.frontend.result }}" \
             "${{ needs.frontend-container.result }}" \
