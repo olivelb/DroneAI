@@ -167,6 +167,12 @@ jobs:
         run: >-
           python -m pytest -q -m integration
           tests/integration/test_stage_scheduler_postgres.py
+      - name: Exercise one-revision rolling compatibility
+        run: |
+          alembic downgrade -1
+          python -m scripts.ci.verify_rolling_migration seed
+          alembic upgrade head
+          python -m scripts.ci.verify_rolling_migration verify
 
   integration:
     name: PostgreSQL, Kafka and S3 composition
