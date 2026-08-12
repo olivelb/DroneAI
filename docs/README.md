@@ -32,6 +32,7 @@ implemented system as it exists now.
 | Tenant content-addressed storage | [`contracts/tenant-cas-v3.md`](contracts/tenant-cas-v3.md) |
 | Machine-readable production drill evidence | [`contracts/production-qualification-evidence-v1.schema.json`](contracts/production-qualification-evidence-v1.schema.json) |
 | Audited feature corrections and named raster styles | [`contracts/explorer-editing-styles-v1.md`](contracts/explorer-editing-styles-v1.md) |
+| Browser runtime response validation | [`contracts/frontend-runtime-contracts-v1.md`](contracts/frontend-runtime-contracts-v1.md) |
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |
 | DroneGS architecture and backend boundary | [`dronegs/ARCHITECTURE.md`](dronegs/ARCHITECTURE.md), [`dronegs/BACKENDS.md`](dronegs/BACKENDS.md) |
 | Trainer command-line contract | [`dronegs/contracts/trainer-cli-v1.md`](dronegs/contracts/trainer-cli-v1.md) |

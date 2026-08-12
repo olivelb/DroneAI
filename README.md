@@ -6,9 +6,11 @@ Splatting, raster generation, optional AI inference and an operator dashboard.
 
 > [!IMPORTANT]
 > The production baseline now separates organizations in authentication,
-> storage and PostgreSQL RLS. It is not yet a public self-service SaaS: OIDC,
-> invitations, platform-support access, commercial quota ledgers and qualified
-> high availability remain outside its present scope.
+> storage, compute and PostgreSQL RLS. Durable invitations, credential recovery,
+> metadata-only platform support, commercial policy ledgers and protected
+> control-worker high availability are implemented. It is not yet a public
+> self-service SaaS: OIDC federation and self-service organization signup remain
+> outside its present scope.
 
 ## Production processes
 

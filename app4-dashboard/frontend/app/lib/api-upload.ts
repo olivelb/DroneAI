@@ -1,24 +1,13 @@
 import { api } from "./api-client";
-
-type DirectUploadFile = {
-  file_id: string;
-  name: string;
-  size: number;
-  s3_key: string;
-  total_parts: number;
-  status: string;
-};
-
-type DirectUploadSession = {
-  session_id: string;
-  dataset: string;
-  status: string;
-  total: number;
-  total_bytes: number;
-  part_size: number;
-  expires_at: string;
-  files: DirectUploadFile[];
-};
+import {
+  parseDirectUploadSession,
+  parseSignedUploadPart,
+  parseUploadAbort,
+  parseUploadFileCompletion,
+  parseUploadResult,
+  type DirectUploadFile,
+  type DirectUploadSession,
+} from "./upload-api-contracts";
 
 type UploadedPart = { part_number: number; etag: string };
 
@@ -37,9 +26,10 @@ const uploadPart = async (
   let lastError: Error | null = null;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const signed = await api<{ method: string; url: string }>(
+      const signed = await api(
         `/datasets/upload-sessions/${encodeURIComponent(sessionId)}`
           + `/files/${encodeURIComponent(descriptor.file_id)}/parts/${partNumber}`,
+        parseSignedUploadPart,
         jsonRequest(),
       );
       const response = await fetch(signed.url, {
@@ -98,6 +88,7 @@ const uploadDirectFile = async (
   await api(
     `/datasets/upload-sessions/${encodeURIComponent(session.session_id)}`
       + `/files/${encodeURIComponent(descriptor.file_id)}/complete`,
+    parseUploadFileCompletion,
     jsonRequest({ parts }),
   );
 };
@@ -116,8 +107,9 @@ export const uploadDataset = async (
   let sessionId: string | null = null;
   try {
     const localFiles = Array.from(files);
-    const session = await api<DirectUploadSession>(
+    const session = await api(
       "/datasets/upload-sessions",
+      parseDirectUploadSession,
       jsonRequest({
         dataset_name: datasetName,
         files: localFiles.map((file) => ({
@@ -151,22 +143,20 @@ export const uploadDataset = async (
         () => worker(),
       ),
     );
-    const result = await api<{
-      total: number;
-      completed: number;
-      failed: number;
-      status: string;
-    }>(
+    const result = await api(
       `/datasets/upload-sessions/${encodeURIComponent(session.session_id)}/complete`,
+      parseUploadResult,
       jsonRequest(),
     );
     onProgress?.({ total, completed: result.completed, failed: result.failed });
     return result;
   } catch (error) {
     if (sessionId) {
-      await api(`/datasets/upload-sessions/${encodeURIComponent(sessionId)}`, {
-        method: "DELETE",
-      }).catch(() => undefined);
+      await api(
+        `/datasets/upload-sessions/${encodeURIComponent(sessionId)}`,
+        parseUploadAbort,
+        { method: "DELETE" },
+      ).catch(() => undefined);
     }
     const message = error instanceof Error ? error.message : "network error";
     const results = Array.from(files, (file) => ({

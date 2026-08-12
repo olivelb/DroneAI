@@ -238,7 +238,7 @@ export type AnalysisRun = {
   color: string;
   tags: string[];
   backend: AIBackend;
-  model_variant?: string;
+  model_variant?: string | null;
   prompt?: string;
   classes: string[];
   confidence: number;
@@ -349,6 +349,11 @@ export type GcpCollection = import("geojson").FeatureCollection<
   import("geojson").Point,
   GcpPointProperties
 > & { gcp_sets: GcpSetSummary[] };
+
+export type GcpSetDetail = import("geojson").FeatureCollection<
+  import("geojson").Point,
+  GcpPointProperties
+> & GcpSetSummary;
 
 export type GcpImportOptions = {
   name: string;

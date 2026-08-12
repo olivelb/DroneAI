@@ -19,6 +19,66 @@ const json = (body: unknown, status = 200) => ({
   body: JSON.stringify(body),
 });
 
+const gcpSetSummary = {
+  set_id: "set-1",
+  name: "Survey control",
+  source_filename: "markers.csv",
+  source_format: "delimited-text",
+  source_crs: "EPSG:2154",
+  source_sha256: "a".repeat(64),
+  point_count: 1,
+  adjustment_count: 1,
+  checkpoint_count: 0,
+  marked_observation_count: 0,
+  version: 1,
+  created_at: "2026-08-10T12:00:00Z",
+  updated_at: "2026-08-10T12:00:00Z",
+};
+
+const gcpObservation = (overrides: Record<string, unknown> = {}) => ({
+  observation_id: "obs-1",
+  image_name: "DJI_0001.JPG",
+  image_s3_key: "datasets/survey-set/DJI_0001.JPG",
+  status: "candidate",
+  pixel_x: null,
+  pixel_y: null,
+  candidate_distance_m: 18.5,
+  candidate_method: "exif-distance",
+  projected_pixel_x: null,
+  projected_pixel_y: null,
+  image_width_px: 1200,
+  image_height_px: 800,
+  image_longitude: 2.0501,
+  image_latitude: 48.0501,
+  version: 1,
+  updated_at: "2026-08-10T12:00:00Z",
+  ...overrides,
+});
+
+const gcpFeature = (overrides: Record<string, unknown> = {}) => ({
+  type: "Feature",
+  id: "point-1",
+  geometry: { type: "Point", coordinates: [2.05, 48.05] },
+  properties: {
+    point_id: "point-1",
+    set_id: "set-1",
+    set_name: "Survey control",
+    external_id: "P1",
+    altitude_m: 125,
+    source_coordinates: [652000, 6860000, 125],
+    role: "adjustment",
+    horizontal_accuracy_m: 0.02,
+    vertical_accuracy_m: 0.03,
+    image_accuracy_px: 1,
+    observation_summary: { candidate: 1, marked: 0, skipped: 0 },
+    observations: [gcpObservation()],
+    properties: {},
+    version: 1,
+    updated_at: "2026-08-10T12:00:00Z",
+    ...overrides,
+  },
+});
+
 async function mockApi(page: Page, options: ApiOptions = {}) {
   const missionStatus = options.missionStatus ?? "success";
   const missionStep =
@@ -139,6 +199,14 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
             selectable_classes: ["car", "small vehicle", "large vehicle"],
           },
         ],
+        sam3: {
+          model_id: "facebook/sam3",
+          model_revision: "revision",
+          processor_target_size: 1008,
+          maximum_source_tile_size: 1536,
+          inference_batch_size: 1,
+          minimum_vram_gib: 16,
+        },
         work_drives: [
           { name: "local", label: "Local", mount: "/work/local" },
         ],
@@ -211,6 +279,7 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
     if (url.pathname === "/maps/mission-existing/metadata/ortho") {
       await route.fulfill(json({
         bounds: { wgs84: [2.0, 48.0, 2.1, 48.1] },
+        bands: 3,
         min_zoom: 10,
         max_zoom: 20,
         crs: "EPSG:2154",
@@ -224,77 +293,38 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       }));
       return;
     }
+    if (url.pathname === "/maps/mission-existing/styles/ortho") {
+      await route.fulfill(json({ layer: "ortho", styles: [] }));
+      return;
+    }
     if (url.pathname === "/maps/mission-existing/gcps" && request.method() === "GET") {
       await route.fulfill(json({
         type: "FeatureCollection",
-        gcp_sets: [{
-          set_id: "set-1",
-          name: "Survey control",
-          source_filename: "markers.csv",
-          source_format: "delimited-text",
-          source_crs: "EPSG:2154",
-          source_sha256: "a".repeat(64),
-          point_count: 1,
-          adjustment_count: 1,
-          checkpoint_count: 0,
-          marked_observation_count: 0,
-          version: 1,
-          created_at: "2026-08-10T12:00:00Z",
-          updated_at: "2026-08-10T12:00:00Z",
-        }],
-        features: [{
-          type: "Feature",
-          id: "point-1",
-          geometry: { type: "Point", coordinates: [2.05, 48.05] },
-          properties: {
-            point_id: "point-1",
-            set_id: "set-1",
-            set_name: "Survey control",
-            external_id: "P1",
-            altitude_m: 125,
-            source_coordinates: [652000, 6860000, 125],
-            role: "adjustment",
-            horizontal_accuracy_m: 0.02,
-            vertical_accuracy_m: 0.03,
-            image_accuracy_px: 1,
-            observation_summary: { candidate: 1, marked: 0, skipped: 0 },
-            observations: [{
-              observation_id: "obs-1",
-              image_name: "DJI_0001.JPG",
-              image_s3_key: "datasets/survey-set/DJI_0001.JPG",
-              status: "candidate",
-              pixel_x: null,
-              pixel_y: null,
-              candidate_distance_m: 18.5,
-              image_longitude: 2.0501,
-              image_latitude: 48.0501,
-              version: 1,
-              updated_at: "2026-08-10T12:00:00Z",
-            }],
-            properties: {},
-            version: 1,
-            updated_at: "2026-08-10T12:00:00Z",
-          },
-        }],
+        gcp_sets: [gcpSetSummary],
+        features: [gcpFeature()],
       }));
       return;
     }
     if (url.pathname === "/maps/mission-existing/gcps/points/point-1") {
       const payload = request.postDataJSON() as Record<string, unknown>;
       options.onGcpPointUpdate?.(payload);
-      await route.fulfill(json({ type: "Feature", id: "point-1" }));
+      await route.fulfill(json(gcpFeature({ ...payload, version: 2 })));
       return;
     }
     if (url.pathname === "/maps/mission-existing/gcps/observations/obs-1") {
       const payload = request.postDataJSON() as Record<string, unknown>;
       options.onGcpObservationUpdate?.(payload);
-      await route.fulfill(json({ observation_id: "obs-1", ...payload }));
+      await route.fulfill(json(gcpObservation({ ...payload, version: 2 })));
       return;
     }
     if (url.pathname === "/maps/mission-existing/gcps/set-1/candidates/refresh") {
       options.onGcpCandidateRefresh?.();
       await route.fulfill(json({
-        gcp_set: { type: "FeatureCollection", features: [] },
+        gcp_set: {
+          ...gcpSetSummary,
+          type: "FeatureCollection",
+          features: [gcpFeature()],
+        },
         candidate_generation: { added_observation_count: 0 },
       }));
       return;
@@ -398,6 +428,7 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         attempts: [{ attempt: 0, status: missionStatus }],
         phases: {
           COLMAP: {
+            vol_id: "mission-existing",
             status: missionStatus,
             step: missionStep,
             progress: missionProgress,

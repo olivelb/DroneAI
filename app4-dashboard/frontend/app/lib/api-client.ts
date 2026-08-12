@@ -1,3 +1,5 @@
+import type { Decoder } from "./contract-decoder";
+
 export class ApiError extends Error {
   status: number;
 
@@ -33,8 +35,9 @@ export const getWsBaseUrl = () => {
     .replace(/^https:/, "wss:");
 };
 
-export const api = async <T = unknown>(
+export const api = async <T>(
   path: string,
+  decode: Decoder<T>,
   init?: RequestInit,
 ): Promise<T> => {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
@@ -52,5 +55,5 @@ export const api = async <T = unknown>(
     }
     throw new ApiError(response.status, detail);
   }
-  return payload as T;
+  return decode(payload);
 };
