@@ -582,6 +582,49 @@ def file_exists(s3_key: str, bucket: str | None = None) -> bool:
         raise
 
 
+def get_object_info(
+    s3_key: str,
+    bucket: str | None = None,
+) -> dict[str, int | str | dict[str, str]] | None:
+    """Return stable HEAD metadata, or ``None`` when the object is absent."""
+
+    selected_bucket = bucket or S3_BUCKET
+    try:
+        response = _get_client().head_object(Bucket=selected_bucket, Key=s3_key)
+    except ClientError as error:
+        if _client_error_code(error) in {"404", "NoSuchKey", "NotFound"}:
+            return None
+        raise
+    metadata = {
+        str(key).lower(): str(value)
+        for key, value in dict(response.get("Metadata") or {}).items()
+    }
+    return {
+        "key": s3_key,
+        "size": int(response.get("ContentLength", -1)),
+        "etag": str(response.get("ETag") or ""),
+        "content_type": str(response.get("ContentType") or ""),
+        "metadata": metadata,
+    }
+
+
+def list_multipart_uploads(
+    s3_key: str,
+    bucket: str | None = None,
+) -> list[str]:
+    """List opaque upload IDs for unfinished multipart uploads of one exact key."""
+
+    selected_bucket = bucket or S3_BUCKET
+    paginator = _get_client().get_paginator("list_multipart_uploads")
+    pages = paginator.paginate(Bucket=selected_bucket, Prefix=s3_key)
+    upload_ids: list[str] = []
+    for page in pages:
+        for upload in page.get("Uploads", []):
+            if upload.get("Key") == s3_key and upload.get("UploadId"):
+                upload_ids.append(str(upload["UploadId"]))
+    return upload_ids
+
+
 def get_object_size(s3_key: str, bucket: str | None = None) -> int:
     """Return the size in bytes of an S3 object."""
     bucket = bucket or S3_BUCKET

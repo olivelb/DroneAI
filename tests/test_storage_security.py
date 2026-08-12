@@ -118,6 +118,55 @@ def test_verified_upload_checks_size_and_sha256(tmp_path, monkeypatch):
     assert result["sha256"] == client.metadata["sha256"]
 
 
+class _RecoveryPaginator:
+    def paginate(self, **kwargs):
+        assert kwargs == {"Bucket": storage.S3_BUCKET, "Prefix": "datasets/a.jpg"}
+        return [
+            {
+                "Uploads": [
+                    {"Key": "datasets/a.jpg", "UploadId": "upload-1"},
+                    {"Key": "datasets/a.jpg.extra", "UploadId": "upload-2"},
+                ]
+            },
+            {"Uploads": [{"Key": "datasets/a.jpg", "UploadId": "upload-3"}]},
+        ]
+
+
+class _RecoveryStorageClient:
+    def head_object(self, *, Bucket, Key):
+        assert Bucket == storage.S3_BUCKET
+        if Key == "datasets/missing.jpg":
+            raise _client_error("404")
+        return {
+            "ContentLength": 123,
+            "ETag": '"object-etag"',
+            "ContentType": "image/jpeg",
+            "Metadata": {"DroneAI-Upload-Session": "session-1"},
+        }
+
+    def get_paginator(self, operation_name):
+        assert operation_name == "list_multipart_uploads"
+        return _RecoveryPaginator()
+
+
+def test_recovery_storage_reads_identity_and_lists_only_exact_key(monkeypatch):
+    client = _RecoveryStorageClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    assert storage.get_object_info("datasets/missing.jpg") is None
+    assert storage.get_object_info("datasets/a.jpg") == {
+        "key": "datasets/a.jpg",
+        "size": 123,
+        "etag": '"object-etag"',
+        "content_type": "image/jpeg",
+        "metadata": {"droneai-upload-session": "session-1"},
+    }
+    assert storage.list_multipart_uploads("datasets/a.jpg") == [
+        "upload-1",
+        "upload-3",
+    ]
+
+
 class _CasClient:
     def __init__(self):
         self.objects = {}
