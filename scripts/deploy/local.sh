@@ -58,6 +58,7 @@ deploy_local() {
         ia-worker \
         processing-worker \
         dashboard-api \
+        dashboard-control-worker \
         dashboard-frontend
     do
         grep --fixed-strings --line-regexp --quiet "$service" \

@@ -18,7 +18,11 @@ def test_documentation_change_only_runs_link_validation() -> None:
 
 
 def test_qualification_contract_changes_run_cpu_and_docs_validation() -> None:
-    assert _enabled("tools/production_qualification.py") == {"python", "docs"}
+    assert _enabled("tools/production_qualification.py") == {
+        "python",
+        "docs",
+        "duplication",
+    }
     assert _enabled("tests/test_production_qualification.py") == {"python", "docs"}
 
 
@@ -27,42 +31,93 @@ def test_frontend_change_only_runs_frontend_job() -> None:
 
 
 def test_frontend_runtime_dependency_changes_run_image_supply_chain() -> None:
+    assert _enabled("app4-dashboard/frontend/Dockerfile") == {
+        "frontend",
+        "frontend_container",
+    }
     for path in (
-        "app4-dashboard/frontend/Dockerfile",
         "app4-dashboard/frontend/package.json",
         "app4-dashboard/frontend/package-lock.json",
     ):
-        assert _enabled(path) == {"frontend", "frontend_container"}
+        assert _enabled(path) == {
+            "frontend",
+            "frontend_container",
+            "duplication",
+        }
 
 
 def test_shared_change_runs_python_and_service_image_jobs() -> None:
-    assert _enabled("shared/event_contracts.py") == {"python", "containers"}
+    assert _enabled("shared/event_contracts.py") == {
+        "python",
+        "duplication",
+        "containers",
+        "integration",
+    }
 
 
 def test_schema_change_runs_python_migrations_and_service_images() -> None:
-    assert _enabled("shared/database.py") == {"python", "migrations", "containers"}
+    assert _enabled("shared/database.py") == {
+        "python",
+        "duplication",
+        "migrations",
+        "containers",
+        "integration",
+    }
     assert _enabled("alembic/versions/20260806_revision.py") == {
         "python",
         "migrations",
         "containers",
+        "integration",
     }
 
 
 def test_scheduler_changes_run_postgres_locking_contract() -> None:
     assert _enabled("app4-dashboard/api/stage_orchestrator.py") == {
         "python",
+        "duplication",
         "migrations",
         "containers",
+        "integration",
     }
     assert _enabled("tests/integration/test_stage_scheduler_postgres.py") == {
         "python",
         "migrations",
+        "integration",
     }
+
+
+def test_platform_composition_changes_run_real_service_integration() -> None:
+    assert _enabled("shared/storage.py") == {
+        "python",
+        "duplication",
+        "containers",
+        "integration",
+    }
+    assert _enabled("tests/integration/test_platform_composition.py") == {
+        "python",
+        "integration",
+    }
+    assert _enabled(".github/compose.integration.yaml") == {"integration"}
 
 
 def test_native_dronegs_change_runs_python_and_native_jobs_when_relevant() -> None:
     assert _enabled("app1-colmap/dronegs/src/trainer.cpp") == {"dronegs"}
-    assert _enabled("app1-colmap/dronegs/tools/lpips_eval.py") == {"python", "dronegs"}
+    assert _enabled("app1-colmap/dronegs/tools/lpips_eval.py") == {
+        "python",
+        "duplication",
+        "dronegs",
+    }
+
+
+def test_ia_changes_run_python_duplication_and_runtime_image_validation() -> None:
+    expected = {"python", "duplication", "containers"}
+    assert _enabled("app2-ia/tile_detection_workflow.py") == expected
+    assert _enabled("app2-ia/Dockerfile") == {"containers"}
+    assert _enabled("requirements/ia-extra.txt") == {"python", "containers"}
+
+
+def test_duplication_tooling_changes_run_the_dedicated_gate() -> None:
+    assert _enabled(".jscpd.json") == {"duplication"}
 
 
 def test_chart_change_only_runs_helm_job() -> None:

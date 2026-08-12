@@ -1,0 +1,86 @@
+# SaaS structural audit and hardening — 2026-08-12
+
+## Decision boundary
+
+This audit evaluates software structure, isolation, reliability, deployment,
+tests and maintainability. It deliberately does not reinterpret BIGZEN results
+or change reconstruction, Gaussian, raster, GCP or detector thresholds. CUDA
+12.9 remains the validated runtime and Node 20 remains the supported frontend
+runtime.
+
+Until OVH CPU/GPU test pods are available, the existing browser E2E remains a
+useful operator-journey metric. It is complemented here by a real synthetic
+Postgres/Kafka/MinIO composition test; neither is presented as scientific
+dataset qualification.
+
+## Implemented in this hardening series
+
+| Area | Delivered invariant | Verification |
+|---|---|---|
+| CI closure | Python duplication and the IA container can no longer be skipped by an affected change; merge queues execute the full gate | path-classifier tests, actionlint, container matrix |
+| Input boundaries | mission/run identifiers are constrained before becoming local paths or object keys | event, tile and workspace tests; exported JSON Schema |
+| API lifecycle | durable outbox, upload reconciliation and stage scheduling run in a dedicated control worker | lifecycle tests, Compose config, Helm render and least-privilege RBAC |
+| Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
+| Integration | one test crosses a real Postgres outbox transaction, Kafka delivery/consumption and verified MinIO round trip | isolated Compose integration CI job |
+| SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
+| Storage evolution | new organizations use versioned namespaced keys while historical keys remain readable | tenancy helper and upload recovery tests |
+| Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
+
+The qualified local baseline after these changes is 884 non-GPU/non-integration
+Python tests, two real-service integration tests, 29 frontend unit tests and 10
+Playwright journeys. The full Python static gate, documentation links, schema
+sync, shellcheck and actionlint also pass.
+
+## Main remaining defects that do not require scientific datasets
+
+### P1 — SaaS control plane
+
+1. **Membership and credential lifecycle.** Organization claims are explicit,
+   but provisioning still edits a Kubernetes Secret. Add durable users,
+   memberships, invitations, hashed API credentials, rotation/revocation and a
+   distinct platform-support role.
+2. **Defense-in-depth tenancy.** Add PostgreSQL row-level-security policies and
+   set a transaction-local organization identity. Keep application filters and
+   add negative tests proving both layers reject cross-organization access.
+3. **Real HTTP black-box composition.** The browser suite mocks the API and the
+   new integration suite exercises service clients below HTTP. Add a small
+   Compose profile running migrations, API and control worker against real
+   services, then launch/cancel a synthetic mission without GPU work.
+4. **Control-worker availability.** The first deployment is a non-overlapping
+   singleton (`Recreate`). Add leader election or qualify all reconciliation
+   loops for active-active replicas before claiming control-plane HA.
+5. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
+   request and retention policies with auditable usage records. Do not reuse
+   scientific quality profiles as commercial quotas.
+
+### P2 — Maintainability and operability
+
+1. **Split remaining hotspots by ownership boundary.** Priority files are
+   `shared/database.py` (models by bounded context),
+   `shared/pipeline_params.py` (contract/catalogue),
+   `app4-dashboard/api/dataset_uploads.py` (commands, S3 gateway, recovery),
+   `app3-processing/analysis_workflow.py` (campaign, aggregation, publication),
+   `shared/storage.py` (client, CAS, multipart) and
+   `app4-dashboard/api/routers/map_gcps.py` (read/write/audit routes).
+2. **Complete runtime response validation.** Authentication now fails closed,
+   but other frontend endpoints still trust the generic JSON transport after
+   compile-time typing. Add generated or lightweight decoders for mission,
+   map, GCP, upload and pod responses.
+3. **Observability and SLOs.** Export request, outbox age, scheduler queue,
+   reconciliation, Kafka lag, S3 failure and organization-usage metrics with
+   trace correlation and alert thresholds.
+4. **Fault and concurrency qualification.** Exercise killed API/control
+   processes, duplicate Kafka delivery, stale leases, S3 timeouts, concurrent
+   upload finalization and rolling migration compatibility.
+5. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
+   legacy storage into organizations and eventually make mission identifiers
+   unique within an organization rather than globally.
+
+## Scientific qualification remains separate
+
+Dataset-backed E2E and benchmarks continue to answer scientific questions:
+accuracy, completeness, reconstruction stability, raster quality, GCP/RTK
+behavior, inference quality and GPU capacity. A platform defect may invalidate
+a run operationally, but a scientific result must not block fixes to tenancy,
+auth, CI, migrations, probes, modularity or recovery that are fully testable
+with synthetic data.

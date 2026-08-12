@@ -34,6 +34,7 @@ from shared.stage_scheduler import (
     StageCandidate,
     select_stage_candidates,
 )
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 from .kubernetes_jobs import (
     IndexedJobConfig,
@@ -551,6 +552,13 @@ def _try_acquire_scheduler_reservation_lock(session: Any) -> bool:
     return bool(acquired)
 
 
+def _scheduler_tenant(mission: Mission) -> str:
+    organization_id = cast(str, mission.organization_id)
+    if organization_id == LEGACY_ORGANIZATION_ID:
+        return cast(str, mission.owner_subject)
+    return organization_id
+
+
 def reserve_ready_jobs(
     session: Any,
     settings: StageOrchestratorSettings,
@@ -584,7 +592,7 @@ def reserve_ready_jobs(
         StageAllocation(
             run_id=cast(str, run.run_id),
             mission_id=cast(int, mission.id),
-            owner_subject=cast(str, mission.owner_subject),
+            owner_subject=_scheduler_tenant(mission),
             stage=cast(StageId, run.stage),
             resource_class=cast(ResourceClassId, run.resource_class),
         )
@@ -594,7 +602,7 @@ def reserve_ready_jobs(
         StageCandidate(
             run_id=cast(str, run.run_id),
             mission_id=cast(int, mission.id),
-            owner_subject=cast(str, mission.owner_subject),
+            owner_subject=_scheduler_tenant(mission),
             stage=cast(StageId, run.stage),
             resource_class=cast(ResourceClassId, run.resource_class),
             created_at=cast(datetime, run.created_at),

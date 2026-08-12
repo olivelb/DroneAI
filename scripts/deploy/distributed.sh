@@ -283,14 +283,17 @@ deploy_distributed() {
         --timeout 10m
 
     if [[ -n "${STAGE_JOBS_IMAGE_TAG:-}" ]]; then
-        kube rollout restart deployment/dashboard-api deployment/dashboard-frontend \
+        kube rollout restart deployment/dashboard-api \
+            deployment/dashboard-control-worker deployment/dashboard-frontend \
             --namespace drone-ai
         kube wait --for=condition=Available \
-            deployment/dashboard-api deployment/dashboard-frontend \
+            deployment/dashboard-api deployment/dashboard-control-worker \
+            deployment/dashboard-frontend \
             --namespace drone-ai --timeout=5m
     else
         kube rollout restart deployment \
-            colmap-worker ia-worker processing-worker dashboard-api dashboard-frontend \
+            colmap-worker ia-worker processing-worker dashboard-api \
+            dashboard-control-worker dashboard-frontend \
             --namespace drone-ai
         kube wait --for=condition=Available deployment --all \
             --namespace drone-ai --timeout=5m

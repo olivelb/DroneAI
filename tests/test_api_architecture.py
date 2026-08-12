@@ -83,6 +83,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/datasets/upload-sessions",
         "/browse",
     } <= paths
+    assert {"/live", "/ready"} <= direct_paths
     assert "/datasets/upload-file" not in paths
     assert any(path.startswith("/preview/{s3_key}") for path in paths)
     assert any(path.startswith("/files/{s3_key}") for path in paths)
@@ -540,14 +541,12 @@ def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
 
 
 def test_frontend_uses_direct_presigned_multipart_upload():
-    source = (Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib" / "api.ts").read_text(
-        encoding="utf-8"
-    )
-    upload_source = source.split(
-        "export const uploadDataset = async",
-        1,
-    )[1].split("const encodeS3Key", 1)[0]
+    api_root = Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib"
+    source = (api_root / "api-upload.ts").read_text(encoding="utf-8")
+    barrel_source = (api_root / "api.ts").read_text(encoding="utf-8")
+    upload_source = source.split("export const uploadDataset = async", 1)[1]
 
+    assert 'export { uploadDataset } from "./api-upload"' in barrel_source
     assert '"/datasets/upload-sessions"' in upload_source
     assert "signed.url" in source
     assert 'credentials: "omit"' in source

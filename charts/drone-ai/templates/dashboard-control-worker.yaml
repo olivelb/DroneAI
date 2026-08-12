@@ -1,0 +1,122 @@
+{{- if .Values.dashboardApi.controlWorker.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: dashboard-control-worker-sa
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+automountServiceAccountToken: {{ .Values.stageJobs.enabled }}
+{{- if .Values.stageJobs.enabled }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: dashboard-control-worker-jobs
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: dashboard-control-worker-jobs
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+subjects:
+- kind: ServiceAccount
+  name: dashboard-control-worker-sa
+  namespace: {{ include "drone-ai.namespace" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: dashboard-control-worker-jobs
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard-control-worker
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+    app: dashboard-control-worker
+spec:
+  replicas: {{ .Values.dashboardApi.controlWorker.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dashboard-control-worker
+  template:
+    metadata:
+      labels:
+        app: dashboard-control-worker
+    spec:
+      serviceAccountName: dashboard-control-worker-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+      - name: wait-for-schema
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        command: ["/bin/sh", "-c"]
+        args:
+        - until cd /app && alembic current 2>/dev/null | grep -q "(head)"; do sleep 2; done
+        env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "drone-ai.storageSecretName" . }}
+              key: {{ .Values.storage.databaseUrlSecretKey }}
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      containers:
+      - name: control-worker
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
+        imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+        command: ["python", "-m", "app4-dashboard.api.control_worker"]
+        env:
+        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        {{- include "drone-ai.controlEnv" . | nindent 8 }}
+        - name: DRONEAI_ENV
+          value: {{ .Values.dashboardApi.environment | quote }}
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          {{- toYaml .Values.dashboardApi.controlWorker.resources | nindent 10 }}
+      volumes:
+      - name: tmp
+        emptyDir: {}
+{{- end }}

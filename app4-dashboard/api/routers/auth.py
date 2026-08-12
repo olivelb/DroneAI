@@ -20,12 +20,14 @@ class SessionRequest(BaseModel):
 class SessionResponse(TypedDict):
     subject: str
     role: str
+    organization_id: str
     expires_in_seconds: int
 
 
 class PrincipalResponse(TypedDict):
     subject: str
     role: str
+    organization_id: str
 
 
 class StatusResponse(TypedDict):
@@ -56,6 +58,7 @@ def create_session(payload: SessionRequest, response: Response) -> SessionRespon
     return {
         "subject": principal.subject,
         "role": principal.role,
+        "organization_id": principal.organization_id,
         "expires_in_seconds": max_age,
     }
 
@@ -70,6 +73,7 @@ def read_session(
     return {
         "subject": principal.subject,
         "role": principal.role,
+        "organization_id": principal.organization_id,
     }
 
 

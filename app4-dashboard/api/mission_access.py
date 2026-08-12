@@ -8,6 +8,7 @@ from typing import Any, Protocol, Self, cast
 from fastapi import HTTPException, status
 
 from shared.database import Mission
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 from .security import Principal
 
@@ -71,7 +72,15 @@ def mission_query(
         action=action,
         vol_id=vol_id,
     )
-    return session.query(Mission).filter(Mission.owner_subject == owner)
+    organization_id = getattr(
+        principal,
+        "organization_id",
+        LEGACY_ORGANIZATION_ID,
+    )
+    return session.query(Mission).filter(
+        Mission.organization_id == organization_id,
+        Mission.owner_subject == owner,
+    )
 
 
 def get_owned_mission(

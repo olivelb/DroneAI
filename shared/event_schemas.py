@@ -15,10 +15,20 @@ from shared.stage_contracts import (
     StageId,
     validate_stage_selection,
 )
+from shared.validation import MISSION_ID_PATTERN, SAFE_SEGMENT_PATTERN
+from shared.tenancy import ORGANIZATION_ID_PATTERN
 
 
 JsonObject = dict[str, Any]
 PIPELINE_STATUSES = frozenset({"processing", "success", "error", "cancelled"})
+MissionId = Annotated[
+    str,
+    Field(min_length=3, max_length=64, pattern=MISSION_ID_PATTERN),
+]
+RunId = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=SAFE_SEGMENT_PATTERN),
+]
 
 
 class EventEnvelope(BaseModel):
@@ -37,7 +47,7 @@ class EventEnvelope(BaseModel):
 
 class MissionEvent(EventEnvelope):
     event_type: Literal["mission"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     input_dataset: str | None = Field(default=None, max_length=1024)
     pipeline: Literal["modern", "legacy"] | None = None
     quality_profile: QualityProfileId | None = None
@@ -53,6 +63,12 @@ class MissionEvent(EventEnvelope):
     colmap_params: JsonObject | None = None
     work_drive: str | None = Field(default=None, max_length=256)
     owner_subject: str | None = Field(default=None, max_length=256)
+    organization_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=ORGANIZATION_ID_PATTERN,
+    )
     phases: list[StageId] | None = Field(default=None, min_length=1, max_length=5)
     stage_run_id: str | None = Field(default=None, max_length=36)
     upstream_artifact_ids: dict[StageId, str] | None = None
@@ -85,7 +101,7 @@ class MissionEvent(EventEnvelope):
 class InferenceEventEnvelope(EventEnvelope):
     """Inference settings propagated across the processing and IA stages."""
 
-    analysis_run_id: str | None = Field(default=None, max_length=128)
+    analysis_run_id: RunId | None = None
     classes: list[str] | None = Field(default=None, max_length=20)
     ai_confidence: float | None = Field(default=None, ge=0, le=1)
     ai_backend: Literal["yolo", "sam3"] | None = None
@@ -95,7 +111,7 @@ class InferenceEventEnvelope(EventEnvelope):
 
 class OrthomosaicEvent(InferenceEventEnvelope):
     event_type: Literal["orthomosaic"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     ortho_s3_key: str | None = Field(default=None, max_length=2048)
     ortho_path: str | None = Field(default=None, max_length=2048)
     tile_size: int | None = Field(default=None, ge=256, le=4096, strict=True)
@@ -109,7 +125,7 @@ class OrthomosaicEvent(InferenceEventEnvelope):
 
 class ImageTileEvent(InferenceEventEnvelope):
     event_type: Literal["image_tile"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     tile_index: int = Field(ge=0, strict=True)
     tile_s3_key: str | None = Field(default=None, max_length=2048)
     tile_path: str | None = Field(default=None, max_length=2048)
@@ -128,10 +144,10 @@ class ImageTileEvent(InferenceEventEnvelope):
 
 class TileDetectionEvent(EventEnvelope):
     event_type: Literal["tile_detection"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     tile_index: int = Field(ge=0, strict=True)
     detections: list[JsonObject] | None = None
-    analysis_run_id: str | None = Field(default=None, max_length=128)
+    analysis_run_id: RunId | None = None
     model_manifest: JsonObject | None = None
     result_s3_key: str | None = Field(default=None, max_length=2048)
     result_sha256: str | None = Field(
@@ -166,7 +182,7 @@ class TileDetectionEvent(EventEnvelope):
 
 class StatusEvent(EventEnvelope):
     event_type: Literal["status"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     status: Literal["processing", "success", "error", "cancelled"]
     service: str | None = Field(default=None, max_length=64)
     step: str | None = Field(default=None, max_length=128)
@@ -184,9 +200,9 @@ class StatusEvent(EventEnvelope):
 
 class ControlEvent(EventEnvelope):
     event_type: Literal["control"]
-    vol_id: str = Field(min_length=1, max_length=256)
+    vol_id: MissionId
     command: Literal["cancel"]
-    analysis_run_id: str | None = Field(default=None, max_length=128)
+    analysis_run_id: RunId | None = None
 
 
 class DeadLetterEvent(EventEnvelope):

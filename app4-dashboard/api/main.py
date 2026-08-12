@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import threading
 from contextlib import asynccontextmanager
 
@@ -11,24 +10,19 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from shared.database import get_session
-from shared.inbox_outbox import run_outbox_dispatcher
-
-from . import dataset_uploads, security
-from .messaging import publish_outbox_event
+from . import security
+from .control_runtime import embedded_control_loops_enabled, start_control_loops
+from .health import database_is_ready
 from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
-from .stage_orchestrator import start_stage_orchestrator
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
 from .routers.maps import router as maps_router
 from .routers.missions import router as missions_router
 from .routers.operations import router as operations_router
 
-logger = logging.getLogger("droneai.api")
-
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(application: FastAPI):
     loop = asyncio.get_running_loop()
     stop_event = threading.Event()
     consumer_thread = threading.Thread(
@@ -37,34 +31,20 @@ async def lifespan(_app: FastAPI):
         kwargs={"stop_event": stop_event},
         daemon=True,
     )
-    outbox_thread = threading.Thread(
-        target=run_outbox_dispatcher,
-        args=(get_session,),
-        kwargs={
-            "publisher": publish_outbox_event,
-            "stop_event": stop_event,
-            "logger": logger,
-        },
-        daemon=True,
-    )
-    upload_cleanup_thread = threading.Thread(
-        target=dataset_uploads.run_upload_cleanup,
-        args=(stop_event,),
-        daemon=True,
-    )
     consumer_thread.start()
-    outbox_thread.start()
-    upload_cleanup_thread.start()
-    stage_orchestrator_thread = start_stage_orchestrator(stop_event)
+    control_supervisor = (
+        start_control_loops(stop_event)
+        if embedded_control_loops_enabled()
+        else None
+    )
+    application.state.control_supervisor = control_supervisor
     try:
         yield
     finally:
         stop_event.set()
         consumer_thread.join(timeout=2)
-        outbox_thread.join(timeout=2)
-        upload_cleanup_thread.join(timeout=2)
-        if stage_orchestrator_thread is not None:
-            stage_orchestrator_thread.join(timeout=2)
+        if control_supervisor is not None:
+            control_supervisor.stop()
 
 
 def create_app() -> FastAPI:
@@ -97,12 +77,28 @@ def create_app() -> FastAPI:
     def read_root():
         return {"status": "ok", "message": "Drone Pipeline API is alive"}
 
+    @application.get("/live", include_in_schema=False)
+    def read_liveness():
+        return {"status": "ok"}
+
+    @application.get("/ready", include_in_schema=False)
+    def read_readiness():
+        if not database_is_ready():
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unavailable"},
+            )
+        return {"status": "ok"}
+
     @application.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):
         principal = await security.authorize_websocket(websocket)
         if principal is None:
             return
-        await status_hub.connect(websocket, principal.subject)
+        await status_hub.connect(
+            websocket,
+            f"{principal.organization_id}:{principal.subject}",
+        )
         try:
             while True:
                 await websocket.receive_text()

@@ -47,6 +47,9 @@ APP3_TYPED_PATHS := \
 	app3-processing/main.py
 API_TYPED_PATHS := \
 	app4-dashboard/api/__init__.py \
+	app4-dashboard/api/control_runtime.py \
+	app4-dashboard/api/control_worker.py \
+	app4-dashboard/api/health.py \
 	app4-dashboard/api/security.py \
 	app4-dashboard/api/rate_limit.py \
 	app4-dashboard/api/messaging.py \
@@ -90,7 +93,7 @@ API_ROUTE_TYPED_PATHS := \
 SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
-.PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test coverage frontend-check frontend-e2e
+.PHONY: check static compile lint worker-lint service-core-lint shared-lint typecheck scripts-check docs-check workflows-check audit test integration-test coverage frontend-check frontend-e2e
 
 compile:
 	$(PYTHON) -m compileall -q $(PYTHON_PATHS)
@@ -145,6 +148,9 @@ static: compile lint worker-lint service-core-lint shared-lint typecheck scripts
 test:
 	$(PYTHON) -m pytest -m "not gpu and not integration"
 
+integration-test:
+	$(PYTHON) -m pytest -m integration tests/integration
+
 coverage:
 	$(PYTHON) -m coverage erase
 	$(PYTHON) -m coverage run -m pytest -m "not gpu and not integration"
@@ -157,6 +163,7 @@ frontend-check:
 	$(NPM) run duplication && \
 	$(NPM) run test && \
 	$(NPM) run lint && \
+	$(NPM) run typecheck && \
 	$(NPM) run build
 
 frontend-e2e:

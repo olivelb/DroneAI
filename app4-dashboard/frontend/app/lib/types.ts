@@ -24,6 +24,13 @@ export type MissionStageId =
   | "rasterization"
   | "detection";
 
+export type SessionPrincipal = {
+  subject: string;
+  role: "viewer" | "operator" | "admin";
+  organization_id: string;
+  expires_in_seconds?: number;
+};
+
 export type StatusPayload = {
   vol_id: string;
   step?: string;

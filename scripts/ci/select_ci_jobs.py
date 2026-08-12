@@ -1,7 +1,7 @@
-"""Select CI jobs from pull-request paths without external actions.
+"""Select CI jobs from candidate paths without external actions.
 
-Pushes to ``main`` and manual runs deliberately execute every scope. Pull
-requests only execute jobs whose runtime or contract is affected by the diff.
+Merge-group and manual runs deliberately execute every scope. Pull requests
+only execute jobs whose runtime or contract is affected by the diff.
 """
 
 from __future__ import annotations
@@ -14,9 +14,11 @@ from typing import Final
 
 SCOPES: Final = (
     "python",
+    "duplication",
     "docs",
     "dronegs",
     "migrations",
+    "integration",
     "frontend",
     "frontend_container",
     "containers",
@@ -27,6 +29,11 @@ CONTROL_PATHS: Final = {
     ".github/workflows/ci.yml",
     "scripts/ci/select_ci_jobs.py",
     "tests/test_ci_change_scopes.py",
+}
+DUPLICATION_TOOL_PATHS: Final = {
+    ".jscpd.json",
+    "app4-dashboard/frontend/package.json",
+    "app4-dashboard/frontend/package-lock.json",
 }
 
 
@@ -69,6 +76,27 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         )
         if is_python or path in {"Makefile", "pyproject.toml"} or _under(path, "requirements"):
             selected["python"] = True
+        if (
+            (
+                path.endswith(".py")
+                and any(
+                    _under(path, directory)
+                    for directory in (
+                        "app1-colmap",
+                        "app2-ia",
+                        "app3-processing",
+                        "app4-dashboard/api",
+                        "shared",
+                        "tools",
+                    )
+                )
+                and not _under(path, "tests")
+                and "/tests/" not in path
+                and not PurePosixPath(path).name.startswith("test_")
+            )
+            or path in DUPLICATION_TOOL_PATHS
+        ):
+            selected["duplication"] = True
         if _under(path, "docs") or path.endswith(".md") or path in {
             "tools/check_markdown_links.py",
             "tools/production_qualification.py",
@@ -88,6 +116,21 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             "requirements/dev.txt",
         }:
             selected["migrations"] = True
+        if (
+            _under(path, "shared")
+            or _under(path, "app4-dashboard/api")
+            or _under(path, "alembic")
+            or _under(path, "tests/integration")
+            or path
+            in {
+                ".github/compose.integration.yaml",
+                "alembic.ini",
+                "compose.local.yaml",
+                "requirements/dev.in",
+                "requirements/dev.txt",
+            }
+        ):
+            selected["integration"] = True
         if _under(path, "app4-dashboard/frontend"):
             selected["frontend"] = True
         if path == ".dockerignore" or path in {
@@ -98,6 +141,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             selected["frontend_container"] = True
         if (
             _under(path, "shared")
+            or _under(path, "app2-ia")
             or _under(path, "app3-processing")
             or _under(path, "app4-dashboard/api")
             or _under(path, "alembic")
@@ -105,10 +149,13 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             in {
                 ".dockerignore",
                 "alembic.ini",
+                "app2-ia/Dockerfile",
                 "app3-processing/Dockerfile",
                 "app4-dashboard/api/Dockerfile",
                 "requirements/api.in",
                 "requirements/api.txt",
+                "requirements/ia-extra.in",
+                "requirements/ia-extra.txt",
                 "requirements/processing.in",
                 "requirements/processing.txt",
             }

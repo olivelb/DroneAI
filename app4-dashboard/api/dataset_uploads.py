@@ -24,6 +24,7 @@ from shared.database import (
     DatasetUploadSession,
     get_session,
 )
+from shared.tenancy import dataset_prefix
 
 from .security import Principal, upload_limits
 
@@ -295,12 +296,14 @@ def _matching_upload_request(
 def _active_upload(
     session: Session,
     dataset_name: str,
+    organization_id: str,
 ) -> DatasetUploadSession | None:
     return cast(
         DatasetUploadSession | None,
         session.query(DatasetUploadSession)
         .filter(
             DatasetUploadSession.dataset_name == dataset_name,
+            DatasetUploadSession.organization_id == organization_id,
             DatasetUploadSession.status.in_(ACTIVE_UPLOAD_STATUSES),
         )
         .first(),
@@ -415,7 +418,12 @@ def create_upload_session(
     principal: Principal,
 ) -> UploadSessionResponse:
     safe_name, total_size = _validate_request(request)
-    existing = _active_upload(session, safe_name)
+    prefix = dataset_prefix(principal.organization_id, safe_name)
+    existing = _active_upload(
+        session,
+        safe_name,
+        principal.organization_id,
+    )
     if existing is not None:
         if (
             existing.created_by != principal.subject
@@ -440,12 +448,13 @@ def create_upload_session(
                 .one(),
             )
         return _serialize_session(existing)
-    if storage.list_objects(f"datasets/{safe_name}/"):
+    if storage.list_objects(f"{prefix}/"):
         raise HTTPException(status_code=409, detail="Dataset already exists")
 
     part_size = configured_part_size(max(item.size for item in request.files))
     record = DatasetUploadSession(
         dataset_name=safe_name,
+        organization_id=principal.organization_id,
         status="initializing",
         total_bytes=total_size,
         file_count=len(request.files),
@@ -459,7 +468,7 @@ def create_upload_session(
             DatasetUploadFile(
                 upload_session=record,
                 filename=item.name,
-                s3_key=f"datasets/{safe_name}/{item.name}",
+                s3_key=f"{prefix}/{item.name}",
                 size_bytes=item.size,
                 content_type=item.content_type or "application/octet-stream",
                 multipart_upload_id=None,
@@ -470,7 +479,11 @@ def create_upload_session(
         session.commit()
     except IntegrityError:
         session.rollback()
-        collision = _active_upload(session, safe_name)
+        collision = _active_upload(
+            session,
+            safe_name,
+            principal.organization_id,
+        )
         if collision is None:
             raise
         if (
@@ -506,7 +519,8 @@ def _owned_session(
     lock: bool = False,
 ) -> DatasetUploadSession:
     query = session.query(DatasetUploadSession).filter(
-        DatasetUploadSession.session_id == session_id
+        DatasetUploadSession.session_id == session_id,
+        DatasetUploadSession.organization_id == principal.organization_id,
     )
     if lock:
         query = query.with_for_update()
@@ -860,12 +874,14 @@ def _finalize_from_intent(
     completed_at = cast(datetime | None, record.completed_at)
     if completed_at is None:
         raise RuntimeError("Finalizing dataset upload has no completion timestamp")
-    manifest_key = f"datasets/{record.dataset_name}/dataset-manifest.json"
+    prefix = _record_dataset_prefix(record)
+    manifest_key = f"{prefix}/dataset-manifest.json"
     manifest = {
         "schema_version": 1,
         "upload_session_id": str(record.session_id),
         "dataset": str(record.dataset_name),
         "created_by": str(record.created_by),
+        "organization_id": str(record.organization_id),
         "completed_at": _aware(completed_at).isoformat(),
         "files": [
             {
@@ -893,6 +909,21 @@ def _finalize_from_intent(
     return _finalize_response(record)
 
 
+def _record_dataset_prefix(record: DatasetUploadSession) -> str:
+    """Recover the durable prefix from file intent across v1/v2 layouts."""
+
+    first_file = next(iter(record.files), None)
+    if first_file is not None:
+        return str(first_file.s3_key).rsplit("/", 1)[0]
+    return cast(
+        str,
+        dataset_prefix(
+            str(record.organization_id),
+            str(record.dataset_name),
+        ),
+    )
+
+
 def _ensure_catalog_record(
     session: Session,
     record: DatasetUploadSession,
@@ -908,10 +939,11 @@ def _ensure_catalog_record(
     completed_at = cast(datetime | None, record.completed_at)
     if completed_at is None:
         raise RuntimeError("Completed dataset upload has no completion timestamp")
-    prefix = f"datasets/{record.dataset_name}"
+    prefix = _record_dataset_prefix(record)
     dataset = Dataset(
         upload_session_id=record.id,
         name=str(record.dataset_name),
+        organization_id=str(record.organization_id),
         owner_subject=str(record.created_by),
         prefix=prefix,
         status="ready",
@@ -938,7 +970,7 @@ def _finalize_response(record: DatasetUploadSession) -> UploadFinalizeResponse:
         "completed": int(record.file_count),
         "failed": 0,
         "status": "done",
-        "manifest_s3_key": f"datasets/{record.dataset_name}/dataset-manifest.json",
+        "manifest_s3_key": f"{_record_dataset_prefix(record)}/dataset-manifest.json",
     }
 
 

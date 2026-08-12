@@ -37,6 +37,7 @@ from shared.tile_results import (
     tile_result_s3_key,
     validate_tile_result_bytes,
 )
+from shared.validation import safe_child_path
 
 
 DetectionRecord = dict[str, Any]
@@ -162,6 +163,7 @@ class AnalysisWorkflow:
                 vol_id=vol_id,
             ),
         )
+
         for feature in collection["features"]:
             feature["properties"].update(
                 {
@@ -182,6 +184,22 @@ class AnalysisWorkflow:
             }
         )
         return collection
+
+    @staticmethod
+    def _workspace(vol_id: str, run_id: str) -> Path:
+        mission_workspace = safe_child_path(
+            "/tmp/processing",
+            vol_id,
+            field_name="vol_id",
+        )
+        return cast(
+            Path,
+            safe_child_path(
+                mission_workspace,
+                run_id,
+                field_name="analysis_run_id",
+            ),
+        )
 
     @staticmethod
     def _write_verified_json(
@@ -498,7 +516,13 @@ class AnalysisWorkflow:
         self._write_verified_json(
             collection,
             result_key,
-            (f"/tmp/processing/{descriptor['vol_id']}/{descriptor['run_id']}/detections.geojson"),
+            str(
+                self._workspace(
+                    descriptor["vol_id"],
+                    descriptor["run_id"],
+                )
+                / "detections.geojson"
+            ),
         )
         self._require_finalization_ownership(run_id, force=True)
 
@@ -637,8 +661,10 @@ class AnalysisWorkflow:
             model_manifest=model_manifest,
             detections=detections,
         )
-        local_path = Path(
-            f"/tmp/processing/{vol_id}/{run_id}/results/tile_{tile_index}.json"
+        local_path = (
+            self._workspace(vol_id, run_id)
+            / "results"
+            / f"tile_{tile_index}.json"
         )
         atomic_write_json(local_path, artifact)
         try:

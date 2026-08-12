@@ -42,10 +42,15 @@ def tenant_sessions(monkeypatch):
     return session_scope
 
 
-def _dataset(owner: str, name: str) -> Dataset:
+def _dataset(
+    owner: str,
+    name: str,
+    organization_id: str = "legacy-unassigned",
+) -> Dataset:
     prefix = f"datasets/{name}"
     return Dataset(
         name=name,
+        organization_id=organization_id,
         owner_subject=owner,
         prefix=prefix,
         status="ready",
@@ -71,6 +76,24 @@ def test_dataset_listing_is_partitioned_by_owner(tenant_sessions):
             "image_count": 2,
         }
     ]
+
+
+def test_dataset_listing_is_partitioned_by_organization_even_for_same_subject(
+    tenant_sessions,
+):
+    with tenant_sessions() as session:
+        session.add_all(
+            [
+                _dataset("alice", "north-flight", "north-survey"),
+                _dataset("alice", "south-flight", "south-survey"),
+            ]
+        )
+
+    result = dataset_routes.list_datasets(
+        security.Principal("alice", "operator", "north-survey")
+    )
+
+    assert [item["name"] for item in result] == ["north-flight"]
 
 
 def test_cross_owner_object_download_is_hidden_before_storage_access(

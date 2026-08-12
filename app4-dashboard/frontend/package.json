@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "duplication": "jscpd ../../shared ../../app1-colmap ../../app2-ia ../../app3-processing ../../app4-dashboard/api ../../tools --format python --config ../../.jscpd.json"

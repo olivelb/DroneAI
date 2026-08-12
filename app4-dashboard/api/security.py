@@ -15,6 +15,11 @@ from hmac import new as hmac_new
 from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
 
 from shared.database import get_session
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    LOCAL_ORGANIZATION_ID,
+    validate_organization_id,
+)
 from shared.rate_limiting import (
     DatabaseTokenBucketRateLimiter,
     RateLimiter,
@@ -34,6 +39,7 @@ LOCAL_SECRET_VALUES = {
 class Principal:
     subject: str
     role: str
+    organization_id: str = LEGACY_ORGANIZATION_ID
 
 
 def deployment_environment() -> str:
@@ -100,9 +106,27 @@ def _configured_keys() -> list[tuple[str, Principal]]:
         key = str(item.get("key") or "")
         subject = str(item.get("subject") or "")
         role = str(item.get("role") or "")
+        raw_organization = str(
+            item.get("organization_id") or LEGACY_ORGANIZATION_ID
+        )
+        try:
+            organization_id = validate_organization_id(raw_organization)
+        except ValueError as error:
+            raise RuntimeError(
+                f"DRONEAI_API_KEYS_JSON[{index}] has an invalid organization_id"
+            ) from error
         if len(key) < 32 or not subject or role not in ROLE_RANK:
             raise RuntimeError(f"DRONEAI_API_KEYS_JSON[{index}] has an invalid key, subject, or role")
-        result.append((key, Principal(subject=subject, role=role)))
+        result.append(
+            (
+                key,
+                Principal(
+                    subject=subject,
+                    role=role,
+                    organization_id=organization_id,
+                ),
+            )
+        )
     return result
 
 
@@ -121,8 +145,16 @@ def validate_production_configuration() -> None:
         return
     if "*" in configured_cors_origins():
         raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
-    if not _configured_keys():
+    configured_keys = _configured_keys()
+    if not configured_keys:
         raise RuntimeError("DRONEAI_API_KEYS_JSON is required in production")
+    if any(
+        principal.organization_id == LEGACY_ORGANIZATION_ID
+        for _key, principal in configured_keys
+    ):
+        raise RuntimeError(
+            "Every production API key requires an explicit organization_id"
+        )
     if len(os.getenv("DRONEAI_SESSION_SECRET", "")) < 32:
         raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters in production")
     for name in ("S3_ACCESS_KEY", "S3_SECRET_KEY", "DATABASE_URL"):
@@ -162,6 +194,7 @@ def issue_session_token(
     payload = {
         "subject": principal.subject,
         "role": principal.role,
+        "organization_id": principal.organization_id,
         "expires_at": int(time.time()) + max_age_seconds,
     }
     encoded = _encode_base64(
@@ -201,17 +234,28 @@ def _authenticate_session_token(token: str) -> Principal | None:
         payload = json.loads(_decode_base64(encoded))
         subject = str(payload["subject"])
         role = str(payload["role"])
+        organization_id = validate_organization_id(
+            str(payload["organization_id"])
+        )
         expires_at = int(payload["expires_at"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
     if not subject or role not in ROLE_RANK or expires_at <= int(time.time()):
         return None
-    return Principal(subject=subject, role=role)
+    return Principal(
+        subject=subject,
+        role=role,
+        organization_id=organization_id,
+    )
 
 
 def authenticate_api_key(token: str | None) -> Principal | None:
     if not authentication_enabled():
-        return Principal(subject="local-development", role="admin")
+        return Principal(
+            subject="local-development",
+            role="admin",
+            organization_id=LOCAL_ORGANIZATION_ID,
+        )
     if not token:
         return None
     for configured_key, principal in _configured_keys():

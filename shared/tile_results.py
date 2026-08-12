@@ -10,6 +10,13 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from shared.validation import (
+    MISSION_ID_PATTERN,
+    SAFE_SEGMENT_PATTERN,
+    validate_mission_id,
+    validate_safe_segment,
+)
+
 
 TILE_RESULT_SCHEMA_VERSION: Literal[1] = 1
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -22,8 +29,13 @@ class TileResultArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1]
-    vol_id: str = Field(min_length=1, max_length=256)
-    analysis_run_id: str | None = Field(default=None, max_length=128)
+    vol_id: str = Field(min_length=3, max_length=64, pattern=MISSION_ID_PATTERN)
+    analysis_run_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=SAFE_SEGMENT_PATTERN,
+    )
     tile_index: int = Field(ge=0, strict=True)
     attempt: int = Field(ge=0, strict=True)
     detection_count: int = Field(ge=0, strict=True)
@@ -44,6 +56,9 @@ def tile_result_s3_key(
     attempt: int,
 ) -> str:
     """Return the deterministic key used by both publisher and consumer."""
+    validate_mission_id(vol_id)
+    if analysis_run_id is not None:
+        validate_safe_segment(analysis_run_id, field_name="analysis_run_id")
     run_component = analysis_run_id or "pipeline"
     return (
         f"missions/{vol_id}/ai-tile-results/{run_component}/"

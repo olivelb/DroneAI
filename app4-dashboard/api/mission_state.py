@@ -10,6 +10,7 @@ from typing import Any, NotRequired, Protocol, TypedDict, cast
 
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 from shared.phase_dag import project_status_to_stage_run
 
 TERMINAL_STATUSES = {"success", "error", "cancelled"}
@@ -354,12 +355,18 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
     }
 
 
-def get_status_summary(owner_subject: str) -> StatusSummary:
+def get_status_summary(
+    owner_subject: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+) -> StatusSummary:
     with get_session() as session:
         missions = cast(
             list[MissionRecord],
             session.query(Mission)
-            .filter(Mission.owner_subject == owner_subject)
+            .filter(
+                Mission.organization_id == organization_id,
+                Mission.owner_subject == owner_subject,
+            )
             .order_by(Mission.updated_at.desc())
             .limit(50)
             .all(),
@@ -376,7 +383,11 @@ def get_status_summary(owner_subject: str) -> StatusSummary:
     }
 
 
-def get_mission_state(vol_id: str, owner_subject: str) -> MissionStateResult:
+def get_mission_state(
+    vol_id: str,
+    owner_subject: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+) -> MissionStateResult:
     with get_session() as session:
         mission = cast(
             MissionRecord | None,
@@ -384,6 +395,7 @@ def get_mission_state(vol_id: str, owner_subject: str) -> MissionStateResult:
             .filter(
                 Mission.vol_id == vol_id,
                 Mission.owner_subject == owner_subject,
+                Mission.organization_id == organization_id,
             )
             .first(),
         )
@@ -399,6 +411,7 @@ def prepare_resume_in_session(
     session: SessionProtocol,
     vol_id: str,
     owner_subject: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
 ) -> tuple[JsonObject | None, ResumeResponse]:
     mission = cast(
         MissionRecord | None,
@@ -406,6 +419,7 @@ def prepare_resume_in_session(
         .filter(
             Mission.vol_id == vol_id,
             Mission.owner_subject == owner_subject,
+            Mission.organization_id == organization_id,
         )
         .first(),
     )
@@ -447,8 +461,14 @@ def prepare_resume_in_session(
 def prepare_resume(
     vol_id: str,
     owner_subject: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
 ) -> tuple[JsonObject | None, ResumeResponse]:
     """Compatibility wrapper using its own transaction."""
 
     with get_session() as session:
-        return prepare_resume_in_session(session, vol_id, owner_subject)
+        return prepare_resume_in_session(
+            session,
+            vol_id,
+            owner_subject,
+            organization_id,
+        )

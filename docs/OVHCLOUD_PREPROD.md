@@ -426,7 +426,7 @@ kubectl -n drone-ai-preprod create secret generic drone-ai-storage-preprod \
   --from-literal=database-url='<TLS_POSTGRESQL_URI>'
 
 kubectl -n drone-ai-preprod create secret generic drone-ai-api-auth \
-  --from-literal=api-keys.json='[{"key":"<RANDOM_32_PLUS_CHAR_KEY>","subject":"preprod-admin","role":"admin"}]' \
+  --from-literal=api-keys.json='[{"key":"<RANDOM_32_PLUS_CHAR_KEY>","subject":"preprod-admin","role":"admin","organization_id":"ovh-preprod"}]' \
   --from-literal=session-secret='<RANDOM_32_PLUS_CHAR_SESSION_SECRET>'
 ```
 

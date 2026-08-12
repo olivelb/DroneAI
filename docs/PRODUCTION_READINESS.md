@@ -37,7 +37,8 @@ compatibility processing worker to zero and review the resulting Job RBAC.
   {
     "key": "a-random-secret-of-at-least-32-bytes",
     "subject": "droneai-operations",
-    "role": "admin"
+    "role": "admin",
+    "organization_id": "acme-survey"
   }
 ]
 ```
@@ -59,6 +60,10 @@ Roles are cumulative:
 - `viewer`: status, parameters, datasets and artifacts;
 - `operator`: viewer plus mission start/cancel/resume and upload;
 - `admin`: operator plus mission/dataset deletion.
+
+`organization_id` is mandatory in staging and production. It is a lower-case
+DNS-like identifier and forms the hard data/storage boundary; `subject` remains
+the human or service identity used for attribution and per-member access.
 
 Clients use `Authorization: Bearer <key>` or `X-API-Key`. Production WebSocket
 clients use the `droneai_api_key` secure cookie; query-string tokens are

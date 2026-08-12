@@ -18,11 +18,13 @@ def _keys():
                 "key": "viewer-secret-key-with-at-least-32-bytes",
                 "subject": "quality",
                 "role": "viewer",
+                "organization_id": "acme-survey",
             },
             {
                 "key": "admin-secret-key-with-at-least-32-bytes!",
                 "subject": "operations",
                 "role": "admin",
+                "organization_id": "acme-survey",
             },
         ]
     )
@@ -39,6 +41,7 @@ def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
         x_api_key=None,
     )
     assert admin.subject == "operations"
+    assert admin.organization_id == "acme-survey"
     with pytest.raises(HTTPException) as error:
         security.require_operator(
             authorization=None,
@@ -64,6 +67,7 @@ def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
     )
     assert response.status_code == 200
     assert response.json()["role"] == "admin"
+    assert response.json()["organization_id"] == "acme-survey"
     cookie = response.headers["set-cookie"].lower()
     assert "httponly" in cookie
     assert "secure" in cookie
@@ -79,6 +83,7 @@ def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
         droneai_api_key=session_token,
     )
     assert principal.subject == "operations"
+    assert principal.organization_id == "acme-survey"
     assert security.authenticate_token(f"{session_token}tampered") is None
 
     response = client.delete("/auth/session")
@@ -119,6 +124,19 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
     monkeypatch.delenv("DRONEAI_SESSION_SECRET", raising=False)
 
     with pytest.raises(RuntimeError, match="DRONEAI_SESSION_SECRET"):
+        security.validate_production_configuration()
+
+
+def test_production_configuration_requires_explicit_organizations(monkeypatch):
+    legacy_keys = json.loads(_keys())
+    for item in legacy_keys:
+        item.pop("organization_id")
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", json.dumps(legacy_keys))
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+
+    with pytest.raises(RuntimeError, match="organization_id"):
         security.validate_production_configuration()
 
 
@@ -275,4 +293,6 @@ def test_rate_limit_identity_uses_authenticated_subject(monkeypatch):
         headers={"X-Forwarded-For": "203.0.113.20"},
     )
 
-    assert response.json() == {"key": "subject:operator-1"}
+    assert response.json() == {
+        "key": "organization:legacy-unassigned:subject:operator-1"
+    }

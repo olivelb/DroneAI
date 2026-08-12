@@ -21,6 +21,7 @@ implemented system as it exists now.
 | GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
 | Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
+| Organization isolation and versioned storage | [`contracts/organization-boundary-v1.md`](contracts/organization-boundary-v1.md) |
 | Tenant-owned dataset catalogue and storage boundary | [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
 | Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
@@ -65,6 +66,9 @@ the current release status:
   [`audits/2026-08-06-audit-hardening-validation.md`](audits/2026-08-06-audit-hardening-validation.md)
 - 2026-08-08 platform audit verification and first P1 implementation batch:
   [`audits/2026-08-08-platform-audit-follow-up.md`](audits/2026-08-08-platform-audit-follow-up.md)
+- 2026-08-12 SaaS structural audit, implemented hardening and remaining
+  non-scientific debt:
+  [`audits/2026-08-12-saas-structural-audit.md`](audits/2026-08-12-saas-structural-audit.md)
 - [`audits/`](audits/) and the date-stamped `AUDIT_*` / `CONTRE_AUDIT_*` reports
 - [`GAJAN_R2S_VALIDATION.md`](GAJAN_R2S_VALIDATION.md)
 - [`dronegs/CHANGELOG.md`](dronegs/CHANGELOG.md)

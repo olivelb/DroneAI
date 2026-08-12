@@ -283,6 +283,7 @@ def delete_dataset(
                 Mission.dataset_id == dataset.id,
                 and_(
                     Mission.dataset_id.is_(None),
+                    Mission.organization_id == dataset.organization_id,
                     Mission.owner_subject == dataset.owner_subject,
                     Mission.input_dataset == dataset.prefix,
                 ),

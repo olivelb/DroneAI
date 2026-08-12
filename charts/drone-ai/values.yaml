@@ -221,6 +221,16 @@ dashboardApi:
   replicaCount: 1
   image: drone-dashboard-api
   tag: latest
+  controlWorker:
+    # Durable outbox delivery, upload reconciliation, and stage scheduling run
+    # outside the request-serving API so API rollouts cannot stop control work.
+    enabled: true
+    replicaCount: 1
+    resources:
+      limits:
+        memory: "1Gi"
+      requests:
+        memory: "256Mi"
   resources:
     limits:
       memory: "2Gi"

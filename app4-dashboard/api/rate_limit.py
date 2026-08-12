@@ -18,7 +18,10 @@ def rate_limit_identity(request: Request) -> str:
     """Prefer the authenticated subject over ingress-dependent source addresses."""
     principal = security.authenticate_request(request)
     if principal is not None:
-        return f"subject:{principal.subject}"
+        return (
+            f"organization:{principal.organization_id}:"
+            f"subject:{principal.subject}"
+        )
     peer = request.client.host if request.client else "unknown"
     return f"peer:{peer}"
 
