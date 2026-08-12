@@ -25,6 +25,7 @@ from shared.database import (
     AIAnalysisRun,
     AIAnalysisTile,
     MapFeature,
+    Mission,
     get_session,
 )
 from shared.event_contracts import deterministic_event_id, make_event
@@ -37,6 +38,7 @@ from shared.tile_results import (
     tile_result_s3_key,
     validate_tile_result_bytes,
 )
+from shared.tenancy import MissionObjectNamespace, mission_event_namespace
 from shared.validation import safe_child_path
 
 
@@ -234,7 +236,10 @@ class AnalysisWorkflow:
         raise ValueError(f"Unsupported AI geometry: {geometry_type}")
 
     @staticmethod
-    def _run_descriptor(run: Any) -> RunDescriptor:
+    def _run_descriptor(
+        run: Any,
+        namespace: MissionObjectNamespace | None = None,
+    ) -> RunDescriptor:
         descriptor: RunDescriptor = {
             "id": run.id,
             "run_id": run.run_id,
@@ -247,6 +252,9 @@ class AnalysisWorkflow:
             "tiling_metadata": run.tiling_metadata or {},
             "model_manifest": run.model_manifest,
         }
+        if namespace is not None:
+            descriptor["organization_id"] = namespace.organization_id
+            descriptor["workspace_prefix"] = namespace.root
         return descriptor
 
     @staticmethod
@@ -421,7 +429,15 @@ class AnalysisWorkflow:
             self._next_finalization_heartbeat = (
                 time.monotonic() + self.finalization_heartbeat_seconds
             )
-            descriptor = self._run_descriptor(run)
+            mission = session.query(Mission).filter(
+                Mission.id == run.mission_id
+            ).one()
+            namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
+            )
+            descriptor = self._run_descriptor(run, namespace)
             references: list[TileResultReference] = []
             for tile in tiles:
                 if (
@@ -511,7 +527,16 @@ class AnalysisWorkflow:
             vol_id=descriptor["vol_id"],
             run=self._descriptor_proxy(descriptor),
         )
-        result_key = f"missions/{descriptor['vol_id']}/analyses/{descriptor['run_id']}/detections.geojson"
+        namespace = MissionObjectNamespace.from_binding(
+            cast(str, descriptor["organization_id"]),
+            cast(str, descriptor["vol_id"]),
+            cast(str, descriptor["workspace_prefix"]),
+        )
+        result_key = namespace.key(
+            "analyses",
+            cast(str, descriptor["run_id"]),
+            "detections.geojson",
+        )
         self._require_finalization_ownership(run_id, force=True)
         self._write_verified_json(
             collection,
@@ -619,11 +644,14 @@ class AnalysisWorkflow:
         tile_index = int(data["tile_index"])
         event_attempt = int(data.get("attempt", 0))
         model_manifest = cast(JsonObject, run.model_manifest)
+        namespace = mission_event_namespace(data)
         result_key = tile_result_s3_key(
             vol_id,
             run_id,
             tile_index,
             event_attempt,
+            organization_id=namespace.organization_id,
+            workspace_prefix=namespace.root,
         )
         referenced_key = data.get("result_s3_key")
         if referenced_key is not None:
@@ -760,6 +788,18 @@ class AnalysisWorkflow:
         tile_index = int(data["tile_index"])
         with get_session() as session:
             run, receipt = self._get_tile_context(session, vol_id, run_id, tile_index)
+            mission = session.query(Mission).filter(
+                Mission.id == run.mission_id
+            ).one()
+            durable_namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
+            )
+            if mission_event_namespace(data) != durable_namespace:
+                raise RuntimeError(
+                    "AI tile result namespace does not match the durable mission"
+                )
             event_attempt = int(data.get("attempt", 0))
             if run.status == "cancelled" or int(run.retry_count or 0) != event_attempt:
                 return
@@ -802,13 +842,18 @@ class AnalysisWorkflow:
             raise
 
     @staticmethod
-    def _orthomosaic_recovery_event(run: Any) -> JsonObject:
+    def _orthomosaic_recovery_event(
+        run: Any,
+        namespace: MissionObjectNamespace,
+    ) -> JsonObject:
         return cast(
             JsonObject,
             make_event(
                 "orthomosaic",
                 {
                     "vol_id": run.vol_id,
+                    "organization_id": namespace.organization_id,
+                    "workspace_prefix": namespace.root,
                     "ortho_s3_key": run.ortho_s3_key,
                     "analysis_run_id": run.run_id,
                     "classes": run.classes or [],
@@ -830,7 +875,11 @@ class AnalysisWorkflow:
         )
 
     @staticmethod
-    def _tile_recovery_event(run: Any, tile: Any) -> JsonObject:
+    def _tile_recovery_event(
+        run: Any,
+        tile: Any,
+        namespace: MissionObjectNamespace,
+    ) -> JsonObject:
         metadata = run.tiling_metadata or {}
         return cast(
             JsonObject,
@@ -838,6 +887,8 @@ class AnalysisWorkflow:
                 "image_tile",
                 {
                     "vol_id": run.vol_id,
+                    "organization_id": namespace.organization_id,
+                    "workspace_prefix": namespace.root,
                     "analysis_run_id": run.run_id,
                     "tile_index": tile.tile_index,
                     "tile_s3_key": tile.tile_s3_key,
@@ -891,6 +942,14 @@ class AnalysisWorkflow:
                 .all()
             )
             for run in runs:
+                mission = session.query(Mission).filter(
+                    Mission.id == run.mission_id
+                ).one()
+                namespace = MissionObjectNamespace.from_binding(
+                    mission.organization_id,
+                    mission.vol_id,
+                    mission.workspace_prefix,
+                )
                 if run.phase == "tile_attempts_exhausted":
                     continue
                 tiles = (
@@ -908,7 +967,9 @@ class AnalysisWorkflow:
                     run.retry_count += 1
                     run.status = "queued"
                     run.phase = "recovery_retiling"
-                    ortho_events.append(self._orthomosaic_recovery_event(run))
+                    ortho_events.append(
+                        self._orthomosaic_recovery_event(run, namespace)
+                    )
                 else:
                     incomplete_tiles = [item for item in tiles if item.status != "completed"]
                     exhausted_tiles = [item for item in incomplete_tiles if item.attempts >= self.maximum_tile_attempts]
@@ -929,7 +990,9 @@ class AnalysisWorkflow:
                         tile.attempts += 1
                         tile.status = "queued"
                         tile.last_error = None
-                        tile_events.append(self._tile_recovery_event(run, tile))
+                        tile_events.append(
+                            self._tile_recovery_event(run, tile, namespace)
+                        )
                     run.status = "running"
                     run.phase = "recovery_detecting"
                 run.heartbeat_at = datetime.now(UTC)

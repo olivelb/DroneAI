@@ -11,6 +11,7 @@ from shared import storage
 from shared.gcp_control import build_weighted_gcp_alignment, write_transformed_reconstruction
 from shared.json_io import atomic_write_json
 from shared.stage_execution import StageQualityGateRejected
+from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .. import runtime
 from ..contracts import (
@@ -134,9 +135,22 @@ def _run_weighted_gcp_alignment(
         stage_run_id = os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
         evidence: dict[str, object] = {"persisted": False}
         if stage_run_id:
-            evidence_key = (
-                f"missions/{vol_id}/stage-runs/{stage_run_id}/"
-                "diagnostics/gcp_alignment_report.json"
+            mission_s3_prefix = getattr(
+                preparation,
+                "mission_s3_prefix",
+                MissionObjectNamespace.create(
+                    LEGACY_ORGANIZATION_ID,
+                    vol_id,
+                ).root,
+            )
+            evidence_key = "/".join(
+                (
+                    mission_s3_prefix,
+                    "stage-runs",
+                    stage_run_id,
+                    "diagnostics",
+                    "gcp_alignment_report.json",
+                )
             )
             try:
                 published = storage.upload_verified_file(

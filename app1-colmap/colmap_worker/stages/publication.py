@@ -342,7 +342,7 @@ def publish_colmap_products(
 
     # --- Upload ALL artifacts to S3 (well-organized folders) ---
     # S3 layout:
-    #   missions/{vol_id}/
+    #   {durable_mission_workspace}/
     #     orthomosaic.tif          — final GeoTIFF
     #     orthomosaic.height.tif   — height map (if generated)
     #     alignment_transform.json — Sim3 geo-alignment

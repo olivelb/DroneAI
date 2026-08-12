@@ -45,6 +45,15 @@ def _artifact(**metadata: Any) -> SimpleNamespace:
     )
 
 
+def _mission(vol_id: str, mission_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=mission_id,
+        vol_id=vol_id,
+        organization_id="legacy-unassigned",
+        workspace_prefix=f"missions/{vol_id}",
+    )
+
+
 def test_raster_product_resolves_content_addressed_ortho(monkeypatch):
     monkeypatch.setattr(
         map_support,
@@ -58,7 +67,7 @@ def test_raster_product_resolves_content_addressed_ortho(monkeypatch):
 
     product = map_support.resolve_raster_product(
         _Session(_artifact(ortho_file="orthomosaic.tif")),
-        SimpleNamespace(id=7),
+        _mission("mission-1", 7),
         "mission-1",
         "ortho",
     )
@@ -81,7 +90,7 @@ def test_raster_product_resolves_height_layer_without_sidecar(monkeypatch):
 
     product = map_support.resolve_raster_product(
         _Session(_artifact(height_file="orthomosaic.height.tif")),
-        SimpleNamespace(id=7),
+        _mission("mission-1", 7),
         "mission-1",
         "depth",
     )
@@ -104,7 +113,7 @@ def test_raster_product_keeps_legacy_mission_compatibility(monkeypatch):
 
     product = map_support.resolve_raster_product(
         _Session(None),
-        SimpleNamespace(id=8),
+        _mission("legacy", 8),
         "legacy",
         "ortho",
     )
@@ -126,7 +135,7 @@ def test_raster_product_fails_closed_for_incomplete_versioned_artifact(
     with pytest.raises(HTTPException) as error:
         map_support.resolve_raster_product(
             _Session(_artifact()),
-            SimpleNamespace(id=7),
+            _mission("mission-1", 7),
             "mission-1",
             "ortho",
         )

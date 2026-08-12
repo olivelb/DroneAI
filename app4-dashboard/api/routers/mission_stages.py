@@ -32,6 +32,7 @@ from shared.stage_contracts import (
     StageId,
     resource_class_for_stage,
 )
+from shared.tenancy import MissionObjectNamespace
 
 from ..messaging import build_stage_mission_event
 from ..mission_access import get_owned_mission
@@ -170,9 +171,16 @@ def _validate_published_artifact(
             detail=f"Stage {stage} requires artifact kind {expected_kind}",
         )
 
-    expected_key = (
-        f"missions/{mission.vol_id}/stage-runs/{run.run_id}/"
-        f"{stage}-workspace/manifest.json"
+    namespace = MissionObjectNamespace.from_binding(
+        cast(str, mission.organization_id),
+        cast(str, mission.vol_id),
+        cast(str | None, mission.workspace_prefix),
+    )
+    expected_key = namespace.key(
+        "stage-runs",
+        cast(str, run.run_id),
+        f"{stage}-workspace",
+        "manifest.json",
     )
     parsed = urlsplit(request.uri)
     if (
@@ -206,6 +214,11 @@ def _validate_published_artifact(
 
 
 def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
+    namespace = MissionObjectNamespace.from_binding(
+        cast(str, mission.organization_id),
+        cast(str, mission.vol_id),
+        cast(str | None, mission.workspace_prefix),
+    )
     ready_runs = release_ready_stage_runs(session, mission)
     queued: list[str] = []
     for run in ready_runs:
@@ -221,6 +234,8 @@ def _queue_ready_stage_runs(session: Any, mission: Mission) -> list[str]:
         payload = {
             **cast(dict[str, Any], mission.params or {}),
             "vol_id": cast(str, mission.vol_id),
+            "organization_id": namespace.organization_id,
+            "workspace_prefix": namespace.root,
             "attempt": cast(int, run.attempt),
             "phases": [cast(str, run.stage)],
             "stage_run_id": cast(str, run.run_id),

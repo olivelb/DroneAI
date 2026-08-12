@@ -20,7 +20,7 @@ from shared.database import (
 )
 from shared.stage_artifacts import mark_stage_run_succeeded, release_ready_stage_runs
 from shared.stage_contracts import STAGE_ARTIFACT_KINDS, StageId
-from shared.tenancy import mission_prefix
+from shared.tenancy import MissionObjectNamespace
 
 
 class StageExecutionCancelled(RuntimeError):
@@ -67,6 +67,14 @@ class StageExecutionContext:
     mission_parameters: dict[str, Any]
     inputs: tuple[StageArtifactInput, ...]
     run_provenance: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def object_namespace(self) -> MissionObjectNamespace:
+        return MissionObjectNamespace.from_binding(
+            self.organization_id,
+            self.vol_id,
+            self.workspace_prefix,
+        )
 
 
 @dataclass(frozen=True)
@@ -167,16 +175,11 @@ def load_stage_execution_context(
             "workspace_prefix": expected_workspace_prefix,
             "owner_subject": expected_owner_subject,
         }
-        if not durable_binding["workspace_prefix"]:
-            raise ValueError("Mission has no durable workspace prefix")
-        canonical_prefix = mission_prefix(
+        namespace = MissionObjectNamespace.from_binding(
             cast(str, durable_binding["organization_id"]),
             cast(str, durable_binding["vol_id"]),
+            cast(str | None, durable_binding["workspace_prefix"]),
         )
-        if durable_binding["workspace_prefix"] != canonical_prefix:
-            raise ValueError(
-                "Mission workspace prefix is outside its tenant namespace"
-            )
         mismatches = [
             name
             for name, expected in expected_binding.items()
@@ -222,7 +225,7 @@ def load_stage_execution_context(
             mission_id=cast(int, mission.id),
             organization_id=cast(str, mission.organization_id),
             vol_id=cast(str, mission.vol_id),
-            workspace_prefix=cast(str, mission.workspace_prefix),
+            workspace_prefix=namespace.root,
             owner_subject=cast(str, mission.owner_subject),
             stage=cast(StageId, run.stage),
             attempt=cast(int, run.attempt),

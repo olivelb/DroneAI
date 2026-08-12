@@ -19,7 +19,7 @@ import RasterStyleControls from "./RasterStyleControls";
 import type { ViewerLayer } from "./workspace-config";
 
 interface LayersPanelProps {
-  missionId: string;
+  workspacePrefix: string;
   activeLayer: ViewerLayer;
   hasDepth: boolean;
   availableFiles: string[];
@@ -43,7 +43,7 @@ interface LayersPanelProps {
 }
 
 export default function LayersPanel({
-  missionId,
+  workspacePrefix,
   activeLayer,
   hasDepth,
   availableFiles,
@@ -164,7 +164,7 @@ export default function LayersPanel({
         <div className="eyebrow mb-2">{t("layers.exports")}</div>
         {hasMapOrthophoto && (
           <a
-            href={getFileUrl(`missions/${missionId}/orthomosaic.tif`)}
+            href={getFileUrl(`${workspacePrefix}/orthomosaic.tif`)}
             className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
           >
             <Download size={14} /> GeoTIFF / COG
@@ -173,13 +173,13 @@ export default function LayersPanel({
         {hasFacadeOrthophoto && (
           <>
             <a
-              href={getFileUrl(`missions/${missionId}/facade_orthophoto.tif`)}
+              href={getFileUrl(`${workspacePrefix}/facade_orthophoto.tif`)}
               className="flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
             >
               <Download size={14} /> {t("layers.facadeOrtho")}
             </a>
             <a
-              href={getFileUrl(`missions/${missionId}/facade_frame.json`)}
+              href={getFileUrl(`${workspacePrefix}/facade_frame.json`)}
               className="mt-2 flex items-center gap-2 rounded-xl border border-[#dce4e1] p-3 text-sm text-[#5d6965]"
             >
               <Download size={14} /> {t("layers.facadeReport")}

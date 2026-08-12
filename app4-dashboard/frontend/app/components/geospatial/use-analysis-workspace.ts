@@ -19,6 +19,7 @@ interface AnalysisWorkspaceOptions {
 
 export function useAnalysisWorkspace(
   missionId: string | null,
+  workspacePrefix: string | null,
   { setNotice, setError }: AnalysisWorkspaceOptions,
 ) {
   const { t } = useI18n();
@@ -30,19 +31,19 @@ export function useAnalysisWorkspace(
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (!missionId) return;
+    if (!missionId || !workspacePrefix) return;
     const payload = await fetchAnalyses(missionId);
     setAnalyses(payload.runs);
     setVisibleRuns((current) =>
       retainKnownRunIds(current, payload.runs.map((run) => run.run_id)),
     );
-  }, [missionId]);
+  }, [missionId, workspacePrefix]);
 
   useEffect(() => {
-    if (!missionId) return;
+    if (!missionId || !workspacePrefix) return;
     let cancelled = false;
     Promise.all([
-      fetchBrowse(`missions/${missionId}/`).catch(() => []),
+      fetchBrowse(`${workspacePrefix}/`).catch(() => []),
       fetchAnalyses(missionId).catch(() => ({ runs: [] })),
     ]).then(([files, runs]) => {
       if (cancelled) return;
@@ -65,7 +66,7 @@ export function useAnalysisWorkspace(
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [missionId, refresh]);
+  }, [missionId, refresh, workspacePrefix]);
 
   const visibleAnalyses = useMemo(
     () => analyses.filter(

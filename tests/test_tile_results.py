@@ -65,6 +65,28 @@ def test_tile_result_artifact_is_versioned_and_bound_to_its_reference():
     assert tile_result_s3_key("mission-1", None, 4, 2) == (
         "missions/mission-1/ai-tile-results/pipeline/attempt_2/tile_4.json"
     )
+    assert tile_result_s3_key(
+        "mission-1",
+        "run-1",
+        4,
+        2,
+        organization_id="acme-survey",
+        workspace_prefix="organizations/acme-survey/missions/mission-1",
+    ) == (
+        "organizations/acme-survey/missions/mission-1/"
+        "ai-tile-results/run-1/attempt_2/tile_4.json"
+    )
+
+
+def test_tenant_tile_result_requires_the_durable_workspace_binding():
+    with pytest.raises(ValueError, match="no workspace prefix"):
+        tile_result_s3_key(
+            "mission-1",
+            None,
+            4,
+            2,
+            organization_id="acme-survey",
+        )
 
 
 @pytest.mark.parametrize("unsafe_value", ["../escape", "a/b", "a\\b", ".", ".."])

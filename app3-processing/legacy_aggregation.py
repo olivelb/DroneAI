@@ -29,15 +29,22 @@ from shared.geospatial_assets import (
 )
 from shared.model_provenance import validate_model_manifest
 from shared.tile_results import tile_result_s3_key, validate_tile_result_bytes
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    MissionObjectNamespace,
+    mission_event_namespace,
+)
 
 
 DetectionRecord = dict[str, Any]
 JsonObject = dict[str, Any]
 
 
-class MissionDescriptor(TypedDict):
+class MissionDescriptor(TypedDict, total=False):
     ortho_s3_key: str | None
     tiling_metadata: JsonObject
+    organization_id: str
+    workspace_prefix: str
 
 
 class TilePersistenceResult(TypedDict):
@@ -162,12 +169,31 @@ class LegacyAggregationWorkflow:
         tile_index: int,
         detections: list[DetectionRecord],
         expected_attempt: int,
+        namespace: MissionObjectNamespace | None = None,
     ) -> TilePersistenceResult | None:
+        namespace = namespace or MissionObjectNamespace.create(
+            LEGACY_ORGANIZATION_ID,
+            vol_id,
+        )
         finalize_mission: MissionDescriptor | None = None
         with get_session() as session:
             mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
             if mission is None:
-                mission = get_or_create_mission(session, vol_id)
+                mission = get_or_create_mission(
+                    session,
+                    vol_id,
+                    organization_id=namespace.organization_id,
+                    workspace_prefix=namespace.root,
+                )
+            durable_namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
+            )
+            if durable_namespace != namespace:
+                raise RuntimeError(
+                    "AI tile event namespace does not match the durable mission"
+                )
             if int(mission.retry_count or 0) != expected_attempt:
                 return None
             receipt = (
@@ -208,6 +234,8 @@ class LegacyAggregationWorkflow:
                         JsonObject,
                         mission.tiling_metadata or {},
                     ),
+                    "organization_id": mission.organization_id,
+                    "workspace_prefix": mission.workspace_prefix,
                 }
             result: TilePersistenceResult = {
                 "finalize_mission": finalize_mission,
@@ -224,7 +252,15 @@ class LegacyAggregationWorkflow:
         tile_index = int(data["tile_index"])
         attempt = int(data.get("attempt", 0))
         result_key = cast(str, data["result_s3_key"])
-        expected_key = tile_result_s3_key(vol_id, None, tile_index, attempt)
+        namespace = mission_event_namespace(data)
+        expected_key = tile_result_s3_key(
+            vol_id,
+            None,
+            tile_index,
+            attempt,
+            organization_id=namespace.organization_id,
+            workspace_prefix=namespace.root,
+        )
         if result_key != expected_key:
             raise RuntimeError(
                 "AI tile result key does not match the deterministic mission key"
@@ -322,9 +358,12 @@ class LegacyAggregationWorkflow:
                 encoding="utf-8",
             )
             os.replace(temporary, output)
+            namespace = mission_event_namespace(
+                {**mission, "vol_id": vol_id}
+            )
             storage.upload_verified_file(
                 output,
-                f"missions/{vol_id}/detections.geojson",
+                namespace.key("detections.geojson"),
             )
 
             with get_session() as session:
@@ -359,6 +398,7 @@ class LegacyAggregationWorkflow:
 
     def process_detection(self, data: JsonObject) -> None:
         vol_id = cast(str, data["vol_id"])
+        namespace = mission_event_namespace(data)
         tile_index = int(data["tile_index"])
         try:
             persistence = self._store_tile(
@@ -366,6 +406,7 @@ class LegacyAggregationWorkflow:
                 tile_index,
                 self._event_detections(data),
                 int(data.get("attempt", 0)),
+                namespace,
             )
         except Exception:
             self.logger.exception(
@@ -443,6 +484,8 @@ class LegacyAggregationWorkflow:
                                 JsonObject,
                                 mission.tiling_metadata or {},
                             ),
+                            "organization_id": mission.organization_id,
+                            "workspace_prefix": mission.workspace_prefix,
                         },
                     )
                 )

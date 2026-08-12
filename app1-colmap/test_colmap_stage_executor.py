@@ -91,6 +91,10 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
         calls.append("prepare")
         assert input_dataset == "datasets/quarry-001"
         assert mission_parameters["pipeline"] == "modern"
+        assert mission_parameters["organization_id"] == "acme-survey"
+        assert mission_parameters["workspace_prefix"] == (
+            "organizations/acme-survey/missions/quarry-001"
+        )
         assert mission_parameters["stage_parameters"] == {
             "gcp_bundle": {"schema_version": 1}
         }
@@ -152,8 +156,9 @@ def test_reconstruction_adapter_runs_aligned_pipeline_and_publishes_workspace(
     )
 
     assert calls == ["prepare", "reconstruct", "rtk", "align", "publish"]
-    assert published_prefix["value"].endswith(
-        f"/{'a' * 32}/reconstruction-workspace"
+    assert published_prefix["value"] == (
+        "organizations/acme-survey/missions/quarry-001/stage-runs/"
+        f"{'a' * 32}/reconstruction-workspace"
     )
     assert result.kind == "reconstruction_workspace"
     assert result.quality_metrics == {"registered_images": 80}

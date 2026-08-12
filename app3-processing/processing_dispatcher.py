@@ -35,6 +35,13 @@ class OrthomosaicSliceOptions(TypedDict, total=False):
     sam_prompt: str
     analysis_run_id: str | None
     analysis_attempt: int
+    organization_id: str
+    workspace_prefix: str | None
+
+
+class MissionNamespaceOptions(TypedDict, total=False):
+    organization_id: str
+    workspace_prefix: str | None
 
 
 class OrthomosaicTiler(Protocol):
@@ -86,6 +93,20 @@ class ProcessingDispatcher:
             analysis_attempt,
         ):
             return
+        namespace_options: MissionNamespaceOptions = {}
+        if (
+            "organization_id" in data
+            or "workspace_prefix" in data
+        ):
+            namespace_options = {
+                "organization_id": str(
+                    data.get("organization_id") or "legacy-unassigned"
+                ),
+                "workspace_prefix": cast(
+                    str | None,
+                    data.get("workspace_prefix"),
+                ),
+            }
         self.tiler.slice(
             str(data.get("ortho_s3_key") or data.get("ortho_path") or ""),
             vol_id,
@@ -97,6 +118,7 @@ class ProcessingDispatcher:
             sam_prompt=str(data.get("sam_prompt", "car")),
             analysis_run_id=analysis_run_id,
             analysis_attempt=analysis_attempt,
+            **namespace_options,
         )
 
     def process_event(self, data: JsonObject, topic: str) -> None:

@@ -9,14 +9,24 @@ from typing import cast
 from fastapi import HTTPException
 
 from shared.database import AIAnalysisRun, get_session
+from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .map_support import AnalysisRunRecord, JsonObject, RouteSession, get_mission
 from .security import Principal
 
 
-def analysis_event(run: AnalysisRunRecord) -> JsonObject:
+def analysis_event(
+    run: AnalysisRunRecord,
+    namespace: MissionObjectNamespace | None = None,
+) -> JsonObject:
+    namespace = namespace or MissionObjectNamespace.create(
+        LEGACY_ORGANIZATION_ID,
+        run.vol_id,
+    )
     event: JsonObject = {
         "vol_id": run.vol_id,
+        "organization_id": namespace.organization_id,
+        "workspace_prefix": namespace.root,
         "ortho_s3_key": run.ortho_s3_key,
         "analysis_run_id": run.run_id,
         "classes": run.classes or [],

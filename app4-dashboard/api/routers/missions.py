@@ -17,8 +17,11 @@ from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.phase_dag import initialize_stage_runs
 from shared.stage_contracts import stage_dag_catalog
-from shared.tenancy import mission_prefix
-from shared.tenancy import LEGACY_ORGANIZATION_ID
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    MissionObjectNamespace,
+    mission_prefix,
+)
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QUALITY_PROFILES,
@@ -66,6 +69,9 @@ router.include_router(mission_stages_router)
 
 
 class MissionMutationRecord(Protocol):
+    vol_id: str
+    organization_id: str
+    workspace_prefix: str | None
     retry_count: int | None
     status: str
     current_step: str | None
@@ -250,6 +256,7 @@ def _delete_mission(
     owner_subject: str | None = None,
 ) -> DeleteMissionResponse:
     mission_exists = False
+    delete_prefix: str | None = None
     with get_session() as session:
         mission = _find_mission(
             session,
@@ -261,13 +268,19 @@ def _delete_mission(
         )
         if mission is not None:
             mission_exists = True
+            delete_prefix = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
+            ).prefix()
             mission.status = "deleting"
             mission.current_step = "DELETING"
             mission.error_message = None
 
     deleted_count = 0
     try:
-        deleted_count = storage.delete_prefix(f"missions/{vol_id}/")
+        if delete_prefix is not None:
+            deleted_count = storage.delete_prefix(delete_prefix)
     except Exception as error:
         if mission_exists:
             with get_session() as session:
@@ -432,6 +445,8 @@ def _start_mission(
             payload = _mission_payload(params)
             payload["owner_subject"] = principal.subject
             payload["organization_id"] = organization_id
+            workspace_prefix = mission_prefix(organization_id, params.vol_id)
+            payload["workspace_prefix"] = workspace_prefix
             selected_profile = quality_profile(params.quality_profile)
             payload["colmap_params"] = {
                 **selected_profile.parameters,
@@ -454,10 +469,7 @@ def _start_mission(
                 pipeline=params.pipeline,
                 dataset_id=dataset.id,
                 input_dataset=params.input_dataset,
-                workspace_prefix=mission_prefix(
-                    organization_id,
-                    params.vol_id,
-                ),
+                workspace_prefix=workspace_prefix,
                 params=payload,
             )
             session.add(mission)
