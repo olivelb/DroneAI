@@ -39,7 +39,8 @@ geographic core ownership, calibrated terrain-envelope camera footprints and
 native JPEG crops are implemented and component-qualified. Area/GSD/VRAM-aware
 resident-cap planning and cross-Job resident streaming are also implemented.
 Seam qualification on a representative native block remains before the new HQ
-profile can be enabled.
+profile can be enabled. The standalone runner now uses the same 2 cm HQ GSD as
+production instead of inheriting the balanced runner's 5 cm preview default.
 
 1. Define the partition in projected ground coordinates, independently of the
    reconstruction's local axes. **Implemented.**
@@ -76,7 +77,8 @@ runtime gates.
 
 ## Phase 3 — Densification A/B
 
-Status: pending the Phase 2 representative block.
+Status: neutral native candidates implemented; A/B execution remains pending
+the Phase 2 reference result.
 
 Run identical seeded block experiments for:
 
@@ -84,6 +86,15 @@ Run identical seeded block experiments for:
 - AbsGrad threshold 0.25;
 - AbsGrad threshold 0.50;
 - multi-view contour-guided densification.
+
+`reference-absolute-absgrad025` and
+`reference-absolute-absgrad050` keep every validated
+`reference-absolute` learning rate and schedule unchanged and vary only the
+AbsGrad contribution to MRNF growth ranking. They remain explicitly
+experimental until this A/B gate passes; the older dev.36 profiles are not
+used because they also change rotation and optimizer calibration. The local
+runner accepts a bounded `--run-label`, isolating orthomosaics, checkpoints and
+reports for seeded candidates that share the same immutable input block.
 
 Compare retained population, PSNR/SSIM/LPIPS, edge MTF, floaters, DEM residuals,
 peak VRAM and wall time. No default changes without a recorded win. This phase

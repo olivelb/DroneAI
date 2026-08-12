@@ -65,6 +65,8 @@ const char* help_text() {
         "[--sh-degree-interval N] "
         "[--profile-id NAME] [--dataset-fingerprint VALUE] "
         "[--optimizer-profile dronegs-dev16|reference-absolute|"
+        "reference-absolute-absgrad025|"
+        "reference-absolute-absgrad050|"
         "reference-dc-only|reference-position-only|"
         "reference-opacity-only|reference-scale-only|"
         "reference-rotation-only|reference-dc-opacity|"

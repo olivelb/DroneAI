@@ -313,6 +313,27 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(
         occurrence_count(manifest_text, "\"grow_until_iteration\"") == 1U,
         "manifest must not duplicate grow_until_iteration");
+
+    options.optimizer_profile =
+        "reference-absolute-absgrad025";
+    options.run_manifest = output / "trainer_run_absgrad025.json";
+    dronegs::write_completed_manifest(
+        options, scene, dronegs::dataset_fingerprint(scene), measurements,
+        ply, gaussians.size());
+    std::ifstream absgrad_manifest(options.run_manifest);
+    const std::string absgrad_manifest_text(
+        (std::istreambuf_iterator<char>(absgrad_manifest)),
+        std::istreambuf_iterator<char>());
+    check(
+        absgrad_manifest_text.find("\"absgrad_score_weight\": 0.25") !=
+            std::string::npos,
+        "neutral AbsGrad manifest weight missing");
+    check(
+        absgrad_manifest_text.find(
+            "\"growth_score\": "
+            "\"mrnf_error_edge_times_robust_abs_projected_gradient\"") !=
+            std::string::npos,
+        "neutral AbsGrad manifest growth score missing");
 }
 
 void test_optimizer_profile_registry() {
@@ -323,6 +344,17 @@ void test_optimizer_profile_registry() {
         production->status ==
             dronegs::OptimizerProfileStatus::validated,
         "production optimizer must be marked validated");
+    for (const auto* name : {
+             "reference-absolute-absgrad025",
+             "reference-absolute-absgrad050",
+         }) {
+        const auto* candidate = dronegs::find_optimizer_profile(name);
+        check(candidate != nullptr, "neutral AbsGrad candidate missing");
+        check(
+            candidate->status ==
+                dronegs::OptimizerProfileStatus::experimental,
+            "neutral AbsGrad candidate must remain experimental");
+    }
     const auto* dev38 = dronegs::find_optimizer_profile(
         "dev38-staged-rotation008-absgrad050-fastgs");
     check(dev38 != nullptr, "dev38 profile missing");

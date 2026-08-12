@@ -520,6 +520,39 @@ int main() {
         require_rate(
             initial_rates.rotation_epsilon,
             1.0e-15F, 1.0e-20F, "rotation epsilon");
+        const auto require_reference_absgrad_parity =
+            [&](dronegs::MrnfOptimizerProfile profile,
+                float expected_absgrad_weight,
+                const char* label) {
+                dronegs::OrderedAlphaTrainingContext context(
+                    rate_fixture, 32U * 32U, 2U, 8U, profile);
+                const auto rates = context.current_learning_rates();
+                require_rate(
+                    rates.position, initial_rates.position,
+                    1.0e-10F, label);
+                require_rate(
+                    rates.dc, initial_rates.dc, 1.0e-8F, label);
+                require_rate(
+                    rates.opacity, initial_rates.opacity,
+                    1.0e-8F, label);
+                require_rate(
+                    rates.scale, initial_rates.scale,
+                    1.0e-8F, label);
+                require_rate(
+                    rates.rotation, initial_rates.rotation,
+                    1.0e-8F, label);
+                require_rate(
+                    dronegs::mrnf_absgrad_score_weight(profile),
+                    expected_absgrad_weight, 1.0e-8F, label);
+            };
+        require_reference_absgrad_parity(
+            dronegs::MrnfOptimizerProfile::
+                reference_absolute_absgrad025,
+            0.25F, "reference AbsGrad 0.25");
+        require_reference_absgrad_parity(
+            dronegs::MrnfOptimizerProfile::
+                reference_absolute_absgrad050,
+            0.50F, "reference AbsGrad 0.50");
         dronegs::OrderedAlphaTrainingContext native_rate_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16);

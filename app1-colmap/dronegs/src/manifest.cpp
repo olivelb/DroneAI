@@ -74,8 +74,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               const RunMeasurements& measurements,
                               const std::filesystem::path& ply_path,
                               std::size_t gaussian_count) {
+    const bool reference_absgrad025 =
+        options.optimizer_profile ==
+            "reference-absolute-absgrad025";
+    const bool reference_absgrad050 =
+        options.optimizer_profile ==
+            "reference-absolute-absgrad050";
     const bool reference_all =
-        options.optimizer_profile == "reference-absolute";
+        options.optimizer_profile == "reference-absolute" ||
+        reference_absgrad025 || reference_absgrad050;
     const bool dev34_geometry =
         options.optimizer_profile == "dev34-opacity096-reference-scale" ||
         options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
@@ -105,9 +112,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.raster_profile == "fastgs" ||
         (options.raster_profile == "auto" && dev38_fastgs);
     const bool absgrad_enabled =
+        reference_absgrad025 || reference_absgrad050 ||
         dev36_absgrad || dev37_antialias || dev38_fastgs;
     const bool staged_rotation =
-        dev35_staged_rotation || absgrad_enabled;
+        dev35_staged_rotation || dev36_absgrad ||
+        dev37_antialias || dev38_fastgs;
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -326,8 +335,9 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    : "null")
            << ",\n"
            << "    \"absgrad_score_weight\": "
-           << (options.optimizer_profile ==
-                       "dev36-staged-rotation008-absgrad025"
+           << (reference_absgrad025 ||
+                       options.optimizer_profile ==
+                           "dev36-staged-rotation008-absgrad025"
                    ? "0.25"
                    : (absgrad_enabled
                           ? "0.50"

@@ -121,8 +121,10 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   selected parent and appended child's optimizer moments after a split;
 - exposes a versioned optimizer registry: `reference-absolute` is the validated
   production optimizer, `dronegs-dev16` is the deprecated native CLI default
-  retained for compatibility, and the `reference-*`, calibrated and dev.34–38
-  profiles remain explicit experiments rather than silent fallbacks;
+  retained for compatibility, the neutral
+  `reference-absolute-absgrad025/050` candidates change only MRNF growth
+  ranking, and the other `reference-*`, calibrated and dev.34–38 profiles
+  remain explicit experiments rather than silent fallbacks;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -315,7 +317,11 @@ the dev.8 decode behavior.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated
-production optimizer selected explicitly by DroneAI. The
+production optimizer selected explicitly by DroneAI.
+`reference-absolute-absgrad025` and
+`reference-absolute-absgrad050` preserve that optimizer's rates and schedules
+and add only a 0.25 or 0.50 robust absolute projected-gradient contribution to
+MRNF growth ranking. They are qualification-only experimental candidates. The
 `reference-dc-only`, `reference-position-only`, `reference-opacity-only`,
 `reference-scale-only`, and `reference-rotation-only` values change exactly
 one family for reproducible ablation. `reference-dc-opacity` combines only the

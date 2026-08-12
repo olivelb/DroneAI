@@ -4098,8 +4098,7 @@ static float bounding_box_diagonal(
 static MrnfLearningRates mrnf_learning_rates(
     std::uint64_t optimizer_step, std::uint64_t maximum_steps,
     float position_scale, MrnfOptimizerProfile profile) {
-    const bool reference_all =
-        profile == MrnfOptimizerProfile::reference_absolute;
+    const bool reference_all = uses_reference_absolute_optimizer(profile);
     const bool calibrated_dc_opacity =
         profile == MrnfOptimizerProfile::calibrated_dc_005_opacity ||
         profile == MrnfOptimizerProfile::calibrated_dc_010_opacity ||
@@ -4482,8 +4481,7 @@ struct OrderedAlphaTrainingContext::Impl {
             }
         }
         position_learning_rate_scale =
-            optimizer_profile ==
-                    MrnfOptimizerProfile::reference_absolute ||
+            uses_reference_absolute_optimizer(optimizer_profile) ||
                 optimizer_profile ==
                     MrnfOptimizerProfile::reference_position_only
                 ? percentile80_median_size(initial_gaussians)
@@ -5240,27 +5238,7 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         const auto previous_count = gaussian_count;
         const float absgrad_score_weight =
-            optimizer_profile ==
-                    MrnfOptimizerProfile::
-                        dev36_staged_rotation008_absgrad025
-                ? 0.25F
-                : (optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev36_staged_rotation008_absgrad050 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa005 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa015 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa030 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev38_staged_rotation008_absgrad050_fastgs
-                       ? 0.50F
-                       : 0.0F);
+            mrnf_absgrad_score_weight(optimizer_profile);
         std::vector<Gaussian> host_gaussians(previous_count);
         std::vector<float> host_weights(previous_count);
         std::vector<float> host_visibility(previous_count);
