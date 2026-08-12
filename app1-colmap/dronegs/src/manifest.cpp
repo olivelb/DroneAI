@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "dronegs/manifest.hpp"
+#include "dronegs/training.hpp"
 
 #include <chrono>
 #include <ctime>
@@ -74,8 +75,15 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                               const RunMeasurements& measurements,
                               const std::filesystem::path& ply_path,
                               std::size_t gaussian_count) {
+    const bool reference_absgrad025 =
+        options.optimizer_profile ==
+            "reference-absolute-absgrad025";
+    const bool reference_absgrad050 =
+        options.optimizer_profile ==
+            "reference-absolute-absgrad050";
     const bool reference_all =
-        options.optimizer_profile == "reference-absolute";
+        options.optimizer_profile == "reference-absolute" ||
+        reference_absgrad025 || reference_absgrad050;
     const bool dev34_geometry =
         options.optimizer_profile == "dev34-opacity096-reference-scale" ||
         options.optimizer_profile == "dev34-opacity096-reference-rotation" ||
@@ -105,9 +113,11 @@ void write_completed_manifest(const Options& options, const Scene& scene,
         options.raster_profile == "fastgs" ||
         (options.raster_profile == "auto" && dev38_fastgs);
     const bool absgrad_enabled =
+        reference_absgrad025 || reference_absgrad050 ||
         dev36_absgrad || dev37_antialias || dev38_fastgs;
     const bool staged_rotation =
-        dev35_staged_rotation || absgrad_enabled;
+        dev35_staged_rotation || dev36_absgrad ||
+        dev37_antialias || dev38_fastgs;
     const bool calibrated_dc_opacity =
         options.optimizer_profile == "calibrated-dc-0.005-opacity" ||
         options.optimizer_profile == "calibrated-dc-0.010-opacity" ||
@@ -193,7 +203,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-native-mrnf-fastgs\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.47\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.48\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -222,6 +232,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"sh_degree_interval\": "
            << options.sh_degree_interval << ",\n"
            << "    \"sh_schedule\": \"progressive_from_zero\",\n"
+           << "    \"appearance_model\": \"color-sh-plus-opacity-sh-v1\",\n"
+           << "    \"opacity_sh_learning_rate_ratio\": 0.05,\n"
            << "    \"max_cap\": " << options.max_cap << ",\n"
            << "    \"resize_factor\": " << options.resize_factor << ",\n"
            << "    \"max_width\": " << options.max_width << ",\n"
@@ -263,11 +275,17 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"topology_cooldown_iterations\": "
            << options.topology_cooldown << ",\n"
            << "    \"topology_refine_through_iteration\": "
-           << (options.iterations - options.topology_cooldown) << ",\n"
+           << topology_refinement_end_iteration(
+                  options.iterations, options.topology_cooldown,
+                  options.adaptive_growth_target != 0U)
+           << ",\n"
            << "    \"photometric_finish_iterations\": "
            << options.photometric_finish << ",\n"
            << "    \"photometric_final_mse_percent\": "
            << options.photometric_mse_percent << ",\n"
+           << "    \"adaptive_growth_target\": "
+           << (options.adaptive_growth_target != 0U ? "true" : "false")
+           << ",\n"
            << "    \"photometric_finish_start_after_iteration\": "
            << (options.iterations - options.photometric_finish) << ",\n"
            << "    \"training_loss_telemetry\": "
@@ -291,7 +309,14 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"grow_until_iteration\": 15000,\n"
            << "    \"prune_until_iteration\": 28500,\n"
            << "    \"growth_threshold\": 0.003,\n"
-           << "    \"growth_fraction\": 0.07,\n"
+           << "    \"growth_fraction\": "
+           << (options.adaptive_growth_target != 0U ? "null" : "0.07")
+           << ",\n"
+           << "    \"growth_fraction_policy\": \""
+           << (options.adaptive_growth_target != 0U
+                   ? "capacity_targeted_0.07_to_0.25"
+                   : "fixed_0.07")
+           << "\",\n"
            << "    \"opacity_prune_threshold\": 0.003921568627,\n"
            << "    \"minimum_scale\": 1e-10,\n"
            << "    \"means_noise_weight\": 50.0,\n"
@@ -324,8 +349,9 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    : "null")
            << ",\n"
            << "    \"absgrad_score_weight\": "
-           << (options.optimizer_profile ==
-                       "dev36-staged-rotation008-absgrad025"
+           << (reference_absgrad025 ||
+                       options.optimizer_profile ==
+                           "dev36-staged-rotation008-absgrad025"
                    ? "0.25"
                    : (absgrad_enabled
                           ? "0.50"

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -22,6 +23,7 @@
 #include "dronegs/image.hpp"
 #include "dronegs/ply.hpp"
 #include "dronegs/profile_registry.hpp"
+#include "dronegs/training.hpp"
 
 namespace {
 
@@ -53,6 +55,11 @@ void write_fixture(const std::filesystem::path& root) {
     std::filesystem::create_directories(sparse);
     std::filesystem::create_directories(root / "images");
     std::ofstream(root / "images" / "frame.jpg", std::ios::binary).put('\0');
+    {
+        std::ofstream regions(root / "image_regions.tsv");
+        regions << "# dronegs-image-regions-v1\n"
+                << "frame.jpg\t16\t24\t320\t240\n";
+    }
 
     {
         std::ofstream stream(sparse / "cameras.bin", std::ios::binary);
@@ -112,10 +119,16 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(scene.images.front().name == "frame.jpg", "image name mismatch");
     check(scene.images.front().qvec[0] == 1.0, "image quaternion mismatch");
     check(scene.images.front().tvec[2] == 0.0, "image translation mismatch");
+    check(
+        scene.images.front().source_x == 16U &&
+            scene.images.front().source_y == 24U &&
+            scene.images.front().source_width == 320U &&
+            scene.images.front().source_height == 240U,
+        "native image region mismatch");
     check(scene.cameras.front().parameters.size() == 4, "camera parameter count mismatch");
     const auto original_fingerprint =
         dronegs::dataset_fingerprint(scene, root);
-    check(original_fingerprint.starts_with("fnv1a64:v2:"),
+    check(original_fingerprint.starts_with("fnv1a64:v3:"),
           "fingerprint kind mismatch");
     auto calibration_changed = scene;
     calibration_changed.cameras.front().parameters.front() += 1.0;
@@ -129,6 +142,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         dronegs::dataset_fingerprint(pose_changed, root) !=
             original_fingerprint,
         "camera poses must invalidate the dataset fingerprint");
+    auto region_changed = scene;
+    region_changed.images.front().source_x += 1U;
+    check(
+        dronegs::dataset_fingerprint(region_changed, root) !=
+            original_fingerprint,
+        "native image regions must invalidate the dataset fingerprint");
 
     auto gaussians = dronegs::initialize_fixed_topology(scene);
     check(gaussians.size() == 2, "Gaussian count mismatch");
@@ -138,6 +157,10 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     for (std::size_t index = 0U; index < 9U; ++index) {
         gaussians.front().sh_rest[index] =
             0.01F * static_cast<float>(index + 1U);
+    }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        gaussians.front().opacity_sh[index] =
+            -0.02F * static_cast<float>(index + 1U);
     }
     const auto output = root.parent_path() / "native-output";
     std::filesystem::create_directories(output);
@@ -159,6 +182,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "PLY vertex count mismatch");
     check(header.find("property float f_rest_8\n") != std::string::npos,
           "PLY degree-1 SH layout mismatch");
+    check(header.find("property float opacity_sh_2\n") != std::string::npos,
+          "PLY degree-1 opacity-SH layout mismatch");
     check(header.find("property float rot_3\n") != std::string::npos,
           "PLY rotation layout mismatch");
     const auto loaded = dronegs::read_gaussian_ply(ply);
@@ -178,6 +203,9 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(loaded.gaussians.front().sh_rest[8] ==
               gaussians.front().sh_rest[8],
           "PLY reader SH-rest mismatch");
+    check(loaded.gaussians.front().opacity_sh[2] ==
+              gaussians.front().opacity_sh[2],
+          "PLY reader opacity-SH mismatch");
 
     dronegs::Options options{
         .data_path = root,
@@ -191,6 +219,7 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .max_width = 1600,
         .tile_mode = 4,
         .seed = 42,
+        .adaptive_growth_target = 1,
     };
     const dronegs::RunMeasurements measurements{
         .started_at = "2026-07-24T10:00:00Z",
@@ -251,6 +280,14 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(manifest_text.find("\"resumed_from_checkpoint\": false") !=
               std::string::npos,
           "manifest resume provenance missing");
+    check(manifest_text.find("\"adaptive_growth_target\": true") !=
+              std::string::npos,
+          "manifest adaptive growth policy missing");
+    check(manifest_text.find(
+              "\"growth_fraction_policy\": "
+              "\"capacity_targeted_0.07_to_0.25\"") !=
+              std::string::npos,
+          "manifest adaptive growth schedule missing");
     check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
@@ -286,6 +323,27 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(
         occurrence_count(manifest_text, "\"grow_until_iteration\"") == 1U,
         "manifest must not duplicate grow_until_iteration");
+
+    options.optimizer_profile =
+        "reference-absolute-absgrad025";
+    options.run_manifest = output / "trainer_run_absgrad025.json";
+    dronegs::write_completed_manifest(
+        options, scene, dronegs::dataset_fingerprint(scene), measurements,
+        ply, gaussians.size());
+    std::ifstream absgrad_manifest(options.run_manifest);
+    const std::string absgrad_manifest_text(
+        (std::istreambuf_iterator<char>(absgrad_manifest)),
+        std::istreambuf_iterator<char>());
+    check(
+        absgrad_manifest_text.find("\"absgrad_score_weight\": 0.25") !=
+            std::string::npos,
+        "neutral AbsGrad manifest weight missing");
+    check(
+        absgrad_manifest_text.find(
+            "\"growth_score\": "
+            "\"mrnf_error_edge_times_robust_abs_projected_gradient\"") !=
+            std::string::npos,
+        "neutral AbsGrad manifest growth score missing");
 }
 
 void test_optimizer_profile_registry() {
@@ -296,6 +354,17 @@ void test_optimizer_profile_registry() {
         production->status ==
             dronegs::OptimizerProfileStatus::validated,
         "production optimizer must be marked validated");
+    for (const auto* name : {
+             "reference-absolute-absgrad025",
+             "reference-absolute-absgrad050",
+         }) {
+        const auto* candidate = dronegs::find_optimizer_profile(name);
+        check(candidate != nullptr, "neutral AbsGrad candidate missing");
+        check(
+            candidate->status ==
+                dronegs::OptimizerProfileStatus::experimental,
+            "neutral AbsGrad candidate must remain experimental");
+    }
     const auto* dev38 = dronegs::find_optimizer_profile(
         "dev38-staged-rotation008-absgrad050-fastgs");
     check(dev38 != nullptr, "dev38 profile missing");
@@ -408,6 +477,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
             parsed.photometric_mse_percent == 0U,
         "CLI photometric finish default mismatch");
     check(
+        parsed.adaptive_growth_target == 0U,
+        "CLI adaptive growth default mismatch");
+    check(
         parsed.optimizer_profile == "dronegs-dev16",
         "CLI optimizer profile default mismatch");
     check(
@@ -430,6 +502,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--topology-cooldown", "1",
         "--photometric-finish", "1",
         "--photometric-mse-percent", "50",
+        "--adaptive-growth-target", "1",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -464,6 +537,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
             tuned.photometric_mse_percent == 50U,
         "CLI photometric finish mismatch");
     check(
+        tuned.adaptive_growth_target == 1U,
+        "CLI adaptive growth mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -483,7 +559,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 34U);
+    values.resize(values.size() - 36U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
@@ -496,6 +572,43 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     }
     check(rejected, "CLI accepted max-width above contract limit");
 }
+
+void test_adaptive_capacity_growth() {
+    check(
+        dronegs::topology_refinement_end_iteration(
+            30'000U, 1'000U, false) == 29'000U,
+        "legacy topology cooldown changed");
+    check(
+        dronegs::topology_refinement_end_iteration(
+            30'000U, 1'000U, true) == 14'800U,
+        "adaptive topology was not frozen after growth");
+    const auto initial = dronegs::adaptive_capacity_growth_fraction(
+        22'547U, 5'700'000U, 200U);
+    check(
+        initial > 0.10F && initial < 0.13F,
+        "adaptive initial growth fraction mismatch");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            5'700'000U, 5'700'000U, 14'600U) == 0.0F,
+        "adaptive growth continued at capacity before the final window");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            5'700'000U, 5'700'000U, 14'800U) == 0.07F,
+        "adaptive final window did not reserve pruning replacement");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            1U, 5'700'000U, 14'800U) == 0.25F,
+        "adaptive growth upper bound mismatch");
+    bool empty_model_rejected = false;
+    try {
+        static_cast<void>(dronegs::adaptive_capacity_growth_fraction(
+            0U, 100U, 200U));
+    } catch (const std::invalid_argument&) {
+        empty_model_rejected = true;
+    }
+    check(empty_model_rejected, "adaptive growth accepted an empty model");
+}
+
 void test_image_cache() {
     std::uint64_t loads = 0U;
     dronegs::ImageCache cache(
@@ -668,6 +781,81 @@ void test_image_cache() {
           "parallel cache failed after refilling the bounded queue");
 }
 
+void test_training_tiles() {
+    const auto landscape = dronegs::make_training_tiles(6001U, 4001U, 4U);
+    check(landscape.size() == 4U, "four-tile mode count mismatch");
+    check(
+        landscape[0].source_x == 0U &&
+            landscape[0].source_y == 0U &&
+            landscape[0].width == 3000U &&
+            landscape[0].height == 2000U,
+        "four-tile mode first region mismatch");
+    check(
+        landscape[3].source_x == 3000U &&
+            landscape[3].source_y == 2000U &&
+            landscape[3].width == 3001U &&
+            landscape[3].height == 2001U,
+        "four-tile mode did not preserve odd image borders");
+
+    const auto wide = dronegs::make_training_tiles(6000U, 4000U, 2U);
+    check(
+        wide.size() == 2U && wide[0].width == 3000U &&
+            wide[1].source_x == 3000U && wide[1].height == 4000U,
+        "two-tile landscape split mismatch");
+    const auto portrait = dronegs::make_training_tiles(4000U, 6000U, 2U);
+    check(
+        portrait.size() == 2U && portrait[0].height == 3000U &&
+            portrait[1].source_y == 3000U && portrait[1].width == 4000U,
+        "two-tile portrait split mismatch");
+
+    const auto [native_width, native_height] =
+        dronegs::training_image_dimensions(landscape[0], 1U, 4096U);
+    check(
+        native_width == 3000U && native_height == 2000U,
+        "tile-local max-width unexpectedly downsampled a native tile");
+    const auto [scaled_width, scaled_height] =
+        dronegs::training_image_dimensions(landscape[3], 2U, 4096U);
+    check(
+        scaled_width == 1500U && scaled_height == 1000U,
+        "tile resize dimensions mismatch");
+
+    bool invalid_mode_rejected = false;
+    try {
+        static_cast<void>(dronegs::make_training_tiles(32U, 32U, 3U));
+    } catch (const std::invalid_argument&) {
+        invalid_mode_rejected = true;
+    }
+    check(invalid_mode_rejected, "invalid tile mode was accepted");
+}
+
+void test_area_image_resampling() {
+    std::vector<std::uint8_t> checkerboard;
+    checkerboard.reserve(4U * 4U * 3U);
+    for (std::uint32_t y = 0U; y < 4U; ++y) {
+        for (std::uint32_t x = 0U; x < 4U; ++x) {
+            const auto value = static_cast<std::uint8_t>(
+                ((x + y) % 2U == 0U) ? 0U : 255U);
+            checkerboard.insert(checkerboard.end(), 3U, value);
+        }
+    }
+    const auto reduced = dronegs::resample_rgb_area(
+        checkerboard, 4U, 4U, 2U, 2U);
+    check(reduced.size() == 12U, "area resampling size mismatch");
+    check(
+        std::all_of(
+            reduced.begin(), reduced.end(),
+            [](std::uint8_t value) { return value == 128U; }),
+        "area resampling did not preserve checkerboard energy");
+
+    const std::vector<std::uint8_t> weighted{
+        0U, 0U, 0U, 0U, 0U, 0U, 255U, 255U, 255U};
+    const auto uneven = dronegs::resample_rgb_area(
+        weighted, 3U, 1U, 2U, 1U);
+    check(
+        uneven[0] == 0U && uneven[3] == 170U,
+        "area resampling fractional overlap mismatch");
+}
+
 
 }  // namespace
 
@@ -682,7 +870,10 @@ int main() {
         test_optimizer_profile_registry();
         test_local_scale_initialization();
         test_cli(data, output);
+        test_adaptive_capacity_growth();
         test_image_cache();
+        test_training_tiles();
+        test_area_image_resampling();
         std::filesystem::remove_all(base);
         std::cout << "DroneGS core tests passed\n";
         return 0;

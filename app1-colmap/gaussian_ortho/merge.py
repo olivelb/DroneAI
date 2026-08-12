@@ -12,38 +12,17 @@ from .gaussian_model import GaussianModel
 from .partition import CellBounds
 
 
-def _core_bounds(
-    cell: CellBounds,
-    dx: float,
-    dy: float,
-    overlap: float,
-) -> CellBounds:
-    """Compute the core (non-overlap) region of a cell."""
-    pad_x = dx * overlap
-    pad_y = dy * overlap
-    return CellBounds(
-        x_min=cell.x_min + pad_x,
-        x_max=cell.x_max - pad_x,
-        y_min=cell.y_min + pad_y,
-        y_max=cell.y_max - pad_y,
-        row=cell.row, col=cell.col,
-    )
-
-
-def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
-                 scene_x_range: tuple[float, float],
-                 scene_y_range: tuple[float, float],
-                 m: int, n: int, overlap: float = 0.20) -> GaussianModel:
+def merge_models(
+    cell_models: list[tuple[CellBounds, GaussianModel]],
+) -> GaussianModel:
     """
     Merge multiple per-cell GaussianModels into one.
 
     For each cell, only Gaussians whose XY centre lies within the core
     (non-overlap) region are kept.
     """
-    x_lo, x_hi = scene_x_range
-    y_lo, y_hi = scene_y_range
-    dx = (x_hi - x_lo) / n
-    dy = (y_hi - y_lo) / m
+    if not cell_models:
+        raise ValueError("at least one partitioned model is required")
 
     all_xyz = []
     all_dc = []
@@ -54,14 +33,18 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
     all_opacity_sh = []
 
     reference_model = cell_models[0][1]
+    opacity_sh_widths = {
+        int(model.opacity_sh.shape[1])
+        for _cell, model in cell_models
+        if model.opacity_sh.shape[1] > 0
+    }
+    if len(opacity_sh_widths) > 1:
+        raise ValueError("partitioned models use incompatible opacity-SH degrees")
+    opacity_sh_width = next(iter(opacity_sh_widths), 0)
 
     for cell, model in cell_models:
-        core = _core_bounds(cell, dx, dy, overlap)
         xyz = model._xyz
-        mask = (
-            (xyz[:, 0] >= core.x_min) & (xyz[:, 0] <= core.x_max) &
-            (xyz[:, 1] >= core.y_min) & (xyz[:, 1] <= core.y_max)
-        )
+        mask = cell.core_mask(xyz, array_module=cp)
         if not cp.any(mask):
             continue
 
@@ -71,13 +54,28 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
         all_scaling.append(model._scaling[mask])
         all_rotation.append(model._rotation[mask])
         all_opacity.append(model._opacity[mask])
-        if model.fagk_enabled and model._opacity_sh.shape[1] > 0:
-            all_opacity_sh.append(model._opacity_sh[mask])
+        if opacity_sh_width > 0:
+            if model.opacity_sh.shape[1] == opacity_sh_width:
+                all_opacity_sh.append(model.opacity_sh[mask])
+            elif model.opacity_sh.shape[1] == 0:
+                all_opacity_sh.append(
+                    cp.zeros(
+                        (int(cp.count_nonzero(mask).item()), opacity_sh_width),
+                        dtype=cp.float32,
+                    )
+                )
+            else:
+                raise ValueError(
+                    "partitioned models use incompatible opacity-SH degrees"
+                )
+
+    if not all_xyz:
+        raise RuntimeError("partition cores retained no Gaussians")
 
     merged = GaussianModel(
         sh_degree=reference_model.max_sh_degree,
-        fagk_enabled=reference_model.fagk_enabled,
-        fagk_max_degree=reference_model.fagk_max_degree,
+        opacity_sh_enabled=reference_model.opacity_sh_enabled,
+        opacity_sh_max_degree=reference_model.opacity_sh_max_degree,
     )
 
     merged._xyz = cp.concatenate(all_xyz, axis=0)
@@ -93,6 +91,6 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
         merged._opacity_sh = cp.empty((merged._xyz.shape[0], 0), dtype=cp.float32)
 
     merged.active_sh_degree = reference_model.max_sh_degree
-    merged.active_fagk_degree = reference_model.fagk_max_degree
+    merged.active_opacity_sh_degree = reference_model.opacity_sh_max_degree
 
     return merged

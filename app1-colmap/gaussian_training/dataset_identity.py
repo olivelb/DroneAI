@@ -8,8 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-IDENTITY_VERSION = "droneai-colmap-dataset-v2"
+IDENTITY_VERSION = "droneai-colmap-dataset-v3"
 SPARSE_FILENAMES = ("cameras.bin", "images.bin", "points3D.bin")
+IMAGE_REGIONS_FILENAME = "image_regions.tsv"
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 SAMPLE_BYTES = 64 * 1024
 
@@ -20,6 +21,7 @@ class DatasetIdentity:
     image_count: int
     sparse_sha256: str
     image_inventory_sha256: str
+    image_regions_sha256: str | None
 
 
 def _hash_file(path: Path) -> str:
@@ -73,6 +75,18 @@ def compute_dataset_identity(data_path: str | Path) -> DatasetIdentity:
         path = sparse / name
         sparse_digest.update(name.encode("utf-8"))
         sparse_digest.update(bytes.fromhex(_hash_file(path)))
+    image_regions_path = root / IMAGE_REGIONS_FILENAME
+    image_regions_sha256 = (
+        _hash_file(image_regions_path)
+        if image_regions_path.is_file()
+        else None
+    )
+    sparse_digest.update(IMAGE_REGIONS_FILENAME.encode("utf-8"))
+    sparse_digest.update(
+        bytes.fromhex(image_regions_sha256)
+        if image_regions_sha256 is not None
+        else b"absent"
+    )
 
     inventory = []
     for path in sorted(
@@ -109,4 +123,5 @@ def compute_dataset_identity(data_path: str | Path) -> DatasetIdentity:
         image_count=len(inventory),
         sparse_sha256=sparse_digest.hexdigest(),
         image_inventory_sha256=inventory_digest,
+        image_regions_sha256=image_regions_sha256,
     )

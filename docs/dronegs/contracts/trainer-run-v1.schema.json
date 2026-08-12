@@ -51,6 +51,8 @@
         "sh_degree": {"type": "integer", "minimum": 0, "maximum": 3},
         "sh_degree_interval": {"type": "integer", "minimum": 1},
         "sh_schedule": {"type": "string"},
+        "appearance_model": {"const": "color-sh-plus-opacity-sh-v1"},
+        "opacity_sh_learning_rate_ratio": {"const": 0.05},
         "max_cap": {"type": "integer", "minimum": 1},
         "resize_factor": {"enum": [1, 2, 4, 8]},
         "max_width": {"type": "integer", "minimum": 1, "maximum": 4096},

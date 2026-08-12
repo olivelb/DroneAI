@@ -2,6 +2,7 @@ import pytest
 
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
+    QUALITY_PROFILES,
     QUALITY_PROFILE_BY_ID,
     profile_overrides,
     quality_profile,
@@ -20,6 +21,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
         "fast-v1": ("1600", "2048", "7500", "1500000"),
         "normal-v2": ("2400", "4096", "15000", "8000000"),
         "high-quality-v2": ("4096", "16384", "30000", "12000000"),
+        "high-quality-v3": ("4096", "16384", "30000", "12000000"),
     }
 
     assert DEFAULT_QUALITY_PROFILE_ID == "normal-v2"
@@ -36,6 +38,21 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     assert quality_profile("fast-v1").parameters["gs_capacity_mode"] == "fixed"
     assert quality_profile("normal-v2").parameters["gs_capacity_mode"] == "adaptive"
     assert quality_profile("high-quality-v2").parameters["gs_capacity_floor"] == "5000000"
+    assert (
+        quality_profile("high-quality-v3").parameters[
+            "gs_target_gaussian_spacing_pixels"
+        ]
+        == "3.6"
+    )
+    assert quality_profile("high-quality-v3").parameters[
+        "gs_resident_partitioning"
+    ] is True
+    assert quality_profile("high-quality-v2").parameters[
+        "gs_resident_partitioning"
+    ] is False
+    assert "high-quality-v3" not in {
+        profile.profile_id for profile in QUALITY_PROFILES
+    }
     assert quality_profile("normal-v2").version == 2
 
 

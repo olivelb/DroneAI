@@ -103,6 +103,7 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
     opacities = model.opacity.squeeze(-1)
     sh_coeffs = model.features
     sh_degree = model.active_sh_degree
+    opacity_sh = model.opacity_sh
 
     if indices is not None:
         means = means[indices]
@@ -110,6 +111,8 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         scales = scales[indices]
         opacities = opacities[indices]
         sh_coeffs = sh_coeffs[indices]
+        if opacity_sh.shape[1] > 0:
+            opacity_sh = opacity_sh[indices]
 
     if settings.viewmatrix is None:
         raise ValueError("RasterSettings.viewmatrix is required")
@@ -125,6 +128,7 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         eps2d=settings.mip_filter_variance,
         compensate_filter=settings.mip_filter_compensation,
         sh_direction_rotation=settings.sh_direction_rotation,
+        opacity_sh=opacity_sh,
     )
 
     # Return in (C, H, W) layout for compatibility with callers

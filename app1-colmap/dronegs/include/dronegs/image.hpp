@@ -10,25 +10,54 @@
 #include <functional>
 #include <list>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace dronegs {
 
+struct ImageRegion {
+    std::uint32_t source_x = 0;
+    std::uint32_t source_y = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
 struct ImageData {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    std::uint32_t source_x = 0;
+    std::uint32_t source_y = 0;
     float source_to_image_x = 1.0F;
     float source_to_image_y = 1.0F;
     std::vector<std::uint8_t> rgb;
 };
 
+std::vector<ImageRegion> make_training_tiles(
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t tile_mode);
+
+std::vector<ImageRegion> make_training_tiles(
+    const ImageRegion& source_region,
+    std::uint32_t tile_mode);
+
+std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
+    const ImageRegion& region, std::uint32_t resize_factor,
+    std::uint32_t max_width);
+
+std::vector<std::uint8_t> resample_rgb_area(
+    const std::vector<std::uint8_t>& source,
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t target_width, std::uint32_t target_height);
+
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
                               std::uint32_t max_width,
-                              bool use_scaled_idct = false);
+                              bool use_scaled_idct = false,
+                              std::optional<ImageRegion> region = std::nullopt);
 
 struct ImageCacheStats {
     std::uint64_t requests = 0;

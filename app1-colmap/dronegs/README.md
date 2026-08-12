@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.47` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.48` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -44,6 +44,19 @@ profile registry, strict dataset/binary/PLY identity on reuse, and a
 deterministic `spatial-block` held-out policy with an optional guard ring.
 Production V1 deliberately retains modulo parity while custom/V2 experiments
 measure spatial generalization.
+Dev.48 turns `tile_mode` into real source-image crops with crop-relative
+intrinsics and grouped train/test assignment. Geographic block datasets may
+also provide `image_regions.tsv`; DroneGS composes each base crop with
+`tile_mode` while decoding the untouched source JPEG. Dataset identity v3
+binds the crop contract to checkpoint and result reuse. Dev.48 also adds the explicitly
+scoped `opacity-SH-v1` capability from the opacity-only FAGK ablation: SH
+degrees 1 through 3 learn
+view-dependent opacity-logit residuals, persist them as `opacity_sh_*` PLY
+properties, and render them consistently in the native and orthomosaic CUDA
+paths. Scale and rotation remain view-independent and are not claimed as full
+FAGK. This bounded variant follows the opacity-only ablation from
+[TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788); it is kept
+separate from the paper's view-dependent scale and rotation extensions.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -67,7 +80,13 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   one scene-wide spacing estimate;
 - keeps SH color and gradients live up to four while display output remains
   bounded independently;
+- learns opacity-SH residuals alongside progressive color SH and preserves
+  them through topology changes and checkpoint V4;
 - decodes JPEG training images and scales pinhole intrinsics;
+- expands tile modes 2 and 4 into crop-relative training views without
+  leaking a source photograph across train/test partitions;
+- reduces oversized crop targets with an area filter that integrates
+  fractional source-pixel coverage instead of point-sampling them;
 - stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;
@@ -93,8 +112,11 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - retains projected-conic and position/scale/rotation gradients plus their
   Adam moments on device across iterations;
 - accumulates normalized SSIM-error-weighted visibility between 200-step
-  refinement windows, selects 7% above 0.003 through reproducible weighted
-  Gumbel top-K, and splits along each parent's longest rotated 3D axis;
+  refinement windows, selects candidates above 0.003 through reproducible
+  weighted Gumbel top-K, and splits along each parent's longest rotated 3D
+  axis. The default selection remains 7%; resident HQ blocks can explicitly
+  target their planned `--max-cap` by adapting the fraction between 7% and
+  25% through the last growth window;
 - accumulates Sobel luminance edge contribution inside existing training
   backward passes, normalizes positive scores by their median, and applies a
   0.25 edge-guidance factor without extra edge-render passes;
@@ -102,8 +124,10 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   selected parent and appended child's optimizer moments after a split;
 - exposes a versioned optimizer registry: `reference-absolute` is the validated
   production optimizer, `dronegs-dev16` is the deprecated native CLI default
-  retained for compatibility, and the `reference-*`, calibrated and dev.34–38
-  profiles remain explicit experiments rather than silent fallbacks;
+  retained for compatibility, the neutral
+  `reference-absolute-absgrad025/050` candidates change only MRNF growth
+  ranking, and the other `reference-*`, calibrated and dev.34–38 profiles
+  remain explicit experiments rather than silent fallbacks;
 - isolates Adam epsilon per parameter family so an ablation changes exactly
   one family's rate, schedule, spatial normalization, and epsilon;
 - samples approximately 4,096 Gaussians deterministically at step 1, every
@@ -115,6 +139,8 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   validation views from every shuffled training schedule;
 - supports a deterministic central spatial block and training guard ring,
   recording training, held-out and ignored camera counts;
+- removes native-image subtiles with no projected sparse-Gaussian support
+  before scheduling, while rejecting an entirely unsupported dataset;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
   and after training, with a tested CPU oracle;
 - writes per-view quality CSV data and can export exactly paired final
@@ -246,6 +272,26 @@ allocation, projection, sorting, tile construction, rendering, and host readback
   --test-every 8 --save-eval-images 1
 ```
 
+`--tile-mode 4` expands every photograph into four independently decoded 2x2
+crops and adjusts the pinhole principal point for each crop. The width ceiling
+therefore applies per crop: a 6000x4000 source can train on four native
+3000x2000 views with `--max-width 4096`. Mode `2` splits the longest image axis;
+mode `1` keeps the full-frame behavior. Train/test assignment remains grouped
+by source photograph.
+
+`--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
+blocks. It recomputes the growth fraction needed to approach `--max-cap` by
+iteration 14,800, clamps each request to 7–25%, and emits the fraction and
+capacity target in every topology-refinement event. It then freezes topology
+for convergence, preventing post-growth pruning from violating the GSD-backed
+density plan. The final adaptive refinement always reserves the minimum split
+budget so Gaussians pruned in that window are replaced before topology freezes.
+Its default is `0`, so existing standalone and production
+recipes keep the fixed 7% schedule and their configured pruning window.
+The resident HQ wrapper passes a pre-filter cap sized for 98% retention and
+records both that training target and the strict GSD-backed retained target;
+the native trainer still treats `--max-cap` as an exact hard ceiling.
+
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,
 matching LichtFeld. `--save-eval-images 1` writes final predictions and their
@@ -289,7 +335,11 @@ the dev.8 decode behavior.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated
-production optimizer selected explicitly by DroneAI. The
+production optimizer selected explicitly by DroneAI.
+`reference-absolute-absgrad025` and
+`reference-absolute-absgrad050` preserve that optimizer's rates and schedules
+and add only a 0.25 or 0.50 robust absolute projected-gradient contribution to
+MRNF growth ranking. They are qualification-only experimental candidates. The
 `reference-dc-only`, `reference-position-only`, `reference-opacity-only`,
 `reference-scale-only`, and `reference-rotation-only` values change exactly
 one family for reproducible ablation. `reference-dc-opacity` combines only the

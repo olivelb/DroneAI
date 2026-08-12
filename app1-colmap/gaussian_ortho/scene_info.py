@@ -4,13 +4,14 @@ Scene information dataclass for 3DGS training.
 Wraps camera lists, point cloud, normalisation bounds, and workspace paths
 into a single structure consumed by the training loop.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 from numpy.typing import NDArray
 
 from .colmap_loader import CameraInfo, PointCloud
+from .camera_footprint import NativeImageCrop
 
 
 @dataclass
@@ -25,6 +26,7 @@ class SceneInfo:
     # Workspace paths
     dense_path: str = ""
     images_dir: str = ""
+    image_crops: dict[str, NativeImageCrop] = field(default_factory=dict)
 
 
 def compute_scene_extent(
@@ -52,6 +54,7 @@ def build_scene_info(
     point_cloud: PointCloud,
     dense_path: str = "",
     images_dir: str = "",
+    image_crops: dict[str, NativeImageCrop] | None = None,
 ) -> SceneInfo:
     """Construct a SceneInfo from loader outputs."""
     all_cams = train_cameras + test_cameras
@@ -64,4 +67,5 @@ def build_scene_info(
         scene_radius=radius,
         dense_path=dense_path,
         images_dir=images_dir or str(Path(dense_path) / "images"),
+        image_crops=dict(image_crops or {}),
     )

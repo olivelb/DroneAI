@@ -1,4 +1,4 @@
-from argparse import Namespace
+from argparse import ArgumentTypeError, Namespace
 
 import pytest
 
@@ -6,7 +6,12 @@ from shared.facade_process import (
     FACADE_DRONEGS_PROFILE_ID,
     FACADE_QUALIFICATION_POLICY_ID,
 )
-from tools.run_local_gaussian import PROFILES, output_paths, resolve_profile
+from tools.run_local_gaussian import (
+    PROFILES,
+    output_paths,
+    resolve_profile,
+    validated_run_label,
+)
 
 
 def _arguments(**overrides):
@@ -83,9 +88,19 @@ def test_high_quality_profile_matches_versioned_quality_envelope():
     assert profile.cap_max == 12_000_000
     assert profile.data_factor == 1
     assert profile.max_width == 4096
-    assert profile.profile_id == "high-quality-v2"
+    assert profile.profile_id == "high-quality-v3"
     assert profile.capacity_mode == "adaptive"
     assert profile.capacity_floor == 5_000_000
+    assert profile.target_gaussian_spacing_pixels == 3.6
+    assert profile.resident_partitioning is True
+    assert profile.resolution == 0.02
+
+
+def test_ab_run_labels_are_bounded_and_cannot_escape_the_workspace():
+    assert validated_run_label("hq-v3-absgrad025") == "hq-v3-absgrad025"
+    for invalid in ("../escape", "/absolute", "Uppercase", "", "a" * 65):
+        with pytest.raises(ArgumentTypeError, match="run-label must match"):
+            validated_run_label(invalid)
 
 
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():

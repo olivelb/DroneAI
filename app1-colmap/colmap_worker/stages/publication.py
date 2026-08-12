@@ -179,6 +179,7 @@ def _write_verified_product_manifest(
                 "vertical_reference": result["vertical_reference"],
                 "vertical_offset_m": result["vertical_offset_m"],
                 "gaussians": result["n_gaussians"],
+                "gaussian_density": result.get("gaussian_density"),
                 "renderer_contract": result["renderer_contract"],
                 "cupy_version": result["cupy_version"],
                 "mip_filter_variance": result["ortho_mip_filter_variance"],

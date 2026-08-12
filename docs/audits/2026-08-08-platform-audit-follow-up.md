@@ -113,12 +113,18 @@ frontend unit suite, lint and optimized Next.js build also pass.
 Aerial Gaussian rendering now measures the finite DSM pixels inside a
 conservative projected footprint derived from registered camera centres. A
 16-by-16 grid makes local holes visible instead of allowing a good global
-average to conceal them. The versioned `GAUSSIAN_MAP_COVERAGE_V1` policy checks:
+average to conceal them. The current versioned
+`GAUSSIAN_MAP_COVERAGE_V2` policy checks:
 
 - at least 50% valid pixels over the expected footprint;
 - at least 75% of expected cells reaching 25% local coverage;
-- at least 1% coverage in the worst expected cell;
+- at least 1% coverage in the worst interior expected cell;
 - at least 10% at the tenth percentile of camera-containing cells.
+
+V2 retains every boundary cell in the global and camera-area checks, while the
+strict minimum ignores footprint-boundary cells that may be mostly NoData when
+an irregular or oblique flight footprint crosses the 16-by-16 grid. This keeps
+the localized-hole invariant without requiring rectangular corner coverage.
 
 The renderer writes `gaussian_coverage_report.json` atomically before GeoTIFF
 publication. A rejected enforced gate stops publication; a deliberately
@@ -128,8 +134,8 @@ product manifest embeds the coverage summary and publication requires the
 report for every aerial product. Facade output remains outside this map-only
 contract.
 
-Unit tests cover complete, sparse, locally punctured and collinear-camera
-footprints. Coverage, filter policy, model filtering, GeoTIFF writing, height
+Unit tests cover complete, sparse, locally punctured, boundary-clipped and
+collinear-camera footprints. Coverage, filter policy, model filtering, GeoTIFF writing, height
 referencing, partitioning, PCA alignment and scene assembly are now part of the
 strict-mypy and service-core Ruff ratchets. The model-filtering protocol keeps
 dynamic CuPy arrays isolated at the CUDA boundary while statically checking the

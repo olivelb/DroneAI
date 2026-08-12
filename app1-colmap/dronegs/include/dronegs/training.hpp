@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -46,6 +49,8 @@ struct MrnfLearningRates {
 enum class MrnfOptimizerProfile {
     dronegs_dev16,
     reference_absolute,
+    reference_absolute_absgrad025,
+    reference_absolute_absgrad050,
     reference_dc_only,
     reference_position_only,
     reference_opacity_only,
@@ -70,6 +75,40 @@ enum class MrnfOptimizerProfile {
     dev37_staged_rotation008_absgrad050_aa030,
     dev38_staged_rotation008_absgrad050_fastgs,
 };
+
+inline constexpr bool uses_reference_absolute_optimizer(
+    MrnfOptimizerProfile profile) {
+    return profile == MrnfOptimizerProfile::reference_absolute ||
+        profile ==
+            MrnfOptimizerProfile::reference_absolute_absgrad025 ||
+        profile ==
+            MrnfOptimizerProfile::reference_absolute_absgrad050;
+}
+
+inline constexpr float mrnf_absgrad_score_weight(
+    MrnfOptimizerProfile profile) {
+    if (profile ==
+            MrnfOptimizerProfile::reference_absolute_absgrad025 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad025) {
+        return 0.25F;
+    }
+    if (profile ==
+            MrnfOptimizerProfile::reference_absolute_absgrad050 ||
+        profile ==
+            MrnfOptimizerProfile::dev36_staged_rotation008_absgrad050 ||
+        profile ==
+            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa005 ||
+        profile ==
+            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa015 ||
+        profile ==
+            MrnfOptimizerProfile::dev37_staged_rotation008_absgrad050_aa030 ||
+        profile ==
+            MrnfOptimizerProfile::dev38_staged_rotation008_absgrad050_fastgs) {
+        return 0.50F;
+    }
+    return 0.0F;
+}
 
 struct MrnfParameterTelemetry {
     float gradient_rms = 0.0F;
@@ -135,6 +174,60 @@ struct TrainingMetrics {
     std::optional<float> final_held_out_psnr;
     std::optional<float> final_held_out_ssim;
 };
+
+inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;
+
+inline std::uint64_t topology_refinement_end_iteration(
+    std::uint64_t iterations,
+    std::uint64_t topology_cooldown,
+    bool adaptive_growth_target) {
+    const auto configured_end = iterations - topology_cooldown;
+    return adaptive_growth_target
+        ? std::min(configured_end, adaptive_growth_last_iteration)
+        : configured_end;
+}
+
+inline float adaptive_capacity_growth_fraction(
+    std::size_t current_gaussians,
+    std::size_t target_gaussians,
+    std::uint64_t iteration) {
+    constexpr std::uint64_t refinement_interval = 200U;
+    constexpr double estimated_pruning_fraction = 0.03;
+    constexpr double estimated_candidate_fraction = 0.93;
+    constexpr float minimum_growth_fraction = 0.07F;
+    constexpr float maximum_growth_fraction = 0.25F;
+
+    if (current_gaussians == 0U) {
+        throw std::invalid_argument(
+            "adaptive growth requires a non-empty Gaussian model");
+    }
+    if (iteration > adaptive_growth_last_iteration) {
+        return 0.0F;
+    }
+    if (target_gaussians <= current_gaussians) {
+        // The final refinement still prunes before it grows. Request the
+        // minimum split budget so capacity freed by that pruning is recycled
+        // and the frozen topology finishes at the target instead of below it.
+        return iteration == adaptive_growth_last_iteration
+            ? minimum_growth_fraction
+            : 0.0F;
+    }
+
+    const auto remaining_windows =
+        ((adaptive_growth_last_iteration - iteration) /
+         refinement_interval) + 1U;
+    const double required_net_growth = std::exp(
+        std::log(
+            static_cast<double>(target_gaussians) /
+            static_cast<double>(current_gaussians)) /
+        static_cast<double>(remaining_windows)) - 1.0;
+    const double requested_fraction =
+        (required_net_growth + estimated_pruning_fraction) /
+        estimated_candidate_fraction;
+    return std::clamp(
+        static_cast<float>(requested_fraction),
+        minimum_growth_fraction, maximum_growth_fraction);
+}
 
 DatasetSplit make_dataset_split(
     std::size_t image_count, std::uint32_t test_every);

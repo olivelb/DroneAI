@@ -4,6 +4,7 @@
 // The dev.32 SH color ceiling and gradient interval follow LichtFeld-Studio
 // FastGS at commit 1004c0841a3776e3f67866ff34101fbc9677397f.
 #include "dronegs/rasterization.hpp"
+#include "dronegs/sh.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,17 +19,6 @@
 namespace dronegs {
 namespace {
 
-constexpr float sh_c0 = 0.28209479177387814F;
-constexpr float sh_c1 = 0.4886025119029199F;
-constexpr std::array<float, 5> sh_c2{
-    1.0925484305920792F, -1.0925484305920792F,
-    0.31539156525252005F, -1.0925484305920792F,
-    0.5462742152960396F};
-constexpr std::array<float, 7> sh_c3{
-    -0.5900435899266435F, 2.890611442640554F,
-    -0.4570457994644658F, 0.3731763325901154F,
-    -0.4570457994644658F, 1.445305721320277F,
-    -0.5900435899266435F};
 constexpr float minimum_depth = 1.0e-4F;
 constexpr float minimum_projected_variance = 0.75F * 0.75F;
 constexpr float maximum_projected_variance = 8.0F * 8.0F;
@@ -47,6 +37,20 @@ float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
 }
 
+float directional_opacity(
+    const Gaussian& gaussian, const std::array<float, 16>& sh_basis,
+    std::uint32_t active_degree) {
+    float logit = gaussian.opacity_logit;
+    const auto active_coefficients =
+        (active_degree + 1U) * (active_degree + 1U) - 1U;
+    for (std::size_t coefficient = 0U;
+         coefficient < active_coefficients; ++coefficient) {
+        logit += sh_basis[coefficient + 1U] *
+            gaussian.opacity_sh[coefficient];
+    }
+    return sigmoid(logit);
+}
+
 std::array<float, 3> camera_center(const RasterCamera& camera) {
     return {
         -(camera.rotation[0] * camera.translation[0] +
@@ -61,48 +65,17 @@ std::array<float, 3> camera_center(const RasterCamera& camera) {
     };
 }
 
-std::array<float, 16> evaluate_sh_basis(
+std::array<float, 16> evaluate_view_sh_basis(
     const Gaussian& gaussian, const RasterCamera& camera,
     std::uint32_t active_degree) {
-    std::array<float, 16> basis{};
-    basis[0] = sh_c0;
-    if (active_degree == 0U) {
-        return basis;
-    }
     const auto center = camera_center(camera);
-    float x = gaussian.xyz[0] - center[0];
-    float y = gaussian.xyz[1] - center[1];
-    float z = gaussian.xyz[2] - center[2];
-    const float inverse_norm = 1.0F / std::sqrt(std::max(
-        1.0e-20F, x * x + y * y + z * z));
-    x *= inverse_norm;
-    y *= inverse_norm;
-    z *= inverse_norm;
-    basis[1] = -sh_c1 * y;
-    basis[2] = sh_c1 * z;
-    basis[3] = -sh_c1 * x;
-    if (active_degree == 1U) {
-        return basis;
-    }
-    const float xx = x * x;
-    const float yy = y * y;
-    const float zz = z * z;
-    basis[4] = sh_c2[0] * x * y;
-    basis[5] = sh_c2[1] * y * z;
-    basis[6] = sh_c2[2] * (2.0F * zz - xx - yy);
-    basis[7] = sh_c2[3] * x * z;
-    basis[8] = sh_c2[4] * (xx - yy);
-    if (active_degree == 2U) {
-        return basis;
-    }
-    basis[9] = sh_c3[0] * y * (3.0F * xx - yy);
-    basis[10] = sh_c3[1] * x * y * z;
-    basis[11] = sh_c3[2] * y * (4.0F * zz - xx - yy);
-    basis[12] = sh_c3[3] * z * (2.0F * zz - 3.0F * xx - 3.0F * yy);
-    basis[13] = sh_c3[4] * x * (4.0F * zz - xx - yy);
-    basis[14] = sh_c3[5] * z * (xx - yy);
-    basis[15] = sh_c3[6] * x * (xx - 3.0F * yy);
-    return basis;
+    return evaluate_sh_basis(
+        {
+            gaussian.xyz[0] - center[0],
+            gaussian.xyz[1] - center[1],
+            gaussian.xyz[2] - center[2],
+        },
+        active_degree);
 }
 
 struct ProjectedCovariance {
@@ -310,7 +283,7 @@ std::vector<ProjectedAlphaSplat> project_visible(
             continue;
         }
         const auto sh_basis =
-            evaluate_sh_basis(gaussian, camera, active_sh_degree);
+            evaluate_view_sh_basis(gaussian, camera, active_sh_degree);
         std::array<float, 3> color{};
         const auto active_coefficients =
             (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
@@ -336,7 +309,8 @@ std::vector<ProjectedAlphaSplat> project_visible(
             .conic_xx = covariance.conic_xx,
             .conic_xy = covariance.conic_xy,
             .conic_yy = covariance.conic_yy,
-            .opacity = sigmoid(gaussian.opacity_logit),
+            .opacity = directional_opacity(
+                gaussian, sh_basis, active_sh_degree),
             .color = color,
             .sh_basis = sh_basis,
         });
@@ -474,6 +448,9 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
         .sh_rest = std::vector<
             std::array<float, maximum_sh_rest_values>>(gaussians.size()),
         .opacity_logit = std::vector<float>(gaussians.size(), 0.0F),
+        .opacity_sh = std::vector<
+            std::array<float, maximum_opacity_sh_coefficients>>(
+                gaussians.size()),
         .xyz = std::vector<std::array<float, 3>>(gaussians.size()),
         .log_scale =
             std::vector<std::array<float, 3>>(gaussians.size()),
@@ -550,7 +527,7 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                         contribution.transmittance_before *
                         contribution.alpha;
                     float unclamped_color =
-                        0.5F + sh_c0 * gaussians[source].dc[channel];
+                        0.5F + sh_dc_basis * gaussians[source].dc[channel];
                     const auto active_coefficients =
                         (active_sh_degree + 1U) *
                             (active_sh_degree + 1U) -
@@ -568,7 +545,7 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                     if (unclamped_color > 0.0F &&
                         unclamped_color < maximum_splat_color) {
                         gradients.dc[source][channel] +=
-                            sh_c0 * color_gradient;
+                            sh_dc_basis * color_gradient;
                         for (std::size_t coefficient = 0U;
                              coefficient < active_coefficients;
                              ++coefficient) {
@@ -587,9 +564,21 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                 }
                 if (contribution.alpha_is_unclamped) {
                     const float opacity = splat.opacity;
-                    gradients.opacity_logit[source] +=
+                    const float logit_gradient =
                         alpha_gradient * contribution.gaussian_weight *
                         opacity * (1.0F - opacity);
+                    gradients.opacity_logit[source] += logit_gradient;
+                    const auto active_coefficients =
+                        (active_sh_degree + 1U) *
+                            (active_sh_degree + 1U) -
+                        1U;
+                    for (std::size_t coefficient = 0U;
+                         coefficient < active_coefficients;
+                         ++coefficient) {
+                        gradients.opacity_sh[source][coefficient] +=
+                            splat.sh_basis[coefficient + 1U] *
+                            logit_gradient;
+                    }
                 }
                 for (std::size_t channel = 0U; channel < 3U; ++channel) {
                     tail[channel] =

@@ -49,6 +49,8 @@ struct AlphaRenderGradients {
     std::vector<std::array<float, 3>> dc;
     std::vector<std::array<float, maximum_sh_rest_values>> sh_rest;
     std::vector<float> opacity_logit;
+    std::vector<
+        std::array<float, maximum_opacity_sh_coefficients>> opacity_sh;
     std::vector<std::array<float, 3>> xyz;
     std::vector<std::array<float, 3>> log_scale;
     std::vector<std::array<float, 4>> rotation;

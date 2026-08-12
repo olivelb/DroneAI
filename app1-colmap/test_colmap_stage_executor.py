@@ -354,7 +354,7 @@ def test_gaussian_filtering_adapter_never_overwrites_training_model(
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(
         sh_degree=3,
-        fagk=True,
+        opacity_sh_enabled=True,
         dronegs_profile_id="normal-v1",
     )
     monkeypatch.setattr(
@@ -452,7 +452,7 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
     config = SimpleNamespace(
         sh_degree=3,
-        fagk=True,
+        opacity_sh_enabled=True,
         dronegs_profile_id="normal-v1",
     )
     monkeypatch.setattr(

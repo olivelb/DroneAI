@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.47.
+- Current development version: 0.5.0-dev.48.
 - Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
   image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
@@ -40,6 +40,11 @@ Each completed phase has one focused commit and an annotated
 - Dev.47 adds checksum-protected checkpoint V3, strict dataset/binary/PLY
   reuse identity, a native production-profile registry and optional
   spatial-block/guard-ring evaluation.
+- Dev.48 implements source-image tile views and the scoped opacity-SH-v1
+  appearance model, area-filtered image reduction, cross-language SH parity
+  and a post-filter achieved-density GSD gate. Component/CUDA gates pass; a
+  representative full-quality E2E comparison remains required before changing
+  production quality claims.
 - The independent Savères 15,000-step qualification passed on 1,065 images:
   19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS, 1.5 million splats and
   40.93 minutes of training. Its PSNR/SSIM production canary passed.
@@ -57,7 +62,7 @@ Each completed phase has one focused commit and an annotated
 ### Development history
 
 The following entries retain the measured progression that led to production
-V1 and dev.47.
+V1 and dev.48.
 - Phase 4 sub-gate completed: COLMAP projection, JPEG decode, differentiable
   additive splatting, DC/opacity Adam, synthetic convergence, and GAJAN smoke.
 - Large-scene memory sub-gate completed: RGB8 targets, lazy 256 MiB LRU cache,

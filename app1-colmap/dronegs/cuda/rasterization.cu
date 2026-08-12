@@ -703,8 +703,19 @@ __global__ void project_alpha_splats_kernel(
     if (camera_z > minimum_depth && isfinite(camera_z)) {
         const float x = camera.fx * camera_x / camera_z + camera.cx;
         const float y = camera.fy * camera_y / camera_z + camera.cy;
+        float sh_basis[16]{};
+        evaluate_sh_basis_device(
+            gaussian, camera, active_sh_degree, sh_basis);
+        const std::uint32_t active_coefficients =
+            (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
+        float opacity_logit = gaussian.opacity_logit;
+        for (std::uint32_t coefficient = 0U;
+             coefficient < active_coefficients; ++coefficient) {
+            opacity_logit += sh_basis[coefficient + 1U] *
+                gaussian.opacity_sh[coefficient];
+        }
         const float opacity =
-            1.0F / (1.0F + expf(-gaussian.opacity_logit));
+            1.0F / (1.0F + expf(-opacity_logit));
         float radius_x = 0.0F;
         float radius_y = 0.0F;
         float conic_xx = 0.0F;
@@ -726,13 +737,7 @@ __global__ void project_alpha_splats_kernel(
             x - radius_x < static_cast<float>(camera.width) &&
             y - radius_y < static_cast<float>(camera.height);
         if (visible) {
-            float sh_basis[16]{};
-            evaluate_sh_basis_device(
-                gaussian, camera, active_sh_degree, sh_basis);
             float color[3]{};
-            const std::uint32_t active_coefficients =
-                (active_sh_degree + 1U) * (active_sh_degree + 1U) -
-                1U;
             for (std::uint32_t channel = 0U; channel < 3U; ++channel) {
                 float value = 0.5F + sh_basis[0] * gaussian.dc[channel];
                 for (std::uint32_t coefficient = 0U;
@@ -1052,6 +1057,7 @@ __global__ void backward_alpha_tiles_kernel(
     const float* image_gradient, float* dc_gradient,
     float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
+    float* opacity_sh_gradient,
     float* projected_geometry_gradient,
     const float* densification_error_map,
     const float* densification_edge_map,
@@ -1199,11 +1205,27 @@ __global__ void backward_alpha_tiles_kernel(
                 (splat.color[channel] - tail[channel]);
         }
         if (raw_alpha < maximum_fragment_alpha) {
+            const float logit_gradient =
+                alpha_gradient * gaussian_weight *
+                splat.compensation * splat.opacity *
+                (1.0F - splat.opacity);
             atomicAdd(
                 &opacity_logit_gradient[source],
-                alpha_gradient * gaussian_weight *
-                    splat.compensation * splat.opacity *
-                    (1.0F - splat.opacity));
+                logit_gradient);
+            const std::uint32_t active_coefficients =
+                (active_sh_degree + 1U) *
+                    (active_sh_degree + 1U) -
+                1U;
+            for (std::uint32_t coefficient = 0U;
+                 coefficient < active_coefficients; ++coefficient) {
+                atomicAdd(
+                    &opacity_sh_gradient[
+                        source * maximum_opacity_sh_coefficients +
+                        coefficient],
+                    projected_sh_basis[
+                        source * 16U + coefficient + 1U] *
+                        logit_gradient);
+            }
             if (projected_geometry_gradient != nullptr) {
                 const float squared_distance_gradient =
                     -0.5F * alpha_gradient * splat.opacity *
@@ -1285,6 +1307,7 @@ __global__ void backward_alpha_buckets_kernel(
     float* dc_gradient,
     float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
+    float* opacity_sh_gradient,
     float* projected_geometry_gradient,
     const float* densification_error_map,
     const float* densification_edge_map,
@@ -1600,6 +1623,15 @@ __global__ void backward_alpha_buckets_kernel(
     atomicAdd(
         &opacity_logit_gradient[source],
         opacity_accum);
+    for (std::uint32_t coefficient = 0U;
+         coefficient < active_coefficients; ++coefficient) {
+        atomicAdd(
+            &opacity_sh_gradient[
+                source * maximum_opacity_sh_coefficients + coefficient],
+            projected_sh_basis[
+                source * 16U + coefficient + 1U] *
+                opacity_accum);
+    }
     for (std::uint32_t component = 0U;
          component < 6U; ++component) {
         atomicAdd(
@@ -3102,6 +3134,7 @@ __global__ void split_gaussians_long_axis_kernel(
     float* first_dc, float* second_dc,
     float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
+    float* first_opacity_sh, float* second_opacity_sh,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
@@ -3201,6 +3234,21 @@ __global__ void split_gaussians_long_axis_kernel(
     second_opacity[parent_index] = 0.0F;
     first_opacity[child_index] = 0.0F;
     second_opacity[child_index] = 0.0F;
+    for (std::size_t coefficient = 0U;
+         coefficient < maximum_opacity_sh_coefficients; ++coefficient) {
+        first_opacity_sh[
+            parent_index * maximum_opacity_sh_coefficients + coefficient] =
+            0.0F;
+        second_opacity_sh[
+            parent_index * maximum_opacity_sh_coefficients + coefficient] =
+            0.0F;
+        first_opacity_sh[
+            child_index * maximum_opacity_sh_coefficients + coefficient] =
+            0.0F;
+        second_opacity_sh[
+            child_index * maximum_opacity_sh_coefficients + coefficient] =
+            0.0F;
+    }
     for (std::size_t component = 0U; component < 4U; ++component) {
         first_rotation[parent_index * 4U + component] = 0.0F;
         second_rotation[parent_index * 4U + component] = 0.0F;
@@ -3229,12 +3277,13 @@ struct DeviceOptimizerTelemetry {
 __global__ void ordered_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
     const float* dc_gradient, const float* sh_rest_gradient,
-    const float* opacity_gradient,
+    const float* opacity_gradient, const float* opacity_sh_gradient,
     const float* xyz_gradient, const float* log_scale_gradient,
     const float* rotation_gradient,
     float* first_dc, float* second_dc,
     float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
+    float* first_opacity_sh, float* second_opacity_sh,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
@@ -3347,6 +3396,25 @@ __global__ void ordered_adam_update_kernel(
         parameter_squared[1] =
             gaussians[gaussian_index].opacity_logit *
             gaussians[gaussian_index].opacity_logit;
+    }
+    for (std::uint32_t coefficient = 0U;
+         coefficient < active_coefficients; ++coefficient) {
+        const auto offset =
+            gaussian_index * maximum_opacity_sh_coefficients +
+            coefficient;
+        const float gradient = opacity_sh_gradient[offset];
+        first_opacity_sh[offset] =
+            beta_first * first_opacity_sh[offset] +
+            (1.0F - beta_first) * gradient;
+        second_opacity_sh[offset] =
+            beta_second * second_opacity_sh[offset] +
+            (1.0F - beta_second) * gradient * gradient;
+        gaussians[gaussian_index].opacity_sh[coefficient] -=
+            (opacity_learning_rate / 20.0F) *
+            first_opacity_sh[offset] * inverse_bias_first /
+            (sqrtf(
+                 second_opacity_sh[offset] * inverse_bias_second) +
+             opacity_epsilon);
     }
 
     for (std::size_t axis = 0U; axis < 3U; ++axis) {
@@ -3652,6 +3720,9 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
                     gaussians.size());
             gradients.opacity_logit =
                 std::vector<float>(gaussians.size(), 0.0F);
+            gradients.opacity_sh = std::vector<
+                std::array<float, maximum_opacity_sh_coefficients>>(
+                    gaussians.size());
             gradients.xyz =
                 std::vector<std::array<float, 3>>(gaussians.size());
             gradients.log_scale =
@@ -3785,6 +3856,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     std::optional<DeviceAllocation<float>> device_dc_gradient;
     std::optional<DeviceAllocation<float>> device_sh_rest_gradient;
     std::optional<DeviceAllocation<float>> device_opacity_logit_gradient;
+    std::optional<DeviceAllocation<float>> device_opacity_sh_gradient;
     std::optional<DeviceAllocation<float>>
         device_projected_geometry_gradient;
     std::optional<DeviceAllocation<float>> device_xyz_gradient;
@@ -3796,6 +3868,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_sh_rest_gradient.emplace(
             gaussians.size() * maximum_sh_rest_values);
         device_opacity_logit_gradient.emplace(gaussians.size());
+        device_opacity_sh_gradient.emplace(
+            gaussians.size() * maximum_opacity_sh_coefficients);
         device_projected_geometry_gradient.emplace(
             gaussians.size() * 6U);
         device_xyz_gradient.emplace(gaussians.size() * 3U);
@@ -3805,6 +3879,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_dc_gradient->zero();
         device_sh_rest_gradient->zero();
         device_opacity_logit_gradient->zero();
+        device_opacity_sh_gradient->zero();
         device_projected_geometry_gradient->zero();
         device_xyz_gradient->zero();
         device_log_scale_gradient->zero();
@@ -3822,6 +3897,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             device_image_gradient->data(), device_dc_gradient->data(),
             device_sh_rest_gradient->data(), active_sh_degree,
             device_opacity_logit_gradient->data(),
+            device_opacity_sh_gradient->data(),
             device_projected_geometry_gradient->data(),
             nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
         require_cuda(cudaGetLastError(), "launch tiled alpha backward");
@@ -3870,6 +3946,9 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             std::array<float, maximum_sh_rest_values>>(gaussians.size());
         gradients.opacity_logit =
             std::vector<float>(gaussians.size(), 0.0F);
+        gradients.opacity_sh = std::vector<
+            std::array<float, maximum_opacity_sh_coefficients>>(
+                gaussians.size());
         gradients.xyz =
             std::vector<std::array<float, 3>>(gaussians.size());
         gradients.log_scale =
@@ -3881,6 +3960,8 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
             gradients.sh_rest.front().data());
         device_opacity_logit_gradient->copy_to_host(
             gradients.opacity_logit.data());
+        device_opacity_sh_gradient->copy_to_host(
+            gradients.opacity_sh.front().data());
         device_xyz_gradient->copy_to_host(
             gradients.xyz.front().data());
         device_log_scale_gradient->copy_to_host(
@@ -4017,8 +4098,7 @@ static float bounding_box_diagonal(
 static MrnfLearningRates mrnf_learning_rates(
     std::uint64_t optimizer_step, std::uint64_t maximum_steps,
     float position_scale, MrnfOptimizerProfile profile) {
-    const bool reference_all =
-        profile == MrnfOptimizerProfile::reference_absolute;
+    const bool reference_all = uses_reference_absolute_optimizer(profile);
     const bool calibrated_dc_opacity =
         profile == MrnfOptimizerProfile::calibrated_dc_005_opacity ||
         profile == MrnfOptimizerProfile::calibrated_dc_010_opacity ||
@@ -4345,6 +4425,8 @@ struct OrderedAlphaTrainingContext::Impl {
         sh_rest_gradient.ensure(
             gaussian_capacity * maximum_sh_rest_values);
         opacity_gradient.ensure(gaussian_capacity);
+        opacity_sh_gradient.ensure(
+            gaussian_capacity * maximum_opacity_sh_coefficients);
         projected_geometry_gradient.ensure(gaussian_capacity * 6U);
         xyz_gradient.ensure(gaussian_capacity * 3U);
         log_scale_gradient.ensure(gaussian_capacity * 3U);
@@ -4357,6 +4439,10 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussian_capacity * maximum_sh_rest_values);
         first_opacity.ensure(gaussian_capacity);
         second_opacity.ensure(gaussian_capacity);
+        first_opacity_sh.ensure(
+            gaussian_capacity * maximum_opacity_sh_coefficients);
+        second_opacity_sh.ensure(
+            gaussian_capacity * maximum_opacity_sh_coefficients);
         first_xyz.ensure(gaussian_capacity * 3U);
         second_xyz.ensure(gaussian_capacity * 3U);
         first_log_scale.ensure(gaussian_capacity * 3U);
@@ -4395,8 +4481,7 @@ struct OrderedAlphaTrainingContext::Impl {
             }
         }
         position_learning_rate_scale =
-            optimizer_profile ==
-                    MrnfOptimizerProfile::reference_absolute ||
+            uses_reference_absolute_optimizer(optimizer_profile) ||
                 optimizer_profile ==
                     MrnfOptimizerProfile::reference_position_only
                 ? percentile80_median_size(initial_gaussians)
@@ -4416,6 +4501,10 @@ struct OrderedAlphaTrainingContext::Impl {
             gaussian_count * maximum_sh_rest_values);
         first_opacity.zero(gaussian_count);
         second_opacity.zero(gaussian_count);
+        first_opacity_sh.zero(
+            gaussian_count * maximum_opacity_sh_coefficients);
+        second_opacity_sh.zero(
+            gaussian_count * maximum_opacity_sh_coefficients);
         first_xyz.zero(gaussian_count * 3U);
         second_xyz.zero(gaussian_count * 3U);
         first_log_scale.zero(gaussian_count * 3U);
@@ -4916,6 +5005,8 @@ struct OrderedAlphaTrainingContext::Impl {
             sh_rest_gradient.zero(
                 gaussian_count * maximum_sh_rest_values);
             opacity_gradient.zero(gaussian_count);
+            opacity_sh_gradient.zero(
+                gaussian_count * maximum_opacity_sh_coefficients);
             projected_geometry_gradient.zero(gaussian_count * 6U);
             frame_refinement_weight.zero(gaussian_count);
             frame_visibility_weight.zero(gaussian_count);
@@ -4946,6 +5037,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     sh_rest_gradient.data(),
                     active_sh_degree,
                     opacity_gradient.data(),
+                    opacity_sh_gradient.data(),
                     projected_geometry_gradient.data(),
                     densification_error_map.data(),
                     densification_edge_map.data(),
@@ -4967,6 +5059,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     image_gradient.data(), dc_gradient.data(),
                     sh_rest_gradient.data(), active_sh_degree,
                     opacity_gradient.data(),
+                    opacity_sh_gradient.data(),
                     projected_geometry_gradient.data(),
                     densification_error_map.data(),
                     densification_edge_map.data(),
@@ -5035,12 +5128,13 @@ struct OrderedAlphaTrainingContext::Impl {
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
                     dc_gradient.data(), sh_rest_gradient.data(),
-                    opacity_gradient.data(),
+                    opacity_gradient.data(), opacity_sh_gradient.data(),
                     xyz_gradient.data(), log_scale_gradient.data(),
                     rotation_gradient.data(),
                     first_dc.data(), second_dc.data(),
                     first_sh_rest.data(), second_sh_rest.data(),
                     first_opacity.data(), second_opacity.data(),
+                    first_opacity_sh.data(), second_opacity_sh.data(),
                     first_xyz.data(), second_xyz.data(),
                     first_log_scale.data(), second_log_scale.data(),
                     first_rotation.data(), second_rotation.data(),
@@ -5144,27 +5238,7 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         const auto previous_count = gaussian_count;
         const float absgrad_score_weight =
-            optimizer_profile ==
-                    MrnfOptimizerProfile::
-                        dev36_staged_rotation008_absgrad025
-                ? 0.25F
-                : (optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev36_staged_rotation008_absgrad050 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa005 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa015 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev37_staged_rotation008_absgrad050_aa030 ||
-                           optimizer_profile ==
-                               MrnfOptimizerProfile::
-                                   dev38_staged_rotation008_absgrad050_fastgs
-                       ? 0.50F
-                       : 0.0F);
+            mrnf_absgrad_score_weight(optimizer_profile);
         std::vector<Gaussian> host_gaussians(previous_count);
         std::vector<float> host_weights(previous_count);
         std::vector<float> host_visibility(previous_count);
@@ -5280,6 +5354,9 @@ struct OrderedAlphaTrainingContext::Impl {
                     gaussian.xyz[axis] < lower_bound[axis] ||
                     gaussian.xyz[axis] > upper_bound[axis];
             }
+            for (const float coefficient : gaussian.opacity_sh) {
+                finite = finite && std::isfinite(coefficient);
+            }
             const float maximum_scale = maximum_scales[index];
             const float minimum_log_scale = std::min({
                 gaussian.log_scale[0],
@@ -5382,6 +5459,10 @@ struct OrderedAlphaTrainingContext::Impl {
                 second_sh_rest, maximum_sh_rest_values);
             compact_moments(first_opacity, 1U);
             compact_moments(second_opacity, 1U);
+            compact_moments(
+                first_opacity_sh, maximum_opacity_sh_coefficients);
+            compact_moments(
+                second_opacity_sh, maximum_opacity_sh_coefficients);
             compact_moments(first_xyz, 3U);
             compact_moments(second_xyz, 3U);
             compact_moments(first_log_scale, 3U);
@@ -5541,6 +5622,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 first_dc.data(), second_dc.data(),
                 first_sh_rest.data(), second_sh_rest.data(),
                 first_opacity.data(), second_opacity.data(),
+                first_opacity_sh.data(), second_opacity_sh.data(),
                 first_xyz.data(), second_xyz.data(),
                 first_log_scale.data(), second_log_scale.data(),
                 first_rotation.data(), second_rotation.data(),
@@ -5641,6 +5723,7 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> dc_gradient;
     ReusableDeviceAllocation<float> sh_rest_gradient;
     ReusableDeviceAllocation<float> opacity_gradient;
+    ReusableDeviceAllocation<float> opacity_sh_gradient;
     ReusableDeviceAllocation<float> projected_geometry_gradient;
     ReusableDeviceAllocation<float> xyz_gradient;
     ReusableDeviceAllocation<float> log_scale_gradient;
@@ -5651,6 +5734,8 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> second_sh_rest;
     ReusableDeviceAllocation<float> first_opacity;
     ReusableDeviceAllocation<float> second_opacity;
+    ReusableDeviceAllocation<float> first_opacity_sh;
+    ReusableDeviceAllocation<float> second_opacity_sh;
     ReusableDeviceAllocation<float> first_xyz;
     ReusableDeviceAllocation<float> second_xyz;
     ReusableDeviceAllocation<float> first_log_scale;
@@ -5828,7 +5913,7 @@ void OrderedAlphaTrainingContext::save_checkpoint(
         'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
         '-', 'V', '1', '\0'};
     stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 3U;
+    constexpr std::uint32_t format_version = 4U;
     write_value(format_version);
     write_string(dataset_fingerprint);
     write_string(configuration_fingerprint);
@@ -5882,6 +5967,12 @@ void OrderedAlphaTrainingContext::save_checkpoint(
         count * maximum_sh_rest_values);
     write_device(impl_->first_opacity, count);
     write_device(impl_->second_opacity, count);
+    write_device(
+        impl_->first_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
+    write_device(
+        impl_->second_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
     write_device(impl_->first_xyz, count * 3U);
     write_device(impl_->second_xyz, count * 3U);
     write_device(impl_->first_log_scale, count * 3U);
@@ -6002,11 +6093,10 @@ OrderedAlphaTrainingContext::load_checkpoint(
     stream.read(magic.data(), magic.size());
     std::uint32_t format_version = 0U;
     read_value(format_version);
-    if (magic != expected_magic ||
-        (format_version != 1U && format_version != 2U &&
-         format_version != 3U)) {
+    if (magic != expected_magic || format_version != 4U) {
         throw std::runtime_error(
-            "unsupported DroneGS checkpoint format");
+            "unsupported DroneGS checkpoint format; opacity-SH training "
+            "requires version 4");
     }
     if (format_version >= 3U) {
         if (total_bytes <= sizeof(std::uint64_t)) {
@@ -6141,6 +6231,12 @@ OrderedAlphaTrainingContext::load_checkpoint(
         count * maximum_sh_rest_values);
     read_device(impl_->first_opacity, count);
     read_device(impl_->second_opacity, count);
+    read_device(
+        impl_->first_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
+    read_device(
+        impl_->second_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
     read_device(impl_->first_xyz, count * 3U);
     read_device(impl_->second_xyz, count * 3U);
     read_device(impl_->first_log_scale, count * 3U);

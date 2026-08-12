@@ -22,6 +22,7 @@ instead of silently choosing a fallback.
 - structural FastGS buckets/checkpoints and warp-cooperative backward;
 - bounded spatial pruning and in-place slot recycling;
 - progressive SH activation every 1,000 steps;
+- color SH plus opacity-SH-v1 residuals on the same progressive schedule;
 - a 1,000-step fixed-topology cooldown;
 - a 1,000-step objective ramp ending at 100% active-pixel MSE;
 - 15,000 steps, 1.5 million splats, resize factor 4 and seed 42.
@@ -46,12 +47,13 @@ remain downstream of this boundary.
 ## Recovery contract
 
 By default, DroneGS atomically replaces `training.ckpt` every 2,000 steps.
-Checkpoint format V3 appends a payload checksum, uses fixed-width fields for
-new boolean/count values, fsyncs the temporary file, and publishes it with an
-atomic replacement that preserves the previous checkpoint on fallback paths.
+Checkpoint format V4 retains V3 checksum/fsync/atomic publication and adds
+opacity-SH Adam moments. V1-V3 checkpoints are rejected because their raw
+Gaussian layout is not resume-compatible; a retained final PLY can still be
+used as `--initial-ply`.
 The checkpoint contains:
 
-- all Gaussian parameters;
+- all Gaussian parameters, including opacity-SH-v1 residuals;
 - all Adam first/second moments and beta powers;
 - densification statistics and topology counters;
 - active SH degree and schedule state;

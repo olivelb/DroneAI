@@ -48,7 +48,7 @@ bool is_descendant_or_equal(const std::filesystem::path& path,
 const char* help_text() {
     return
         "DroneGS complete MRNF lifecycle "
-        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.47\n"
+        "ordered-alpha L1+DSSIM prototype 0.5.0-dev.48\n"
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
@@ -62,9 +62,12 @@ const char* help_text() {
         "[--resume-from PATH] [--stop-after N] "
         "[--topology-cooldown N] "
         "[--photometric-finish N] [--photometric-mse-percent 0..100] "
+        "[--adaptive-growth-target 0|1] "
         "[--sh-degree-interval N] "
         "[--profile-id NAME] [--dataset-fingerprint VALUE] "
         "[--optimizer-profile dronegs-dev16|reference-absolute|"
+        "reference-absolute-absgrad025|"
+        "reference-absolute-absgrad050|"
         "reference-dc-only|reference-position-only|"
         "reference-opacity-only|reference-scale-only|"
         "reference-rotation-only|reference-dc-opacity|"
@@ -102,7 +105,7 @@ Options parse_options(int argc, char** argv) {
         "--checkpoint-every", "--checkpoint-path", "--resume-from",
         "--stop-after",
         "--topology-cooldown", "--photometric-finish",
-        "--photometric-mse-percent",
+        "--photometric-mse-percent", "--adaptive-growth-target",
         "--optimizer-profile", "--sh-degree-interval",
         "--initial-ply", "--pruning-policy", "--raster-profile",
         "--profile-id", "--dataset-fingerprint",
@@ -190,6 +193,11 @@ Options parse_options(int argc, char** argv) {
         options.photometric_mse_percent = parse_u32(
             values.at("--photometric-mse-percent"),
             "--photometric-mse-percent");
+    }
+    if (values.contains("--adaptive-growth-target")) {
+        options.adaptive_growth_target = parse_u32(
+            values.at("--adaptive-growth-target"),
+            "--adaptive-growth-target");
     }
     if (values.contains("--checkpoint-every")) {
         options.checkpoint_every = parse_unsigned(
@@ -313,6 +321,10 @@ void validate_options(const Options& options) {
         throw std::invalid_argument(
             "--photometric-finish and --photometric-mse-percent "
             "must both be zero or both be positive");
+    }
+    if (options.adaptive_growth_target > 1U) {
+        throw std::invalid_argument(
+            "--adaptive-growth-target must be 0 or 1");
     }
     if (options.checkpoint_every != 0U &&
         options.checkpoint_path.empty()) {

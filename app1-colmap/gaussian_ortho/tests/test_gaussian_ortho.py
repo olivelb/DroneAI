@@ -24,8 +24,14 @@ from gaussian_ortho.colmap_loader import (
     CameraInfo, PointCloud, apply_sim3_to_points, apply_sim3_to_camera,
 )
 from gaussian_ortho.scene_info import build_scene_info
-from gaussian_ortho.partition import compute_partition_grid, partition_scene
+from gaussian_ortho.partition import (
+    CellBounds,
+    compute_partition_grid,
+    ground_projection_from_sim3,
+    partition_scene,
+)
 from gaussian_ortho.geo_writer import _geotiff_creation_options, write_geotiff
+from gaussian_ortho.camera_footprint import geographic_scene_frame
 
 if cp is not None:
     from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
@@ -36,6 +42,7 @@ if cp is not None:
     )
     from gaussian_ortho.rasterizer import make_view_matrix, make_ortho_proj
     from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
+    from gaussian_ortho.merge import merge_models
 
 
 requires_gpu = pytest.mark.skipif(cp is None, reason="CuPy is not installed")
@@ -77,7 +84,7 @@ def _make_scene(n_cams=10, n_points=500):
 def _make_gpu_model(n=200, sh_degree=0, seed=42):
     """Create a GaussianModel on GPU with random data (no training)."""
     rng = np.random.RandomState(seed)
-    model = GaussianModel(sh_degree=sh_degree, fagk_enabled=False)
+    model = GaussianModel(sh_degree=sh_degree, opacity_sh_enabled=False)
     model._xyz = cp.array(rng.randn(n, 3).astype(np.float32) * 5)
     n_sh = num_sh_coefficients(sh_degree)
     model._features_dc = cp.array(rng.randn(n, 1, 3).astype(np.float32) * 0.1)
@@ -118,8 +125,17 @@ class TestSH:
         dirs_np /= np.linalg.norm(dirs_np, axis=-1, keepdims=True)
         dirs = cp.array(dirs_np)
         basis = eval_sh_basis(0, dirs)
+        assert cp.allclose(basis[:, 0], SH_C0)
         expected = cp.full_like(basis, SH_C0)
         assert cp.allclose(basis, expected, atol=1e-6)
+
+    def test_basis_uses_native_dronegs_sign_convention(self):
+        directions = cp.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=cp.float32
+        )
+        basis = eval_sh_basis(1, directions)
+        assert float(basis[0, 3]) == pytest.approx(-0.4886025119)
+        assert float(basis[1, 1]) == pytest.approx(-0.4886025119)
 
 # ---------------------------------------------------------------------------
 #  Gaussian Model
@@ -153,7 +169,7 @@ class TestGaussianModel:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.ply")
             model.save_ply(path)
-            model2 = GaussianModel(sh_degree=2, fagk_enabled=False)
+            model2 = GaussianModel(sh_degree=2, opacity_sh_enabled=False)
             model2.load_ply(path)
             assert model2.num_gaussians == 30
             np.testing.assert_allclose(
@@ -226,15 +242,158 @@ class TestPartition:
 
     def test_partition_scene(self):
         scene = _make_scene(n_cams=40, n_points=2000)
-        cells = partition_scene(scene, m=2, n=2, min_cameras=2)
+        for camera in scene.train_cameras:
+            camera.R = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+            camera.T[2] = 100.0
+        transform = {"R": np.eye(3).tolist(), "scale": 1.0, "t": [0, 0, 0]}
+        frame = geographic_scene_frame(
+            scene.point_cloud.points,
+            transform,
+            terrain_margin_m=0.0,
+        )
+        cells = partition_scene(
+            scene,
+            m=2,
+            n=2,
+            min_cameras=2,
+            geographic_frame=frame,
+        )
         assert len(cells) >= 1
         for bounds, cell_scene in cells:
             assert len(cell_scene.train_cameras) >= 2
 
     def test_no_partition(self):
         scene = _make_scene()
-        cells = partition_scene(scene, m=1, n=1)
+        for camera in scene.train_cameras:
+            camera.R = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+            camera.T[2] = 100.0
+        transform = {"R": np.eye(3).tolist(), "scale": 1.0, "t": [0, 0, 0]}
+        frame = geographic_scene_frame(
+            scene.point_cloud.points,
+            transform,
+            terrain_margin_m=0.0,
+        )
+        cells = partition_scene(
+            scene,
+            m=1,
+            n=1,
+            geographic_frame=frame,
+        )
         assert len(cells) == 1
+
+    def test_grid_extent_comes_from_ground_points_not_camera_centres(self):
+        point_cloud = PointCloud(
+            points=np.array(
+                [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 20.0, 0.0]],
+                dtype=np.float32,
+            ),
+            colors=np.ones((3, 3), dtype=np.float32),
+            normals=np.zeros((3, 3), dtype=np.float32),
+        )
+        cameras = _make_cameras(5)
+        for camera in cameras:
+            camera.T[:] = 10_000.0
+        scene = build_scene_info(cameras, [], point_cloud)
+
+        cells = compute_partition_grid(
+            scene,
+            m=1,
+            n=2,
+            overlap=0.2,
+        )
+
+        assert cells[0].core_x_min == pytest.approx(0.0)
+        assert cells[-1].core_x_max == pytest.approx(10.0)
+        assert cells[-1].core_y_max == pytest.approx(20.0)
+        assert cells[0].buffer_x_min == pytest.approx(-1.0)
+
+    def test_sim3_projection_defines_projected_ground_grid(self):
+        transform = {
+            "R": [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            "scale": 2.0,
+            "t": [100.0, 200.0, 10.0],
+        }
+        linear, offset = ground_projection_from_sim3(transform)
+        point_cloud = PointCloud(
+            points=np.array(
+                [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 20.0, 0.0]],
+                dtype=np.float32,
+            ),
+            colors=np.ones((3, 3), dtype=np.float32),
+            normals=np.zeros((3, 3), dtype=np.float32),
+        )
+        scene = build_scene_info(_make_cameras(5), [], point_cloud)
+
+        cell = compute_partition_grid(
+            scene,
+            m=1,
+            n=1,
+            overlap=0.0,
+            model_to_ground_linear=linear,
+            model_to_ground_offset=offset,
+        )[0]
+
+        assert cell.core_x_min == pytest.approx(60.0)
+        assert cell.core_x_max == pytest.approx(100.0)
+        assert cell.core_y_min == pytest.approx(200.0)
+        assert cell.core_y_max == pytest.approx(220.0)
+
+    def test_adjacent_cores_have_single_boundary_owner(self):
+        scene = _make_scene(n_points=500)
+        left, right = compute_partition_grid(
+            scene,
+            m=1,
+            n=2,
+            overlap=0.2,
+        )
+        boundary = np.array(
+            [[left.core_x_max, left.core_y_min, 0.0]],
+            dtype=np.float32,
+        )
+
+        assert not bool(left.core_mask(boundary, array_module=np)[0])
+        assert bool(right.core_mask(boundary, array_module=np)[0])
+
+    @pytest.mark.gpu
+    @requires_gpu
+    def test_merge_uses_projected_ground_core(self):
+        ground_linear = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
+        common = {
+            "core_y_min": -1.0,
+            "core_y_max": 1.0,
+            "buffer_x_min": -1.0,
+            "buffer_x_max": 11.0,
+            "buffer_y_min": -2.0,
+            "buffer_y_max": 2.0,
+            "row": 0,
+            "model_to_ground_linear": ground_linear,
+        }
+        left_cell = CellBounds(
+            core_x_min=0.0,
+            core_x_max=5.0,
+            col=0,
+            **common,
+        )
+        right_cell = CellBounds(
+            core_x_min=5.0,
+            core_x_max=10.0,
+            col=1,
+            include_core_x_max=True,
+            **common,
+        )
+        left_model = _make_gpu_model(1)
+        right_model = _make_gpu_model(1)
+        left_model._xyz[:] = cp.asarray([[0.0, 8.0, 0.0]], dtype=cp.float32)
+        right_model._xyz[:] = cp.asarray([[0.0, 8.0, 0.0]], dtype=cp.float32)
+        left_model._features_dc[:] = 1.0
+        right_model._features_dc[:] = 2.0
+
+        merged = merge_models(
+            [(left_cell, left_model), (right_cell, right_model)]
+        )
+
+        assert merged.num_gaussians == 1
+        assert float(cp.asnumpy(merged._features_dc)[0, 0, 0]) == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +422,7 @@ class TestOrthoRenderer:
 
     def test_translucent_surface_color_is_not_composited_on_white(self):
         """Ortho RGB represents surface colour independently of opacity."""
-        model = GaussianModel(sh_degree=0, fagk_enabled=False)
+        model = GaussianModel(sh_degree=0, opacity_sh_enabled=False)
         model._xyz = cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32)
         model._features_dc = cp.zeros((1, 1, 3), dtype=cp.float32)
         model._features_rest = cp.empty((1, 0, 3), dtype=cp.float32)
@@ -319,6 +478,31 @@ class TestOrthoRenderer:
 
         assert float(depth[0, 0]) == pytest.approx(10.0, abs=1e-5)
         assert 0.0 < float(alpha[0, 0]) < 1.0
+
+    def test_opacity_sh_changes_nadir_alpha(self):
+        common = {
+            "means_3d": cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32),
+            "quats": cp.array([[1.0, 0.0, 0.0, 0.0]], dtype=cp.float32),
+            "scales": cp.ones((1, 3), dtype=cp.float32),
+            "opacities": cp.array([0.5], dtype=cp.float32),
+            "sh_coeffs": cp.zeros((1, 4, 3), dtype=cp.float32),
+            "sh_degree": 1,
+            "viewmat": cp.eye(4, dtype=cp.float32),
+            "fx": 1.0,
+            "fy": 1.0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "width": 1,
+            "height": 1,
+        }
+        _rgb, _depth, scalar_alpha = rasterize_ortho(**common)
+        opacity_sh = cp.zeros((1, 3), dtype=cp.float32)
+        opacity_sh[0, 1] = 2.0
+        _rgb, _depth, directional_alpha = rasterize_ortho(
+            **common, opacity_sh=opacity_sh
+        )
+
+        assert float(directional_alpha[0, 0]) > float(scalar_alpha[0, 0])
 
 
 # ---------------------------------------------------------------------------

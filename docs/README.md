@@ -19,7 +19,7 @@ implemented system as it exists now.
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
 | GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
-| Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
+| Resident-block HQ candidate and adaptive quality profiles | [`contracts/quality-profiles-v3.md`](contracts/quality-profiles-v3.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Organization isolation and versioned storage | [`contracts/organization-boundary-v1.md`](contracts/organization-boundary-v1.md) |
 | Durable members, credentials and identity audit | [`contracts/identity-control-plane-v1.md`](contracts/identity-control-plane-v1.md) |

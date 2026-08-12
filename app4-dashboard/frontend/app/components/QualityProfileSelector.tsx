@@ -12,6 +12,7 @@ const DESCRIPTION_KEYS: Record<QualityProfileId, MessageKey> = {
   "high-quality-v1": "profile.highQuality.description",
   "normal-v2": "profile.normal.description",
   "high-quality-v2": "profile.highQuality.description",
+  "high-quality-v3": "profile.highQuality.description",
 };
 
 const formatInteger = (value: unknown) =>

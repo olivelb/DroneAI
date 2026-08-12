@@ -902,7 +902,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_cap_max": {
         "label": "Maximum Gaussians",
-        "description": "Operator ceiling. Adaptive profiles may select a lower scene and VRAM-safe capacity.",
+        "description": "Operator ceiling for one GPU-resident model; resident-block profiles may exceed it across the complete terrain.",
         "type": "int",
         "group": "Orthomosaic",
         "min": 1000000,
@@ -918,7 +918,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_capacity_floor": {
         "label": "Minimum Gaussian Capacity",
-        "description": "Lower bound used by adaptive profiles before applying the operator and VRAM ceilings.",
+        "description": "Lower bound used by adaptive profiles before resolving scene density and the resident GPU ceiling.",
         "type": "int",
         "group": "Orthomosaic",
         "min": 1000000,
@@ -933,6 +933,12 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 0.0,
         "max": 64.0,
         "step": 1.0,
+    },
+    "gs_resident_partitioning": {
+        "label": "Geographic Resident Blocks",
+        "description": "Train, filter and raster geographic core/buffer blocks one at a time instead of merging the full scene on one GPU.",
+        "type": "bool",
+        "group": "Orthomosaic",
     },
     "gs_sh_degree": {
         "label": "Spherical Harmonics Degree",
@@ -1134,8 +1140,8 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "step": 0.01,
     },
     "gs_coverage_min_worst_cell_ratio": {
-        "label": "Minimum Worst Cell",
-        "description": "Rejects a completely missing localized footprint cell even when the global ratio is high.",
+        "label": "Minimum Worst Interior Cell",
+        "description": "Rejects a completely missing interior footprint cell while allowing partial NoData cells where an irregular footprint crosses its boundary.",
         "type": "float",
         "group": "Orthomosaic",
         "min": 0,

@@ -23,12 +23,18 @@ struct OptimizerProfileDefinition {
     std::string_view validation_scene;
 };
 
-inline constexpr std::array<OptimizerProfileDefinition, 25>
+inline constexpr std::array<OptimizerProfileDefinition, 27>
     optimizer_profile_registry{{
         {"dronegs-dev16", MrnfOptimizerProfile::dronegs_dev16,
          OptimizerProfileStatus::deprecated, "dev16", "Gajan"},
         {"reference-absolute", MrnfOptimizerProfile::reference_absolute,
          OptimizerProfileStatus::validated, "dev45", "Albagnac"},
+        {"reference-absolute-absgrad025",
+         MrnfOptimizerProfile::reference_absolute_absgrad025,
+         OptimizerProfileStatus::experimental, "candidate-v1", "pending"},
+        {"reference-absolute-absgrad050",
+         MrnfOptimizerProfile::reference_absolute_absgrad050,
+         OptimizerProfileStatus::experimental, "candidate-v1", "pending"},
         {"reference-dc-only", MrnfOptimizerProfile::reference_dc_only,
          OptimizerProfileStatus::experimental, "dev19", "Gajan"},
         {"reference-position-only", MrnfOptimizerProfile::reference_position_only,

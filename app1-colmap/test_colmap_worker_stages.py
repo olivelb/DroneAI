@@ -22,6 +22,18 @@ from colmap_worker.stages import gaussian as gaussian_stage
 from colmap_worker.stages import preparation as preparation_stage
 from colmap_worker.stages import publication as publication_stage
 from gaussian_ortho import phase_artifacts
+from gaussian_ortho.capacity_planning import (
+    GaussianCapacityPlan,
+    GaussianDensityAssessment,
+)
+from gaussian_ortho.generate_gaussian_orthophoto import (
+    GaussianFilteredPartition,
+    GaussianFilteringPhaseState,
+    GaussianPartitionModel,
+    GaussianTrainingState,
+)
+from gaussian_ortho.partition import CellBounds
+from gaussian_ortho.render_geometry import GaussianRenderGeometry
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
@@ -166,20 +178,33 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertTrue(warnings)
 
     def test_versioned_quality_profile_becomes_custom_after_training_override(self):
-        profile = quality_profile("high-quality-v2")
+        profile = quality_profile("high-quality-v3")
         config, warnings = dronegs_config.resolve_dronegs_config(
             profile.parameters,
             facade_mode=False,
             data_factor=int(profile.parameters["gs_data_factor"]),
         )
 
-        self.assertEqual(config.profile_id, "high-quality-v2")
+        self.assertEqual(config.profile_id, "high-quality-v3")
         self.assertEqual(config.iterations, 30_000)
         self.assertEqual(config.cap_max, 12_000_000)
         self.assertEqual(config.capacity_mode, "adaptive")
         self.assertEqual(config.capacity_floor, 5_000_000)
-        self.assertEqual(config.target_gaussian_spacing_pixels, 8.0)
+        self.assertEqual(config.target_gaussian_spacing_pixels, 3.6)
+        self.assertTrue(config.resident_partitioning)
         self.assertEqual(warnings, ())
+
+        legacy_profile = quality_profile("high-quality-v2")
+        legacy_config, legacy_warnings = dronegs_config.resolve_dronegs_config(
+            {
+                **legacy_profile.parameters,
+                "gs_resident_partitioning": "false",
+            },
+            facade_mode=False,
+            data_factor=int(legacy_profile.parameters["gs_data_factor"]),
+        )
+        self.assertFalse(legacy_config.resident_partitioning)
+        self.assertEqual(legacy_warnings, ())
 
         overridden, warnings = dronegs_config.resolve_dronegs_config(
             {**profile.parameters, "gs_cap_max": "11000000"},
@@ -316,6 +341,28 @@ class TestColmapStageHelpers(unittest.TestCase):
                     merged_model=types.SimpleNamespace(num_gaussians=1_500_000),
                     facade_subset_result=None,
                 ),
+                capacity_plan=GaussianCapacityPlan(
+                    mode="adaptive",
+                    requested_cap=1_500_000,
+                    capacity_floor=1_000_000,
+                    target_spacing_pixels=8.0,
+                    robust_ground_area_m2=2_500.0,
+                    requested_gsd_m=0.025,
+                    target_output_pixels=4_000_000,
+                    surface_target=100_000,
+                    free_vram_bytes=None,
+                    total_vram_bytes=None,
+                    vram_cap=None,
+                    resident_cap=1_000_000,
+                    partition_overlap=0.2,
+                    buffer_capacity_factor=1.96,
+                    required_cell_count=1,
+                    cells_sufficient=True,
+                    effective_scene_cap=1_000_000,
+                    effective_cell_cap=1_000_000,
+                    cell_count=1,
+                    estimated_capacity_bytes=1_280_000_000,
+                ),
             )
             phase_artifacts.write_training_artifact(
                 tmp_dir,
@@ -326,11 +373,109 @@ class TestColmapStageHelpers(unittest.TestCase):
             artifact = phase_artifacts.read_training_artifact(tmp_dir, config)
             self.assertEqual(artifact.model_path, model_path)
             self.assertEqual(artifact.gaussian_count, 1_500_000)
+            self.assertEqual(artifact.capacity_plan, phase.capacity_plan)
             with self.assertRaisesRegex(ValueError, "config identity"):
                 phase_artifacts.read_training_artifact(
                     tmp_dir,
                     replace(config, cap_max=config.cap_max + 1),
                 )
+
+            partition_path = Path(tmp_dir, "training", "cell-0-0.ply")
+            partition_path.write_bytes(b"core-ply")
+            bounds = CellBounds(
+                core_x_min=0.0,
+                core_x_max=10.0,
+                core_y_min=0.0,
+                core_y_max=10.0,
+                buffer_x_min=-2.0,
+                buffer_x_max=12.0,
+                buffer_y_min=-2.0,
+                buffer_y_max=12.0,
+                row=0,
+                col=0,
+                include_core_x_max=True,
+                include_core_y_max=True,
+            )
+            partition_phase = types.SimpleNamespace(
+                backend_name="dronegs",
+                trainer_binary_sha256="a" * 64,
+                scene_state=phase.scene_state,
+                training_state=GaussianTrainingState(
+                    merged_model=None,
+                    final_ply=None,
+                    facade_subset_result=None,
+                    partition_models=(
+                        GaussianPartitionModel(
+                            bounds=bounds,
+                            model_path=str(partition_path),
+                            gaussian_count=1_200_000,
+                            core_gaussian_count=1_200_000,
+                        ),
+                    ),
+                ),
+                capacity_plan=phase.capacity_plan,
+            )
+            phase_artifacts.write_training_artifact(
+                tmp_dir,
+                config,
+                partition_phase,
+                model_path=None,
+            )
+            partition_artifact = phase_artifacts.read_training_artifact(
+                tmp_dir,
+                config,
+            )
+            self.assertIsNone(partition_artifact.model_path)
+            self.assertEqual(partition_artifact.gaussian_count, 1_200_000)
+            self.assertEqual(len(partition_artifact.partition_models), 1)
+            self.assertEqual(partition_artifact.partition_models[0].bounds, bounds)
+
+            partition_geometry = GaussianRenderGeometry(
+                geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
+                frame_origin=None,
+                rotation_geo=None,
+                sh_direction_rotation=np.eye(3),
+                facade_depth_bounds_model=None,
+                render_extent=(0.0, 10.0, 0.0, 10.0, 0.0, 8.0),
+                local_gsd=0.025,
+                resolution_units="metres",
+                coverage_camera_positions=np.array([[1.0, 1.0, 10.0]]),
+            )
+            partition_filtering = GaussianFilteringPhaseState(
+                render_state=None,
+                input_gaussians=1_200_000,
+                output_gaussians=1_100_000,
+                density_assessment=None,
+                partition_geometry=partition_geometry,
+                partition_models=(
+                    GaussianFilteredPartition(
+                        bounds=bounds,
+                        model_path=str(partition_path),
+                        gaussian_count=1_150_000,
+                        core_gaussian_count=1_100_000,
+                        render_extent=partition_geometry.render_extent,
+                    ),
+                ),
+            )
+            phase_artifacts.write_filtering_artifact(
+                tmp_dir,
+                config,
+                partition_phase,
+                partition_filtering,
+                model_path=None,
+            )
+            partition_filter_artifact = phase_artifacts.read_filtering_artifact(
+                tmp_dir,
+                config,
+            )
+            hydrated_partitions = (
+                phase_artifacts.hydrate_partitioned_filtering_phase(
+                    partition_filter_artifact
+                )
+            )
+            self.assertIsNone(partition_filter_artifact.model_path)
+            self.assertEqual(len(hydrated_partitions.partition_models), 1)
+            self.assertEqual(hydrated_partitions.output_gaussians, 1_100_000)
 
             filtered_model_path = Path(tmp_dir, "filtering", "filtered.ply")
             filtered_model_path.parent.mkdir()
@@ -351,6 +496,17 @@ class TestColmapStageHelpers(unittest.TestCase):
                         [[0.0, 0.0, 10.0], [2.0, 1.0, 11.0]]
                     ),
                 ),
+                density_assessment=GaussianDensityAssessment(
+                    robust_ground_area_m2=2_500.0,
+                    requested_gsd_m=0.025,
+                    target_spacing_pixels=8.0,
+                    actual_gaussian_count=1_200_000,
+                    required_gaussian_count=62_500,
+                    achieved_spacing_m=0.04564,
+                    achieved_spacing_pixels=1.8256,
+                    minimum_compatible_gsd_m=0.005705,
+                    accepted=True,
+                ),
             )
             phase_artifacts.write_filtering_artifact(
                 tmp_dir,
@@ -362,6 +518,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             filtered = phase_artifacts.read_filtering_artifact(tmp_dir, config)
             self.assertEqual(filtered.model_path, filtered_model_path)
             self.assertEqual(filtered.output_gaussians, 1_200_000)
+            self.assertEqual(
+                filtered.density_assessment,
+                filtering_phase.density_assessment,
+            )
             self.assertEqual(filtered.render_extent, (-10.0, 10.0, -5.0, 5.0, 0.0, 8.0))
             self.assertEqual(filtered.scene_summary.registered_camera_count, 2)
             loaded_model = types.SimpleNamespace(num_gaussians=1_200_000)

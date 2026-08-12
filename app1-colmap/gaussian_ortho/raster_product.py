@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         GaussianOrthoConfig,
         GaussianRasterizationPhaseState,
     )
+    from .render_geometry import GaussianRenderGeometry
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,26 @@ class GaussianSceneSummary:
     facade_subset_result: dict[str, object] | None
 
 
+def _render_geometry(
+    filtering_phase: GaussianFilteringPhaseState,
+) -> GaussianRenderGeometry:
+    render = filtering_phase.render_state or filtering_phase.partition_geometry
+    if render is None:
+        raise RuntimeError("Gaussian raster product has no render geometry")
+    return render
+
+
+def _write_json_report(report_path: str, report: object) -> None:
+    path = Path(report_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
 def _write_coverage_report(
     config: GaussianOrthoConfig,
     filtering_phase: GaussianFilteringPhaseState,
@@ -63,21 +84,14 @@ def _write_coverage_report(
     report = evaluate_spatial_coverage(
         height,
         extent=extent,
-        camera_positions=(
-            filtering_phase.render_state.coverage_camera_positions
-        ),
+        camera_positions=_render_geometry(
+            filtering_phase
+        ).coverage_camera_positions,
         policy=policy,
         enforced=config.coverage_gate_enabled,
     )
     report_path = str(Path(config.ortho_file).with_name("gaussian_coverage_report.json"))
-    path = Path(report_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".json.tmp")
-    temporary.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
+    _write_json_report(report_path, report)
     _report(
         config.vol_id,
         "GAUSS",
@@ -85,7 +99,7 @@ def _write_coverage_report(
         "Gaussian spatial coverage: "
         f"valid={report['valid_pixel_ratio']:.1%}, "
         f"covered cells={report['covered_cells_ratio']:.1%}, "
-        f"worst cell={report['worst_cell_ratio']:.1%} "
+        f"worst interior cell={report['worst_cell_ratio']:.1%} "
         f"({report['status']}).",
         config.report_fn,
     )
@@ -97,6 +111,40 @@ def _write_coverage_report(
             "Gaussian spatial coverage gate rejected the product: "
             f"{failed_checks}. Report: {report_path}"
         )
+    return report_path, report
+
+
+def _write_seam_report(
+    config: GaussianOrthoConfig,
+    filtering_phase: GaussianFilteringPhaseState,
+    rgb: Any,
+    height: Any,
+    extent: tuple[float, float, float, float],
+) -> tuple[str | None, dict[str, Any] | None]:
+    if not getattr(filtering_phase, "partition_models", ()):
+        return None, None
+    from .seam_quality import evaluate_core_seams
+
+    render = _render_geometry(filtering_phase)
+    report = evaluate_core_seams(
+        rgb,
+        height,
+        extent=extent,
+        gsd=render.local_gsd,
+        geo_origin=render.geo_origin,
+        partitions=filtering_phase.partition_models,
+    )
+    report_path = str(
+        Path(config.ortho_file).with_name("gaussian_seam_report.json")
+    )
+    _write_json_report(report_path, report)
+    _report(
+        config.vol_id,
+        "GAUSS",
+        97,
+        f"Recorded evidence for {report['seam_count']} resident core seams.",
+        config.report_fn,
+    )
     return report_path, report
 
 
@@ -112,7 +160,10 @@ def _write_facade_report(
 ) -> Path:
     if summary.facade_frame is None:
         raise RuntimeError("Facade frame is unavailable for reporting")
-    depth_bounds = filtering_phase.render_state.facade_depth_bounds_model
+    render = filtering_phase.render_state
+    if render is None:
+        raise RuntimeError("Facade raster product has no global render state")
+    depth_bounds = render.facade_depth_bounds_model
     subset = summary.facade_subset_result
     report_path = Path(
         config.facade_frame_report
@@ -170,7 +221,7 @@ def _write_facade_report(
             "width": width,
             "height": height,
             "pixel_size": config.resolution,
-            "pixel_size_units": filtering_phase.render_state.resolution_units,
+            "pixel_size_units": render.resolution_units,
             "extent": [
                 geo_x_min,
                 geo_y_max - height * config.resolution,
@@ -196,7 +247,7 @@ def finalize_gaussian_raster_product(
     rasterization_phase: GaussianRasterizationPhaseState,
     summary: GaussianSceneSummary,
     *,
-    final_ply: str,
+    final_ply: str | None,
     cupy_version: str,
 ) -> dict[str, Any]:
     """Apply quality gates and publish RGB/height products identically."""
@@ -212,7 +263,14 @@ def finalize_gaussian_raster_product(
         height_map,
         (x_min, x_max, y_min, y_max),
     )
-    render = filtering_phase.render_state
+    seam_path, seam_report = _write_seam_report(
+        config,
+        filtering_phase,
+        rgb,
+        height_map,
+        (x_min, x_max, y_min, y_max),
+    )
+    render = _render_geometry(filtering_phase)
     geo_x_min, geo_y_max = georeference_raster_origin(
         x_min,
         y_max,
@@ -298,6 +356,8 @@ def finalize_gaussian_raster_product(
         "facade_frame_report": str(report_path) if report_path else None,
         "gaussian_coverage_report": coverage_path,
         "gaussian_coverage": coverage,
+        "gaussian_seam_report": seam_path,
+        "gaussian_seams": seam_report,
         "scale_source": summary.scale_source,
         "meters_per_model_unit": summary.colmap_to_meters,
         "registered_cameras": summary.registered_camera_count,
@@ -305,6 +365,11 @@ def finalize_gaussian_raster_product(
         "renderer_contract": "cupy-ortho-v3-surface-color",
         "cupy_version": cupy_version,
         "n_gaussians": filtering_phase.output_gaussians,
+        "gaussian_density": (
+            filtering_phase.density_assessment.as_dict()
+            if filtering_phase.density_assessment is not None
+            else None
+        ),
         "ortho_mip_filter_variance": config.ortho_mip_filter_variance,
         "ortho_mip_filter_compensation": config.ortho_mip_filter_compensation,
     }

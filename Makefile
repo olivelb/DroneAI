@@ -6,6 +6,7 @@ PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/ap
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/__init__.py \
+	app1-colmap/gaussian_ortho/camera_footprint.py \
 	app1-colmap/gaussian_ortho/capacity_planning.py \
 	app1-colmap/gaussian_ortho/colmap_loader.py \
 	app1-colmap/gaussian_ortho/colmap_subset.py \
@@ -27,7 +28,9 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/rasterizer.py \
 	app1-colmap/gaussian_ortho/raster_product.py \
 	app1-colmap/gaussian_ortho/render_geometry.py \
-	app1-colmap/gaussian_ortho/scene_info.py
+	app1-colmap/gaussian_ortho/scene_info.py \
+	app1-colmap/gaussian_ortho/seam_quality.py \
+	app1-colmap/gaussian_ortho/sh_basis.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))
 APP2_TYPED_PATHS := \

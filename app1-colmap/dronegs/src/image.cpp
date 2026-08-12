@@ -2,7 +2,9 @@
 #include "dronegs/image.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <csetjmp>
 #include <cstddef>
@@ -38,8 +40,7 @@ void jpeg_error_exit(j_common_ptr common) {
 }
 
 struct DecodedImage {
-    std::uint32_t source_width = 0;
-    std::uint32_t source_height = 0;
+    ImageRegion source_region;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::vector<std::uint8_t> rgb;
@@ -48,7 +49,8 @@ struct DecodedImage {
 DecodedImage decode_jpeg(const std::filesystem::path& path,
                          std::uint32_t resize_factor,
                          std::uint32_t max_width,
-                         bool use_scaled_idct) {
+                         bool use_scaled_idct,
+                         std::optional<ImageRegion> requested_region) {
     auto* file = std::fopen(path.string().c_str(), "rb");
     if (file == nullptr) {
         throw std::runtime_error("cannot open training image: " + path.string());
@@ -78,13 +80,30 @@ DecodedImage decode_jpeg(const std::filesystem::path& path,
         static_cast<std::uint32_t>(decoder.image_width);
     const auto source_height =
         static_cast<std::uint32_t>(decoder.image_height);
+    const ImageRegion region = requested_region.value_or(ImageRegion{
+        .source_x = 0U,
+        .source_y = 0U,
+        .width = source_width,
+        .height = source_height,
+    });
+    const auto region_right =
+        static_cast<std::uint64_t>(region.source_x) + region.width;
+    const auto region_bottom =
+        static_cast<std::uint64_t>(region.source_y) + region.height;
+    if (region.width == 0U || region.height == 0U ||
+        region_right > source_width || region_bottom > source_height) {
+        jpeg_destroy_decompress(&decoder);
+        std::fclose(file);
+        throw std::invalid_argument(
+            "training image region is outside JPEG bounds: " + path.string());
+    }
     if (use_scaled_idct) {
         double effective_factor =
             static_cast<double>(std::max(resize_factor, 1U));
-        if (max_width > 0U && source_width > max_width) {
+        if (max_width > 0U && region.width > max_width) {
             effective_factor = std::max(
                 effective_factor,
-                static_cast<double>(source_width) /
+                static_cast<double>(region.width) /
                     static_cast<double>(max_width));
         }
         decoder.scale_num = 1U;
@@ -106,11 +125,38 @@ DecodedImage decode_jpeg(const std::filesystem::path& path,
         throw std::runtime_error("unsupported JPEG dimensions or colorspace: " + path.string());
     }
 
+    const auto decoded_width =
+        static_cast<std::uint32_t>(decoder.output_width);
+    const auto decoded_height =
+        static_cast<std::uint32_t>(decoder.output_height);
+    const auto map_floor = [](std::uint32_t coordinate,
+                              std::uint32_t decoded_extent,
+                              std::uint32_t source_extent) {
+        return static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(coordinate) * decoded_extent /
+            source_extent);
+    };
+    const auto map_ceil = [](std::uint64_t coordinate,
+                             std::uint32_t decoded_extent,
+                             std::uint32_t source_extent) {
+        return static_cast<std::uint32_t>(
+            (coordinate * decoded_extent + source_extent - 1U) /
+            source_extent);
+    };
+    const auto decoded_x_begin =
+        map_floor(region.source_x, decoded_width, source_width);
+    const auto decoded_y_begin =
+        map_floor(region.source_y, decoded_height, source_height);
+    const auto decoded_x_end = std::min(
+        decoded_width,
+        map_ceil(region_right, decoded_width, source_width));
+    const auto decoded_y_end = std::min(
+        decoded_height,
+        map_ceil(region_bottom, decoded_height, source_height));
     DecodedImage image{
-        .source_width = source_width,
-        .source_height = source_height,
-        .width = static_cast<std::uint32_t>(decoder.output_width),
-        .height = static_cast<std::uint32_t>(decoder.output_height),
+        .source_region = region,
+        .width = decoded_x_end - decoded_x_begin,
+        .height = decoded_y_end - decoded_y_begin,
         .rgb = {},
     };
     const auto pixel_count = static_cast<std::size_t>(image.width) * image.height;
@@ -121,10 +167,23 @@ DecodedImage decode_jpeg(const std::filesystem::path& path,
     }
     image.rgb.resize(pixel_count * 3U);
     const auto row_stride = static_cast<std::size_t>(image.width) * 3U;
-    while (decoder.output_scanline < decoder.output_height) {
-        auto* row = image.rgb.data() +
-                    static_cast<std::size_t>(decoder.output_scanline) * row_stride;
-        static_cast<void>(jpeg_read_scanlines(&decoder, &row, 1));
+    if (decoded_y_begin > 0U) {
+        static_cast<void>(jpeg_skip_scanlines(&decoder, decoded_y_begin));
+    }
+    std::vector<std::uint8_t> decoded_row(
+        static_cast<std::size_t>(decoded_width) * 3U);
+    for (std::uint32_t y = 0U; y < image.height; ++y) {
+        auto* row = decoded_row.data();
+        static_cast<void>(jpeg_read_scanlines(&decoder, &row, 1U));
+        const auto* source = decoded_row.data() +
+            static_cast<std::size_t>(decoded_x_begin) * 3U;
+        std::copy_n(
+            source, row_stride,
+            image.rgb.data() + static_cast<std::size_t>(y) * row_stride);
+    }
+    if (decoder.output_scanline < decoder.output_height) {
+        static_cast<void>(jpeg_skip_scanlines(
+            &decoder, decoder.output_height - decoder.output_scanline));
     }
     static_cast<void>(jpeg_finish_decompress(&decoder));
     jpeg_destroy_decompress(&decoder);
@@ -134,61 +193,225 @@ DecodedImage decode_jpeg(const std::filesystem::path& path,
 
 }  // namespace
 
+std::vector<ImageRegion> make_training_tiles(
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t tile_mode) {
+    if (source_width == 0U || source_height == 0U) {
+        throw std::invalid_argument(
+            "training image dimensions must be positive");
+    }
+    std::uint32_t columns = 1U;
+    std::uint32_t rows = 1U;
+    if (tile_mode == 2U) {
+        if (source_width >= source_height) {
+            columns = 2U;
+        } else {
+            rows = 2U;
+        }
+    } else if (tile_mode == 4U) {
+        columns = 2U;
+        rows = 2U;
+    } else if (tile_mode != 1U) {
+        throw std::invalid_argument(
+            "tile mode must be 1, 2, or 4; received " +
+            std::to_string(tile_mode));
+    }
+    if (source_width < columns || source_height < rows) {
+        throw std::invalid_argument(
+            "tile mode exceeds training image dimensions");
+    }
+
+    std::vector<ImageRegion> regions;
+    regions.reserve(static_cast<std::size_t>(columns) * rows);
+    for (std::uint32_t row = 0U; row < rows; ++row) {
+        const auto top = static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(row) * source_height / rows);
+        const auto bottom = static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(row + 1U) * source_height / rows);
+        for (std::uint32_t column = 0U; column < columns; ++column) {
+            const auto left = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(column) * source_width / columns);
+            const auto right = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(column + 1U) * source_width /
+                columns);
+            regions.push_back({
+                .source_x = left,
+                .source_y = top,
+                .width = right - left,
+                .height = bottom - top,
+            });
+        }
+    }
+    return regions;
+}
+
+std::vector<ImageRegion> make_training_tiles(
+    const ImageRegion& source_region,
+    std::uint32_t tile_mode) {
+    const auto relative = make_training_tiles(
+        source_region.width,
+        source_region.height,
+        tile_mode);
+    std::vector<ImageRegion> regions;
+    regions.reserve(relative.size());
+    for (const auto& tile : relative) {
+        const auto source_x =
+            static_cast<std::uint64_t>(source_region.source_x) + tile.source_x;
+        const auto source_y =
+            static_cast<std::uint64_t>(source_region.source_y) + tile.source_y;
+        if (source_x > std::numeric_limits<std::uint32_t>::max() ||
+            source_y > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error("training tile source offset overflows");
+        }
+        regions.push_back({
+            .source_x = static_cast<std::uint32_t>(source_x),
+            .source_y = static_cast<std::uint32_t>(source_y),
+            .width = tile.width,
+            .height = tile.height,
+        });
+    }
+    return regions;
+}
+
+std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
+    const ImageRegion& region, std::uint32_t resize_factor,
+    std::uint32_t max_width) {
+    if (region.width == 0U || region.height == 0U) {
+        throw std::invalid_argument(
+            "training image region dimensions must be positive");
+    }
+    double effective_factor =
+        static_cast<double>(std::max(resize_factor, 1U));
+    if (max_width > 0U && region.width > max_width) {
+        effective_factor = std::max(
+            effective_factor,
+            static_cast<double>(region.width) /
+                static_cast<double>(max_width));
+    }
+    return {
+        std::max(
+            1U, static_cast<std::uint32_t>(
+                    static_cast<double>(region.width) / effective_factor)),
+        std::max(
+            1U, static_cast<std::uint32_t>(
+                    static_cast<double>(region.height) / effective_factor)),
+    };
+}
+
+std::vector<std::uint8_t> resample_rgb_area(
+    const std::vector<std::uint8_t>& source,
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t target_width, std::uint32_t target_height) {
+    if (source_width == 0U || source_height == 0U ||
+        target_width == 0U || target_height == 0U) {
+        throw std::invalid_argument(
+            "RGB resampling dimensions must be positive");
+    }
+    const auto source_pixels =
+        static_cast<std::size_t>(source_width) * source_height;
+    if (source_pixels > std::numeric_limits<std::size_t>::max() / 3U ||
+        source.size() != source_pixels * 3U) {
+        throw std::invalid_argument(
+            "RGB resampling source size does not match its dimensions");
+    }
+    if (target_width > source_width || target_height > source_height) {
+        throw std::invalid_argument(
+            "area resampling only supports image reduction");
+    }
+    if (source_width == target_width && source_height == target_height) {
+        return source;
+    }
+
+    std::vector<std::uint8_t> target(
+        static_cast<std::size_t>(target_width) * target_height * 3U);
+    const double scale_x =
+        static_cast<double>(source_width) / target_width;
+    const double scale_y =
+        static_cast<double>(source_height) / target_height;
+    const double target_area = scale_x * scale_y;
+    for (std::uint32_t target_y = 0U; target_y < target_height; ++target_y) {
+        const double source_y_begin = target_y * scale_y;
+        const double source_y_end = (target_y + 1U) * scale_y;
+        const auto first_y = static_cast<std::uint32_t>(
+            std::floor(source_y_begin));
+        const auto last_y = std::min(
+            source_height,
+            static_cast<std::uint32_t>(std::ceil(source_y_end)));
+        for (std::uint32_t target_x = 0U; target_x < target_width; ++target_x) {
+            const double source_x_begin = target_x * scale_x;
+            const double source_x_end = (target_x + 1U) * scale_x;
+            const auto first_x = static_cast<std::uint32_t>(
+                std::floor(source_x_begin));
+            const auto last_x = std::min(
+                source_width,
+                static_cast<std::uint32_t>(std::ceil(source_x_end)));
+            std::array<double, 3> sum{};
+            for (std::uint32_t source_y = first_y;
+                 source_y < last_y; ++source_y) {
+                const double overlap_y = std::max(
+                    0.0,
+                    std::min(source_y_end, static_cast<double>(source_y + 1U)) -
+                        std::max(source_y_begin, static_cast<double>(source_y)));
+                for (std::uint32_t source_x = first_x;
+                     source_x < last_x; ++source_x) {
+                    const double overlap_x = std::max(
+                        0.0,
+                        std::min(source_x_end, static_cast<double>(source_x + 1U)) -
+                            std::max(source_x_begin, static_cast<double>(source_x)));
+                    const double weight = overlap_x * overlap_y;
+                    const auto source_offset =
+                        (static_cast<std::size_t>(source_y) * source_width +
+                         source_x) * 3U;
+                    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                        sum[channel] +=
+                            static_cast<double>(source[source_offset + channel]) *
+                            weight;
+                    }
+                }
+            }
+            const auto target_offset =
+                (static_cast<std::size_t>(target_y) * target_width +
+                 target_x) * 3U;
+            for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                target[target_offset + channel] =
+                    static_cast<std::uint8_t>(std::clamp(
+                        std::lround(sum[channel] / target_area), 0L, 255L));
+            }
+        }
+    }
+    return target;
+}
+
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
                               std::uint32_t max_width,
-                              bool use_scaled_idct) {
+                              bool use_scaled_idct,
+                              std::optional<ImageRegion> region) {
     auto source = decode_jpeg(
-        path, resize_factor, max_width, use_scaled_idct);
-    double effective_factor = static_cast<double>(std::max(resize_factor, 1U));
-    if (max_width > 0U && source.source_width > max_width) {
-        effective_factor = std::max(
-            effective_factor,
-            static_cast<double>(source.source_width) /
-                static_cast<double>(max_width));
-    }
-    const auto target_width = std::max(
-        1U, static_cast<std::uint32_t>(
-                static_cast<double>(source.source_width) / effective_factor));
-    const auto target_height = std::max(
-        1U, static_cast<std::uint32_t>(
-                static_cast<double>(source.source_height) / effective_factor));
+        path, resize_factor, max_width, use_scaled_idct, region);
+    const auto [target_width, target_height] = training_image_dimensions(
+        source.source_region, resize_factor, max_width);
 
     ImageData result{
         .width = target_width,
         .height = target_height,
+        .source_x = source.source_region.source_x,
+        .source_y = source.source_region.source_y,
         .source_to_image_x =
             static_cast<float>(target_width) /
-                static_cast<float>(source.source_width),
+                static_cast<float>(source.source_region.width),
         .source_to_image_y =
             static_cast<float>(target_height) /
-                static_cast<float>(source.source_height),
+                static_cast<float>(source.source_region.height),
         .rgb = {},
     };
     if (source.width == target_width && source.height == target_height) {
         result.rgb = std::move(source.rgb);
         return result;
     }
-    result.rgb.resize(static_cast<std::size_t>(target_width) * target_height * 3U);
-    for (std::uint32_t y = 0; y < target_height; ++y) {
-        const auto source_y = std::min(
-            source.height - 1U,
-            static_cast<std::uint32_t>(
-                static_cast<double>(y) * source.height / target_height));
-        for (std::uint32_t x = 0; x < target_width; ++x) {
-            const auto source_x = std::min(
-                source.width - 1U,
-                static_cast<std::uint32_t>(
-                    static_cast<double>(x) * source.width / target_width));
-            const auto source_offset =
-                (static_cast<std::size_t>(source_y) * source.width + source_x) * 3U;
-            const auto target_offset =
-                (static_cast<std::size_t>(y) * target_width + x) * 3U;
-            for (std::size_t channel = 0; channel < 3U; ++channel) {
-                result.rgb[target_offset + channel] = source.rgb[source_offset + channel];
-            }
-        }
-    }
+    result.rgb = resample_rgb_area(
+        source.rgb, source.width, source.height,
+        target_width, target_height);
     return result;
 }
 

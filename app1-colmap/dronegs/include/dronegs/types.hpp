@@ -13,6 +13,8 @@ inline constexpr std::uint32_t maximum_sh_degree = 3U;
 inline constexpr std::size_t maximum_sh_rest_coefficients = 15U;
 inline constexpr std::size_t maximum_sh_rest_values =
     3U * maximum_sh_rest_coefficients;
+inline constexpr std::size_t maximum_opacity_sh_coefficients =
+    maximum_sh_rest_coefficients;
 
 struct Options {
     std::filesystem::path data_path;
@@ -40,6 +42,7 @@ struct Options {
     std::uint64_t topology_cooldown = 0;
     std::uint64_t photometric_finish = 0;
     std::uint32_t photometric_mse_percent = 0;
+    std::uint32_t adaptive_growth_target = 0;
     std::uint64_t checkpoint_every = 0;
     std::uint64_t stop_after = 0;
     std::string profile_id = "custom";
@@ -63,6 +66,10 @@ struct Image {
     std::string name;
     std::array<double, 4> qvec{};
     std::array<double, 3> tvec{};
+    std::uint32_t source_x = 0U;
+    std::uint32_t source_y = 0U;
+    std::uint32_t source_width = 0U;
+    std::uint32_t source_height = 0U;
 };
 
 struct SparsePoint {
@@ -82,6 +89,9 @@ struct Gaussian {
     std::array<float, 3> dc{};
     // Channel-major 3DGS order: R[0..14], G[0..14], B[0..14].
     std::array<float, maximum_sh_rest_values> sh_rest{};
+    // Directional logit residuals for SH basis coefficients 1..15.
+    // The scalar opacity_logit remains the view-independent intercept.
+    std::array<float, maximum_opacity_sh_coefficients> opacity_sh{};
     std::array<float, 3> log_scale{};
     std::array<float, 4> rotation{1.0F, 0.0F, 0.0F, 0.0F};
     float opacity_logit = 0.0F;

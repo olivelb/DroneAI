@@ -262,10 +262,13 @@ can leak into the facade frame.
 
 Every aerial Gaussian render must also publish
 `gaussian_coverage_report.json` under the versioned
-`GAUSSIAN_MAP_COVERAGE_V1` policy. The gate evaluates finite DSM pixels over a
+`GAUSSIAN_MAP_COVERAGE_V2` policy. The gate evaluates finite DSM pixels over a
 16-by-16 registered-camera footprint, including global validity, occupied
-cells, the worst expected cell and camera-cell tenth percentile. Its defaults
-are 50%, 75% of cells above 25%, 1% and 10%, respectively. Failure stops
+cells, the worst interior cell and camera-cell tenth percentile. Boundary cells
+remain part of the aggregate and camera checks, but the strict 1% minimum only
+applies to cells surrounded by the expected footprint so an oblique footprint
+is not rejected solely for transparent corners. Its defaults are 50%, 75% of
+cells above 25%, 1% and 10%, respectively. Failure stops
 GeoTIFF publication unless an operator explicitly disables enforcement; that
 override remains visible as `measured-rejected` in the report and manifest.
 NaN is the only missing-height representation. Facade products are excluded

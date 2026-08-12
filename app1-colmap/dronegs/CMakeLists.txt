@@ -96,6 +96,7 @@ add_library(dronegs_core
     src/model.cpp
     src/ply.cpp
     src/manifest.cpp
+    src/sh.cpp
     src/rasterization.cpp
 )
 target_include_directories(dronegs_core PUBLIC include)
@@ -128,6 +129,7 @@ target_link_libraries(dronegs PRIVATE dronegs_core dronegs_cuda)
 
 if(DRONEGS_BUILD_TESTS)
     enable_testing()
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
     add_executable(dronegs_core_tests tests/test_core.cpp)
     target_link_libraries(dronegs_core_tests PRIVATE dronegs_core)
@@ -136,6 +138,15 @@ if(DRONEGS_BUILD_TESTS)
     add_executable(dronegs_rasterization_tests tests/test_rasterization.cpp)
     target_link_libraries(dronegs_rasterization_tests PRIVATE dronegs_core)
     add_test(NAME dronegs_rasterization_tests COMMAND dronegs_rasterization_tests)
+
+    add_executable(dronegs_sh_basis_probe tests/sh_basis_probe.cpp)
+    target_link_libraries(dronegs_sh_basis_probe PRIVATE dronegs_core)
+    add_test(
+        NAME dronegs_sh_python_parity_tests
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sh_python_parity.py
+                $<TARGET_FILE:dronegs_sh_basis_probe>
+                ${CMAKE_CURRENT_SOURCE_DIR}/../gaussian_ortho)
 
     add_executable(dronegs_cuda_tests tests/test_loss.cu)
     target_link_libraries(dronegs_cuda_tests PRIVATE dronegs_cuda)
@@ -157,7 +168,12 @@ if(DRONEGS_BUILD_TESTS)
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
 
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_executable(dronegs_tile_training_tests tests/test_tile_training.cu)
+    target_link_libraries(dronegs_tile_training_tests PRIVATE dronegs_cuda)
+    set_target_properties(
+        dronegs_tile_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME dronegs_tile_training_tests COMMAND dronegs_tile_training_tests)
+
     add_test(
         NAME dronegs_lpips_tool_tests
         COMMAND ${Python3_EXECUTABLE}

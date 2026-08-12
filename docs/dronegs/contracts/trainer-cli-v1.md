@@ -36,7 +36,7 @@ DroneGS is the sole implementation of this contract.
 | `--max-cap` | Integer greater than zero |
 | `--resize-factor` | 1, 2, 4, or 8 |
 | `--max-width` | 1 through 4096 |
-| `--tile-mode` | 1, 2, or 4 |
+| `--tile-mode` | 1, 2, or 4 source-image training views |
 | `--seed` | Unsigned integer; mandatory for benchmarks |
 | `--run-manifest` | Final manifest conforming to the native v1 schema |
 | `--profile-id` | Versioned recipe identifier; production uses `DRONEGS_PRODUCTION_PROFILE_V1` |
@@ -73,6 +73,26 @@ profiles as separate, uniquely named fields. The adapter rejects duplicate
 JSON keys, validates the contract, records the trainer binary SHA-256, and
 promotes the PLY only after recording its SHA-256.
 
+Tile mode is an image-space training contract, not a scene partition. Mode `1`
+uses the complete source image, mode `2` bisects its longest axis, and mode `4`
+uses a 2-by-2 grid. Each crop is decoded independently, `--max-width` applies
+to the crop rather than the full photograph, and the camera principal point is
+translated into crop coordinates before rasterization. Dataset splitting is
+performed on source photographs before expansion, so all tiles from one photo
+remain together in training, held-out evaluation, or the spatial guard set.
+The reduction after JPEG decode uses area resampling with exact fractional
+source-pixel coverage; it no longer uses nearest-neighbour or bilinear point
+sampling. Images that already match the requested dimensions are not filtered.
+
+A partition subset may include `image_regions.tsv` at its dataset root. The
+first line must be `# dronegs-image-regions-v1`; each following tab-separated
+row is `image_name`, `source_x`, `source_y`, `width`, `height`, with right and
+bottom exclusive. Names must be unique and every region must lie inside its
+COLMAP camera dimensions. DroneGS composes `tile_mode` inside this base region,
+decodes directly from the untouched source JPEG, and translates the principal
+point by the combined source offset. Dataset fingerprints v3 include this
+contract, so a crop change invalidates checkpoint and completed-run reuse.
+
 `spatial-block` computes camera centers from COLMAP world-to-camera poses,
 selects the two dominant spatial axes, reserves a deterministic central block
 with the same target count as `--test-every`, then excludes the requested guard
@@ -100,7 +120,15 @@ Successful execution produces:
 - process exit status zero.
 
 The PLY exposes positions `x/y/z`, `f_dc_0..2`, standard-order `f_rest_N`,
-`scale_0..2` in log space, quaternion `rot_0..3`, and logit `opacity`.
+directional opacity-logit residuals `opacity_sh_N`, `scale_0..2` in log space,
+quaternion `rot_0..3`, and the view-independent logit `opacity`. The opacity
+properties use coefficients 1 through 15 of the same SH basis and degree as
+color; degree zero emits no `opacity_sh_N` properties. This scoped
+`opacity-SH-v1` contract does not make scale or rotation view-dependent.
+
+Checkpoint format V4 is required for opacity-SH optimizer moments. Checkpoints
+from V1 through V3 are deliberately rejected because their raw Gaussian layout
+cannot be resumed safely; their final PLY remains a valid initialization input.
 
 ## Progress
 

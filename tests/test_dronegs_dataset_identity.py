@@ -45,6 +45,15 @@ def test_dataset_identity_covers_sparse_model_and_image_content(tmp_path):
     image_changed = compute_dataset_identity(dataset)
     assert image_changed.fingerprint != original.fingerprint
 
+    image.write_bytes(b"a" * 200_000)
+    (dataset / "image_regions.tsv").write_text(
+        "# dronegs-image-regions-v1\nflight-01.jpg\t10\t20\t100\t80\n",
+        encoding="utf-8",
+    )
+    crop_changed = compute_dataset_identity(dataset)
+    assert crop_changed.fingerprint != original.fingerprint
+    assert crop_changed.image_regions_sha256 is not None
+
 
 def test_dataset_identity_is_relocation_and_mtime_stable(tmp_path):
     first = _dataset(tmp_path / "first")

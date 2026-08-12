@@ -2,6 +2,39 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.48 - Native image tiles and opacity-SH v1
+
+- Make tile modes operational: mode 2 splits the longest image axis and mode
+  4 trains on a 2-by-2 crop grid with crop-relative principal points.
+- Apply the width ceiling per crop, retain all source pixels when a crop fits,
+  and replace nearest-neighbour resize with area resampling. Fractional source
+  coverage is integrated explicitly so high-frequency image energy is not
+  aliased into the training target.
+- Split datasets by source photograph before expanding tiles, preventing
+  train/held-out leakage while evaluating every held-out crop.
+- Add directional opacity-logit SH coefficients through CPU/CUDA forward,
+  analytical backward, Adam, topology split/compaction, PLY and checkpoint
+  persistence. This capability is named `opacity-SH-v1`; scale and rotation
+  remain view-independent.
+- Align the CuPy orthomosaic SH signs with the native DroneGS basis and consume
+  `opacity_sh_*` properties during nadir rendering.
+- Centralize the Python/CuPy SH basis and compare it directly with a native
+  C++ probe for normalized degree-0 through degree-3 directions in CTest.
+- Move checkpoints to format V4 because the Gaussian and optimizer state now
+  contains opacity-SH arrays; older checkpoints fail closed and must restart
+  training from their source dataset or final PLY.
+- Add focused CPU/CUDA parity, four-crop training, opacity-SH learning and
+  checkpoint round-trip canaries.
+- Rename the Python boundary from ambiguous `fagk` flags to
+  `opacity_sh_enabled`, and document that scale/rotation remain static.
+- Refuse adaptive Normal/HQ rasterization when the post-filter Gaussian count
+  cannot support the requested GSD at the profile's declared spacing; persist
+  the capacity plan and density verdict through Stage Job artifacts.
+- Define partition cores/buffers in projected ground coordinates, assign
+  cameras through calibrated terrain-envelope footprint overlap, and compose
+  lossless native JPEG block crops with `tile_mode`. Dataset fingerprints v3
+  include the crop contract.
+
 ## 0.5.0-dev.47 - Production identity and spatial canary
 
 - Add a versioned native profile registry and reject unknown or

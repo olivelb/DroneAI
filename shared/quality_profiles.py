@@ -12,6 +12,7 @@ QualityProfileId = Literal[
     "high-quality-v1",
     "normal-v2",
     "high-quality-v2",
+    "high-quality-v3",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v2"
 
@@ -52,6 +53,7 @@ def _profile(
     capacity_mode: str = "fixed",
     capacity_floor: int | None = None,
     target_spacing_pixels: float = 0.0,
+    resident_partitioning: bool = False,
 ) -> QualityProfile:
     return QualityProfile(
         profile_id=profile_id,
@@ -69,6 +71,7 @@ def _profile(
                 "gs_capacity_mode": capacity_mode,
                 "gs_capacity_floor": str(capacity_floor or gaussians),
                 "gs_target_gaussian_spacing_pixels": str(target_spacing_pixels),
+                "gs_resident_partitioning": resident_partitioning,
                 "gs_production_profile": profile_id,
             }
         ),
@@ -137,10 +140,31 @@ QUALITY_PROFILES: tuple[QualityProfile, ...] = (
         target_spacing_pixels=8.0,
     ),
 )
+
+_CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
+    _profile(
+        "high-quality-v3",
+        "High Quality (resident candidate)",
+        "Qualification candidate using geographic resident buffers and streamed cores.",
+        image_size=4_096,
+        features=16_384,
+        iterations=30_000,
+        gaussians=12_000_000,
+        data_factor="1",
+        capacity_mode="adaptive",
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        resident_partitioning=True,
+    ),
+)
 QUALITY_PROFILE_BY_ID = MappingProxyType(
     {
         profile.profile_id: profile
-        for profile in (*_LEGACY_QUALITY_PROFILES, *QUALITY_PROFILES)
+        for profile in (
+            *_LEGACY_QUALITY_PROFILES,
+            *QUALITY_PROFILES,
+            *_CANDIDATE_QUALITY_PROFILES,
+        )
     }
 )
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import time
@@ -38,6 +39,7 @@ from shared.geo_alignment import (  # noqa: E402
 from shared.quality_profiles import quality_profile  # noqa: E402
 
 WORKSPACE_MARKER = ".droneai-local-workspace.json"
+RUN_LABEL_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class GaussianProfile:
     capacity_mode: str = "fixed"
     capacity_floor: int = 0
     target_gaussian_spacing_pixels: float = 0.0
+    resident_partitioning: bool = False
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
 
 
@@ -227,18 +230,33 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
         target_gaussian_spacing_pixels=float(
             parameters["gs_target_gaussian_spacing_pixels"]
         ),
+        resident_partitioning=bool(parameters["gs_resident_partitioning"]),
     )
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
 PROFILES["normal"] = versioned_quality_profile("normal-v2")
-PROFILES["high-quality"] = versioned_quality_profile("high-quality-v2")
+PROFILES["high-quality"] = replace(
+    versioned_quality_profile("high-quality-v3"),
+    # Production missions inherit the 2 cm default from pipeline_params.
+    # Keep the standalone qualification runner on that same output contract
+    # instead of silently retaining the balanced runner's 5 cm preview GSD.
+    resolution=0.02,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workspace", type=Path)
     parser.add_argument("--profile", choices=sorted(PROFILES), default="low-memory")
+    parser.add_argument(
+        "--run-label",
+        type=validated_run_label,
+        help=(
+            "isolated artifact/checkpoint label for reproducible A/B runs "
+            "that share one input workspace"
+        ),
+    )
     parser.add_argument("--backend", choices=("dronegs",))
     parser.add_argument("--iterations", type=int)
     parser.add_argument("--cap-max", type=int)
@@ -292,6 +310,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     return parser.parse_args()
+
+
+def validated_run_label(value: str) -> str:
+    """Reject path-like or ambiguous labels before constructing artifacts."""
+
+    if not RUN_LABEL_PATTERN.fullmatch(value):
+        raise argparse.ArgumentTypeError(
+            "run-label must match [a-z0-9][a-z0-9._-]{0,63}"
+        )
+    return value
 
 
 def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
@@ -463,9 +491,10 @@ def main() -> int:
         if aligned_path is None:
             raise RuntimeError("map workspace validation returned no aligned model")
         transform_path = ensure_transform(workspace, aligned_path)
+    run_label = args.run_label or args.profile
     ortho_path, height_path, checkpoint_path = output_paths(
         workspace,
-        args.profile,
+        run_label,
         args.output,
         args.render_mode,
     )
@@ -490,12 +519,13 @@ def main() -> int:
             f"{profile.backend} trainer is missing from the local Gaussian image"
         )
 
-    report_path = workspace / f"gaussian_run.{args.profile}.json"
+    report_path = workspace / f"gaussian_run.{run_label}.json"
     started_at = time.time()
     report: dict[str, Any] = {
         "schema_version": 1,
         "status": "running",
         "profile": args.profile,
+        "run_label": run_label,
         "parameters": asdict(profile),
         "workspace": str(workspace),
         "trainer_backend": profile.backend,
@@ -521,6 +551,7 @@ def main() -> int:
             target_gaussian_spacing_pixels=(
                 profile.target_gaussian_spacing_pixels
             ),
+            resident_partitioning=profile.resident_partitioning,
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
             verbose=args.verbose,

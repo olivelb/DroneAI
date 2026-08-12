@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 APP1_ROOT = Path(__file__).resolve().parents[1] / "app1-colmap"
@@ -14,6 +15,7 @@ if str(APP1_ROOT) not in sys.path:
 
 workflow = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 raster_product = importlib.import_module("gaussian_ortho.raster_product")
+seam_quality = importlib.import_module("gaussian_ortho.seam_quality")
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
@@ -73,6 +75,84 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
     assert calls["trainer_binary_sha256"] == "a" * 64
 
 
+def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
+    x, y = np.meshgrid(
+        np.linspace(0.0, 500.0, 40),
+        np.linspace(0.0, 418.8, 40),
+    )
+    points = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+    scene_state = SimpleNamespace(
+        point_cloud=SimpleNamespace(points=points),
+        colmap_to_meters=1.0,
+        cells=[(None, SimpleNamespace())],
+        use_partition=False,
+    )
+    backend = SimpleNamespace(
+        name="dronegs",
+        binary_sha256=lambda: "b" * 64,
+    )
+    trained_caps = []
+    monkeypatch.setattr(
+        workflow,
+        "prepare_gaussian_scene",
+        lambda _config: scene_state,
+    )
+
+    def apply_partition(scene, _config, *, required_cell_count):
+        assert required_cell_count == 7
+        scene.cells = [(SimpleNamespace(), SimpleNamespace())] * 9
+        scene.use_partition = True
+
+    monkeypatch.setattr(
+        workflow,
+        "_apply_required_geographic_partition",
+        apply_partition,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "replace",
+        lambda config, **changes: SimpleNamespace(**(vars(config) | changes)),
+    )
+
+    def train(config, _scene, **_kwargs):
+        trained_caps.append(config.cap_max)
+        return SimpleNamespace(final_ply="final.ply")
+
+    monkeypatch.setattr(workflow, "train_and_merge_gaussian_models", train)
+    config = SimpleNamespace(
+        capacity_mode="adaptive",
+        cap_max=12_000_000,
+        capacity_floor=5_000_000,
+        target_gaussian_spacing_pixels=3.6,
+        resolution=0.02,
+        partition_overlap=0.2,
+        partition_m=1,
+        partition_n=1,
+        resident_partitioning=True,
+        vol_id="mission",
+        report_fn=None,
+    )
+
+    result = workflow.execute_gaussian_training_phase(
+        config,
+        backend=backend,
+        model_class=lambda: None,
+        merge_models_fn=lambda: None,
+        cupy_module=SimpleNamespace(),
+    )
+
+    assert result.capacity_plan is not None
+    assert result.capacity_plan.effective_scene_cap == pytest.approx(
+        40_400_000,
+        rel=0.03,
+    )
+    assert result.capacity_plan.cell_count == 9
+    assert result.capacity_plan.resident_cap == 12_000_000
+    assert result.capacity_plan.cells_sufficient
+    assert trained_caps == [result.capacity_plan.effective_cell_cap]
+    assert trained_caps[0] < result.capacity_plan.resident_cap
+
+
 def test_filtering_phase_applies_render_preparation_once_and_records_counts(
     monkeypatch,
 ):
@@ -95,7 +175,11 @@ def test_filtering_phase_applies_render_preparation_once_and_records_counts(
         return SimpleNamespace(merged_model=filtered_model)
 
     monkeypatch.setattr(workflow, "prepare_gaussian_render_state", prepare)
-    config = SimpleNamespace(name="config")
+    config = SimpleNamespace(
+        name="config",
+        render_mode="map",
+        capacity_mode="fixed",
+    )
     cupy = SimpleNamespace(name="cupy")
 
     result = workflow.execute_gaussian_filtering_phase(
@@ -146,6 +230,8 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
         SimpleNamespace(
             vol_id="mission",
             resolution=0.02,
+            render_mode="map",
+            capacity_mode="fixed",
             report_fn=None,
             ortho_mip_filter_variance=0.03,
             ortho_mip_filter_compensation=True,
@@ -160,6 +246,142 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
     assert calls[0][1]["extent"] == render_state.render_extent
     assert result.width == 20
     assert result.height == 12
+
+
+def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
+    tmp_path,
+):
+    left_path = tmp_path / "left.ply"
+    right_path = tmp_path / "right.ply"
+    left_path.write_bytes(b"left")
+    right_path.write_bytes(b"right")
+    left_bounds = workflow.CellBounds(
+        0.0, 10.0, 0.0, 10.0,
+        -2.0, 12.0, -2.0, 12.0,
+        0, 0,
+    )
+    right_bounds = workflow.CellBounds(
+        10.0, 20.0, 0.0, 10.0,
+        8.0, 22.0, -2.0, 12.0,
+        0, 1,
+        include_core_x_max=True,
+        include_core_y_max=True,
+    )
+    geometry = workflow.GaussianRenderGeometry(
+        geo_origin=np.zeros(3),
+        frame_origin=None,
+        rotation_geo=None,
+        sh_direction_rotation=None,
+        facade_depth_bounds_model=None,
+        render_extent=(0.0, 20.0, 0.0, 10.0, -1.0, 2.0),
+        local_gsd=1.0,
+        resolution_units="metres",
+        coverage_camera_positions=np.empty((0, 3)),
+    )
+    partitions = tuple(
+        workflow.GaussianFilteredPartition(
+            bounds=bounds,
+            model_path=str(path),
+            gaussian_count=8,
+            core_gaussian_count=5,
+            render_extent=geometry.render_extent,
+        )
+        for bounds, path in ((left_bounds, left_path), (right_bounds, right_path))
+    )
+    filtering = workflow.GaussianFilteringPhaseState(
+        render_state=None,
+        input_gaussians=10,
+        output_gaussians=10,
+        partition_geometry=geometry,
+        partition_models=partitions,
+    )
+
+    class FakeModel:
+        def __init__(self, **_kwargs):
+            self.path = ""
+
+        def load_ply(self, path):
+            self.path = path
+
+    def render(model, *, extent, gsd, **_kwargs):
+        width = round((extent[1] - extent[0]) / gsd)
+        height = round((extent[3] - extent[2]) / gsd)
+        value = 40 if model.path.endswith("left.ply") else 180
+        return {
+            "rgb": np.full((height, width, 3), value, dtype=np.uint8),
+            "height": np.full((height, width), value, dtype=np.float32),
+            "extent": extent[:4],
+            "gsd": gsd,
+        }
+
+    pool = SimpleNamespace(free_all_blocks=lambda: None)
+    config = SimpleNamespace(
+        capacity_mode="fixed",
+        sh_degree=3,
+        opacity_sh_enabled=True,
+        ortho_mip_filter_variance=0.03,
+        ortho_mip_filter_compensation=True,
+        vol_id="mission",
+        report_fn=None,
+    )
+    result = workflow.execute_partitioned_gaussian_rasterization_phase(
+        config,
+        filtering,
+        model_class=FakeModel,
+        render_fn=render,
+        cupy_module=SimpleNamespace(
+            get_default_memory_pool=lambda: pool,
+        ),
+    )
+
+    assert result.result["rgb"].shape == (10, 20, 3)
+    assert np.all(result.result["rgb"][:, :10] == 40)
+    assert np.all(result.result["rgb"][:, 10:] == 180)
+    assert np.isfinite(result.result["height"]).all()
+
+    seam_report = seam_quality.evaluate_core_seams(
+        result.result["rgb"],
+        result.result["height"],
+        extent=result.result["extent"],
+        gsd=1.0,
+        geo_origin=np.zeros(3),
+        partitions=partitions,
+    )
+    assert seam_report["seam_count"] == 1
+    seam = seam_report["seams"][0]
+    assert seam["orientation"] == "vertical"
+    assert seam["rgb_absolute_8bit"]["mean"] == pytest.approx(140.0)
+    assert seam["height_absolute"]["p95"] == pytest.approx(140.0)
+
+
+def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
+    density = workflow.GaussianDensityAssessment(
+        robust_ground_area_m2=250_000.0,
+        requested_gsd_m=0.015,
+        target_spacing_pixels=8.0,
+        actual_gaussian_count=10_000_000,
+        required_gaussian_count=17_361_112,
+        achieved_spacing_m=0.1581,
+        achieved_spacing_pixels=10.54,
+        minimum_compatible_gsd_m=0.01976,
+        accepted=False,
+    )
+    filtering_phase = workflow.GaussianFilteringPhaseState(
+        render_state=SimpleNamespace(),
+        input_gaussians=12_000_000,
+        output_gaussians=10_000_000,
+        density_assessment=density,
+    )
+
+    with pytest.raises(RuntimeError, match="Use at least 0.0198 m/px"):
+        workflow.execute_gaussian_rasterization_phase(
+            SimpleNamespace(
+                render_mode="map",
+                capacity_mode="adaptive",
+            ),
+            filtering_phase,
+            render_fn=lambda *_args, **_kwargs: {},
+        )
 
 
 def test_raster_product_applies_shared_coverage_and_geotiff_contract(
@@ -220,6 +442,7 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     )
     filtering = SimpleNamespace(
         output_gaussians=1_200_000,
+        density_assessment=None,
         render_state=SimpleNamespace(
             coverage_camera_positions=np.array([[0.0, 0.0, 10.0]]),
             geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
