@@ -12,6 +12,8 @@ import argparse
 import csv
 import json
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +48,29 @@ def _comparison_grid(
     width = max(1, round(width_m * scale))
     height = max(1, round(height_m * scale))
     return width, height, from_bounds(*bounds, width, height)
+
+
+@contextmanager
+def _shared_comparison_grid(
+    candidate_path: Path,
+    reference_path: Path,
+    max_dimension: int,
+) -> Iterator[
+    tuple[
+        rasterio.DatasetReader,
+        rasterio.DatasetReader,
+        tuple[float, ...],
+        int,
+        int,
+        rasterio.Affine,
+    ]
+]:
+    with rasterio.open(candidate_path) as candidate, rasterio.open(
+        reference_path
+    ) as reference:
+        bounds = _intersection_bounds(candidate, reference)
+        width, height, grid_transform = _comparison_grid(bounds, max_dimension)
+        yield candidate, reference, bounds, width, height, grid_transform
 
 
 def _warp_band(
@@ -202,9 +227,9 @@ def compare_dem(
     max_dimension: int,
     preview_path: Path,
 ) -> dict[str, Any]:
-    with rasterio.open(candidate_path) as candidate, rasterio.open(reference_path) as reference:
-        bounds = _intersection_bounds(candidate, reference)
-        width, height, grid_transform = _comparison_grid(bounds, max_dimension)
+    with _shared_comparison_grid(
+        candidate_path, reference_path, max_dimension
+    ) as (candidate, reference, bounds, width, height, grid_transform):
         candidate_z = _warp_band(
             candidate,
             1,
@@ -306,9 +331,9 @@ def compare_ortho(
     max_dimension: int,
     preview_path: Path,
 ) -> dict[str, Any]:
-    with rasterio.open(candidate_path) as candidate, rasterio.open(reference_path) as reference:
-        bounds = _intersection_bounds(candidate, reference)
-        width, height, grid_transform = _comparison_grid(bounds, max_dimension)
+    with _shared_comparison_grid(
+        candidate_path, reference_path, max_dimension
+    ) as (candidate, reference, bounds, width, height, grid_transform):
         candidate_rgb, candidate_valid = _warp_rgb(
             candidate, width=width, height=height, dst_transform=grid_transform
         )
