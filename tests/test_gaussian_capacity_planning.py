@@ -123,6 +123,24 @@ def test_two_centimeter_hq_candidate_targets_about_40m_merged_gaussians():
     assert plan.required_cell_count == 7
 
 
+def test_resident_scene_that_fits_does_not_pay_theoretical_buffer_overhead():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        points=_surface(200.0, 200.0),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=24 * capacity.GIB,
+        resident_partitioning=True,
+    )
+
+    assert 7_000_000 < plan.effective_scene_cap < 8_000_000
+    assert plan.required_cell_count == 1
+    assert plan.effective_cell_cap == plan.effective_scene_cap
+
+
 def test_fixed_preview_keeps_its_reproducible_cap():
     plan = capacity.plan_gaussian_capacity(
         mode="fixed",

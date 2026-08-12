@@ -211,22 +211,24 @@ def plan_gaussian_capacity(
                 resident_cap = min(resident_cap, memory_cap)
             resident_cap = max(CAPACITY_QUANTUM, _round_down(resident_cap))
             buffer_capacity_factor = (1.0 + 2.0 * partition_overlap) ** 2
-            required_cell_count = max(
-                1,
-                math.ceil(
+            # A monolithic resident scene has no neighbouring core whose
+            # context must be duplicated. Apply overlap overhead only after
+            # the unique scene target itself exceeds the resident cap.
+            required_cell_count = (
+                1
+                if effective_scene <= resident_cap
+                else math.ceil(
                     effective_scene
                     * buffer_capacity_factor
                     / resident_cap
-                ),
+                )
             )
-            effective_cell = min(
-                resident_cap,
-                _round_up(
-                    effective_scene
-                    * buffer_capacity_factor
-                    / cell_count
-                ),
+            resident_target = (
+                effective_scene
+                if cell_count == 1
+                else effective_scene * buffer_capacity_factor / cell_count
             )
+            effective_cell = min(resident_cap, _round_up(resident_target))
         else:
             effective_scene = min(requested_cap, desired)
             if memory_cap is not None:
