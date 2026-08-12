@@ -308,6 +308,7 @@ def _restore_raster_workspace(
             source.checksum_sha256,
             cancellation_check=control.raise_if_cancelled,
             selection=WorkspaceSelection(paths=frozenset({ortho_relative})),
+            expected_organization_id=context.organization_id,
         )
     else:
         restored = restore_workspace_measured(
@@ -315,6 +316,7 @@ def _restore_raster_workspace(
             workspace,
             source.checksum_sha256,
             cancellation_check=control.raise_if_cancelled,
+            expected_organization_id=context.organization_id,
         )
     raster_path = resolve_workspace_path(workspace, ortho_relative)
     if not raster_path.is_file():
@@ -445,6 +447,7 @@ def run_detection_stage(
                     ),
                 ),
                 allow_partial_workspace=selective_restore,
+                organization_id=context.organization_id,
                 cancellation_check=control.raise_if_cancelled,
             )
         else:

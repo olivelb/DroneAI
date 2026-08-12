@@ -9,8 +9,9 @@ from typing import Any, cast
 from sqlalchemy.orm import Session
 
 from shared.artifact_manifest import content_addressed_blob_key
-from shared.database import DetectionShardReceipt, MissionStageRun
+from shared.database import DetectionShardReceipt, Mission, MissionStageRun
 from shared.detection_sharding import DetectionShardPlan
+from shared.tenancy import validate_organization_id
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,13 @@ def _lower_sha256(value: str, field: str) -> str:
     return value
 
 
-def _result_key(value: str, checksum_sha256: str) -> str:
+def _result_key(
+    value: str,
+    checksum_sha256: str,
+    organization_id: str | None = None,
+    *,
+    allow_legacy_global: bool = False,
+) -> str:
     if not value or "\\" in value:
         raise ValueError("Detection shard result key must be a canonical S3 key")
     path = PurePosixPath(value)
@@ -36,8 +43,16 @@ def _result_key(value: str, checksum_sha256: str) -> str:
         or path.as_posix() != value
     ):
         raise ValueError("Detection shard result key must be a canonical S3 key")
-    if value != content_addressed_blob_key(checksum_sha256):
-        raise ValueError("Detection shard result key must match its content checksum")
+    expected_key = content_addressed_blob_key(
+        checksum_sha256,
+        organization_id=organization_id,
+    )
+    if value != expected_key:
+        legacy_key = content_addressed_blob_key(checksum_sha256)
+        if not allow_legacy_global or value != legacy_key:
+            raise ValueError(
+                "Detection shard result key must match its content checksum"
+            )
     return value
 
 
@@ -47,6 +62,20 @@ def _durable_plan(run: MissionStageRun) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("Detection stage run has no durable shard plan")
     return cast(dict[str, Any], value)
+
+
+def detection_run_organization_id(session: Session, run_id: str) -> str:
+    """Resolve the durable mission tenant for a detection stage run."""
+
+    value = (
+        session.query(Mission.organization_id)
+        .join(MissionStageRun, MissionStageRun.mission_id == Mission.id)
+        .filter(MissionStageRun.run_id == run_id)
+        .scalar()
+    )
+    if value is None:
+        raise ValueError("Detection stage run has no durable mission organization")
+    return validate_organization_id(str(value))
 
 
 def _same_receipt(
@@ -76,6 +105,7 @@ def record_detection_shard_receipt(
     result_key: str,
     result_checksum_sha256: str,
     result_size_bytes: int,
+    organization_id: str | None = None,
 ) -> RecordedShardReceipt:
     """Insert one receipt or reuse an identical retry under the run row lock."""
 
@@ -83,7 +113,6 @@ def record_detection_shard_receipt(
         raise ValueError("Detection shard receipts require a multi-shard plan")
     shard = plan.shard(shard_index)
     checksum = _lower_sha256(result_checksum_sha256, "Shard result checksum")
-    canonical_key = _result_key(result_key, checksum)
     if result_size_bytes <= 0:
         raise ValueError("Shard result size must be positive")
     run = (
@@ -98,6 +127,13 @@ def record_detection_shard_receipt(
         raise ValueError(f"Shard receipt cannot publish from status {run.status}")
     if _durable_plan(run) != plan.descriptor():
         raise ValueError("Shard receipt plan does not match the durable stage plan")
+    durable_organization = detection_run_organization_id(session, run_id)
+    if (
+        organization_id is not None
+        and validate_organization_id(organization_id) != durable_organization
+    ):
+        raise ValueError("Detection shard organization does not match mission")
+    canonical_key = _result_key(result_key, checksum, durable_organization)
     existing = (
         session.query(DetectionShardReceipt)
         .filter(
@@ -150,6 +186,7 @@ def complete_detection_shard_receipts(
         raise ValueError(f"Shard finalization cannot run from status {run.status}")
     if _durable_plan(run) != plan.descriptor():
         raise ValueError("Finalizer plan does not match the durable stage plan")
+    durable_organization = detection_run_organization_id(session, run_id)
     receipts = cast(
         list[DetectionShardReceipt],
         session.query(DetectionShardReceipt)
@@ -179,7 +216,12 @@ def complete_detection_shard_receipts(
             cast(str, receipt.result_checksum_sha256),
             "Durable shard result checksum",
         )
-        _result_key(cast(str, receipt.result_key), checksum)
+        _result_key(
+            cast(str, receipt.result_key),
+            checksum,
+            durable_organization,
+            allow_legacy_global=True,
+        )
         if cast(int, receipt.result_size_bytes) <= 0:
             raise ValueError("Durable shard result size must be positive")
     return tuple(receipts)

@@ -14,16 +14,20 @@ from typing import Any, cast
 
 from shared import storage
 from shared.artifact_manifest import (
+    ARTIFACT_MANIFEST_VERSION,
     ROLE_PATTERN,
+    TENANT_ARTIFACT_MANIFEST_VERSION,
     ArtifactManifest,
     ManifestBlob,
     ManifestFile,
     ManifestParent,
     canonical_v2_bytes,
+    canonical_v3_bytes,
     parse_artifact_manifest,
 )
 from shared.checksums import sha256_file
 from shared.config import S3_BUCKET
+from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
 
 WORKSPACE_MANIFEST_VERSION = 1
 MAX_OVERLAY_MANIFESTS = 64
@@ -59,6 +63,13 @@ def artifact_selective_restore_enabled() -> bool:
     return enabled
 
 
+def _tenant_cas_organization_id(organization_id: str | None) -> str | None:
+    if organization_id is None:
+        return None
+    validated = validate_organization_id(organization_id)
+    return None if validated == LEGACY_ORGANIZATION_ID else validated
+
+
 @dataclass(frozen=True)
 class PublishedWorkspace:
     manifest_key: str
@@ -70,6 +81,7 @@ class PublishedWorkspace:
     reused_bytes: int = 0
     upload_seconds: float = 0.0
     manifest_size_bytes: int = 0
+    manifest_schema_version: int = WORKSPACE_MANIFEST_VERSION
 
 
 @dataclass(frozen=True)
@@ -109,7 +121,7 @@ def workspace_transfer_provenance(
 
     transfer: dict[str, Any] = {
         "schema_version": 1,
-        "manifest_schema_version": WORKSPACE_MANIFEST_VERSION,
+        "manifest_schema_version": published.manifest_schema_version,
         "publish": {
             "logical_bytes": published.size_bytes,
             "file_count": published.file_count,
@@ -240,6 +252,7 @@ def publish_workspace(
         reused_bytes=0,
         upload_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=int(verified_manifest["size"]),
+        manifest_schema_version=WORKSPACE_MANIFEST_VERSION,
     )
 
 
@@ -251,6 +264,7 @@ def publish_workspace_v2(
     role_overrides: dict[str, str] | None = None,
     parents: tuple[ManifestParent, ...] = (),
     allow_partial_workspace: bool = False,
+    organization_id: str | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedWorkspace:
     """Publish a verified incremental CAS overlay.
@@ -260,6 +274,7 @@ def publish_workspace_v2(
     """
 
     started_at = time.monotonic()
+    tenant_organization_id = _tenant_cas_organization_id(organization_id)
     root = Path(workspace).resolve(strict=True)
     if not root.is_dir():
         raise NotADirectoryError(root)
@@ -279,6 +294,7 @@ def publish_workspace_v2(
         _manifest, parent_files, _manifest_bytes = _load_manifest_overlay(
             parent.manifest_key,
             parent.checksum_sha256,
+            expected_organization_id=tenant_organization_id,
             cancellation_check=cancellation_check,
         )
         for relative, entry in parent_files.items():
@@ -309,10 +325,17 @@ def publish_workspace_v2(
             and parent_entry.blob.checksum_sha256 == digest
         ):
             continue
-        uploaded = storage.publish_content_addressed_file(
-            file_path,
-            cancellation_check=cancellation_check,
-        )
+        if tenant_organization_id is None:
+            uploaded = storage.publish_content_addressed_file(
+                file_path,
+                cancellation_check=cancellation_check,
+            )
+        else:
+            uploaded = storage.publish_content_addressed_file(
+                file_path,
+                organization_id=tenant_organization_id,
+                cancellation_check=cancellation_check,
+            )
         transferred_bytes += uploaded.transferred_bytes
         if uploaded.reused:
             cas_reused_bytes += size
@@ -330,8 +353,8 @@ def publish_workspace_v2(
     missing_inherited = set(inherited) - local_paths
     if missing_inherited and not allow_partial_workspace:
         raise ValueError(
-            "Artifact Manifest v2 cannot implicitly delete inherited files: "
-            f"{sorted(missing_inherited)}"
+            "A versioned Artifact Manifest cannot implicitly delete inherited "
+            f"files: {sorted(missing_inherited)}"
         )
     resolved = dict(inherited)
     resolved.update((entry.path, entry) for entry in files)
@@ -341,8 +364,21 @@ def publish_workspace_v2(
         for relative, entry in inherited.items()
         if relative not in changed_paths
     )
-    manifest = ArtifactManifest(2, tuple(files), parents)
-    canonical = canonical_v2_bytes(manifest)
+    manifest = ArtifactManifest(
+        (
+            TENANT_ARTIFACT_MANIFEST_VERSION
+            if tenant_organization_id is not None
+            else ARTIFACT_MANIFEST_VERSION
+        ),
+        tuple(files),
+        parents,
+        organization_id=tenant_organization_id,
+    )
+    canonical = (
+        canonical_v3_bytes(manifest)
+        if tenant_organization_id is not None
+        else canonical_v2_bytes(manifest)
+    )
     digest = hashlib.sha256(canonical).hexdigest()
     manifest_key = f"{prefix}/manifest.json"
     verified_manifest = _upload_workspace_manifest(
@@ -362,6 +398,7 @@ def publish_workspace_v2(
         reused_bytes=inherited_reused_bytes + cas_reused_bytes,
         upload_seconds=round(time.monotonic() - started_at, 6),
         manifest_size_bytes=manifest_size,
+        manifest_schema_version=manifest.schema_version,
     )
 
 
@@ -369,6 +406,7 @@ def _load_manifest_overlay(
     manifest_key: str,
     expected_checksum_sha256: str,
     *,
+    expected_organization_id: str | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> tuple[ArtifactManifest, dict[str, ManifestFile], int]:
     manifest_bytes_total = 0
@@ -404,6 +442,13 @@ def _load_manifest_overlay(
             raise OSError(f"Workspace manifest checksum mismatch: {digest}/{checksum}")
         manifest_bytes_total += len(content)
         manifest = parse_artifact_manifest(content, manifest_key=key)
+        if (
+            manifest.organization_id is not None
+            and manifest.organization_id != expected_organization_id
+        ):
+            raise ValueError(
+                "Artifact manifest organization does not match the request tenant"
+            )
         active.add(identity)
         inherited: dict[str, ManifestFile] = {}
         try:
@@ -433,6 +478,8 @@ def _load_manifest_overlay(
 def resolve_workspace_files(
     manifest_key: str,
     expected_checksum_sha256: str,
+    *,
+    expected_organization_id: str | None = None,
 ) -> dict[str, ManifestFile]:
     """Resolve an immutable workspace overlay without materializing its blobs.
 
@@ -445,6 +492,7 @@ def resolve_workspace_files(
     _manifest, resolved, _manifest_bytes = _load_manifest_overlay(
         manifest_key,
         expected_checksum_sha256,
+        expected_organization_id=expected_organization_id,
     )
     return dict(resolved)
 
@@ -456,6 +504,7 @@ def restore_workspace_measured(
     *,
     cancellation_check: Callable[[], None] | None = None,
     selection: WorkspaceSelection | None = None,
+    expected_organization_id: str | None = None,
 ) -> RestoredWorkspace:
     started_at = time.monotonic()
     destination_root = Path(destination).resolve()
@@ -463,6 +512,7 @@ def restore_workspace_measured(
     manifest, resolved_files, manifest_bytes_total = _load_manifest_overlay(
         manifest_key,
         expected_checksum_sha256,
+        expected_organization_id=expected_organization_id,
         cancellation_check=cancellation_check,
     )
     selected_files = [
@@ -516,6 +566,7 @@ def restore_workspace(
     *,
     cancellation_check: Callable[[], None] | None = None,
     selection: WorkspaceSelection | None = None,
+    expected_organization_id: str | None = None,
 ) -> int:
     """Restore a v1 workspace and preserve the legacy file-count return value."""
 
@@ -525,4 +576,5 @@ def restore_workspace(
         expected_checksum_sha256,
         cancellation_check=cancellation_check,
         selection=selection,
+        expected_organization_id=expected_organization_id,
     ).file_count

@@ -9,17 +9,31 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any, Final
 
+from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
+
 
 LEGACY_MANIFEST_VERSION: Final = 1
 ARTIFACT_MANIFEST_VERSION: Final = 2
+TENANT_ARTIFACT_MANIFEST_VERSION: Final = 3
 SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 ROLE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9._-]{0,63}$")
 
 
-def content_addressed_blob_key(checksum_sha256: str) -> str:
-    """Return the only valid v2 object key for a SHA-256 blob."""
+def content_addressed_blob_key(
+    checksum_sha256: str,
+    *,
+    organization_id: str | None = None,
+) -> str:
+    """Return a legacy-global or tenant-scoped key for a SHA-256 blob."""
 
     checksum = _sha256(checksum_sha256, "checksum_sha256")
+    if organization_id is not None:
+        organization = validate_organization_id(organization_id)
+        if organization != LEGACY_ORGANIZATION_ID:
+            return (
+                f"organizations/{organization}/blobs/sha256/"
+                f"{checksum[:2]}/{checksum}"
+            )
     return f"blobs/sha256/{checksum[:2]}/{checksum}"
 
 
@@ -49,6 +63,7 @@ class ArtifactManifest:
     schema_version: int
     files: tuple[ManifestFile, ...]
     parents: tuple[ManifestParent, ...] = ()
+    organization_id: str | None = None
 
 
 def _object(value: object, path: str) -> Mapping[str, Any]:
@@ -130,12 +145,19 @@ def _legacy_manifest(payload: Mapping[str, Any], manifest_key: str) -> ArtifactM
     return ArtifactManifest(schema_version=LEGACY_MANIFEST_VERSION, files=tuple(files))
 
 
-def _v2_blob(value: object, path: str) -> ManifestBlob:
+def _versioned_blob(
+    value: object,
+    path: str,
+    organization_id: str | None,
+) -> ManifestBlob:
     blob = _object(value, path)
     _exact_keys(blob, {"key", "size", "sha256"}, path)
     checksum = _sha256(blob.get("sha256"), f"{path}.sha256")
     key = _safe_object_key(blob.get("key"), f"{path}.key")
-    expected_key = content_addressed_blob_key(checksum)
+    expected_key = content_addressed_blob_key(
+        checksum,
+        organization_id=organization_id,
+    )
     if key != expected_key:
         raise ValueError(f"{path}.key is not content-addressed by its SHA-256")
     return ManifestBlob(
@@ -145,8 +167,16 @@ def _v2_blob(value: object, path: str) -> ManifestBlob:
     )
 
 
-def _v2_manifest(payload: Mapping[str, Any]) -> ArtifactManifest:
-    _exact_keys(payload, {"schema_version", "files", "parents"}, "manifest")
+def _versioned_manifest(
+    payload: Mapping[str, Any],
+    *,
+    schema_version: int,
+    organization_id: str | None,
+) -> ArtifactManifest:
+    expected_fields = {"schema_version", "files", "parents"}
+    if schema_version == TENANT_ARTIFACT_MANIFEST_VERSION:
+        expected_fields.add("organization_id")
+    _exact_keys(payload, expected_fields, "manifest")
     raw_files = payload.get("files")
     raw_parents = payload.get("parents")
     if not isinstance(raw_files, list):
@@ -171,7 +201,11 @@ def _v2_manifest(payload: Mapping[str, Any]) -> ArtifactManifest:
             ManifestFile(
                 path=file_path,
                 role=role,
-                blob=_v2_blob(item.get("blob"), f"{path}.blob"),
+                blob=_versioned_blob(
+                    item.get("blob"),
+                    f"{path}.blob",
+                    organization_id,
+                ),
             )
         )
 
@@ -201,14 +235,15 @@ def _v2_manifest(payload: Mapping[str, Any]) -> ArtifactManifest:
             )
         )
     return ArtifactManifest(
-        schema_version=ARTIFACT_MANIFEST_VERSION,
+        schema_version=schema_version,
         files=tuple(files),
         parents=tuple(parents),
+        organization_id=organization_id,
     )
 
 
 def parse_artifact_manifest(content: bytes, *, manifest_key: str) -> ArtifactManifest:
-    """Parse and normalize either the deployed v1 format or strict v2."""
+    """Parse and normalize the deployed v1, global v2, or tenant v3 format."""
 
     try:
         payload = json.loads(content)
@@ -219,7 +254,25 @@ def parse_artifact_manifest(content: bytes, *, manifest_key: str) -> ArtifactMan
     if version == LEGACY_MANIFEST_VERSION:
         return _legacy_manifest(root, manifest_key)
     if version == ARTIFACT_MANIFEST_VERSION:
-        return _v2_manifest(root)
+        return _versioned_manifest(
+            root,
+            schema_version=ARTIFACT_MANIFEST_VERSION,
+            organization_id=None,
+        )
+    if version == TENANT_ARTIFACT_MANIFEST_VERSION:
+        organization = root.get("organization_id")
+        if not isinstance(organization, str):
+            raise ValueError("manifest.organization_id is invalid")
+        organization = validate_organization_id(organization)
+        if organization == LEGACY_ORGANIZATION_ID:
+            raise ValueError(
+                "Artifact Manifest v3 requires a non-legacy organization"
+            )
+        return _versioned_manifest(
+            root,
+            schema_version=TENANT_ARTIFACT_MANIFEST_VERSION,
+            organization_id=organization,
+        )
     raise ValueError(f"Unsupported workspace manifest schema: {version!r}")
 
 
@@ -228,6 +281,8 @@ def canonical_v2_bytes(manifest: ArtifactManifest) -> bytes:
 
     if manifest.schema_version != ARTIFACT_MANIFEST_VERSION:
         raise ValueError("Only Artifact Manifest v2 can be serialized by this writer")
+    if manifest.organization_id is not None:
+        raise ValueError("Artifact Manifest v2 cannot declare organization_id")
     ordered = ArtifactManifest(
         schema_version=ARTIFACT_MANIFEST_VERSION,
         files=tuple(sorted(manifest.files, key=lambda item: item.path)),
@@ -259,6 +314,52 @@ def canonical_v2_bytes(manifest: ArtifactManifest) -> bytes:
     canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     if parse_artifact_manifest(canonical, manifest_key="v2/manifest.json") != ordered:
         raise ValueError("Artifact Manifest v2 is not canonicalizable")
+    return canonical
+
+
+def canonical_v3_bytes(manifest: ArtifactManifest) -> bytes:
+    """Serialize a tenant-scoped v3 manifest deterministically."""
+
+    if manifest.schema_version != TENANT_ARTIFACT_MANIFEST_VERSION:
+        raise ValueError("Only Artifact Manifest v3 can be serialized by this writer")
+    if manifest.organization_id is None:
+        raise ValueError("Artifact Manifest v3 requires organization_id")
+    organization = validate_organization_id(manifest.organization_id)
+    if organization == LEGACY_ORGANIZATION_ID:
+        raise ValueError("Artifact Manifest v3 requires a non-legacy organization")
+    ordered = ArtifactManifest(
+        schema_version=TENANT_ARTIFACT_MANIFEST_VERSION,
+        files=tuple(sorted(manifest.files, key=lambda item: item.path)),
+        parents=tuple(sorted(manifest.parents, key=lambda item: item.artifact_id)),
+        organization_id=organization,
+    )
+    payload = {
+        "schema_version": TENANT_ARTIFACT_MANIFEST_VERSION,
+        "organization_id": organization,
+        "files": [
+            {
+                "path": item.path,
+                "role": item.role,
+                "blob": {
+                    "key": item.blob.key,
+                    "size": item.blob.size_bytes,
+                    "sha256": item.blob.checksum_sha256,
+                },
+            }
+            for item in ordered.files
+        ],
+        "parents": [
+            {
+                "artifact_id": parent.artifact_id,
+                "manifest_key": parent.manifest_key,
+                "checksum_sha256": parent.checksum_sha256,
+            }
+            for parent in ordered.parents
+        ],
+    }
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    if parse_artifact_manifest(canonical, manifest_key="v3/manifest.json") != ordered:
+        raise ValueError("Artifact Manifest v3 is not canonicalizable")
     return canonical
 
 

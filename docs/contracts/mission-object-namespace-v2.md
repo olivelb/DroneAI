@@ -38,9 +38,9 @@ from the same root, run and stage.
 ## Compatibility boundary
 
 This contract preserves v1 legacy mission roots and Artifact Manifest v1/v2
-reads. It does not change the current global content-addressed blob layout;
-tenant-scoped CAS is a separate migration so old manifests remain readable
-during rollout.
+reads. New organization-owned CAS writes are now isolated by
+[`Tenant content-addressed storage v3`](tenant-cas-v3.md); old global manifests
+remain readable during rollout.
 
 ## Verification
 

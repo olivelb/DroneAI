@@ -232,13 +232,21 @@ def test_v2_workspace_publication_preserves_exact_parent_and_roles(
     assert captured["role_overrides"] == {"model.ply": "gaussian-model"}
     assert captured["parents"][0].artifact_id == "artifact-1"
     assert captured["parents"][0].manifest_key == "upstream/manifest.json"
+    assert captured["organization_id"] == "acme-survey"
 
 
 def _mock_workspace_transfer(monkeypatch, calls):
-    def restore(manifest_key, destination, checksum, cancellation_check):
+    def restore(
+        manifest_key,
+        destination,
+        checksum,
+        cancellation_check,
+        expected_organization_id,
+    ):
         calls.append("restore")
         assert manifest_key == "upstream/manifest.json"
         assert checksum == "b" * 64
+        assert expected_organization_id == "acme-survey"
         cancellation_check()
         Path(destination, ".droneai").mkdir(parents=True, exist_ok=True)
         return RestoredWorkspace(

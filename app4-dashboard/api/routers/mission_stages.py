@@ -72,6 +72,9 @@ def _stage_parameters(
     stage: StageId,
     request: StageRunCreate,
     mission_parameters: dict[str, Any] | None = None,
+    *,
+    organization_id: str | None = None,
+    allow_legacy_gcp_bundle: bool = False,
 ) -> dict[str, Any]:
     parameters = {
         "dag_version": STAGE_DAG_VERSION,
@@ -87,7 +90,11 @@ def _stage_parameters(
                 detail="A GCP bundle is only valid for the reconstruction stage",
             )
         try:
-            validate_gcp_bundle(bundle)
+            validate_gcp_bundle(
+                bundle,
+                expected_organization_id=organization_id,
+                allow_legacy_global=allow_legacy_gcp_bundle,
+            )
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -295,6 +302,8 @@ def create_stage_run(
                         stage,
                         request,
                         cast(dict[str, Any], mission.params or {}),
+                        organization_id=str(mission.organization_id),
+                        allow_legacy_gcp_bundle=True,
                     )
                     or set(cast(list[str], existing.upstream_artifact_ids or []))
                     != set(request.upstream_artifact_ids.values())
@@ -343,6 +352,7 @@ def create_stage_run(
                 stage,
                 request,
                 cast(dict[str, Any], mission.params or {}),
+                organization_id=str(mission.organization_id),
             )
             resource_class = resource_class_for_stage(stage, parameters)
             run = MissionStageRun(

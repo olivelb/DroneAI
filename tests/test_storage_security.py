@@ -205,6 +205,34 @@ def test_content_addressed_publish_uploads_once_then_reuses(tmp_path, monkeypatc
     assert client.put_calls[0]["IfNoneMatch"] == "*"
 
 
+def test_content_addressed_publish_isolated_by_organization(tmp_path, monkeypatch):
+    artifact = tmp_path / "model.ply"
+    artifact.write_bytes(b"same-immutable-model")
+    client = _CasClient()
+    monkeypatch.setattr(storage, "_get_client", lambda: client)
+
+    acme = storage.publish_content_addressed_file(
+        artifact,
+        organization_id="acme",
+    )
+    other = storage.publish_content_addressed_file(
+        artifact,
+        organization_id="other",
+    )
+    acme_retry = storage.publish_content_addressed_file(
+        artifact,
+        organization_id="acme",
+    )
+
+    assert acme.key.startswith("organizations/acme/blobs/sha256/")
+    assert other.key.startswith("organizations/other/blobs/sha256/")
+    assert acme.key != other.key
+    assert acme.reused is False
+    assert other.reused is False
+    assert acme_retry.reused is True
+    assert len(client.put_calls) == 2
+
+
 def test_content_addressed_publish_rejects_conflicting_existing_object(
     tmp_path,
     monkeypatch,

@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from shared.artifact_manifest import content_addressed_blob_key
+from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
 
 
 @dataclass(frozen=True)
@@ -112,29 +113,67 @@ def build_gcp_bundle_files(
     )
 
 
-def bundle_blob(data: bytes) -> dict[str, Any]:
+def bundle_blob(
+    data: bytes,
+    organization_id: str | None = None,
+) -> dict[str, Any]:
     checksum = hashlib.sha256(data).hexdigest()
     return {
-        "key": content_addressed_blob_key(checksum),
+        "key": content_addressed_blob_key(
+            checksum,
+            organization_id=organization_id,
+        ),
         "size": len(data),
         "sha256": checksum,
     }
 
 
-def validate_gcp_bundle(payload: object) -> dict[str, dict[str, Any]]:
-    """Fail closed on a stage-supplied immutable GCP bundle descriptor."""
-
-    if not isinstance(payload, dict) or set(payload) != {
+def _bundle_organization(payload: dict[str, Any]) -> tuple[int, str | None]:
+    schema_version = payload.get("schema_version")
+    expected_fields = {
         "schema_version",
         "set_id",
         "source_sha256",
         "gcp_list",
         "accuracy_csv",
         "quality",
-    }:
-        raise ValueError("GCP bundle fields are invalid")
-    if payload.get("schema_version") != 1:
+    }
+    bundle_organization: str | None = None
+    if schema_version == 2:
+        expected_fields.add("organization_id")
+        raw_organization = payload.get("organization_id")
+        if not isinstance(raw_organization, str):
+            raise ValueError("GCP bundle organization is invalid")
+        bundle_organization = validate_organization_id(raw_organization)
+        if bundle_organization == LEGACY_ORGANIZATION_ID:
+            raise ValueError("GCP bundle v2 requires a non-legacy organization")
+    elif schema_version != 1:
         raise ValueError("Unsupported GCP bundle schema version")
+    if set(payload) != expected_fields:
+        raise ValueError("GCP bundle fields are invalid")
+    return schema_version, bundle_organization
+
+
+def _validate_bundle_tenant(
+    schema_version: int,
+    bundle_organization: str | None,
+    expected_organization_id: str | None,
+    *,
+    allow_legacy_global: bool,
+) -> None:
+    if expected_organization_id is None:
+        return
+    expected_organization = validate_organization_id(expected_organization_id)
+    if expected_organization == LEGACY_ORGANIZATION_ID:
+        if schema_version != 1:
+            raise ValueError("Legacy mission requires GCP bundle v1")
+    elif bundle_organization != expected_organization and not (
+        allow_legacy_global and schema_version == 1
+    ):
+        raise ValueError("GCP bundle organization does not match mission")
+
+
+def _validate_bundle_identity(payload: dict[str, Any]) -> None:
     try:
         UUID(str(payload.get("set_id")))
     except (TypeError, ValueError, AttributeError) as error:
@@ -144,6 +183,9 @@ def validate_gcp_bundle(payload: object) -> dict[str, dict[str, Any]]:
         r"[0-9a-f]{64}", source_checksum
     ) is None:
         raise ValueError("GCP bundle source checksum is invalid")
+
+
+def _validate_bundle_quality(payload: dict[str, Any]) -> None:
     quality = payload.get("quality")
     if not isinstance(quality, dict) or set(quality) != {
         "adjustment_points",
@@ -171,21 +213,57 @@ def validate_gcp_bundle(payload: object) -> dict[str, dict[str, Any]]:
     )
     if quality.get("verification") != expected_verification:
         raise ValueError("GCP bundle verification status is inconsistent")
-    result: dict[str, dict[str, Any]] = {}
-    for name in ("gcp_list", "accuracy_csv"):
-        descriptor = payload.get(name)
-        if not isinstance(descriptor, dict) or set(descriptor) != {"key", "size", "sha256"}:
-            raise ValueError(f"GCP bundle {name} descriptor is invalid")
-        checksum = descriptor.get("sha256")
-        size = descriptor.get("size")
-        key = descriptor.get("key")
-        if not isinstance(checksum, str) or re.fullmatch(
-            r"[0-9a-f]{64}", checksum
-        ) is None:
-            raise ValueError(f"GCP bundle {name} checksum is invalid")
-        if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
-            raise ValueError(f"GCP bundle {name} size is invalid")
-        if key != content_addressed_blob_key(checksum):
-            raise ValueError(f"GCP bundle {name} key is not content-addressed")
-        result[name] = descriptor
-    return result
+
+
+def _validated_bundle_descriptor(
+    payload: dict[str, Any],
+    name: str,
+    bundle_organization: str | None,
+) -> dict[str, Any]:
+    descriptor = payload.get(name)
+    if not isinstance(descriptor, dict) or set(descriptor) != {
+        "key",
+        "size",
+        "sha256",
+    }:
+        raise ValueError(f"GCP bundle {name} descriptor is invalid")
+    checksum = descriptor.get("sha256")
+    size = descriptor.get("size")
+    key = descriptor.get("key")
+    if not isinstance(checksum, str) or re.fullmatch(
+        r"[0-9a-f]{64}", checksum
+    ) is None:
+        raise ValueError(f"GCP bundle {name} checksum is invalid")
+    if not isinstance(size, int) or isinstance(size, bool) or size <= 0:
+        raise ValueError(f"GCP bundle {name} size is invalid")
+    if key != content_addressed_blob_key(
+        checksum,
+        organization_id=bundle_organization,
+    ):
+        raise ValueError(f"GCP bundle {name} key is not content-addressed")
+    return descriptor
+
+
+def validate_gcp_bundle(
+    payload: object,
+    *,
+    expected_organization_id: str | None = None,
+    allow_legacy_global: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Fail closed on a stage-supplied immutable GCP bundle descriptor."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("GCP bundle fields are invalid")
+    schema_version, bundle_organization = _bundle_organization(payload)
+    _validate_bundle_tenant(
+        schema_version,
+        bundle_organization,
+        expected_organization_id,
+        allow_legacy_global=allow_legacy_global,
+    )
+    _validate_bundle_identity(payload)
+    _validate_bundle_quality(payload)
+    return {
+        name: _validated_bundle_descriptor(payload, name, bundle_organization)
+        for name in ("gcp_list", "accuracy_csv")
+    }

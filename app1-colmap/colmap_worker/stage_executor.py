@@ -61,6 +61,7 @@ def _restore_input_workspace(
         workspace,
         source.checksum_sha256,
         cancellation_check=control.raise_if_cancelled,
+        expected_organization_id=context.organization_id,
     )
     return restored
 
@@ -102,6 +103,7 @@ def _publish_stage_workspace(
         default_role=f"{stage}-workspace",
         role_overrides=role_overrides,
         parents=tuple(parents),
+        organization_id=context.organization_id,
         cancellation_check=control.raise_if_cancelled,
     )
 

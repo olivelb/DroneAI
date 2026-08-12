@@ -101,6 +101,7 @@ def run_detection_shard_subtask(
                 run_id=context.run_id,
                 plan=plan,
                 result=result,
+                organization_id=context.organization_id,
                 cancellation_check=control.raise_if_cancelled,
             )
     finally:

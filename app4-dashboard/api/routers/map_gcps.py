@@ -453,7 +453,10 @@ def prepare_ground_control_bundle(
     mission = _authorized_mission(session, vol_id, principal, owner_subject, "gcp_bundle_create")
     gcp_set = _require_gcp_set(session, mission.id, set_id)
     try:
-        bundle = materialize_gcp_bundle(gcp_set)
+        bundle = materialize_gcp_bundle(
+            gcp_set,
+            mission.organization_id,
+        )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     except OSError as error:

@@ -27,6 +27,7 @@ dataset qualification.
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
+| Immutable tenant data | tenant workspaces, GCP bundles and detection shards publish under organization-specific CAS identities while historical readers remain available | v3 canonicalization, identical-byte isolation and cross-tenant denial tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
 The qualified local baseline after these changes is 917 non-GPU/non-integration
@@ -51,14 +52,15 @@ organization, mission and workspace prefix, moves it to a non-owner
 and verifies cross-tenant denial with the real PostgreSQL role. The second
 phase makes `Mission.workspace_prefix` non-nullable and authoritative in every
 mission-object producer and consumer, including event propagation, recovery
-and exact-prefix deletion. The remaining ordered phases are:
+and exact-prefix deletion. The third phase isolates new tenant workspaces, GCP
+bundles and detection shards in organization-specific CAS while retaining
+historical v1/v2 reads. The remaining ordered phases are:
 
-1. introduce tenant CAS while retaining v1/v2 reads;
-2. reject fused compute in protected multi-organization deployments;
-3. complete organization binding for status/control events and deterministic
+1. reject fused compute in protected multi-organization deployments;
+2. complete organization binding for status/control events and deterministic
    identity before
    relaxing the globally unique mission identifier;
-4. account physical fan-out resource units and run the detection finalizer on
+3. account physical fan-out resource units and run the detection finalizer on
    CPU.
 
 ### P1 — SaaS control plane

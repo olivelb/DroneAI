@@ -70,6 +70,27 @@ def test_gcp_bundle_is_scoped_to_reconstruction_stage_parameters():
     assert error.value.status_code == 422
 
 
+def test_tenant_stage_parameters_reject_new_global_gcp_bundle_but_allow_replay():
+    request = stage_schemas.StageRunCreate(parameters={"gcp_bundle": _gcp_bundle()})
+
+    with pytest.raises(HTTPException) as error:
+        stage_routes._stage_parameters(
+            "reconstruction",
+            request,
+            organization_id="acme",
+        )
+    assert error.value.status_code == 422
+    assert "organization does not match" in error.value.detail
+
+    parameters = stage_routes._stage_parameters(
+        "reconstruction",
+        request,
+        organization_id="acme",
+        allow_legacy_gcp_bundle=True,
+    )
+    assert parameters["gcp_bundle"]["schema_version"] == 1
+
+
 def _reconstruction_artifact_request(
     vol_id: str,
     run_id: str,

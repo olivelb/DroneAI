@@ -58,7 +58,7 @@ def test_raster_product_resolves_content_addressed_ortho(monkeypatch):
     monkeypatch.setattr(
         map_support,
         "_workspace_object_keys",
-        lambda _key, _checksum: {
+        lambda _key, _checksum, _organization: {
             "orthomosaic.tif": "blobs/sha256/aa/ortho",
             "orthomosaic.tif.cog.json": "blobs/sha256/bb/sidecar",
         },
@@ -82,7 +82,7 @@ def test_raster_product_resolves_height_layer_without_sidecar(monkeypatch):
     monkeypatch.setattr(
         map_support,
         "_workspace_object_keys",
-        lambda _key, _checksum: {
+        lambda _key, _checksum, _organization: {
             "orthomosaic.height.tif": "blobs/sha256/cc/height",
         },
     )
@@ -129,7 +129,9 @@ def test_raster_product_fails_closed_for_incomplete_versioned_artifact(
     monkeypatch.setattr(
         map_support,
         "_workspace_object_keys",
-        lambda _key, _checksum: {"unrelated.txt": "blobs/sha256/dd/other"},
+        lambda _key, _checksum, _organization: {
+            "unrelated.txt": "blobs/sha256/dd/other"
+        },
     )
 
     with pytest.raises(HTTPException) as error:
