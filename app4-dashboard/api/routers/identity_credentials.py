@@ -7,6 +7,7 @@ from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from shared.database import ApiCredential, OrganizationMember, get_session
 from shared.identity import (
@@ -36,6 +37,24 @@ class CredentialCreateRequest(BaseModel):
 
 class CredentialRotateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=160)
+
+
+def _locked_owned_credential(
+    session: Session,
+    principal: security.Principal,
+    credential_id: str,
+) -> tuple[ApiCredential, OrganizationMember]:
+    credential = find_credential(
+        session,
+        principal,
+        credential_id,
+        for_update=True,
+    )
+    member = session.get(OrganizationMember, credential.member_id)
+    if member is None:
+        raise HTTPException(status_code=404, detail="Member not found")
+    authorize_member_access(principal, member)
+    return credential, member
 
 
 @router.get("")
@@ -116,16 +135,9 @@ def revoke_credential(
     reason: str | None = Query(default=None, max_length=500),
 ) -> dict[str, object]:
     with get_session() as session:
-        credential = find_credential(
-            session,
-            principal,
-            credential_id,
-            for_update=True,
+        credential, member = _locked_owned_credential(
+            session, principal, credential_id
         )
-        member = session.get(OrganizationMember, credential.member_id)
-        if member is None:
-            raise HTTPException(status_code=404, detail="Member not found")
-        authorize_member_access(principal, member)
         if credential.status == "active":
             before = credential_state(credential)
             mark_credential_revoked(
@@ -158,16 +170,9 @@ def rotate_credential(
     ],
 ) -> dict[str, object]:
     with get_session() as session:
-        credential = find_credential(
-            session,
-            principal,
-            credential_id,
-            for_update=True,
+        credential, member = _locked_owned_credential(
+            session, principal, credential_id
         )
-        member = session.get(OrganizationMember, credential.member_id)
-        if member is None:
-            raise HTTPException(status_code=404, detail="Member not found")
-        authorize_member_access(principal, member)
         if credential.status != "active":
             raise HTTPException(status_code=409, detail="Credential is not active")
         if member.status != "active":

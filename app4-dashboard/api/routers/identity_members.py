@@ -6,6 +6,7 @@ from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from shared.database import (
     IdentityAuditEvent,
@@ -49,6 +50,36 @@ class MemberUpdateRequest(BaseModel):
     status: Literal["active", "suspended"] | None = None
 
 
+def _create_member(
+    session: Session,
+    *,
+    organization_id: str,
+    subject: str,
+    role: str,
+    actor_subject: str,
+) -> OrganizationMember:
+    member = OrganizationMember(
+        organization_id=organization_id,
+        subject=subject,
+        role=role,
+        status="active",
+        created_by=actor_subject,
+        updated_by=actor_subject,
+    )
+    session.add(member)
+    session.flush()
+    append_audit_event(
+        session,
+        organization_id=organization_id,
+        actor_subject=actor_subject,
+        action="member_created",
+        target_type="member",
+        target_id=cast(str, member.id),
+        after_state=member_state(member),
+    )
+    return member
+
+
 @router.post("/bootstrap", status_code=201)
 def bootstrap_organization(
     payload: BootstrapRequest,
@@ -76,24 +107,12 @@ def bootstrap_organization(
         )
         member_created = member is None
         if member is None:
-            member = OrganizationMember(
+            member = _create_member(
+                session,
                 organization_id=principal.organization_id,
                 subject=principal.subject,
                 role="admin",
-                status="active",
-                created_by=principal.subject,
-                updated_by=principal.subject,
-            )
-            session.add(member)
-            session.flush()
-            append_audit_event(
-                session,
-                organization_id=principal.organization_id,
                 actor_subject=principal.subject,
-                action="member_created",
-                target_type="member",
-                target_id=cast(str, member.id),
-                after_state=member_state(member),
             )
         if organization_created or member_created:
             append_audit_event(
@@ -192,24 +211,12 @@ def create_member(
             raise HTTPException(status_code=409, detail="Organization is suspended")
         if find_member(session, principal.organization_id, payload.subject) is not None:
             raise HTTPException(status_code=409, detail="Member already exists")
-        member = OrganizationMember(
+        member = _create_member(
+            session,
             organization_id=principal.organization_id,
             subject=payload.subject,
             role=payload.role,
-            status="active",
-            created_by=principal.subject,
-            updated_by=principal.subject,
-        )
-        session.add(member)
-        session.flush()
-        append_audit_event(
-            session,
-            organization_id=principal.organization_id,
             actor_subject=principal.subject,
-            action="member_created",
-            target_type="member",
-            target_id=cast(str, member.id),
-            after_state=member_state(member),
         )
         result = member_response(member)
     return result
