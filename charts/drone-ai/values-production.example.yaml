@@ -42,6 +42,10 @@ dashboardApi:
   environment: production
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
+  controlWorker:
+    replicaCount: 2
+    leaderElection:
+      enabled: true
   service:
     type: ClusterIP
   cors:

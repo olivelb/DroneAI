@@ -47,6 +47,7 @@ APP3_TYPED_PATHS := \
 	app3-processing/main.py
 API_TYPED_PATHS := \
 	app4-dashboard/api/__init__.py \
+	app4-dashboard/api/control_leadership.py \
 	app4-dashboard/api/control_runtime.py \
 	app4-dashboard/api/control_worker.py \
 	app4-dashboard/api/health.py \

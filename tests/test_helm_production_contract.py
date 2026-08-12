@@ -201,7 +201,19 @@ def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() ->
     assert "path: /live" in api
     assert "dashboard-control-worker-sa" in worker
     assert 'command: ["python", "-m", "app4-dashboard.api.control_worker"]' in worker
-    assert "type: Recreate" in worker
+    assert "type: RollingUpdate" in worker
+    assert "maxUnavailable: 0" in worker
+    assert "kind: PodDisruptionBudget" in worker
+    assert "DRONEAI_CONTROL_LEADER_ELECTION" in worker
+    assert "DRONEAI_CONTROL_LEADER_POLL_SECONDS" in worker
+    assert "controlWorker.replicaCount must be at least 2" in api
+    assert "controlWorker.leaderElection.enabled must be true" in api
+    for protected_values in (
+        _read(CHART / "values-production.example.yaml"),
+        _read(CHART / "values-ovh-preprod.example.yaml"),
+    ):
+        assert "controlWorker:\n    replicaCount: 2" in protected_values
+        assert "leaderElection:\n      enabled: true" in protected_values
     assert "dashboard-control-worker:" in compose
     assert 'DRONEAI_EMBED_CONTROL_LOOPS: "false"' in compose
     assert "http://localhost:8000/ready" in compose
