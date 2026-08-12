@@ -1,0 +1,244 @@
+{
+  "schema_version": 1,
+  "method": "shared projected grid; bilinear continuous resampling",
+  "dem": {
+    "candidate": "/bench/droneai-hq-20260812/outputs/orthomosaic.height.tif",
+    "reference": "/bench/dem_reference_32636.tif",
+    "crs": "EPSG:32636",
+    "overlap_bounds": [
+      413977.9434520024,
+      6634234.0590714,
+      415038.76345200243,
+      6635200.4390714
+    ],
+    "comparison_grid": {
+      "width": 2048,
+      "height": 1866
+    },
+    "valid_sample_ratio": 0.9570477353798231,
+    "candidate_height_m": {
+      "count": 3657423,
+      "mean": 67.30276449766859,
+      "median": 67.92394256591797,
+      "standard_deviation": 5.978671424067932,
+      "rmse": 67.56779277899794,
+      "p05": 57.57436752319336,
+      "p95": 76.00852890014649,
+      "minimum": 46.66691589355469,
+      "maximum": 86.3768310546875
+    },
+    "reference_height_m": {
+      "count": 3657423,
+      "mean": 66.62832142433406,
+      "median": 67.65779876708984,
+      "standard_deviation": 6.0247763992558685,
+      "rmse": 66.90015804529466,
+      "p05": 56.10026588439941,
+      "p95": 74.47790451049805,
+      "minimum": 49.73686218261719,
+      "maximum": 79.88272094726562
+    },
+    "signed_difference_candidate_minus_reference_m": {
+      "count": 3657423,
+      "mean": 0.6744430733345395,
+      "median": 0.36861419677734375,
+      "standard_deviation": 1.6049744648358333,
+      "rmse": 1.7409240339383016,
+      "p05": -0.9910964965820312,
+      "p95": 3.3468780517578125,
+      "minimum": -12.184761047363281,
+      "maximum": 21.229236602783203
+    },
+    "absolute_difference_m": {
+      "count": 3657423,
+      "mean": 1.0984626339090993,
+      "median": 0.7215118408203125,
+      "standard_deviation": 1.3506281256694952,
+      "rmse": 1.7409240339383016,
+      "p05": 0.066497802734375,
+      "p95": 3.4042041778564442,
+      "minimum": 0.0,
+      "maximum": 21.229236602783203
+    },
+    "vertical_bias_m": 0.6744430733345395,
+    "bias_corrected_rmse_m": 1.6049744648358333,
+    "height_correlation": 0.964272542492817,
+    "difference_preview_scale_m": [
+      -5.252304992675782,
+      5.252304992675782
+    ]
+  },
+  "orthomosaic": {
+    "candidate": "/bench/droneai-hq-20260812/outputs/orthomosaic.tif",
+    "reference": "/bench/orthomosaic_reference_32636.tif",
+    "crs": "EPSG:32636",
+    "overlap_bounds": [
+      413977.9434520024,
+      6634234.0590714,
+      415038.76345200243,
+      6635200.4390714
+    ],
+    "comparison_grid": {
+      "width": 2048,
+      "height": 1866
+    },
+    "common_valid_sample_ratio": 0.9596741442256163,
+    "candidate_coverage_of_reference": 1.0,
+    "rgb_signed_bias_candidate_minus_reference": {
+      "red": 51.31395852804076,
+      "green": 51.37529617269223,
+      "blue": 66.30118393734759
+    },
+    "rgb_mae": 57.83588629199169,
+    "rgb_rmse": 66.148056806022,
+    "psnr_db": 11.720461794918444,
+    "grayscale_correlation": 0.1290014345125365,
+    "coarse_registration": {
+      "grayscale": {
+        "candidate_relative_to_reference_px": [
+          -0.0017885461259492675,
+          -0.27526665974020587
+        ],
+        "candidate_relative_to_reference_m": [
+          -0.000926428467446052,
+          -0.14255744621635014
+        ],
+        "peak_to_sidelobe_ratio": 99.11705017089844
+      },
+      "gradient_magnitude": {
+        "candidate_relative_to_reference_px": [
+          0.18338295393550913,
+          -0.25306878600047633
+        ],
+        "candidate_relative_to_reference_m": [
+          0.0949884302704434,
+          -0.13106142198023152
+        ],
+        "peak_to_sidelobe_ratio": 97.11453247070312
+      }
+    },
+    "preview_panels": [
+      "reference",
+      "candidate",
+      "absolute RGB difference x3"
+    ]
+  },
+  "checkpoints": {
+    "source_crs": "EPSG:4326",
+    "raster_crs": "EPSG:32636",
+    "checkpoint_count": 5,
+    "candidate_minus_survey_m": {
+      "count": 5,
+      "mean": 0.44630759181638807,
+      "median": 0.5167208808087906,
+      "standard_deviation": 0.7934234287010334,
+      "rmse": 0.9103357642785698,
+      "p05": -0.46795740077406267,
+      "p95": 1.4722777730161765,
+      "minimum": -0.49417095891506335,
+      "maximum": 1.5964325532275367
+    },
+    "reference_minus_survey_m": {
+      "count": 5,
+      "mean": 0.06551676646699178,
+      "median": 0.09300220521635083,
+      "standard_deviation": 0.04940020188059516,
+      "rmse": 0.0820538032886587,
+      "p05": -0.010858496363931634,
+      "p95": 0.10121975376665233,
+      "minimum": -0.03016880364700114,
+      "maximum": 0.10257702361199961
+    },
+    "candidate_minus_reference_m": {
+      "count": 5,
+      "mean": 0.3807908253493963,
+      "median": 0.4237186755924398,
+      "standard_deviation": 0.8073054522169218,
+      "rmse": 0.8926050335111511,
+      "p05": -0.5632955662173316,
+      "p95": 1.4016789942373662,
+      "minimum": -0.596747982527063,
+      "maximum": 1.5006418788422735
+    },
+    "candidate_error_plane_diagnostic": {
+      "purpose": "diagnostic only; not a correction or release metric",
+      "centroid_xy": [
+        414459.5014057526,
+        6634703.50299728
+      ],
+      "intercept_at_centroid_m": 0.44630759181678387,
+      "slope_x_m_per_m": -0.0009457332216489089,
+      "slope_y_m_per_m": 0.0023022865778636057,
+      "tilt_x_degrees": -0.05418650599078852,
+      "tilt_y_degrees": 0.13191107107562128,
+      "plane_corrected_rmse_m": 0.19081239000663996
+    },
+    "points": [
+      {
+        "point_id": "1",
+        "projected_xy": [
+          414020.4918706026,
+          6635061.113551956
+        ],
+        "surveyed_z_m": 54.454,
+        "candidate_z_m": 56.05043255322754,
+        "reference_z_m": 54.549790674385264,
+        "candidate_minus_survey_m": 1.5964325532275367,
+        "reference_minus_survey_m": 0.09579067438526323,
+        "candidate_minus_reference_m": 1.5006418788422735
+      },
+      {
+        "point_id": "14",
+        "projected_xy": [
+          414163.27413980436,
+          6634498.772001322
+        ],
+        "surveyed_z_m": 63.19,
+        "candidate_z_m": 63.70672088080879,
+        "reference_z_m": 63.28300220521635,
+        "candidate_minus_survey_m": 0.5167208808087906,
+        "reference_minus_survey_m": 0.09300220521635083,
+        "candidate_minus_reference_m": 0.4237186755924398
+      },
+      {
+        "point_id": "15",
+        "projected_xy": [
+          414489.4406079697,
+          6634442.113408132
+        ],
+        "surveyed_z_m": 72.556,
+        "candidate_z_m": 72.06182904108493,
+        "reference_z_m": 72.658577023612,
+        "candidate_minus_survey_m": -0.49417095891506335,
+        "reference_minus_survey_m": 0.10257702361199961,
+        "candidate_minus_reference_m": -0.596747982527063
+      },
+      {
+        "point_id": "17",
+        "projected_xy": [
+          414778.24412492,
+          6634450.678139025
+        ],
+        "surveyed_z_m": 75.018,
+        "candidate_z_m": 74.65489683178994,
+        "reference_z_m": 75.08438273276835,
+        "candidate_minus_survey_m": -0.36310316821005983,
+        "reference_minus_survey_m": 0.06638273276834639,
+        "candidate_minus_reference_m": -0.4294859009784062
+      },
+      {
+        "point_id": "5",
+        "projected_xy": [
+          414846.05628546624,
+          6635064.837885964
+        ],
+        "surveyed_z_m": 67.419,
+        "candidate_z_m": 68.39465865217073,
+        "reference_z_m": 67.388831196353,
+        "candidate_minus_survey_m": 0.9756586521707362,
+        "reference_minus_survey_m": -0.03016880364700114,
+        "candidate_minus_reference_m": 1.0058274558177374
+      }
+    ]
+  }
+}
