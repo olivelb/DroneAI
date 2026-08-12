@@ -574,6 +574,14 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
 }
 
 void test_adaptive_capacity_growth() {
+    check(
+        dronegs::topology_refinement_end_iteration(
+            30'000U, 1'000U, false) == 29'000U,
+        "legacy topology cooldown changed");
+    check(
+        dronegs::topology_refinement_end_iteration(
+            30'000U, 1'000U, true) == 14'800U,
+        "adaptive topology was not frozen after growth");
     const auto initial = dronegs::adaptive_capacity_growth_fraction(
         22'547U, 5'700'000U, 200U);
     check(

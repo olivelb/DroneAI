@@ -282,8 +282,10 @@ by source photograph.
 `--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
 blocks. It recomputes the growth fraction needed to approach `--max-cap` by
 iteration 14,800, clamps each request to 7–25%, and emits the fraction and
-capacity target in every topology-refinement event. Its default is `0`, so
-existing standalone and production recipes keep the fixed 7% schedule.
+capacity target in every topology-refinement event. It then freezes topology
+for convergence, preventing post-growth pruning from violating the GSD-backed
+density plan. Its default is `0`, so existing standalone and production
+recipes keep the fixed 7% schedule and their configured pruning window.
 
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,

@@ -175,12 +175,23 @@ struct TrainingMetrics {
     std::optional<float> final_held_out_ssim;
 };
 
+inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;
+
+inline std::uint64_t topology_refinement_end_iteration(
+    std::uint64_t iterations,
+    std::uint64_t topology_cooldown,
+    bool adaptive_growth_target) {
+    const auto configured_end = iterations - topology_cooldown;
+    return adaptive_growth_target
+        ? std::min(configured_end, adaptive_growth_last_iteration)
+        : configured_end;
+}
+
 inline float adaptive_capacity_growth_fraction(
     std::size_t current_gaussians,
     std::size_t target_gaussians,
     std::uint64_t iteration) {
     constexpr std::uint64_t refinement_interval = 200U;
-    constexpr std::uint64_t last_growth_iteration = 14'800U;
     constexpr double estimated_pruning_fraction = 0.03;
     constexpr double estimated_candidate_fraction = 0.93;
     constexpr float minimum_growth_fraction = 0.07F;
@@ -191,12 +202,13 @@ inline float adaptive_capacity_growth_fraction(
             "adaptive growth requires a non-empty Gaussian model");
     }
     if (target_gaussians <= current_gaussians ||
-        iteration > last_growth_iteration) {
+        iteration > adaptive_growth_last_iteration) {
         return 0.0F;
     }
 
     const auto remaining_windows =
-        ((last_growth_iteration - iteration) / refinement_interval) + 1U;
+        ((adaptive_growth_last_iteration - iteration) /
+         refinement_interval) + 1U;
     const double required_net_growth = std::exp(
         std::log(
             static_cast<double>(target_gaussians) /

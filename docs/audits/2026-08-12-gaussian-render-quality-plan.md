@@ -90,8 +90,12 @@ Current representative-block evidence on BIGZEN:
   200-iteration window it recomputes the compound growth needed to reach the
   planned retained population by iteration 14,800, compensates conservatively
   for pruning and candidate eligibility, and clamps the requested fraction to
-  7–25%. Existing non-resident profiles retain the fixed 7% behavior. The
-  policy, target and per-window fraction are recorded for reproducibility.
+  7–25%. Once that final growth window has run, adaptive HQ freezes the
+  topology so later pruning cannot silently invalidate the planned density;
+  the remaining iterations optimize the fixed population. Existing
+  non-resident profiles retain the fixed 7% behavior and their configured
+  pruning window. The policy, target and per-window fraction are recorded for
+  reproducibility.
 
 The next gate is a complete reference-absolute run with this policy. AbsGrad
 A/B runs start only if the reference reaches the density target without

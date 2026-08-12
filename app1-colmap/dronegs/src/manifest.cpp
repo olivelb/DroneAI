@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "dronegs/manifest.hpp"
+#include "dronegs/training.hpp"
 
 #include <chrono>
 #include <ctime>
@@ -274,7 +275,10 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"topology_cooldown_iterations\": "
            << options.topology_cooldown << ",\n"
            << "    \"topology_refine_through_iteration\": "
-           << (options.iterations - options.topology_cooldown) << ",\n"
+           << topology_refinement_end_iteration(
+                  options.iterations, options.topology_cooldown,
+                  options.adaptive_growth_target != 0U)
+           << ",\n"
            << "    \"photometric_finish_iterations\": "
            << options.photometric_finish << ",\n"
            << "    \"photometric_final_mse_percent\": "

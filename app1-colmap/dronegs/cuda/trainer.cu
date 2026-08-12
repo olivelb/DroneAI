@@ -1355,7 +1355,8 @@ TrainingMetrics train_ordered_mrnf(
         << ";topology_cooldown=" << options.topology_cooldown
         << ";photometric_finish=" << options.photometric_finish
         << ";photometric_mse=" << options.photometric_mse_percent
-        << ";adaptive_growth=" << options.adaptive_growth_target
+        << ";adaptive_growth=2:"
+        << options.adaptive_growth_target
         << ";profile_id=" << options.profile_id
         << ";optimizer=" << options.optimizer_profile
         << ";pruning=" << options.pruning_policy
@@ -1501,13 +1502,15 @@ TrainingMetrics train_ordered_mrnf(
         std::max<std::uint64_t>(
             1U, options.iterations / 20U);
     const std::uint64_t topology_refine_end =
-        options.iterations - options.topology_cooldown;
-    if (options.topology_cooldown != 0U) {
+        topology_refinement_end_iteration(
+            options.iterations, options.topology_cooldown,
+            options.adaptive_growth_target != 0U);
+    if (topology_refine_end < options.iterations) {
         std::cout
             << "{\"event\":\"topology_cooldown\",\"refine_through_iteration\":"
             << topology_refine_end
             << ",\"fixed_topology_iterations\":"
-            << options.topology_cooldown << "}\n"
+            << (options.iterations - topology_refine_end) << "}\n"
             << std::flush;
     }
     const std::uint64_t photometric_finish_start =
