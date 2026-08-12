@@ -40,6 +40,10 @@ std::vector<ImageRegion> make_training_tiles(
     std::uint32_t source_width, std::uint32_t source_height,
     std::uint32_t tile_mode);
 
+std::vector<ImageRegion> make_training_tiles(
+    const ImageRegion& source_region,
+    std::uint32_t tile_mode);
+
 std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
     const ImageRegion& region, std::uint32_t resize_factor,
     std::uint32_t max_width);

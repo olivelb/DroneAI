@@ -54,6 +54,11 @@ void write_fixture(const std::filesystem::path& root) {
     std::filesystem::create_directories(sparse);
     std::filesystem::create_directories(root / "images");
     std::ofstream(root / "images" / "frame.jpg", std::ios::binary).put('\0');
+    {
+        std::ofstream regions(root / "image_regions.tsv");
+        regions << "# dronegs-image-regions-v1\n"
+                << "frame.jpg\t16\t24\t320\t240\n";
+    }
 
     {
         std::ofstream stream(sparse / "cameras.bin", std::ios::binary);
@@ -113,10 +118,16 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(scene.images.front().name == "frame.jpg", "image name mismatch");
     check(scene.images.front().qvec[0] == 1.0, "image quaternion mismatch");
     check(scene.images.front().tvec[2] == 0.0, "image translation mismatch");
+    check(
+        scene.images.front().source_x == 16U &&
+            scene.images.front().source_y == 24U &&
+            scene.images.front().source_width == 320U &&
+            scene.images.front().source_height == 240U,
+        "native image region mismatch");
     check(scene.cameras.front().parameters.size() == 4, "camera parameter count mismatch");
     const auto original_fingerprint =
         dronegs::dataset_fingerprint(scene, root);
-    check(original_fingerprint.starts_with("fnv1a64:v2:"),
+    check(original_fingerprint.starts_with("fnv1a64:v3:"),
           "fingerprint kind mismatch");
     auto calibration_changed = scene;
     calibration_changed.cameras.front().parameters.front() += 1.0;
@@ -130,6 +141,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         dronegs::dataset_fingerprint(pose_changed, root) !=
             original_fingerprint,
         "camera poses must invalidate the dataset fingerprint");
+    auto region_changed = scene;
+    region_changed.images.front().source_x += 1U;
+    check(
+        dronegs::dataset_fingerprint(region_changed, root) !=
+            original_fingerprint,
+        "native image regions must invalidate the dataset fingerprint");
 
     auto gaussians = dronegs::initialize_fixed_topology(scene);
     check(gaussians.size() == 2, "Gaussian count mismatch");

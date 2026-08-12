@@ -30,6 +30,10 @@ This changelog covers the standalone Gaussian trainer project.
 - Refuse adaptive Normal/HQ rasterization when the post-filter Gaussian count
   cannot support the requested GSD at the profile's declared spacing; persist
   the capacity plan and density verdict through Stage Job artifacts.
+- Define partition cores/buffers in projected ground coordinates, assign
+  cameras through calibrated terrain-envelope footprint overlap, and compose
+  lossless native JPEG block crops with `tile_mode`. Dataset fingerprints v3
+  include the crop contract.
 
 ## 0.5.0-dev.47 - Production identity and spatial canary
 

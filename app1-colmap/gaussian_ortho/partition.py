@@ -9,6 +9,10 @@ from typing import Any
 import numpy as np
 
 from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
+from .camera_footprint import (
+    GeographicSceneFrame,
+    camera_assignment_for_ground_buffer,
+)
 from .scene_info import SceneInfo, build_scene_info
 
 
@@ -208,18 +212,6 @@ def compute_partition_grid(
     return cells
 
 
-def _camera_in_buffer(camera: CameraInfo, cell: CellBounds) -> bool:
-    """Temporary centre-based assignment in the correct ground frame."""
-    center = cell.project_model_points(
-        np.asarray(camera.T, dtype=np.float64)[None, :],
-        array_module=np,
-    )[0]
-    return bool(
-        cell.buffer_x_min <= center[0] <= cell.buffer_x_max
-        and cell.buffer_y_min <= center[1] <= cell.buffer_y_max
-    )
-
-
 def _filter_points_in_buffer(point_cloud: PointCloud, cell: CellBounds) -> PointCloud:
     mask = cell.buffer_mask(point_cloud.points, array_module=np)
     return PointCloud(
@@ -238,10 +230,16 @@ def partition_scene(
     *,
     model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR,
     model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET,
+    geographic_frame: GeographicSceneFrame | None = None,
+    crop_margin_pixels: int = 128,
 ) -> list[tuple[CellBounds, SceneInfo]]:
-    """Build resident training scenes from projected-ground buffers."""
+    """Build resident scenes from footprint-visible native-image crops."""
     if min_cameras < 1:
         raise ValueError("minimum partition camera count must be positive")
+    if geographic_frame is None:
+        raise ValueError(
+            "partition camera selection requires a geographic scene frame"
+        )
     cells = compute_partition_grid(
         scene,
         m,
@@ -252,11 +250,25 @@ def partition_scene(
     )
     result: list[tuple[CellBounds, SceneInfo]] = []
     for cell in cells:
-        cameras = [
-            camera
+        assignments = [
+            (camera, assignment)
             for camera in scene.train_cameras
-            if _camera_in_buffer(camera, cell)
+            if (
+                assignment := camera_assignment_for_ground_buffer(
+                    camera,
+                    geographic_frame,
+                    (
+                        cell.buffer_x_min,
+                        cell.buffer_x_max,
+                        cell.buffer_y_min,
+                        cell.buffer_y_max,
+                    ),
+                    crop_margin_pixels=crop_margin_pixels,
+                )
+            )
+            is not None
         ]
+        cameras = [camera for camera, _assignment in assignments]
         if len(cameras) < min_cameras:
             continue
         point_cloud = _filter_points_in_buffer(scene.point_cloud, cell)
@@ -271,6 +283,10 @@ def partition_scene(
                     point_cloud=point_cloud,
                     dense_path=scene.dense_path,
                     images_dir=scene.images_dir,
+                    image_crops={
+                        camera.image_name: assignment.crop
+                        for camera, assignment in assignments
+                    },
                 ),
             )
         )

@@ -65,6 +65,10 @@ struct Image {
     std::string name;
     std::array<double, 4> qvec{};
     std::array<double, 3> tvec{};
+    std::uint32_t source_x = 0U;
+    std::uint32_t source_y = 0U;
+    std::uint32_t source_width = 0U;
+    std::uint32_t source_height = 0U;
 };
 
 struct SparsePoint {

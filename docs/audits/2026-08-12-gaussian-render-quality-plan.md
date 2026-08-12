@@ -35,17 +35,20 @@ Qualification evidence:
 ## Phase 2 — Geographic HQ blocks
 
 Status: in progress. Projected-ground core/buffer cells and deterministic
-geographic core ownership are implemented and component-qualified. Camera
-footprints, native crops, resident-cap planning and streamed products remain.
+geographic core ownership, calibrated terrain-envelope camera footprints and
+native JPEG crops are implemented and component-qualified. Resident-cap
+planning and streamed products remain.
 
 1. Define the partition in projected ground coordinates, independently of the
    reconstruction's local axes. **Implemented.**
 2. Derive each camera's ground footprint from calibrated rays and an explicit
    terrain-height envelope. Assign cameras only when their footprint
    intersects a block buffer and their view is geometrically usable.
+   **Implemented.**
 3. Convert each block footprint back to source-image polygons, extract native
    crops with a configurable pixel margin, and retain crop-relative
-   intrinsics.
+   intrinsics. **Implemented with a 128 px contract margin; configuration is
+   deferred until the representative-block gate shows a need.**
 4. Train one resident core/buffer block at a time with a 12 M hard resident
    cap. Plan the number of blocks from area, requested GSD, target spacing and
    available VRAM; do not encode a universal 40 M constant.

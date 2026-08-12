@@ -31,6 +31,7 @@ from gaussian_ortho.partition import (
     partition_scene,
 )
 from gaussian_ortho.geo_writer import _geotiff_creation_options, write_geotiff
+from gaussian_ortho.camera_footprint import geographic_scene_frame
 
 if cp is not None:
     from gaussian_ortho.gaussian_model import GaussianModel, num_sh_coefficients, SH_C0
@@ -241,14 +242,43 @@ class TestPartition:
 
     def test_partition_scene(self):
         scene = _make_scene(n_cams=40, n_points=2000)
-        cells = partition_scene(scene, m=2, n=2, min_cameras=2)
+        for camera in scene.train_cameras:
+            camera.R = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+            camera.T[2] = 100.0
+        transform = {"R": np.eye(3).tolist(), "scale": 1.0, "t": [0, 0, 0]}
+        frame = geographic_scene_frame(
+            scene.point_cloud.points,
+            transform,
+            terrain_margin_m=0.0,
+        )
+        cells = partition_scene(
+            scene,
+            m=2,
+            n=2,
+            min_cameras=2,
+            geographic_frame=frame,
+        )
         assert len(cells) >= 1
         for bounds, cell_scene in cells:
             assert len(cell_scene.train_cameras) >= 2
 
     def test_no_partition(self):
         scene = _make_scene()
-        cells = partition_scene(scene, m=1, n=1)
+        for camera in scene.train_cameras:
+            camera.R = np.diag([1.0, -1.0, -1.0]).astype(np.float32)
+            camera.T[2] = 100.0
+        transform = {"R": np.eye(3).tolist(), "scale": 1.0, "t": [0, 0, 0]}
+        frame = geographic_scene_frame(
+            scene.point_cloud.points,
+            transform,
+            terrain_margin_m=0.0,
+        )
+        cells = partition_scene(
+            scene,
+            m=1,
+            n=1,
+            geographic_frame=frame,
+        )
         assert len(cells) == 1
 
     def test_grid_extent_comes_from_ground_points_not_camera_centres(self):

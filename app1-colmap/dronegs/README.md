@@ -45,7 +45,10 @@ deterministic `spatial-block` held-out policy with an optional guard ring.
 Production V1 deliberately retains modulo parity while custom/V2 experiments
 measure spatial generalization.
 Dev.48 turns `tile_mode` into real source-image crops with crop-relative
-intrinsics and grouped train/test assignment. It also adds the explicitly
+intrinsics and grouped train/test assignment. Geographic block datasets may
+also provide `image_regions.tsv`; DroneGS composes each base crop with
+`tile_mode` while decoding the untouched source JPEG. Dataset identity v3
+binds the crop contract to checkpoint and result reuse. Dev.48 also adds the explicitly
 scoped `opacity-SH-v1` capability from the opacity-only FAGK ablation: SH
 degrees 1 through 3 learn
 view-dependent opacity-logit residuals, persist them as `opacity_sh_*` PLY

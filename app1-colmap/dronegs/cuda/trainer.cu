@@ -520,9 +520,21 @@ std::vector<FrameDescriptor> make_frame_descriptors(
             throw std::runtime_error(
                 "training camera dimensions exceed uint32");
         }
+        const ImageRegion source_region = image.source_width > 0U
+            ? ImageRegion{
+                  .source_x = image.source_x,
+                  .source_y = image.source_y,
+                  .width = image.source_width,
+                  .height = image.source_height,
+              }
+            : ImageRegion{
+                  .source_x = 0U,
+                  .source_y = 0U,
+                  .width = static_cast<std::uint32_t>(camera.width),
+                  .height = static_cast<std::uint32_t>(camera.height),
+              };
         const auto regions = make_training_tiles(
-            static_cast<std::uint32_t>(camera.width),
-            static_cast<std::uint32_t>(camera.height),
+            source_region,
             options.tile_mode);
         for (std::size_t tile_index = 0U;
              tile_index < regions.size(); ++tile_index) {

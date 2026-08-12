@@ -6,6 +6,7 @@ PRODUCTION_PYTHON_PATHS := app1-colmap app2-ia app3-processing app4-dashboard/ap
 COLMAP_WORKER_PATHS := app1-colmap/colmap_worker app1-colmap/main.py
 GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/__init__.py \
+	app1-colmap/gaussian_ortho/camera_footprint.py \
 	app1-colmap/gaussian_ortho/capacity_planning.py \
 	app1-colmap/gaussian_ortho/colmap_loader.py \
 	app1-colmap/gaussian_ortho/colmap_subset.py \

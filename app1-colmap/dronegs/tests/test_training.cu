@@ -220,6 +220,23 @@ int main() {
                 "scaled-IDCT training image contract mismatch");
         }
         const auto regions = dronegs::make_training_tiles(32U, 32U, 4U);
+        const auto nested_regions = dronegs::make_training_tiles(
+            dronegs::ImageRegion{
+                .source_x = 4U,
+                .source_y = 8U,
+                .width = 20U,
+                .height = 16U,
+            },
+            4U);
+        if (nested_regions.front().source_x != 4U ||
+            nested_regions.front().source_y != 8U ||
+            nested_regions.front().width != 10U ||
+            nested_regions.front().height != 8U ||
+            nested_regions.back().source_x != 14U ||
+            nested_regions.back().source_y != 16U) {
+            throw std::runtime_error(
+                "native block crop and tile composition mismatch");
+        }
         const auto cropped_decode = dronegs::load_training_image(
             root / "images" / "frame.jpg", 1U, 32U, false,
             regions.back());

@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -13,7 +14,9 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 
 namespace dronegs {
@@ -123,6 +126,93 @@ std::vector<Image> load_images(const std::filesystem::path& path) {
         images.push_back(std::move(image));
     }
     return images;
+}
+
+std::uint32_t parse_region_value(
+    std::string_view value,
+    const char* label) {
+    std::uint32_t result = 0U;
+    const auto parsed = std::from_chars(
+        value.data(), value.data() + value.size(), result);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+        throw std::runtime_error(
+            std::string("invalid native image region ") + label);
+    }
+    return result;
+}
+
+void load_image_regions(
+    const std::filesystem::path& path,
+    const std::vector<Camera>& cameras,
+    std::vector<Image>& images) {
+    if (!std::filesystem::is_regular_file(path)) {
+        return;
+    }
+    std::ifstream stream(path);
+    std::string line;
+    if (!std::getline(stream, line) || line != "# dronegs-image-regions-v1") {
+        throw std::runtime_error("invalid native image region contract header");
+    }
+    std::unordered_map<std::uint32_t, const Camera*> cameras_by_id;
+    for (const auto& camera : cameras) {
+        cameras_by_id.emplace(camera.id, &camera);
+    }
+    std::unordered_map<std::string, Image*> images_by_name;
+    for (auto& image : images) {
+        if (!images_by_name.emplace(image.name, &image).second) {
+            throw std::runtime_error(
+                "native image regions require unique COLMAP image names");
+        }
+    }
+    std::unordered_map<std::string, bool> assigned;
+    while (std::getline(stream, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::array<std::string_view, 5> fields{};
+        std::size_t begin = 0U;
+        for (std::size_t index = 0U; index < fields.size(); ++index) {
+            const auto separator = line.find('\t', begin);
+            const auto end = separator == std::string::npos
+                ? line.size()
+                : separator;
+            fields[index] = std::string_view(line).substr(begin, end - begin);
+            if (index + 1U < fields.size() && separator == std::string::npos) {
+                throw std::runtime_error("truncated native image region row");
+            }
+            begin = end + 1U;
+        }
+        if (begin <= line.size()) {
+            throw std::runtime_error("native image region row has extra fields");
+        }
+        const std::string name(fields[0]);
+        const auto image_entry = images_by_name.find(name);
+        if (image_entry == images_by_name.end() ||
+            !assigned.emplace(name, true).second) {
+            throw std::runtime_error(
+                "native image region references an unknown or duplicate image");
+        }
+        auto& image = *image_entry->second;
+        const auto camera_entry = cameras_by_id.find(image.camera_id);
+        if (camera_entry == cameras_by_id.end()) {
+            throw std::runtime_error("native image region camera is missing");
+        }
+        image.source_x = parse_region_value(fields[1], "source_x");
+        image.source_y = parse_region_value(fields[2], "source_y");
+        image.source_width = parse_region_value(fields[3], "width");
+        image.source_height = parse_region_value(fields[4], "height");
+        const auto& camera = *camera_entry->second;
+        if (image.source_width == 0U || image.source_height == 0U ||
+            static_cast<std::uint64_t>(image.source_x) + image.source_width >
+                camera.width ||
+            static_cast<std::uint64_t>(image.source_y) + image.source_height >
+                camera.height) {
+            throw std::runtime_error("native image region exceeds camera bounds");
+        }
+    }
+    if (!stream.eof()) {
+        throw std::runtime_error("cannot read native image region contract");
+    }
 }
 
 std::vector<SparsePoint> load_points(const std::filesystem::path& path) {
@@ -254,6 +344,10 @@ Scene load_colmap_scene(const std::filesystem::path& data_path) {
         .images = load_images(sparse / "images.bin"),
         .points = load_points(sparse / "points3D.bin"),
     };
+    load_image_regions(
+        data_path / "image_regions.tsv",
+        scene.cameras,
+        scene.images);
     if (scene.cameras.empty() || scene.images.empty() || scene.points.empty()) {
         throw std::runtime_error("COLMAP scene must contain cameras, images, and sparse points");
     }
@@ -277,6 +371,10 @@ std::string dataset_fingerprint(
         hash_bytes(hash, &image.id, sizeof(image.id));
         hash_bytes(hash, image.name.data(), image.name.size());
         hash_bytes(hash, &image.camera_id, sizeof(image.camera_id));
+        hash_bytes(hash, &image.source_x, sizeof(image.source_x));
+        hash_bytes(hash, &image.source_y, sizeof(image.source_y));
+        hash_bytes(hash, &image.source_width, sizeof(image.source_width));
+        hash_bytes(hash, &image.source_height, sizeof(image.source_height));
         hash_bytes(
             hash, image.qvec.data(), sizeof(double) * image.qvec.size());
         hash_bytes(
@@ -291,7 +389,7 @@ std::string dataset_fingerprint(
         hash_image_inventory(hash, data_path / "images");
     }
     std::ostringstream result;
-    result << "fnv1a64:v2:" << std::hex << std::setw(16)
+    result << "fnv1a64:v3:" << std::hex << std::setw(16)
            << std::setfill('0') << hash;
     return result.str();
 }

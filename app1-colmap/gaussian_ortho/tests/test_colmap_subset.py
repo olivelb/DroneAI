@@ -9,6 +9,7 @@ from gaussian_ortho.colmap_subset import (
     _write_colmap_points3d_bin,
     export_colmap_subset,
 )
+from gaussian_ortho.camera_footprint import NativeImageCrop
 
 
 def test_gaussian_pipeline_imports_without_legacy_backend() -> None:
@@ -94,6 +95,16 @@ def test_export_colmap_subset_filters_images_cameras_and_points(
             str(tmp_path / "cell"),
             ["keep.jpg"],
             images_dir=str(source_images),
+            image_crops={
+                "keep.jpg": NativeImageCrop(
+                    source_x=2,
+                    source_y=3,
+                    width=10,
+                    height=8,
+                    source_width=16,
+                    source_height=12,
+                )
+            },
         )
     )
 
@@ -101,3 +112,6 @@ def test_export_colmap_subset_filters_images_cameras_and_points(
     assert set(_read_colmap_images_bin(output / "images.bin")) == {10}
     assert set(_read_colmap_points3d_bin(output / "points3D.bin")) == {100}
     assert (tmp_path / "cell" / "images").resolve() == source_images.resolve()
+    assert (tmp_path / "cell" / "image_regions.tsv").read_text(
+        encoding="utf-8"
+    ) == "# dronegs-image-regions-v1\nkeep.jpg\t2\t3\t10\t8\n"

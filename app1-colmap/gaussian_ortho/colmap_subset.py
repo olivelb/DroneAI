@@ -10,6 +10,8 @@ from typing import TypedDict
 
 import numpy as np
 
+from .camera_footprint import NativeImageCrop
+
 
 class ColmapCameraRecord(TypedDict):
     model_id: int
@@ -120,6 +122,7 @@ def export_colmap_subset(
     camera_names: list[str],
     point_ids: set[int] | None = None,
     images_dir: str | None = None,
+    image_crops: Mapping[str, NativeImageCrop] | None = None,
     max_point_error: float | None = None,
     min_track_length: int = 0,
     max_points: int | None = None,
@@ -204,6 +207,13 @@ def export_colmap_subset(
         filtered_points, target_sparse / "points3D.bin"
     )
 
+    _write_native_image_regions(
+        Path(target_dir) / "image_regions.tsv",
+        filtered_images,
+        filtered_cameras,
+        image_crops or {},
+    )
+
     target_images = Path(target_dir) / "images"
     if images_dir and not target_images.exists():
         os.symlink(os.path.abspath(images_dir), target_images)
@@ -215,6 +225,49 @@ def export_colmap_subset(
         "coverage_balanced": len(filtered_points) < points_before_cap,
     }
     return report if return_report else str(target_sparse)
+
+
+def _write_native_image_regions(
+    path: Path,
+    images: Mapping[int, ColmapImageRecord],
+    cameras: Mapping[int, ColmapCameraRecord],
+    crops: Mapping[str, NativeImageCrop],
+) -> None:
+    """Write the native decoder's deterministic per-image crop contract."""
+    selected_names = {image["name"] for image in images.values()}
+    unknown_names = set(crops) - selected_names
+    if unknown_names:
+        raise ValueError(
+            "native image crops reference images outside the COLMAP subset: "
+            + ", ".join(sorted(unknown_names))
+        )
+    lines = ["# dronegs-image-regions-v1"]
+    for image in sorted(images.values(), key=lambda item: item["name"]):
+        crop = crops.get(image["name"])
+        if crop is None:
+            continue
+        if "\t" in image["name"] or "\n" in image["name"]:
+            raise ValueError("native image crop names cannot contain tabs or newlines")
+        camera = cameras[image["camera_id"]]
+        if (
+            crop.source_width != camera["width"]
+            or crop.source_height != camera["height"]
+        ):
+            raise ValueError("native image crop dimensions do not match COLMAP")
+        lines.append(
+            "\t".join(
+                (
+                    image["name"],
+                    str(crop.source_x),
+                    str(crop.source_y),
+                    str(crop.width),
+                    str(crop.height),
+                )
+            )
+        )
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _read_colmap_cameras_bin(path: Path) -> dict[int, ColmapCameraRecord]:

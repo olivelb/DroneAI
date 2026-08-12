@@ -60,7 +60,8 @@ from gaussian_training.manifest_contract import (
     manifest_matches_ply,
     validate_run_manifest,
 )
-from .partition import ground_projection_from_sim3, partition_scene
+from .partition import partition_scene
+from .camera_footprint import geographic_scene_frame
 from .exif_altitude import (
     extract_exif_altitudes,
     compute_colmap_scale,
@@ -477,7 +478,12 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
                 "Partitioned Gaussian training requires a geographic Sim3 "
                 "transform so blocks are defined in projected ground coordinates"
             )
-        ground_linear, ground_offset = ground_projection_from_sim3(transform_data)
+        geographic_frame = geographic_scene_frame(
+            point_cloud.points,
+            transform_data,
+        )
+        ground_linear = geographic_frame.ground_linear
+        ground_offset = geographic_frame.ground_offset
         _report(
             config.vol_id,
             "GAUSS",
@@ -494,6 +500,7 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
                 config.partition_overlap,
                 model_to_ground_linear=ground_linear,
                 model_to_ground_offset=ground_offset,
+                geographic_frame=geographic_frame,
             )
         ]
         _report(
@@ -692,6 +699,7 @@ def train_and_merge_gaussian_models(
                 target_dir=cell_workspace,
                 camera_names=[camera.image_name for camera in cell_scene.train_cameras],
                 images_dir=images_dir_path,
+                image_crops=cell_scene.image_crops,
                 max_point_error=1.0,
                 min_track_length=3,
             )

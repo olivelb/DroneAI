@@ -245,6 +245,34 @@ std::vector<ImageRegion> make_training_tiles(
     return regions;
 }
 
+std::vector<ImageRegion> make_training_tiles(
+    const ImageRegion& source_region,
+    std::uint32_t tile_mode) {
+    const auto relative = make_training_tiles(
+        source_region.width,
+        source_region.height,
+        tile_mode);
+    std::vector<ImageRegion> regions;
+    regions.reserve(relative.size());
+    for (const auto& tile : relative) {
+        const auto source_x =
+            static_cast<std::uint64_t>(source_region.source_x) + tile.source_x;
+        const auto source_y =
+            static_cast<std::uint64_t>(source_region.source_y) + tile.source_y;
+        if (source_x > std::numeric_limits<std::uint32_t>::max() ||
+            source_y > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::overflow_error("training tile source offset overflows");
+        }
+        regions.push_back({
+            .source_x = static_cast<std::uint32_t>(source_x),
+            .source_y = static_cast<std::uint32_t>(source_y),
+            .width = tile.width,
+            .height = tile.height,
+        });
+    }
+    return regions;
+}
+
 std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
     const ImageRegion& region, std::uint32_t resize_factor,
     std::uint32_t max_width) {

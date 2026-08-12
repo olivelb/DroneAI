@@ -1457,10 +1457,13 @@ keeps model-relative Z.
 For large map scenes with a geographic Sim3, the surveyed point footprint can
 be split into an m×n grid in projected ground coordinates. Every cell records
 an exclusive core and an expanded training buffer, while its COLMAP subset
-remains in numerically stable local coordinates. Camera-centre assignment is
-still transitional; the production HQ path will replace it with calibrated
-ground-footprint visibility and native-image crops before partitioning is
-enabled by default. A single partition (1×1) remains the default.
+remains in numerically stable local coordinates. Calibrated corner rays are
+intersected with the robust terrain-height envelope; only cameras whose ground
+footprint overlaps the buffer are retained. The overlap is projected back to
+the source photograph and expanded by a 128 px margin. DroneGS decodes that
+native JPEG region directly and then composes `tile_mode` inside it, avoiding
+any intermediate image resampling or JPEG recompression. A single partition
+(1×1) remains the default until resident-cap and streamed-product gates pass.
 
 #### Step 3: Training
 
@@ -1751,6 +1754,7 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
 | `gaussian_model.py` | Gaussian model with opacity-SH-v1 and PLY I/O; no full FAGK scale/rotation |
+| `camera_footprint.py` | Calibrated projected-ground visibility and native JPEG crop planning |
 | `cuda_rasterizer.py` | CuPy CUDA rasteriser for orthographic Gaussian splatting |
 | `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |
 | `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |

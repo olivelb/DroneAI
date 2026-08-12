@@ -64,6 +64,10 @@ dronegs::Scene make_scene() {
         .name = "tile.jpg",
         .qvec = {1.0, 0.0, 0.0, 0.0},
         .tvec = {0.0, 0.0, 0.0},
+        .source_x = 4U,
+        .source_y = 4U,
+        .source_width = 24U,
+        .source_height = 24U,
     });
     std::uint64_t id = 1U;
     for (int y = -3; y <= 3; ++y) {

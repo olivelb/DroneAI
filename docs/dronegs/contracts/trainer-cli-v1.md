@@ -84,6 +84,15 @@ The reduction after JPEG decode uses area resampling with exact fractional
 source-pixel coverage; it no longer uses nearest-neighbour or bilinear point
 sampling. Images that already match the requested dimensions are not filtered.
 
+A partition subset may include `image_regions.tsv` at its dataset root. The
+first line must be `# dronegs-image-regions-v1`; each following tab-separated
+row is `image_name`, `source_x`, `source_y`, `width`, `height`, with right and
+bottom exclusive. Names must be unique and every region must lie inside its
+COLMAP camera dimensions. DroneGS composes `tile_mode` inside this base region,
+decodes directly from the untouched source JPEG, and translates the principal
+point by the combined source offset. Dataset fingerprints v3 include this
+contract, so a crop change invalidates checkpoint and completed-run reuse.
+
 `spatial-block` computes camera centers from COLMAP world-to-camera poses,
 selects the two dominant spatial axes, reserves a deterministic central block
 with the same target count as `--test-every`, then excludes the requested guard
