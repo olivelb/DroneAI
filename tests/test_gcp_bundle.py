@@ -36,13 +36,13 @@ def _point(
     )
 
 
-def _bundle_payload(files) -> dict[str, object]:
-    return {
-        "schema_version": 1,
+def _bundle_payload(files, organization_id: str | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "schema_version": 2 if organization_id is not None else 1,
         "set_id": str(UUID(int=1)),
         "source_sha256": "a" * 64,
-        "gcp_list": bundle_blob(files.gcp_list),
-        "accuracy_csv": bundle_blob(files.accuracy_csv),
+        "gcp_list": bundle_blob(files.gcp_list, organization_id),
+        "accuracy_csv": bundle_blob(files.accuracy_csv, organization_id),
         "quality": {
             "adjustment_points": files.adjustment_points,
             "checkpoint_points": files.checkpoint_points,
@@ -54,6 +54,9 @@ def _bundle_payload(files) -> dict[str, object]:
             ),
         },
     }
+    if organization_id is not None:
+        payload["organization_id"] = organization_id
+    return payload
 
 
 def test_builds_deterministic_calculation_files_with_independent_checkpoint(tmp_path):
@@ -117,6 +120,41 @@ def test_bundle_descriptor_fails_closed_on_inconsistent_quality_summary():
 
     with pytest.raises(ValueError, match="verification status is inconsistent"):
         validate_gcp_bundle(payload)
+
+
+def test_tenant_bundle_rejects_cross_tenant_and_global_descriptors():
+    files = build_gcp_bundle_files(
+        "EPSG:4326",
+        [_point("P1", 1), _point("P2", 2), _point("P3", 3)],
+    )
+    payload = _bundle_payload(files, "acme")
+
+    validate_gcp_bundle(payload, expected_organization_id="acme")
+    with pytest.raises(ValueError, match="organization does not match"):
+        validate_gcp_bundle(payload, expected_organization_id="other")
+
+    payload["gcp_list"] = bundle_blob(files.gcp_list)
+    with pytest.raises(ValueError, match="not content-addressed"):
+        validate_gcp_bundle(payload, expected_organization_id="acme")
+
+
+def test_tenant_mission_rejects_legacy_global_bundle():
+    files = build_gcp_bundle_files(
+        "EPSG:4326",
+        [_point("P1", 1), _point("P2", 2), _point("P3", 3)],
+    )
+
+    with pytest.raises(ValueError, match="organization does not match"):
+        validate_gcp_bundle(
+            _bundle_payload(files),
+            expected_organization_id="acme",
+        )
+
+    validate_gcp_bundle(
+        _bundle_payload(files),
+        expected_organization_id="acme",
+        allow_legacy_global=True,
+    )
 
 
 def test_worker_downloads_and_verifies_immutable_bundle(monkeypatch, tmp_path: Path):

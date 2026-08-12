@@ -27,6 +27,7 @@ implemented system as it exists now.
 | Tenant-owned dataset catalogue and storage boundary | [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
 | Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
+| Tenant content-addressed storage | [`contracts/tenant-cas-v3.md`](contracts/tenant-cas-v3.md) |
 | Machine-readable production drill evidence | [`contracts/production-qualification-evidence-v1.schema.json`](contracts/production-qualification-evidence-v1.schema.json) |
 | Audited feature corrections and named raster styles | [`contracts/explorer-editing-styles-v1.md`](contracts/explorer-editing-styles-v1.md) |
 | Production boundaries and release gates | [`PRODUCTION_READINESS.md`](PRODUCTION_READINESS.md) |

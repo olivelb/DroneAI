@@ -16,6 +16,7 @@ from shared.checksums import sha256_file
 from shared.database import DetectionShardReceipt
 from shared.detection_shard_receipts import (
     RecordedShardReceipt,
+    detection_run_organization_id,
     record_detection_shard_receipt,
 )
 from shared.detection_shard_results import (
@@ -24,6 +25,7 @@ from shared.detection_shard_results import (
     parse_detection_shard_result,
 )
 from shared.detection_sharding import DetectionShardPlan
+from shared.tenancy import LEGACY_ORGANIZATION_ID, validate_organization_id
 
 
 @dataclass(frozen=True)
@@ -40,12 +42,19 @@ def publish_detection_shard_result(
     run_id: str,
     plan: DetectionShardPlan,
     result: DetectionShardResult,
+    organization_id: str | None = None,
     cancellation_check: Callable[[], None] | None = None,
 ) -> PublishedDetectionShard:
     """Publish canonical result bytes to CAS, then commit their durable receipt."""
 
     validated = parse_detection_shard_result(result.payload(), plan)
     content = canonical_detection_shard_result(validated)
+    durable_organization = detection_run_organization_id(session, run_id)
+    if (
+        organization_id is not None
+        and validate_organization_id(organization_id) != durable_organization
+    ):
+        raise ValueError("Detection shard organization does not match mission")
     with tempfile.NamedTemporaryFile(
         mode="wb",
         prefix="droneai-detection-shard-",
@@ -55,10 +64,17 @@ def publish_detection_shard_result(
         path = Path(descriptor.name)
         descriptor.write(content)
     try:
-        uploaded = storage.publish_content_addressed_file(
-            path,
-            cancellation_check=cancellation_check,
-        )
+        if durable_organization == LEGACY_ORGANIZATION_ID:
+            uploaded = storage.publish_content_addressed_file(
+                path,
+                cancellation_check=cancellation_check,
+            )
+        else:
+            uploaded = storage.publish_content_addressed_file(
+                path,
+                organization_id=durable_organization,
+                cancellation_check=cancellation_check,
+            )
     finally:
         path.unlink(missing_ok=True)
     recorded: RecordedShardReceipt = record_detection_shard_receipt(
@@ -69,6 +85,7 @@ def publish_detection_shard_result(
         result_key=uploaded.key,
         result_checksum_sha256=uploaded.checksum_sha256,
         result_size_bytes=uploaded.size_bytes,
+        organization_id=durable_organization,
     )
     return PublishedDetectionShard(
         receipt=recorded.receipt,

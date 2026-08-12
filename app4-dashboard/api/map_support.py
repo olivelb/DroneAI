@@ -208,12 +208,14 @@ def _artifact_manifest_key(artifact: MissionArtifactRecord) -> str:
 def _workspace_object_keys(
     manifest_key: str,
     checksum_sha256: str,
+    organization_id: str,
 ) -> dict[str, str]:
     return {
         path: entry.blob.key
         for path, entry in resolve_workspace_files(
             manifest_key,
             checksum_sha256,
+            expected_organization_id=organization_id,
         ).items()
     }
 
@@ -269,6 +271,7 @@ def resolve_raster_product(
         object_keys = _workspace_object_keys(
             _artifact_manifest_key(artifact),
             artifact.checksum_sha256,
+            mission.organization_id,
         )
     except (OSError, ValueError) as error:
         raise HTTPException(
@@ -318,6 +321,7 @@ def resolve_detection_product(
         object_keys = _workspace_object_keys(
             _artifact_manifest_key(artifact),
             artifact.checksum_sha256,
+            mission.organization_id,
         )
     except (OSError, ValueError) as error:
         raise HTTPException(

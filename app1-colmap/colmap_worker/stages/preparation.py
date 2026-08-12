@@ -314,7 +314,11 @@ def prepare_colmap_pipeline_run(
     if facade_mode:
         gcp_assets = {"gcp_path": None, "accuracy_path": None, "changed": False}
     elif stage_gcp_bundle is not None:
-        gcp_assets = prepare_immutable_gcp_bundle(stage_gcp_bundle, workspace_dir)
+        gcp_assets = prepare_immutable_gcp_bundle(
+            stage_gcp_bundle,
+            workspace_dir,
+            expected_organization_id=mission_namespace.organization_id,
+        )
         params["gcp_adjustment_enabled"] = True
     else:
         gcp_assets = prepare_gcp_assets(raw_image_dir, workspace_dir)

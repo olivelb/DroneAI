@@ -103,10 +103,16 @@ def prepare_gcp_assets(
 def prepare_immutable_gcp_bundle(
     bundle: object,
     workspace_root: str | Path,
+    *,
+    expected_organization_id: str | None = None,
 ) -> dict[str, Any]:
     """Download and verify an immutable operator-marked GCP stage input."""
 
-    descriptors = validate_gcp_bundle(bundle)
+    descriptors = validate_gcp_bundle(
+        bundle,
+        expected_organization_id=expected_organization_id,
+        allow_legacy_global=True,
+    )
     workspace = Path(workspace_root) / "gcp"
     workspace.mkdir(parents=True, exist_ok=True)
     destinations = {

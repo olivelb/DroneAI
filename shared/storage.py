@@ -260,6 +260,7 @@ def publish_content_addressed_file(
     local_path: str | Path,
     bucket: str | None = None,
     *,
+    organization_id: str | None = None,
     cancellation_check: Callable[[], None] | None = None,
     force_multipart: bool = False,
 ) -> ContentAddressedUpload:
@@ -281,7 +282,10 @@ def publish_content_addressed_file(
             "CAS publication exceeds the 5 TiB S3 object limit"
         )
     digest = _sha256_file(path)
-    key = content_addressed_blob_key(digest)
+    key = content_addressed_blob_key(
+        digest,
+        organization_id=organization_id,
+    )
     client = _get_client()
     if _verify_content_addressed_head(
         client,

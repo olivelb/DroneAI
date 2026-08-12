@@ -26,7 +26,7 @@ from shared.gcp_bundle import (
     bundle_blob,
 )
 from shared.gcp_import import ImportedGcpSet
-from shared.tenancy import MissionObjectNamespace
+from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .map_support import JsonObject, RouteSession
 
@@ -307,7 +307,10 @@ def update_point_coordinates(
     point.altitude_m = altitude_m
 
 
-def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
+def materialize_gcp_bundle(
+    gcp_set: GcpSet,
+    organization_id: str,
+) -> JsonObject:
     """Publish a reproducible CAS bundle for a reconstruction stage run."""
 
     points = [
@@ -331,13 +334,27 @@ def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
         for point in cast(list[GcpPoint], gcp_set.points)
     ]
     files = build_gcp_bundle_files(gcp_set.source_crs, points)
+    tenant_organization_id = (
+        organization_id
+        if organization_id != LEGACY_ORGANIZATION_ID
+        else None
+    )
 
     def publish(data: bytes) -> JsonObject:
-        expected = cast(JsonObject, bundle_blob(data))
+        expected = cast(
+            JsonObject,
+            bundle_blob(data, tenant_organization_id),
+        )
         with tempfile.NamedTemporaryFile() as temporary:
             temporary.write(data)
             temporary.flush()
-            uploaded = storage.publish_content_addressed_file(temporary.name)
+            if tenant_organization_id is None:
+                uploaded = storage.publish_content_addressed_file(temporary.name)
+            else:
+                uploaded = storage.publish_content_addressed_file(
+                    temporary.name,
+                    organization_id=tenant_organization_id,
+                )
         if (
             uploaded.key != expected["key"]
             or uploaded.size_bytes != expected["size"]
@@ -346,8 +363,8 @@ def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
             raise OSError("Published GCP blob identity does not match its content")
         return expected
 
-    return {
-        "schema_version": 1,
+    bundle: JsonObject = {
+        "schema_version": 2 if tenant_organization_id else 1,
         "set_id": gcp_set.set_id,
         "source_sha256": gcp_set.source_sha256,
         "gcp_list": publish(files.gcp_list),
@@ -361,3 +378,6 @@ def materialize_gcp_bundle(gcp_set: GcpSet) -> JsonObject:
             ),
         },
     }
+    if tenant_organization_id:
+        bundle["organization_id"] = tenant_organization_id
+    return bundle

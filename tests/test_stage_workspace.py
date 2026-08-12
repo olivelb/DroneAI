@@ -12,6 +12,7 @@ from shared.artifact_manifest import (
     ManifestFile,
     ManifestParent,
     canonical_v2_bytes,
+    content_addressed_blob_key,
 )
 
 
@@ -37,13 +38,21 @@ def fake_s3(tmp_path, monkeypatch):
         shutil.copy2(root / key, target)
         return target
 
-    def publish_cas(local_path, *, cancellation_check=None):
+    def publish_cas(
+        local_path,
+        *,
+        organization_id=None,
+        cancellation_check=None,
+    ):
         if cancellation_check is not None:
             cancellation_check()
         source = Path(local_path)
         content = source.read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
-        key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+        key = content_addressed_blob_key(
+            checksum,
+            organization_id=organization_id,
+        )
         target = root / key
         reused = target.exists()
         if reused:
@@ -190,6 +199,53 @@ def test_v2_writer_publishes_only_incremental_files_and_restores_overlay(
     assert restored.manifest_schema_version == 2
     assert (tmp_path / "restored-child" / "base.bin").read_bytes() == b"stable-parent"
     assert (tmp_path / "restored-child" / "model.ply").read_bytes() == b"new-model"
+
+
+def test_v3_writer_isolates_identical_blobs_and_rejects_cross_tenant_restore(
+    tmp_path,
+    fake_s3,
+):
+    source = tmp_path / "tenant-source"
+    source.mkdir()
+    (source / "model.bin").write_bytes(b"same-model")
+
+    acme = stage_workspace.publish_workspace_v2(
+        source,
+        "organizations/acme/missions/example/stages/model/run-a",
+        default_role="stage-workspace",
+        organization_id="acme",
+    )
+    other = stage_workspace.publish_workspace_v2(
+        source,
+        "organizations/other/missions/example/stages/model/run-b",
+        default_role="stage-workspace",
+        organization_id="other",
+    )
+    acme_manifest = json.loads((fake_s3 / acme.manifest_key).read_bytes())
+    other_manifest = json.loads((fake_s3 / other.manifest_key).read_bytes())
+
+    assert acme.manifest_schema_version == 3
+    assert acme_manifest["schema_version"] == 3
+    assert acme_manifest["organization_id"] == "acme"
+    assert acme_manifest["files"][0]["blob"]["key"] != (
+        other_manifest["files"][0]["blob"]["key"]
+    )
+    restored = tmp_path / "tenant-restored"
+    stage_workspace.restore_workspace_measured(
+        acme.manifest_key,
+        restored,
+        acme.checksum_sha256,
+        expected_organization_id="acme",
+    )
+    assert (restored / "model.bin").read_bytes() == b"same-model"
+
+    with pytest.raises(ValueError, match="organization does not match"):
+        stage_workspace.restore_workspace_measured(
+            acme.manifest_key,
+            tmp_path / "cross-tenant",
+            acme.checksum_sha256,
+            expected_organization_id="other",
+        )
 
 
 def test_v2_writer_rejects_implicit_parent_file_deletion(tmp_path, fake_s3):

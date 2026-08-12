@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from shared.artifact_manifest import content_addressed_blob_key
 from shared.database import DetectionShardReceipt, Mission, MissionStageRun
 from shared import detection_shard_publication
 from shared.detection_shard_publication import (
@@ -55,11 +56,19 @@ def _plan():
     )
 
 
-def _create_run(scope, plan, *, status="running", stage="detection"):
+def _create_run(
+    scope,
+    plan,
+    *,
+    status="running",
+    stage="detection",
+    organization_id="legacy-unassigned",
+):
     with scope() as session:
         mission = Mission(
             vol_id="sharded-mission",
             owner_subject="operator-a",
+            organization_id=organization_id,
             status="processing",
             params={},
         )
@@ -83,12 +92,15 @@ def _create_run(scope, plan, *, status="running", stage="detection"):
 def shard_cas(tmp_path, monkeypatch):
     root = tmp_path / "shard-cas"
 
-    def publish(local_path, *, cancellation_check=None):
+    def publish(local_path, *, organization_id=None, cancellation_check=None):
         if cancellation_check is not None:
             cancellation_check()
         content = Path(local_path).read_bytes()
         checksum = hashlib.sha256(content).hexdigest()
-        key = f"blobs/sha256/{checksum[:2]}/{checksum}"
+        key = content_addressed_blob_key(
+            checksum,
+            organization_id=organization_id,
+        )
         target = root / key
         reused = target.exists()
         if not reused:
@@ -281,3 +293,32 @@ def test_cas_publication_and_restore_are_idempotent_and_verified(
     corrupt_path.write_bytes(b"corrupt")
     with pytest.raises(OSError, match="verification failed"):
         restore_detection_shard_results(receipts, plan)
+
+
+def test_shard_publication_uses_durable_tenant_and_rejects_override(
+    receipt_sessions,
+    shard_cas,
+):
+    plan = _plan()
+    _create_run(receipt_sessions, plan, organization_id="acme")
+
+    with receipt_sessions() as session:
+        published = publish_detection_shard_result(
+            session,
+            run_id="d" * 32,
+            plan=plan,
+            result=_shard_result(plan, 0),
+            organization_id="acme",
+        )
+        assert published.receipt.result_key.startswith(
+            "organizations/acme/blobs/sha256/"
+        )
+
+        with pytest.raises(ValueError, match="organization does not match"):
+            publish_detection_shard_result(
+                session,
+                run_id="d" * 32,
+                plan=plan,
+                result=_shard_result(plan, 1),
+                organization_id="other",
+            )

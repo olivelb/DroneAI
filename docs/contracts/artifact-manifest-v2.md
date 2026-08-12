@@ -1,9 +1,11 @@
-# Artifact Manifest v2 contract
+# Artifact Manifest v2/v3 contract
 
 Artifact Manifest v2 is the incremental storage contract for bounded stage
 Jobs. The deployed writer still emits workspace manifest v1. The current
 reader accepts both versions so reader compatibility is available before any
-v2 object is published.
+v2 object is published. Tenant-owned versioned writes now emit v3; its
+organization binding is specified by
+[`Tenant content-addressed storage v3`](tenant-cas-v3.md).
 
 ## Normalized model
 
@@ -51,6 +53,10 @@ Rules enforced by `shared.artifact_manifest`:
 - canonical serialization sorts files by logical path and parents by artifact
   ID before using sorted compact JSON.
 
+Manifest v3 has the same file and parent model, adds a required non-legacy
+`organization_id`, and requires each blob key to be
+`organizations/{organization_id}/blobs/sha256/<first-two>/<sha256>`.
+
 ## Compatibility and rollout
 
 The rollout is deliberately asymmetric:
@@ -62,10 +68,12 @@ The rollout is deliberately asymmetric:
 3. Add parent-overlay resolution and selective materialization. **Done for the
    shared restore engine:** every parent checksum is verified recursively and
    callers can select exact logical paths, roles, or their union.
-4. Enable the v2 writer behind a disabled-by-default environment flag. **Done:**
+4. Enable the versioned writer behind a disabled-by-default environment flag.
+   **Done:**
    bounded stage adapters use `publish_workspace_v2` only when
    `DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED=true`; the Helm value
-   `stageJobs.artifactManifestV2WriteEnabled` defaults to `false`.
+   `stageJobs.artifactManifestV2WriteEnabled` defaults to `false`. The retained
+   rollout name selects v2 for legacy missions and v3 for tenant missions.
 5. Add a detection-only selective-restore canary. **Done behind a second
    disabled flag:** `DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED=true` restores
    the exact orthomosaic path declared by the raster artifact and requires the
