@@ -302,7 +302,7 @@ def finalize_gaussian_raster_product(
         "meters_per_model_unit": summary.colmap_to_meters,
         "registered_cameras": summary.registered_camera_count,
         "texture_cameras": summary.texture_camera_count,
-        "renderer_contract": "cupy-ortho-v2-sh-frame",
+        "renderer_contract": "cupy-ortho-v3-surface-color",
         "cupy_version": cupy_version,
         "n_gaussians": filtering_phase.output_gaussians,
         "ortho_mip_filter_variance": config.ortho_mip_filter_variance,

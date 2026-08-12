@@ -519,7 +519,7 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
             "height": 600,
             "n_gaussians": 1_200_000,
             "gaussian_coverage": {"accepted": True},
-            "renderer_contract": "cupy-ortho-v2-sh-frame",
+            "renderer_contract": "cupy-ortho-v3-surface-color",
             "cupy_version": cupy_version,
         }
 
@@ -545,6 +545,6 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     assert result.kind == "raster_product_workspace"
     assert result.metadata["ortho_file"] == "orthomosaic.tif"
     assert result.quality_metrics["gaussian_count"] == 1_200_000
-    assert result.provenance["renderer_contract"] == "cupy-ortho-v2-sh-frame"
+    assert result.provenance["renderer_contract"] == "cupy-ortho-v3-surface-color"
     assert result.provenance["workspace_transfer"]["restore"]["file_count"] == 2
     assert cancellation.cleared == 1

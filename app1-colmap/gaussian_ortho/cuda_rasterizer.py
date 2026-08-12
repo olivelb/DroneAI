@@ -152,6 +152,7 @@ extern "C" __global__ void render_tiles(
     const int*   __restrict__ tile_offsets,
     float* __restrict__ out_rgb,
     float* __restrict__ out_depth,
+    float* __restrict__ out_alpha,
     float bg_r, float bg_g, float bg_b,
     int width, int height, int tile_size
 ) {
@@ -213,6 +214,7 @@ extern "C" __global__ void render_tiles(
     out_depth[idx] = accumulated_opacity > 1.0e-6f
         ? d_acc / accumulated_opacity
         : 0.0f;
+    out_alpha[idx] = accumulated_opacity;
 }
 ''', 'render_tiles')
 
@@ -241,7 +243,7 @@ def rasterize_ortho(
     eps2d: float = 0.03,
     compensate_filter: bool = True,
     sh_direction_rotation: np.ndarray | cp.ndarray | None = None,
-) -> tuple[cp.ndarray, cp.ndarray]:
+) -> tuple[cp.ndarray, cp.ndarray, cp.ndarray]:
     """
     Orthographic rasterisation of 3D Gaussians.
 
@@ -249,6 +251,7 @@ def rasterize_ortho(
     -------
     rgb : cp.ndarray (H, W, 3) float32   — rendered RGB
     depth : cp.ndarray (H, W) float32     — rendered depth
+    alpha : cp.ndarray (H, W) float32     — accumulated opacity
     """
     if not math.isfinite(float(eps2d)) or float(eps2d) < 0.0:
         raise ValueError("eps2d must be finite and non-negative")
@@ -259,7 +262,8 @@ def rasterize_ortho(
     if N == 0:
         rgb = cp.empty((height, width, 3), dtype=cp.float32)
         rgb[:] = bg
-        return rgb, cp.zeros((height, width), dtype=cp.float32)
+        empty = cp.zeros((height, width), dtype=cp.float32)
+        return rgb, empty, empty.copy()
 
     # ---- 1. Camera-space transform (orthographic projection) ----
     R_view = viewmat[:3, :3]
@@ -346,7 +350,8 @@ def rasterize_ortho(
     if idx_valid.size == 0:
         rgb = cp.empty((height, width, 3), dtype=cp.float32)
         rgb[:] = bg
-        return rgb, cp.zeros((height, width), dtype=cp.float32)
+        empty = cp.zeros((height, width), dtype=cp.float32)
+        return rgb, empty, empty.copy()
 
     # Compact to valid subset
     means_2d_v = cp.ascontiguousarray(means_2d[idx_valid])
@@ -376,7 +381,8 @@ def rasterize_ortho(
     if total_pairs == 0:
         rgb = cp.empty((height, width, 3), dtype=cp.float32)
         rgb[:] = bg
-        return rgb, cp.zeros((height, width), dtype=cp.float32)
+        empty = cp.zeros((height, width), dtype=cp.float32)
+        return rgb, empty, empty.copy()
 
     pair_offsets = cp.zeros(N_v, dtype=cp.int32)
     if N_v > 1:
@@ -414,6 +420,7 @@ def rasterize_ortho(
     # ---- 8. Render ----
     out_rgb   = cp.zeros(height * width * 3, dtype=cp.float32)
     out_depth = cp.zeros(height * width, dtype=cp.float32)
+    out_alpha = cp.zeros(height * width, dtype=cp.float32)
 
     grid  = (tiles_x, tiles_y)
     block = (TILE_SIZE, TILE_SIZE)
@@ -422,9 +429,13 @@ def rasterize_ortho(
         grid, block,
         (means_2d_v, conics_v, colors_v, opac_v, depths_v,
          sorted_gauss_ids, tile_offsets,
-         out_rgb, out_depth,
+         out_rgb, out_depth, out_alpha,
          np.float32(float(bg[0])), np.float32(float(bg[1])), np.float32(float(bg[2])),
          np.int32(width), np.int32(height), np.int32(TILE_SIZE)),
     )
 
-    return out_rgb.reshape(height, width, 3), out_depth.reshape(height, width)
+    return (
+        out_rgb.reshape(height, width, 3),
+        out_depth.reshape(height, width),
+        out_alpha.reshape(height, width),
+    )

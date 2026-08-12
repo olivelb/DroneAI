@@ -197,6 +197,42 @@ The roads and field geometry align at overview scale, but this rendering is
 not a credible substitute for the Metashape orthomosaic. Coverage gates alone
 therefore remain necessary but insufficient quality evidence.
 
+### Surface-colour renderer follow-up
+
+A bounded rerender on the retained 10,293,536-Gaussian filtering artifact
+isolated the dominant photometric defect without repeating reconstruction,
+training or filtering. DroneGS trains against a black background, whereas the
+v2 orthographic renderer composed partially transparent splats directly onto
+white. Background transmittance therefore washed out valid surface pixels.
+
+Renderer contract `cupy-ortho-v3-surface-color` now preserves accumulated
+opacity, renders premultiplied radiance against the training background and
+recovers surface RGB by alpha normalization. White is used only where no
+Gaussian contributes. A GPU regression test fixes this contract for a
+translucent half-grey surface.
+
+The A/B window covers 100 x 100 m, from easting 414,414.638 m to
+414,514.638 m and northing 6,634,612.328 m to 6,634,712.328 m in
+`EPSG:32636`. It contains 25,000,000 pixels on the same 0.02 m grid. Both
+candidate variants use the same filtered model, geometry, SH coefficients and
+Mip filter; only surface-colour recovery changes.
+
+| ROI metric versus Metashape | v2 white composition | v3 surface colour |
+| --- | ---: | ---: |
+| RGB MAE | 66.68 / 255 | 17.39 / 255 |
+| RGB RMSE | 73.66 / 255 | 21.95 / 255 |
+| PSNR | 10.79 dB | 21.30 dB |
+| Grayscale correlation | -0.0219 | 0.2289 |
+| Mean RGB bias | +62.3, +59.8, +77.0 | +8.3, +12.5, +1.9 |
+
+This accepts the surface-colour correction: it removes the white veil and
+improves PSNR by 10.52 dB on the fixed ROI. It does not accept local detail.
+The remaining low correlation and visible streaked texture require a separate
+surface-support/covariance investigation before a full replacement
+orthomosaic is justified. The experimental ROI products and metrics remain on
+BIGZEN under `Y:\BenchGCP\droneai-hq-20260812\sh-ab`; they are not production
+artifacts and were not published to the mission.
+
 ## Reproducing the comparison
 
 The reusable tool performs CRS validation, shared-grid DEM and RGB comparison,
