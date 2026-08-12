@@ -25,6 +25,7 @@ from shared.tile_results import (
     build_tile_result_artifact,
     tile_result_s3_key,
 )
+from shared.validation import safe_child_path
 
 
 class Producer(Protocol):
@@ -143,7 +144,16 @@ class TileDetectionWorkflow:
         vol_id: str,
         analysis_run_id: str | None,
     ) -> Path:
-        return self.workspace_root / vol_id / (analysis_run_id or "pipeline")
+        mission_workspace = safe_child_path(
+            self.workspace_root,
+            vol_id,
+            field_name="vol_id",
+        )
+        return safe_child_path(
+            mission_workspace,
+            analysis_run_id or "pipeline",
+            field_name="analysis_run_id",
+        )
 
     def _cancelled(
         self,

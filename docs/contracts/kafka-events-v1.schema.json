@@ -6,7 +6,9 @@
         "analysis_run_id": {
           "anyOf": [
             {
-              "maxLength": 128,
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "type": "string"
             },
             {
@@ -68,8 +70,9 @@
           "type": "integer"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         }
@@ -247,7 +250,9 @@
         "analysis_run_id": {
           "anyOf": [
             {
-              "maxLength": 128,
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "type": "string"
             },
             {
@@ -431,8 +436,9 @@
           "title": "Total Tiles"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         }
@@ -772,8 +778,9 @@
           "title": "Upstream Artifact Ids"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         },
@@ -851,7 +858,9 @@
         "analysis_run_id": {
           "anyOf": [
             {
-              "maxLength": 128,
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "type": "string"
             },
             {
@@ -977,8 +986,9 @@
           "title": "Tile Size"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         }
@@ -1133,8 +1143,9 @@
           "title": "Step"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         }
@@ -1157,7 +1168,9 @@
         "analysis_run_id": {
           "anyOf": [
             {
-              "maxLength": 128,
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
               "type": "string"
             },
             {
@@ -1313,8 +1326,9 @@
           "type": "integer"
         },
         "vol_id": {
-          "maxLength": 256,
-          "minLength": 1,
+          "maxLength": 64,
+          "minLength": 3,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$",
           "title": "Vol Id",
           "type": "string"
         }

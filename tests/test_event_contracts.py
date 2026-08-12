@@ -160,6 +160,30 @@ def test_decode_event_rejects_wrong_version_and_missing_fields():
         )
 
 
+@pytest.mark.parametrize("unsafe_value", ["../escape", "a/b", "a\\b", ".", ".."])
+def test_event_path_identifiers_reject_unsafe_segments(unsafe_value):
+    with pytest.raises(EventValidationError, match="vol_id"):
+        make_event(
+            "image_tile",
+            {
+                "vol_id": unsafe_value,
+                "tile_index": 1,
+                "tile_s3_key": "missions/safe/tile.jpg",
+            },
+        )
+
+    with pytest.raises(EventValidationError, match="analysis_run_id"):
+        make_event(
+            "image_tile",
+            {
+                "vol_id": "mission-safe",
+                "analysis_run_id": unsafe_value,
+                "tile_index": 1,
+                "tile_s3_key": "missions/mission-safe/tile.jpg",
+            },
+        )
+
+
 def test_status_events_accept_cancelled_and_reject_unknown_states():
     event = make_event(
         "status",

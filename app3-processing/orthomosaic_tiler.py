@@ -33,6 +33,7 @@ from shared.database import (
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_partitioning import tile_work_key
 from shared.pipeline_params import normalize_ai_backend
+from shared.validation import safe_child_path
 
 
 JsonObject = dict[str, Any]
@@ -100,8 +101,16 @@ class OrthomosaicTiler:
 
     @staticmethod
     def _workspace(vol_id: str, analysis_run_id: str | None) -> Path:
-        workspace_id = analysis_run_id or "pipeline"
-        return Path("/tmp/processing") / vol_id / workspace_id
+        mission_workspace = safe_child_path(
+            "/tmp/processing",
+            vol_id,
+            field_name="vol_id",
+        )
+        return safe_child_path(
+            mission_workspace,
+            analysis_run_id or "pipeline",
+            field_name="analysis_run_id",
+        )
 
     def _cleanup_tiles(self, tiles_dir: Path) -> None:
         for tile_path in tiles_dir.glob("tile_*.jpg"):

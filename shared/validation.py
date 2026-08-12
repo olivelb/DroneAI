@@ -11,6 +11,8 @@ from shared.yolo_capabilities import SUPPORTED_AERIAL_CLASSES
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MISSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$")
+SAFE_SEGMENT_PATTERN = SAFE_SEGMENT_RE.pattern
+MISSION_ID_PATTERN = MISSION_ID_RE.pattern
 CLASS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
 DATASET_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BOOLEAN_STRINGS = {"0", "1", "false", "true", "no", "yes", "off", "on"}

@@ -67,6 +67,14 @@ def test_tile_result_artifact_is_versioned_and_bound_to_its_reference():
     )
 
 
+@pytest.mark.parametrize("unsafe_value", ["../escape", "a/b", "a\\b", ".", ".."])
+def test_tile_result_key_rejects_unsafe_path_segments(unsafe_value):
+    with pytest.raises(ValueError):
+        tile_result_s3_key(unsafe_value, "run-1", 4, 2)
+    with pytest.raises(ValueError):
+        tile_result_s3_key("mission-1", unsafe_value, 4, 2)
+
+
 def test_tile_result_artifact_rejects_tampering():
     raw_payload = _artifact_bytes()
 
