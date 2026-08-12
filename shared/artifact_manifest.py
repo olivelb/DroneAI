@@ -276,6 +276,41 @@ def parse_artifact_manifest(content: bytes, *, manifest_key: str) -> ArtifactMan
     raise ValueError(f"Unsupported workspace manifest schema: {version!r}")
 
 
+def _canonical_versioned_bytes(manifest: ArtifactManifest) -> bytes:
+    payload = {
+        "schema_version": manifest.schema_version,
+        "files": [
+            {
+                "path": item.path,
+                "role": item.role,
+                "blob": {
+                    "key": item.blob.key,
+                    "size": item.blob.size_bytes,
+                    "sha256": item.blob.checksum_sha256,
+                },
+            }
+            for item in manifest.files
+        ],
+        "parents": [
+            {
+                "artifact_id": parent.artifact_id,
+                "manifest_key": parent.manifest_key,
+                "checksum_sha256": parent.checksum_sha256,
+            }
+            for parent in manifest.parents
+        ],
+    }
+    if manifest.organization_id is not None:
+        payload["organization_id"] = manifest.organization_id
+    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    manifest_key = f"v{manifest.schema_version}/manifest.json"
+    if parse_artifact_manifest(canonical, manifest_key=manifest_key) != manifest:
+        raise ValueError(
+            f"Artifact Manifest v{manifest.schema_version} is not canonicalizable"
+        )
+    return canonical
+
+
 def canonical_v2_bytes(manifest: ArtifactManifest) -> bytes:
     """Serialize a normalized v2 manifest deterministically."""
 
@@ -288,33 +323,7 @@ def canonical_v2_bytes(manifest: ArtifactManifest) -> bytes:
         files=tuple(sorted(manifest.files, key=lambda item: item.path)),
         parents=tuple(sorted(manifest.parents, key=lambda item: item.artifact_id)),
     )
-    payload = {
-        "schema_version": ARTIFACT_MANIFEST_VERSION,
-        "files": [
-            {
-                "path": item.path,
-                "role": item.role,
-                "blob": {
-                    "key": item.blob.key,
-                    "size": item.blob.size_bytes,
-                    "sha256": item.blob.checksum_sha256,
-                },
-            }
-            for item in ordered.files
-        ],
-        "parents": [
-            {
-                "artifact_id": parent.artifact_id,
-                "manifest_key": parent.manifest_key,
-                "checksum_sha256": parent.checksum_sha256,
-            }
-            for parent in ordered.parents
-        ],
-    }
-    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    if parse_artifact_manifest(canonical, manifest_key="v2/manifest.json") != ordered:
-        raise ValueError("Artifact Manifest v2 is not canonicalizable")
-    return canonical
+    return _canonical_versioned_bytes(ordered)
 
 
 def canonical_v3_bytes(manifest: ArtifactManifest) -> bytes:
@@ -333,34 +342,7 @@ def canonical_v3_bytes(manifest: ArtifactManifest) -> bytes:
         parents=tuple(sorted(manifest.parents, key=lambda item: item.artifact_id)),
         organization_id=organization,
     )
-    payload = {
-        "schema_version": TENANT_ARTIFACT_MANIFEST_VERSION,
-        "organization_id": organization,
-        "files": [
-            {
-                "path": item.path,
-                "role": item.role,
-                "blob": {
-                    "key": item.blob.key,
-                    "size": item.blob.size_bytes,
-                    "sha256": item.blob.checksum_sha256,
-                },
-            }
-            for item in ordered.files
-        ],
-        "parents": [
-            {
-                "artifact_id": parent.artifact_id,
-                "manifest_key": parent.manifest_key,
-                "checksum_sha256": parent.checksum_sha256,
-            }
-            for parent in ordered.parents
-        ],
-    }
-    canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
-    if parse_artifact_manifest(canonical, manifest_key="v3/manifest.json") != ordered:
-        raise ValueError("Artifact Manifest v3 is not canonicalizable")
-    return canonical
+    return _canonical_versioned_bytes(ordered)
 
 
 def validate_parent_graph(manifests: Mapping[str, ArtifactManifest]) -> None:
