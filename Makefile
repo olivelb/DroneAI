@@ -44,6 +44,8 @@ APP2_TYPED_PATHS := \
 APP3_TYPED_PATHS := \
 	app3-processing/processing_core.py \
 	app3-processing/orthomosaic_tiler.py \
+	app3-processing/analysis_publication.py \
+	app3-processing/analysis_recovery.py \
 	app3-processing/analysis_workflow.py \
 	app3-processing/legacy_aggregation.py \
 	app3-processing/processing_dispatcher.py \
