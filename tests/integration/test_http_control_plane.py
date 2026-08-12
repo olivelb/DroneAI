@@ -51,7 +51,10 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
     dataset_created = False
 
     assert requests.get(f"{API_URL}/live", timeout=10).json() == {"status": "ok"}
-    assert requests.get(f"{API_URL}/ready", timeout=10).json() == {"status": "ok"}
+    assert requests.get(f"{API_URL}/ready", timeout=10).json() == {
+        "status": "ok",
+        "bootstrap_credentials_active": True,
+    }
     assert requests.get(f"{API_URL}/missions", timeout=10).status_code == 401
 
     try:

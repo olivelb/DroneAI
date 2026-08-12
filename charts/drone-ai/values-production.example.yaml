@@ -55,6 +55,7 @@ dashboardApi:
   auth:
     disabled: false
     databaseAuthEnabled: true
+    allowStaticBootstrap: false
     existingSecret: drone-ai-api-auth
     secretKey: api-keys.json
     sessionSecretKey: session-secret

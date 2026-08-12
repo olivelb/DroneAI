@@ -201,6 +201,8 @@ spec:
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
         - name: DRONEAI_DATABASE_AUTH_ENABLED
           value: {{ .Values.dashboardApi.auth.databaseAuthEnabled | quote }}
+        - name: DRONEAI_ALLOW_STATIC_BOOTSTRAP
+          value: {{ .Values.dashboardApi.auth.allowStaticBootstrap | quote }}
         - name: DRONEAI_RLS_REQUIRED
           value: {{ .Values.dashboardApi.rowLevelSecurityRequired | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS

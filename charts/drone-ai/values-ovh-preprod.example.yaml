@@ -113,6 +113,8 @@ dashboardApi:
   auth:
     disabled: false
     databaseAuthEnabled: true
+    # Temporary until the first durable preproduction admin is issued.
+    allowStaticBootstrap: true
     existingSecret: drone-ai-api-auth
     secretKey: api-keys.json
     sessionSecretKey: session-secret
