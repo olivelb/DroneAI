@@ -13,13 +13,14 @@ from fastapi.responses import JSONResponse
 from . import security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready
-from .rate_limit import RasterTileRateLimitMiddleware
+from .rate_limit import OrganizationRequestQuotaMiddleware, RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
 from .routers.datasets import router as datasets_router
 from .routers.identity import router as identity_router
 from .routers.maps import router as maps_router
 from .routers.missions import router as missions_router
 from .routers.operations import router as operations_router
+from .routers.organization_saas import router as organization_saas_router
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -58,6 +59,7 @@ def create_app() -> FastAPI:
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
     application.add_middleware(RasterTileRateLimitMiddleware)
+    application.add_middleware(OrganizationRequestQuotaMiddleware)
 
     @application.middleware("http")
     async def cookie_csrf_guard(request: Request, call_next):
@@ -72,6 +74,7 @@ def create_app() -> FastAPI:
     application.include_router(datasets_router)
     application.include_router(maps_router)
     application.include_router(operations_router)
+    application.include_router(organization_saas_router)
 
     @application.get("/")
     def read_root():

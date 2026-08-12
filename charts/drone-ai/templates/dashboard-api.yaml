@@ -8,6 +8,9 @@
 {{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.rowLevelSecurityRequired) }}
 {{- fail "dashboardApi.rowLevelSecurityRequired must be true in staging and production" }}
 {{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.saas.organizationRequestQuotasEnabled) }}
+{{- fail "dashboardApi.saas.organizationRequestQuotasEnabled must be true in staging and production" }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
 {{- fail "storage.existingSecret is required in staging and production" }}
 {{- end }}
@@ -226,6 +229,8 @@ spec:
           value: {{ .Values.dashboardApi.uploads.maxFileBytes | quote }}
         - name: DRONEAI_UPLOAD_MAX_BATCH_BYTES
           value: {{ .Values.dashboardApi.uploads.maxBatchBytes | quote }}
+        - name: DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED
+          value: {{ .Values.dashboardApi.saas.organizationRequestQuotasEnabled | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_PER_MINUTE
           value: {{ .Values.dashboardApi.tiles.rateLimitPerMinute | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_BACKEND

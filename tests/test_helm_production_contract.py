@@ -61,6 +61,25 @@ def test_production_api_scale_out_uses_shared_runtime_contracts() -> None:
     assert "fieldPath: metadata.name" in deployment
 
 
+def test_protected_overlays_enable_organization_quota_and_retention_controls() -> None:
+    defaults = _read(CHART / "values.yaml")
+    production = _read(CHART / "values-production.example.yaml")
+    preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
+    api = _read(CHART / "templates" / "dashboard-api.yaml")
+    control = _read(CHART / "templates" / "_control-env.tpl")
+
+    assert "organizationRequestQuotasEnabled: false" in defaults
+    for values in (production, preproduction):
+        assert "organizationRequestQuotasEnabled: true" in values
+    assert "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED" in api
+    assert (
+        "dashboardApi.saas.organizationRequestQuotasEnabled must be true"
+        in api
+    )
+    assert "DRONEAI_RETENTION_CLEANUP_SECONDS" in control
+    assert "DRONEAI_RETENTION_FAILURE_RETRY_SECONDS" in control
+
+
 def test_production_identity_uses_database_credentials_and_rotatable_secrets() -> None:
     defaults = _read(CHART / "values.yaml")
     production = _read(CHART / "values-production.example.yaml")

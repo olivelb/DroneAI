@@ -112,14 +112,18 @@ Migration `0026` enables one fail-closed policy on:
 - missions, logs, stage runs, shard receipts and artifacts/parents;
 - analyses/tiles, detections, processed tiles and map features/audit;
 - GCP sets, points, observations and audit, plus raster styles;
-- tenant-attributed outbox records.
+- tenant-attributed outbox records;
+- organization SaaS policies, shared request buckets and the append-only usage
+  ledger added by migration `0028`.
 
 Child policies resolve ownership through their protected parent. Artifact
 lineage requires both child and parent artifacts to be visible. The inbox and
 rate-limit tables remain infrastructure state: they are not exposed by tenant
 routes, while the inbox consumer still needs cross-organization idempotency.
 
-The table owner is intentionally not forced through RLS so migrations and
+The usage ledger additionally rejects `UPDATE` and `DELETE` through a database
+trigger, including table-owner mutations. The table owner is intentionally not
+forced through RLS so migrations and
 system workers can operate across tenants. This is why the distinct non-owner
 API role is a release invariant, not an optional hardening suggestion.
 

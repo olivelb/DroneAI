@@ -62,4 +62,8 @@ dashboardApi.controlWorker.enabled is true.
   value: {{ .Values.storage.accessKeySecretKey | quote }}
 - name: DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY
   value: {{ .Values.storage.secretKeySecretKey | quote }}
+- name: DRONEAI_RETENTION_CLEANUP_SECONDS
+  value: {{ .Values.dashboardApi.saas.retentionCleanupSeconds | quote }}
+- name: DRONEAI_RETENTION_FAILURE_RETRY_SECONDS
+  value: {{ .Values.dashboardApi.saas.retentionFailureRetrySeconds | quote }}
 {{- end }}

@@ -38,6 +38,7 @@ class SchedulingLimits:
     per_owner_active: int = 1
     per_mission_active: int = 1
     resource_active: dict[ResourceClassId, int] = field(default_factory=dict)
+    owner_active: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         values = (
@@ -45,6 +46,7 @@ class SchedulingLimits:
             self.per_owner_active,
             self.per_mission_active,
             *self.resource_active.values(),
+            *self.owner_active.values(),
         )
         if any(value < 1 for value in values):
             raise ValueError("Scheduling concurrency limits must be positive")
@@ -108,6 +110,10 @@ def select_stage_candidates(
             for _ in range(len(queue)):
                 current = queue[0]
                 same_mission = mission_allocations[current.mission_id]
+                owner_limit = limits.owner_active.get(
+                    owner,
+                    limits.per_owner_active,
+                )
                 resource_limit = limits.resource_active.get(current.resource_class)
                 available_units = limits.global_active - allocated_units
                 if resource_limit is not None:
@@ -116,7 +122,7 @@ def select_stage_candidates(
                         resource_limit - resource_counts[current.resource_class],
                     )
                 if (
-                    owner_counts[owner] < limits.per_owner_active
+                    owner_counts[owner] < owner_limit
                     and len(same_mission) < limits.per_mission_active
                     and all(
                         stages_are_independent(current.stage, item.stage)

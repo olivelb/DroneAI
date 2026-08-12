@@ -53,6 +53,7 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/health.py \
 	app4-dashboard/api/security.py \
 	app4-dashboard/api/rate_limit.py \
+	app4-dashboard/api/retention.py \
 	app4-dashboard/api/messaging.py \
 	app4-dashboard/api/realtime.py \
 	app4-dashboard/api/kubernetes_jobs.py \
@@ -94,7 +95,8 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/mission_catalog.py \
 	app4-dashboard/api/routers/mission_stages.py \
 	app4-dashboard/api/routers/missions.py \
-	app4-dashboard/api/routers/operations.py
+	app4-dashboard/api/routers/operations.py \
+	app4-dashboard/api/routers/organization_saas.py
 SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 

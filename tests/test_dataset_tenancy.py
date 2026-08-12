@@ -9,7 +9,13 @@ from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from shared.database import Dataset, DatasetUploadSession, Mission
+from shared.database import (
+    Dataset,
+    DatasetUploadSession,
+    Mission,
+    MissionArtifact,
+    OrganizationUsageEvent,
+)
 
 dataset_access = importlib.import_module("app4-dashboard.api.dataset_access")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
@@ -23,6 +29,8 @@ def tenant_sessions(monkeypatch):
     DatasetUploadSession.__table__.create(engine)
     Dataset.__table__.create(engine)
     Mission.__table__.create(engine)
+    MissionArtifact.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager

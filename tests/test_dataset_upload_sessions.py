@@ -11,7 +11,15 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from shared.database import Dataset, DatasetUploadFile, DatasetUploadSession
+from shared.database import (
+    Dataset,
+    DatasetUploadFile,
+    DatasetUploadSession,
+    Mission,
+    MissionArtifact,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
+)
 
 uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 security = importlib.import_module("app4-dashboard.api.security")
@@ -24,6 +32,10 @@ def upload_session():
     DatasetUploadSession.__table__.create(engine)
     Dataset.__table__.create(engine)
     DatasetUploadFile.__table__.create(engine)
+    Mission.__table__.create(engine)
+    MissionArtifact.__table__.create(engine)
+    OrganizationSaasPolicy.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         yield session
 
@@ -214,6 +226,10 @@ def test_direct_upload_is_durable_presigned_and_atomically_finalized(
     assert dataset.status == "ready"
     assert dataset.file_count == 2
     assert dataset.image_count == 2
+    usage_event = upload_session.query(OrganizationUsageEvent).filter_by(
+        action="storage_reserved"
+    ).one()
+    assert usage_event.quantity == 6 * 1024 * 1024 + 1024
 
 
 def test_direct_upload_rejects_cross_principal_access(upload_session, fake_storage):
@@ -290,6 +306,41 @@ def test_direct_upload_applies_existing_batch_quotas(
         )
 
     assert error.value.status_code == 413
+
+
+def test_direct_upload_enforces_organization_storage_quota(
+    upload_session,
+    fake_storage,
+):
+    upload_session.add(
+        OrganizationSaasPolicy(
+            organization_id="legacy-unassigned",
+            storage_limit_bytes=1_000,
+            version=1,
+            created_by="platform-support",
+            updated_by="platform-support",
+        )
+    )
+    upload_session.commit()
+
+    with pytest.raises(HTTPException) as error:
+        uploads.create_upload_session(
+            upload_session,
+            uploads.UploadSessionRequest(
+                dataset_name="over-organization-quota",
+                files=[{"name": "image.jpg", "size": 1_001}],
+            ),
+            security.Principal("operator-1", "operator"),
+        )
+
+    assert error.value.status_code == 413
+    assert error.value.detail == {
+        "message": "Organization storage quota exceeded",
+        "current_bytes": 0,
+        "requested_bytes": 1_001,
+        "limit_bytes": 1_000,
+    }
+    assert upload_session.query(DatasetUploadSession).count() == 0
 
 
 def _upload_record(dataset_name: str, *, status: str = "uploading") -> DatasetUploadSession:

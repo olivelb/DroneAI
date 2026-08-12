@@ -7,8 +7,11 @@ Last verified: 2026-08-12
 The repository now provides an authenticated, role-separated multi-organization
 baseline with durable members, hashed credentials, organization-scoped data and
 object-prefix isolation, plus PostgreSQL row-level security. It is not yet a
-public self-service SaaS: invitations, OIDC federation, a platform-support role
-and commercial quota ledgers remain explicit follow-up work.
+public self-service SaaS: invitations, OIDC federation and a durable
+platform-support identity/recovery workflow remain explicit follow-up work.
+Commercial capacity and retention are now enforced by the versioned
+organization policy described in
+[`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md).
 
 ## Required production configuration
 
@@ -42,6 +45,9 @@ control work and take over after the leader connection or pod disappears.
 Every leadership health check executes through the held connection, and loss
 stops all local loops before the replica competes again. Development keeps the
 single-worker mode available for SQLite and lightweight Compose use.
+The elected worker also owns policy-driven mission retention; object deletion
+failure is durable and retried rather than being reported as a successful
+database-only purge.
 
 CI also runs a GPU-free black-box control-plane profile. It migrates a fresh
 PostgreSQL database, starts the authenticated API and control worker against
@@ -131,7 +137,9 @@ Production startup fails when:
 - authentication or database-backed credentials are disabled;
 - the session signing secret or credential pepper is missing or too short;
 - S3/database variables are missing or use known local defaults;
-- `DRONEAI_RLS_REQUIRED` is not enabled.
+- `DRONEAI_RLS_REQUIRED` is not enabled;
+- organization request quotas are not explicitly enabled with
+  `DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED=true`.
 
 Cookie-authenticated mutations also require a configured trusted `Origin`.
 
@@ -169,6 +177,11 @@ quotas before issuing any storage URL:
 - `DRONEAI_UPLOAD_MAX_BATCH_BYTES` (default 50 GiB);
 - a fixed extension allow-list.
 
+These technical per-request bounds are independent from the organization
+storage allowance. The latter includes catalogue datasets, active multipart
+reservations and known durable artifact sizes, and is reserved transactionally
+before any upload URL is issued.
+
 Operational tuning is available through:
 
 - `DRONEAI_UPLOAD_PART_BYTES` (default 16 MiB, 5–512 MiB);
@@ -188,8 +201,11 @@ in every environment; accepting an untracked development-only ingestion path
 would bypass the tenant catalogue. Mission Studio always uses the direct
 multipart protocol.
 
-Retention and lifecycle rules remain the responsibility of the selected S3
-service and must be configured before public ingestion.
+Provider lifecycle rules must not independently delete tenant mission prefixes.
+Mission retention is claimed by the elected control worker from the durable
+organization policy and audited with the database deletion. Bucket rules remain
+appropriate for provider versions, incomplete multipart uploads and explicitly
+documented disposable prefixes.
 
 ## AI model integrity policy
 

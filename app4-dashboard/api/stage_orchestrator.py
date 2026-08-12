@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -22,6 +22,7 @@ from shared.detection_sharding import (
     build_detection_shard_plan,
     parse_detection_shard_plan_descriptor,
 )
+from shared.organization_saas import append_usage_event, stage_run_limits
 from shared.stage_contracts import (
     STAGE_ORDER,
     ResourceClassId,
@@ -785,6 +786,29 @@ def reserve_ready_jobs(
             continue
         prepared_candidate_rows.append((run, mission))
     candidate_rows = prepared_candidate_rows
+    organization_ids = {
+        cast(str, mission.organization_id)
+        for _run, mission in (*active_rows, *candidate_rows)
+        if mission.organization_id != LEGACY_ORGANIZATION_ID
+    }
+    commercial_limits = stage_run_limits(
+        session,
+        organization_ids,
+        platform_limit=settings.limits.per_owner_active,
+    )
+    effective_owner_limits = dict(settings.limits.owner_active)
+    for organization_id, limit in commercial_limits.items():
+        effective_owner_limits[organization_id] = min(
+            effective_owner_limits.get(
+                organization_id,
+                settings.limits.per_owner_active,
+            ),
+            limit,
+        )
+    effective_limits = replace(
+        settings.limits,
+        owner_active=effective_owner_limits,
+    )
     active = [
         StageAllocation(
             run_id=cast(str, run.run_id),
@@ -810,7 +834,7 @@ def reserve_ready_jobs(
     ]
     selected = {
         item.run_id: item
-        for item in select_stage_candidates(candidates, active, settings.limits)
+        for item in select_stage_candidates(candidates, active, effective_limits)
     }
     reserved: list[ReservedStageJob] = []
     for run, mission in candidate_rows:
@@ -850,6 +874,24 @@ def reserve_ready_jobs(
                 else executor.gpu_architecture
             ),
         }
+        append_usage_event(
+            session,
+            organization_id=cast(str, mission.organization_id),
+            action="stage_scheduled",
+            resource_type="stage_run",
+            resource_id=cast(str, run.run_id),
+            actor_subject="system:stage-scheduler",
+            quantity=allocation.resource_units,
+            unit="resource_units",
+            idempotency_key=(
+                f"stage-scheduled:{run.run_id}:{run.dispatch_attempts}"
+            ),
+            details={
+                "stage": run.stage,
+                "resource_class": run.resource_class,
+                "mission_id": mission.vol_id,
+            },
+        )
         reserved.append(reserved_job)
     return reserved
 

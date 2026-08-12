@@ -333,6 +333,15 @@ IDENTITY_AUDIT_ACTIONS = (
     "credential_revoked",
     "credential_rotated",
 )
+ORGANIZATION_USAGE_ACTIONS = (
+    "policy_updated",
+    "storage_reserved",
+    "storage_released",
+    "stage_scheduled",
+    "request_throttled",
+    "retention_deleted",
+    "retention_failed",
+)
 
 
 def _values_check(column: str, values: tuple[str, ...]) -> str:
@@ -497,6 +506,116 @@ class IdentityAuditEvent(AppendOnlyAuditMixin, Base):
     action = Column(String(48), nullable=False)
     target_type = Column(String(32), nullable=False)
     target_id = Column(String(256), nullable=False)
+
+
+class OrganizationSaasPolicy(RequiredTimestampMixin, Base):
+    """Commercial capacity and lifecycle policy, separate from science."""
+
+    __tablename__ = "organization_saas_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "storage_limit_bytes IS NULL OR storage_limit_bytes >= 1",
+            name="ck_organization_saas_policy_storage_limit",
+        ),
+        CheckConstraint(
+            "concurrent_stage_runs_limit IS NULL "
+            "OR concurrent_stage_runs_limit >= 1",
+            name="ck_organization_saas_policy_stage_limit",
+        ),
+        CheckConstraint(
+            "request_rate_per_minute IS NULL OR request_rate_per_minute >= 1",
+            name="ck_organization_saas_policy_request_rate",
+        ),
+        CheckConstraint(
+            "request_burst IS NULL OR request_burst >= 1",
+            name="ck_organization_saas_policy_request_burst",
+        ),
+        CheckConstraint(
+            "(request_rate_per_minute IS NULL) = (request_burst IS NULL)",
+            name="ck_organization_saas_policy_request_pair",
+        ),
+        CheckConstraint(
+            "retention_days IS NULL OR retention_days >= 1",
+            name="ck_organization_saas_policy_retention",
+        ),
+        CheckConstraint(
+            "version >= 1",
+            name="ck_organization_saas_policy_version",
+        ),
+    )
+
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    storage_limit_bytes = Column(PORTABLE_BIGINT, nullable=True)
+    concurrent_stage_runs_limit = Column(Integer, nullable=True)
+    request_rate_per_minute = Column(Integer, nullable=True)
+    request_burst = Column(Integer, nullable=True)
+    retention_days = Column(Integer, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+
+
+class OrganizationUsageEvent(Base):
+    """Append-only commercial usage and policy-decision ledger."""
+
+    __tablename__ = "organization_usage_events"
+    __table_args__ = (
+        Index(
+            "ix_organization_usage_org_created",
+            "organization_id",
+            "created_at",
+        ),
+        Index(
+            "ix_organization_usage_resource",
+            "organization_id",
+            "resource_type",
+            "resource_id",
+        ),
+        CheckConstraint(
+            _values_check("action", ORGANIZATION_USAGE_ACTIONS),
+            name="ck_organization_usage_action",
+        ),
+    )
+
+    id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    event_id = _uuid_identifier_column()
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    action = Column(String(48), nullable=False)
+    resource_type = Column(String(48), nullable=False)
+    resource_id = Column(String(256), nullable=False)
+    quantity = Column(PORTABLE_BIGINT, nullable=True)
+    unit = Column(String(32), nullable=True)
+    actor_subject = Column(String(256), nullable=False)
+    idempotency_key = Column(String(256), nullable=True, unique=True)
+    details = Column(PORTABLE_JSON, nullable=False, default=dict)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(UTC),
+    )
+
+
+class OrganizationRequestBucket(Base):
+    """Transactional organization-wide API request token bucket."""
+
+    __tablename__ = "organization_request_buckets"
+
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tokens = Column(Float, nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False, index=True)
 
 
 class Dataset(RequiredTimestampMixin, Base):

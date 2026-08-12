@@ -300,18 +300,24 @@ restore rehearsal.
 Current safe retention policy:
 
 - keep seven rotating daily PostgreSQL slots in preproduction;
-- keep published mission products and their immutable parents until an
-  owner-authorized retention operation exists and has exported the useful
-  products first;
+- keep published mission products indefinitely while the organization's
+  `retention_days` is null;
+- configure `retention_days` only after the customer export/legal-hold policy is
+  reviewed through the operator-only policy command;
 - keep audited feature tombstones and edit events with their mission;
 - never lifecycle-delete Terraform state or its most recent known-good version;
-- delete temporary uploads, failed multipart parts and disposable Job prefixes
-  only through a bounded, dry-run-capable cleanup operation.
+- let the upload reconciler delete temporary/failed multipart state and record
+  the corresponding organization storage release.
 
-An expired mission must be removed as one reviewed retention transaction:
-database rows, derived objects and previews are inventoried by owner and mission
-before deletion. S3 age alone is not sufficient because immutable parent edges
-can still reference an older product.
+An expired terminal mission is claimed by the elected control worker, which
+marks it `deleting`, removes its exact durable S3 prefix, deletes the database
+graph and appends an immutable usage event. Failure becomes
+`deletion_failed` and is retried only after the configured backoff. S3 age alone
+is not sufficient because immutable parent edges can still reference an older
+product. Dataset inputs are retained separately because several missions may
+reference the same catalogue row. The full v1 boundary and provisioning command
+are in
+[`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md).
 
 ## Failure recovery
 

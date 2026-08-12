@@ -22,8 +22,9 @@ dataset qualification.
 | API lifecycle | durable outbox, upload reconciliation and stage scheduling run in a dedicated control worker | lifecycle tests, Compose config, Helm render and least-privilege RBAC |
 | Control-worker availability | protected overlays run two rolling replicas with PostgreSQL session-lock leadership and a disruption budget | real two-connection exclusion, forced-connection-loss takeover and Helm render tests |
 | Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
-| Integration | six focused tests cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
+| Integration | eight focused tests cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
 | HTTP control plane | a black-box journey bootstraps an organization, uploads to MinIO, launches/cancels a mission and observes published outbox delivery | GPU-free Compose profile with migration, authenticated API and control worker |
+| SaaS policy | storage, logical stage concurrency, shared request rate and terminal-mission retention are explicit per-organization controls, separate from science | PostgreSQL policy/RLS, append-only usage ledger, scheduler/upload/middleware/retention tests and operator-only provisioning CLI |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
 | Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
@@ -35,8 +36,8 @@ dataset qualification.
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 954 non-GPU/non-integration
-Python tests, six focused real-service integration tests, one real HTTP
+The qualified local baseline after these changes is 975 non-GPU/non-integration
+Python tests, eight focused real-service integration tests, one real HTTP
 control-plane journey, 29 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and
 actionlint also pass.
@@ -79,9 +80,6 @@ deliberately separate from scientific qualification.
    credentials and rotation/revocation are implemented. Add invitations, OIDC
    federation, recovery flows and a distinct platform-support role without
    widening the organization `admin` role.
-2. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
-   request and retention policies with auditable usage records. Do not reuse
-   scientific quality profiles as commercial quotas.
 
 ### P2 — Maintainability and operability
 

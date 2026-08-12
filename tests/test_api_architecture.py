@@ -92,6 +92,8 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/auth/members",
         "/auth/credentials",
         "/auth/audit-events",
+        "/operations/organization/capacity",
+        "/operations/organization/usage-events",
     } <= paths
     assert {"/live", "/ready"} <= direct_paths
     assert "/datasets/upload-file" not in paths
