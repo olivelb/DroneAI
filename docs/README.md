@@ -59,6 +59,9 @@ the current release status:
 - BIGZEN full-scene `high-quality-v2` qualification at 12 M Gaussians and
   0.015 m/px:
   [`benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md`](benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md)
+- BIGZEN aerial GCP high-quality K3s run, storage-failure recovery, final DEM
+  checkpoints and Metashape raster comparison:
+  [`benchmarks/aerial-gcp-hq-e2e-2026-08-12.md`](benchmarks/aerial-gcp-hq-e2e-2026-08-12.md)
 - BIGZEN Chapelle Banyuls P4 Fast local baseline plus the successful K3s
   five-Job/RTX 3090/SAM3 qualification addendum:
   [`benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md)

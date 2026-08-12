@@ -124,6 +124,7 @@ def test_default_stage_plan_is_versioned_and_dependency_ordered():
     assert specs[0]["status"] == "queued"
     assert all(spec["status"] == "blocked" for spec in specs[1:])
     assert len({spec["idempotency_key"] for spec in specs}) == len(STAGE_ORDER)
+    assert all(spec["parameters"]["work_drive"] is None for spec in specs)
     assert [spec["resource_class"] for spec in specs] == [
         "gpu-geometry",
         "gpu-high-memory",
@@ -146,6 +147,23 @@ def test_detection_stage_persists_sam_prompt_and_tile_size():
     detection = next(spec for spec in specs if spec["stage"] == "detection")
     assert detection["parameters"]["ai"]["sam_prompt"] == "construction vehicle"
     assert detection["parameters"]["ai"]["tile_size"] == 1024
+
+
+def test_stage_plan_and_manual_retry_preserve_the_selected_work_drive():
+    specs = build_stage_run_specs(
+        {"vol_id": "mission-drive", "work_drive": "drive-j"}
+    )
+    assert all(
+        spec["parameters"]["work_drive"] == "drive-j" for spec in specs
+    )
+
+    request = stage_schemas.StageRunCreate(parameters={})
+    parameters = stage_routes._stage_parameters(
+        "rasterization",
+        request,
+        {"work_drive": "drive-j"},
+    )
+    assert parameters["work_drive"] == "drive-j"
 
 
 def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
@@ -186,6 +204,35 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
         resource_class_for_stage(
             "gaussian_training",
             {"resource_class": "gpu-standard"},
+        )
+    assert resource_class_for_stage(
+        "rasterization",
+        {
+            "quality_profile": "normal-v1",
+            "colmap_params": {"gs_cap_max": "3000000"},
+        },
+    ) == "gpu-standard"
+    assert resource_class_for_stage(
+        "rasterization",
+        {
+            "quality_profile": "high-quality-v2",
+            "colmap_params": {"gs_cap_max": "12000000"},
+        },
+    ) == "gpu-high-memory"
+    assert resource_class_for_stage(
+        "rasterization",
+        {
+            "quality_profile": "custom",
+            "colmap_params": {"gs_cap_max": "3000001"},
+        },
+    ) == "gpu-high-memory"
+    with pytest.raises(ValueError, match="below the gpu-high-memory"):
+        resource_class_for_stage(
+            "rasterization",
+            {
+                "quality_profile": "high-quality-v2",
+                "resource_class": "gpu-standard",
+            },
         )
     assert resource_class_node_selector("cpu-standard") == {}
     assert resource_class_node_selector("gpu-standard") == {

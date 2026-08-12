@@ -123,6 +123,10 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "one distinct Secret per stage" in deployment
     assert "DRONEAI_STAGE_JOB_RUNTIME_CLASS" in control_env
     assert ".Values.gpu.runtimeClassName" in control_env
+    assert "DRONEAI_STAGE_WORK_DRIVES_JSON" in control_env
+    assert ".Values.colmapWorker.workVolume.drives" in control_env
+    assert "DRONEAI_STAGE_WORK_DRIVE_DEFAULT" in control_env
+    assert "DRONEAI_STAGE_WORK_EMPTY_DIR_SIZE_LIMIT" in control_env
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in control_env
     assert "DRONEAI_STAGE_HF_TOKEN_SECRET_KEY" in control_env
     assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in control_env

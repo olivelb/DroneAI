@@ -107,6 +107,26 @@ DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
     "detection": "gpu-standard",
 }
 
+# The normal profile is capped at 3M Gaussians. Above that envelope, the
+# raster finalization path can transiently materialize multi-gigabyte arrays
+# and needs the 64 GiB host-memory class even though its steady-state VRAM use
+# remains much lower.
+RASTER_HIGH_MEMORY_GAUSSIAN_THRESHOLD = 3_000_000
+
+
+def _rasterization_requires_high_memory(parameters: dict[str, Any]) -> bool:
+    profile = str(parameters.get("quality_profile") or "").strip().lower()
+    if profile.startswith("high-quality"):
+        return True
+    colmap = parameters.get("colmap_params") or {}
+    if not isinstance(colmap, dict):
+        return False
+    try:
+        gaussian_cap = int(colmap.get("gs_cap_max") or 0)
+    except (TypeError, ValueError):
+        return False
+    return gaussian_cap > RASTER_HIGH_MEMORY_GAUSSIAN_THRESHOLD
+
 
 def resource_class_meets_gpu_envelope(
     candidate: ResourceClassId,
@@ -145,6 +165,8 @@ def resource_class_for_stage(
 ) -> ResourceClassId:
     parameters = parameters or {}
     baseline_id = DEFAULT_STAGE_RESOURCE_CLASSES[stage]
+    if stage == "rasterization" and _rasterization_requires_high_memory(parameters):
+        baseline_id = "gpu-high-memory"
     ai = parameters.get("ai") or {}
     if stage == "detection" and ai.get("backend") == "sam3":
         compatible_classes = [

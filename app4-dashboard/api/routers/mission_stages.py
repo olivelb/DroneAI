@@ -67,11 +67,17 @@ def _request_key(principal: Principal, raw_key: str) -> str:
     ).hexdigest()
 
 
-def _stage_parameters(stage: StageId, request: StageRunCreate) -> dict[str, Any]:
+def _stage_parameters(
+    stage: StageId,
+    request: StageRunCreate,
+    mission_parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     parameters = {
         "dag_version": STAGE_DAG_VERSION,
         **request.parameters,
     }
+    if "work_drive" not in parameters and mission_parameters:
+        parameters["work_drive"] = mission_parameters.get("work_drive")
     bundle = parameters.get("gcp_bundle")
     if bundle is not None:
         if stage != "reconstruction":
@@ -270,7 +276,11 @@ def create_stage_run(
                     )
                 if (
                     cast(dict[str, Any], existing.parameters or {})
-                    != _stage_parameters(stage, request)
+                    != _stage_parameters(
+                        stage,
+                        request,
+                        cast(dict[str, Any], mission.params or {}),
+                    )
                     or set(cast(list[str], existing.upstream_artifact_ids or []))
                     != set(request.upstream_artifact_ids.values())
                 ):
@@ -314,7 +324,11 @@ def create_stage_run(
                 MissionStageRun.stage == stage,
             ).scalar()
             attempt = int(latest_attempt if latest_attempt is not None else -1) + 1
-            parameters = _stage_parameters(stage, request)
+            parameters = _stage_parameters(
+                stage,
+                request,
+                cast(dict[str, Any], mission.params or {}),
+            )
             resource_class = resource_class_for_stage(stage, parameters)
             run = MissionStageRun(
                 mission_id=mission.id,

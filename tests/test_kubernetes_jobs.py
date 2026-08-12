@@ -104,6 +104,63 @@ def test_cpu_job_does_not_request_a_gpu():
     assert "nodeSelector" not in job["spec"]["template"]["spec"]
 
 
+@pytest.mark.parametrize(
+    ("volume", "expected"),
+    (
+        (
+            jobs.StageJobWorkVolume(
+                {"hostPath": {"path": "/mnt/j/.droneai/work", "type": "Directory"}}
+            ),
+            {"hostPath": {"path": "/mnt/j/.droneai/work", "type": "Directory"}},
+        ),
+        (
+            jobs.StageJobWorkVolume(
+                {"persistentVolumeClaim": {"claimName": "droneai-work"}}
+            ),
+            {"persistentVolumeClaim": {"claimName": "droneai-work"}},
+        ),
+    ),
+)
+def test_stage_job_uses_the_configured_work_volume(volume, expected):
+    job = jobs.build_stage_job(
+        jobs.StageJobRequest(
+            run_id="run-work-volume",
+            mission_id=1,
+            vol_id="mission-work-volume",
+            owner_subject="owner",
+            stage="rasterization",
+            resource_class="gpu-high-memory",
+        ),
+        jobs.StageJobConfig(
+            namespace="drone-ai",
+            image="image@sha256:" + "1" * 64,
+            command=("run",),
+            work_volume=volume,
+        ),
+    )
+
+    work = next(
+        item
+        for item in job["spec"]["template"]["spec"]["volumes"]
+        if item["name"] == "work"
+    )
+    assert work == {"name": "work", **expected}
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        {"hostPath": {"path": "/", "type": "Directory"}},
+        {"hostPath": {"path": "/mnt/../unsafe", "type": "Directory"}},
+        {"persistentVolumeClaim": {"claimName": "Not_Safe"}},
+        {"emptyDir": {"sizeLimit": "unbounded"}},
+    ),
+)
+def test_stage_job_rejects_unsafe_work_volumes(source):
+    with pytest.raises(ValueError, match="Stage Job"):
+        jobs.StageJobWorkVolume(source)
+
+
 def test_job_rejects_resource_selector_conflicts_and_invalid_tolerations():
     request = jobs.StageJobRequest(
         run_id="run-selector-conflict",

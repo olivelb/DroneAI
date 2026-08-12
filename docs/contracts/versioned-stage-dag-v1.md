@@ -123,7 +123,10 @@ per-mission and per-resource-class limits all apply. Same-mission concurrency
 is permitted only when neither DAG node is an ancestor of the other. Kubernetes
 Job manifests are bounded (`activeDeadlineSeconds`, no retry, automatic TTL),
 run as non-root with dropped capabilities and derive their requests/limits from
-the persisted resource class. All five commands completed the representative
+the persisted resource class. Rasterization uses `gpu-high-memory` whenever
+the selected profile is `high-quality-*` or its configured Gaussian cap is
+above the normal 3M envelope; this covers the large host-memory peak of final
+GeoTIFF materialization independently of steady-state VRAM use. All five commands completed the representative
 BIGZEN K3s/RTX 3090 Q3 chain. The generic chart default remains disabled only
 to require an explicit immutable executor map for each environment; it is no
 longer an adapter-availability limitation. `deploy.sh distributed` activates
@@ -152,7 +155,12 @@ executor selectors may narrow but never contradict them. Job pods receive only
 run/mission identity plus S3/Kafka settings and their stage-specific Secret
 references for database/S3 credentials; they use bounded writable
 `/tmp`, `/work` and `/cache` volumes over a read-only root filesystem. The
-dashboard RBAC gains namespaced Job verbs only while this mode is enabled.
+selected mission `work_drive` is persisted in every stage-run contract. The
+control plane resolves that name only through the operator-owned Helm drive
+catalog and mounts its declared `hostPath`, PVC or bounded `emptyDir` at
+`/work`; a missing drive fails the run instead of silently consuming node-root
+storage. The dashboard RBAC gains namespaced Job verbs only while this mode is
+enabled.
 
 ## One-shot worker boundary
 
