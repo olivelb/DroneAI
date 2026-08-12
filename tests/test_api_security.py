@@ -1,13 +1,12 @@
 import importlib
-import io
 import json
 
 import pytest
-from fastapi import FastAPI, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 
 security = importlib.import_module("app4-dashboard.api.security")
-datasets = importlib.import_module("app4-dashboard.api.routers.datasets")
+dataset_uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 api_main = importlib.import_module("app4-dashboard.api.main")
 rate_limit = importlib.import_module("app4-dashboard.api.rate_limit")
 
@@ -150,40 +149,29 @@ def test_dataset_upload_quota_and_extension_are_enforced(monkeypatch):
     monkeypatch.setenv("DRONEAI_UPLOAD_MAX_FILE_BYTES", "4")
     monkeypatch.setenv("DRONEAI_UPLOAD_MAX_BATCH_BYTES", "6")
 
-    datasets.validate_uploads(
-        [
-            UploadFile(
-                file=io.BytesIO(b"1234"),
-                filename="DJI_0001.JPG",
-                size=4,
-            )
-        ]
+    dataset_uploads._validate_request(
+        dataset_uploads.UploadSessionRequest(
+            dataset_name="valid",
+            files=[{"name": "DJI_0001.JPG", "size": 4}],
+        )
     )
     with pytest.raises(HTTPException) as extension_error:
-        datasets.validate_uploads(
-            [
-                UploadFile(
-                    file=io.BytesIO(b"x"),
-                    filename="payload.exe",
-                    size=1,
-                )
-            ]
+        dataset_uploads._validate_request(
+            dataset_uploads.UploadSessionRequest(
+                dataset_name="invalid-extension",
+                files=[{"name": "payload.exe", "size": 1}],
+            )
         )
     assert extension_error.value.status_code == 415
     with pytest.raises(HTTPException) as quota_error:
-        datasets.validate_uploads(
-            [
-                UploadFile(
-                    file=io.BytesIO(b"1234"),
-                    filename="one.jpg",
-                    size=4,
-                ),
-                UploadFile(
-                    file=io.BytesIO(b"1234"),
-                    filename="two.jpg",
-                    size=4,
-                ),
-            ]
+        dataset_uploads._validate_request(
+            dataset_uploads.UploadSessionRequest(
+                dataset_name="over-quota",
+                files=[
+                    {"name": "one.jpg", "size": 4},
+                    {"name": "two.jpg", "size": 4},
+                ],
+            )
         )
     assert quota_error.value.status_code == 413
 

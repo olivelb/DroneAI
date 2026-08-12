@@ -21,6 +21,7 @@ implemented system as it exists now.
 | GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
 | Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
+| Tenant-owned dataset catalogue and storage boundary | [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
 | Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |
 | Machine-readable production drill evidence | [`contracts/production-qualification-evidence-v1.schema.json`](contracts/production-qualification-evidence-v1.schema.json) |

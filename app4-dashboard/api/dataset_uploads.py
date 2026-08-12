@@ -18,6 +18,7 @@ from sqlalchemy.orm import Query, Session
 
 from shared import storage
 from shared.database import (
+    Dataset,
     DatasetUploadFile,
     DatasetUploadSession,
     get_session,
@@ -45,6 +46,7 @@ DATASET_SUFFIXES = {
 MIN_PART_BYTES = 5 * 1024 * 1024
 MAX_PART_BYTES = 512 * 1024 * 1024
 MAX_MULTIPART_PARTS = 10_000
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 
 def _storage_error_code(error: Exception) -> str | None:
@@ -491,6 +493,7 @@ def finalize_upload_session(
 ) -> UploadFinalizeResponse:
     record = _owned_session(session, session_id, principal, lock=True)
     if record.status == "completed":
+        _ensure_catalog_record(session, record)
         return _finalize_response(record)
     _require_uploading(record)
     if any(item.status != "completed" for item in record.files):
@@ -523,8 +526,46 @@ def finalize_upload_session(
         )
     record.status = "completed"
     record.completed_at = completed_at
+    _ensure_catalog_record(session, record)
     session.flush()
     return _finalize_response(record)
+
+
+def _ensure_catalog_record(
+    session: Session,
+    record: DatasetUploadSession,
+) -> Dataset:
+    existing = cast(
+        Dataset | None,
+        session.query(Dataset)
+        .filter(Dataset.upload_session_id == record.id)
+        .first(),
+    )
+    if existing is not None:
+        return existing
+    completed_at = cast(datetime | None, record.completed_at)
+    if completed_at is None:
+        raise RuntimeError("Completed dataset upload has no completion timestamp")
+    prefix = f"datasets/{record.dataset_name}"
+    dataset = Dataset(
+        upload_session_id=record.id,
+        name=str(record.dataset_name),
+        owner_subject=str(record.created_by),
+        prefix=prefix,
+        status="ready",
+        manifest_s3_key=f"{prefix}/dataset-manifest.json",
+        file_count=int(record.file_count),
+        image_count=sum(
+            1
+            for item in record.files
+            if Path(str(item.filename)).suffix.lower() in IMAGE_SUFFIXES
+        ),
+        total_bytes=int(record.total_bytes),
+        ready_at=completed_at,
+    )
+    session.add(dataset)
+    session.flush()
+    return dataset
 
 
 def _finalize_response(record: DatasetUploadSession) -> UploadFinalizeResponse:

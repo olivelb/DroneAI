@@ -10,7 +10,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from shared.database import DatasetUploadFile, DatasetUploadSession
+from shared.database import Dataset, DatasetUploadFile, DatasetUploadSession
 
 uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 security = importlib.import_module("app4-dashboard.api.security")
@@ -21,6 +21,7 @@ datasets_router = importlib.import_module("app4-dashboard.api.routers.datasets")
 def upload_session():
     engine = create_engine("sqlite+pysqlite:///:memory:")
     DatasetUploadSession.__table__.create(engine)
+    Dataset.__table__.create(engine)
     DatasetUploadFile.__table__.create(engine)
     with Session(engine, expire_on_commit=False) as session:
         yield session
@@ -151,6 +152,12 @@ def test_direct_upload_is_durable_presigned_and_atomically_finalized(
     assert final["manifest_s3_key"] in objects
     persisted = upload_session.query(DatasetUploadSession).one()
     assert persisted.status == "completed"
+    dataset = upload_session.query(Dataset).one()
+    assert dataset.owner_subject == "operator-1"
+    assert dataset.prefix == "datasets/Quarry_survey"
+    assert dataset.status == "ready"
+    assert dataset.file_count == 2
+    assert dataset.image_count == 2
 
 
 def test_direct_upload_rejects_cross_principal_access(upload_session, fake_storage):
@@ -307,14 +314,14 @@ def test_missing_multipart_upload_is_an_idempotent_abort(
     assert record.files[0].status == "aborted"
 
 
-@pytest.mark.parametrize("environment", ["staging", "production"])
-def test_legacy_proxied_upload_is_disabled_outside_development(
+@pytest.mark.parametrize("environment", ["development", "staging", "production"])
+def test_legacy_proxied_upload_is_disabled(
     environment,
     monkeypatch,
 ):
     monkeypatch.setenv("DRONEAI_ENV", environment)
 
     with pytest.raises(HTTPException) as error:
-        datasets_router.upload_dataset_batch("dataset", [])
+        datasets_router.upload_dataset_batch()
 
     assert error.value.status_code == 404

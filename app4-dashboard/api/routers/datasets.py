@@ -3,33 +3,36 @@
 from __future__ import annotations
 
 import re
-import uuid
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Any, TypedDict, cast
 
 from fastapi import (
     APIRouter,
     Depends,
-    File,
     HTTPException,
     Query,
-    UploadFile,
     status,
 )
 from fastapi.responses import RedirectResponse, StreamingResponse
+from sqlalchemy import and_, or_
 
 from shared import storage
-from shared.database import get_session
+from shared.database import Dataset, Mission, get_session
 
 from .. import dataset_uploads
+from ..dataset_access import (
+    authorize_storage_path,
+    dataset_query,
+    get_owned_dataset,
+    normalize_storage_path,
+)
 from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
     Principal,
-    is_production,
     require_admin,
     require_authenticated,
     require_operator,
-    upload_limits,
 )
 
 router = APIRouter(
@@ -38,7 +41,6 @@ router = APIRouter(
 )
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 MAX_INLINE_PREVIEW_BYTES = 64 * 1024 * 1024
-DATASET_SUFFIXES = dataset_uploads.DATASET_SUFFIXES
 
 
 class BrowseItem(TypedDict):
@@ -60,23 +62,6 @@ class DatasetDeleteResponse(TypedDict):
     objects_deleted: int
 
 
-class UploadFileResult(TypedDict):
-    name: str
-    status: str
-    s3_key: NotRequired[str]
-    error: NotRequired[str]
-
-
-class UploadBatchResponse(TypedDict):
-    upload_id: str
-    dataset: str
-    total: int
-    completed: int
-    failed: int
-    status: str
-    files: list[UploadFileResult]
-
-
 def sanitize_dataset_name(value: str, *, replacement: str = "") -> str:
     pattern = r"[^a-zA-Z0-9_\-.]" if not replacement else r"[^a-zA-Z0-9_-]"
     return re.sub(pattern, replacement, value.strip())
@@ -86,51 +71,60 @@ def image_count(keys: list[str]) -> int:
     return sum(1 for key in keys if key.lower().endswith(IMAGE_SUFFIXES))
 
 
-def upload_size(upload: UploadFile) -> int:
-    if isinstance(upload.size, int):
-        return upload.size
-    position = upload.file.tell()
-    upload.file.seek(0, 2)
-    size = upload.file.tell()
-    upload.file.seek(position)
-    return size
-
-
-def validate_uploads(files: list[UploadFile]) -> None:
-    limits = upload_limits()
-    if len(files) > limits["max_files"]:
-        raise HTTPException(
-            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-            detail="Upload contains too many files",
-        )
-    total_size = 0
-    for upload in files:
-        filename = Path(upload.filename or "").name
-        if not filename or Path(filename).suffix.lower() not in DATASET_SUFFIXES:
-            raise HTTPException(
-                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"Unsupported dataset file: {filename or '<empty>'}",
-            )
-        size = upload_size(upload)
-        if size > limits["max_file_bytes"]:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail=f"Dataset file exceeds quota: {filename}",
-            )
-        total_size += size
-        if total_size > limits["max_batch_bytes"]:
-            raise HTTPException(
-                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                detail="Upload batch exceeds quota",
-            )
-
-
 @router.get("/browse")
-def browse_path(prefix: str = "datasets/") -> list[BrowseItem]:
+def browse_path(
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    prefix: str = "datasets/",
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> list[BrowseItem]:
     try:
+        normalized = normalize_storage_path(prefix)
+        with get_session() as session:
+            if normalized == "":
+                datasets = dataset_query(
+                    session,
+                    principal,
+                    requested_owner=owner_subject,
+                    action="browse_root",
+                ).all()
+                return [
+                    {
+                        "name": "datasets",
+                        "path": "datasets",
+                        "is_dir": True,
+                        "image_count": sum(
+                            int(item.image_count)
+                            for item in datasets
+                        ),
+                    }
+                ] if datasets else []
+            if normalized == "datasets":
+                datasets = dataset_query(
+                    session,
+                    principal,
+                    requested_owner=owner_subject,
+                    action="browse_datasets",
+                ).order_by(Dataset.name).all()
+                return [
+                    {
+                        "name": str(dataset.name),
+                        "path": str(dataset.prefix),
+                        "is_dir": True,
+                        "image_count": int(dataset.image_count),
+                    }
+                    for dataset in datasets
+                ]
+            authorized_prefix = authorize_storage_path(
+                session,
+                normalized,
+                principal,
+                requested_owner=owner_subject,
+                action="browse_storage",
+            )
+        storage_prefix = f"{authorized_prefix}/"
         items: list[BrowseItem] = []
-        for key in storage.list_objects(prefix, delimiter="/"):
-            if key.endswith("/") and key != prefix:
+        for key in storage.list_objects(storage_prefix, delimiter="/"):
+            if key.endswith("/") and key != storage_prefix:
                 items.append(
                     {
                         "name": key.rstrip("/").split("/")[-1],
@@ -152,6 +146,8 @@ def browse_path(prefix: str = "datasets/") -> list[BrowseItem]:
             items,
             key=lambda item: (not item["is_dir"], item["name"]),
         )
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -162,18 +158,28 @@ def browse_path(prefix: str = "datasets/") -> list[BrowseItem]:
 @router.get("/preview/{s3_key:path}")
 def preview_image(
     s3_key: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
     max_size: int = 4096,
     colormap: str = "",
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> StreamingResponse:
-    if not storage.file_exists(s3_key):
+    with get_session() as session:
+        authorized_key = authorize_storage_path(
+            session,
+            s3_key,
+            principal,
+            requested_owner=owner_subject,
+            action="preview_storage",
+        )
+    if not storage.file_exists(authorized_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found",
         )
     try:
-        preview_key = s3_key
-        if s3_key.lower().endswith((".tif", ".tiff")):
-            path = Path(s3_key)
+        preview_key = authorized_key
+        if authorized_key.lower().endswith((".tif", ".tiff")):
+            path = Path(authorized_key)
             preview_key = str(path.with_name(f"{path.stem}.preview.webp")).replace("\\", "/")
             if not storage.file_exists(preview_key):
                 raise HTTPException(
@@ -204,7 +210,7 @@ def preview_image(
         return StreamingResponse(
             output,
             media_type="image/png",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers={"Cache-Control": "private, max-age=3600"},
         )
     except HTTPException:
         raise
@@ -221,22 +227,28 @@ def preview_image(
 
 
 @router.get("/datasets")
-def list_datasets() -> list[DatasetItem]:
+def list_datasets(
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> list[DatasetItem]:
     try:
-        results: list[DatasetItem] = []
-        for prefix in storage.list_objects("datasets/", delimiter="/"):
-            if not prefix.endswith("/"):
-                continue
-            count = image_count(storage.list_objects(prefix))
-            if count:
-                results.append(
-                    {
-                        "name": prefix.rstrip("/").split("/")[-1],
-                        "path": prefix.rstrip("/"),
-                        "image_count": count,
-                    }
-                )
-        return results
+        with get_session() as session:
+            datasets = dataset_query(
+                session,
+                principal,
+                requested_owner=owner_subject,
+                action="list",
+            ).order_by(Dataset.name).all()
+            return [
+                {
+                    "name": str(dataset.name),
+                    "path": str(dataset.prefix),
+                    "image_count": int(dataset.image_count),
+                }
+                for dataset in datasets
+            ]
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -244,40 +256,107 @@ def list_datasets() -> list[DatasetItem]:
         ) from error
 
 
-@router.delete(
-    "/datasets/{name}",
-    dependencies=[Depends(require_admin)],
-)
-def delete_dataset(name: str) -> DatasetDeleteResponse:
+@router.delete("/datasets/{name}")
+def delete_dataset(
+    name: str,
+    principal: Annotated[Principal, Depends(require_admin)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> DatasetDeleteResponse:
     safe_name = sanitize_dataset_name(name)
     if not safe_name or safe_name != name.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid dataset name",
         )
+    with get_session() as session:
+        dataset = get_owned_dataset(
+            session,
+            principal,
+            name=safe_name,
+            requested_owner=owner_subject,
+            action="delete",
+            statuses=("ready", "deleting", "deletion_failed"),
+            for_update=True,
+        )
+        referenced = session.query(Mission.id).filter(
+            or_(
+                Mission.dataset_id == dataset.id,
+                and_(
+                    Mission.dataset_id.is_(None),
+                    Mission.owner_subject == dataset.owner_subject,
+                    Mission.input_dataset == dataset.prefix,
+                ),
+            )
+        ).first()
+        if referenced is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Dataset is referenced by a mission and cannot be deleted",
+            )
+        mutable_dataset = cast(Any, dataset)
+        mutable_dataset.status = "deleting"
+        mutable_dataset.deletion_requested_at = datetime.now(UTC)
+        mutable_dataset.deleted_at = None
+        dataset_prefix = str(dataset.prefix)
     try:
-        deleted = storage.delete_prefix(f"datasets/{safe_name}/")
-        return {
-            "status": "success",
-            "message": f"Dataset '{safe_name}' deleted.",
-            "objects_deleted": deleted,
-        }
+        deleted = storage.delete_prefix(f"{dataset_prefix}/")
     except Exception as error:
+        with get_session() as session:
+            dataset = get_owned_dataset(
+                session,
+                principal,
+                name=safe_name,
+                requested_owner=owner_subject,
+                action="delete_failure",
+                statuses=("deleting", "deletion_failed"),
+                for_update=True,
+            )
+            cast(Any, dataset).status = "deletion_failed"
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Dataset deletion failed: {error}",
         ) from error
+    with get_session() as session:
+        dataset = get_owned_dataset(
+            session,
+            principal,
+            name=safe_name,
+            requested_owner=owner_subject,
+            action="delete_complete",
+            statuses=("deleting",),
+            for_update=True,
+        )
+        mutable_dataset = cast(Any, dataset)
+        mutable_dataset.status = "deleted"
+        mutable_dataset.deleted_at = datetime.now(UTC)
+    return {
+        "status": "success",
+        "message": f"Dataset '{safe_name}' deleted.",
+        "objects_deleted": deleted,
+    }
 
 
 @router.get("/files/{s3_key:path}")
-def get_file(s3_key: str) -> RedirectResponse:
-    if not storage.file_exists(s3_key):
+def get_file(
+    s3_key: str,
+    principal: Annotated[Principal, Depends(require_authenticated)],
+    owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+) -> RedirectResponse:
+    with get_session() as session:
+        authorized_key = authorize_storage_path(
+            session,
+            s3_key,
+            principal,
+            requested_owner=owner_subject,
+            action="download_storage",
+        )
+    if not storage.file_exists(authorized_key):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="File not found",
         )
     return RedirectResponse(
-        url=storage.get_presigned_url(s3_key),
+        url=storage.get_presigned_url(authorized_key),
         status_code=302,
     )
 
@@ -286,55 +365,11 @@ def get_file(s3_key: str) -> RedirectResponse:
     "/datasets/upload",
     dependencies=[Depends(require_operator)],
 )
-def upload_dataset_batch(
-    dataset_name: Annotated[str, Query()],
-    files: Annotated[list[UploadFile], File()],
-) -> UploadBatchResponse:
-    if is_production():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Not found",
-        )
-    validate_uploads(files)
-    safe_name = sanitize_dataset_name(dataset_name, replacement="_")
-    if not safe_name:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid dataset name",
-        )
-    result: UploadBatchResponse = {
-        "upload_id": uuid.uuid4().hex[:12],
-        "dataset": safe_name,
-        "total": len(files),
-        "completed": 0,
-        "failed": 0,
-        "status": "uploading",
-        "files": [],
-    }
-    for index, upload in enumerate(files):
-        filename = Path(upload.filename or f"file_{index}").name
-        s3_key = f"datasets/{safe_name}/{filename}"
-        try:
-            storage.put_object(s3_key, upload.file)
-            result["completed"] += 1
-            result["files"].append(
-                {
-                    "name": filename,
-                    "s3_key": s3_key,
-                    "status": "ok",
-                }
-            )
-        except Exception as error:
-            result["failed"] += 1
-            result["files"].append(
-                {
-                    "name": filename,
-                    "status": "error",
-                    "error": str(error),
-                }
-            )
-    result["status"] = "done" if not result["failed"] else "partial"
-    return result
+def upload_dataset_batch() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="Not found",
+    )
 
 
 @router.post(
