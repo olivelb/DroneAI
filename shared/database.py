@@ -254,6 +254,12 @@ DATASET_UPLOAD_FILE_STATUSES = (
     "aborted",
     "failed",
 )
+DATASET_STATUSES = (
+    "ready",
+    "deleting",
+    "deletion_failed",
+    "deleted",
+)
 
 
 def _values_check(column: str, values: tuple[str, ...]) -> str:
@@ -276,6 +282,54 @@ def _uuid_identifier_column() -> Column[Any]:
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
+
+class Dataset(RequiredTimestampMixin, Base):
+    """Tenant-owned immutable input catalog entry backed by one S3 prefix."""
+
+    __tablename__ = "datasets"
+    __table_args__ = (
+        Index(
+            "uq_datasets_live_owner_name",
+            "owner_subject",
+            "name",
+            unique=True,
+            postgresql_where=text("status != 'deleted'"),
+            sqlite_where=text("status != 'deleted'"),
+        ),
+        Index(
+            "uq_datasets_live_prefix",
+            "prefix",
+            unique=True,
+            postgresql_where=text("status != 'deleted'"),
+            sqlite_where=text("status != 'deleted'"),
+        ),
+        CheckConstraint(
+            _values_check("status", DATASET_STATUSES),
+            name="ck_datasets_status",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    dataset_id = _uuid_identifier_column()
+    upload_session_id = Column(
+        Integer,
+        ForeignKey("dataset_upload_sessions.id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
+        index=True,
+    )
+    name = Column(String(256), nullable=False)
+    owner_subject = Column(String(256), nullable=False, index=True)
+    prefix = Column(String(1024), nullable=False)
+    status = Column(String(32), nullable=False, default="ready")
+    manifest_s3_key = Column(String(1024), nullable=False)
+    file_count = Column(Integer, nullable=False)
+    image_count = Column(Integer, nullable=False)
+    total_bytes = Column(PORTABLE_BIGINT, nullable=False)
+    ready_at = Column(DateTime(timezone=True), nullable=False)
+    deletion_requested_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
 
 
 class DatasetUploadSession(RequiredTimestampMixin, Base):
@@ -397,6 +451,12 @@ class Mission(Base):
     pipeline = Column(String(32), nullable=False, default="modern")
 
     # S3 references (replace filesystem paths)
+    dataset_id = Column(
+        Integer,
+        ForeignKey("datasets.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
     input_dataset = Column(String(1024), nullable=True)  # S3 prefix for input images
     workspace_prefix = Column(String(1024), nullable=True)  # S3 prefix for mission workspace
 

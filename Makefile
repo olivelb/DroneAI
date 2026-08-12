@@ -62,6 +62,7 @@ API_FRAMEWORK_TYPED_PATHS := \
 	app4-dashboard/api/stage_schemas.py
 API_DOMAIN_TYPED_PATHS := \
 	app4-dashboard/api/analysis_support.py \
+	app4-dashboard/api/dataset_access.py \
 	app4-dashboard/api/dataset_uploads.py \
 	app4-dashboard/api/feature_audit.py \
 	app4-dashboard/api/gcp_audit.py \

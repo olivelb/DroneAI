@@ -87,11 +87,17 @@ The browser creates a durable upload session through the API, requests a
 short-lived URL for each S3 multipart part, sends the bytes directly to object
 storage and returns the ETags for server-side completion. The API verifies the
 completed object size and publishes `dataset-manifest.json` only after every
-file is complete. Incomplete sessions expire after 24 hours by default and the
-API cleanup worker aborts their stored multipart parts. A partial unique index
-reserves each active dataset name across API replicas. Cleanup replicas claim
-expired rows with `FOR UPDATE SKIP LOCKED`, and an already-missing multipart
-upload is treated as an idempotent successful abort.
+file is complete. Finalization then creates the tenant-owned `ready` catalogue
+entry that is required for listing, storage access and mission launch. A raw S3
+prefix is not launchable. New missions retain the prefix for compatibility and
+also reference the catalogue row by foreign key. See
+[`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md).
+
+Incomplete sessions expire after 24 hours by default and the API cleanup worker
+aborts their stored multipart parts. A partial unique index reserves each active
+dataset name across API replicas. Cleanup replicas claim expired rows with `FOR
+UPDATE SKIP LOCKED`, and an already-missing multipart upload is treated as an
+idempotent successful abort.
 
 The API accepts aerial images plus DJI/GNSS sidecars and enforces the same
 quotas before issuing any storage URL:
@@ -112,9 +118,10 @@ The S3 bucket must allow `PUT`, `GET` and `HEAD` from the exact frontend
 origin and expose the `ETag` response header. Local MinIO receives that rule
 automatically. For an external S3-compatible bucket, apply it with
 `scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
-origin. The previous API-proxied `/datasets/upload` endpoint remains available
-only in development for compatibility. Staging and production return `404`;
-Mission Studio always uses the direct multipart protocol.
+origin. The previous API-proxied `/datasets/upload` endpoint now returns `404`
+in every environment; accepting an untracked development-only ingestion path
+would bypass the tenant catalogue. Mission Studio always uses the direct
+multipart protocol.
 
 Retention and lifecycle rules remain the responsibility of the selected S3
 service and must be configured before public ingestion.

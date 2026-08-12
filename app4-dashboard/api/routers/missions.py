@@ -28,6 +28,7 @@ from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 from shared.sam3_capabilities import Sam3Capability, sam3_capability
 
 from ..kubernetes_status import KubernetesStatus, get_pod_states
+from ..dataset_access import get_owned_dataset
 from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
     build_cancel_event,
@@ -408,6 +409,13 @@ def _start_mission(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(f"Mission {params.vol_id} already exists; use the resume endpoint for an existing mission"),
                 )
+            dataset = get_owned_dataset(
+                session,
+                principal,
+                prefix=params.input_dataset,
+                action="launch_mission",
+                for_update=True,
+            )
             payload = _mission_payload(params)
             payload["owner_subject"] = principal.subject
             selected_profile = quality_profile(params.quality_profile)
@@ -429,6 +437,7 @@ def _start_mission(
                 owner_subject=principal.subject,
                 status="pending",
                 pipeline=params.pipeline,
+                dataset_id=dataset.id,
                 input_dataset=params.input_dataset,
                 workspace_prefix=f"missions/{params.vol_id}",
                 params=payload,

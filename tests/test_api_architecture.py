@@ -13,7 +13,13 @@ from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from shared.database import Mission, MissionStageRun, OutboxEvent
+from shared.database import (
+    Dataset,
+    DatasetUploadSession,
+    Mission,
+    MissionStageRun,
+    OutboxEvent,
+)
 
 image_preview = importlib.import_module("app4-dashboard.api.image_preview")
 main = importlib.import_module("app4-dashboard.api.main")
@@ -178,6 +184,8 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
 
 def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    DatasetUploadSession.__table__.create(engine)
+    Dataset.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     OutboxEvent.__table__.create(engine)
@@ -196,6 +204,20 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
             session.close()
 
     monkeypatch.setattr(mission_routes, "get_session", session_scope)
+    with session_scope() as session:
+        session.add(
+            Dataset(
+                name="profile-mission",
+                owner_subject="test-operator",
+                prefix="datasets/profile-mission",
+                status="ready",
+                manifest_s3_key="datasets/profile-mission/dataset-manifest.json",
+                file_count=1,
+                image_count=1,
+                total_bytes=1,
+                ready_at=datetime.now(UTC),
+            )
+        )
     params = mission_routes.MissionParams(
         vol_id="profile-mission-001",
         input_dataset="datasets/profile-mission",
