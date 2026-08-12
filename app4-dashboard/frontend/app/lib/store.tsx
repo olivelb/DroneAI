@@ -96,7 +96,7 @@ export function StoreProvider({ children }: { children: React.ReactNode }) {
 
   const loadParameters = useCallback(async () => {
     try {
-      const data = (await fetchParameters()) as ParameterConfigResponse;
+      const data = await fetchParameters();
       setParameterSchema(data);
       setAiModelVariant((current) =>
         data.yolo_models.some((model) => model.id === current && model.available)

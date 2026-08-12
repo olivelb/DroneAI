@@ -47,7 +47,7 @@ export function useAnalysisWorkspace(
     ]).then(([files, runs]) => {
       if (cancelled) return;
       setAvailableFiles(
-        (files as Record<string, string>[]).map(
+        files.map(
           (item) => item.path ?? item.name ?? "",
         ),
       );

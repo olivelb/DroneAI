@@ -39,13 +39,21 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
         await route.fulfill(json({ detail: "Session expired" }, 401));
         return;
       }
-      await route.fulfill(json({ subject: "e2e-operator", role: "operator" }));
+      await route.fulfill(json({
+        subject: "e2e-operator",
+        role: "operator",
+        organization_id: "e2e-organization",
+      }));
       return;
     }
     if (url.pathname === "/auth/session" && request.method() === "POST") {
       const payload = request.postDataJSON() as { api_key: string };
       options.onSessionCreate?.(payload.api_key);
-      await route.fulfill(json({ subject: "e2e-operator", role: "operator" }));
+      await route.fulfill(json({
+        subject: "e2e-operator",
+        role: "operator",
+        organization_id: "e2e-organization",
+      }));
       return;
     }
     if (url.pathname === "/auth/session" && request.method() === "DELETE") {

@@ -253,6 +253,7 @@ jobs:
         run: corepack npm audit --omit=dev --audit-level=high
       - run: corepack npm run test
       - run: corepack npm run lint
+      - run: corepack npm run typecheck
       - run: corepack npm run build
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium

@@ -46,7 +46,7 @@ export function WorkspaceDataProvider({
     try {
       const data = await fetchBrowse(path);
       if (!Array.isArray(data)) return;
-      setItems(data as DatasetItem[]);
+      setItems(data);
       setCurrentPath(path);
     } catch (error) {
       console.error("Browse error:", error);
@@ -56,8 +56,8 @@ export function WorkspaceDataProvider({
   const refreshPods = useCallback(async () => {
     try {
       const data = await fetchPods();
-      setPods((data.pods ?? []) as PodState[]);
-      setPodsError((data.error as string) ?? null);
+      setPods(data.pods ?? []);
+      setPodsError(data.error ?? null);
     } catch (error) {
       setPodsError(String(error));
     }
