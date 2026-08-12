@@ -76,30 +76,32 @@ def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
 def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     defaults = _read(CHART / "values.yaml")
     deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    control_worker = _read(CHART / "templates" / "dashboard-control-worker.yaml")
+    control_env = _read(CHART / "templates" / "_control-env.tpl")
 
     assert "stageJobs:" in defaults
     assert "enabled: false" in defaults
     assert "globalConcurrency: 2" in defaults
     assert "perOwnerConcurrency: 1" in defaults
-    assert 'resources: ["jobs"]' in deployment
-    assert 'verbs: ["create", "get", "list", "watch", "delete"]' in deployment
-    assert "DRONEAI_STAGE_JOBS_ENABLED" in deployment
+    assert 'resources: ["jobs"]' in control_worker
+    assert 'verbs: ["create", "get", "list", "watch", "delete"]' in control_worker
+    assert "DRONEAI_STAGE_JOBS_ENABLED" in control_env
     assert "credentialSecrets: {}" in defaults
-    assert "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON" in deployment
+    assert "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON" in control_env
     assert "one distinct Secret per stage" in deployment
-    assert "DRONEAI_STAGE_JOB_RUNTIME_CLASS" in deployment
-    assert ".Values.gpu.runtimeClassName" in deployment
-    assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in deployment
-    assert "DRONEAI_STAGE_HF_TOKEN_SECRET_KEY" in deployment
-    assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in deployment
+    assert "DRONEAI_STAGE_JOB_RUNTIME_CLASS" in control_env
+    assert ".Values.gpu.runtimeClassName" in control_env
+    assert "DRONEAI_STAGE_HF_TOKEN_SECRET_NAME" in control_env
+    assert "DRONEAI_STAGE_HF_TOKEN_SECRET_KEY" in control_env
+    assert "DRONEAI_STAGE_SAM3_MODEL_REVISION" in control_env
     assert "artifactManifestV2WriteEnabled: false" in defaults
     assert "artifactSelectiveRestoreEnabled: false" in defaults
     assert "detectionFanout:" in defaults
-    assert "DRONEAI_DETECTION_FANOUT_ENABLED" in deployment
-    assert "DRONEAI_DETECTION_TILES_PER_SHARD" in deployment
-    assert "DRONEAI_DETECTION_SHARD_PARALLELISM" in deployment
-    assert "DRONEAI_DETECTION_MAXIMUM_TILES" in deployment
-    assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in deployment
+    assert "DRONEAI_DETECTION_FANOUT_ENABLED" in control_env
+    assert "DRONEAI_DETECTION_TILES_PER_SHARD" in control_env
+    assert "DRONEAI_DETECTION_SHARD_PARALLELISM" in control_env
+    assert "DRONEAI_DETECTION_MAXIMUM_TILES" in control_env
+    assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in control_env
     assert (
         "artifactSelectiveRestoreEnabled requires "
         "stageJobs.artifactManifestV2WriteEnabled=true"
@@ -109,3 +111,21 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
         "stageJobs.artifactSelectiveRestoreEnabled=true"
     ) in deployment
     assert "automountServiceAccountToken: false" in deployment
+
+
+def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() -> None:
+    defaults = _read(CHART / "values.yaml")
+    api = _read(CHART / "templates" / "dashboard-api.yaml")
+    worker = _read(CHART / "templates" / "dashboard-control-worker.yaml")
+    compose = _read(ROOT / "compose.local.yaml")
+
+    assert "controlWorker:" in defaults
+    assert "DRONEAI_EMBED_CONTROL_LOOPS" in api
+    assert "path: /ready" in api
+    assert "path: /live" in api
+    assert "dashboard-control-worker-sa" in worker
+    assert 'command: ["python", "-m", "app4-dashboard.api.control_worker"]' in worker
+    assert "type: Recreate" in worker
+    assert "dashboard-control-worker:" in compose
+    assert 'DRONEAI_EMBED_CONTROL_LOOPS: "false"' in compose
+    assert "http://localhost:8000/ready" in compose

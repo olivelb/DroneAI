@@ -27,7 +27,7 @@ image_tag="${IMAGE_TAG:-}"
 if [[ -z "${image_tag}" ]]; then
   if helm status drone-ai --namespace "${namespace}" >/dev/null 2>&1; then
     deployed_tags=()
-    for deployment in processing-worker dashboard-api dashboard-frontend; do
+    for deployment in processing-worker dashboard-api dashboard-control-worker dashboard-frontend; do
       image_ref="$(kubectl -n "${namespace}" get deployment "${deployment}" \
         -o jsonpath='{.spec.template.spec.containers[0].image}')"
       deployed_tags+=("${image_ref##*:}")

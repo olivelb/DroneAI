@@ -83,6 +83,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/datasets/upload-sessions",
         "/browse",
     } <= paths
+    assert {"/live", "/ready"} <= direct_paths
     assert "/datasets/upload-file" not in paths
     assert any(path.startswith("/preview/{s3_key}") for path in paths)
     assert any(path.startswith("/files/{s3_key}") for path in paths)

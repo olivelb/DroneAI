@@ -224,6 +224,7 @@ services:
       CORS_ORIGINS: "*"
       DRONEAI_ENV: development
       DRONEAI_AUTH_DISABLED: "true"
+      DRONEAI_EMBED_CONTROL_LOOPS: "false"
       DRONEAI_RUNTIME_MODE: compose
       DRONEAI_UPLOAD_MAX_FILES: "2500"
       DRONEAI_UPLOAD_MAX_FILE_BYTES: "2147483648"
@@ -240,10 +241,20 @@ services:
         - CMD
         - python
         - -c
-        - import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=2)
+        - import urllib.request; urllib.request.urlopen('http://localhost:8000/ready', timeout=2)
       interval: 5s
       timeout: 3s
       retries: 30
+
+  dashboard-control-worker:
+    image: drone-dashboard-api:latest
+    restart: unless-stopped
+    depends_on: *worker-dependencies
+    environment:
+      <<: *common-environment
+      DRONEAI_ENV: development
+      DRONEAI_STAGE_JOBS_ENABLED: "false"
+    command: [python, -m, app4-dashboard.api.control_worker]
 
   dashboard-frontend:
     image: drone-dashboard-frontend:latest
