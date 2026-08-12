@@ -7,10 +7,10 @@ from typing import Any, Protocol, Self, cast
 
 from fastapi import HTTPException, status
 
-from shared.access_audit import append_access_audit_event
 from shared.database import Mission
 from shared.tenancy import LEGACY_ORGANIZATION_ID
 
+from .access_audit import record_authorized_cross_member_access
 from .security import Principal
 
 audit_logger = logging.getLogger("droneai.audit.mission_access")
@@ -54,24 +54,14 @@ def resolve_owner_subject(
             raise RuntimeError(
                 "Cross-member mission access requires a durable audit session"
             )
-        append_access_audit_event(
+        record_authorized_cross_member_access(
             audit_session,
-            organization_id=getattr(
-                principal,
-                "organization_id",
-                LEGACY_ORGANIZATION_ID,
-            ),
-            actor_subject=principal.subject,
-            actor_role=principal.role,
-            actor_realm=getattr(principal, "realm", "tenant"),
-            actor_member_id=getattr(principal, "member_id", None),
-            actor_credential_id=getattr(principal, "credential_id", None),
+            principal,
             action=action,
             target_owner_subject=owner,
             resource_type="mission",
             resource_id=vol_id,
         )
-        audit_session.flush()
         audit_logger.warning(
             "admin_cross_member_mission_access principal=%s owner=%s action=%s vol_id=%s",
             principal.subject,
