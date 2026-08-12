@@ -121,7 +121,6 @@ class TestSH:
         expected = cp.full_like(basis, SH_C0)
         assert cp.allclose(basis, expected, atol=1e-6)
 
-
 # ---------------------------------------------------------------------------
 #  Gaussian Model
 # ---------------------------------------------------------------------------
@@ -262,6 +261,26 @@ class TestOrthoRenderer:
         assert "height" in result
         assert result["rgb"].ndim == 3
 
+    def test_translucent_surface_color_is_not_composited_on_white(self):
+        """Ortho RGB represents surface colour independently of opacity."""
+        model = GaussianModel(sh_degree=0, fagk_enabled=False)
+        model._xyz = cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32)
+        model._features_dc = cp.zeros((1, 1, 3), dtype=cp.float32)
+        model._features_rest = cp.empty((1, 0, 3), dtype=cp.float32)
+        model._scaling = cp.zeros((1, 3), dtype=cp.float32)
+        model._rotation = cp.array([[1.0, 0.0, 0.0, 0.0]], dtype=cp.float32)
+        model._opacity = cp.zeros((1, 1), dtype=cp.float32)
+        model._opacity_sh = cp.empty((1, 0), dtype=cp.float32)
+
+        result = render_orthophoto(
+            model,
+            gsd=1.0,
+            extent=(-0.5, 0.5, -0.5, 0.5, 9.0, 11.0),
+            chunk_size=512,
+        )
+
+        assert result["rgb"][0, 0].tolist() == [127, 127, 127]
+
     def test_sim3_rotation_keeps_sh_in_training_frame(self):
         """Rotated geometry must evaluate directional SH in its learned frame."""
         sh = cp.zeros((1, 4, 3), dtype=cp.float32)
@@ -282,7 +301,7 @@ class TestOrthoRenderer:
 
     def test_depth_is_normalized_by_accumulated_opacity(self):
         """A translucent surface keeps its geometric depth, not alpha*depth."""
-        _rgb, depth = rasterize_ortho(
+        _rgb, depth, alpha = rasterize_ortho(
             means_3d=cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32),
             quats=cp.array([[1.0, 0.0, 0.0, 0.0]], dtype=cp.float32),
             scales=cp.ones((1, 3), dtype=cp.float32),
@@ -299,6 +318,7 @@ class TestOrthoRenderer:
         )
 
         assert float(depth[0, 0]) == pytest.approx(10.0, abs=1e-5)
+        assert 0.0 < float(alpha[0, 0]) < 1.0
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@ from .cuda_rasterizer import rasterize_ortho as _cuda_rasterize_ortho
 class RasterResult(TypedDict):
     image: cp.ndarray
     depth: cp.ndarray
+    alpha: cp.ndarray
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +115,7 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
         raise ValueError("RasterSettings.viewmatrix is required")
     viewmat = cp.array(settings.viewmatrix, dtype=cp.float32)
 
-    rgb, depth = _cuda_rasterize_ortho(
+    rgb, depth, alpha = _cuda_rasterize_ortho(
         means, quats, scales, opacities, sh_coeffs, sh_degree,
         viewmat,
         settings.fx, settings.fy, settings.cx, settings.cy,
@@ -129,5 +130,6 @@ def render_ortho(model: GaussianModel, settings: RasterSettings,
     # Return in (C, H, W) layout for compatibility with callers
     image: cp.ndarray = rgb.transpose(2, 0, 1)  # (H, W, 3) -> (3, H, W)
     depth_out: cp.ndarray = depth[None, :, :]  # (H, W) -> (1, H, W)
+    alpha_out: cp.ndarray = alpha[None, :, :]  # (H, W) -> (1, H, W)
 
-    return {"image": image, "depth": depth_out}
+    return {"image": image, "depth": depth_out, "alpha": alpha_out}

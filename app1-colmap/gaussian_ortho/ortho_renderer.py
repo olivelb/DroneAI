@@ -251,7 +251,10 @@ def _render_single_tile(
         image_width=width, image_height=height,
         fx=fx, fy=fy, cx=width / 2.0, cy=height / 2.0,
         znear=znear, zfar=zfar,
-        bg_color=(1.0, 1.0, 1.0),
+        # DroneGS learns against black. Render premultiplied radiance on that
+        # background, then recover the surface colour below; compositing
+        # translucent splats directly on white washes out the map.
+        bg_color=(0.0, 0.0, 0.0),
         mip_filter_variance=mip_filter_variance,
         mip_filter_compensation=mip_filter_compensation,
         viewmatrix=viewmat,
@@ -261,8 +264,11 @@ def _render_single_tile(
     result = render_ortho(model, settings, indices=indices)
 
     img = result["image"]
+    alpha = result["alpha"]
+    valid = alpha > 1.0e-6
+    surface_rgb = cp.where(valid, img / cp.maximum(alpha, 1.0e-6), 1.0)
     img_np: np.ndarray = (
-        cp.clip(img, 0, 1).transpose(1, 2, 0).get() * 255
+        cp.clip(surface_rgb, 0, 1).transpose(1, 2, 0).get() * 255
     ).astype(np.uint8)
 
     depth = result["depth"]
