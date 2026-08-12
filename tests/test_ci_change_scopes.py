@@ -98,6 +98,7 @@ def test_platform_composition_changes_run_real_service_integration() -> None:
         "integration",
     }
     assert _enabled(".github/compose.integration.yaml") == {"integration"}
+    assert _enabled(".github/compose.http-e2e.yaml") == {"integration"}
 
 
 def test_native_dronegs_change_runs_python_and_native_jobs_when_relevant() -> None:

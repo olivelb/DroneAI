@@ -1,0 +1,23 @@
+services:
+  db-migrate:
+    image: drone-dashboard-api:http-e2e
+    build:
+      context: .
+      dockerfile: app4-dashboard/api/Dockerfile
+    profiles: [http-e2e]
+
+  dashboard-api:
+    image: drone-dashboard-api:http-e2e
+    profiles: [http-e2e]
+    environment:
+      DRONEAI_AUTH_DISABLED: "false"
+      DRONEAI_API_KEYS_JSON: >-
+        [{"key":"droneai-http-e2e-key-0000000000000000","subject":"http-e2e-admin","role":"admin","organization_id":"http-e2e"}]
+      DRONEAI_STAGE_JOBS_ENABLED: "false"
+      S3_PUBLIC_ENDPOINT: http://localhost:${DRONEAI_MINIO_API_PORT:-30091}
+
+  dashboard-control-worker:
+    image: drone-dashboard-api:http-e2e
+    profiles: [http-e2e]
+    environment:
+      DRONEAI_CONTROL_LEADER_ELECTION: "false"

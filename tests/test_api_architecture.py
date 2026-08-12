@@ -35,7 +35,11 @@ feature_mutation_routes = importlib.import_module(
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
-TEST_PRINCIPAL = SimpleNamespace(subject="test-operator", role="admin")
+TEST_PRINCIPAL = SimpleNamespace(
+    subject="test-operator",
+    role="admin",
+    organization_id="legacy-unassigned",
+)
 
 
 class FakeProducer:
@@ -503,7 +507,7 @@ def test_object_store_analysis_vectors_read_versioned_tile_artifacts(monkeypatch
     assert features[0]["properties"]["tile_index"] == 4
 
 
-def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
+def test_dead_outbox_replay_is_tenant_scoped_and_resets_delivery_state(monkeypatch):
     record = SimpleNamespace(
         id=17,
         event_id="event-17",
@@ -518,8 +522,11 @@ def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
         locked_by="worker-1",
     )
 
+    filters = []
+
     class Query:
-        def filter(self, *_args):
+        def filter(self, *criteria):
+            filters.extend(criteria)
             return self
 
         def order_by(self, *_args):
@@ -545,17 +552,85 @@ def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
 
     monkeypatch.setattr(operation_routes, "get_session", session_scope)
 
-    dead_events = operation_routes.list_dead_outbox_events(limit=10)
-    response = operation_routes.replay_dead_outbox_event(record.id)
+    dead_events = operation_routes.list_dead_outbox_events(TEST_PRINCIPAL, limit=10)
+    response = operation_routes.replay_dead_outbox_event(record.id, TEST_PRINCIPAL)
 
     assert dead_events[0]["event_id"] == "event-17"
     assert response == {"status": "queued", "id": 17}
+    assert len(filters) == 4
     assert record.status == "pending"
     assert record.attempts == 0
     assert record.available_at.tzinfo is UTC
     assert record.dead_at is None
     assert record.locked_at is None
     assert record.locked_by is None
+
+
+def test_outbox_delivery_status_is_tenant_scoped_and_payload_free(monkeypatch):
+    record = SimpleNamespace(
+        id=18,
+        organization_id="tenant-a",
+        event_id="event-18",
+        event_type="control",
+        topic="pipeline-control",
+        message_key="tenant-a:mission-1",
+        status="published",
+        attempts=1,
+        published_at=datetime(2026, 8, 12, tzinfo=UTC),
+        last_error=None,
+    )
+    filters = []
+
+    class Query:
+        def filter(self, *criteria):
+            filters.extend(criteria)
+            return self
+
+        def order_by(self, *_args):
+            return self
+
+        def limit(self, _value):
+            return self
+
+        def all(self):
+            return [record]
+
+    @contextmanager
+    def session_scope():
+        yield SimpleNamespace(query=lambda _model: Query())
+
+    monkeypatch.setattr(operation_routes, "get_session", session_scope)
+    principal = SimpleNamespace(organization_id="tenant-a")
+
+    response = operation_routes.list_outbox_delivery_status(
+        principal,
+        delivery_status="published",
+        limit=10,
+    )
+
+    assert len(filters) == 2
+    assert response == [
+        {
+            "id": 18,
+            "event_id": "event-18",
+            "event_type": "control",
+            "topic": "pipeline-control",
+            "message_key": "tenant-a:mission-1",
+            "status": "published",
+            "attempts": 1,
+            "published_at": datetime(2026, 8, 12, tzinfo=UTC),
+            "last_error": None,
+        }
+    ]
+    assert "payload" not in response[0]
+
+    with pytest.raises(HTTPException) as invalid_status:
+        operation_routes.list_outbox_delivery_status(
+            principal,
+            delivery_status="unknown",
+            limit=10,
+        )
+    assert invalid_status.value.status_code == 422
 
 
 def test_frontend_uses_direct_presigned_multipart_upload():

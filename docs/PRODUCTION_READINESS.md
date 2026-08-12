@@ -43,6 +43,15 @@ Every leadership health check executes through the held connection, and loss
 stops all local loops before the replica competes again. Development keeps the
 single-worker mode available for SQLite and lightweight Compose use.
 
+CI also runs a GPU-free black-box control-plane profile. It migrates a fresh
+PostgreSQL database, starts the authenticated API and control worker against
+real Kafka and MinIO, bootstraps an organization, completes one presigned
+multipart dataset upload, launches and cancels a synthetic mission, and waits
+until the cancellation outbox record is published. The administrative
+`GET /operations/outbox` view exposes delivery identity and status but never
+event payloads, and explicitly filters by the caller's organization. This is
+an operational E2E; it does not replace dataset-backed scientific validation.
+
 The production example activates bounded stage Jobs and disables every fused
 Kafka compute worker. Staging and production now fail at application startup
 and Helm render if that invariant is weakened. Replace every executor image

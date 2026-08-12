@@ -123,6 +123,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             or _under(path, "tests/integration")
             or path
             in {
+                ".github/compose.http-e2e.yaml",
                 ".github/compose.integration.yaml",
                 "alembic.ini",
                 "compose.local.yaml",

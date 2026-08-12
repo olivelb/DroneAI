@@ -32,7 +32,17 @@ def test_accepts_normalized_mission_id():
     assert validate_mission_id("banyuls-2026_001") == "banyuls-2026_001"
 
 
-@pytest.mark.parametrize("value", ["images/foo", "datasets/../secret", "/datasets/foo", "datasets//foo"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "images/foo",
+        "datasets/../secret",
+        "/datasets/foo",
+        "datasets//foo",
+        "organizations/tenant-a/images/foo",
+        "organizations/TENANT/datasets/foo",
+    ],
+)
 def test_rejects_unsafe_dataset_prefixes(value):
     with pytest.raises(ValueError):
         validate_dataset_prefix(value)
@@ -40,6 +50,9 @@ def test_rejects_unsafe_dataset_prefixes(value):
 
 def test_normalizes_dataset_trailing_slash():
     assert validate_dataset_prefix("datasets/banyuls/") == "datasets/banyuls"
+    assert validate_dataset_prefix(
+        "organizations/tenant-a/datasets/banyuls/"
+    ) == "organizations/tenant-a/datasets/banyuls"
 
 
 def test_safe_child_path_stays_under_base(tmp_path):
