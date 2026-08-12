@@ -16,6 +16,10 @@ from typing import Annotated
 from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
 
 from shared.database import get_session
+from shared.deployment_mode import (
+    bounded_stage_jobs_enabled,
+    is_protected_environment,
+)
 from shared.identity import (
     AuthenticatedIdentity,
     authenticate_credential,
@@ -69,12 +73,8 @@ def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
     )
 
 
-def deployment_environment() -> str:
-    return os.getenv("DRONEAI_ENV", "development").strip().lower()
-
-
 def is_production() -> bool:
-    return deployment_environment() in {"production", "staging"}
+    return bool(is_protected_environment())
 
 
 def build_tile_rate_limiter() -> RateLimiter:
@@ -174,6 +174,7 @@ def authentication_enabled() -> bool:
 def validate_production_configuration() -> None:
     if not is_production():
         return
+    bounded_stage_jobs_enabled()
     if "*" in configured_cors_origins():
         raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
     if not database_authentication_enabled(production=True):

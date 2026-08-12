@@ -105,8 +105,6 @@ spec:
         env:
         {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.storage.databaseUrlSecretKey) | nindent 8 }}
         {{- include "drone-ai.controlEnv" . | nindent 8 }}
-        - name: DRONEAI_ENV
-          value: {{ .Values.dashboardApi.environment | quote }}
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:

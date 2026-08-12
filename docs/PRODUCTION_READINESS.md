@@ -17,7 +17,7 @@ overlay. Before installation, create:
 
 - the storage Secret with `s3-access-key`, `s3-secret-key`, operator
   `database-url` and non-owner `api-database-url`;
-- before enabling bounded compute, five stage Secrets containing a non-owner
+- five stage Secrets containing a non-owner
   `stage-database-url` plus stage-scoped S3 credentials;
 - the API auth Secret with a distinct random `session-secret` and
   `credential-pepper`, each at least 32 characters;
@@ -34,16 +34,21 @@ Bounded Jobs receive only their stage Secret and verify RLS at startup.
 Protected Helm overlays require this split and readiness
 fails when PostgreSQL reports that RLS is inactive for the API role.
 
-The production example intentionally does not activate bounded stage Jobs.
-Those executors are qualified for controlled preproduction, but a production
-environment must first satisfy the environment-specific cancellation,
-deadline, backup/restore, interruption and rollback gates in
+The production example activates bounded stage Jobs and disables every fused
+Kafka compute worker. Staging and production now fail at application startup
+and Helm render if that invariant is weakened. Replace every executor image
+placeholder with the promoted immutable Git SHA or digest before install.
+
+Replace `REPLACE_GPU_ARCHITECTURE` with the reviewed target architecture; CUDA
+12.9 runtime qualification does not by itself identify the OVH GPU SKU.
+Actual workload promotion still requires the environment-specific
+cancellation, deadline, backup/restore, interruption and rollback gates in
 [`OPERATIONS.md`](OPERATIONS.md). The promotion record must pass
 `python3 tools/production_qualification.py gate <evidence.qualification.json>`;
 a structurally valid draft or BIGZEN evidence for another target is not a
-production approval. When approved, add the complete immutable
-`stageJobs.executors` map, disable the fused COLMAP/IA Deployments, scale the
-compatibility processing worker to zero and review the resulting Job RBAC.
+production approval. Until OVH CPU/GPU nodes are available, Jobs may remain
+unscheduled; that infrastructure constraint must not re-enable the unsafe
+fused path. Review the rendered Job RBAC before workload promotion.
 
 The optional bootstrap `api-keys.json` is a JSON array:
 
@@ -103,6 +108,7 @@ rebuild. `CORS_ORIGINS` must contain the corresponding frontend origin.
 
 Production startup fails when:
 
+- bounded stage Jobs are disabled or the mode is not an explicit boolean;
 - `CORS_ORIGINS` contains `*`;
 - authentication or database-backed credentials are disabled;
 - the session signing secret or credential pepper is missing or too short;

@@ -120,6 +120,7 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert 'resources: ["jobs"]' in control_worker
     assert 'verbs: ["create", "get", "list", "watch", "delete"]' in control_worker
     assert "DRONEAI_STAGE_JOBS_ENABLED" in control_env
+    assert "DRONEAI_STAGE_JOBS_ENABLED" in deployment
     assert "credentialSecrets: {}" in defaults
     assert "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON" in control_env
     assert ".Values.stageJobs.databaseUrlSecretKey" in control_env
@@ -151,6 +152,41 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
         "stageJobs.artifactSelectiveRestoreEnabled=true"
     ) in deployment
     assert "automountServiceAccountToken: false" in deployment
+
+
+def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
+    production = _read(CHART / "values-production.example.yaml")
+    preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    helpers = _read(CHART / "templates" / "_helpers.tpl")
+
+    for values in (production, preproduction):
+        stage_values = values.split("\nstageJobs:\n", 1)[1]
+        assert stage_values.startswith("  enabled: true\n")
+        assert "  artifactManifestV2WriteEnabled: true\n" in stage_values
+        for stage in (
+            "reconstruction",
+            "gaussian_training",
+            "gaussian_filtering",
+            "rasterization",
+            "detection",
+        ):
+            assert f"    {stage}:\n" in stage_values
+        assert stage_values.count(
+            "gpu_architecture: REPLACE_GPU_ARCHITECTURE"
+        ) == 5
+        assert "colmapWorker:\n  enabled: false" in values
+        assert "iaWorker:\n  enabled: false" in values
+        assert "processingWorker:\n  replicaCount: 0" in values
+
+    assert "stageJobs.enabled must be true in staging and production" in deployment
+    assert "colmapWorker.enabled must be false" in deployment
+    assert "iaWorker.enabled must be false" in deployment
+    assert "processingWorker.replicaCount must be 0" in deployment
+    assert "stageJobs.executors.%s.image is required" in deployment
+    assert "stageJobs.executors.%s.command is required" in deployment
+    assert "name: DRONEAI_ENV" in helpers
+    assert ".Values.dashboardApi.environment" in helpers
 
 
 def test_control_worker_is_separate_from_http_api_and_probes_are_meaningful() -> None:

@@ -14,6 +14,7 @@ from shared.config import (
     TOPIC_MISSION,
     TOPIC_STATUS,
 )
+from shared.deployment_mode import assert_fused_compute_allowed
 from shared.kafka_reliability import (
     ConsumerAssignmentWatchdog,
     process_message,
@@ -47,6 +48,7 @@ def control_consumer_thread(producer: object) -> None:
 
 
 def worker_main() -> None:
+    assert_fused_compute_allowed("COLMAP")
     logging.basicConfig(
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

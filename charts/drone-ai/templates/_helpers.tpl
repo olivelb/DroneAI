@@ -55,6 +55,8 @@ workers retain their operator connection.
 */}}
 {{- define "drone-ai.commonEnv" -}}
 {{- $root := .root -}}
+- name: DRONEAI_ENV
+  value: {{ $root.Values.dashboardApi.environment | quote }}
 - name: KAFKA_BROKER
   value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" $root.Values.global.namespace) $root.Values.kafka.broker | quote }}
 - name: INBOX_LEASE_SECONDS

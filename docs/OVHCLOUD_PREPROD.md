@@ -444,8 +444,8 @@ durable admin credential, then remove `api-keys.json`. Keep `session-secret` and
 `credential-pepper`; rotating the pepper intentionally invalidates every
 durable credential.
 
-The shared storage Secret is sufficient only while bounded stage Jobs remain
-disabled. Before setting `stageJobs.enabled=true`, provision the five existing
+The protected preproduction overlay always enables bounded stage Jobs and
+rejects fused compute. Before installing it, provision the five existing
 Secrets named by `stageJobs.credentialSecrets` in the preproduction values.
 Each must contain `stage-database-url`, `s3-access-key` and `s3-secret-key`,
 using a distinct non-owner `NOBYPASSRLS` database role and least-privilege

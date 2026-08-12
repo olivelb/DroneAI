@@ -14,6 +14,7 @@ from typing import Any, cast
 from sqlalchemy import text
 
 from shared.database import Mission, MissionArtifact, MissionStageRun, get_session
+from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.detection_shard_receipts import complete_detection_shard_receipts
 from shared.detection_sharding import (
     MAX_DETECTION_TILES,
@@ -104,7 +105,7 @@ class ReservedStageJob:
 
 
 def stage_jobs_enabled() -> bool:
-    return os.getenv("DRONEAI_STAGE_JOBS_ENABLED", "false").strip().lower() == "true"
+    return bool(bounded_stage_jobs_enabled())
 
 
 def _positive_int(name: str, default: int) -> int:

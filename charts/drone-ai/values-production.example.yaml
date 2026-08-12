@@ -24,8 +24,10 @@ postgres:
   enabled: false
 
 # Workspaces shown in the dashboard must correspond to volumes mounted in the
-# COLMAP pod. Create this claim (or use a cloud CSI provisioner) before install.
+# bounded stage Jobs. Create this claim (or use a cloud CSI provisioner) before
+# install. The fused Kafka worker remains development-only.
 colmapWorker:
+  enabled: false
   tag: "REPLACE_GIT_SHA"
   workVolume:
     drives:
@@ -60,6 +62,29 @@ dashboardFrontend:
     type: ClusterIP
 
 stageJobs:
+  enabled: true
+  artifactManifestV2WriteEnabled: true
+  executors:
+    reconstruction:
+      image: "registry.example.com/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "reconstruction"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_training:
+      image: "registry.example.com/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_training"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_filtering:
+      image: "registry.example.com/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_filtering"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    rasterization:
+      image: "registry.example.com/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "rasterization"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    detection:
+      image: "registry.example.com/drone-ia:REPLACE_GIT_SHA"
+      command: ["python3", "app2-ia/stage_executor.py"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
   credentialSecrets:
     reconstruction: drone-ai-stage-reconstruction-production
     gaussian_training: drone-ai-stage-gaussian-training-production
@@ -68,9 +93,11 @@ stageJobs:
     detection: drone-ai-stage-detection-production
 
 iaWorker:
+  enabled: false
   tag: "REPLACE_GIT_SHA"
 
 processingWorker:
+  replicaCount: 0
   tag: "REPLACE_GIT_SHA"
 
 ingress:

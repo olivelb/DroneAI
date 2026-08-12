@@ -69,6 +69,24 @@ def test_control_supervisor_starts_and_stops_every_loop(monkeypatch):
     assert all(not thread.is_alive() for thread in supervisor.threads)
 
 
+def test_control_supervisor_rejects_protected_fused_mode_before_threads_start(
+    monkeypatch,
+):
+    started = []
+    monkeypatch.setenv("DRONEAI_ENV", "staging")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+    monkeypatch.setattr(
+        control_runtime.threading.Thread,
+        "start",
+        lambda self: started.append(self.name),
+    )
+
+    with pytest.raises(RuntimeError, match="require bounded stage Jobs"):
+        control_runtime.start_control_loops()
+
+    assert started == []
+
+
 def test_control_supervisor_reports_an_unexpected_exit():
     thread = threading.Thread(target=lambda: None, name="exited-loop")
     thread.start()

@@ -475,6 +475,14 @@ def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatc
         orchestrator.settings_from_environment()
 
 
+def test_protected_settings_reject_fused_compute(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "staging")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+
+    with pytest.raises(RuntimeError, match="require bounded stage Jobs"):
+        orchestrator.settings_from_environment()
+
+
 def test_executor_catalog_parses_stage_tolerations():
     payload = {
         stage: {
