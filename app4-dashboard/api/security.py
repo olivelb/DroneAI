@@ -131,7 +131,76 @@ def build_tile_rate_limiter() -> RateLimiter:
     )
 
 
+def build_identity_rate_limiter(*, scope: str) -> RateLimiter:
+    """Build one pre-authentication limiter without authenticating a request."""
+
+    if scope not in {"peer", "credential"}:
+        raise ValueError("identity rate-limit scope must be peer or credential")
+    backend = os.getenv(
+        "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND",
+        "",
+    ).strip().lower()
+    if not backend or backend == "auto":
+        backend = "database" if is_production() else "local"
+    if is_production() and backend == "local":
+        raise RuntimeError(
+            "Production requires database-backed identity rate limiting"
+        )
+    prefix = f"DRONEAI_IDENTITY_{scope.upper()}_RATE_LIMIT"
+    default_rate = "600" if scope == "peer" else "60"
+    default_burst = "120" if scope == "peer" else "10"
+    requests_per_minute = int(
+        os.getenv(f"{prefix}_PER_MINUTE", default_rate)
+    )
+    burst = int(os.getenv(f"{prefix}_BURST", default_burst))
+    max_keys = int(
+        os.getenv("DRONEAI_IDENTITY_RATE_LIMIT_MAX_CLIENTS", "100000")
+    )
+    if backend == "database":
+        return DatabaseTokenBucketRateLimiter(
+            session_scope=get_session,
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    if backend == "local":
+        return TokenBucketRateLimiter(
+            requests_per_minute=requests_per_minute,
+            burst=burst,
+            max_keys=max_keys,
+        )
+    raise RuntimeError(
+        "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND must be 'database' or 'local'"
+    )
+
+
 tile_rate_limiter = build_tile_rate_limiter()
+identity_peer_rate_limiter = build_identity_rate_limiter(scope="peer")
+identity_credential_rate_limiter = build_identity_rate_limiter(
+    scope="credential"
+)
+
+
+def static_bootstrap_allowed() -> bool:
+    """Return whether transitional static credentials may authenticate."""
+
+    raw = os.getenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP")
+    if raw is None:
+        return not is_production()
+    normalized = raw.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise RuntimeError(
+            "DRONEAI_ALLOW_STATIC_BOOTSTRAP must be true or false"
+        )
+    return normalized == "true"
+
+
+def static_bootstrap_credentials_active() -> bool:
+    """Expose only whether the transitional registry is currently usable."""
+
+    return static_bootstrap_allowed() and bool(
+        os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
+    )
 
 
 def configured_cors_origins() -> list[str]:
@@ -140,9 +209,9 @@ def configured_cors_origins() -> list[str]:
 
 
 def _configured_keys() -> list[tuple[str, Principal]]:
-    raw = os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
-    if not raw:
+    if not static_bootstrap_credentials_active():
         return []
+    raw = os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -218,6 +287,16 @@ def validate_production_configuration() -> None:
         raise RuntimeError(
             "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED must be enabled "
             "in production"
+        )
+    static_bootstrap_configured = bool(
+        os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
+    )
+    allow_static_bootstrap = static_bootstrap_allowed()
+    if static_bootstrap_configured and not allow_static_bootstrap:
+        raise RuntimeError(
+            "Static bootstrap credentials are disabled in production; remove "
+            "DRONEAI_API_KEYS_JSON or temporarily set "
+            "DRONEAI_ALLOW_STATIC_BOOTSTRAP=true during adoption"
         )
     configured_keys = _configured_keys()
     if any(

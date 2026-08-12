@@ -83,12 +83,23 @@ def test_protected_overlays_enable_organization_quota_and_retention_controls() -
 def test_production_identity_uses_database_credentials_and_rotatable_secrets() -> None:
     defaults = _read(CHART / "values.yaml")
     production = _read(CHART / "values-production.example.yaml")
+    preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
     deployment = _read(CHART / "templates" / "dashboard-api.yaml")
 
     assert "databaseAuthEnabled: false" in defaults
     assert "databaseAuthEnabled: true" in production
+    assert "allowStaticBootstrap: true" in defaults
+    assert "allowStaticBootstrap: false" in production
+    assert "allowStaticBootstrap: true" in preproduction
     assert "credentialPepperSecretKey: credential-pepper" in production
     assert "DRONEAI_DATABASE_AUTH_ENABLED" in deployment
+    assert "DRONEAI_ALLOW_STATIC_BOOTSTRAP" in deployment
+    assert "rateLimitBackend: auto" in defaults
+    assert "peerRateLimitPerMinute:" in defaults
+    assert "credentialRateLimitPerMinute:" in defaults
+    assert "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND" in deployment
+    assert "DRONEAI_IDENTITY_PEER_RATE_LIMIT_PER_MINUTE" in deployment
+    assert "DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_PER_MINUTE" in deployment
     assert "DRONEAI_CREDENTIAL_PEPPER" in deployment
     assert "optional: true" in deployment
 

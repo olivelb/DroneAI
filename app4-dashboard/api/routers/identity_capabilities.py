@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from shared.database import (
@@ -31,6 +31,7 @@ from ..identity_api import (
     credential_state,
     member_state,
 )
+from ..rate_limit import enforce_identity_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["identity capabilities"])
 
@@ -314,7 +315,9 @@ def revoke_recovery_token(
 @router.post("/capabilities/redeem", status_code=201)
 def redeem_identity_capability(
     payload: CapabilityRedeemRequest,
+    request: Request,
 ) -> dict[str, object]:
+    enforce_identity_rate_limit(request, payload.token)
     capability_id = capability_id_from_token(payload.token)
     if capability_id is None:
         raise HTTPException(status_code=401, detail="Invalid identity capability")

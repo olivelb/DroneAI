@@ -11,6 +11,8 @@ services:
     profiles: [http-e2e]
     environment:
       DRONEAI_AUTH_DISABLED: "false"
+      DRONEAI_ALLOW_STATIC_BOOTSTRAP: "true"
+      DRONEAI_IDENTITY_RATE_LIMIT_BACKEND: database
       DRONEAI_API_KEYS_JSON: >-
         [{"key":"droneai-http-e2e-key-0000000000000000","subject":"http-e2e-admin","role":"admin","organization_id":"http-e2e"}]
       DRONEAI_STAGE_JOBS_ENABLED: "false"

@@ -210,7 +210,13 @@ def test_http_probes_distinguish_liveness_from_readiness(monkeypatch):
     }
     assert routes["/live"]() == {"status": "ok"}
     monkeypatch.setattr(main, "database_is_ready", lambda: True)
-    assert routes["/ready"]() == {"status": "ok"}
+    assert routes["/ready"]() == {
+        "status": "ok",
+        "bootstrap_credentials_active": False,
+    }
     monkeypatch.setattr(main, "database_is_ready", lambda: False)
     unavailable = routes["/ready"]()
     assert unavailable.status_code == 503
+    assert unavailable.body == (
+        b'{"status":"unavailable","bootstrap_credentials_active":false}'
+    )

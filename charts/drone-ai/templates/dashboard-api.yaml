@@ -201,6 +201,20 @@ spec:
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
         - name: DRONEAI_DATABASE_AUTH_ENABLED
           value: {{ .Values.dashboardApi.auth.databaseAuthEnabled | quote }}
+        - name: DRONEAI_ALLOW_STATIC_BOOTSTRAP
+          value: {{ .Values.dashboardApi.auth.allowStaticBootstrap | quote }}
+        - name: DRONEAI_IDENTITY_RATE_LIMIT_BACKEND
+          value: {{ .Values.dashboardApi.auth.rateLimitBackend | quote }}
+        - name: DRONEAI_IDENTITY_PEER_RATE_LIMIT_PER_MINUTE
+          value: {{ .Values.dashboardApi.auth.peerRateLimitPerMinute | quote }}
+        - name: DRONEAI_IDENTITY_PEER_RATE_LIMIT_BURST
+          value: {{ .Values.dashboardApi.auth.peerRateLimitBurst | quote }}
+        - name: DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_PER_MINUTE
+          value: {{ .Values.dashboardApi.auth.credentialRateLimitPerMinute | quote }}
+        - name: DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_BURST
+          value: {{ .Values.dashboardApi.auth.credentialRateLimitBurst | quote }}
+        - name: DRONEAI_IDENTITY_RATE_LIMIT_MAX_CLIENTS
+          value: {{ .Values.dashboardApi.auth.rateLimitMaxClients | quote }}
         - name: DRONEAI_RLS_REQUIRED
           value: {{ .Values.dashboardApi.rowLevelSecurityRequired | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS
