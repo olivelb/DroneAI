@@ -205,6 +205,25 @@ jobs:
         run: |
           alembic upgrade head
           make integration-test PYTHON=python
+      - name: Start black-box HTTP control plane
+        run: |
+          compose=(
+            docker compose
+            --project-name droneai-integration
+            --file compose.local.yaml
+            --file .github/compose.integration.yaml
+            --file .github/compose.http-e2e.yaml
+            --profile http-e2e
+          )
+          "${compose[@]}" build db-migrate
+          "${compose[@]}" up --detach --wait dashboard-api dashboard-control-worker
+      - name: Launch and cancel a synthetic mission over HTTP
+        env:
+          DRONEAI_HTTP_E2E_URL: http://localhost:30080
+          DRONEAI_HTTP_E2E_API_KEY: droneai-http-e2e-key-0000000000000000
+        run: >-
+          python -m pytest -q -m integration
+          tests/integration/test_http_control_plane.py
       - name: Show dependency logs on failure
         if: failure()
         run: >-
@@ -212,7 +231,9 @@ jobs:
           --project-name droneai-integration
           --file compose.local.yaml
           --file .github/compose.integration.yaml
-          logs --no-color postgres kafka minio
+          --file .github/compose.http-e2e.yaml
+          --profile http-e2e
+          logs --no-color postgres kafka minio dashboard-api dashboard-control-worker
       - name: Stop integration dependencies
         if: always()
         run: >-
@@ -220,6 +241,8 @@ jobs:
           --project-name droneai-integration
           --file compose.local.yaml
           --file .github/compose.integration.yaml
+          --file .github/compose.http-e2e.yaml
+          --profile http-e2e
           down --volumes
 
   duplication:

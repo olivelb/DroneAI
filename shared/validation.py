@@ -7,6 +7,7 @@ from typing import Any
 from shared.pipeline_params import PARAM_OVERRIDE_KEYS, PARAMETER_METADATA
 from shared.facade_selection import parse_excluded_basename_ranges
 from shared.projected_crs import normalize_epsg
+from shared.tenancy import validate_organization_id
 from shared.yolo_capabilities import SUPPORTED_AERIAL_CLASSES
 
 SAFE_SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -35,15 +36,26 @@ def validate_safe_segment(value: str, *, field_name: str = "path segment") -> st
 
 def validate_dataset_prefix(value: str) -> str:
     normalized = str(value or "").strip().replace("\\", "/").rstrip("/")
-    if not normalized.startswith("datasets/"):
-        raise ValueError("input_dataset must start with 'datasets/'")
     if normalized.startswith("/") or "//" in normalized:
         raise ValueError("input_dataset must be a normalized S3 prefix")
 
     parts = normalized.split("/")
-    if len(parts) < 2 or any(part in {"", ".", ".."} for part in parts):
+    if any(part in {"", ".", ".."} for part in parts):
         raise ValueError("input_dataset contains an unsafe path segment")
-    if any(not DATASET_SEGMENT_RE.fullmatch(part) for part in parts[1:]):
+    if len(parts) >= 2 and parts[0] == "datasets":
+        dataset_parts = parts[1:]
+    elif (
+        len(parts) >= 4
+        and parts[0] == "organizations"
+        and parts[2] == "datasets"
+    ):
+        validate_organization_id(parts[1])
+        dataset_parts = parts[3:]
+    else:
+        raise ValueError(
+            "input_dataset must use a legacy or organization-scoped dataset prefix"
+        )
+    if any(not DATASET_SEGMENT_RE.fullmatch(part) for part in dataset_parts):
         raise ValueError("input_dataset contains unsupported characters")
     if len(normalized) > 512:
         raise ValueError("input_dataset is too long")
