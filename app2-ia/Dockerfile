@@ -1,8 +1,9 @@
-FROM ultralytics/ultralytics:latest@sha256:7450b223200b645ce328f8d9e9a8f7ce1a94fd4b06251c14ec97c4b40fd80c01
+FROM nvidia/cuda:12.9.2-base-ubuntu24.04@sha256:bb0d3cf98bade70e5bf3e15d92355d1418b9628f59b7ed853e83ea66ff20fa49
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PATH=/opt/venv/bin:$PATH
 ENV AERIAL_MODEL_DIR=/opt/modelzoo
 ENV AERIAL_BAKED_MODEL_DIR=/opt/modelzoo
 ENV AERIAL_MODEL_VARIANT=best
@@ -15,13 +16,13 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
+    python3 \
+    python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements/ia-extra.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir --requirement /tmp/requirements.txt \
-    # spin is development tooling inherited from the base image. It is not a
-    # worker dependency and conflicts with huggingface-hub's Click version.
-    && python3 -m pip uninstall --yes spin \
+RUN python3 -m venv /opt/venv \
+    && python3 -m pip install --no-cache-dir --require-hashes --requirement /tmp/requirements.txt \
     && python3 -m pip check
 
 RUN mkdir -p /opt/modelzoo \

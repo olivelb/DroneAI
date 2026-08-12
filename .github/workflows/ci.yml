@@ -363,8 +363,11 @@ jobs:
             artifact: ia-worker
             dockerfile: app2-ia/Dockerfile
             command: >-
-              import os, sys;
+              import os, sys, torch, torchvision, ultralytics;
               assert os.getuid() == 10001;
+              assert torch.version.cuda == '12.9';
+              assert torchvision.__version__.endswith('+cu129');
+              assert ultralytics.__version__ == '8.4.0';
               sys.path.insert(0, '/app/app2-ia');
               import detection_core, tile_detection_workflow
     steps:

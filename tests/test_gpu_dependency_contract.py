@@ -36,6 +36,8 @@ def test_active_cuda_runtime_contracts_are_aligned_to_12_9_2() -> None:
     cmake = (ROOT / "app1-colmap" / "dronegs" / "CMakeLists.txt").read_text(encoding="utf-8")
     manifest = (ROOT / "app1-colmap" / "dronegs" / "src" / "manifest.cpp").read_text(encoding="utf-8")
     license_inventory = (ROOT / "docs" / "dronegs" / "GPL_COMPONENTS.md").read_text(encoding="utf-8")
+    ia_dockerfile = (ROOT / "app2-ia" / "Dockerfile").read_text(encoding="utf-8")
+    ia_lock = (ROOT / "requirements" / "ia-extra.txt").read_text(encoding="utf-8")
 
     assert "nvidia/cuda:12.9.2-devel-ubuntu24.04" in workflow
     assert "nvidia/cuda:12.9.2-base-ubuntu24.04" in deployment
@@ -44,6 +46,11 @@ def test_active_cuda_runtime_contracts_are_aligned_to_12_9_2() -> None:
     assert "DRONEGS_CUDA_RUNTIME_VERSION" in manifest
     assert '\"cuda_runtime\": \"12.8\"' not in manifest
     assert "NVIDIA CUB | 2.8.2 from CUDA Toolkit 12.9.2" in license_inventory
+    assert "nvidia/cuda:12.9.2-base-ubuntu24.04@sha256:" in ia_dockerfile
+    assert "torch==2.13.0+cu129" in ia_lock
+    assert "torchvision==0.28.0+cu129" in ia_lock
+    assert "nvidia-cuda-runtime-cu12==12.9.79" in ia_lock
+    assert "nvidia-cuda-runtime==" not in ia_lock
 
 
 def test_colmap_runtime_is_non_root_and_read_only() -> None:

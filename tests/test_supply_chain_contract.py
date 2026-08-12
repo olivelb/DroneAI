@@ -129,7 +129,7 @@ def test_python_runtime_bases_and_artifacts_are_immutable() -> None:
 
 
 def test_supported_python_locks_and_installers_require_hashes() -> None:
-    for lock_name in ("api.txt", "processing.txt", "colmap.txt", "dev.txt"):
+    for lock_name in ("api.txt", "processing.txt", "colmap.txt", "dev.txt", "ia-extra.txt"):
         lock = (ROOT / "requirements" / lock_name).read_text(encoding="utf-8")
         assert "pip-compile" in lock[:300]
         assert "--generate-hashes" in lock[:300]
@@ -141,6 +141,7 @@ def test_supported_python_locks_and_installers_require_hashes() -> None:
     )
     assert workflow.count("pip install --require-hashes") == 3
     assert "--require-hashes" in bootstrap
+    assert "--require-hashes" in (ROOT / "app2-ia" / "Dockerfile").read_text(encoding="utf-8")
 
 
 def test_frontend_runtime_has_immutable_supply_chain_evidence() -> None:

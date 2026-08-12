@@ -10,4 +10,7 @@ rasterio
 safetensors
 sentencepiece
 sqlalchemy
+torch==2.13.0+cu129
+torchvision==0.28.0+cu129
 transformers
+ultralytics==8.4.0
