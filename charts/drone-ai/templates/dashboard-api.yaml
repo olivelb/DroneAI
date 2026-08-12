@@ -17,6 +17,18 @@
 {{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.controlWorker.enabled) }}
 {{- fail "dashboardApi.controlWorker.enabled must remain true when the HTTP API uses an RLS database role" }}
 {{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.stageJobs.enabled) }}
+{{- fail "stageJobs.enabled must be true in staging and production; fused Kafka compute is development-only" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment .Values.colmapWorker.enabled }}
+{{- fail "colmapWorker.enabled must be false in staging and production; use bounded stage Jobs" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment .Values.iaWorker.enabled }}
+{{- fail "iaWorker.enabled must be false in staging and production; use bounded stage Jobs" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (gt (int .Values.processingWorker.replicaCount) 0) }}
+{{- fail "processingWorker.replicaCount must be 0 in staging and production; use bounded stage Jobs" }}
+{{- end }}
 {{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
 {{- if eq .Values.stageJobs.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey }}
 {{- fail "stageJobs.databaseUrlSecretKey must identify a non-owner PostgreSQL role distinct from the operator role in staging and production" }}
@@ -31,6 +43,21 @@
 {{- fail "stageJobs.credentialSecrets must use one distinct Secret per stage" }}
 {{- end }}
 {{- $_ := set $seenCredentialSecrets $secretName true }}
+{{- $executor := index $.Values.stageJobs.executors $stage | default dict }}
+{{- $executorImage := get $executor "image" | default "" }}
+{{- if not $executorImage }}
+{{- fail (printf "stageJobs.executors.%s.image is required in %s" $stage $.Values.dashboardApi.environment) }}
+{{- end }}
+{{- if not (or (regexMatch "@sha256:[0-9a-f]{64}$" $executorImage) (regexMatch ":[0-9a-f]{7,40}$" $executorImage)) }}
+{{- fail (printf "stageJobs.executors.%s.image must use an OCI digest or Git-SHA tag" $stage) }}
+{{- end }}
+{{- $executorCommand := get $executor "command" | default list }}
+{{- if not $executorCommand }}
+{{- fail (printf "stageJobs.executors.%s.command is required in %s" $stage $.Values.dashboardApi.environment) }}
+{{- end }}
+{{- if and (ne $stage "rasterization") (not (get $executor "gpu_architecture")) }}
+{{- fail (printf "stageJobs.executors.%s.gpu_architecture is required in %s" $stage $.Values.dashboardApi.environment) }}
+{{- end }}
 {{- end }}
 {{- end }}
 # --- ServiceAccount ---
@@ -159,8 +186,6 @@ spec:
         {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.dashboardApi.databaseUrlSecretKey) | nindent 8 }}
         - name: CORS_ORIGINS
           value: {{ .Values.dashboardApi.cors.origins | quote }}
-        - name: DRONEAI_ENV
-          value: {{ .Values.dashboardApi.environment | quote }}
         - name: DRONEAI_EMBED_CONTROL_LOOPS
           value: {{ (not .Values.dashboardApi.controlWorker.enabled) | quote }}
         - name: DRONEAI_AUTH_DISABLED
@@ -203,7 +228,10 @@ spec:
           value: {{ .Values.dashboardApi.tiles.rateLimitBurst | quote }}
         - name: DRONEAI_TILE_RATE_LIMIT_MAX_CLIENTS
           value: {{ .Values.dashboardApi.tiles.rateLimitMaxClients | quote }}
-        {{- if not .Values.dashboardApi.controlWorker.enabled }}
+        {{- if .Values.dashboardApi.controlWorker.enabled }}
+        - name: DRONEAI_STAGE_JOBS_ENABLED
+          value: {{ .Values.stageJobs.enabled | quote }}
+        {{- else }}
         {{- include "drone-ai.controlEnv" . | nindent 8 }}
         {{- end }}
         - name: POD_NAMESPACE

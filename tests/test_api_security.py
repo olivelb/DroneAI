@@ -34,6 +34,7 @@ def _keys():
 
 def _enable_production_rls(monkeypatch):
     monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
 
 
 def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
@@ -168,6 +169,7 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
 
 def test_production_configuration_requires_rls(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
@@ -175,6 +177,14 @@ def test_production_configuration_requires_rls(monkeypatch):
     monkeypatch.delenv("DRONEAI_RLS_REQUIRED", raising=False)
 
     with pytest.raises(RuntimeError, match="DRONEAI_RLS_REQUIRED"):
+        security.validate_production_configuration()
+
+
+def test_production_configuration_rejects_fused_compute(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "false")
+
+    with pytest.raises(RuntimeError, match="require bounded stage Jobs"):
         security.validate_production_configuration()
 
 

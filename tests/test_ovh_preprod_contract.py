@@ -107,7 +107,10 @@ def test_preprod_overlay_requires_immutable_images_and_external_secrets() -> Non
     assert "s3Bucket: droneai-preprod-backups-fe7dc125" in values
     assert "amazon/aws-cli:2.31.25@sha256:" in _read(CHART / "values.yaml")
     assert values.count("@sha256:") >= 2
-    assert "processingWorker:\n  tag: \"REPLACE_GIT_SHA\"\n  resources:" in values
+    assert (
+        "processingWorker:\n  replicaCount: 0\n"
+        "  tag: \"REPLACE_GIT_SHA\"\n  resources:"
+    ) in values
     assert "limits:\n      memory: 4Gi\n    requests:\n      memory: 2Gi" in values
     assert "memory: 16Gi" in values
     assert "memory: 32Gi" in values

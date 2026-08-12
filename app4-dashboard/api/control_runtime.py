@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass
 
 from shared.database import get_session
+from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.inbox_outbox import run_outbox_dispatcher
 
 from . import dataset_uploads
@@ -46,6 +47,9 @@ class ControlLoopSupervisor:
 def start_control_loops(
     stop_event: threading.Event | None = None,
 ) -> ControlLoopSupervisor:
+    # Validate before any daemon thread starts so a protected deployment cannot
+    # become partially live with its compute scheduler disabled.
+    bounded_stage_jobs_enabled()
     event = stop_event or threading.Event()
     outbox_thread = threading.Thread(
         target=run_outbox_dispatcher,

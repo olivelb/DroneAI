@@ -1,6 +1,6 @@
 # OVHcloud preproduction overlay. Replace every REPLACE_* value before install.
-# GPU workers remain disabled until a GPU flavor/quota has been confirmed and
-# the corresponding Terraform node pool exists.
+# Fused GPU workers remain disabled. Bounded Jobs may stay Pending until a GPU
+# flavor/quota has been confirmed and the corresponding node pool exists.
 global:
   namespace: drone-ai-preprod
   createNamespace: false
@@ -86,6 +86,7 @@ iaWorker:
     size: 30Gi
 
 processingWorker:
+  replicaCount: 0
   tag: "REPLACE_GIT_SHA"
   resources:
     limits:
@@ -117,6 +118,29 @@ dashboardFrontend:
     type: ClusterIP
 
 stageJobs:
+  enabled: true
+  artifactManifestV2WriteEnabled: true
+  executors:
+    reconstruction:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "reconstruction"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_training:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_training"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_filtering:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_filtering"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    rasterization:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      command: ["python3", "app1-colmap/stage_executor.py", "rasterization"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    detection:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-ia:REPLACE_GIT_SHA"
+      command: ["python3", "app2-ia/stage_executor.py"]
+      gpu_architecture: REPLACE_GPU_ARCHITECTURE
   credentialSecrets:
     reconstruction: drone-ai-stage-reconstruction-preprod
     gaussian_training: drone-ai-stage-gaussian-training-preprod

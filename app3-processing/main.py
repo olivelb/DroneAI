@@ -32,6 +32,7 @@ from shared.config import (
     TOPIC_STATUS,
     TOPIC_TILE_DETECTIONS,
 )
+from shared.deployment_mode import assert_fused_compute_allowed
 from shared.kafka_reliability import (
     ConsumerAssignmentWatchdog,
     process_message,
@@ -130,6 +131,7 @@ def event_handler(topic: str) -> Callable[[dict[str, Any]], None]:
 
 
 def worker_main() -> None:
+    assert_fused_compute_allowed("processing")
     work_consumer = create_work_consumer()
     assignment_watchdog = ConsumerAssignmentWatchdog.from_environment()
     threading.Thread(target=control_consumer_thread, daemon=True).start()

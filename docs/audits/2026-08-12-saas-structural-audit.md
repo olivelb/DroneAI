@@ -28,9 +28,10 @@ dataset qualification.
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
 | Immutable tenant data | tenant workspaces, GCP bundles and detection shards publish under organization-specific CAS identities while historical readers remain available | v3 canonicalization, identical-byte isolation and cross-tenant denial tests |
+| Protected compute | staging and production accept only bounded, immutable stage Jobs; the API, control worker, Helm overlays and compatibility workers all fail closed against fused execution | deployment-mode tests, protected Helm renders and worker startup guards |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 917 non-GPU/non-integration
+The qualified local baseline after these changes is 934 non-GPU/non-integration
 Python tests, five real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
@@ -54,13 +55,14 @@ phase makes `Mission.workspace_prefix` non-nullable and authoritative in every
 mission-object producer and consumer, including event propagation, recovery
 and exact-prefix deletion. The third phase isolates new tenant workspaces, GCP
 bundles and detection shards in organization-specific CAS while retaining
-historical v1/v2 reads. The remaining ordered phases are:
+historical v1/v2 reads. The fourth phase rejects fused compute in protected
+environments at both the application and Helm boundaries. The remaining
+ordered phases are:
 
-1. reject fused compute in protected multi-organization deployments;
-2. complete organization binding for status/control events and deterministic
+1. complete organization binding for status/control events and deterministic
    identity before
    relaxing the globally unique mission identifier;
-3. account physical fan-out resource units and run the detection finalizer on
+2. account physical fan-out resource units and run the detection finalizer on
    CPU.
 
 ### P1 — SaaS control plane

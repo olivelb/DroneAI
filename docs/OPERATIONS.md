@@ -72,14 +72,16 @@ activation, verify that their values identify distinct database and object
 storage principals: database roles must have no schema, role or database
 administration privilege, and S3 policies must be limited to the DroneAI bucket
 and the exact read/write/delete operations needed by the executor. Account for
-immutable upstream manifests and shared `blobs/sha256/` CAS objects when writing
-those policies. Do not claim credential isolation merely by copying the same
-principal into five differently named Secrets.
+immutable upstream manifests and organization-scoped
+`organizations/{organization_id}/blobs/sha256/` CAS objects when writing those
+policies. Historical global CAS reads are migration compatibility only. Do not
+claim credential isolation merely by copying the same principal into five
+differently named Secrets.
 
 Development deployments may omit the map and retain the shared
 `storage.existingSecret` fallback so the single-node BIGZEN workflow remains
-reproducible. That fallback is intentionally rejected when stage Jobs are
-enabled with `dashboardApi.environment=staging` or `production`.
+reproducible. Staging and production require bounded stage Jobs and reject this
+fallback as well as all fused compute workers.
 
 ## GPU capability scheduling gate
 

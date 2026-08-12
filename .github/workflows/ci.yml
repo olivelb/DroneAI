@@ -454,6 +454,11 @@ jobs:
           --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
+          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia:${GITHUB_SHA}"
           > /tmp/drone-ai-production.yaml
       - name: Render OVHcloud preproduction values
         run: >-
@@ -462,6 +467,11 @@ jobs:
           --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
+          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
+          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia:${GITHUB_SHA}"
           > /tmp/drone-ai-ovh-preprod.yaml
       - name: Verify production storage Secret references
         run: |
@@ -483,6 +493,12 @@ jobs:
             echo "GPU workers must remain opt-in in the preproduction overlay" >&2
             exit 1
           fi
+          awk '
+            $0 == "  name: processing-worker" { found = 1 }
+            found && $0 == "  replicas: 0" { zero = 1 }
+            found && $0 == "---" { exit(zero ? 0 : 1) }
+            END { exit(found && zero ? 0 : 1) }
+          ' /tmp/drone-ai-ovh-preprod.yaml
           if grep -Eq '^[[:space:]]+image: .+:latest$' /tmp/drone-ai-ovh-preprod.yaml; then
             echo "Mutable service image tag found in the preproduction render" >&2
             exit 1
