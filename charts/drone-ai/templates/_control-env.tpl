@@ -40,6 +40,12 @@ dashboardApi.controlWorker.enabled is true.
   value: {{ .Values.stageJobs.ttlSecondsAfterFinished | quote }}
 - name: DRONEAI_STAGE_JOB_RUNTIME_CLASS
   value: {{ .Values.gpu.runtimeClassName | quote }}
+- name: DRONEAI_STAGE_WORK_DRIVES_JSON
+  value: {{ .Values.colmapWorker.workVolume.drives | toJson | quote }}
+- name: DRONEAI_STAGE_WORK_DRIVE_DEFAULT
+  value: {{ .Values.colmapWorker.workVolume.default | quote }}
+- name: DRONEAI_STAGE_WORK_EMPTY_DIR_SIZE_LIMIT
+  value: {{ .Values.colmapWorker.workVolume.sizeLimit | quote }}
 - name: DRONEAI_STAGE_HF_TOKEN_SECRET_NAME
   value: {{ .Values.hfToken.existingSecret | quote }}
 - name: DRONEAI_STAGE_HF_TOKEN_SECRET_KEY

@@ -9,7 +9,9 @@ import re
 import ssl
 import urllib.error
 import urllib.request
+from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 from typing import Any, cast
 
 from shared.stage_contracts import (
@@ -95,6 +97,53 @@ class IndexedJobConfig:
 
 
 @dataclass(frozen=True)
+class StageJobWorkVolume:
+    """Validated Kubernetes volume source selected from deployment config."""
+
+    source: JsonObject
+
+    def __post_init__(self) -> None:
+        if len(self.source) != 1:
+            raise ValueError("A Stage Job work volume requires exactly one source")
+        kind, value = next(iter(self.source.items()))
+        if kind == "hostPath":
+            if not isinstance(value, dict) or set(value) != {"path", "type"}:
+                raise ValueError("Stage Job hostPath work volumes require path and type")
+            path = value.get("path")
+            if (
+                not isinstance(path, str)
+                or not path.startswith("/")
+                or path == "/"
+                or ".." in PurePosixPath(path).parts
+                or value.get("type") != "Directory"
+            ):
+                raise ValueError("Stage Job hostPath work volume is unsafe")
+        elif kind == "persistentVolumeClaim":
+            if not isinstance(value, dict) or set(value) != {"claimName"}:
+                raise ValueError("Stage Job PVC work volumes require claimName")
+            claim_name = value.get("claimName")
+            if not isinstance(claim_name, str) or not re.fullmatch(
+                r"[a-z0-9](?:[-a-z0-9.]{0,251}[a-z0-9])?",
+                claim_name,
+            ):
+                raise ValueError("Stage Job PVC claim name is invalid")
+        elif kind == "emptyDir":
+            if not isinstance(value, dict) or set(value) - {"sizeLimit"}:
+                raise ValueError("Stage Job emptyDir work volume is invalid")
+            size_limit = value.get("sizeLimit")
+            if size_limit is not None and (
+                not isinstance(size_limit, str)
+                or not re.fullmatch(r"[1-9][0-9]*(?:Mi|Gi|Ti)", size_limit)
+            ):
+                raise ValueError("Stage Job emptyDir size limit is invalid")
+        else:
+            raise ValueError(f"Unsupported Stage Job work volume source: {kind}")
+
+    def manifest(self) -> JsonObject:
+        return deepcopy(self.source)
+
+
+@dataclass(frozen=True)
 class StageJobConfig:
     namespace: str
     image: str
@@ -109,6 +158,7 @@ class StageJobConfig:
     secret_environment: tuple[SecretEnvironment, ...] = ()
     indexed: IndexedJobConfig | None = None
     name_suffix: str | None = None
+    work_volume: StageJobWorkVolume | None = None
 
     def __post_init__(self) -> None:
         if not self.image or not self.command:
@@ -221,6 +271,17 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
         "droneai.resource-class": request.resource_class,
         "droneai.run-id-hash": run_id_hash,
     }
+    work_volume = (
+        {
+            "name": "work",
+            **config.work_volume.manifest(),
+        }
+        if config.work_volume is not None
+        else {
+            "name": "work",
+            "emptyDir": {"sizeLimit": resources["ephemeral_storage_limit"]},
+        }
+    )
     pod_spec: JsonObject = {
         "restartPolicy": "Never",
         "serviceAccountName": config.service_account_name,
@@ -250,10 +311,7 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
         ],
         "volumes": [
             {"name": "tmp", "emptyDir": {}},
-            {
-                "name": "work",
-                "emptyDir": {"sizeLimit": resources["ephemeral_storage_limit"]},
-            },
+            work_volume,
             {
                 "name": "cache",
                 "emptyDir": {"sizeLimit": resources["ephemeral_storage_limit"]},

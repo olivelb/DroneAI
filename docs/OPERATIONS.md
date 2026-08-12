@@ -95,6 +95,16 @@ smallest physical GPU it observes and logs the resulting advertised GB class.
 reported usable MiB does not map cleanly to its reviewed SKU; never use it to
 overstate capacity.
 
+Stage Jobs resolve the mission `work_drive` from
+`colmapWorker.workVolume.drives`. Verify the rendered Job's `work` volume before
+a large run: a configured `hostPath` must be the real mounted disk path and a
+cloud workspace must reference the expected bound PVC. The scheduler fails a
+run whose selected drive disappeared. Do not replace that failure with a root
+`emptyDir`: restoring and rasterizing a large CAS workspace can cross kubelet's
+ephemeral-storage eviction threshold. The HQ raster class is
+`gpu-high-memory` (24 GiB request, 64 GiB limit); normal rasterization remains
+`gpu-standard` while its Gaussian cap is at most 3M.
+
 Executor-specific `node_selector` entries may further restrict a pool or GPU
 architecture, but cannot contradict the resource-class selectors. Executor
 `tolerations` accept only explicit non-empty taint keys and validated Kubernetes

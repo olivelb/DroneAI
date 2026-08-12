@@ -37,7 +37,7 @@ The entire stack is packaged as a single Helm chart (`charts/drone-ai/`) that wo
 
 | Service | Image | GPU | Memory | Role |
 |---------|-------|-----|--------|------|
-| Stage Jobs 1–4 | `drone-colmap:<git-sha>` | 1 when required | resource class; initially 16 Gi request / 32 Gi limit | Reconstruction, Gaussian training/filtering and Ortho/DEM rasterization |
+| Stage Jobs 1–4 | `drone-colmap:<git-sha>` | 1 when required | resource class; HQ raster/training/filtering use 24 Gi request / 64 Gi limit | Reconstruction, Gaussian training/filtering and Ortho/DEM rasterization |
 | Stage Job 5 | `drone-ia:<git-sha>` | 1 | `gpu-high-memory` class | SAM3/YOLO streaming inference and GeoJSON publication |
 | Compatibility processing worker | `drone-processing:<git-sha>` | — | 4–16 Gi | Used only by the fused Kafka compatibility path |
 | `dashboard-api` | `drone-dashboard-api` | — | 512 Mi–2 Gi | FastAPI control plane, WebSocket status |
@@ -300,7 +300,10 @@ spec:
 
 Apply this manifest before Helm. The CSI driver binds the claim to real cloud
 block storage; a missing or unbound claim prevents the COLMAP pod from becoming
-ready instead of advertising an unusable workspace.
+ready instead of advertising an unusable workspace. The same drive catalog is
+also consumed by bounded Stage Jobs: the mission-selected
+`cloud-workspace` PVC is mounted at `/work`, so CAS restore and raster scratch
+data do not consume the Kubernetes node root filesystem.
 
 ## Step 6: Create `values-cloud.yaml`
 

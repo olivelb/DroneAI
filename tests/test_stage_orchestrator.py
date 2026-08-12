@@ -92,9 +92,16 @@ def _add_run(
     status="queued",
     stage="reconstruction",
     resource_class="gpu-geometry",
+    mission_params=None,
+    run_parameters=None,
 ):
     with scope() as session:
-        mission = Mission(vol_id=vol_id, owner_subject=owner, status="pending")
+        mission = Mission(
+            vol_id=vol_id,
+            owner_subject=owner,
+            status="pending",
+            params=mission_params,
+        )
         session.add(mission)
         session.flush()
         session.add(
@@ -106,6 +113,7 @@ def _add_run(
                 status=status,
                 idempotency_key=run_id[0] * 64,
                 resource_class=resource_class,
+                parameters=run_parameters,
             )
         )
 
@@ -209,6 +217,79 @@ def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sess
         run = session.query(MissionStageRun).one()
         assert run.resource_class == "gpu-standard"
         assert run.provenance["resource_class_repaired_from"] == "cpu-standard"
+
+
+def test_reservation_routes_work_to_the_mission_selected_drive(stage_sessions):
+    run_id = "4" * 32
+    _add_run(
+        stage_sessions,
+        "mission-work-drive",
+        "owner-a",
+        run_id,
+        stage="rasterization",
+        resource_class="gpu-high-memory",
+        mission_params={"work_drive": "drive-j"},
+        run_parameters={"work_drive": "drive-j"},
+    )
+    work_volume = orchestrator.StageJobWorkVolume(
+        {"hostPath": {"path": "/mnt/j/.droneai/work", "type": "Directory"}}
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(
+                work_drives={"drive-j": work_volume},
+                work_drive_default="drive-j",
+            ),
+            datetime.now(UTC),
+        )
+
+    assert reserved[0].config.work_volume == work_volume
+    manifest = orchestrator.build_stage_job(
+        reserved[0].request,
+        reserved[0].config,
+    )
+    work = next(
+        volume
+        for volume in manifest["spec"]["template"]["spec"]["volumes"]
+        if volume["name"] == "work"
+    )
+    assert work["hostPath"]["path"] == "/mnt/j/.droneai/work"
+
+
+def test_reservation_fails_the_run_when_selected_work_drive_disappears(
+    stage_sessions,
+):
+    run_id = "2" * 32
+    _add_run(
+        stage_sessions,
+        "mission-missing-drive",
+        "owner-a",
+        run_id,
+        mission_params={"work_drive": "drive-j"},
+        run_parameters={"work_drive": "drive-j"},
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(
+                work_drives={
+                    "system": orchestrator.StageJobWorkVolume(
+                        {"emptyDir": {"sizeLimit": "100Gi"}}
+                    )
+                },
+                work_drive_default="system",
+            ),
+            datetime.now(UTC),
+        )
+
+    assert reserved == []
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).one()
+        assert run.status == "failed"
+        assert "work_drive is not configured" in run.error_message
 
 
 def test_reservation_skips_when_another_postgres_scheduler_owns_the_lock():
@@ -419,6 +500,41 @@ def test_executor_catalog_parses_stage_tolerations():
             effect="NoSchedule",
         ),
     )
+
+
+def test_work_drive_catalog_supports_local_pvc_and_bounded_empty_dir():
+    catalog = orchestrator._work_drive_catalog(
+        json.dumps(
+            [
+                {"name": "drive-j", "hostPath": "/mnt/j/.droneai/work"},
+                {"name": "cloud", "existingClaim": "droneai-work"},
+                {"name": "system", "type": "emptyDir"},
+            ]
+        ),
+        empty_dir_size_limit="120Gi",
+    )
+
+    assert catalog["drive-j"].source["hostPath"]["type"] == "Directory"
+    assert catalog["cloud"].source["persistentVolumeClaim"] == {
+        "claimName": "droneai-work"
+    }
+    assert catalog["system"].source["emptyDir"] == {"sizeLimit": "120Gi"}
+
+
+def test_work_drive_catalog_fails_closed_on_ambiguous_sources():
+    with pytest.raises(ValueError, match="one supported source"):
+        orchestrator._work_drive_catalog(
+            json.dumps(
+                [
+                    {
+                        "name": "ambiguous",
+                        "hostPath": "/mnt/j/work",
+                        "existingClaim": "droneai-work",
+                    }
+                ]
+            ),
+            empty_dir_size_limit="100Gi",
+        )
 
 
 def test_protected_stage_jobs_require_distinct_scoped_credential_secrets(

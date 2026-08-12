@@ -44,6 +44,7 @@ from .kubernetes_jobs import (
     StageJobConfig,
     StageJobRequest,
     StageJobToleration,
+    StageJobWorkVolume,
     build_stage_job,
     stage_job_name,
 )
@@ -91,6 +92,8 @@ class StageOrchestratorSettings:
     detection_tiles_per_shard: int = 1_024
     detection_shard_parallelism: int = 2
     detection_maximum_tiles: int = MAX_DETECTION_TILES
+    work_drives: dict[str, StageJobWorkVolume] = field(default_factory=dict)
+    work_drive_default: str | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,50 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
             node_selector=tuple(sorted(selector.items())),
             tolerations=parsed_tolerations,
         )
+    return result
+
+
+def _work_drive_catalog(
+    raw: str,
+    *,
+    empty_dir_size_limit: str,
+) -> dict[str, StageJobWorkVolume]:
+    payload = json.loads(raw or "[]")
+    if not isinstance(payload, list):
+        raise ValueError("DRONEAI_STAGE_WORK_DRIVES_JSON must be a list")
+    result: dict[str, StageJobWorkVolume] = {}
+    for item in payload:
+        if not isinstance(item, dict):
+            raise ValueError("Stage Job work drive entries must be objects")
+        name = item.get("name")
+        if not isinstance(name, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}",
+            name,
+        ):
+            raise ValueError("Stage Job work drive name is invalid")
+        if name in result:
+            raise ValueError(f"Duplicate Stage Job work drive: {name}")
+        host_path = item.get("hostPath")
+        claim_name = item.get("existingClaim")
+        drive_type = item.get("type")
+        configured_sources = sum(
+            (
+                bool(host_path),
+                bool(claim_name),
+                drive_type == "emptyDir",
+            )
+        )
+        if configured_sources != 1:
+            raise ValueError(
+                f"Stage Job work drive {name} requires one supported source"
+            )
+        if host_path:
+            source = {"hostPath": {"path": host_path, "type": "Directory"}}
+        elif claim_name:
+            source = {"persistentVolumeClaim": {"claimName": claim_name}}
+        else:
+            source = {"emptyDir": {"sizeLimit": empty_dir_size_limit}}
+        result[name] = StageJobWorkVolume(source)
     return result
 
 
@@ -306,6 +353,20 @@ def settings_from_environment() -> StageOrchestratorSettings:
             os.getenv("DRONEAI_STAGE_HF_TOKEN_SECRET_KEY", "HF_TOKEN"),
         ),
     )
+    work_drives = _work_drive_catalog(
+        os.getenv("DRONEAI_STAGE_WORK_DRIVES_JSON", "[]"),
+        empty_dir_size_limit=os.getenv(
+            "DRONEAI_STAGE_WORK_EMPTY_DIR_SIZE_LIMIT",
+            "100Gi",
+        ),
+    )
+    work_drive_default = (
+        os.getenv("DRONEAI_STAGE_WORK_DRIVE_DEFAULT", "").strip() or None
+    )
+    if work_drives and work_drive_default not in work_drives:
+        raise ValueError(
+            "DRONEAI_STAGE_WORK_DRIVE_DEFAULT must name a configured work drive"
+        )
     return StageOrchestratorSettings(
         enabled=enabled,
         namespace=os.getenv("POD_NAMESPACE", "drone-ai"),
@@ -349,6 +410,8 @@ def settings_from_environment() -> StageOrchestratorSettings:
             MAX_DETECTION_TILES,
             MAX_DETECTION_TILES,
         ),
+        work_drives=work_drives,
+        work_drive_default=work_drive_default,
     )
 
 
@@ -481,6 +544,21 @@ def _reserved_job(
     elif stage == "detection" and phase == DETECTION_FINALIZER_PHASE:
         name_suffix = "finalizer"
         phase_environment = (("DRONEAI_DETECTION_EXECUTION_MODE", "finalizer"),)
+    run_parameters = cast(dict[str, Any], getattr(run, "parameters", None) or {})
+    mission_parameters = cast(
+        dict[str, Any],
+        getattr(mission, "params", None) or {},
+    )
+    work_drive = (
+        run_parameters.get("work_drive")
+        or mission_parameters.get("work_drive")
+        or settings.work_drive_default
+    )
+    work_volume = None
+    if settings.work_drives:
+        if not isinstance(work_drive, str) or work_drive not in settings.work_drives:
+            raise ValueError("Stage Job work_drive is not configured")
+        work_volume = settings.work_drives[work_drive]
     request = StageJobRequest(
         run_id=cast(str, run.run_id),
         mission_id=cast(int, mission.id),
@@ -511,6 +589,7 @@ def _reserved_job(
             ),
             indexed=indexed,
             name_suffix=name_suffix,
+            work_volume=work_volume,
         ),
         job_name=_detection_job_name(run),
     )
@@ -625,6 +704,13 @@ def reserve_ready_jobs(
             run.error_message = f"Invalid detection fan-out plan: {error}"
             run.completed_at = now
             continue
+        try:
+            reserved_job = _reserved_job(run, mission, settings)
+        except ValueError as error:
+            run.status = "failed"
+            run.error_message = f"Invalid Stage Job workspace configuration: {error}"
+            run.completed_at = now
+            continue
         run.executor = EXECUTOR_NAME
         run.job_name = _detection_job_name(run)
         run.scheduled_at = now
@@ -636,7 +722,7 @@ def reserve_ready_jobs(
             "resource_class": run.resource_class,
             "gpu_architecture": executor.gpu_architecture,
         }
-        reserved.append(_reserved_job(run, mission, settings))
+        reserved.append(reserved_job)
     return reserved
 
 

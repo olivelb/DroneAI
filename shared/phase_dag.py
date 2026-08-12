@@ -87,6 +87,7 @@ def build_stage_run_specs(payload: dict[str, Any]) -> list[StageRunSpec]:
             "dag_version": STAGE_DAG_VERSION,
             "quality_profile": payload.get("quality_profile"),
             "quality_profile_version": payload.get("quality_profile_version"),
+            "work_drive": payload.get("work_drive"),
             "colmap_params": payload.get("colmap_params") or {},
             "ai": {
                 "backend": payload.get("ai_backend"),
