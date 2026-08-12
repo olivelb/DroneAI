@@ -82,6 +82,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/identity.py \
+	app4-dashboard/api/routers/identity_access_audit.py \
 	app4-dashboard/api/routers/identity_capabilities.py \
 	app4-dashboard/api/routers/identity_credentials.py \
 	app4-dashboard/api/routers/identity_members.py \

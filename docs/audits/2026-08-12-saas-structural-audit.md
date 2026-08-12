@@ -22,7 +22,7 @@ dataset qualification.
 | API lifecycle | durable outbox, upload reconciliation and stage scheduling run in a dedicated control worker | lifecycle tests, Compose config, Helm render and least-privilege RBAC |
 | Control-worker availability | protected overlays run two rolling replicas with PostgreSQL session-lock leadership and a disruption budget | real two-connection exclusion, forced-connection-loss takeover and Helm render tests |
 | Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
-| Integration | eight focused tests cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
+| Integration | eleven focused tests cross real PostgreSQL, Kafka and MinIO boundaries | isolated Compose integration CI job and migrated temporary database |
 | HTTP control plane | a black-box journey bootstraps an organization, uploads to MinIO, launches/cancels a mission and observes published outbox delivery | GPU-free Compose profile with migration, authenticated API and control worker |
 | SaaS policy | storage, logical stage concurrency, shared request rate and terminal-mission retention are explicit per-organization controls, separate from science | PostgreSQL policy/RLS, append-only usage ledger, scheduler/upload/middleware/retention tests and operator-only provisioning CLI |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
@@ -31,6 +31,7 @@ dataset qualification.
 | Platform support | durable `support` identities can inspect organization metadata and state only, without tenant-admin or data-plane privilege | separate realm tests, SQL update restriction, RLS denial and append-only platform audit |
 | Bootstrap retirement | production ignores static bootstrap credentials by default, fails startup on a forgotten registry and exposes only their active/inactive state in readiness | security policy, Helm overlays and HTTP readiness tests |
 | Identity abuse control | auth and platform identity lookups are preceded by shared peer and public-credential token buckets that store no raw token | middleware/direct-login tests and PostgreSQL-backed limiter qualification |
+| Delegated access audit | explicit admin access to another member's mission or dataset is tenant-scoped, fail-closed and durably append-only | API filtering tests, real PostgreSQL immutability and non-owner RLS denial |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
@@ -41,8 +42,8 @@ dataset qualification.
 | GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 1005 non-GPU/non-integration
-Python tests, eight focused real-service integration tests, one real HTTP
+The qualified local baseline after these changes is 1007 non-GPU/non-integration
+Python tests, eleven focused real-service integration tests, one real HTTP
 control-plane journey, 32 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and
 actionlint also pass.

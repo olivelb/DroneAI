@@ -118,7 +118,8 @@ the distinct stage roles keep compromise blast radius explicit.
 
 Migration `0026` enables one fail-closed policy on:
 
-- organizations, members, API credentials and identity audit;
+- organizations, members, API credentials, identity audit and the append-only
+  cross-member access ledger;
 - one-time identity capabilities;
 - dataset upload sessions/files and datasets;
 - missions, logs, stage runs, shard receipts and artifacts/parents;
@@ -142,8 +143,9 @@ API role is a release invariant, not an optional hardening suggestion.
 Migration `0029` adds separate RLS-protected platform member, credential and
 append-only audit tables. Migration `0030` adds capability-scoped tenant
 policies for invitation and recovery redemption. Migration `0031` removes the
-mission-to-tenant audience oracle. These changes do not widen the ordinary
-organization context.
+mission-to-tenant audience oracle. Migration `0032` adds the tenant-scoped,
+append-only cross-member access ledger. These changes do not widen the
+ordinary organization context or platform support's metadata-only role.
 
 ## Migration, rollback and qualification
 

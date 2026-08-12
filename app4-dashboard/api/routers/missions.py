@@ -135,13 +135,44 @@ def _find_mission(
     return cast(MissionMutationRecord | None, query.first())
 
 
+def _resolve_owner_for_direct_lookup(
+    principal: Principal,
+    requested_owner: str | None,
+    *,
+    action: str,
+    vol_id: str | None = None,
+) -> str:
+    """Persist explicit delegation before helpers open their own DB session."""
+
+    normalized_owner = requested_owner.strip() if requested_owner is not None else None
+    durable_delegation = (
+        normalized_owner not in {None, "", principal.subject}
+        and principal.role == "admin"
+    )
+    if durable_delegation:
+        with get_session() as audit_session:
+            return resolve_owner_subject(
+                principal,
+                requested_owner,
+                action=action,
+                vol_id=vol_id,
+                audit_session=audit_session,
+            )
+    return resolve_owner_subject(
+        principal,
+        requested_owner,
+        action=action,
+        vol_id=vol_id,
+    )
+
+
 @router.get("/status/summary")
 def status_summary(
     principal: Annotated[Principal, Depends(require_authenticated)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> StatusSummary:
     try:
-        owner = resolve_owner_subject(
+        owner = _resolve_owner_for_direct_lookup(
             principal,
             owner_subject,
             action="summary",
@@ -163,7 +194,7 @@ def mission_state(
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> MissionStateResult:
     try:
-        owner = resolve_owner_subject(
+        owner = _resolve_owner_for_direct_lookup(
             principal,
             owner_subject,
             action="state",
@@ -346,7 +377,7 @@ def _resume_mission(
     owner_subject: str | None = None,
 ) -> ResumeResponse:
     try:
-        owner = resolve_owner_subject(
+        owner = _resolve_owner_for_direct_lookup(
             principal,
             owner_subject,
             action="resume",
@@ -366,6 +397,8 @@ def _resume_mission(
                     event=build_resume_event(payload),
                     key=tenant_mission_key(principal.organization_id, vol_id),
                 )
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

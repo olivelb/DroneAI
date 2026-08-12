@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from fastapi import HTTPException, status
 
+from shared.access_audit import append_access_audit_event
 from shared.database import Dataset
 from shared.tenancy import LEGACY_ORGANIZATION_ID
 
@@ -23,8 +24,9 @@ def resolve_dataset_owner(
     *,
     action: str,
     dataset_name: str | None = None,
+    audit_session: Any | None = None,
 ) -> str:
-    """Resolve a dataset tenant boundary with explicit audited admin delegation."""
+    """Resolve dataset ownership inside one tenant with audited delegation."""
 
     owner = (requested_owner or principal.subject).strip()
     if not owner:
@@ -38,8 +40,30 @@ def resolve_dataset_owner(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Dataset not found",
             )
+        if audit_session is None:
+            raise RuntimeError(
+                "Cross-member dataset access requires a durable audit session"
+            )
+        append_access_audit_event(
+            audit_session,
+            organization_id=getattr(
+                principal,
+                "organization_id",
+                LEGACY_ORGANIZATION_ID,
+            ),
+            actor_subject=principal.subject,
+            actor_role=principal.role,
+            actor_realm=getattr(principal, "realm", "tenant"),
+            actor_member_id=getattr(principal, "member_id", None),
+            actor_credential_id=getattr(principal, "credential_id", None),
+            action=action,
+            target_owner_subject=owner,
+            resource_type="dataset",
+            resource_id=dataset_name,
+        )
+        audit_session.flush()
         audit_logger.warning(
-            "admin_cross_tenant_dataset_access principal=%s owner=%s action=%s dataset=%s",
+            "admin_cross_member_dataset_access principal=%s owner=%s action=%s dataset=%s",
             principal.subject,
             owner,
             action,
@@ -62,6 +86,7 @@ def dataset_query(
         requested_owner,
         action=action,
         dataset_name=dataset_name,
+        audit_session=session,
     )
     organization_id = getattr(
         principal,
