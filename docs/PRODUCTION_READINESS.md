@@ -94,10 +94,18 @@ also reference the catalogue row by foreign key. See
 [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md).
 
 Incomplete sessions expire after 24 hours by default and the API cleanup worker
-aborts their stored multipart parts. A partial unique index reserves each active
-dataset name across API replicas. Cleanup replicas claim expired rows with `FOR
-UPDATE SKIP LOCKED`, and an already-missing multipart upload is treated as an
-idempotent successful abort.
+first reconciles crash-recovery intents, then aborts ordinary expired multipart
+parts. Creation persists `initializing` rows before asking S3 for an upload ID;
+file completion persists the part list as `completing` before completing S3;
+and dataset completion persists `finalizing` plus a stable timestamp before
+publishing the manifest. A retry or the cleanup worker adopts a matching S3
+object by its session/file metadata and declared size. An API delete also
+refuses `completing`, `finalizing`, or an active session with already-completed
+files, so a lost HTTP response cannot erase resumable progress. Expiry cleanup
+can still remove that progress after the retention window. A partial unique
+index reserves each active dataset name across API replicas. Recovery and
+cleanup replicas claim rows with `FOR UPDATE SKIP LOCKED`, and an
+already-missing multipart upload is treated as an idempotent successful abort.
 
 The API accepts aerial images plus DJI/GNSS sidecars and enforces the same
 quotas before issuing any storage URL:
@@ -114,9 +122,12 @@ Operational tuning is available through:
 - `DRONEAI_UPLOAD_PART_URL_SECONDS` (default 15 minutes, maximum one hour);
 - `DRONEAI_UPLOAD_CLEANUP_SECONDS` (default 15 minutes).
 
-The S3 bucket must allow `PUT`, `GET` and `HEAD` from the exact frontend
-origin and expose the `ETag` response header. Local MinIO receives that rule
-automatically. For an external S3-compatible bucket, apply it with
+The browser CORS policy must allow `PUT` from the exact frontend origin and
+expose the `ETag` response header. The API storage principal also needs object
+`PUT`, `GET`, `HEAD` and `DELETE`, plus create/complete/abort and list-multipart
+permissions on the dataset prefix; orphan recovery depends on exact-key
+multipart listing. Local MinIO receives the browser rule automatically. For an
+external S3-compatible bucket, apply it with
 `scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
 origin. The previous API-proxied `/datasets/upload` endpoint now returns `404`
 in every environment; accepting an untracked development-only ingestion path

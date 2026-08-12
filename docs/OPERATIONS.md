@@ -303,6 +303,9 @@ can still reference an older product.
 
 | Observation | Safe response |
 |---|---|
+| Dataset upload remains `initializing` | Inspect `last_error` and S3 create/list/abort permissions. Retry the exact create request or wait for the reconciler; it aborts any unrecorded exact-key multipart handle before creating a new one. |
+| Dataset file remains `completing` | Do not abort or delete the key. Retry the same completion request or wait for reconciliation; a matching object is adopted from `HEAD` without replaying S3 completion. |
+| Dataset upload remains `finalizing` | Do not delete the manifest or file objects. Retry the session completion or wait for reconciliation; the stable timestamp makes manifest publication idempotent before catalogue commit. |
 | Queued run has no Job | Let the bounded reconciler recreate it within its dispatch limit; do not create an untracked pod. |
 | Heartbeat is stale | Treat it as delayed observability, inspect the Job and node, and do not infer failure solely from silence. |
 | Job failed or exceeded its deadline | Preserve logs and durable error, then create a new stage attempt against the same exact parents. |
@@ -311,6 +314,30 @@ can still reference an older product.
 | Database is unavailable/corrupt | Stop writers, restore into an isolated instance, validate migrations/counts, then perform a reviewed cutover. |
 | S3 object is missing | Stop downstream retries and recover the exact version/checksum; do not substitute a similarly named object. |
 | Deployment regression | Roll back to the recorded Helm revision and immutable image digests; schema rollback requires its own tested procedure. |
+
+The upload reconciler runs before expired-upload cleanup on every
+`DRONEAI_UPLOAD_CLEANUP_SECONDS` interval. Inspect pending states without
+modifying them manually:
+
+```sql
+SELECT session_id, dataset_name, status, updated_at, last_error
+FROM dataset_upload_sessions
+WHERE status IN ('initializing', 'finalizing')
+   OR EXISTS (
+       SELECT 1
+       FROM dataset_upload_files
+       WHERE upload_session_id = dataset_upload_sessions.id
+         AND status = 'completing'
+   )
+ORDER BY updated_at;
+```
+
+Repeated `last_error` values indicate a storage permission/provider problem or
+a database outage, not a scientific-data failure. Keep those incidents in the
+SaaS operational queue. Migration `0023` is reversible for deployment rollback,
+but its downgrade deliberately removes sessions that never obtained an S3
+handle and converts uncertain completions to `failed`; run it only after the
+new API writers are stopped and multipart state has been inventoried.
 
 For compatibility Kafka workers, an unassigned consumer is not necessarily
 lost: replicas may legitimately outnumber topic partitions. The assignment

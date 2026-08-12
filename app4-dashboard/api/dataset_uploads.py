@@ -13,6 +13,7 @@ from typing import TypedDict, cast
 
 from fastapi import HTTPException, status
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Query, Session
 
@@ -47,6 +48,7 @@ MIN_PART_BYTES = 5 * 1024 * 1024
 MAX_PART_BYTES = 512 * 1024 * 1024
 MAX_MULTIPART_PARTS = 10_000
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
+ACTIVE_UPLOAD_STATUSES = ("initializing", "uploading", "finalizing", "failed")
 
 
 def _storage_error_code(error: Exception) -> str | None:
@@ -241,7 +243,10 @@ def _validate_request(request: UploadSessionRequest) -> tuple[str, int]:
 
 def _serialize_session(record: DatasetUploadSession) -> UploadSessionResponse:
     part_size = int(record.part_size)
-    files = sorted(record.files, key=lambda item: item.filename)
+    files = sorted(
+        (item for item in record.files if item.status == "uploading"),
+        key=lambda item: item.filename,
+    )
     return {
         "session_id": str(record.session_id),
         "dataset": str(record.dataset_name),
@@ -264,30 +269,184 @@ def _serialize_session(record: DatasetUploadSession) -> UploadSessionResponse:
     }
 
 
+def _matching_upload_request(
+    record: DatasetUploadSession,
+    request: UploadSessionRequest,
+) -> bool:
+    requested = sorted(
+        (
+            item.name,
+            int(item.size),
+            item.content_type or "application/octet-stream",
+        )
+        for item in request.files
+    )
+    persisted = sorted(
+        (
+            str(item.filename),
+            int(item.size_bytes),
+            str(item.content_type),
+        )
+        for item in record.files
+    )
+    return requested == persisted
+
+
+def _active_upload(
+    session: Session,
+    dataset_name: str,
+) -> DatasetUploadSession | None:
+    return cast(
+        DatasetUploadSession | None,
+        session.query(DatasetUploadSession)
+        .filter(
+            DatasetUploadSession.dataset_name == dataset_name,
+            DatasetUploadSession.status.in_(ACTIVE_UPLOAD_STATUSES),
+        )
+        .first(),
+    )
+
+
+def _record_initialization_error(
+    session: Session,
+    record_id: int,
+    file_id: int,
+    error: Exception,
+) -> None:
+    """Best-effort persistence after a storage or database initialization error."""
+
+    try:
+        record = cast(
+            DatasetUploadSession,
+            session.query(DatasetUploadSession)
+            .filter(DatasetUploadSession.id == record_id)
+            .with_for_update()
+            .one(),
+        )
+        file_record = cast(
+            DatasetUploadFile,
+            session.query(DatasetUploadFile)
+            .filter(DatasetUploadFile.id == file_id)
+            .with_for_update()
+            .one(),
+        )
+        message = str(error)[:4000]
+        record.last_error = message
+        file_record.last_error = message
+        session.commit()
+    except Exception:
+        session.rollback()
+        logger.exception("Failed to persist multipart initialization error")
+
+
+def _initialize_pending_files(session: Session, record_id: int) -> None:
+    """Create S3 multipart handles only after their database intent is durable."""
+
+    while True:
+        # Commits release the parent-row lock. Refresh the identity map before
+        # claiming the next file so another API replica cannot leave us with a
+        # stale ``initializing`` relationship and a valid handle we would abort.
+        session.expire_all()
+        record = cast(
+            DatasetUploadSession,
+            session.query(DatasetUploadSession)
+            .filter(DatasetUploadSession.id == record_id)
+            .with_for_update()
+            .one(),
+        )
+        file_record = next(
+            (item for item in record.files if item.status == "initializing"),
+            None,
+        )
+        if file_record is None:
+            if record.status == "initializing":
+                record.status = "uploading"
+                record.last_error = None
+                session.commit()
+            return
+
+        created_upload_id: str | None = None
+        try:
+            key = str(file_record.s3_key)
+            for orphan_upload_id in storage.list_multipart_uploads(key):
+                try:
+                    storage.abort_multipart_upload(key, orphan_upload_id)
+                except Exception as error:
+                    if _storage_error_code(error) != "NoSuchUpload":
+                        raise
+            created_upload_id = storage.create_multipart_upload(
+                key,
+                content_type=str(file_record.content_type),
+                metadata={
+                    "droneai-upload-session": str(record.session_id),
+                    "droneai-upload-file": str(file_record.file_id),
+                    "expected-size": str(file_record.size_bytes),
+                },
+            )
+            file_record.multipart_upload_id = created_upload_id
+            file_record.status = "uploading"
+            file_record.last_error = None
+            session.commit()
+        except Exception as error:
+            failed_file_id = int(file_record.id)
+            session.rollback()
+            if created_upload_id is not None:
+                try:
+                    storage.abort_multipart_upload(
+                        key,
+                        created_upload_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to abort multipart upload after database failure"
+                    )
+            _record_initialization_error(
+                session,
+                record_id,
+                failed_file_id,
+                error,
+            )
+            raise
+
+
 def create_upload_session(
     session: Session,
     request: UploadSessionRequest,
     principal: Principal,
 ) -> UploadSessionResponse:
     safe_name, total_size = _validate_request(request)
-    existing = cast(
-        DatasetUploadSession | None,
-        session.query(DatasetUploadSession)
-        .filter(
-            DatasetUploadSession.dataset_name == safe_name,
-            DatasetUploadSession.status.in_(("uploading", "failed")),
-        )
-        .first(),
-    )
+    existing = _active_upload(session, safe_name)
     if existing is not None:
-        raise HTTPException(status_code=409, detail="Dataset upload already in progress")
+        if (
+            existing.created_by != principal.subject
+            or not _matching_upload_request(existing, request)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Dataset upload already in progress",
+            )
+        if existing.status == "initializing":
+            try:
+                _initialize_pending_files(session, int(existing.id))
+            except Exception as error:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"Object storage upload initialization failed: {error}",
+                ) from error
+            existing = cast(
+                DatasetUploadSession,
+                session.query(DatasetUploadSession)
+                .filter(DatasetUploadSession.id == existing.id)
+                .one(),
+            )
+        return _serialize_session(existing)
     if storage.list_objects(f"datasets/{safe_name}/"):
         raise HTTPException(status_code=409, detail="Dataset already exists")
 
     part_size = configured_part_size(max(item.size for item in request.files))
     record = DatasetUploadSession(
         dataset_name=safe_name,
-        status="uploading",
+        status="initializing",
         total_bytes=total_size,
         file_count=len(request.files),
         part_size=part_size,
@@ -295,61 +454,47 @@ def create_upload_session(
         expires_at=datetime.now(UTC) + _session_lifetime(),
     )
     session.add(record)
+    for item in request.files:
+        session.add(
+            DatasetUploadFile(
+                upload_session=record,
+                filename=item.name,
+                s3_key=f"datasets/{safe_name}/{item.name}",
+                size_bytes=item.size,
+                content_type=item.content_type or "application/octet-stream",
+                multipart_upload_id=None,
+                status="initializing",
+            )
+        )
     try:
-        session.flush()
+        session.commit()
     except IntegrityError:
         session.rollback()
-        collision = (
-            session.query(DatasetUploadSession)
-            .filter(
-                DatasetUploadSession.dataset_name == safe_name,
-                DatasetUploadSession.status.in_(("uploading", "failed")),
-            )
-            .first()
-        )
-        if collision is not None:
+        collision = _active_upload(session, safe_name)
+        if collision is None:
+            raise
+        if (
+            collision.created_by != principal.subject
+            or not _matching_upload_request(collision, request)
+        ):
             raise HTTPException(
                 status_code=409,
                 detail="Dataset upload already in progress",
             ) from None
-        raise
-
-    created: list[tuple[str, str]] = []
+        record = collision
     try:
-        for item in request.files:
-            s3_key = f"datasets/{safe_name}/{item.name}"
-            upload_id = storage.create_multipart_upload(
-                s3_key,
-                content_type=item.content_type or "application/octet-stream",
-                metadata={
-                    "droneai-upload-session": str(record.session_id),
-                    "expected-size": str(item.size),
-                },
-            )
-            created.append((s3_key, upload_id))
-            session.add(
-                DatasetUploadFile(
-                    upload_session_id=record.id,
-                    filename=item.name,
-                    s3_key=s3_key,
-                    size_bytes=item.size,
-                    content_type=item.content_type or "application/octet-stream",
-                    multipart_upload_id=upload_id,
-                    status="uploading",
-                )
-            )
-        session.flush()
+        _initialize_pending_files(session, int(record.id))
     except Exception as error:
-        for s3_key, upload_id in created:
-            try:
-                storage.abort_multipart_upload(s3_key, upload_id)
-            except Exception:
-                logger.exception("Failed to abort partial upload initialization")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Object storage upload initialization failed: {error}",
         ) from error
-    session.refresh(record)
+    record = cast(
+        DatasetUploadSession,
+        session.query(DatasetUploadSession)
+        .filter(DatasetUploadSession.id == record.id)
+        .one(),
+    )
     return _serialize_session(record)
 
 
@@ -393,6 +538,201 @@ def _require_uploading(record: DatasetUploadSession) -> None:
         raise HTTPException(status_code=410, detail="Upload session has expired")
 
 
+def _completed_file_response(
+    file_record: DatasetUploadFile,
+) -> UploadFileCompleteResponse:
+    return {
+        "file_id": str(file_record.file_id),
+        "name": str(file_record.filename),
+        "s3_key": str(file_record.s3_key),
+        "size": int(file_record.size_bytes),
+        "etag": str(file_record.etag or ""),
+        "status": "completed",
+    }
+
+
+def _normalized_parts(
+    request: CompleteUploadFileRequest,
+    expected: int,
+) -> list[dict[str, int | str]]:
+    ordered = sorted(request.parts, key=lambda part: part.part_number)
+    if [part.part_number for part in ordered] != list(range(1, expected + 1)):
+        raise HTTPException(
+            status_code=400,
+            detail="Completed parts must contain every part exactly once",
+        )
+    return [
+        {"part_number": part.part_number, "etag": part.etag}
+        for part in ordered
+    ]
+
+
+def _stored_s3_parts(file_record: DatasetUploadFile) -> list[dict[str, int | str]]:
+    raw_parts = file_record.completed_parts
+    if not isinstance(raw_parts, list) or not raw_parts:
+        raise RuntimeError("Completing upload has no durable multipart part list")
+    return [
+        {
+            "PartNumber": int(
+                cast(dict[str, int | str], part)["part_number"]
+            ),
+            "ETag": str(cast(dict[str, int | str], part)["etag"]),
+        }
+        for part in raw_parts
+    ]
+
+
+def _object_identity(
+    record: DatasetUploadSession,
+    file_record: DatasetUploadFile,
+    info: dict[str, int | str | dict[str, str]],
+) -> tuple[bool, bool]:
+    metadata = cast(dict[str, str], info["metadata"])
+    session_matches = metadata.get("droneai-upload-session") == str(
+        record.session_id
+    )
+    persisted_file_id = metadata.get("droneai-upload-file")
+    file_matches = persisted_file_id in {None, "", str(file_record.file_id)}
+    expected_size_matches = metadata.get("expected-size") == str(
+        file_record.size_bytes
+    )
+    owned = session_matches and file_matches
+    valid = (
+        owned
+        and expected_size_matches
+        and int(cast(int | str, info["size"])) == int(file_record.size_bytes)
+    )
+    return owned, valid
+
+
+def _fail_file_completion(
+    session: Session,
+    record: DatasetUploadSession,
+    file_record: DatasetUploadFile,
+    message: str,
+    *,
+    delete_owned_object: bool = False,
+) -> None:
+    if delete_owned_object:
+        storage.delete_object(str(file_record.s3_key))
+    file_record.status = "failed"
+    file_record.last_error = message[:4000]
+    record.status = "failed"
+    record.last_error = message[:4000]
+    session.commit()
+    raise HTTPException(status_code=422, detail=message)
+
+
+def _persist_transient_recovery_error(
+    session: Session,
+    record: DatasetUploadSession,
+    file_record: DatasetUploadFile,
+    error: Exception,
+) -> None:
+    message = str(error)[:4000]
+    record.last_error = message
+    file_record.last_error = message
+    session.commit()
+
+
+def _complete_file_from_intent(
+    session: Session,
+    record_id: int,
+    file_record_id: int,
+) -> UploadFileCompleteResponse | None:
+    """Converge a durable ``completing`` intent with the observable S3 state."""
+
+    record = cast(
+        DatasetUploadSession,
+        session.query(DatasetUploadSession)
+        .filter(DatasetUploadSession.id == record_id)
+        .with_for_update()
+        .one(),
+    )
+    file_record = cast(
+        DatasetUploadFile,
+        session.query(DatasetUploadFile)
+        .filter(DatasetUploadFile.id == file_record_id)
+        .with_for_update()
+        .one(),
+    )
+    if file_record.status == "completed":
+        return _completed_file_response(file_record)
+    if file_record.status != "completing":
+        return None
+
+    try:
+        info = storage.get_object_info(str(file_record.s3_key))
+    except Exception as error:
+        _persist_transient_recovery_error(session, record, file_record, error)
+        raise
+    if info is None:
+        upload_id = str(file_record.multipart_upload_id or "")
+        if not upload_id:
+            _fail_file_completion(
+                session,
+                record,
+                file_record,
+                "Multipart upload ID is missing and no completed object exists",
+            )
+        try:
+            storage.complete_multipart_upload(
+                str(file_record.s3_key),
+                upload_id,
+                _stored_s3_parts(file_record),
+            )
+        except Exception as error:
+            try:
+                info = storage.get_object_info(str(file_record.s3_key))
+            except Exception as reconciliation_error:
+                _persist_transient_recovery_error(
+                    session,
+                    record,
+                    file_record,
+                    reconciliation_error,
+                )
+                raise reconciliation_error from error
+            if info is None and _storage_error_code(error) == "NoSuchUpload":
+                _fail_file_completion(
+                    session,
+                    record,
+                    file_record,
+                    "Multipart upload disappeared before a completed object was visible",
+                )
+            if info is None:
+                _persist_transient_recovery_error(session, record, file_record, error)
+                raise
+        if info is None:
+            info = storage.get_object_info(str(file_record.s3_key))
+            if info is None:
+                missing_object_error = RuntimeError(
+                    "S3 completed multipart upload but HEAD returned no object"
+                )
+                _persist_transient_recovery_error(
+                    session,
+                    record,
+                    file_record,
+                    missing_object_error,
+                )
+                raise missing_object_error
+
+    owned, valid = _object_identity(record, file_record, info)
+    if not valid:
+        _fail_file_completion(
+            session,
+            record,
+            file_record,
+            "Completed object identity or size does not match the upload intent",
+            delete_owned_object=owned,
+        )
+    file_record.status = "completed"
+    file_record.etag = str(info["etag"])
+    file_record.last_error = None
+    record.last_error = None
+    session.commit()
+    return _completed_file_response(file_record)
+
+
 def create_part_url(
     session: Session,
     session_id: str,
@@ -433,57 +773,38 @@ def complete_upload_file(
     _require_uploading(record)
     file_record = _session_file(record, file_id)
     if file_record.status == "completed":
-        return {
-            "file_id": str(file_record.file_id),
-            "name": str(file_record.filename),
-            "s3_key": str(file_record.s3_key),
-            "size": int(file_record.size_bytes),
-            "etag": str(file_record.etag or ""),
-            "status": "completed",
-        }
-    if file_record.status != "uploading":
+        return _completed_file_response(file_record)
+    if file_record.status not in {"uploading", "completing"}:
         raise HTTPException(status_code=409, detail="Upload file is not active")
 
     expected = math.ceil(int(file_record.size_bytes) / int(record.part_size))
-    ordered = sorted(request.parts, key=lambda part: part.part_number)
-    if [part.part_number for part in ordered] != list(range(1, expected + 1)):
-        raise HTTPException(
-            status_code=400,
-            detail="Completed parts must contain every part exactly once",
-        )
-    result = storage.complete_multipart_upload(
-        str(file_record.s3_key),
-        str(file_record.multipart_upload_id),
-        [
-            {"PartNumber": part.part_number, "ETag": part.etag}
-            for part in ordered
-        ],
-    )
-    if int(result["size"]) != int(file_record.size_bytes):
-        storage.delete_object(str(file_record.s3_key))
-        file_record.status = "failed"
-        record.status = "failed"
-        session.flush()
+    normalized = _normalized_parts(request, expected)
+    if file_record.status == "uploading":
+        file_record.status = "completing"
+        file_record.completed_parts = normalized
+        file_record.last_error = None
         session.commit()
+    elif file_record.completed_parts != normalized:
         raise HTTPException(
-            status_code=422,
-            detail="Completed object size does not match the declared file size",
+            status_code=409,
+            detail="Multipart completion is already in progress with different parts",
         )
-    file_record.status = "completed"
-    file_record.completed_parts = [
-        {"part_number": part.part_number, "etag": part.etag}
-        for part in ordered
-    ]
-    file_record.etag = str(result["etag"])
-    session.flush()
-    return {
-        "file_id": str(file_record.file_id),
-        "name": str(file_record.filename),
-        "s3_key": str(file_record.s3_key),
-        "size": int(file_record.size_bytes),
-        "etag": str(file_record.etag),
-        "status": "completed",
-    }
+    try:
+        result = _complete_file_from_intent(
+            session,
+            int(record.id),
+            int(file_record.id),
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Object storage completion is pending recovery: {error}",
+        ) from error
+    if result is None:
+        raise HTTPException(status_code=409, detail="Upload file is not active")
+    return result
 
 
 def finalize_upload_session(
@@ -494,19 +815,58 @@ def finalize_upload_session(
     record = _owned_session(session, session_id, principal, lock=True)
     if record.status == "completed":
         _ensure_catalog_record(session, record)
+        session.commit()
         return _finalize_response(record)
-    _require_uploading(record)
-    if any(item.status != "completed" for item in record.files):
-        raise HTTPException(status_code=409, detail="Upload files are incomplete")
+    if record.status == "uploading":
+        _require_uploading(record)
+        if any(item.status != "completed" for item in record.files):
+            raise HTTPException(status_code=409, detail="Upload files are incomplete")
+        record.status = "finalizing"
+        record.completed_at = datetime.now(UTC)
+        record.last_error = None
+        session.commit()
+    elif record.status != "finalizing":
+        raise HTTPException(status_code=409, detail="Upload session is not active")
+    try:
+        return _finalize_from_intent(session, int(record.id))
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Dataset finalization is pending recovery: {error}",
+        ) from error
 
-    completed_at = datetime.now(UTC)
+
+def _finalize_from_intent(
+    session: Session,
+    record_id: int,
+) -> UploadFinalizeResponse:
+    """Publish an idempotent manifest before committing the catalog transition."""
+
+    record = cast(
+        DatasetUploadSession,
+        session.query(DatasetUploadSession)
+        .filter(DatasetUploadSession.id == record_id)
+        .with_for_update()
+        .one(),
+    )
+    if record.status == "completed":
+        _ensure_catalog_record(session, record)
+        session.commit()
+        return _finalize_response(record)
+    if record.status != "finalizing":
+        raise RuntimeError("Dataset upload has no durable finalization intent")
+    completed_at = cast(datetime | None, record.completed_at)
+    if completed_at is None:
+        raise RuntimeError("Finalizing dataset upload has no completion timestamp")
     manifest_key = f"datasets/{record.dataset_name}/dataset-manifest.json"
     manifest = {
         "schema_version": 1,
         "upload_session_id": str(record.session_id),
         "dataset": str(record.dataset_name),
         "created_by": str(record.created_by),
-        "completed_at": completed_at.isoformat(),
+        "completed_at": _aware(completed_at).isoformat(),
         "files": [
             {
                 "name": str(item.filename),
@@ -518,16 +878,18 @@ def finalize_upload_session(
         ],
     }
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-    storage.put_object(manifest_key, payload)
-    if storage.get_object_size(manifest_key) != len(payload):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Dataset manifest verification failed",
-        )
+    try:
+        storage.put_object(manifest_key, payload)
+        if storage.get_object_size(manifest_key) != len(payload):
+            raise RuntimeError("Dataset manifest verification failed")
+    except Exception as error:
+        record.last_error = str(error)[:4000]
+        session.commit()
+        raise
     record.status = "completed"
-    record.completed_at = completed_at
+    record.last_error = None
     _ensure_catalog_record(session, record)
-    session.flush()
+    session.commit()
     return _finalize_response(record)
 
 
@@ -584,20 +946,31 @@ def _abort_record(record: DatasetUploadSession) -> None:
     errors: list[str] = []
     for item in record.files:
         try:
-            if item.status == "uploading":
+            if item.status == "initializing":
+                for upload_id in storage.list_multipart_uploads(str(item.s3_key)):
+                    try:
+                        storage.abort_multipart_upload(str(item.s3_key), upload_id)
+                    except Exception as error:
+                        if _storage_error_code(error) != "NoSuchUpload":
+                            raise
+            elif item.status == "uploading" and item.multipart_upload_id:
                 storage.abort_multipart_upload(
                     str(item.s3_key),
                     str(item.multipart_upload_id),
                 )
+            elif item.status == "completing":
+                raise RuntimeError("file completion is pending reconciliation")
             elif item.status == "completed":
                 storage.delete_object(str(item.s3_key))
             item.status = "aborted"
+            item.last_error = None
         except Exception as error:
             if item.status == "uploading" and _storage_error_code(error) == "NoSuchUpload":
                 item.status = "aborted"
                 continue
             errors.append(f"{item.filename}: {error}")
     record.status = "failed" if errors else "aborted"
+    record.last_error = "; ".join(errors)[:4000] if errors else None
     if errors:
         raise RuntimeError("; ".join(errors))
 
@@ -612,6 +985,21 @@ def abort_upload_session(
         return {"session_id": str(record.session_id), "status": str(record.status)}
     if record.status == "completed":
         raise HTTPException(status_code=409, detail="Completed upload cannot be aborted")
+    has_uncertain_completion = any(
+        item.status == "completing" for item in record.files
+    )
+    has_resumable_progress = record.status == "uploading" and any(
+        item.status == "completed" for item in record.files
+    )
+    if (
+        record.status == "finalizing"
+        or has_uncertain_completion
+        or has_resumable_progress
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Upload has recoverable progress and cannot be aborted",
+        )
     try:
         _abort_record(record)
     except RuntimeError as error:
@@ -621,8 +1009,77 @@ def abort_upload_session(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Upload cleanup incomplete: {error}",
         ) from error
-    session.flush()
+    session.commit()
     return {"session_id": str(record.session_id), "status": "aborted"}
+
+
+def _pending_upload_query(session: Session) -> Query[DatasetUploadSession]:
+    return (
+        session.query(DatasetUploadSession)
+        .filter(
+            or_(
+                DatasetUploadSession.status.in_(("initializing", "finalizing")),
+                DatasetUploadSession.files.any(
+                    DatasetUploadFile.status == "completing"
+                ),
+            )
+        )
+        .order_by(DatasetUploadSession.updated_at, DatasetUploadSession.id)
+        .with_for_update(skip_locked=True)
+        .limit(100)
+    )
+
+
+def reconcile_pending_uploads() -> int:
+    """Retry crash-safe storage transitions claimed with ``SKIP LOCKED``."""
+
+    reconciled = 0
+    with get_session() as session:
+        records = cast(list[DatasetUploadSession], _pending_upload_query(session).all())
+        record_ids = [int(record.id) for record in records]
+        for record_id in record_ids:
+            try:
+                record = cast(
+                    DatasetUploadSession,
+                    session.query(DatasetUploadSession)
+                    .filter(DatasetUploadSession.id == record_id)
+                    .one(),
+                )
+                if record.status == "initializing":
+                    _initialize_pending_files(session, record_id)
+                record = cast(
+                    DatasetUploadSession,
+                    session.query(DatasetUploadSession)
+                    .filter(DatasetUploadSession.id == record_id)
+                    .one(),
+                )
+                completing_ids = [
+                    int(item.id)
+                    for item in record.files
+                    if item.status == "completing"
+                ]
+                for file_record_id in completing_ids:
+                    _complete_file_from_intent(
+                        session,
+                        record_id,
+                        file_record_id,
+                    )
+                record = cast(
+                    DatasetUploadSession,
+                    session.query(DatasetUploadSession)
+                    .filter(DatasetUploadSession.id == record_id)
+                    .one(),
+                )
+                if record.status == "finalizing":
+                    _finalize_from_intent(session, record_id)
+                reconciled += 1
+            except Exception:
+                session.rollback()
+                logger.exception(
+                    "Dataset upload reconciliation failed for database id %s",
+                    record_id,
+                )
+    return reconciled
 
 
 def _expired_upload_query(
@@ -632,8 +1089,11 @@ def _expired_upload_query(
     return (
         session.query(DatasetUploadSession)
         .filter(
-            DatasetUploadSession.status.in_(("uploading", "failed")),
+            DatasetUploadSession.status.in_(("initializing", "uploading", "failed")),
             DatasetUploadSession.expires_at <= now,
+            ~DatasetUploadSession.files.any(
+                DatasetUploadFile.status == "completing"
+            ),
         )
         .order_by(DatasetUploadSession.expires_at, DatasetUploadSession.id)
         .with_for_update(skip_locked=True)
@@ -672,6 +1132,7 @@ def run_upload_cleanup(stop_event: Event) -> None:
         return
     while not stop_event.is_set():
         try:
+            reconcile_pending_uploads()
             cleanup_expired_uploads()
         except Exception:
             logger.exception("Dataset upload cleanup pass failed")

@@ -243,13 +243,17 @@ OUTBOX_EVENT_STATUSES = (
     "dead",
 )
 DATASET_UPLOAD_SESSION_STATUSES = (
+    "initializing",
     "uploading",
+    "finalizing",
     "completed",
     "aborted",
     "failed",
 )
 DATASET_UPLOAD_FILE_STATUSES = (
+    "initializing",
     "uploading",
+    "completing",
     "completed",
     "aborted",
     "failed",
@@ -342,8 +346,12 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
             "uq_dataset_upload_sessions_active_name",
             "dataset_name",
             unique=True,
-            postgresql_where=text("status IN ('uploading', 'failed')"),
-            sqlite_where=text("status IN ('uploading', 'failed')"),
+            postgresql_where=text(
+                "status IN ('initializing', 'uploading', 'finalizing', 'failed')"
+            ),
+            sqlite_where=text(
+                "status IN ('initializing', 'uploading', 'finalizing', 'failed')"
+            ),
         ),
         CheckConstraint(
             _values_check("status", DATASET_UPLOAD_SESSION_STATUSES),
@@ -360,13 +368,14 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
         index=True,
     )
     dataset_name = Column(String(256), nullable=False, index=True)
-    status = Column(String(32), nullable=False, default="uploading")
+    status = Column(String(32), nullable=False, default="initializing")
     total_bytes = Column(PORTABLE_BIGINT, nullable=False)
     file_count = Column(Integer, nullable=False)
     part_size = Column(Integer, nullable=False)
     created_by = Column(String(256), nullable=False)
     expires_at = Column(DateTime(timezone=True), nullable=False)
     completed_at = Column(DateTime(timezone=True), nullable=True)
+    last_error = Column(Text, nullable=True)
 
     files = relationship(
         "DatasetUploadFile",
@@ -409,10 +418,11 @@ class DatasetUploadFile(RequiredTimestampMixin, Base):
     s3_key = Column(String(1024), nullable=False)
     size_bytes = Column(PORTABLE_BIGINT, nullable=False)
     content_type = Column(String(256), nullable=False)
-    multipart_upload_id = Column(Text, nullable=False)
-    status = Column(String(32), nullable=False, default="uploading")
+    multipart_upload_id = Column(Text, nullable=True)
+    status = Column(String(32), nullable=False, default="initializing")
     completed_parts = Column(PORTABLE_JSON, nullable=True)
     etag = Column(String(256), nullable=True)
+    last_error = Column(Text, nullable=True)
 
     upload_session = relationship(
         "DatasetUploadSession",
