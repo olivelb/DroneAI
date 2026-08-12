@@ -20,11 +20,21 @@ density target rather than limiting the whole terrain to one GPU model:
 
 `scene_target = ceil(area_m2 / (requested_gsd_m * spacing_px)^2)`
 
+This is the required **retained** population. Resident HQ training targets a
+pre-filter population derived from a 98% retention policy:
+
+`training_target = ceil(scene_target / 0.98)`
+
+Both targets are rounded to the capacity quantum and recorded in the capacity
+plan. The final density gate remains strict against `scene_target`; the reserve
+does not relax the requested GSD.
+
 It then accounts conservatively for core/buffer overlap and chooses a compact
 projected-ground grid whose resident cells stay at or below the operator and
 VRAM caps. At approximately 209,400 m², 2 cm GSD, 3.6 px spacing and 20%
-overlap, this resolves to about 40.4 M unique scene Gaussians, at least seven
-resident cells, and no more than 12 M Gaussians loaded for one buffer.
+overlap, this resolves to about 40.4 M unique retained Gaussians, about 41.3 M
+Gaussians before filtering, at least seven resident cells, and no more than
+12 M Gaussians loaded for one buffer.
 
 Each cell is trained from calibrated footprint-visible native image crops.
 Training, filtering and rasterization persist and reload one buffer model at a

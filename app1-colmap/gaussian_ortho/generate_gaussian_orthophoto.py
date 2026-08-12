@@ -699,7 +699,9 @@ def execute_gaussian_training_phase(
             14,
             "Adaptive capacity: "
             f"{area:,.0f} m² at {config.resolution:.4f} m/px, "
-            f"surface target {capacity_plan.surface_target:,}, "
+            f"retained surface target {capacity_plan.surface_target:,}, "
+            f"pre-filter training target {capacity_plan.training_target:,} "
+            f"at {capacity_plan.post_filter_retention_target:.0%} retention, "
             f"VRAM cap {vram_cap}, merged scene target "
             f"{capacity_plan.effective_scene_cap:,} "
             f"with {capacity_plan.cell_count} cells at up to "

@@ -136,9 +136,32 @@ def test_resident_scene_that_fits_does_not_pay_theoretical_buffer_overhead():
         resident_partitioning=True,
     )
 
-    assert 7_000_000 < plan.effective_scene_cap < 8_000_000
+    assert 7_000_000 < plan.surface_target < 8_000_000
+    assert plan.post_filter_retention_target == pytest.approx(0.98)
+    assert plan.training_target is not None
+    assert plan.training_target > plan.surface_target
+    assert plan.effective_scene_cap == plan.training_target
     assert plan.required_cell_count == 1
     assert plan.effective_cell_cap == plan.effective_scene_cap
+
+
+def test_resident_adaptive_plan_reserves_two_percent_for_post_filtering():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        points=_surface(200.0, 147.31),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=24 * capacity.GIB,
+        resident_partitioning=True,
+    )
+
+    assert plan.surface_target == 5_700_000
+    assert plan.training_target == 5_800_000
+    assert plan.effective_scene_cap == 5_800_000
+    assert int(plan.training_target * plan.post_filter_retention_target) >= 5_683_256
 
 
 def test_fixed_preview_keeps_its_reproducible_cap():
@@ -172,6 +195,8 @@ def test_legacy_adaptive_profile_keeps_its_monolithic_operator_cap():
 
     assert plan.effective_scene_cap == 12_000_000
     assert plan.required_cell_count == 1
+    assert plan.post_filter_retention_target == 1.0
+    assert plan.training_target == plan.surface_target
 
 
 def test_detected_vram_is_optional_for_cpu_contract_tests():

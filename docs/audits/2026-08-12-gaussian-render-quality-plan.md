@@ -96,10 +96,20 @@ Current representative-block evidence on BIGZEN:
   non-resident profiles retain the fixed 7% behavior and their configured
   pruning window. The policy, target and per-window fraction are recorded for
   reproducibility.
+- the first complete 30,000-iteration reference run reached 5.7 M Gaussians,
+  used about 10.1 GiB VRAM, and passed its 22-view canary at 22.98 dB PSNR and
+  0.523 SSIM. Post-training scale and opacity filtering retained 5,643,241
+  Gaussians (99.0%), 40,015 below the strict 5,683,256 requirement for 2 cm.
+  The density gate correctly rejected the raster instead of silently
+  advertising 2 cm. Resident adaptive planning now distinguishes the retained
+  surface target from a pre-filter training target sized for 98% retention;
+  this representative block therefore targets 5.8 M before filtering. The
+  failed run and its checkpoint/model remain retained as qualification
+  evidence.
 
-The next gate is a complete reference-absolute run with this policy. AbsGrad
-A/B runs start only if the reference reaches the density target without
-exceeding the resident memory budget.
+The next gate is a repeat complete reference-absolute run with the retention
+reserve. AbsGrad A/B runs start only if the reference reaches the retained
+density target without exceeding the resident memory budget.
 
 ## Phase 3 — Densification A/B
 

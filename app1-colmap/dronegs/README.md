@@ -286,6 +286,9 @@ capacity target in every topology-refinement event. It then freezes topology
 for convergence, preventing post-growth pruning from violating the GSD-backed
 density plan. Its default is `0`, so existing standalone and production
 recipes keep the fixed 7% schedule and their configured pruning window.
+The resident HQ wrapper passes a pre-filter cap sized for 98% retention and
+records both that training target and the strict GSD-backed retained target;
+the native trainer still treats `--max-cap` as an exact hard ceiling.
 
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,

@@ -15,6 +15,7 @@ CAPACITY_QUANTUM = 100_000
 GAUSSIAN_CAPACITY_BYTES = 1_280
 VRAM_USABLE_FRACTION = 0.85
 VRAM_FIXED_RESERVE_BYTES = 4 * GIB
+RESIDENT_POST_FILTER_RETENTION_TARGET = 0.98
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,8 @@ class GaussianCapacityPlan:
     effective_cell_cap: int
     cell_count: int
     estimated_capacity_bytes: int
+    post_filter_retention_target: float = 1.0
+    training_target: int | None = None
 
     def as_dict(self) -> dict[str, int | float | str | None]:
         return asdict(self)
@@ -181,6 +184,8 @@ def plan_gaussian_capacity(
     area: float | None = None
     output_pixels: int | None = None
     surface_target: int | None = None
+    training_target: int | None = None
+    post_filter_retention_target = 1.0
     memory_cap = (
         vram_gaussian_cap(total_vram_bytes, free_vram_bytes)
         if total_vram_bytes is not None
@@ -201,10 +206,17 @@ def plan_gaussian_capacity(
             meters_per_model_unit=meters_per_model_unit,
         )
         output_pixels = max(1, math.ceil(area / requested_gsd_m**2))
-        surface_target = _round_up(
-            output_pixels / target_spacing_pixels**2
+        unrounded_surface_target = output_pixels / target_spacing_pixels**2
+        surface_target = _round_up(unrounded_surface_target)
+        post_filter_retention_target = (
+            RESIDENT_POST_FILTER_RETENTION_TARGET
+            if resident_partitioning
+            else 1.0
         )
-        desired = max(capacity_floor, surface_target)
+        training_target = _round_up(
+            unrounded_surface_target / post_filter_retention_target
+        )
+        desired = max(capacity_floor, training_target)
         if resident_partitioning:
             effective_scene = desired
             if memory_cap is not None:
@@ -261,6 +273,10 @@ def plan_gaussian_capacity(
         effective_cell_cap=effective_cell,
         cell_count=cell_count,
         estimated_capacity_bytes=effective_cell * GAUSSIAN_CAPACITY_BYTES,
+        post_filter_retention_target=(
+            post_filter_retention_target if mode == "adaptive" else 1.0
+        ),
+        training_target=training_target,
     )
 
 
@@ -351,6 +367,17 @@ def capacity_plan_from_dict(payload: object) -> GaussianCapacityPlan:
     mode = payload.get("mode")
     if mode not in {"fixed", "adaptive"}:
         raise ValueError("stored Gaussian capacity mode is invalid")
+    retention = payload.get("post_filter_retention_target", 1.0)
+    if isinstance(retention, bool) or not isinstance(retention, (float, int)):
+        raise ValueError(
+            "stored Gaussian capacity number is invalid: "
+            "post_filter_retention_target"
+        )
+    retention = float(retention)
+    if not math.isfinite(retention) or not 0.0 < retention <= 1.0:
+        raise ValueError(
+            "stored Gaussian post-filter retention target must be in (0, 1]"
+        )
     return GaussianCapacityPlan(
         mode=mode,
         requested_cap=cast(int, _stored_int(payload, "requested_cap")),
@@ -391,6 +418,8 @@ def capacity_plan_from_dict(payload: object) -> GaussianCapacityPlan:
             int,
             _stored_int(payload, "estimated_capacity_bytes")
         ),
+        post_filter_retention_target=retention,
+        training_target=_stored_int(payload, "training_target", optional=True),
     )
 
 
