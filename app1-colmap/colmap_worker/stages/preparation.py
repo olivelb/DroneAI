@@ -17,6 +17,7 @@ from shared.facade_selection import (
 from shared.gcp_control import prepare_gcp_assets, prepare_immutable_gcp_bundle
 from shared.json_io import atomic_write_json
 from shared.pipeline_params import normalize_feature_type, normalize_matcher_type
+from shared.tenancy import mission_event_namespace
 from pipeline_support import (
     build_colmap_cache_config,
     changed_colmap_cache_parameters,
@@ -271,8 +272,11 @@ def prepare_colmap_pipeline_run(
         ),
     )
 
-    # --- S3 prefix for this mission ---
-    mission_s3_prefix = f"missions/{vol_id}"
+    # --- Durable S3 namespace for this mission ---
+    mission_namespace = mission_event_namespace(
+        {**mission_params, "vol_id": vol_id}
+    )
+    mission_s3_prefix = mission_namespace.root
 
     # --- 1. Preparation ---
     runtime.report_mission_progress(vol_id, "PREPARING", 2, log=f"Creating workspace at {workspace_dir}")

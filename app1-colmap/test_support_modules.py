@@ -234,7 +234,12 @@ class TestWorkerSupport(unittest.TestCase):
             "updated_at": "2026-03-26T00:00:00+00:00",
             "last_log": "Fusion interrupted",
         }
-        mission = MagicMock(resume_info={})
+        mission = MagicMock(
+            resume_info={},
+            vol_id="vol-012",
+            organization_id="legacy-unassigned",
+            workspace_prefix="missions/vol-012",
+        )
         tracker = worker_support.MissionStateTracker()
         mission_context = worker_support.MissionContext(
             mission={

@@ -16,6 +16,10 @@ from shared.validation import (
     validate_mission_id,
     validate_safe_segment,
 )
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    MissionObjectNamespace,
+)
 
 
 TILE_RESULT_SCHEMA_VERSION: Literal[1] = 1
@@ -54,15 +58,31 @@ def tile_result_s3_key(
     analysis_run_id: str | None,
     tile_index: int,
     attempt: int,
+    *,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+    workspace_prefix: str | None = None,
 ) -> str:
     """Return the deterministic key used by both publisher and consumer."""
     validate_mission_id(vol_id)
     if analysis_run_id is not None:
         validate_safe_segment(analysis_run_id, field_name="analysis_run_id")
+    if workspace_prefix is None and organization_id != LEGACY_ORGANIZATION_ID:
+        raise ValueError("Tenant-bound tile result has no workspace prefix")
+    namespace = (
+        MissionObjectNamespace.create(organization_id, vol_id)
+        if workspace_prefix is None
+        else MissionObjectNamespace.from_binding(
+            organization_id,
+            vol_id,
+            workspace_prefix,
+        )
+    )
     run_component = analysis_run_id or "pipeline"
-    return (
-        f"missions/{vol_id}/ai-tile-results/{run_component}/"
-        f"attempt_{attempt}/tile_{tile_index}.json"
+    return namespace.key(
+        "ai-tile-results",
+        run_component,
+        f"attempt_{attempt}",
+        f"tile_{tile_index}.json",
     )
 
 

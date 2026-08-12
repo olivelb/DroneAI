@@ -417,9 +417,10 @@ def run_detection_stage(
         )
         atomic_write_json(geojson_path, collection)
         control.raise_if_cancelled()
-        prefix = (
-            f"missions/{context.vol_id}/stage-runs/"
-            f"{context.run_id}/detection-workspace"
+        prefix = context.object_namespace.key(
+            "stage-runs",
+            context.run_id,
+            "detection-workspace",
         )
         if artifact_manifest_v2_write_enabled():
             source = context.inputs[0]

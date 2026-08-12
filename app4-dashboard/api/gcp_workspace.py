@@ -26,6 +26,7 @@ from shared.gcp_bundle import (
     bundle_blob,
 )
 from shared.gcp_import import ImportedGcpSet
+from shared.tenancy import MissionObjectNamespace
 
 from .map_support import JsonObject, RouteSession
 
@@ -121,10 +122,12 @@ def validate_observation_pixels(
         raise ValueError(f"GCP pixel ({pixel_x:.3f}, {pixel_y:.3f}) is outside the {width} x {height} image")
 
 
-def load_mission_image_positions(vol_id: str) -> MissionImagePositions | None:
+def load_mission_image_positions(
+    namespace: MissionObjectNamespace,
+) -> MissionImagePositions | None:
     """Load EXIF-derived image positions published by reconstruction preflight."""
 
-    position_key = f"missions/{vol_id}/geo_data.txt"
+    position_key = namespace.key("geo_data.txt")
     crs_key = f"{position_key}.crs"
     if not storage.file_exists(position_key) or not storage.file_exists(crs_key):
         return None
@@ -138,10 +141,12 @@ def load_mission_image_positions(vol_id: str) -> MissionImagePositions | None:
     return MissionImagePositions(projected_crs=projected_crs, images=images)
 
 
-def load_camera_projection_index(vol_id: str) -> CameraProjectionIndex | None:
+def load_camera_projection_index(
+    namespace: MissionObjectNamespace,
+) -> CameraProjectionIndex | None:
     """Load the portable registered-camera index produced after alignment."""
 
-    key = f"missions/{vol_id}/camera_projection_index.json"
+    key = namespace.key("camera_projection_index.json")
     if not storage.file_exists(key):
         return None
     return parse_camera_projection_index(read_bounded_object(key, MAX_CAMERA_INDEX_BYTES))

@@ -25,6 +25,7 @@ from shared.tile_results import (
     build_tile_result_artifact,
     tile_result_s3_key,
 )
+from shared.tenancy import mission_event_namespace
 from shared.validation import safe_child_path
 
 
@@ -257,6 +258,9 @@ class TileDetectionWorkflow:
         attempt: JsonObject,
         workspace: Path,
     ) -> None:
+        namespace = mission_event_namespace(
+            {**tile_info, "vol_id": vol_id}
+        )
         tile_index = int(tile_info["tile_index"])
         model_manifest = cast(JsonObject, attempt["model_manifest"])
         artifact = build_tile_result_artifact(
@@ -272,6 +276,8 @@ class TileDetectionWorkflow:
             analysis_run_id,
             tile_index,
             analysis_attempt,
+            organization_id=namespace.organization_id,
+            workspace_prefix=namespace.root,
         )
         local_result = workspace / f"tile_result_{tile_index}.json"
         atomic_write_json(local_result, artifact)
@@ -290,6 +296,8 @@ class TileDetectionWorkflow:
             "tile_detection",
             {
                 "vol_id": vol_id,
+                "organization_id": namespace.organization_id,
+                "workspace_prefix": namespace.root,
                 "tile_index": tile_index,
                 "analysis_run_id": analysis_run_id,
                 "model_manifest": model_manifest,

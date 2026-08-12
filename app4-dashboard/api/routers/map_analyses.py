@@ -18,6 +18,7 @@ from shared.database import (
 )
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.inbox_outbox import enqueue_outbox
+from shared.tenancy import MissionObjectNamespace
 
 from ..analysis_support import analysis_event, get_owned_run, owned_run_scope
 from ..map_schemas import AnalysisCreate
@@ -109,7 +110,14 @@ def create_analysis(
         typed_session.add(run_model)
         event = make_event(
             "orthomosaic",
-            analysis_event(run),
+            analysis_event(
+                run,
+                MissionObjectNamespace.from_binding(
+                    mission.organization_id,
+                    mission.vol_id,
+                    mission.workspace_prefix,
+                ),
+            ),
             event_id=deterministic_event_id(
                 "orthomosaic", vol_id, run_id, 0
             ),
@@ -133,6 +141,13 @@ def retry_analysis(
     with owned_run_scope(
         vol_id, run_id, principal, owner_subject, "analysis_retry"
     ) as (typed_session, run):
+        mission = get_mission(
+            typed_session,
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+            action="analysis_retry",
+        )
         if run.status != "failed":
             raise HTTPException(
                 status_code=409,
@@ -160,7 +175,14 @@ def retry_analysis(
         )
         event = make_event(
             "orthomosaic",
-            analysis_event(run),
+            analysis_event(
+                run,
+                MissionObjectNamespace.from_binding(
+                    mission.organization_id,
+                    mission.vol_id,
+                    mission.workspace_prefix,
+                ),
+            ),
             event_id=deterministic_event_id(
                 "orthomosaic", vol_id, run_id, run.retry_count
             ),

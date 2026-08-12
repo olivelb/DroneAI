@@ -73,9 +73,10 @@ def _publish_stage_workspace(
     stage: str,
     role_overrides: dict[str, str] | None = None,
 ) -> PublishedWorkspace:
-    prefix = (
-        f"missions/{context.vol_id}/stage-runs/"
-        f"{context.run_id}/{stage}-workspace"
+    prefix = context.object_namespace.key(
+        "stage-runs",
+        context.run_id,
+        f"{stage}-workspace",
     )
     if not artifact_manifest_v2_write_enabled():
         return publish_workspace(
@@ -134,6 +135,8 @@ def run_reconstruction_stage(
             context.vol_id,
             {
                 **context.mission_parameters,
+                "organization_id": context.organization_id,
+                "workspace_prefix": context.workspace_prefix,
                 "stage_parameters": context.parameters,
             },
         )

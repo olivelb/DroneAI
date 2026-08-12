@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from PIL import Image
+from shared.tenancy import MissionObjectNamespace
 
 from importlib import import_module
 
@@ -85,7 +86,8 @@ def test_point_schema_requires_complete_manual_coordinates():
 
 def test_load_mission_positions_returns_none_until_preflight(monkeypatch):
     monkeypatch.setattr(gcp_workspace.storage, "file_exists", lambda _key: False)
-    assert gcp_workspace.load_mission_image_positions("mission") is None
+    namespace = MissionObjectNamespace.create("acme-survey", "mission")
+    assert gcp_workspace.load_mission_image_positions(namespace) is None
 
 
 def test_observation_json_exposes_optimistic_lock_version():

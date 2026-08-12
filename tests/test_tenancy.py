@@ -4,11 +4,12 @@ import pytest
 
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
+    MissionObjectNamespace,
+    current_organization_id,
     dataset_prefix,
     mission_prefix,
-    validate_organization_id,
-    current_organization_id,
     organization_context,
+    validate_organization_id,
 )
 
 
@@ -28,6 +29,34 @@ def test_legacy_resources_keep_the_v1_layout_during_migration() -> None:
     assert mission_prefix(LEGACY_ORGANIZATION_ID, "mission-1") == (
         "missions/mission-1"
     )
+
+
+def test_mission_namespace_builds_only_tenant_bound_object_keys() -> None:
+    namespace = MissionObjectNamespace.from_binding(
+        "acme-survey",
+        "mission-1",
+        "organizations/acme-survey/missions/mission-1",
+    )
+
+    assert namespace.key("stage-runs", "run-1", "manifest.json") == (
+        "organizations/acme-survey/missions/mission-1/"
+        "stage-runs/run-1/manifest.json"
+    )
+    assert namespace.prefix("analyses", "run-2") == (
+        "organizations/acme-survey/missions/mission-1/analyses/run-2/"
+    )
+
+
+def test_mission_namespace_rejects_rebound_or_unsafe_paths() -> None:
+    with pytest.raises(ValueError, match="outside its tenant namespace"):
+        MissionObjectNamespace.from_binding(
+            "acme-survey",
+            "mission-1",
+            "organizations/other/missions/mission-1",
+        )
+    namespace = MissionObjectNamespace.create("acme-survey", "mission-1")
+    with pytest.raises(ValueError, match="safe object-key component"):
+        namespace.key("../escape")
 
 
 @pytest.mark.parametrize("value", ["../escape", "Uppercase", "two.parts", ""])

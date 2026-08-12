@@ -10,6 +10,7 @@ from shared.cancellation import AttemptCancellationRegistry
 from shared.config import DEFAULT_WORKSPACE_DIR
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_reliability import publish_json, reliable_consumer_config
+from shared.tenancy import mission_event_namespace
 from shared.worker_messaging import (
     make_progress_publisher,
     run_control_consumer,
@@ -136,6 +137,9 @@ class MissionStateTracker:
 
     def start_mission(self, mission_context):
         previous_state = self.load_state(mission_context.vol_id)
+        namespace = mission_event_namespace(
+            {**mission_context.mission, "vol_id": mission_context.vol_id}
+        )
 
         try:
             with get_session() as session:
@@ -153,9 +157,20 @@ class MissionStateTracker:
                         "legacy-unassigned",
                     ),
                     params=mission_context.mission,
-                    workspace_prefix=f"missions/{mission_context.vol_id}",
+                    workspace_prefix=namespace.root,
                     input_dataset=mission_context.mission.get("input_dataset"),
                 )
+                durable_namespace = mission_event_namespace(
+                    {
+                        "vol_id": mission.vol_id,
+                        "organization_id": mission.organization_id,
+                        "workspace_prefix": mission.workspace_prefix,
+                    }
+                )
+                if durable_namespace != namespace:
+                    raise RuntimeError(
+                        "Mission event namespace does not match durable state"
+                    )
                 mission.status = "processing"
                 mission.current_step = "STARTING"
                 mission.progress = 0
@@ -231,6 +246,7 @@ class MissionContext:
 
 def build_mission_context(mission):
     vol_id = validate_mission_id(mission["vol_id"])
+    mission_event_namespace(mission)
     # Pick work drive from mission params or env default
     work_drive = mission.get("colmap_params", {}).get("work_drive") or mission.get("work_drive")
     if not work_drive:
@@ -323,6 +339,11 @@ def publish_next_stage_message(producer, topic_out, vol_id, ortho_s3_key, missio
         "orthomosaic",
         {
             "vol_id": vol_id,
+            "organization_id": mission_params.get(
+                "organization_id",
+                "legacy-unassigned",
+            ),
+            "workspace_prefix": mission_params.get("workspace_prefix"),
             "ortho_s3_key": ortho_s3_key,
             "classes": mission_params.get("classes", ["car"]),
             "ai_confidence": mission_params.get("ai_confidence", 0.3),

@@ -33,6 +33,11 @@ from shared.database import (
 from shared.event_contracts import deterministic_event_id, make_event
 from shared.kafka_partitioning import tile_work_key
 from shared.pipeline_params import normalize_ai_backend
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    MissionObjectNamespace,
+    mission_event_namespace,
+)
 from shared.validation import safe_child_path
 
 
@@ -175,9 +180,24 @@ class OrthomosaicTiler:
         analysis_run_id: str | None,
         analysis_attempt: int,
         plan: JsonObject,
+        namespace: MissionObjectNamespace,
     ) -> bool:
         with get_session() as session:
-            mission = get_or_create_mission(session, vol_id)
+            mission = get_or_create_mission(
+                session,
+                vol_id,
+                organization_id=namespace.organization_id,
+                workspace_prefix=namespace.root,
+            )
+            durable_namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                mission.vol_id,
+                mission.workspace_prefix,
+            )
+            if durable_namespace != namespace:
+                raise RuntimeError(
+                    "Orthomosaic event namespace does not match the durable mission"
+                )
             metadata = self._public_metadata(plan)
             if analysis_run_id:
                 run = (
@@ -299,9 +319,12 @@ class OrthomosaicTiler:
         y: int,
         plan: JsonObject,
         options: JsonObject,
+        namespace: MissionObjectNamespace,
     ) -> JsonObject:
         payload: JsonObject = {
             "vol_id": vol_id,
+            "organization_id": namespace.organization_id,
+            "workspace_prefix": namespace.root,
             "tile_index": tile_index,
             "tile_s3_key": tile_s3_key,
             "offset_x": x,
@@ -343,6 +366,7 @@ class OrthomosaicTiler:
         y: int,
         plan: JsonObject,
         options: JsonObject,
+        namespace: MissionObjectNamespace,
     ) -> bool:
         window = Window(
             x,
@@ -380,6 +404,7 @@ class OrthomosaicTiler:
             y=y,
             plan=plan,
             options=options,
+            namespace=namespace,
         )
         self.producer.produce(
             self.tile_topic,
@@ -455,6 +480,7 @@ class OrthomosaicTiler:
         analysis_attempt: int,
         tile_size: int,
         options: JsonObject,
+        namespace: MissionObjectNamespace,
     ) -> int | None:
         with rasterio.open(local_ortho) as src:
             plan = self._build_plan(src, tile_size)
@@ -464,6 +490,7 @@ class OrthomosaicTiler:
                 analysis_run_id=analysis_run_id,
                 analysis_attempt=analysis_attempt,
                 plan=plan,
+                namespace=namespace,
             ):
                 return None
             self.report_progress(
@@ -497,6 +524,7 @@ class OrthomosaicTiler:
                     y=y,
                     plan=plan,
                     options=options,
+                    namespace=namespace,
                 ):
                     return None
                 tile_count = tile_index + 1
@@ -522,9 +550,18 @@ class OrthomosaicTiler:
         sam_prompt: str = "car",
         analysis_run_id: str | None = None,
         analysis_attempt: int = 0,
+        organization_id: str = LEGACY_ORGANIZATION_ID,
+        workspace_prefix: str | None = None,
     ) -> None:
         """Tile one orthomosaic and publish inference work."""
 
+        namespace = mission_event_namespace(
+            {
+                "vol_id": vol_id,
+                "organization_id": organization_id,
+                "workspace_prefix": workspace_prefix,
+            }
+        )
         workspace = self._workspace(vol_id, analysis_run_id)
         local_ortho = workspace / "orthomosaic.tif"
         tiles_dir = workspace / "tiles"
@@ -533,7 +570,9 @@ class OrthomosaicTiler:
         try:
             self._download(ortho_s3_key, local_ortho, vol_id)
             tiles_s3_prefix = (
-                f"missions/{vol_id}/analyses/{analysis_run_id}/tiles" if analysis_run_id else f"missions/{vol_id}/tiles"
+                namespace.key("analyses", analysis_run_id, "tiles")
+                if analysis_run_id
+                else namespace.key("tiles")
             )
             options: JsonObject = {
                 "ai_backend": normalize_ai_backend(ai_backend),
@@ -553,6 +592,7 @@ class OrthomosaicTiler:
                 analysis_attempt=analysis_attempt,
                 tile_size=tile_size,
                 options=options,
+                namespace=namespace,
             )
             if tile_count is None:
                 return

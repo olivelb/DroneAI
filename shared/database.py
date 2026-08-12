@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    event,
     text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -46,6 +47,7 @@ from shared.stage_contracts import RESOURCE_CLASSES
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
     current_organization_id,
+    mission_prefix,
     validate_organization_id,
 )
 
@@ -702,7 +704,7 @@ class Mission(Base):
         index=True,
     )
     input_dataset = Column(String(1024), nullable=True)  # S3 prefix for input images
-    workspace_prefix = Column(String(1024), nullable=True)  # S3 prefix for mission workspace
+    workspace_prefix = Column(String(1024), nullable=False)
 
     # Pipeline parameters (full JSON blob from mission launch message)
     params = Column(PORTABLE_JSON, nullable=True)
@@ -788,6 +790,25 @@ class Mission(Base):
 
     def __repr__(self) -> str:
         return f"<Mission(vol_id={self.vol_id!r}, status={self.status!r}, step={self.current_step!r})>"
+
+
+@event.listens_for(Mission, "init", propagate=True)  # type: ignore[untyped-decorator]
+def _initialize_mission_workspace(
+    _target: Mission,
+    _args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> None:
+    """Keep locally constructed and imported missions on the canonical namespace."""
+
+    if kwargs.get("workspace_prefix") is not None:
+        return
+    vol_id = kwargs.get("vol_id")
+    if vol_id is None:
+        return
+    kwargs["workspace_prefix"] = mission_prefix(
+        str(kwargs.get("organization_id") or LEGACY_ORGANIZATION_ID),
+        str(vol_id),
+    )
 
 
 class MissionStageRun(RequiredTimestampMixin, Base):

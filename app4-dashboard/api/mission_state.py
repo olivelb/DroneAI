@@ -10,8 +10,8 @@ from typing import Any, NotRequired, Protocol, TypedDict, cast
 
 from shared.config import SERVICE_ORDER
 from shared.database import Mission, MissionLog, get_or_create_mission, get_session
-from shared.tenancy import LEGACY_ORGANIZATION_ID
 from shared.phase_dag import project_status_to_stage_run
+from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 TERMINAL_STATUSES = {"success", "error", "cancelled"}
 MISSION_PROCESSING_STALE_SECONDS = float(os.getenv("MISSION_PROCESSING_STALE_SECONDS", "120"))
@@ -45,7 +45,9 @@ class SessionProtocol(Protocol):
 class MissionRecord(Protocol):
     id: int
     vol_id: str
+    organization_id: str
     owner_subject: str
+    workspace_prefix: str | None
     status: str
     current_step: str | None
     progress: int
@@ -343,7 +345,11 @@ def serialize_mission(mission: MissionRecord) -> SerializedMission:
     return {
         "vol_id": mission.vol_id,
         "owner_subject": mission.owner_subject,
-        "workspace_dir": f"missions/{mission.vol_id}",
+        "workspace_dir": MissionObjectNamespace.from_binding(
+            mission.organization_id,
+            mission.vol_id,
+            mission.workspace_prefix,
+        ).root,
         "workspace_state": workspace_state,
         "colmap_resume": build_colmap_resume_state(mission),
         "services": services,
@@ -444,6 +450,13 @@ def prepare_resume_in_session(
 
     payload = dict(mission.params)
     payload["vol_id"] = vol_id
+    namespace = MissionObjectNamespace.from_binding(
+        mission.organization_id,
+        mission.vol_id,
+        mission.workspace_prefix,
+    )
+    payload["organization_id"] = namespace.organization_id
+    payload["workspace_prefix"] = namespace.root
     mission.retry_count = int(mission.retry_count or 0) + 1
     payload["attempt"] = mission.retry_count
     mission.status = "processing"

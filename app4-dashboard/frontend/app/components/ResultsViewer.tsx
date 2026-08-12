@@ -60,6 +60,7 @@ export default function ResultsViewer() {
   );
   const mission = activeMission;
   const missionId = mission?.vol_id ?? sortedMissions[0]?.vol_id ?? null;
+  const workspacePrefix = mission?.workspace_dir ?? sortedMissions[0]?.workspace_dir ?? null;
 
   const [expanded, setExpanded] = useState(false);
   const [panelOpen, setPanelOpen] = useState(true);
@@ -141,7 +142,7 @@ export default function ResultsViewer() {
     refreshCandidates: refreshGcpCandidates,
     finishPhoto: finishPhotoObservation,
   } = gcp;
-  const analysis = useAnalysisWorkspace(missionId, { setNotice, setError });
+  const analysis = useAnalysisWorkspace(missionId, workspacePrefix, { setNotice, setError });
   const {
     availableFiles,
     analyses,
@@ -376,7 +377,7 @@ export default function ResultsViewer() {
               activePanel={activePanel}
               onPanelChange={setActivePanel}
               layers={{
-                missionId,
+                workspacePrefix: workspacePrefix ?? "",
                 activeLayer,
                 hasDepth,
                 availableFiles,

@@ -565,6 +565,9 @@ def test_frontend_uses_direct_presigned_multipart_upload():
 
 def test_prepare_resume_increments_mission_attempt():
     mission = SimpleNamespace(
+        vol_id="mission-1",
+        organization_id="legacy-unassigned",
+        workspace_prefix="missions/mission-1",
         service_states={"COLMAP": {"status": "error"}},
         params={"vol_id": "mission-1", "pipeline": "modern"},
         retry_count=4,
@@ -770,6 +773,8 @@ def test_stale_heartbeat_is_monitoring_metadata_not_pipeline_failure(monkeypatch
     mission = SimpleNamespace(
         id=1,
         vol_id="mission-1",
+        organization_id="legacy-unassigned",
+        workspace_prefix="missions/mission-1",
         owner_subject="test-operator",
         service_states={"COLMAP": {"status": "processing", "step": "GAUSS"}},
         status="processing",

@@ -18,6 +18,7 @@ from shared.database import Detection, MapFeature, MissionArtifact
 from shared.geospatial_assets import detections_feature_collection
 from shared.geospatial_workspace import bounds_intersect, geometry_bounds
 from shared.stage_workspace import resolve_workspace_files
+from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .mission_access import get_owned_mission
 from .security import Principal
@@ -95,7 +96,10 @@ class RouteSession(Protocol):
 
 class MissionRecord(Protocol):
     id: int
+    vol_id: str
+    organization_id: str
     owner_subject: str
+    workspace_prefix: str | None
     input_dataset: str | None
     tiling_metadata: JsonObject | None
 
@@ -166,7 +170,11 @@ class AnalysisTileRecord(Protocol):
     bounds_wgs84: list[float] | None
 
 
-def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
+def mission_key(
+    vol_id: str,
+    layer: str,
+    namespace: MissionObjectNamespace | None = None,
+) -> tuple[str, str]:
     if not VOL_ID_PATTERN.fullmatch(vol_id):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -179,7 +187,11 @@ def mission_key(vol_id: str, layer: str) -> tuple[str, str]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Unknown raster layer",
         ) from error
-    return f"missions/{vol_id}/{suffix}", colormap
+    mission_namespace = namespace or MissionObjectNamespace.create(
+        LEGACY_ORGANIZATION_ID,
+        vol_id,
+    )
+    return mission_namespace.key(suffix), colormap
 
 
 def _artifact_manifest_key(artifact: MissionArtifactRecord) -> str:
@@ -219,7 +231,12 @@ def resolve_raster_product(
     are not hidden by falling back to a potentially stale legacy object.
     """
 
-    legacy_key, colormap = mission_key(vol_id, layer)
+    namespace = MissionObjectNamespace.from_binding(
+        mission.organization_id,
+        mission.vol_id,
+        mission.workspace_prefix,
+    )
+    compatibility_key, colormap = mission_key(vol_id, layer, namespace)
     artifact = cast(
         MissionArtifactRecord | None,
         session.query(MissionArtifact)
@@ -231,14 +248,14 @@ def resolve_raster_product(
         .first(),
     )
     if artifact is None:
-        require_object(legacy_key)
-        legacy_sidecar_key = f"{legacy_key}.cog.json"
+        require_object(compatibility_key)
+        compatibility_sidecar_key = f"{compatibility_key}.cog.json"
         return RasterProductObject(
-            key=legacy_key,
+            key=compatibility_key,
             default_colormap=colormap,
             sidecar_key=(
-                legacy_sidecar_key
-                if storage.file_exists(legacy_sidecar_key)
+                compatibility_sidecar_key
+                if storage.file_exists(compatibility_sidecar_key)
                 else None
             ),
         )

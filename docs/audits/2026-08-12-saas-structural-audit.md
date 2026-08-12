@@ -25,10 +25,11 @@ dataset qualification.
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
 | Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
-| Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper and upload recovery tests |
+| Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
+| Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 897 non-GPU/non-integration
+The qualified local baseline after these changes is 917 non-GPU/non-integration
 Python tests, five real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
@@ -39,23 +40,25 @@ sync, shellcheck and actionlint also pass.
 
 The follow-up review at `f295d4f521caa0924a65740be9a5572bf75cb0c7`
 corrected an earlier overstatement: persisting `Mission.workspace_prefix` did
-not migrate every producer. The bounded and fused compute paths still contain
-literal `missions/{vol_id}` keys, and Manifest v2 still writes global
+not migrate every producer. At that revision, the bounded and fused compute
+paths still contained literal `missions/{vol_id}` keys, and Manifest v2 still
+writes global
 `blobs/sha256` keys.
 
 The first corrective phase binds every bounded Job to its durable
 organization, mission and workspace prefix, moves it to a non-owner
 `stage-database-url`, applies the organization to every executor transaction,
-and verifies cross-tenant denial with the real PostgreSQL role. The remaining
-ordered phases are:
+and verifies cross-tenant denial with the real PostgreSQL role. The second
+phase makes `Mission.workspace_prefix` non-nullable and authoritative in every
+mission-object producer and consumer, including event propagation, recovery
+and exact-prefix deletion. The remaining ordered phases are:
 
-1. make `Mission.workspace_prefix` the only mission-object namespace and fix
-   publication, GCP metadata, manual recovery and deletion;
-2. introduce tenant CAS while retaining v1/v2 reads;
-3. reject fused compute in protected multi-organization deployments;
-4. bind every Kafka event and deterministic identity to organization before
+1. introduce tenant CAS while retaining v1/v2 reads;
+2. reject fused compute in protected multi-organization deployments;
+3. complete organization binding for status/control events and deterministic
+   identity before
    relaxing the globally unique mission identifier;
-5. account physical fan-out resource units and run the detection finalizer on
+4. account physical fan-out resource units and run the detection finalizer on
    CPU.
 
 ### P1 — SaaS control plane

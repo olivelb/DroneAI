@@ -18,6 +18,7 @@ from shared.gcp_candidates import (
     rank_new_image_candidates,
 )
 from shared.gcp_import import import_gcp_bytes
+from shared.tenancy import MissionObjectNamespace
 
 from ..gcp_schemas import GcpObservationUpdate, GcpPointUpdate
 from ..gcp_audit import audit_event_json, record_gcp_audit
@@ -294,8 +295,13 @@ async def import_ground_control(
                 imported=imported,
                 actor_subject=principal.subject,
             )
-            positions = load_mission_image_positions(vol_id)
-            camera_index = load_camera_projection_index(vol_id)
+            namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                vol_id,
+                mission.workspace_prefix,
+            )
+            positions = load_mission_image_positions(namespace)
+            camera_index = load_camera_projection_index(namespace)
             positioned_by_name = {item.image_name: item for item in positions.images} if positions else {}
             cameras_by_name = {item.image_name: item for item in camera_index.cameras} if camera_index else {}
             observation_count = 0
@@ -489,8 +495,13 @@ def refresh_ground_control_candidates(
         )
         gcp_set = _require_gcp_set(typed_session, mission.id, set_id)
         try:
-            positions = load_mission_image_positions(vol_id)
-            camera_index = load_camera_projection_index(vol_id)
+            namespace = MissionObjectNamespace.from_binding(
+                mission.organization_id,
+                vol_id,
+                mission.workspace_prefix,
+            )
+            positions = load_mission_image_positions(namespace)
+            camera_index = load_camera_projection_index(namespace)
         except (OSError, UnicodeDecodeError, ValueError) as error:
             raise HTTPException(
                 status_code=422,

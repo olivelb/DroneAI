@@ -671,7 +671,11 @@ def test_manual_artifact_publication_validates_contract_before_s3(monkeypatch):
         "run-contract",
         str(uuid4()),
     )
-    mission = SimpleNamespace(vol_id="mission-contract")
+    mission = SimpleNamespace(
+        vol_id="mission-contract",
+        organization_id="legacy-unassigned",
+        workspace_prefix="missions/mission-contract",
+    )
     run = SimpleNamespace(
         stage="reconstruction",
         run_id="run-contract",
@@ -719,7 +723,11 @@ def test_manual_artifact_publication_rejects_failed_remote_verification(monkeypa
 
     with pytest.raises(HTTPException) as error:
         stage_routes._validate_published_artifact(
-            SimpleNamespace(vol_id="mission-remote"),
+            SimpleNamespace(
+                vol_id="mission-remote",
+                organization_id="legacy-unassigned",
+                workspace_prefix="missions/mission-remote",
+            ),
             SimpleNamespace(
                 stage="reconstruction",
                 run_id="run-remote",
