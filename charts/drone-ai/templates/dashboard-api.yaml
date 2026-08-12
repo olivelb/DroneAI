@@ -150,6 +150,8 @@ spec:
           value: {{ (not .Values.dashboardApi.controlWorker.enabled) | quote }}
         - name: DRONEAI_AUTH_DISABLED
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
+        - name: DRONEAI_DATABASE_AUTH_ENABLED
+          value: {{ .Values.dashboardApi.auth.databaseAuthEnabled | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS
           value: {{ .Values.dashboardApi.auth.sessionMaxAgeSeconds | quote }}
         {{- if .Values.dashboardApi.auth.existingSecret }}
@@ -158,11 +160,17 @@ spec:
             secretKeyRef:
               name: {{ .Values.dashboardApi.auth.existingSecret }}
               key: {{ .Values.dashboardApi.auth.secretKey }}
+              optional: true
         - name: DRONEAI_SESSION_SECRET
           valueFrom:
             secretKeyRef:
               name: {{ .Values.dashboardApi.auth.existingSecret }}
               key: {{ .Values.dashboardApi.auth.sessionSecretKey }}
+        - name: DRONEAI_CREDENTIAL_PEPPER
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.dashboardApi.auth.existingSecret }}
+              key: {{ .Values.dashboardApi.auth.credentialPepperSecretKey }}
         {{- end }}
         - name: DRONEAI_UPLOAD_MAX_FILES
           value: {{ .Values.dashboardApi.uploads.maxFiles | quote }}

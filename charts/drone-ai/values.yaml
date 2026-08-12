@@ -244,9 +244,11 @@ dashboardApi:
   environment: development
   auth:
     disabled: true
+    databaseAuthEnabled: false
     existingSecret: ""
     secretKey: api-keys.json
     sessionSecretKey: session-secret
+    credentialPepperSecretKey: credential-pepper
     sessionMaxAgeSeconds: 28800
   uploads:
     # Strings prevent large byte counts from being rendered in scientific

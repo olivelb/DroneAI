@@ -1,13 +1,14 @@
 # DroneAI production readiness
 
-Last verified: 2026-08-10
+Last verified: 2026-08-12
 
 ## Supported deployment boundary
 
-The repository now provides an authenticated, role-separated **single-tenant**
-production baseline. It is suitable behind a TLS ingress for one organization.
-It is not yet a public multi-tenant SaaS: that boundary additionally requires
-OIDC, tenant ownership columns and object-prefix isolation.
+The repository now provides an authenticated, role-separated multi-organization
+baseline with durable members, hashed credentials, organization-scoped data and
+object-prefix isolation. It is not yet a public self-service SaaS: invitations,
+OIDC federation, a platform-support role, PostgreSQL row-level security and
+commercial quota ledgers remain explicit follow-up work.
 
 ## Required production configuration
 
@@ -15,8 +16,9 @@ Deploy with `charts/drone-ai/values-production.example.yaml` as a reviewed
 overlay. Before installation, create:
 
 - the storage Secret with `s3-access-key`, `s3-secret-key` and `database-url`;
-- the API auth Secret with `api-keys.json` and a distinct random
-  `session-secret` of at least 32 characters;
+- the API auth Secret with a distinct random `session-secret` and
+  `credential-pepper`, each at least 32 characters;
+- during first adoption only, an `api-keys.json` bootstrap admin entry;
 - the ingress TLS Secret.
 
 The production example intentionally does not activate bounded stage Jobs.
@@ -30,7 +32,7 @@ production approval. When approved, add the complete immutable
 `stageJobs.executors` map, disable the fused COLMAP/IA Deployments, scale the
 compatibility processing worker to zero and review the resulting Job RBAC.
 
-`api-keys.json` is a JSON array:
+The optional bootstrap `api-keys.json` is a JSON array:
 
 ```json
 [
@@ -48,12 +50,20 @@ repository:
 
 ```bash
 openssl rand -base64 48 > session-secret
+openssl rand -base64 48 > credential-pepper
 kubectl -n drone-ai create secret generic drone-ai-api-auth \
   --from-file=api-keys.json=./api-keys.json \
-  --from-file=session-secret=./session-secret
+  --from-file=session-secret=./session-secret \
+  --from-file=credential-pepper=./credential-pepper
 ```
 
-Do not pass either value as a command-line literal or commit these files.
+Do not pass any of these values as a command-line literal or commit the files.
+
+After migration `0025`, use the bootstrap key once to call
+`POST /auth/bootstrap`, issue and verify durable admin credentials through
+`POST /auth/credentials`, then remove `api-keys.json` from the Secret. Full
+rotation, revocation and suspension behavior is defined in
+[`contracts/identity-control-plane-v1.md`](contracts/identity-control-plane-v1.md).
 
 Roles are cumulative:
 
@@ -81,7 +91,8 @@ rebuild. `CORS_ORIGINS` must contain the corresponding frontend origin.
 Production startup fails when:
 
 - `CORS_ORIGINS` contains `*`;
-- authentication is disabled or no API key registry is present;
+- authentication or database-backed credentials are disabled;
+- the session signing secret or credential pepper is missing or too short;
 - S3/database variables are missing or use known local defaults.
 
 Cookie-authenticated mutations also require a configured trusted `Origin`.

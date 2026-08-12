@@ -44,9 +44,11 @@ dashboardApi:
     origins: "https://droneai.example.com"
   auth:
     disabled: false
+    databaseAuthEnabled: true
     existingSecret: drone-ai-api-auth
     secretKey: api-keys.json
     sessionSecretKey: session-secret
+    credentialPepperSecretKey: credential-pepper
     sessionMaxAgeSeconds: 28800
 
 dashboardFrontend:

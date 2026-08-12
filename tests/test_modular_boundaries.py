@@ -214,6 +214,22 @@ def test_frontend_authentication_has_an_independent_provider_boundary():
     assert "<AuthProvider>" in providers_source
 
 
+def test_identity_control_plane_keeps_sessions_members_and_credentials_separate():
+    composition = "app4-dashboard/api/routers/identity.py"
+    modules = [
+        "app4-dashboard/api/routers/auth.py",
+        "app4-dashboard/api/routers/identity_members.py",
+        "app4-dashboard/api/routers/identity_credentials.py",
+        "app4-dashboard/api/identity_api.py",
+        "shared/identity.py",
+    ]
+
+    assert _line_count(composition) < 30
+    assert all(_line_count(module) < 330 for module in modules)
+    assert "include_router" in _source(composition)
+    assert "fastapi" not in _source("shared/identity.py")
+
+
 def test_frontend_mission_runtime_owns_server_state_and_realtime_io():
     runtime = "app4-dashboard/frontend/app/lib/mission-runtime.tsx"
     runtime_state = "app4-dashboard/frontend/app/lib/mission-runtime-state.ts"

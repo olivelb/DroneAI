@@ -265,6 +265,19 @@ DATASET_STATUSES = (
     "deletion_failed",
     "deleted",
 )
+ORGANIZATION_STATUSES = ("active", "suspended")
+ORGANIZATION_MEMBER_STATUSES = ("active", "suspended")
+ORGANIZATION_MEMBER_ROLES = ("viewer", "operator", "admin")
+API_CREDENTIAL_STATUSES = ("active", "revoked")
+IDENTITY_AUDIT_ACTIONS = (
+    "organization_bootstrapped",
+    "organization_updated",
+    "member_created",
+    "member_updated",
+    "credential_created",
+    "credential_revoked",
+    "credential_rotated",
+)
 
 
 def _values_check(column: str, values: tuple[str, ...]) -> str:
@@ -287,6 +300,148 @@ def _uuid_identifier_column() -> Column[Any]:
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
+
+class Organization(RequiredTimestampMixin, Base):
+    """Durable customer boundary for every SaaS-owned resource."""
+
+    __tablename__ = "organizations"
+    __table_args__ = (
+        CheckConstraint(
+            _values_check("status", ORGANIZATION_STATUSES),
+            name="ck_organizations_status",
+        ),
+    )
+
+    id = Column(String(64), primary_key=True)
+    display_name = Column(String(160), nullable=False)
+    status = Column(String(32), nullable=False, default="active")
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+
+
+class OrganizationMember(RequiredTimestampMixin, Base):
+    """Organization-scoped human or service identity and current role."""
+
+    __tablename__ = "organization_members"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "subject",
+            name="uq_organization_members_subject",
+        ),
+        Index(
+            "ix_organization_members_org_status_role",
+            "organization_id",
+            "status",
+            "role",
+        ),
+        CheckConstraint(
+            _values_check("status", ORGANIZATION_MEMBER_STATUSES),
+            name="ck_organization_members_status",
+        ),
+        CheckConstraint(
+            _values_check("role", ORGANIZATION_MEMBER_ROLES),
+            name="ck_organization_members_role",
+        ),
+        CheckConstraint(
+            "auth_version >= 1",
+            name="ck_organization_members_auth_version",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    subject = Column(String(256), nullable=False)
+    role = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False, default="active")
+    auth_version = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+
+
+class ApiCredential(RequiredTimestampMixin, Base):
+    """Revocable API credential; only its peppered digest is persisted."""
+
+    __tablename__ = "api_credentials"
+    __table_args__ = (
+        Index(
+            "ix_api_credentials_org_member_status",
+            "organization_id",
+            "member_id",
+            "status",
+        ),
+        CheckConstraint(
+            _values_check("status", API_CREDENTIAL_STATUSES),
+            name="ck_api_credentials_status",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True)
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    member_id = Column(
+        String(36),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String(160), nullable=False)
+    secret_hash = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="active")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(256), nullable=True)
+    revocation_reason = Column(String(500), nullable=True)
+    rotated_from_id = Column(
+        String(36),
+        ForeignKey("api_credentials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by = Column(String(256), nullable=False)
+
+
+class IdentityAuditEvent(AppendOnlyAuditMixin, Base):
+    """Database-protected identity and access lifecycle history."""
+
+    __tablename__ = "identity_audit_events"
+    __table_args__ = (
+        Index(
+            "ix_identity_audit_org_created",
+            "organization_id",
+            "created_at",
+        ),
+        Index(
+            "ix_identity_audit_target_created",
+            "target_type",
+            "target_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            _values_check("action", IDENTITY_AUDIT_ACTIONS),
+            name="ck_identity_audit_action",
+        ),
+    )
+
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    action = Column(String(48), nullable=False)
+    target_type = Column(String(32), nullable=False)
+    target_id = Column(String(256), nullable=False)
 
 
 class Dataset(RequiredTimestampMixin, Base):
@@ -327,6 +482,7 @@ class Dataset(RequiredTimestampMixin, Base):
     name = Column(String(256), nullable=False)
     organization_id = Column(
         String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=False,
         default=LEGACY_ORGANIZATION_ID,
         server_default=LEGACY_ORGANIZATION_ID,
@@ -379,6 +535,7 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
     dataset_name = Column(String(256), nullable=False, index=True)
     organization_id = Column(
         String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=False,
         default=LEGACY_ORGANIZATION_ID,
         server_default=LEGACY_ORGANIZATION_ID,
@@ -475,6 +632,7 @@ class Mission(Base):
     )
     organization_id = Column(
         String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
         nullable=False,
         default=LEGACY_ORGANIZATION_ID,
         server_default=LEGACY_ORGANIZATION_ID,

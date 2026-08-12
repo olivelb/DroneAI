@@ -15,6 +15,13 @@ from hmac import new as hmac_new
 from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
 
 from shared.database import get_session
+from shared.identity import (
+    AuthenticatedIdentity,
+    authenticate_credential,
+    credential_pepper,
+    database_authentication_enabled,
+    validate_session_identity,
+)
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
     LOCAL_ORGANIZATION_ID,
@@ -40,6 +47,22 @@ class Principal:
     subject: str
     role: str
     organization_id: str = LEGACY_ORGANIZATION_ID
+    member_id: str | None = None
+    credential_id: str | None = None
+    auth_version: int | None = None
+    authentication_method: str = "static"
+
+
+def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
+    return Principal(
+        subject=identity.subject,
+        role=identity.role,
+        organization_id=identity.organization_id,
+        member_id=identity.member_id,
+        credential_id=identity.credential_id,
+        auth_version=identity.auth_version,
+        authentication_method="database",
+    )
 
 
 def deployment_environment() -> str:
@@ -137,7 +160,11 @@ def authentication_enabled() -> bool:
         if disabled and is_production():
             raise RuntimeError("DRONEAI_AUTH_DISABLED cannot be enabled in production")
         return not disabled
-    return is_production() or bool(_configured_keys())
+    return (
+        is_production()
+        or bool(_configured_keys())
+        or database_authentication_enabled(production=is_production())
+    )
 
 
 def validate_production_configuration() -> None:
@@ -145,9 +172,11 @@ def validate_production_configuration() -> None:
         return
     if "*" in configured_cors_origins():
         raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
+    if not database_authentication_enabled(production=True):
+        raise RuntimeError(
+            "DRONEAI_DATABASE_AUTH_ENABLED must be enabled in production"
+        )
     configured_keys = _configured_keys()
-    if not configured_keys:
-        raise RuntimeError("DRONEAI_API_KEYS_JSON is required in production")
     if any(
         principal.organization_id == LEGACY_ORGANIZATION_ID
         for _key, principal in configured_keys
@@ -157,6 +186,7 @@ def validate_production_configuration() -> None:
         )
     if len(os.getenv("DRONEAI_SESSION_SECRET", "")) < 32:
         raise RuntimeError("DRONEAI_SESSION_SECRET must contain at least 32 characters in production")
+    credential_pepper()
     for name in ("S3_ACCESS_KEY", "S3_SECRET_KEY", "DATABASE_URL"):
         value = os.getenv(name, "").strip()
         if not value or value in LOCAL_SECRET_VALUES:
@@ -195,8 +225,17 @@ def issue_session_token(
         "subject": principal.subject,
         "role": principal.role,
         "organization_id": principal.organization_id,
+        "authentication_method": principal.authentication_method,
         "expires_at": int(time.time()) + max_age_seconds,
     }
+    if principal.member_id is not None:
+        payload.update(
+            {
+                "member_id": principal.member_id,
+                "credential_id": principal.credential_id,
+                "auth_version": principal.auth_version,
+            }
+        )
     encoded = _encode_base64(
         json.dumps(
             payload,
@@ -232,21 +271,57 @@ def _authenticate_session_token(token: str) -> Principal | None:
         return None
     try:
         payload = json.loads(_decode_base64(encoded))
-        subject = str(payload["subject"])
-        role = str(payload["role"])
-        organization_id = validate_organization_id(
-            str(payload["organization_id"])
-        )
         expires_at = int(payload["expires_at"])
     except (KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
-    if not subject or role not in ROLE_RANK or expires_at <= int(time.time()):
+    if expires_at <= int(time.time()):
         return None
-    return Principal(
+    durable_fields = ("member_id", "credential_id", "auth_version")
+    durable_values = [payload.get(field) for field in durable_fields]
+    if any(value is not None for value in durable_values):
+        if any(value is None for value in durable_values):
+            return None
+        try:
+            member_id = str(payload["member_id"])
+            credential_id = str(payload["credential_id"])
+            auth_version = int(payload["auth_version"])
+        except (TypeError, ValueError):
+            return None
+        with get_session() as session:
+            identity = validate_session_identity(
+                session,
+                member_id=member_id,
+                credential_id=credential_id,
+                auth_version=auth_version,
+            )
+        return _principal_from_identity(identity) if identity is not None else None
+    try:
+        subject = str(payload["subject"])
+        role = str(payload["role"])
+        organization_id = validate_organization_id(str(payload["organization_id"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not subject or role not in ROLE_RANK:
+        return None
+    authentication_method = str(payload.get("authentication_method", "static"))
+    principal = Principal(
         subject=subject,
         role=role,
         organization_id=organization_id,
+        authentication_method="static-session",
     )
+    if authentication_method == "local":
+        return principal if not authentication_enabled() and not is_production() else None
+    if authentication_method not in {"static", "static-session"}:
+        return None
+    if any(
+        configured.subject == principal.subject
+        and configured.role == principal.role
+        and configured.organization_id == principal.organization_id
+        for _key, configured in _configured_keys()
+    ):
+        return principal
+    return None
 
 
 def authenticate_api_key(token: str | None) -> Principal | None:
@@ -255,12 +330,18 @@ def authenticate_api_key(token: str | None) -> Principal | None:
             subject="local-development",
             role="admin",
             organization_id=LOCAL_ORGANIZATION_ID,
+            authentication_method="local",
         )
     if not token:
         return None
     for configured_key, principal in _configured_keys():
         if secrets.compare_digest(token, configured_key):
             return principal
+    if database_authentication_enabled(production=is_production()):
+        with get_session() as session:
+            identity = authenticate_credential(session, token)
+        if identity is not None:
+            return _principal_from_identity(identity)
     return None
 
 
