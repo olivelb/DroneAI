@@ -8,7 +8,7 @@ from typing import Any, cast
 
 import numpy as np
 
-from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
+from .colmap_loader import PointCloud, Sim3Transform
 from .camera_footprint import (
     GeographicSceneFrame,
     camera_assignment_for_ground_buffer,
