@@ -112,6 +112,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             "shared/config.py",
             "shared/database.py",
             "tests/integration/test_stage_scheduler_postgres.py",
+            "scripts/ci/verify_rolling_migration.py",
             "requirements/dev.in",
             "requirements/dev.txt",
         }:
