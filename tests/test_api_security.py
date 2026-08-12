@@ -11,6 +11,7 @@ security = importlib.import_module("app4-dashboard.api.security")
 dataset_uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
 api_main = importlib.import_module("app4-dashboard.api.main")
 rate_limit = importlib.import_module("app4-dashboard.api.rate_limit")
+auth_routes = importlib.import_module("app4-dashboard.api.routers.auth")
 
 
 def _keys():
@@ -380,6 +381,197 @@ def test_production_auto_selects_database_tile_rate_limiting(monkeypatch):
     limiter = security.build_tile_rate_limiter()
 
     assert isinstance(limiter, security.DatabaseTokenBucketRateLimiter)
+
+
+def test_production_requires_shared_identity_rate_limiting(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_IDENTITY_RATE_LIMIT_BACKEND", "local")
+
+    with pytest.raises(RuntimeError, match="database-backed identity"):
+        security.build_identity_rate_limiter(scope="peer")
+
+    monkeypatch.setenv("DRONEAI_IDENTITY_RATE_LIMIT_BACKEND", "auto")
+    limiter = security.build_identity_rate_limiter(scope="credential")
+
+    assert isinstance(limiter, security.DatabaseTokenBucketRateLimiter)
+
+
+def test_identity_rate_limiter_uses_public_uuid_without_retaining_secret():
+    credential_id = "7af8698a-c9d7-49b2-b1a9-bf42d754ad43"
+    secret = "identity-secret-that-must-not-be-persisted"
+
+    identity = rate_limit._public_credential_identity(
+        f"dai.{credential_id}.{secret}"
+    )
+
+    assert identity == f"tenant:{credential_id}"
+    assert secret not in identity
+
+
+def test_identity_middleware_limits_targeted_public_credential(monkeypatch):
+    now = lambda: 100.0
+    monkeypatch.setattr(
+        security,
+        "identity_peer_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=100,
+            burst=10,
+            clock=now,
+        ),
+    )
+    monkeypatch.setattr(
+        security,
+        "identity_credential_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=1,
+            burst=1,
+            clock=now,
+        ),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
+    calls = []
+
+    @application.get("/auth/credentials")
+    def credentials():
+        calls.append("called")
+        return []
+
+    token = (
+        "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43."
+        "identity-secret-that-is-at-least-32-bytes"
+    )
+    client = TestClient(application)
+
+    assert client.get(
+        "/auth/credentials",
+        headers={"X-API-Key": token},
+    ).status_code == 200
+    limited = client.get(
+        "/auth/credentials",
+        headers={"X-API-Key": token},
+    )
+
+    assert limited.status_code == 429
+    assert limited.headers["X-RateLimit-Scope"] == "identity"
+    assert limited.headers["X-RateLimit-Limit"] == "1"
+    assert calls == ["called"]
+
+
+def test_identity_peer_bucket_limits_rotating_public_identifiers(monkeypatch):
+    now = lambda: 100.0
+    monkeypatch.setattr(
+        security,
+        "identity_peer_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=2,
+            burst=2,
+            clock=now,
+        ),
+    )
+    monkeypatch.setattr(
+        security,
+        "identity_credential_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=100,
+            burst=100,
+            clock=now,
+        ),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
+
+    @application.get("/auth/members")
+    def members():
+        return []
+
+    client = TestClient(application)
+    credential_ids = (
+        "7af8698a-c9d7-49b2-b1a9-bf42d754ad43",
+        "a0f544dd-3170-4f72-ab94-b39caeb8e144",
+        "11161978-b152-4575-a1b5-d6b059d1df61",
+    )
+    statuses = [
+        client.get(
+            "/auth/members",
+            headers={
+                "X-API-Key": f"dai.{credential_id}.{'s' * 32}"
+            },
+        ).status_code
+        for credential_id in credential_ids
+    ]
+
+    assert statuses == [200, 200, 429]
+
+
+def test_session_json_credential_is_limited_before_authentication(monkeypatch):
+    now = lambda: 100.0
+    monkeypatch.setattr(
+        security,
+        "identity_peer_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=100,
+            burst=10,
+            clock=now,
+        ),
+    )
+    monkeypatch.setattr(
+        security,
+        "identity_credential_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=1,
+            burst=1,
+            clock=now,
+        ),
+    )
+    authentication_calls = []
+    monkeypatch.setattr(
+        security,
+        "authenticate_api_key",
+        lambda token: authentication_calls.append(token),
+    )
+    application = FastAPI()
+    application.include_router(auth_routes.router)
+    token = (
+        "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43."
+        "identity-secret-that-is-at-least-32-bytes"
+    )
+    client = TestClient(application)
+
+    first = client.post("/auth/session", json={"api_key": token})
+    second = client.post("/auth/session", json={"api_key": token})
+
+    assert first.status_code == 401
+    assert second.status_code == 429
+    assert authentication_calls == [token]
+
+
+def test_identity_middleware_fails_closed_when_backend_is_unavailable(
+    monkeypatch,
+):
+    class UnavailableLimiter:
+        requests_per_minute = 1
+
+        @staticmethod
+        def consume(_key):
+            raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(
+        security,
+        "identity_peer_rate_limiter",
+        UnavailableLimiter(),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
+
+    @application.get("/auth/members")
+    def members():
+        return []
+
+    response = TestClient(application).get("/auth/members")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Identity rate limiter unavailable"}
 
 
 def test_raster_tile_middleware_returns_retry_after(monkeypatch):

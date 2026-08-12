@@ -10,10 +10,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import security
+from . import rate_limit, security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready, readiness_payload
-from .rate_limit import OrganizationRequestQuotaMiddleware, RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
 from .routers.datasets import router as datasets_router
 from .routers.identity import router as identity_router
@@ -59,8 +58,9 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     )
-    application.add_middleware(RasterTileRateLimitMiddleware)
-    application.add_middleware(OrganizationRequestQuotaMiddleware)
+    application.add_middleware(rate_limit.RasterTileRateLimitMiddleware)
+    application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
+    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
 
     @application.middleware("http")
     async def cookie_csrf_guard(request: Request, call_next):

@@ -94,6 +94,12 @@ def test_production_identity_uses_database_credentials_and_rotatable_secrets() -
     assert "credentialPepperSecretKey: credential-pepper" in production
     assert "DRONEAI_DATABASE_AUTH_ENABLED" in deployment
     assert "DRONEAI_ALLOW_STATIC_BOOTSTRAP" in deployment
+    assert "rateLimitBackend: auto" in defaults
+    assert "peerRateLimitPerMinute:" in defaults
+    assert "credentialRateLimitPerMinute:" in defaults
+    assert "DRONEAI_IDENTITY_RATE_LIMIT_BACKEND" in deployment
+    assert "DRONEAI_IDENTITY_PEER_RATE_LIMIT_PER_MINUTE" in deployment
+    assert "DRONEAI_IDENTITY_CREDENTIAL_RATE_LIMIT_PER_MINUTE" in deployment
     assert "DRONEAI_CREDENTIAL_PEPPER" in deployment
     assert "optional: true" in deployment
 

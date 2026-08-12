@@ -5,10 +5,11 @@ from __future__ import annotations
 import os
 from typing import Annotated, TypedDict
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from .. import security
+from ..rate_limit import enforce_identity_rate_limit
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -35,7 +36,12 @@ class StatusResponse(TypedDict):
 
 
 @router.post("/session")
-def create_session(payload: SessionRequest, response: Response) -> SessionResponse:
+def create_session(
+    payload: SessionRequest,
+    request: Request,
+    response: Response,
+) -> SessionResponse:
+    enforce_identity_rate_limit(request, payload.api_key)
     principal = security.authenticate_api_key(payload.api_key)
     if principal is None:
         raise HTTPException(
