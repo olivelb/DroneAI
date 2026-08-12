@@ -76,9 +76,10 @@ def dataset_prefix(organization_id: str, dataset_name: str) -> str:
     """Return the legacy prefix or the organization-scoped v2 prefix."""
 
     organization = validate_organization_id(organization_id)
+    dataset = _object_key_component(dataset_name, field_name="dataset_name")
     if organization == LEGACY_ORGANIZATION_ID:
-        return f"datasets/{dataset_name}"
-    return f"organizations/{organization}/datasets/{dataset_name}"
+        return f"datasets/{dataset}"
+    return f"organizations/{organization}/datasets/{dataset}"
 
 
 def mission_prefix(organization_id: str, vol_id: str) -> str:

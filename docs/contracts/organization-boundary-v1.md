@@ -95,7 +95,8 @@ retain the member subject for attribution.
   a distinct metadata-only platform-support realm are implemented; OIDC and a
   management UI are not.
 - Mission IDs remain globally unique in the database.
-- Existing v1 storage is not automatically adopted into an explicit
-  organization; such adoption needs an audited administrative workflow.
+- Existing v1 storage is never adopted automatically. The explicit
+  copy-and-switch workflow is defined in
+  [`legacy-adoption-v1.md`](legacy-adoption-v1.md).
 - Billing policy, retention and organization quota ledgers remain separate
   from scientific profiles and are governed by the SaaS policy contract.

@@ -92,6 +92,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/auth/members",
         "/auth/credentials",
         "/auth/audit-events",
+        "/auth/access-audit-events",
         "/auth/invitations",
         "/auth/recovery-tokens",
         "/auth/capabilities/redeem",

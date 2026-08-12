@@ -3,6 +3,7 @@ confluent-kafka
 geoalchemy2
 opencv-python-headless
 pillow
+prometheus-client
 psycopg2-binary
 pydantic
 pyproj

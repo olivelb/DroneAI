@@ -391,6 +391,9 @@ PLATFORM_AUDIT_ACTIONS = (
     "platform_credential_rotated",
     "organization_status_updated",
 )
+ACCESS_AUDIT_ACTOR_REALMS = ("tenant", "platform")
+ACCESS_AUDIT_RESOURCE_TYPES = ("mission", "dataset")
+ACCESS_AUDIT_OUTCOMES = ("authorized",)
 ORGANIZATION_USAGE_ACTIONS = (
     "policy_updated",
     "storage_reserved",
@@ -399,6 +402,10 @@ ORGANIZATION_USAGE_ACTIONS = (
     "request_throttled",
     "retention_deleted",
     "retention_failed",
+    "legacy_adoption_started",
+    "legacy_adoption_resource",
+    "legacy_adoption_completed",
+    "legacy_adoption_failed",
 )
 
 
@@ -699,6 +706,63 @@ class PlatformAuditEvent(AppendOnlyAuditMixin, Base):
     action = Column(String(64), nullable=False)
     target_type = Column(String(32), nullable=False)
     target_id = Column(String(256), nullable=False)
+
+
+class AccessAuditEvent(AppendOnlyAuditMixin, Base):
+    """Append-only evidence of explicit cross-member data access."""
+
+    __tablename__ = "access_audit_events"
+    __table_args__ = (
+        Index(
+            "ix_access_audit_org_created",
+            "organization_id",
+            "created_at",
+        ),
+        Index(
+            "ix_access_audit_owner_created",
+            "organization_id",
+            "target_owner_subject",
+            "created_at",
+        ),
+        Index(
+            "ix_access_audit_resource_created",
+            "resource_type",
+            "resource_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            _values_check("actor_realm", ACCESS_AUDIT_ACTOR_REALMS),
+            name="ck_access_audit_actor_realm",
+        ),
+        CheckConstraint(
+            _values_check("resource_type", ACCESS_AUDIT_RESOURCE_TYPES),
+            name="ck_access_audit_resource_type",
+        ),
+        CheckConstraint(
+            _values_check("outcome", ACCESS_AUDIT_OUTCOMES),
+            name="ck_access_audit_outcome",
+        ),
+        CheckConstraint(
+            "length(action) BETWEEN 1 AND 64",
+            name="ck_access_audit_action_length",
+        ),
+    )
+
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    actor_role = Column(String(32), nullable=False)
+    actor_realm = Column(String(32), nullable=False, default="tenant")
+    actor_member_id = Column(String(36), nullable=True)
+    actor_credential_id = Column(String(36), nullable=True)
+    action = Column(String(64), nullable=False)
+    target_owner_subject = Column(String(256), nullable=False)
+    resource_type = Column(String(32), nullable=False)
+    resource_id = Column(String(256), nullable=True)
+    outcome = Column(String(32), nullable=False, default="authorized")
 
 
 class OrganizationSaasPolicy(RequiredTimestampMixin, Base):

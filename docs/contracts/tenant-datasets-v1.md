@@ -17,9 +17,10 @@ environment so local development follows the same catalogue-producing flow.
 
 Migration `0022` imports the newest completed upload session for each existing
 dataset prefix and links existing missions when owner and prefix both match.
-Raw S3 prefixes without a completed upload session are intentionally not
-assigned to a tenant. They must be re-ingested or handled by a future explicit,
-audited adoption workflow.
+Raw S3 prefixes without a catalogue row are intentionally not assigned to a
+tenant. They must be re-ingested. Existing catalogue-backed legacy datasets
+can use the explicit audited workflow in
+[`legacy-adoption-v1.md`](legacy-adoption-v1.md).
 
 ## Tenant boundary
 
@@ -57,9 +58,9 @@ tombstone that is excluded from ordinary access.
 
 ## v1 compatibility limits
 
-- Historical S3 prefixes remain `datasets/{name}`. New explicit organizations
-  write `organizations/{organization_id}/datasets/{name}`; migration `0024`
-  does not copy or silently adopt historical objects.
+- Historical S3 prefixes remain `datasets/{name}` until an operator runs the
+  explicit copy-and-switch adoption workflow. Migration `0024` still performs
+  no implicit storage mutation.
 - The browser upload currently accepts plain filenames rather than relative
   paths and records multipart ETags rather than full-file SHA-256 values.
 - Recovery from a database commit failure immediately after an S3 multipart

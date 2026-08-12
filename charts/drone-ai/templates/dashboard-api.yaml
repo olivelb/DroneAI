@@ -11,6 +11,9 @@
 {{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.saas.organizationRequestQuotasEnabled) }}
 {{- fail "dashboardApi.saas.organizationRequestQuotasEnabled must be true in staging and production" }}
 {{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.observability.metricsEnabled) }}
+{{- fail "dashboardApi.observability.metricsEnabled must be true in staging and production" }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
 {{- fail "storage.existingSecret is required in staging and production" }}
 {{- end }}
@@ -147,6 +150,12 @@ spec:
     metadata:
       labels:
         app: dashboard-api
+      {{- if .Values.dashboardApi.observability.metricsEnabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: {{ .Values.dashboardApi.observability.metricsPort | quote }}
+      {{- end }}
     spec:
       serviceAccountName: dashboard-api-sa
       securityContext:
@@ -217,6 +226,10 @@ spec:
           value: {{ .Values.dashboardApi.auth.rateLimitMaxClients | quote }}
         - name: DRONEAI_RLS_REQUIRED
           value: {{ .Values.dashboardApi.rowLevelSecurityRequired | quote }}
+        - name: DRONEAI_METRICS_ENABLED
+          value: {{ .Values.dashboardApi.observability.metricsEnabled | quote }}
+        - name: DRONEAI_METRICS_PORT
+          value: {{ .Values.dashboardApi.observability.metricsPort | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS
           value: {{ .Values.dashboardApi.auth.sessionMaxAgeSeconds | quote }}
         {{- if .Values.dashboardApi.auth.existingSecret }}
@@ -273,6 +286,10 @@ spec:
           value: {{ .Values.colmapWorker.workVolume.default | quote }}
         ports:
         - containerPort: 8000
+        {{- if .Values.dashboardApi.observability.metricsEnabled }}
+        - name: metrics
+          containerPort: {{ .Values.dashboardApi.observability.metricsPort }}
+        {{- end }}
         volumeMounts:
         - name: tmp
           mountPath: /tmp

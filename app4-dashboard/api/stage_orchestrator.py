@@ -23,6 +23,10 @@ from shared.detection_sharding import (
     parse_detection_shard_plan_descriptor,
 )
 from shared.organization_saas import append_usage_event, stage_run_limits
+from shared.observability import (
+    observe_control_loop,
+    observe_stage_queue,
+)
 from shared.stage_contracts import (
     STAGE_ORDER,
     ResourceClassId,
@@ -83,9 +87,9 @@ class StageOrchestratorSettings:
     executors: dict[StageId, StageExecutorConfig]
     job_environment: tuple[tuple[str, str], ...] = ()
     job_secret_environment: tuple[SecretEnvironment, ...] = ()
-    job_secret_environment_by_stage: dict[
-        StageId, tuple[SecretEnvironment, ...]
-    ] = field(default_factory=dict)
+    job_secret_environment_by_stage: dict[StageId, tuple[SecretEnvironment, ...]] = (
+        field(default_factory=dict)
+    )
     detection_environment: tuple[tuple[str, str], ...] = ()
     detection_secret_environment: tuple[SecretEnvironment, ...] = ()
     service_account_name: str = "stage-job-sa"
@@ -155,10 +159,14 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
             or re.search(r":[0-9a-f]{7,40}$", image)
         ):
             raise ValueError(f"Executor image for {stage} must be immutable")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(part, str) and part for part in command
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(part, str) and part for part in command)
         ):
-            raise ValueError(f"Executor command for {stage} must be a non-empty string list")
+            raise ValueError(
+                f"Executor command for {stage} must be a non-empty string list"
+            )
         if stage != "rasterization" and not isinstance(architecture, str):
             raise ValueError(f"GPU architecture must be declared for {stage}")
         if not isinstance(selector, dict) or not all(
@@ -247,8 +255,16 @@ def _storage_secret_environment(secret_name: str) -> tuple[SecretEnvironment, ..
                 "DRONEAI_STAGE_DATABASE_URL_SECRET_KEY",
                 "stage-database-url",
             ),
-            ("S3_ACCESS_KEY", "DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY", "s3-access-key"),
-            ("S3_SECRET_KEY", "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY", "s3-secret-key"),
+            (
+                "S3_ACCESS_KEY",
+                "DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY",
+                "s3-access-key",
+            ),
+            (
+                "S3_SECRET_KEY",
+                "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY",
+                "s3-secret-key",
+            ),
         )
     )
 
@@ -271,8 +287,7 @@ def _scoped_stage_secret_environment(
     if not payload:
         if enabled and protected:
             raise ValueError(
-                f"{environment} stage Jobs require one distinct credential Secret "
-                "for every stage"
+                f"{environment} stage Jobs require one distinct credential Secret for every stage"
             )
         return {}
     missing = [stage for stage in STAGE_ORDER if stage not in payload]
@@ -298,12 +313,8 @@ def settings_from_environment() -> StageOrchestratorSettings:
     enabled = stage_jobs_enabled()
     deployment_environment = os.getenv("DRONEAI_ENV", "development").strip().lower()
     protected_environment = deployment_environment in {"staging", "production"}
-    detection_fanout_enabled = _strict_bool(
-        "DRONEAI_DETECTION_FANOUT_ENABLED"
-    )
-    manifest_v2_enabled = _strict_bool(
-        "DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED"
-    )
+    detection_fanout_enabled = _strict_bool("DRONEAI_DETECTION_FANOUT_ENABLED")
+    manifest_v2_enabled = _strict_bool("DRONEAI_ARTIFACT_MANIFEST_V2_WRITE_ENABLED")
     selective_restore_enabled = _strict_bool(
         "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED"
     )
@@ -400,15 +411,21 @@ def settings_from_environment() -> StageOrchestratorSettings:
         job_secret_environment_by_stage=scoped_secret_environment,
         detection_environment=detection_environment,
         detection_secret_environment=detection_secret_environment,
-        service_account_name=os.getenv("DRONEAI_STAGE_JOB_SERVICE_ACCOUNT", "stage-job-sa"),
-        active_deadline_seconds=_positive_int("DRONEAI_STAGE_JOB_ACTIVE_DEADLINE_SECONDS", 86_400),
+        service_account_name=os.getenv(
+            "DRONEAI_STAGE_JOB_SERVICE_ACCOUNT", "stage-job-sa"
+        ),
+        active_deadline_seconds=_positive_int(
+            "DRONEAI_STAGE_JOB_ACTIVE_DEADLINE_SECONDS", 86_400
+        ),
         ttl_seconds_after_finished=int(
             os.getenv("DRONEAI_STAGE_JOB_TTL_SECONDS_AFTER_FINISHED", "3600")
         ),
         runtime_class_name=(
             os.getenv("DRONEAI_STAGE_JOB_RUNTIME_CLASS", "").strip() or None
         ),
-        maximum_dispatch_attempts=_positive_int("DRONEAI_STAGE_MAX_DISPATCH_ATTEMPTS", 3),
+        maximum_dispatch_attempts=_positive_int(
+            "DRONEAI_STAGE_MAX_DISPATCH_ATTEMPTS", 3
+        ),
         detection_fanout_enabled=detection_fanout_enabled,
         detection_tiles_per_shard=_positive_int(
             "DRONEAI_DETECTION_TILES_PER_SHARD",
@@ -475,19 +492,21 @@ def _prepare_detection_fanout(
         raise ValueError(
             "Detection fan-out requires exactly one immutable upstream artifact"
         )
-    artifact = session.query(MissionArtifact).filter(
-        MissionArtifact.artifact_id == upstream_ids[0],
-        MissionArtifact.mission_id == run.mission_id,
-    ).one_or_none()
+    artifact = (
+        session.query(MissionArtifact)
+        .filter(
+            MissionArtifact.artifact_id == upstream_ids[0],
+            MissionArtifact.mission_id == run.mission_id,
+        )
+        .one_or_none()
+    )
     if (
         artifact is None
         or artifact.kind != "raster_product_workspace"
         or artifact.stage_run.stage != "rasterization"
         or artifact.stage_run.status != "succeeded"
     ):
-        raise ValueError(
-            "Detection fan-out requires its exact raster product artifact"
-        )
+        raise ValueError("Detection fan-out requires its exact raster product artifact")
     metrics = cast(dict[str, Any], artifact.stage_run.quality_metrics or {})
     width = _integer_value(metrics.get("width"), "Raster width")
     height = _integer_value(metrics.get("height"), "Raster height")
@@ -498,9 +517,11 @@ def _prepare_detection_fanout(
     ai = cast(dict[str, Any], raw_ai)
     tile_size = _integer_value(ai.get("tile_size") or 1_024, "Detection tile size")
     overlap = _integer_value(
-        ai.get("tile_overlap")
-        if ai.get("tile_overlap") is not None
-        else tile_size // 4,
+        (
+            ai.get("tile_overlap")
+            if ai.get("tile_overlap") is not None
+            else tile_size // 4
+        ),
         "Detection tile overlap",
     )
     plan = build_detection_shard_plan(
@@ -530,9 +551,7 @@ def _prepare_detection_fanout(
 
 def _detection_shard_count(run: MissionStageRun) -> int:
     provenance = cast(dict[str, Any], run.provenance or {})
-    plan = parse_detection_shard_plan_descriptor(
-        provenance.get("detection_shard_plan")
-    )
+    plan = parse_detection_shard_plan_descriptor(provenance.get("detection_shard_plan"))
     return _integer_value(plan.shard_count, "Detection shard count")
 
 
@@ -572,9 +591,7 @@ def _reserved_job(
     stage = cast(StageId, run.stage)
     executor = settings.executors[stage]
     phase = _detection_phase(run)
-    detection_inference = (
-        stage == "detection" and phase != DETECTION_FINALIZER_PHASE
-    )
+    detection_inference = stage == "detection" and phase != DETECTION_FINALIZER_PHASE
     detection_environment = (
         settings.detection_environment if detection_inference else ()
     )
@@ -613,9 +630,13 @@ def _reserved_job(
             )
         except ValueError:
             effective_parallelism = requested_parallelism
-        if not 1 <= effective_parallelism <= min(
-            requested_parallelism,
-            plan.shard_count,
+        if (
+            not 1
+            <= effective_parallelism
+            <= min(
+                requested_parallelism,
+                plan.shard_count,
+            )
         ):
             raise ValueError(
                 "Effective detection shard parallelism exceeds its reservation"
@@ -647,8 +668,7 @@ def _reserved_job(
     workspace_prefix = cast(str | None, mission.workspace_prefix)
     if not organization_id or not workspace_prefix:
         raise ValueError(
-            "Bounded stage execution requires a durable organization and "
-            "mission workspace prefix"
+            "Bounded stage execution requires a durable organization and mission workspace prefix"
         )
     request = StageJobRequest(
         run_id=cast(str, run.run_id),
@@ -681,9 +701,7 @@ def _reserved_job(
                 () if phase == DETECTION_FINALIZER_PHASE else executor.tolerations
             ),
             environment=(
-                settings.job_environment
-                + detection_environment
-                + phase_environment
+                settings.job_environment + detection_environment + phase_environment
             ),
             secret_environment=(
                 scoped_secret_environment + detection_secret_environment
@@ -755,25 +773,38 @@ def reserve_ready_jobs(
     if not _try_acquire_scheduler_reservation_lock(session):
         logger.debug("Another scheduler replica owns the reservation transaction")
         return []
-    active_rows = session.query(MissionStageRun, Mission).join(
-        Mission,
-        Mission.id == MissionStageRun.mission_id,
-    ).filter(
-        MissionStageRun.executor == EXECUTOR_NAME,
-        MissionStageRun.status.in_(ACTIVE_STATUSES),
-    ).all()
-    candidate_rows = session.query(MissionStageRun, Mission).join(
-        Mission,
-        Mission.id == MissionStageRun.mission_id,
-    ).filter(
-        MissionStageRun.status == "queued",
-        MissionStageRun.executor.is_(None),
-        MissionStageRun.dispatch_attempts < settings.maximum_dispatch_attempts,
-        Mission.status != "cancelled",
-    ).order_by(
-        MissionStageRun.created_at,
-        MissionStageRun.run_id,
-    ).with_for_update(skip_locked=True).limit(500).all()
+    active_rows = (
+        session.query(MissionStageRun, Mission)
+        .join(
+            Mission,
+            Mission.id == MissionStageRun.mission_id,
+        )
+        .filter(
+            MissionStageRun.executor == EXECUTOR_NAME,
+            MissionStageRun.status.in_(ACTIVE_STATUSES),
+        )
+        .all()
+    )
+    candidate_rows = (
+        session.query(MissionStageRun, Mission)
+        .join(
+            Mission,
+            Mission.id == MissionStageRun.mission_id,
+        )
+        .filter(
+            MissionStageRun.status == "queued",
+            MissionStageRun.executor.is_(None),
+            MissionStageRun.dispatch_attempts < settings.maximum_dispatch_attempts,
+            Mission.status != "cancelled",
+        )
+        .order_by(
+            MissionStageRun.created_at,
+            MissionStageRun.run_id,
+        )
+        .with_for_update(skip_locked=True)
+        .limit(500)
+        .all()
+    )
     prepared_candidate_rows = []
     for run, mission in candidate_rows:
         _repair_underprovisioned_resource_class(run)
@@ -883,9 +914,7 @@ def reserve_ready_jobs(
             actor_subject="system:stage-scheduler",
             quantity=allocation.resource_units,
             unit="resource_units",
-            idempotency_key=(
-                f"stage-scheduled:{run.run_id}:{run.dispatch_attempts}"
-            ),
+            idempotency_key=(f"stage-scheduled:{run.run_id}:{run.dispatch_attempts}"),
             details={
                 "stage": run.stage,
                 "resource_class": run.resource_class,
@@ -896,9 +925,16 @@ def reserve_ready_jobs(
     return reserved
 
 
-def _record_dispatch_error(run_id: str, error: Exception, maximum_attempts: int) -> None:
+def _record_dispatch_error(
+    run_id: str, error: Exception, maximum_attempts: int
+) -> None:
     with get_session() as session:
-        run = session.query(MissionStageRun).filter(MissionStageRun.run_id == run_id).with_for_update().one()
+        run = (
+            session.query(MissionStageRun)
+            .filter(MissionStageRun.run_id == run_id)
+            .with_for_update()
+            .one()
+        )
         run.dispatch_error = str(error)[:4000]
         if cast(int, run.dispatch_attempts) >= maximum_attempts:
             run.status = "failed"
@@ -960,13 +996,19 @@ def reconcile_stage_jobs(
     settings: StageOrchestratorSettings,
 ) -> None:
     with get_session() as session:
-        rows = session.query(MissionStageRun, Mission).join(
-            Mission,
-            Mission.id == MissionStageRun.mission_id,
-        ).filter(
-            MissionStageRun.executor == EXECUTOR_NAME,
-            MissionStageRun.status.in_((*ACTIVE_STATUSES, "cancelled")),
-        ).with_for_update(skip_locked=True).all()
+        rows = (
+            session.query(MissionStageRun, Mission)
+            .join(
+                Mission,
+                Mission.id == MissionStageRun.mission_id,
+            )
+            .filter(
+                MissionStageRun.executor == EXECUTOR_NAME,
+                MissionStageRun.status.in_((*ACTIVE_STATUSES, "cancelled")),
+            )
+            .with_for_update(skip_locked=True)
+            .all()
+        )
         now = datetime.now(UTC)
         for run, mission in rows:
             name = cast(str, run.job_name)
@@ -992,7 +1034,10 @@ def reconcile_stage_jobs(
                 if error.status_code != 404:
                     raise
                 run.dispatch_attempts = cast(int, run.dispatch_attempts) + 1
-                if cast(int, run.dispatch_attempts) > settings.maximum_dispatch_attempts:
+                if (
+                    cast(int, run.dispatch_attempts)
+                    > settings.maximum_dispatch_attempts
+                ):
                     run.status = "failed"
                     run.error_message = "Stage Job disappeared after bounded retries"
                     run.completed_at = now
@@ -1003,9 +1048,14 @@ def reconcile_stage_jobs(
                     run.dispatch_error = None
                 except Exception as create_error:
                     run.dispatch_error = str(create_error)[:4000]
-                    if cast(int, run.dispatch_attempts) >= settings.maximum_dispatch_attempts:
+                    if (
+                        cast(int, run.dispatch_attempts)
+                        >= settings.maximum_dispatch_attempts
+                    ):
                         run.status = "failed"
-                        run.error_message = "Stage Job recreation failed after bounded retries"
+                        run.error_message = (
+                            "Stage Job recreation failed after bounded retries"
+                        )
                         run.completed_at = now
                 continue
             status = cast(dict[str, Any], job.get("status") or {})
@@ -1034,10 +1084,7 @@ def reconcile_stage_jobs(
                         )
                     except ValueError as error:
                         run.status = "failed"
-                        run.error_message = (
-                            "Detection shards exited without a complete durable "
-                            f"receipt set: {error}"
-                        )
+                        run.error_message = f"Detection shards exited without a complete durable receipt set: {error}"
                         run.completed_at = now
                         continue
                     shard_job_name = cast(str, run.job_name)
@@ -1062,7 +1109,9 @@ def reconcile_stage_jobs(
                     run.current_step = "DETECTION_FINALIZING"
                     continue
                 run.status = "failed"
-                run.error_message = "Stage Job exited without publishing its immutable artifact"
+                run.error_message = (
+                    "Stage Job exited without publishing its immutable artifact"
+                )
                 run.completed_at = now
 
 
@@ -1073,6 +1122,37 @@ def orchestrator_tick(
     reconcile_stage_jobs(client, settings)
     with get_session() as session:
         reserved = reserve_ready_jobs(session, settings, datetime.now(UTC))
+        active_runs = (
+            session.query(MissionStageRun)
+            .filter(
+                MissionStageRun.status.in_(ACTIVE_STATUSES),
+            )
+            .all()
+        )
+        queue_counts: dict[tuple[str, str], tuple[int, int]] = {}
+        oldest_queued_age = 0.0
+        observed_at = datetime.now(UTC)
+        for run in active_runs:
+            key = (str(run.status), str(run.resource_class))
+            runs, units = queue_counts.get(key, (0, 0))
+            resource_units = (
+                _active_resource_units(run)
+                if run.status == "running"
+                else _requested_resource_units(run, settings)
+            )
+            queue_counts[key] = (runs + 1, units + resource_units)
+            if run.status == "queued":
+                created_at = run.created_at
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=UTC)
+                oldest_queued_age = max(
+                    oldest_queued_age,
+                    (observed_at - created_at).total_seconds(),
+                )
+        observe_stage_queue(
+            queue_counts,
+            oldest_queued_age_seconds=oldest_queued_age,
+        )
     dispatch_reserved_jobs(client, reserved, settings.maximum_dispatch_attempts)
 
 
@@ -1084,7 +1164,9 @@ def run_stage_orchestrator(stop_event: threading.Event) -> None:
     while not stop_event.is_set():
         try:
             orchestrator_tick(client, settings)
+            observe_control_loop("stage_orchestrator", succeeded=True)
         except Exception:
+            observe_control_loop("stage_orchestrator", succeeded=False)
             logger.exception("Stage orchestrator tick failed")
         stop_event.wait(settings.poll_seconds)
 

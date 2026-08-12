@@ -6,13 +6,13 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from . import rate_limit, security
+from . import security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready, readiness_payload
+from .http_middleware import configure_http_middleware
 from .realtime import consume_status_events, status_hub
 from .routers.datasets import router as datasets_router
 from .routers.identity import router as identity_router
@@ -21,9 +21,12 @@ from .routers.missions import router as missions_router
 from .routers.operations import router as operations_router
 from .routers.organization_saas import router as organization_saas_router
 from .routers.platform import router as platform_router
+from shared.observability import start_metrics_server
+
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    metrics_server = start_metrics_server()
     loop = asyncio.get_running_loop()
     stop_event = threading.Event()
     consumer_thread = threading.Thread(
@@ -34,9 +37,7 @@ async def lifespan(application: FastAPI):
     )
     consumer_thread.start()
     control_supervisor = (
-        start_control_loops(stop_event)
-        if embedded_control_loops_enabled()
-        else None
+        start_control_loops(stop_event) if embedded_control_loops_enabled() else None
     )
     application.state.control_supervisor = control_supervisor
     try:
@@ -46,29 +47,14 @@ async def lifespan(application: FastAPI):
         consumer_thread.join(timeout=2)
         if control_supervisor is not None:
             control_supervisor.stop()
+        if metrics_server is not None:
+            metrics_server.stop()
 
 
 def create_app() -> FastAPI:
     security.validate_production_configuration()
     application = FastAPI(lifespan=lifespan)
-    application.add_middleware(
-        CORSMiddleware,
-        allow_origins=security.configured_cors_origins(),
-        allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Authorization", "Content-Type", "X-API-Key"],
-    )
-    application.add_middleware(rate_limit.RasterTileRateLimitMiddleware)
-    application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
-    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
-
-    @application.middleware("http")
-    async def cookie_csrf_guard(request: Request, call_next):
-        try:
-            security.enforce_cookie_csrf(request)
-        except HTTPException as error:
-            return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
-        return await call_next(request)
+    configure_http_middleware(application)
 
     application.include_router(identity_router)
     application.include_router(missions_router)

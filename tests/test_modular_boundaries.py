@@ -48,6 +48,20 @@ def test_qgis_crs_logic_stays_framework_neutral():
     assert "def reproject_features" in source
 
 
+def test_storage_delegates_immutable_publication_algorithms():
+    facade = "shared/storage.py"
+    immutable = "shared/storage_immutable.py"
+    facade_source = _source(facade)
+    immutable_source = _source(immutable)
+
+    assert _line_count(facade) < 850
+    assert _line_count(immutable) < 600
+    assert "immutable.publish_content_addressed_file(" in facade_source
+    assert "immutable.copy_verified_object(" in facade_source
+    assert "from shared import storage" not in immutable_source
+    assert "boto3.client" not in immutable_source
+
+
 def test_processing_worker_delegates_long_running_workflows():
     main_source = _source("app3-processing/main.py")
     workflow_source = _source("app3-processing/analysis_workflow.py")

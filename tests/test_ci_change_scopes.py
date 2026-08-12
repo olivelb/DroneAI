@@ -84,6 +84,16 @@ def test_scheduler_changes_run_postgres_locking_contract() -> None:
         "migrations",
         "integration",
     }
+    assert _enabled("scripts/ci/verify_rolling_migration.py") == {
+        "python",
+        "migrations",
+    }
+    assert _enabled("tools/adopt_legacy_storage.py") == {
+        "python",
+        "duplication",
+        "migrations",
+        "integration",
+    }
 
 
 def test_platform_composition_changes_run_real_service_integration() -> None:

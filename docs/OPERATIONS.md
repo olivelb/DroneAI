@@ -353,6 +353,25 @@ reference the same catalogue row. The full v1 boundary and provisioning command
 are in
 [`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md).
 
+### Legacy resource adoption
+
+Historical `legacy-unassigned` datasets and terminal missions are adopted only
+with the operator command documented in
+[`contracts/legacy-adoption-v1.md`](contracts/legacy-adoption-v1.md). Run the
+default read-only plan first, archive its JSON, review every source/target
+prefix, the physical `target_write_bytes` and logical quota impact, then pass
+the freshly recomputed checksum to `--apply`. Stop writers for the selected
+database graphs and S3 prefixes throughout this maintenance sequence.
+
+Never delete the legacy source after the command reports success. First verify
+the tenant catalogue/API, restore at least one adopted artifact from its v3
+manifest, confirm the append-only `legacy_adoption_completed` event, and apply
+the ordinary backup/legal-hold policy. A failed run may leave safe verified
+copies in the target prefix. After fixing the cause, reuse the selection and
+`run_id` only if the freshly regenerated plan has the same checksum; otherwise
+review a new plan and use its new `run_id`. Never manually relabel rows or
+overwrite objects.
+
 ## Failure recovery
 
 | Observation | Safe response |
@@ -368,6 +387,7 @@ are in
 | Database is unavailable/corrupt | Stop writers, restore into an isolated instance, validate migrations/counts, then perform a reviewed cutover. |
 | S3 object is missing | Stop downstream retries and recover the exact version/checksum; do not substitute a similarly named object. |
 | Deployment regression | Roll back to the recorded Helm revision and immutable image digests; schema rollback requires its own tested procedure. |
+| Legacy adoption failed | Keep source objects untouched. Inspect the durable `legacy_adoption_failed` event and fix the reported object/DB conflict. Resume with the recorded `run_id` only when the regenerated plan checksum is unchanged; otherwise review and start a new run. |
 
 The upload reconciler runs before expired-upload cleanup on every
 `DRONEAI_UPLOAD_CLEANUP_SECONDS` interval. Inspect pending states without

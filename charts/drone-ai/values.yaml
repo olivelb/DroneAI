@@ -14,6 +14,16 @@ global:
   # be rendered accidentally. Local/K3s development keeps latest support.
   requireImmutableImages: false
 
+observability:
+  alerts:
+    # Requires the Prometheus Operator CRDs in the target cluster.
+    enabled: false
+    httpErrorRatio: 0.05
+    httpP95Seconds: 2
+    outboxAgeSeconds: 300
+    stageQueueAgeSeconds: 600
+    kafkaLagRecords: 1000
+
 # --------------------------------------------------------------------------
 # Kafka
 # --------------------------------------------------------------------------
@@ -226,6 +236,10 @@ dashboardApi:
   # PostgreSQL role.
   databaseUrlSecretKey: database-url
   rowLevelSecurityRequired: false
+  observability:
+    # Dedicated pod-local Prometheus endpoint; never routed through ingress.
+    metricsEnabled: false
+    metricsPort: 9100
   controlWorker:
     # Durable outbox delivery, upload reconciliation, and stage scheduling run
     # outside the request-serving API so API rollouts cannot stop control work.

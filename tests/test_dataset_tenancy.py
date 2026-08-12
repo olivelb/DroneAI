@@ -10,6 +10,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from shared.database import (
+    AccessAuditEvent,
     Dataset,
     DatasetUploadSession,
     Mission,
@@ -31,6 +32,7 @@ def tenant_sessions(monkeypatch):
     Mission.__table__.create(engine)
     MissionArtifact.__table__.create(engine)
     OrganizationUsageEvent.__table__.create(engine)
+    AccessAuditEvent.__table__.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
@@ -125,7 +127,7 @@ def test_cross_owner_object_download_is_hidden_before_storage_access(
     assert error.value.status_code == 404
 
 
-def test_admin_cross_tenant_dataset_access_must_be_explicit_and_is_audited(
+def test_admin_cross_member_dataset_access_must_be_explicit_and_is_audited(
     tenant_sessions,
     caplog,
 ):
@@ -138,8 +140,15 @@ def test_admin_cross_tenant_dataset_access_must_be_explicit_and_is_audited(
     )
 
     assert [item["name"] for item in result] == ["alice-flight"]
-    assert "admin_cross_tenant_dataset_access" in caplog.text
+    assert "admin_cross_member_dataset_access" in caplog.text
     assert "principal=platform-admin" in caplog.text
+    with tenant_sessions() as session:
+        event = session.query(AccessAuditEvent).one()
+        assert event.actor_subject == "platform-admin"
+        assert event.target_owner_subject == "alice"
+        assert event.action == "list"
+        assert event.resource_type == "dataset"
+        assert event.resource_id is None
 
 
 def test_mission_launch_requires_a_ready_owned_dataset(

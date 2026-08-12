@@ -8,6 +8,7 @@ geoalchemy2
 numpy
 pillow
 plyfile
+prometheus-client
 psycopg2-binary
 pydantic
 pycolmap==4.1.1

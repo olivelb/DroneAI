@@ -24,6 +24,7 @@ from shared.organization_saas import (
     RETENTION_TERMINAL_STATUSES,
     append_usage_event,
 )
+from shared.observability import observe_control_loop, observe_reconciliation
 from shared.tenancy import MissionObjectNamespace
 
 logger = logging.getLogger("droneai.retention")
@@ -38,6 +39,23 @@ class RetentionCandidate:
     prefix: str
 
 
+def _locked_deleting_mission(
+    session: Session,
+    candidate: RetentionCandidate,
+) -> Mission | None:
+    return cast(
+        Mission | None,
+        session.query(Mission)
+        .filter(
+            Mission.id == candidate.mission_id,
+            Mission.organization_id == candidate.organization_id,
+            Mission.status == "deleting",
+        )
+        .with_for_update()
+        .one_or_none(),
+    )
+
+
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
@@ -49,21 +67,29 @@ def claim_retention_candidates(
     retry_seconds: int,
     limit: int = 100,
 ) -> list[RetentionCandidate]:
-    rows = session.query(Mission, OrganizationSaasPolicy).outerjoin(
-        OrganizationSaasPolicy,
-        OrganizationSaasPolicy.organization_id == Mission.organization_id,
-    ).filter(
-        or_(
-            and_(
-                OrganizationSaasPolicy.retention_days.isnot(None),
-                Mission.status.in_(RETENTION_TERMINAL_STATUSES),
+    rows = (
+        session.query(Mission, OrganizationSaasPolicy)
+        .outerjoin(
+            OrganizationSaasPolicy,
+            OrganizationSaasPolicy.organization_id == Mission.organization_id,
+        )
+        .filter(
+            or_(
+                and_(
+                    OrganizationSaasPolicy.retention_days.isnot(None),
+                    Mission.status.in_(RETENTION_TERMINAL_STATUSES),
+                ),
+                Mission.status.in_(RETRYABLE_RETENTION_STATUSES),
             ),
-            Mission.status.in_(RETRYABLE_RETENTION_STATUSES),
-        ),
-    ).order_by(Mission.updated_at, Mission.id).with_for_update(
-        of=Mission,
-        skip_locked=True,
-    ).limit(limit * 5).all()
+        )
+        .order_by(Mission.updated_at, Mission.id)
+        .with_for_update(
+            of=Mission,
+            skip_locked=True,
+        )
+        .limit(limit * 5)
+        .all()
+    )
     candidates: list[RetentionCandidate] = []
     for mission, policy in rows:
         updated_at = _aware(cast(datetime, mission.updated_at))
@@ -104,17 +130,15 @@ def _complete_retention(
     objects_deleted: int,
 ) -> bool:
     with get_session() as session:
-        mission = session.query(Mission).filter(
-            Mission.id == candidate.mission_id,
-            Mission.organization_id == candidate.organization_id,
-            Mission.status == "deleting",
-        ).with_for_update().one_or_none()
+        mission = _locked_deleting_mission(session, candidate)
         if mission is None:
             return False
         artifact_bytes = int(
-            session.query(func.sum(MissionArtifact.size_bytes)).filter(
+            session.query(func.sum(MissionArtifact.size_bytes))
+            .filter(
                 MissionArtifact.mission_id == candidate.mission_id,
-            ).scalar()
+            )
+            .scalar()
             or 0
         )
         append_usage_event(
@@ -137,11 +161,7 @@ def _complete_retention(
 
 def _fail_retention(candidate: RetentionCandidate, error: Exception) -> None:
     with get_session() as session:
-        mission = session.query(Mission).filter(
-            Mission.id == candidate.mission_id,
-            Mission.organization_id == candidate.organization_id,
-            Mission.status == "deleting",
-        ).with_for_update().one_or_none()
+        mission = _locked_deleting_mission(session, candidate)
         if mission is None:
             return
         mission.status = "deletion_failed"
@@ -205,7 +225,10 @@ def run_retention_cleanup(stop_event: Event) -> None:
         return
     while not stop_event.is_set():
         try:
-            retention_cleanup_once(retry_seconds=retry_seconds)
+            completed = retention_cleanup_once(retry_seconds=retry_seconds)
+            observe_reconciliation("retention", "deleted", completed)
+            observe_control_loop("retention", succeeded=True)
         except Exception:
+            observe_control_loop("retention", succeeded=False)
             logger.exception("Retention cleanup pass failed")
         stop_event.wait(interval)

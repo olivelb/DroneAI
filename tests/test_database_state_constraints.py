@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from shared.database import (
+    AccessAuditEvent,
     AIAnalysisRun,
     AIAnalysisTile,
     Dataset,
@@ -40,6 +41,12 @@ from shared.database import (
 
 
 EXPECTED_CHECKS = {
+    AccessAuditEvent: {
+        "ck_access_audit_actor_realm",
+        "ck_access_audit_resource_type",
+        "ck_access_audit_outcome",
+        "ck_access_audit_action_length",
+    },
     Organization: {"ck_organizations_status"},
     OrganizationMember: {
         "ck_organization_members_status",

@@ -42,6 +42,8 @@ dashboardApi:
   environment: production
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
+  observability:
+    metricsEnabled: true
   saas:
     organizationRequestQuotasEnabled: true
   controlWorker:
