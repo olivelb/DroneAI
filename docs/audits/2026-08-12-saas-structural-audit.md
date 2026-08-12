@@ -36,9 +36,10 @@ dataset qualification.
 | Protected compute | staging and production accept only bounded, immutable stage Jobs; the API, control worker, Helm overlays and compatibility workers all fail closed against fused execution | deployment-mode tests, protected Helm renders and worker startup guards |
 | Tenant event plane | organization binds every new pipeline/status/control event, deterministic identity, trace correlation, Kafka key, cancellation cache and realtime audience check | cross-organization identity, routing, cancellation and fan-out tests plus exported JSON Schema |
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
+| GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 983 non-GPU/non-integration
+The qualified local baseline after these changes is 995 non-GPU/non-integration
 Python tests, eight focused real-service integration tests, one real HTTP
 control-plane journey, 32 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import tempfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -118,8 +119,28 @@ def validate_observation_pixels(
 ) -> None:
     """Reject GCP annotations outside the original image pixel grid."""
 
+    if not math.isfinite(pixel_x) or not math.isfinite(pixel_y):
+        raise ValueError("GCP pixel coordinates must be finite")
+    if width <= 0 or height <= 0:
+        raise ValueError("GCP image dimensions must be positive")
     if not (0 <= pixel_x < width and 0 <= pixel_y < height):
         raise ValueError(f"GCP pixel ({pixel_x:.3f}, {pixel_y:.3f}) is outside the {width} x {height} image")
+
+
+def imported_observation_status(
+    pixel_x: float,
+    pixel_y: float,
+    width: int | None,
+    height: int | None,
+) -> str:
+    """Mark imported pixels only when their original image bounds are known."""
+
+    if (width is None) != (height is None):
+        raise ValueError("Imported GCP image dimensions are incomplete")
+    if width is None or height is None:
+        return "candidate"
+    validate_observation_pixels(pixel_x, pixel_y, width, height)
+    return "marked"
 
 
 def load_mission_image_positions(
@@ -313,6 +334,44 @@ def materialize_gcp_bundle(
 ) -> JsonObject:
     """Publish a reproducible CAS bundle for a reconstruction stage run."""
 
+    def validated_observations(point: GcpPoint) -> tuple[BundleObservation, ...]:
+        result: list[BundleObservation] = []
+        for observation in cast(list[GcpObservation], point.observations):
+            if observation.status != "marked":
+                continue
+            if observation.pixel_x is None or observation.pixel_y is None:
+                raise ValueError(
+                    f"Marked GCP observation {observation.image_name} has no pixels"
+                )
+            if observation.image_width_px is None or observation.image_height_px is None:
+                raise ValueError(
+                    "Marked GCP observation "
+                    f"{observation.image_name} has no validated image dimensions"
+                )
+            if not observation.image_s3_key:
+                raise ValueError(
+                    f"Marked GCP observation {observation.image_name} has no source image"
+                )
+            validate_observation_pixels(
+                float(observation.pixel_x),
+                float(observation.pixel_y),
+                int(observation.image_width_px),
+                int(observation.image_height_px),
+            )
+            if not storage.file_exists(observation.image_s3_key):
+                raise ValueError(
+                    "Marked GCP observation source image is unavailable: "
+                    f"{observation.image_name}"
+                )
+            result.append(
+                BundleObservation(
+                    image_name=observation.image_name,
+                    pixel_x=float(observation.pixel_x),
+                    pixel_y=float(observation.pixel_y),
+                )
+            )
+        return tuple(result)
+
     points = [
         BundlePoint(
             external_id=point.external_id,
@@ -321,15 +380,7 @@ def materialize_gcp_bundle(
             horizontal_accuracy_m=point.horizontal_accuracy_m,
             vertical_accuracy_m=point.vertical_accuracy_m,
             image_accuracy_px=point.image_accuracy_px,
-            observations=tuple(
-                BundleObservation(
-                    image_name=observation.image_name,
-                    pixel_x=cast(float, observation.pixel_x),
-                    pixel_y=cast(float, observation.pixel_y),
-                )
-                for observation in cast(list[GcpObservation], point.observations)
-                if observation.status == "marked"
-            ),
+            observations=validated_observations(point),
         )
         for point in cast(list[GcpPoint], gcp_set.points)
     ]

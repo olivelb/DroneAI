@@ -90,6 +90,25 @@ def test_rejects_empty_odm_file():
         import_gcp_bytes(b"EPSG:4326\n", "gcp_list.txt")
 
 
+@pytest.mark.parametrize(
+    ("pixel_x", "pixel_y", "message"),
+    [
+        ("nan", "20", "finite"),
+        ("10", "inf", "finite"),
+        ("-0.1", "20", "non-negative"),
+        ("10", "-1", "non-negative"),
+    ],
+)
+def test_rejects_unsafe_odm_observation_pixels(pixel_x, pixel_y, message):
+    payload = (
+        "EPSG:4326\n"
+        f"1.25 44.5 210 {pixel_x} {pixel_y} DJI_0001.JPG GCP-1\n"
+    ).encode()
+
+    with pytest.raises(ValueError, match=message):
+        import_gcp_bytes(payload, "gcp_list.txt")
+
+
 def test_imports_kml_point_placemarks_as_wgs84():
     payload = b"""<?xml version="1.0"?>
 <kml xmlns="http://www.opengis.net/kml/2.2"><Document>
@@ -119,6 +138,18 @@ def test_imports_metashape_xml_positions_and_photo_projections():
     assert point.external_id == "GCP-M1"
     assert point.observations[0].image_name == "DJI_0004.JPG"
     assert point.observations[0].pixel_x == pytest.approx(1200.5)
+
+
+def test_rejects_unsafe_metashape_projection_pixels():
+    payload = b"""<document>
+  <coordinate_system><wkt>EPSG:4326</wkt></coordinate_system>
+  <cameras><camera id="4" label="DJI_0004.JPG" /></cameras>
+  <markers><marker id="1" label="GCP-M1"><reference x="1.25" y="44.5" z="211" /></marker></markers>
+  <frames><frame><markers><marker marker_id="1"><location camera_id="4" x="nan" y="900.25" /></marker></markers></frame></frames>
+</document>"""
+
+    with pytest.raises(ValueError, match="finite"):
+        import_gcp_bytes(payload, "markers.xml")
 
 
 def test_applies_trimble_and_custom_column_profiles():
