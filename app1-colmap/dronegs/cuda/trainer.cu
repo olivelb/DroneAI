@@ -1355,6 +1355,7 @@ TrainingMetrics train_ordered_mrnf(
         << ";topology_cooldown=" << options.topology_cooldown
         << ";photometric_finish=" << options.photometric_finish
         << ";photometric_mse=" << options.photometric_mse_percent
+        << ";adaptive_growth=" << options.adaptive_growth_target
         << ";profile_id=" << options.profile_id
         << ";optimizer=" << options.optimizer_profile
         << ";pruning=" << options.pruning_policy
@@ -1561,13 +1562,20 @@ TrainingMetrics train_ordered_mrnf(
             workspace.latest_optimizer_telemetry());
         if (iteration % 200U == 0U && iteration < 28'500U &&
             iteration <= topology_refine_end) {
+            float growth_fraction = iteration < 15'000U ? 0.07F : 0.0F;
+            if (growth_fraction > 0.0F &&
+                options.adaptive_growth_target != 0U) {
+                growth_fraction = adaptive_capacity_growth_fraction(
+                    workspace.size(),
+                    static_cast<std::size_t>(options.max_cap), iteration);
+            }
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
                 (iteration * 0x9E3779B97F4A7C15ULL);
             const auto refinement =
                 workspace.refine_topology(
                     0.003F,
-                    iteration < 15'000U ? 0.07F : 0.0F,
+                    growth_fraction,
                     refinement_seed,
                     options.pruning_policy == "spatial-bounds");
             ++metrics.topology_refinements;
@@ -1578,6 +1586,11 @@ TrainingMetrics train_ordered_mrnf(
             std::cout
                 << "{\"event\":\"topology_refinement\",\"iteration\":"
                 << iteration
+                << ",\"growth_fraction\":" << growth_fraction
+                << ",\"capacity_target\":"
+                << (options.adaptive_growth_target != 0U
+                        ? options.max_cap
+                        : 0U)
                 << ",\"candidates\":" << refinement.candidates
                 << ",\"pruned\":" << refinement.pruned
                 << ",\"pruned_non_finite\":"

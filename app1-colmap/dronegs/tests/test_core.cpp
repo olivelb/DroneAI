@@ -23,6 +23,7 @@
 #include "dronegs/image.hpp"
 #include "dronegs/ply.hpp"
 #include "dronegs/profile_registry.hpp"
+#include "dronegs/training.hpp"
 
 namespace {
 
@@ -218,6 +219,7 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .max_width = 1600,
         .tile_mode = 4,
         .seed = 42,
+        .adaptive_growth_target = 1,
     };
     const dronegs::RunMeasurements measurements{
         .started_at = "2026-07-24T10:00:00Z",
@@ -278,6 +280,14 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(manifest_text.find("\"resumed_from_checkpoint\": false") !=
               std::string::npos,
           "manifest resume provenance missing");
+    check(manifest_text.find("\"adaptive_growth_target\": true") !=
+              std::string::npos,
+          "manifest adaptive growth policy missing");
+    check(manifest_text.find(
+              "\"growth_fraction_policy\": "
+              "\"capacity_targeted_0.07_to_0.25\"") !=
+              std::string::npos,
+          "manifest adaptive growth schedule missing");
     check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
@@ -467,6 +477,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
             parsed.photometric_mse_percent == 0U,
         "CLI photometric finish default mismatch");
     check(
+        parsed.adaptive_growth_target == 0U,
+        "CLI adaptive growth default mismatch");
+    check(
         parsed.optimizer_profile == "dronegs-dev16",
         "CLI optimizer profile default mismatch");
     check(
@@ -489,6 +502,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--topology-cooldown", "1",
         "--photometric-finish", "1",
         "--photometric-mse-percent", "50",
+        "--adaptive-growth-target", "1",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -523,6 +537,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
             tuned.photometric_mse_percent == 50U,
         "CLI photometric finish mismatch");
     check(
+        tuned.adaptive_growth_target == 1U,
+        "CLI adaptive growth mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -542,7 +559,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 34U);
+    values.resize(values.size() - 36U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
@@ -555,6 +572,31 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     }
     check(rejected, "CLI accepted max-width above contract limit");
 }
+
+void test_adaptive_capacity_growth() {
+    const auto initial = dronegs::adaptive_capacity_growth_fraction(
+        22'547U, 5'700'000U, 200U);
+    check(
+        initial > 0.10F && initial < 0.13F,
+        "adaptive initial growth fraction mismatch");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            5'700'000U, 5'700'000U, 14'800U) == 0.0F,
+        "adaptive growth did not stop at capacity");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            1U, 5'700'000U, 14'800U) == 0.25F,
+        "adaptive growth upper bound mismatch");
+    bool empty_model_rejected = false;
+    try {
+        static_cast<void>(dronegs::adaptive_capacity_growth_fraction(
+            0U, 100U, 200U));
+    } catch (const std::invalid_argument&) {
+        empty_model_rejected = true;
+    }
+    check(empty_model_rejected, "adaptive growth accepted an empty model");
+}
+
 void test_image_cache() {
     std::uint64_t loads = 0U;
     dronegs::ImageCache cache(
@@ -816,6 +858,7 @@ int main() {
         test_optimizer_profile_registry();
         test_local_scale_initialization();
         test_cli(data, output);
+        test_adaptive_capacity_growth();
         test_image_cache();
         test_training_tiles();
         test_area_image_resampling();

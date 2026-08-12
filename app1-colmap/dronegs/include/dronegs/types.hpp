@@ -42,6 +42,7 @@ struct Options {
     std::uint64_t topology_cooldown = 0;
     std::uint64_t photometric_finish = 0;
     std::uint32_t photometric_mse_percent = 0;
+    std::uint32_t adaptive_growth_target = 0;
     std::uint64_t checkpoint_every = 0;
     std::uint64_t stop_after = 0;
     std::string profile_id = "custom";

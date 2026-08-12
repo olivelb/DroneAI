@@ -57,6 +57,7 @@ class DroneGSTuning:
     photometric_mse_percent: int = (
         DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
     )
+    adaptive_growth_target: bool = False
     prefetch_depth: int = 1
     decode_workers: int = 1
     jpeg_idct_scale: int = 0
@@ -93,6 +94,8 @@ class DroneGSTuning:
             or not self.optimizer_profile.strip()
         ):
             raise ValueError("optimizer_profile must not be empty")
+        if not isinstance(self.adaptive_growth_target, bool):
+            raise ValueError("adaptive_growth_target must be boolean")
         if self.pruning_policy not in SUPPORTED_DRONEGS_PRUNING_POLICIES:
             raise ValueError("unsupported DroneGS pruning_policy")
         if self.raster_profile not in SUPPORTED_DRONEGS_RASTER_PROFILES:
@@ -443,6 +446,8 @@ class DroneGSBackend:
                 "--photometric-finish", str(tuning.photometric_finish),
                 "--photometric-mse-percent",
                 str(tuning.photometric_mse_percent),
+                "--adaptive-growth-target",
+                "1" if tuning.adaptive_growth_target else "0",
                 "--prefetch-depth", str(tuning.prefetch_depth),
                 "--decode-workers", str(tuning.decode_workers),
                 "--jpeg-idct-scale", str(tuning.jpeg_idct_scale),

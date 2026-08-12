@@ -79,6 +79,7 @@ def _manifest(request):
             "topology_cooldown_iterations": tuning.topology_cooldown,
             "photometric_finish_iterations": tuning.photometric_finish,
             "photometric_final_mse_percent": tuning.photometric_mse_percent,
+            "adaptive_growth_target": tuning.adaptive_growth_target,
         },
         "metrics": {"psnr": 19.0, "ssim": 0.30},
     }

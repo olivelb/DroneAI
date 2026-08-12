@@ -188,6 +188,7 @@ def _reusable_dronegs_result(
         "topology_cooldown_iterations": request.dronegs.topology_cooldown,
         "photometric_finish_iterations": request.dronegs.photometric_finish,
         "photometric_final_mse_percent": (request.dronegs.photometric_mse_percent),
+        "adaptive_growth_target": request.dronegs.adaptive_growth_target,
     }
     parameters = manifest.get("parameters", {})
     if (
@@ -867,6 +868,7 @@ def train_and_merge_gaussian_models(
                     max(1, config.iterations // 5),
                 ),
                 photometric_mse_percent=config.dronegs_photometric_mse_percent,
+                adaptive_growth_target=bool(config.resident_partitioning),
                 checkpoint_every=config.dronegs_checkpoint_every,
                 resume_from=resume_from,
                 test_every=config.dronegs_test_every,

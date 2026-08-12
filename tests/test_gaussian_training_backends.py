@@ -86,6 +86,7 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--checkpoint-path") + 1] == ("/output/training.ckpt")
     assert command[command.index("--test-split") + 1] == "modulo"
     assert command[command.index("--test-guard-percent") + 1] == "0"
+    assert command[command.index("--adaptive-growth-target") + 1] == "0"
     assert "--resize_factor" not in command
 
 
@@ -99,6 +100,7 @@ def test_dronegs_adapter_passes_validated_production_tuning():
             topology_cooldown=100,
             photometric_finish=100,
             photometric_mse_percent=100,
+            adaptive_growth_target=True,
             test_every=8,
             canary_min_psnr=None,
             canary_min_ssim=None,
@@ -113,6 +115,12 @@ def test_dronegs_adapter_passes_validated_production_tuning():
     assert command[command.index("--topology-cooldown") + 1] == "100"
     assert command[command.index("--photometric-finish") + 1] == "100"
     assert command[command.index("--photometric-mse-percent") + 1] == "100"
+    assert command[command.index("--adaptive-growth-target") + 1] == "1"
+
+
+def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
+    with pytest.raises(ValueError, match="adaptive_growth_target"):
+        DroneGSTuning(adaptive_growth_target=1)
 
 
 def test_dronegs_adapter_runs_contract_executable(tmp_path):

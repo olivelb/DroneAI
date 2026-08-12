@@ -279,6 +279,9 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << options.photometric_finish << ",\n"
            << "    \"photometric_final_mse_percent\": "
            << options.photometric_mse_percent << ",\n"
+           << "    \"adaptive_growth_target\": "
+           << (options.adaptive_growth_target != 0U ? "true" : "false")
+           << ",\n"
            << "    \"photometric_finish_start_after_iteration\": "
            << (options.iterations - options.photometric_finish) << ",\n"
            << "    \"training_loss_telemetry\": "
@@ -302,7 +305,14 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"grow_until_iteration\": 15000,\n"
            << "    \"prune_until_iteration\": 28500,\n"
            << "    \"growth_threshold\": 0.003,\n"
-           << "    \"growth_fraction\": 0.07,\n"
+           << "    \"growth_fraction\": "
+           << (options.adaptive_growth_target != 0U ? "null" : "0.07")
+           << ",\n"
+           << "    \"growth_fraction_policy\": \""
+           << (options.adaptive_growth_target != 0U
+                   ? "capacity_targeted_0.07_to_0.25"
+                   : "fixed_0.07")
+           << "\",\n"
            << "    \"opacity_prune_threshold\": 0.003921568627,\n"
            << "    \"minimum_scale\": 1e-10,\n"
            << "    \"means_noise_weight\": 50.0,\n"

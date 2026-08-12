@@ -77,6 +77,26 @@ The first validation is a short representative native block. A full BIGZEN
 E2E becomes useful only after that block passes memory, density, seam and
 runtime gates.
 
+Current representative-block evidence on BIGZEN:
+
+- the selected central core covers 29,462 m², uses 59 native camera crops and
+  starts from 22,547 sparse Gaussians;
+- its 2 cm density plan requests about 5.7 M retained Gaussians, below the
+  12 M resident hard cap and within the measured RTX 3090 memory envelope;
+- a fixed 7% growth reference reached only 613,790 Gaussians at the final
+  growth window (10.8% of target). The incomplete result was quarantined and
+  is not a quality reference;
+- resident HQ training now opts into capacity-targeted growth. At each
+  200-iteration window it recomputes the compound growth needed to reach the
+  planned retained population by iteration 14,800, compensates conservatively
+  for pruning and candidate eligibility, and clamps the requested fraction to
+  7–25%. Existing non-resident profiles retain the fixed 7% behavior. The
+  policy, target and per-window fraction are recorded for reproducibility.
+
+The next gate is a complete reference-absolute run with this policy. AbsGrad
+A/B runs start only if the reference reaches the density target without
+exceeding the resident memory budget.
+
 ## Phase 3 — Densification A/B
 
 Status: neutral native candidates implemented; A/B execution remains pending

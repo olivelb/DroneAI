@@ -112,8 +112,11 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - retains projected-conic and position/scale/rotation gradients plus their
   Adam moments on device across iterations;
 - accumulates normalized SSIM-error-weighted visibility between 200-step
-  refinement windows, selects 7% above 0.003 through reproducible weighted
-  Gumbel top-K, and splits along each parent's longest rotated 3D axis;
+  refinement windows, selects candidates above 0.003 through reproducible
+  weighted Gumbel top-K, and splits along each parent's longest rotated 3D
+  axis. The default selection remains 7%; resident HQ blocks can explicitly
+  target their planned `--max-cap` by adapting the fraction between 7% and
+  25% through the last growth window;
 - accumulates Sobel luminance edge contribution inside existing training
   backward passes, normalizes positive scores by their median, and applies a
   0.25 edge-guidance factor without extra edge-render passes;
@@ -275,6 +278,12 @@ therefore applies per crop: a 6000x4000 source can train on four native
 3000x2000 views with `--max-width 4096`. Mode `2` splits the longest image axis;
 mode `1` keeps the full-frame behavior. Train/test assignment remains grouped
 by source photograph.
+
+`--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
+blocks. It recomputes the growth fraction needed to approach `--max-cap` by
+iteration 14,800, clamps each request to 7–25%, and emits the fraction and
+capacity target in every topology-refinement event. Its default is `0`, so
+existing standalone and production recipes keep the fixed 7% schedule.
 
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,

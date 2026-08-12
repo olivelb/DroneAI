@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <vector>
 
@@ -171,6 +174,41 @@ struct TrainingMetrics {
     std::optional<float> final_held_out_psnr;
     std::optional<float> final_held_out_ssim;
 };
+
+inline float adaptive_capacity_growth_fraction(
+    std::size_t current_gaussians,
+    std::size_t target_gaussians,
+    std::uint64_t iteration) {
+    constexpr std::uint64_t refinement_interval = 200U;
+    constexpr std::uint64_t last_growth_iteration = 14'800U;
+    constexpr double estimated_pruning_fraction = 0.03;
+    constexpr double estimated_candidate_fraction = 0.93;
+    constexpr float minimum_growth_fraction = 0.07F;
+    constexpr float maximum_growth_fraction = 0.25F;
+
+    if (current_gaussians == 0U) {
+        throw std::invalid_argument(
+            "adaptive growth requires a non-empty Gaussian model");
+    }
+    if (target_gaussians <= current_gaussians ||
+        iteration > last_growth_iteration) {
+        return 0.0F;
+    }
+
+    const auto remaining_windows =
+        ((last_growth_iteration - iteration) / refinement_interval) + 1U;
+    const double required_net_growth = std::exp(
+        std::log(
+            static_cast<double>(target_gaussians) /
+            static_cast<double>(current_gaussians)) /
+        static_cast<double>(remaining_windows)) - 1.0;
+    const double requested_fraction =
+        (required_net_growth + estimated_pruning_fraction) /
+        estimated_candidate_fraction;
+    return std::clamp(
+        static_cast<float>(requested_fraction),
+        minimum_growth_fraction, maximum_growth_fraction);
+}
 
 DatasetSplit make_dataset_split(
     std::size_t image_count, std::uint32_t test_every);
