@@ -61,7 +61,9 @@ def _context(
     return StageExecutionContext(
         run_id="a" * 32,
         mission_id=1,
+        organization_id="acme-survey",
         vol_id="quarry-001",
+        workspace_prefix="organizations/acme-survey/missions/quarry-001",
         owner_subject="operator-a",
         stage=stage,
         attempt=0,

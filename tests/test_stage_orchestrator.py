@@ -1,3 +1,4 @@
+
 import importlib
 import json
 from contextlib import contextmanager
@@ -99,6 +100,7 @@ def _add_run(
         mission = Mission(
             vol_id=vol_id,
             owner_subject=owner,
+            workspace_prefix=f"missions/{vol_id}",
             status="pending",
             params=mission_params,
         )
@@ -124,6 +126,7 @@ def _add_detection_run(scope, run_id, *, width, height, tile_size=1024):
         mission = Mission(
             vol_id=f"mission-{run_id}",
             owner_subject="owner-detection",
+            workspace_prefix=f"missions/mission-{run_id}",
             status="pending",
         )
         session.add(mission)
@@ -604,6 +607,35 @@ def test_reserved_jobs_receive_only_their_stage_credential_secret(
         "S3_ACCESS_KEY",
         "S3_SECRET_KEY",
     }
+    assert next(
+        item for item in secrets if item.name == "DATABASE_URL"
+    ).secret_key == "stage-database-url"
+
+
+def test_protected_stage_jobs_require_rls_at_the_executor_boundary(monkeypatch):
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv(
+        "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON",
+        json.dumps({stage: f"credentials-{stage}" for stage in _executors()}),
+    )
+    monkeypatch.setenv(
+        "DRONEAI_STAGE_EXECUTORS_JSON",
+        json.dumps(
+            {
+                stage: {
+                    "image": executor.image,
+                    "command": list(executor.command),
+                    "gpu_architecture": executor.gpu_architecture,
+                }
+                for stage, executor in _executors().items()
+            }
+        ),
+    )
+
+    settings = orchestrator.settings_from_environment()
+
+    assert ("DRONEAI_STAGE_RLS_REQUIRED", "true") in settings.job_environment
 
 
 def test_settings_forward_explicit_v2_writer_rollout_to_stage_jobs(monkeypatch):
@@ -809,6 +841,8 @@ def test_detection_job_alone_receives_model_configuration_and_hf_token():
     mission = Mission(
         id=42,
         vol_id="mission-model-scope",
+        organization_id="acme-survey",
+        workspace_prefix="organizations/acme-survey/missions/mission-model-scope",
         owner_subject="operator@example.test",
     )
 

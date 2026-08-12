@@ -40,7 +40,7 @@ def qualification_sessions(monkeypatch):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
-    def scope() -> Iterator[Session]:
+    def scope(**_context: object) -> Iterator[Session]:
         session = factory()
         try:
             yield session
@@ -60,6 +60,7 @@ def _seed_mission(scope, *, vol_id: str, owner: str, run_digits: str) -> int:
         mission = Mission(
             vol_id=vol_id,
             owner_subject=owner,
+            workspace_prefix=f"missions/{vol_id}",
             status="pending",
             params={"quality_profile": "normal-v1"},
         )

@@ -51,7 +51,9 @@ def _context(plan):
     return StageExecutionContext(
         run_id="d" * 32,
         mission_id=1,
+        organization_id="acme-survey",
         vol_id="quarry-001",
+        workspace_prefix="organizations/acme-survey/missions/quarry-001",
         owner_subject="operator-a",
         stage="detection",
         attempt=0,
@@ -133,7 +135,8 @@ def test_indexed_subtask_runs_only_its_index_and_publishes_a_receipt(
     )
 
     @contextmanager
-    def session_scope():
+    def session_scope(**context):
+        assert context == {"organization_id": "acme-survey"}
         yield object()
 
     monkeypatch.setattr(detection_shard_stage, "get_session", session_scope)
@@ -170,7 +173,8 @@ def test_finalizer_requires_receipts_and_delegates_only_validated_fan_in(
     )
 
     @contextmanager
-    def session_scope():
+    def session_scope(**context):
+        assert context == {"organization_id": "acme-survey"}
         yield object()
 
     receipts = (object(), object())

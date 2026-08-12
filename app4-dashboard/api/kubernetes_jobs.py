@@ -20,6 +20,7 @@ from shared.stage_contracts import (
     StageId,
     resource_class_node_selector,
 )
+from shared.tenancy import mission_prefix, validate_organization_id
 
 JsonObject = dict[str, Any]
 
@@ -28,10 +29,21 @@ JsonObject = dict[str, Any]
 class StageJobRequest:
     run_id: str
     mission_id: int
+    organization_id: str
     vol_id: str
+    workspace_prefix: str
     owner_subject: str
     stage: StageId
     resource_class: ResourceClassId
+
+    def __post_init__(self) -> None:
+        organization_id = validate_organization_id(self.organization_id)
+        if self.mission_id < 1 or not self.run_id or not self.owner_subject:
+            raise ValueError("Stage Job mission binding is incomplete")
+        if self.workspace_prefix != mission_prefix(organization_id, self.vol_id):
+            raise ValueError(
+                "Stage Job workspace prefix must match its durable tenant mission"
+            )
 
 
 @dataclass(frozen=True)
@@ -175,7 +187,9 @@ class StageJobConfig:
         reserved = {
             "DRONEAI_STAGE_RUN_ID",
             "DRONEAI_MISSION_ID",
+            "DRONEAI_ORGANIZATION_ID",
             "DRONEAI_VOL_ID",
+            "DRONEAI_WORKSPACE_PREFIX",
             "DRONEAI_STAGE",
             "DRONEAI_OWNER_SUBJECT",
             "DRONEAI_RESOURCE_CLASS",
@@ -224,7 +238,9 @@ def build_stage_job(request: StageJobRequest, config: StageJobConfig) -> JsonObj
     environment: list[JsonObject] = [
         {"name": "DRONEAI_STAGE_RUN_ID", "value": request.run_id},
         {"name": "DRONEAI_MISSION_ID", "value": str(request.mission_id)},
+        {"name": "DRONEAI_ORGANIZATION_ID", "value": request.organization_id},
         {"name": "DRONEAI_VOL_ID", "value": request.vol_id},
+        {"name": "DRONEAI_WORKSPACE_PREFIX", "value": request.workspace_prefix},
         {"name": "DRONEAI_STAGE", "value": request.stage},
         {"name": "DRONEAI_OWNER_SUBJECT", "value": request.owner_subject},
         {"name": "DRONEAI_RESOURCE_CLASS", "value": request.resource_class},

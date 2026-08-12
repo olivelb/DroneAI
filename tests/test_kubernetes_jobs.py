@@ -1,3 +1,4 @@
+
 import importlib
 
 import pytest
@@ -9,7 +10,9 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
     request = jobs.StageJobRequest(
         run_id="A_RUN/with unsafe characters",
         mission_id=42,
+        organization_id="acme-survey",
         vol_id="quarry-001",
+        workspace_prefix="organizations/acme-survey/missions/quarry-001",
         owner_subject="operator@example.test",
         stage="gaussian_training",
         resource_class="gpu-high-memory",
@@ -78,6 +81,11 @@ def test_stage_job_is_bounded_hardened_and_resource_aware():
         "name": "drone-ai-storage",
         "key": "database-url",
     }
+    environment = {item["name"]: item for item in container["env"]}
+    assert environment["DRONEAI_ORGANIZATION_ID"]["value"] == "acme-survey"
+    assert environment["DRONEAI_WORKSPACE_PREFIX"]["value"] == (
+        "organizations/acme-survey/missions/quarry-001"
+    )
 
 
 def test_cpu_job_does_not_request_a_gpu():
@@ -85,7 +93,9 @@ def test_cpu_job_does_not_request_a_gpu():
         jobs.StageJobRequest(
             run_id="run-1",
             mission_id=1,
+            organization_id="acme-survey",
             vol_id="mission-1",
+            workspace_prefix="organizations/acme-survey/missions/mission-1",
             owner_subject="owner",
             stage="rasterization",
             resource_class="cpu-standard",
@@ -123,11 +133,15 @@ def test_cpu_job_does_not_request_a_gpu():
 )
 def test_stage_job_uses_the_configured_work_volume(volume, expected):
     job = jobs.build_stage_job(
-        jobs.StageJobRequest(
-            run_id="run-work-volume",
-            mission_id=1,
-            vol_id="mission-work-volume",
-            owner_subject="owner",
+            jobs.StageJobRequest(
+                run_id="run-work-volume",
+                mission_id=1,
+                organization_id="acme-survey",
+                vol_id="mission-work-volume",
+                workspace_prefix=(
+                    "organizations/acme-survey/missions/mission-work-volume"
+                ),
+                owner_subject="owner",
             stage="rasterization",
             resource_class="gpu-high-memory",
         ),
@@ -165,7 +179,9 @@ def test_job_rejects_resource_selector_conflicts_and_invalid_tolerations():
     request = jobs.StageJobRequest(
         run_id="run-selector-conflict",
         mission_id=1,
+        organization_id="acme-survey",
         vol_id="mission-1",
+        workspace_prefix="organizations/acme-survey/missions/mission-1",
         owner_subject="owner",
         stage="detection",
         resource_class="gpu-standard",
@@ -191,7 +207,9 @@ def test_indexed_job_injects_a_bounded_completion_index():
         jobs.StageJobRequest(
             run_id="detection-run",
             mission_id=1,
+            organization_id="acme-survey",
             vol_id="mission-1",
+            workspace_prefix="organizations/acme-survey/missions/mission-1",
             owner_subject="owner",
             stage="detection",
             resource_class="gpu-standard",
@@ -239,7 +257,9 @@ def test_job_name_suffix_creates_a_distinct_bounded_finalizer_identity():
     request = jobs.StageJobRequest(
         run_id="detection-run",
         mission_id=1,
+        organization_id="acme-survey",
         vol_id="mission-1",
+        workspace_prefix="organizations/acme-survey/missions/mission-1",
         owner_subject="owner",
         stage="detection",
         resource_class="gpu-standard",

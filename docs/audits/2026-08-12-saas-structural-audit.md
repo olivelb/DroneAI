@@ -25,7 +25,7 @@ dataset qualification.
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
 | Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
-| Storage evolution | new organizations use versioned namespaced keys while historical keys remain readable | tenancy helper and upload recovery tests |
+| Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper and upload recovery tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
 The qualified local baseline after these changes is 897 non-GPU/non-integration
@@ -34,6 +34,29 @@ Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
 
 ## Main remaining defects that do not require scientific datasets
+
+### P0 — shared SaaS data plane
+
+The follow-up review at `f295d4f521caa0924a65740be9a5572bf75cb0c7`
+corrected an earlier overstatement: persisting `Mission.workspace_prefix` did
+not migrate every producer. The bounded and fused compute paths still contain
+literal `missions/{vol_id}` keys, and Manifest v2 still writes global
+`blobs/sha256` keys.
+
+The first corrective phase binds every bounded Job to its durable
+organization, mission and workspace prefix, moves it to a non-owner
+`stage-database-url`, applies the organization to every executor transaction,
+and verifies cross-tenant denial with the real PostgreSQL role. The remaining
+ordered phases are:
+
+1. make `Mission.workspace_prefix` the only mission-object namespace and fix
+   publication, GCP metadata, manual recovery and deletion;
+2. introduce tenant CAS while retaining v1/v2 reads;
+3. reject fused compute in protected multi-organization deployments;
+4. bind every Kafka event and deterministic identity to organization before
+   relaxing the globally unique mission identifier;
+5. account physical fan-out resource units and run the detection finalizer on
+   CPU.
 
 ### P1 — SaaS control plane
 

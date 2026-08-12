@@ -9,17 +9,22 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.orm.exc import NoResultFound
 
 import shared.database as database
 from shared.database import (
     ApiCredential,
     Mission,
+    MissionArtifact,
     MissionLog,
+    MissionStageRun,
     Organization,
     OrganizationMember,
     OutboxEvent,
 )
 from shared.identity import issue_credential
+from shared.stage_execution import load_stage_execution_context
+from shared.tenancy import mission_prefix
 
 security = importlib.import_module("app4-dashboard.api.security")
 
@@ -58,11 +63,15 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
     suffix = uuid4().hex[:12]
     role = f"droneai_rls_{suffix}"
     password = f"rls-test-{uuid4().hex}"
+    stage_role = f"droneai_stage_{suffix}"
+    stage_password = f"stage-test-{uuid4().hex}"
     organization_a = f"rls-a-{suffix}"
     organization_b = f"rls-b-{suffix}"
     credential_b = str(uuid4())
     mission_a = f"rls-mission-a-{suffix}"
     mission_b = f"rls-mission-b-{suffix}"
+    run_a = str(uuid4())
+    run_b = str(uuid4())
     owner_url = database.DATABASE_URL
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
@@ -131,14 +140,40 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             vol_id=mission_a,
             organization_id=organization_a,
             owner_subject=member_a.subject,
+            workspace_prefix=mission_prefix(organization_a, mission_a),
         )
         second_mission = Mission(
             vol_id=mission_b,
             organization_id=organization_b,
             owner_subject=member_b.subject,
+            workspace_prefix=mission_prefix(organization_b, mission_b),
         )
         session.add_all([first_mission, second_mission])
         session.flush()
+        session.add_all(
+            [
+                MissionStageRun(
+                    run_id=run_a,
+                    mission_id=first_mission.id,
+                    stage="reconstruction",
+                    attempt=0,
+                    status="queued",
+                    executor="kubernetes-job",
+                    resource_class="gpu-geometry",
+                    idempotency_key=uuid4().hex * 2,
+                ),
+                MissionStageRun(
+                    run_id=run_b,
+                    mission_id=second_mission.id,
+                    stage="reconstruction",
+                    attempt=0,
+                    status="queued",
+                    executor="kubernetes-job",
+                    resource_class="gpu-geometry",
+                    idempotency_key=uuid4().hex * 2,
+                ),
+            ]
+        )
         session.add_all(
             [
                 MissionLog(
@@ -180,18 +215,43 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         session.execute(text(f'GRANT USAGE ON SCHEMA public TO "{role}"'))
         session.execute(
             text(
-                f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
-                f'IN SCHEMA public TO "{role}"'
+                f'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{role}"'
+            )
+        )
+        session.execute(
+            text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
+        )
+        session.execute(
+            text(
+                f'CREATE ROLE "{stage_role}" LOGIN PASSWORD :password '
+                "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
+            ),
+            {"password": stage_password},
+        )
+        session.execute(text(f'GRANT CONNECT ON DATABASE droneai TO "{stage_role}"'))
+        session.execute(text(f'GRANT USAGE ON SCHEMA public TO "{stage_role}"'))
+        session.execute(text(f'GRANT SELECT ON missions TO "{stage_role}"'))
+        session.execute(
+            text(f'GRANT SELECT, UPDATE ON mission_stage_runs TO "{stage_role}"')
+        )
+        session.execute(
+            text(
+                f"GRANT SELECT, INSERT ON mission_artifacts, "
+                f'mission_artifact_parents, detection_shard_receipts TO "{stage_role}"'
             )
         )
         session.execute(
             text(
-                f"GRANT USAGE, SELECT ON ALL SEQUENCES "
-                f'IN SCHEMA public TO "{role}"'
+                f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public "
+                f'TO "{stage_role}"'
             )
         )
 
     api_url = make_url(owner_url).set(username=role, password=password)
+    stage_url = make_url(owner_url).set(
+        username=stage_role,
+        password=stage_password,
+    )
     database.reset_engine()
     database.DATABASE_URL = api_url.render_as_string(hide_password=False)
     try:
@@ -200,18 +260,19 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             assert session.query(Mission).count() == 0
             assert session.query(OutboxEvent).count() == 0
             for table in PROTECTED_TABLES:
-                assert session.execute(
-                    text("SELECT row_security_active(to_regclass(:table))"),
-                    {"table": table},
-                ).scalar_one() is True
+                assert (
+                    session.execute(
+                        text("SELECT row_security_active(to_regclass(:table))"),
+                        {"table": table},
+                    ).scalar_one()
+                    is True
+                )
 
         with database.get_session(organization_id=organization_a) as session:
             assert [item.id for item in session.query(Organization).all()] == [
                 organization_a
             ]
-            assert [item.vol_id for item in session.query(Mission).all()] == [
-                mission_a
-            ]
+            assert [item.vol_id for item in session.query(Mission).all()] == [mission_a]
             assert session.query(MissionLog).count() == 1
             assert session.query(OutboxEvent).count() == 1
             assert session.query(ApiCredential).count() == 1
@@ -219,9 +280,7 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         with database.get_session() as session:
             assert session.query(Mission).count() == 0
 
-        with database.get_session(
-            authentication_credential_id=credential_a
-        ) as session:
+        with database.get_session(authentication_credential_id=credential_a) as session:
             assert [item.id for item in session.query(ApiCredential).all()] == [
                 credential_a
             ]
@@ -244,6 +303,55 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             member_b.subject,
         )
 
+        database.reset_engine()
+        database.DATABASE_URL = stage_url.render_as_string(hide_password=False)
+        monkeypatch.setenv("DRONEAI_STAGE_RLS_REQUIRED", "true")
+        context = load_stage_execution_context(
+            run_a,
+            "reconstruction",
+            expected_organization_id=organization_a,
+            expected_mission_id=first_mission.id,
+            expected_vol_id=mission_a,
+            expected_workspace_prefix=mission_prefix(organization_a, mission_a),
+            expected_owner_subject=member_a.subject,
+        )
+        assert context.organization_id == organization_a
+        assert context.workspace_prefix == mission_prefix(organization_a, mission_a)
+        with pytest.raises(NoResultFound):
+            load_stage_execution_context(
+                run_b,
+                "reconstruction",
+                expected_organization_id=organization_a,
+            )
+
+        with database.get_session(organization_id=organization_a) as session:
+            assert (
+                session.query(MissionStageRun)
+                .filter(MissionStageRun.run_id == run_b)
+                .update({"current_step": "CROSS_TENANT"})
+                == 0
+            )
+        with pytest.raises(DBAPIError):
+            with database.get_session(organization_id=organization_a) as session:
+                foreign_run = (
+                    session.query(MissionStageRun)
+                    .filter(MissionStageRun.run_id == run_a)
+                    .one()
+                )
+                session.add(
+                    MissionArtifact(
+                        artifact_id=str(uuid4()),
+                        mission_id=second_mission.id,
+                        stage_run_id=foreign_run.id,
+                        kind="reconstruction_workspace",
+                        uri="s3://drone-ai/forbidden",
+                        checksum_sha256="f" * 64,
+                    )
+                )
+                session.flush()
+
+        database.reset_engine()
+        database.DATABASE_URL = api_url.render_as_string(hide_password=False)
         with pytest.raises(DBAPIError):
             with database.get_session(organization_id=organization_a) as session:
                 session.add(
@@ -258,6 +366,8 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         database.reset_engine()
         database.DATABASE_URL = owner_url
         with database.get_session() as session:
+            session.execute(text(f'DROP OWNED BY "{stage_role}"'))
+            session.execute(text(f'DROP ROLE "{stage_role}"'))
             session.execute(text(f'DROP OWNED BY "{role}"'))
             session.execute(text(f'DROP ROLE "{role}"'))
 

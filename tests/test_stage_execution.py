@@ -1,3 +1,4 @@
+
 from contextlib import contextmanager
 
 import pytest
@@ -30,7 +31,7 @@ def execution_sessions(monkeypatch):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
-    def scope():
+    def scope(**_context):
         session = factory()
         try:
             yield session
@@ -50,6 +51,7 @@ def _mission_with_reconstruction(scope, run_id="a" * 32):
         mission = Mission(
             vol_id=f"mission-{run_id[0]}",
             owner_subject="operator-a",
+            workspace_prefix=f"missions/mission-{run_id[0]}",
             status="pending",
             params={"quality_profile": "normal-v1"},
         )
@@ -104,6 +106,8 @@ def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
     )
 
     assert observed["context"].mission_parameters["quality_profile"] == "normal-v1"
+    assert observed["context"].organization_id == "legacy-unassigned"
+    assert observed["context"].workspace_prefix == "missions/mission-a"
     assert observed["context"].mission_attempt == 0
     with execution_sessions() as session:
         reconstruction = session.query(MissionStageRun).filter(
@@ -191,6 +195,7 @@ def test_one_shot_loads_exact_inputs_and_persists_parent_edges(execution_session
         mission = Mission(
             vol_id="mission-input",
             owner_subject="operator-a",
+            workspace_prefix="missions/mission-input",
             status="pending",
         )
         session.add(mission)

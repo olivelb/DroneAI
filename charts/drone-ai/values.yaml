@@ -273,9 +273,13 @@ dashboardApi:
 # --------------------------------------------------------------------------
 stageJobs:
   enabled: false
+  # Each stage Secret must expose a PostgreSQL URL for a non-owner,
+  # NOBYPASSRLS executor role under this key. The generated development Secret
+  # aliases the operator URL for local compatibility only.
+  databaseUrlSecretKey: stage-database-url
   # Existing Secrets injected into each one-shot executor. Each Secret exposes
-  # database-url, s3-access-key and s3-secret-key (key names remain configurable
-  # through storage.*). A complete map with five distinct Secret names is
+  # stage-database-url, s3-access-key and s3-secret-key. A complete map with
+  # five distinct Secret names is
   # mandatory when Jobs are enabled in staging or production. Development may
   # omit it and reuse storage.existingSecret for local compatibility only.
   credentialSecrets: {}

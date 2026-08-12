@@ -91,6 +91,7 @@ def test_production_api_uses_a_distinct_rls_database_role() -> None:
     assert "distinct non-owner PostgreSQL role" in deployment
     assert "controlWorker.enabled must remain true" in deployment
     assert ".databaseUrlSecretKey" in helpers
+    assert "key: {{ .Values.dashboardApi.databaseUrlSecretKey }}" in deployment
 
 
 def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
@@ -113,6 +114,7 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
 
     assert "stageJobs:" in defaults
     assert "enabled: false" in defaults
+    assert "databaseUrlSecretKey: stage-database-url" in defaults
     assert "globalConcurrency: 2" in defaults
     assert "perOwnerConcurrency: 1" in defaults
     assert 'resources: ["jobs"]' in control_worker
@@ -120,6 +122,8 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_STAGE_JOBS_ENABLED" in control_env
     assert "credentialSecrets: {}" in defaults
     assert "DRONEAI_STAGE_CREDENTIAL_SECRETS_JSON" in control_env
+    assert ".Values.stageJobs.databaseUrlSecretKey" in control_env
+    assert "stageJobs.databaseUrlSecretKey must identify a non-owner" in deployment
     assert "one distinct Secret per stage" in deployment
     assert "DRONEAI_STAGE_JOB_RUNTIME_CLASS" in control_env
     assert ".Values.gpu.runtimeClassName" in control_env

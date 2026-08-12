@@ -17,6 +17,8 @@ overlay. Before installation, create:
 
 - the storage Secret with `s3-access-key`, `s3-secret-key`, operator
   `database-url` and non-owner `api-database-url`;
+- before enabling bounded compute, five stage Secrets containing a non-owner
+  `stage-database-url` plus stage-scoped S3 credentials;
 - the API auth Secret with a distinct random `session-secret` and
   `credential-pepper`, each at least 32 characters;
 - during first adoption only, an `api-keys.json` bootstrap admin entry;
@@ -26,8 +28,10 @@ The API database role must be `NOSUPERUSER`, `NOBYPASSRLS` and must not own
 application tables. Provisioning grants, transaction semantics and the
 synthetic PostgreSQL qualification are defined in
 [`contracts/postgres-tenant-rls-v1.md`](contracts/postgres-tenant-rls-v1.md).
-Migrations and workers keep `database-url`; only the HTTP API receives
-`api-database-url`. Protected Helm overlays require this split and readiness
+Migrations and cross-tenant control workers keep `database-url`; the HTTP Pod
+receives only `api-database-url`, including its schema-wait init container.
+Bounded Jobs receive only their stage Secret and verify RLS at startup.
+Protected Helm overlays require this split and readiness
 fails when PostgreSQL reports that RLS is inactive for the API role.
 
 The production example intentionally does not activate bounded stage Jobs.

@@ -57,7 +57,7 @@ dashboardApi.controlWorker.enabled is true.
 - name: DRONEAI_STAGE_STORAGE_SECRET_NAME
   value: {{ include "drone-ai.storageSecretName" . | quote }}
 - name: DRONEAI_STAGE_DATABASE_URL_SECRET_KEY
-  value: {{ .Values.storage.databaseUrlSecretKey | quote }}
+  value: {{ .Values.stageJobs.databaseUrlSecretKey | quote }}
 - name: DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY
   value: {{ .Values.storage.accessKeySecretKey | quote }}
 - name: DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY
