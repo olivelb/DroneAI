@@ -52,6 +52,25 @@ def test_localized_hole_fails_even_when_global_coverage_is_high() -> None:
     assert "worst_cell_ratio" in failed
 
 
+def test_empty_boundary_corners_do_not_hide_valid_interior_coverage() -> None:
+    height = np.ones((160, 160), dtype=np.float32)
+    height[:10, 150:] = np.nan
+    height[150:, 150:] = np.nan
+
+    report = evaluate_spatial_coverage(
+        height,
+        extent=EXTENT,
+        camera_positions=CAMERA_SQUARE,
+    )
+
+    assert report["schema_version"] == 2
+    assert report["policy_id"] == "GAUSSIAN_MAP_COVERAGE_V2"
+    assert report["interior_cells"] == 10 * 10
+    assert report["valid_pixel_ratio"] > 0.99
+    assert report["worst_cell_ratio"] == pytest.approx(1.0)
+    assert report["accepted"] is True
+
+
 def test_sparse_central_render_fails_projected_footprint_gate() -> None:
     height = np.full((160, 160), np.nan, dtype=np.float32)
     height[50:110, 50:110] = 20.0

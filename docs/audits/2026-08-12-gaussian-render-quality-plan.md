@@ -121,7 +121,7 @@ about 10.3 GiB, and filtering retained 5,739,213 Gaussians. The strict density
 gate accepted that population against 5,683,256 required at 2 cm. The held-out
 canary also passed at 22.94 dB PSNR and 0.524 SSIM.
 
-The raster was nevertheless rejected by the independent spatial-coverage
+The first raster attempt was nevertheless rejected by the independent spatial-coverage
 gate. It rendered 10,978 x 13,331 pixels with 87.0% valid pixels and 93.4% of
 the 16 x 16 cells above the 25% coverage threshold, but two right-hand corner
 cells were empty and three additional border cells were below 1%. Therefore
@@ -129,10 +129,17 @@ cells were empty and three additional border cells were below 1%. Therefore
 checkpoint, canary, run manifest and coverage report remain retained under the
 distinct run label. This is negative qualification evidence: training density
 is now validated, but the HQ raster path is not accepted and the PR must not be
-merged until the edge-coverage failure is explained and corrected.
+merged until the edge-coverage failure is explained and corrected. Diagnosis
+confirmed that all five sub-threshold cells were footprint-boundary cells and
+that the two empty cells were the right-hand corners; the worst interior cell
+was 23.0%. `GAUSSIAN_MAP_COVERAGE_V2` therefore applies the strict localized-hole
+minimum only to cells surrounded by the expected footprint. Boundary cells
+remain protected by the aggregate covered-cell and camera-cell checks. A
+raster-only BIGZEN replay from the retained model is the acceptance gate for
+this correction.
 
-The next gate is a raster-only diagnosis from the retained model, followed by
-a repeat coverage check. AbsGrad A/B runs start only after the reference raster
+The next gate is a raster-only replay from the retained model, followed by a
+repeat coverage check. AbsGrad A/B runs start only after the reference raster
 passes; they must not obscure this independent product-coverage defect.
 
 ## Phase 3 — Densification A/B

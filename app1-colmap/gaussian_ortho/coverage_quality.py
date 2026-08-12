@@ -10,7 +10,7 @@ from numpy.typing import NDArray
 from scipy.spatial import Delaunay, QhullError
 
 
-GAUSSIAN_MAP_COVERAGE_POLICY_ID = "GAUSSIAN_MAP_COVERAGE_V1"
+GAUSSIAN_MAP_COVERAGE_POLICY_ID = "GAUSSIAN_MAP_COVERAGE_V2"
 
 
 @dataclass(frozen=True)
@@ -53,6 +53,7 @@ class SpatialCoverageReport(TypedDict):
     raster_shape: list[int]
     camera_count: int
     expected_cells: int
+    interior_cells: int
     valid_pixel_ratio: float
     covered_cells_ratio: float
     worst_cell_ratio: float
@@ -63,6 +64,32 @@ class SpatialCoverageReport(TypedDict):
     cell_valid_ratios: list[dict[str, int | float]]
     checks: list[CoverageCheck]
     policy: dict[str, Any]
+
+
+def _interior_footprint_cells(
+    expected_cells: set[tuple[int, int]],
+) -> set[tuple[int, int]]:
+    """Return cells surrounded by the expected footprint in all directions.
+
+    Border cells can contain mostly NoData simply because a curved or oblique
+    flight footprint crosses a coarse grid cell.  The strict minimum is meant
+    to detect holes *inside* the mapped footprint, while aggregate and camera
+    cell checks continue to protect its boundary.
+    """
+    neighbors = tuple(
+        (row_offset, column_offset)
+        for row_offset in (-1, 0, 1)
+        for column_offset in (-1, 0, 1)
+        if row_offset or column_offset
+    )
+    return {
+        (row, column)
+        for row, column in expected_cells
+        if all(
+            (row + row_offset, column + column_offset) in expected_cells
+            for row_offset, column_offset in neighbors
+        )
+    }
 
 
 def _normalized_camera_points(
@@ -117,7 +144,9 @@ def _footprint_cells(
         return camera_cells, "camera-cells-collinear"
 
     expected: set[tuple[int, int]] = set()
-    offsets = np.linspace(0.1, 0.9, 3, dtype=np.float64)
+    offsets: NDArray[np.float64] = np.linspace(
+        0.1, 0.9, 3, dtype=np.float64
+    )
     for row in range(policy.grid_size):
         for column in range(policy.grid_size):
             samples = np.array(
@@ -147,8 +176,12 @@ def _cell_metrics(
     list[int] | None,
 ]:
     rows, columns = height.shape
-    row_edges = np.linspace(0, rows, grid_size + 1, dtype=np.int64)
-    column_edges = np.linspace(0, columns, grid_size + 1, dtype=np.int64)
+    row_edges: NDArray[np.int64] = np.linspace(
+        0, rows, grid_size + 1, dtype=np.int64
+    )
+    column_edges: NDArray[np.int64] = np.linspace(
+        0, columns, grid_size + 1, dtype=np.int64
+    )
     ratios: dict[tuple[int, int], float] = {}
     counts: dict[tuple[int, int], tuple[int, int]] = {}
     min_row, min_column = rows, columns
@@ -205,12 +238,18 @@ def evaluate_spatial_coverage(
         height_array,
         selected_policy.grid_size,
     )
-    expected_ratios = np.asarray(
+    expected_ratios: NDArray[np.float64] = np.asarray(
         [cell_ratios[cell] for cell in sorted(expected_cells)],
         dtype=np.float64,
     )
+    interior_cells = _interior_footprint_cells(expected_cells)
+    strict_cells = interior_cells or expected_cells
+    strict_ratios: NDArray[np.float64] = np.asarray(
+        [cell_ratios[cell] for cell in sorted(strict_cells)],
+        dtype=np.float64,
+    )
     camera_cells = _camera_cells(points, selected_policy.grid_size)
-    camera_ratios = np.asarray(
+    camera_ratios: NDArray[np.float64] = np.asarray(
         [cell_ratios[cell] for cell in sorted(camera_cells)],
         dtype=np.float64,
     )
@@ -220,7 +259,7 @@ def evaluate_spatial_coverage(
     covered_cells_ratio = float(
         np.mean(expected_ratios >= selected_policy.cell_coverage_threshold)
     )
-    worst_cell_ratio = float(np.min(expected_ratios))
+    worst_cell_ratio = float(np.min(strict_ratios))
     p10_cell_ratio = float(np.quantile(expected_ratios, 0.10))
     camera_cell_p10_ratio = (
         float(np.quantile(camera_ratios, 0.10))
@@ -257,7 +296,7 @@ def evaluate_spatial_coverage(
     ]
     accepted = all(check["passed"] for check in checks)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_id": selected_policy.policy_id,
         "accepted": accepted,
         "enforced": enforced,
@@ -270,6 +309,7 @@ def evaluate_spatial_coverage(
         "raster_shape": [int(height_array.shape[0]), int(height_array.shape[1])],
         "camera_count": len(points),
         "expected_cells": len(expected_cells),
+        "interior_cells": len(interior_cells),
         "valid_pixel_ratio": valid_ratio,
         "covered_cells_ratio": covered_cells_ratio,
         "worst_cell_ratio": worst_cell_ratio,

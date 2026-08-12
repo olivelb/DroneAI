@@ -1140,8 +1140,8 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "step": 0.01,
     },
     "gs_coverage_min_worst_cell_ratio": {
-        "label": "Minimum Worst Cell",
-        "description": "Rejects a completely missing localized footprint cell even when the global ratio is high.",
+        "label": "Minimum Worst Interior Cell",
+        "description": "Rejects a completely missing interior footprint cell while allowing partial NoData cells where an irregular footprint crosses its boundary.",
         "type": "float",
         "group": "Orthomosaic",
         "min": 0,

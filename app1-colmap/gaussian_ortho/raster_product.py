@@ -99,7 +99,7 @@ def _write_coverage_report(
         "Gaussian spatial coverage: "
         f"valid={report['valid_pixel_ratio']:.1%}, "
         f"covered cells={report['covered_cells_ratio']:.1%}, "
-        f"worst cell={report['worst_cell_ratio']:.1%} "
+        f"worst interior cell={report['worst_cell_ratio']:.1%} "
         f"({report['status']}).",
         config.report_fn,
     )
