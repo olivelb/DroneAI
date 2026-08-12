@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.47` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.48` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -44,6 +44,15 @@ profile registry, strict dataset/binary/PLY identity on reuse, and a
 deterministic `spatial-block` held-out policy with an optional guard ring.
 Production V1 deliberately retains modulo parity while custom/V2 experiments
 measure spatial generalization.
+Dev.48 turns `tile_mode` into real source-image crops with crop-relative
+intrinsics and grouped train/test assignment. It also adds the explicitly
+scoped `opacity-SH-v1` FAGK capability: SH degrees 1 through 3 learn
+view-dependent opacity-logit residuals, persist them as `opacity_sh_*` PLY
+properties, and render them consistently in the native and orthomosaic CUDA
+paths. Scale and rotation remain view-independent and are not claimed as full
+FAGK. This bounded variant follows the opacity-only ablation from
+[TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788); it is kept
+separate from the paper's view-dependent scale and rotation extensions.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -67,7 +76,11 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   one scene-wide spacing estimate;
 - keeps SH color and gradients live up to four while display output remains
   bounded independently;
+- learns opacity-SH residuals alongside progressive color SH and preserves
+  them through topology changes and checkpoint V4;
 - decodes JPEG training images and scales pinhole intrinsics;
+- expands tile modes 2 and 4 into crop-relative training views without
+  leaking a source photograph across train/test partitions;
 - stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;

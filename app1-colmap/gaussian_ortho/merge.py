@@ -54,6 +54,14 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
     all_opacity_sh = []
 
     reference_model = cell_models[0][1]
+    opacity_sh_widths = {
+        int(model.opacity_sh.shape[1])
+        for _cell, model in cell_models
+        if model.opacity_sh.shape[1] > 0
+    }
+    if len(opacity_sh_widths) > 1:
+        raise ValueError("partitioned models use incompatible opacity-SH degrees")
+    opacity_sh_width = next(iter(opacity_sh_widths), 0)
 
     for cell, model in cell_models:
         core = _core_bounds(cell, dx, dy, overlap)
@@ -71,8 +79,20 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
         all_scaling.append(model._scaling[mask])
         all_rotation.append(model._rotation[mask])
         all_opacity.append(model._opacity[mask])
-        if model.fagk_enabled and model._opacity_sh.shape[1] > 0:
-            all_opacity_sh.append(model._opacity_sh[mask])
+        if opacity_sh_width > 0:
+            if model.opacity_sh.shape[1] == opacity_sh_width:
+                all_opacity_sh.append(model.opacity_sh[mask])
+            elif model.opacity_sh.shape[1] == 0:
+                all_opacity_sh.append(
+                    cp.zeros(
+                        (int(cp.count_nonzero(mask).item()), opacity_sh_width),
+                        dtype=cp.float32,
+                    )
+                )
+            else:
+                raise ValueError(
+                    "partitioned models use incompatible opacity-SH degrees"
+                )
 
     merged = GaussianModel(
         sh_degree=reference_model.max_sh_degree,

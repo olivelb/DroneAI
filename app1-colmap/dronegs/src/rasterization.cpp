@@ -47,6 +47,20 @@ float sigmoid(float value) {
     return 1.0F / (1.0F + std::exp(-value));
 }
 
+float directional_opacity(
+    const Gaussian& gaussian, const std::array<float, 16>& sh_basis,
+    std::uint32_t active_degree) {
+    float logit = gaussian.opacity_logit;
+    const auto active_coefficients =
+        (active_degree + 1U) * (active_degree + 1U) - 1U;
+    for (std::size_t coefficient = 0U;
+         coefficient < active_coefficients; ++coefficient) {
+        logit += sh_basis[coefficient + 1U] *
+            gaussian.opacity_sh[coefficient];
+    }
+    return sigmoid(logit);
+}
+
 std::array<float, 3> camera_center(const RasterCamera& camera) {
     return {
         -(camera.rotation[0] * camera.translation[0] +
@@ -336,7 +350,8 @@ std::vector<ProjectedAlphaSplat> project_visible(
             .conic_xx = covariance.conic_xx,
             .conic_xy = covariance.conic_xy,
             .conic_yy = covariance.conic_yy,
-            .opacity = sigmoid(gaussian.opacity_logit),
+            .opacity = directional_opacity(
+                gaussian, sh_basis, active_sh_degree),
             .color = color,
             .sh_basis = sh_basis,
         });
@@ -474,6 +489,9 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
         .sh_rest = std::vector<
             std::array<float, maximum_sh_rest_values>>(gaussians.size()),
         .opacity_logit = std::vector<float>(gaussians.size(), 0.0F),
+        .opacity_sh = std::vector<
+            std::array<float, maximum_opacity_sh_coefficients>>(
+                gaussians.size()),
         .xyz = std::vector<std::array<float, 3>>(gaussians.size()),
         .log_scale =
             std::vector<std::array<float, 3>>(gaussians.size()),
@@ -587,9 +605,21 @@ AlphaRenderBackwardOutput render_alpha_reference_backward(
                 }
                 if (contribution.alpha_is_unclamped) {
                     const float opacity = splat.opacity;
-                    gradients.opacity_logit[source] +=
+                    const float logit_gradient =
                         alpha_gradient * contribution.gaussian_weight *
                         opacity * (1.0F - opacity);
+                    gradients.opacity_logit[source] += logit_gradient;
+                    const auto active_coefficients =
+                        (active_sh_degree + 1U) *
+                            (active_sh_degree + 1U) -
+                        1U;
+                    for (std::size_t coefficient = 0U;
+                         coefficient < active_coefficients;
+                         ++coefficient) {
+                        gradients.opacity_sh[source][coefficient] +=
+                            splat.sh_basis[coefficient + 1U] *
+                            logit_gradient;
+                    }
                 }
                 for (std::size_t channel = 0U; channel < 3U; ++channel) {
                     tail[channel] =

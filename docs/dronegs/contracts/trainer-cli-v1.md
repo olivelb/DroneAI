@@ -110,7 +110,15 @@ Successful execution produces:
 - process exit status zero.
 
 The PLY exposes positions `x/y/z`, `f_dc_0..2`, standard-order `f_rest_N`,
-`scale_0..2` in log space, quaternion `rot_0..3`, and logit `opacity`.
+directional opacity-logit residuals `opacity_sh_N`, `scale_0..2` in log space,
+quaternion `rot_0..3`, and the view-independent logit `opacity`. The opacity
+properties use coefficients 1 through 15 of the same SH basis and degree as
+color; degree zero emits no `opacity_sh_N` properties. This scoped
+`opacity-SH-v1` contract does not make scale or rotation view-dependent.
+
+Checkpoint format V4 is required for opacity-SH optimizer moments. Checkpoints
+from V1 through V3 are deliberately rejected because their raw Gaussian layout
+cannot be resumed safely; their final PLY remains a valid initialization input.
 
 ## Progress
 

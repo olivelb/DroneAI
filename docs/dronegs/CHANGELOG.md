@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.48 - Native image tiles and opacity-SH v1
+
+- Make tile modes operational: mode 2 splits the longest image axis and mode
+  4 trains on a 2-by-2 crop grid with crop-relative principal points.
+- Apply the width ceiling per crop, retain all source pixels when a crop fits,
+  and replace nearest-neighbour resize with bilinear sampling.
+- Split datasets by source photograph before expanding tiles, preventing
+  train/held-out leakage while evaluating every held-out crop.
+- Add directional opacity-logit SH coefficients through CPU/CUDA forward,
+  analytical backward, Adam, topology split/compaction, PLY and checkpoint
+  persistence. This capability is named `opacity-SH-v1`; scale and rotation
+  remain view-independent.
+- Align the CuPy orthomosaic SH signs with the native DroneGS basis and consume
+  `opacity_sh_*` properties during nadir rendering.
+- Move checkpoints to format V4 because the Gaussian and optimizer state now
+  contains opacity-SH arrays; older checkpoints fail closed and must restart
+  training from their source dataset or final PLY.
+- Add focused CPU/CUDA parity, four-crop training, opacity-SH learning and
+  checkpoint round-trip canaries.
+
 ## 0.5.0-dev.47 - Production identity and spatial canary
 
 - Add a versioned native profile registry and reject unknown or

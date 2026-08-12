@@ -70,6 +70,11 @@ class GaussianModel:
         return 1.0 / (1.0 + cp.exp(-self._opacity))   # sigmoid
 
     @property
+    def opacity_sh(self) -> cp.ndarray:
+        """Directional opacity-logit residuals in native DroneGS SH order."""
+        return self._opacity_sh
+
+    @property
     def features(self) -> cp.ndarray:
         return cp.concatenate([self._features_dc, self._features_rest], axis=1)
 
@@ -133,10 +138,21 @@ class GaussianModel:
             key=lambda s: int(s.split('_')[-1]),
         )
         if opa_sh_names and self.fagk_enabled:
+            expected_counts = {3, 8, 15}
+            if len(opa_sh_names) not in expected_counts:
+                raise ValueError(
+                    "opacity SH properties must encode degree 1, 2, or 3"
+                )
+            if len(opa_sh_names) != self._features_rest.shape[1]:
+                raise ValueError(
+                    "opacity SH degree must match the color SH degree"
+                )
             opa_sh = np.stack([vertex[on] for on in opa_sh_names], axis=1)
             self._opacity_sh = cp.array(opa_sh, dtype=cp.float32)
+            self.active_fagk_degree = int(np.sqrt(len(opa_sh_names) + 1)) - 1
         else:
             self._opacity_sh = cp.empty((n, 0), dtype=cp.float32)
+            self.active_fagk_degree = 0
 
     def save_ply(self, path: str) -> None:
         """Save Gaussian parameters to a PLY file."""

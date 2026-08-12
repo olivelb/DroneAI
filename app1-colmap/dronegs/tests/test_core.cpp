@@ -139,6 +139,10 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         gaussians.front().sh_rest[index] =
             0.01F * static_cast<float>(index + 1U);
     }
+    for (std::size_t index = 0U; index < 3U; ++index) {
+        gaussians.front().opacity_sh[index] =
+            -0.02F * static_cast<float>(index + 1U);
+    }
     const auto output = root.parent_path() / "native-output";
     std::filesystem::create_directories(output);
     const auto ply = output / "point_cloud.ply";
@@ -159,6 +163,8 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "PLY vertex count mismatch");
     check(header.find("property float f_rest_8\n") != std::string::npos,
           "PLY degree-1 SH layout mismatch");
+    check(header.find("property float opacity_sh_2\n") != std::string::npos,
+          "PLY degree-1 opacity-SH layout mismatch");
     check(header.find("property float rot_3\n") != std::string::npos,
           "PLY rotation layout mismatch");
     const auto loaded = dronegs::read_gaussian_ply(ply);
@@ -178,6 +184,9 @@ void test_scene_and_ply(const std::filesystem::path& root) {
     check(loaded.gaussians.front().sh_rest[8] ==
               gaussians.front().sh_rest[8],
           "PLY reader SH-rest mismatch");
+    check(loaded.gaussians.front().opacity_sh[2] ==
+              gaussians.front().opacity_sh[2],
+          "PLY reader opacity-SH mismatch");
 
     dronegs::Options options{
         .data_path = root,

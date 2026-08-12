@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <jpeglib.h>
 
 #include "dronegs/model.hpp"
+#include "dronegs/ordered_training.hpp"
 #include "dronegs/training.hpp"
 
 namespace {
@@ -97,7 +99,8 @@ int main() {
         options.run_manifest = root / "output" / "trainer_run.json";
         options.iterations = 2U;
         options.strategy = "mrnf";
-        options.sh_degree = 0U;
+        options.sh_degree = 1U;
+        options.sh_degree_interval = 1U;
         options.max_cap = 100U;
         options.resize_factor = 1U;
         options.max_width = 32U;
@@ -122,6 +125,39 @@ int main() {
                 std::to_string(metrics.held_out_image_count) +
                 " cache_misses=" +
                 std::to_string(metrics.image_cache_misses));
+        }
+        bool learned_directional_opacity = false;
+        for (const auto& gaussian : gaussians) {
+            for (std::size_t coefficient = 0U;
+                 coefficient < 3U; ++coefficient) {
+                learned_directional_opacity =
+                    learned_directional_opacity ||
+                    std::abs(gaussian.opacity_sh[coefficient]) > 1.0e-9F;
+            }
+        }
+        if (!learned_directional_opacity) {
+            throw std::runtime_error(
+                "opacity-SH coefficients were not trained");
+        }
+
+        const auto checkpoint = root / "opacity-sh-v4.ckpt";
+        dronegs::OrderedAlphaTrainingContext checkpoint_source(
+            gaussians, 16U * 16U, 2U, 100U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            1U, 1U, 17U);
+        const dronegs::TrainingCheckpointProgress saved_progress{};
+        checkpoint_source.save_checkpoint(
+            checkpoint, saved_progress, "tile-dataset", "tile-config");
+        dronegs::OrderedAlphaTrainingContext checkpoint_restored(
+            gaussians, 16U * 16U, 2U, 100U,
+            dronegs::MrnfOptimizerProfile::dronegs_dev16,
+            1U, 1U, 17U);
+        const auto loaded_progress = checkpoint_restored.load_checkpoint(
+            checkpoint, "tile-dataset", "tile-config");
+        if (loaded_progress.completed_iteration != 0U ||
+            checkpoint_restored.size() != gaussians.size()) {
+            throw std::runtime_error(
+                "opacity-SH checkpoint v4 round-trip mismatch");
         }
         std::filesystem::remove_all(root);
         std::cout << "DroneGS tile training test passed\n";

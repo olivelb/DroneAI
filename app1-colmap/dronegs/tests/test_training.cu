@@ -375,17 +375,19 @@ int main() {
             throw std::runtime_error(
                 "insufficient DSSIM finite-difference probes");
         }
-        dronegs::Gaussian split_parent{
-            .xyz = {-0.2F, 0.1F, 2.0F},
-            .dc = {0.0F, 0.0F, 0.0F},
-            .log_scale = {
-                std::log(0.2F),
-                std::log(0.1F),
-                std::log(0.08F),
-            },
-            .rotation = {1.0F, 0.0F, 0.0F, 0.0F},
-            .opacity_logit = 0.0F,
+        // CUDA 12.0 miscompiles designated aggregate initialization for this
+        // mixed std::array/POD type. Assign explicitly so the native test
+        // exercises the intended non-unit anisotropic parent.
+        dronegs::Gaussian split_parent;
+        split_parent.xyz = {-0.2F, 0.1F, 2.0F};
+        split_parent.dc = {0.0F, 0.0F, 0.0F};
+        split_parent.log_scale = {
+            std::log(0.2F),
+            std::log(0.1F),
+            std::log(0.08F),
         };
+        split_parent.rotation = {1.0F, 0.0F, 0.0F, 0.0F};
+        split_parent.opacity_logit = 0.0F;
         std::vector<std::uint8_t> split_target(32U * 32U * 3U, 0U);
         for (std::size_t y = 0U; y < 32U; ++y) {
             for (std::size_t x = 16U; x < 32U; ++x) {
@@ -1045,7 +1047,12 @@ int main() {
                 first_split.opacity_logit -
                 second_split.opacity_logit) > 1.0e-6F) {
             throw std::runtime_error(
-                "long-axis split geometry/opacity mismatch");
+                "long-axis split geometry/opacity mismatch: distance=" +
+                std::to_string(std::sqrt(split_distance_squared)) +
+                " expected=" + std::to_string(expected_split_distance) +
+                " opacity_delta=" + std::to_string(std::abs(
+                    first_split.opacity_logit -
+                    second_split.opacity_logit)));
         }
         const auto empty_refinement =
             split_context.refine_topology(0.0F, 1.0F);
@@ -1241,6 +1248,17 @@ int main() {
                         return false;
                     }
                 }
+                for (std::size_t coefficient = 0U;
+                     coefficient <
+                         dronegs::maximum_opacity_sh_coefficients;
+                     ++coefficient) {
+                    if (std::abs(
+                            left.opacity_sh[coefficient] -
+                            right.opacity_sh[coefficient]) >
+                        resume_tolerance) {
+                        return false;
+                    }
+                }
                 for (std::size_t component = 0U;
                      component < 4U; ++component) {
                     if (std::abs(
@@ -1342,19 +1360,19 @@ int main() {
         ordered_initial.front().rotation = {
             rotation_w, 0.0F, 0.0F, rotation_z};
         auto ordered_gaussians = ordered_initial;
-        const dronegs::Options options{
-            .data_path = root,
-            .output_path = root.parent_path() / "unused-output",
-            .run_manifest = root.parent_path() / "unused-output" / "trainer_run.json",
-            .iterations = 30U,
-            .strategy = "mrnf",
-            .sh_degree = 0U,
-            .max_cap = 100U,
-            .resize_factor = 1U,
-            .max_width = 32U,
-            .tile_mode = 4U,
-            .seed = 7U,
-        };
+        dronegs::Options options;
+        options.data_path = root;
+        options.output_path = root.parent_path() / "unused-output";
+        options.run_manifest =
+            root.parent_path() / "unused-output" / "trainer_run.json";
+        options.iterations = 30U;
+        options.strategy = "mrnf";
+        options.sh_degree = 0U;
+        options.max_cap = 100U;
+        options.resize_factor = 1U;
+        options.max_width = 32U;
+        options.tile_mode = 4U;
+        options.seed = 7U;
         const auto additive_metrics = dronegs::train_fixed_topology(
             options, scene, additive_gaussians);
         const auto ordered_metrics =

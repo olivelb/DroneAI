@@ -1,9 +1,9 @@
 # DroneGS architecture
 
-Status: dev.47 sole production Gaussian backend with recovery/canary
+Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.47
+Project version: 0.5.0-dev.48
 
 ## Decision
 
@@ -65,6 +65,22 @@ reuse verifies the full sparse/image dataset identity, trainer binary hash,
 profile, canary and PLY hash. The optional spatial split projects camera
 centers onto their two dominant axes, holds a deterministic central block and
 can exclude a guard ring from training; production V1 keeps modulo parity.
+
+Dev.48 treats tile mode as image-space view expansion. Crops retain source
+resolution up to the per-crop width ceiling; their focal lengths keep the
+same pixel scale and their principal points are translated by the crop origin.
+Dataset membership is assigned before expansion. The appearance model adds
+15 optional SH residuals to the scalar opacity logit and activates them on the
+same progressive degree schedule as color SH. This is the bounded
+`opacity-SH-v1` subset of FAGK, not direction-dependent scale or rotation.
+Checkpoint V4 stores the new Adam moments and intentionally rejects prior raw
+Gaussian layouts.
+
+The scope follows the opacity-only ablation described by
+[TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788): the base
+opacity logit receives a view-direction SH residual before sigmoid activation.
+The paper's fully anisotropic scale and rotation extensions remain future
+experimental work and are not implied by the `opacity-SH-v1` name.
 
 ## Stable boundary
 

@@ -120,6 +120,17 @@ GaussianPly read_gaussian_ply(const std::filesystem::path& path) {
         throw std::runtime_error(
             "Gaussian PLY SH degree is unsupported");
     }
+    std::uint32_t opacity_sh_count = 0U;
+    while (property_indices.contains(
+        "opacity_sh_" + std::to_string(opacity_sh_count))) {
+        ++opacity_sh_count;
+    }
+    if (opacity_sh_count > maximum_opacity_sh_coefficients ||
+        (opacity_sh_count != 0U &&
+         opacity_sh_count != coefficient_count - 1U)) {
+        throw std::runtime_error(
+            "Gaussian PLY opacity-SH property count is unsupported");
+    }
 
     GaussianPly output{
         .gaussians = std::vector<Gaussian>(vertex_count),
@@ -151,6 +162,11 @@ GaussianPly read_gaussian_ply(const std::filesystem::path& path) {
                 value("f_rest_" + std::to_string(index));
         }
         gaussian.opacity_logit = value("opacity");
+        for (std::uint32_t index = 0U;
+             index < opacity_sh_count; ++index) {
+            gaussian.opacity_sh[index] =
+                value("opacity_sh_" + std::to_string(index));
+        }
         gaussian.log_scale = {
             value("scale_0"),
             value("scale_1"),
@@ -173,6 +189,17 @@ GaussianPly read_gaussian_ply(const std::filesystem::path& path) {
             if (!finite(item)) {
                 throw std::runtime_error(
                     "Gaussian PLY contains non-finite scale");
+            }
+        }
+        if (!finite(gaussian.opacity_logit)) {
+            throw std::runtime_error(
+                "Gaussian PLY contains non-finite opacity");
+        }
+        for (std::uint32_t index = 0U;
+             index < opacity_sh_count; ++index) {
+            if (!finite(gaussian.opacity_sh[index])) {
+                throw std::runtime_error(
+                    "Gaussian PLY contains non-finite opacity SH");
             }
         }
     }
@@ -198,7 +225,7 @@ void write_gaussian_ply(const std::filesystem::path& path,
            << "format binary_little_endian 1.0\n"
            << "comment DroneGS anisotropic "
               "geometry-optimized MRNF-growth L1+DSSIM prototype "
-              "0.5.0-dev.39\n"
+              "0.5.0-dev.48 opacity-SH-v1\n"
            << "element vertex " << gaussians.size() << "\n"
            << "property float x\n"
            << "property float y\n"
@@ -208,6 +235,11 @@ void write_gaussian_ply(const std::filesystem::path& path,
            << "property float f_dc_2\n";
     for (std::uint32_t index = 0; index < rest_count; ++index) {
         stream << "property float f_rest_" << index << "\n";
+    }
+    const auto opacity_sh_count = coefficient_count - 1U;
+    for (std::uint32_t index = 0U;
+         index < opacity_sh_count; ++index) {
+        stream << "property float opacity_sh_" << index << "\n";
     }
     stream << "property float scale_0\n"
            << "property float scale_1\n"
@@ -231,6 +263,10 @@ void write_gaussian_ply(const std::filesystem::path& path,
         }
         for (std::uint32_t index = 0; index < rest_count; ++index) {
             write_float(stream, gaussian.sh_rest[index]);
+        }
+        for (std::uint32_t index = 0U;
+             index < opacity_sh_count; ++index) {
+            write_float(stream, gaussian.opacity_sh[index]);
         }
         for (float value : gaussian.log_scale) {
             write_float(stream, value);

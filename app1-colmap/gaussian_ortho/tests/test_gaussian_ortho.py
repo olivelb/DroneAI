@@ -118,8 +118,17 @@ class TestSH:
         dirs_np /= np.linalg.norm(dirs_np, axis=-1, keepdims=True)
         dirs = cp.array(dirs_np)
         basis = eval_sh_basis(0, dirs)
+        assert cp.allclose(basis[:, 0], SH_C0)
         expected = cp.full_like(basis, SH_C0)
         assert cp.allclose(basis, expected, atol=1e-6)
+
+    def test_basis_uses_native_dronegs_sign_convention(self):
+        directions = cp.array(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=cp.float32
+        )
+        basis = eval_sh_basis(1, directions)
+        assert float(basis[0, 3]) == pytest.approx(-0.4886025119)
+        assert float(basis[1, 1]) == pytest.approx(-0.4886025119)
 
 # ---------------------------------------------------------------------------
 #  Gaussian Model
@@ -319,6 +328,31 @@ class TestOrthoRenderer:
 
         assert float(depth[0, 0]) == pytest.approx(10.0, abs=1e-5)
         assert 0.0 < float(alpha[0, 0]) < 1.0
+
+    def test_opacity_sh_changes_nadir_alpha(self):
+        common = {
+            "means_3d": cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32),
+            "quats": cp.array([[1.0, 0.0, 0.0, 0.0]], dtype=cp.float32),
+            "scales": cp.ones((1, 3), dtype=cp.float32),
+            "opacities": cp.array([0.5], dtype=cp.float32),
+            "sh_coeffs": cp.zeros((1, 4, 3), dtype=cp.float32),
+            "sh_degree": 1,
+            "viewmat": cp.eye(4, dtype=cp.float32),
+            "fx": 1.0,
+            "fy": 1.0,
+            "cx": 0.5,
+            "cy": 0.5,
+            "width": 1,
+            "height": 1,
+        }
+        _rgb, _depth, scalar_alpha = rasterize_ortho(**common)
+        opacity_sh = cp.zeros((1, 3), dtype=cp.float32)
+        opacity_sh[0, 1] = 2.0
+        _rgb, _depth, directional_alpha = rasterize_ortho(
+            **common, opacity_sh=opacity_sh
+        )
+
+        assert float(directional_alpha[0, 0]) > float(scalar_alpha[0, 0])
 
 
 # ---------------------------------------------------------------------------
