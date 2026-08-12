@@ -18,6 +18,8 @@ This changelog covers the standalone Gaussian trainer project.
   remain view-independent.
 - Align the CuPy orthomosaic SH signs with the native DroneGS basis and consume
   `opacity_sh_*` properties during nadir rendering.
+- Centralize the Python/CuPy SH basis and compare it directly with a native
+  C++ probe for normalized degree-0 through degree-3 directions in CTest.
 - Move checkpoints to format V4 because the Gaussian and optimizer state now
   contains opacity-SH arrays; older checkpoints fail closed and must restart
   training from their source dataset or final PLY.

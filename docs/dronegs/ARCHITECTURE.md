@@ -82,6 +82,12 @@ opacity logit receives a view-direction SH residual before sigmoid activation.
 The paper's fully anisotropic scale and rotation extensions remain future
 experimental work and are not implied by the `opacity-SH-v1` name.
 
+The real SH sign/order convention is a tested cross-language contract. The
+native CPU implementation and the array-generic Python implementation used by
+the CuPy renderer are evaluated on the same normalized directions through
+`dronegs_sh_python_parity_tests`; native CUDA parity remains covered by the
+CPU/CUDA rasterization suite.
+
 ## Stable boundary
 
 ```text
