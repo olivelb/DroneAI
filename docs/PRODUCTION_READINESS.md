@@ -260,6 +260,12 @@ because their local wall-frame selection has a separate quality contract.
   referenced tile artifacts and around deduplication and final S3 publication.
 - Each API pod has a distinct status consumer group for local WebSocket fan-out,
   while the shared status inbox applies the database transition only once.
+- Scheduler organization and mission limits count logical stage runs, while
+  global and resource-class limits count physical pod units. Indexed detection
+  parallelism is capped to available GPU units and persisted for accounting.
+- Detection shard inference uses its persisted GPU class; the receipt-verified
+  finalizer re-enters scheduling as `cpu-standard` without model credentials or
+  GPU placement constraints.
 - The revisioned Helm migration job runs `alembic upgrade head`, while init
   containers prevent database-dependent services from starting on an old
   schema.

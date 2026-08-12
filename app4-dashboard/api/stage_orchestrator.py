@@ -58,6 +58,9 @@ SCHEDULER_LOCK_KEY = 1
 DETECTION_PHASE_KEY = "detection_execution_phase"
 DETECTION_SHARDS_PHASE = "shards"
 DETECTION_FINALIZER_PHASE = "finalizer"
+DETECTION_REQUESTED_PARALLELISM_KEY = "requested_shard_parallelism"
+DETECTION_EFFECTIVE_PARALLELISM_KEY = "effective_shard_parallelism"
+DETECTION_INFERENCE_RESOURCE_CLASS_KEY = "detection_inference_resource_class"
 CANCELLATION_JOB_CLEANUP_AT_KEY = "cancellation_job_cleanup_at"
 
 
@@ -454,6 +457,14 @@ def _prepare_detection_fanout(
 ) -> DetectionShardPlan | None:
     if run.stage != "detection" or not settings.detection_fanout_enabled:
         return None
+    phase = _detection_phase(run)
+    if phase == DETECTION_FINALIZER_PHASE:
+        return None
+    if phase == DETECTION_SHARDS_PHASE:
+        provenance = cast(dict[str, Any], run.provenance or {})
+        return parse_detection_shard_plan_descriptor(
+            provenance.get("detection_shard_plan")
+        )
     upstream_ids = cast(list[Any], run.upstream_artifact_ids or [])
     if (
         len(upstream_ids) != 1
@@ -516,6 +527,42 @@ def _prepare_detection_fanout(
     return plan
 
 
+def _detection_shard_count(run: MissionStageRun) -> int:
+    provenance = cast(dict[str, Any], run.provenance or {})
+    plan = parse_detection_shard_plan_descriptor(
+        provenance.get("detection_shard_plan")
+    )
+    return _integer_value(plan.shard_count, "Detection shard count")
+
+
+def _requested_resource_units(
+    run: MissionStageRun,
+    settings: StageOrchestratorSettings,
+) -> int:
+    if run.stage != "detection" or _detection_phase(run) != DETECTION_SHARDS_PHASE:
+        return 1
+    return min(settings.detection_shard_parallelism, _detection_shard_count(run))
+
+
+def _active_resource_units(
+    run: MissionStageRun,
+) -> int:
+    if run.stage != "detection" or _detection_phase(run) != DETECTION_SHARDS_PHASE:
+        return 1
+    provenance = cast(dict[str, Any], run.provenance or {})
+    shard_count = _detection_shard_count(run)
+    value = provenance.get(DETECTION_EFFECTIVE_PARALLELISM_KEY)
+    try:
+        effective = _integer_value(value, "Effective detection shard parallelism")
+    except ValueError:
+        # A Job dispatched before physical accounting may still be running.
+        # Count every shard conservatively until that legacy Job terminates.
+        return shard_count
+    if not 1 <= effective <= shard_count:
+        return shard_count
+    return effective
+
+
 def _reserved_job(
     run: MissionStageRun,
     mission: Mission,
@@ -523,11 +570,15 @@ def _reserved_job(
 ) -> ReservedStageJob:
     stage = cast(StageId, run.stage)
     executor = settings.executors[stage]
+    phase = _detection_phase(run)
+    detection_inference = (
+        stage == "detection" and phase != DETECTION_FINALIZER_PHASE
+    )
     detection_environment = (
-        settings.detection_environment if stage == "detection" else ()
+        settings.detection_environment if detection_inference else ()
     )
     detection_secret_environment = (
-        settings.detection_secret_environment if stage == "detection" else ()
+        settings.detection_secret_environment if detection_inference else ()
     )
     scoped_secret_environment = settings.job_secret_environment_by_stage.get(
         stage,
@@ -536,18 +587,41 @@ def _reserved_job(
     indexed = None
     name_suffix = None
     phase_environment: tuple[tuple[str, str], ...] = ()
-    phase = _detection_phase(run)
     if stage == "detection" and phase == DETECTION_SHARDS_PHASE:
         provenance = cast(dict[str, Any], run.provenance or {})
         plan = parse_detection_shard_plan_descriptor(
             provenance.get("detection_shard_plan")
         )
-        indexed = IndexedJobConfig(
-            completions=plan.shard_count,
-            parallelism=min(
+        try:
+            requested_parallelism = _integer_value(
+                provenance.get(DETECTION_REQUESTED_PARALLELISM_KEY),
+                "Requested detection shard parallelism",
+            )
+        except ValueError:
+            # Jobs created before physical-unit accounting did not persist the
+            # configured parallelism. Preserve their previous bounded behavior
+            # when a missing Kubernetes Job has to be reconstructed.
+            requested_parallelism = min(
                 settings.detection_shard_parallelism,
                 plan.shard_count,
-            ),
+            )
+        try:
+            effective_parallelism = _integer_value(
+                provenance.get(DETECTION_EFFECTIVE_PARALLELISM_KEY),
+                "Effective detection shard parallelism",
+            )
+        except ValueError:
+            effective_parallelism = requested_parallelism
+        if not 1 <= effective_parallelism <= min(
+            requested_parallelism,
+            plan.shard_count,
+        ):
+            raise ValueError(
+                "Effective detection shard parallelism exceeds its reservation"
+            )
+        indexed = IndexedJobConfig(
+            completions=plan.shard_count,
+            parallelism=effective_parallelism,
         )
         phase_environment = (("DRONEAI_DETECTION_EXECUTION_MODE", "shard"),)
     elif stage == "detection" and phase == DETECTION_FINALIZER_PHASE:
@@ -583,7 +657,11 @@ def _reserved_job(
         workspace_prefix=workspace_prefix,
         owner_subject=cast(str, mission.owner_subject),
         stage=stage,
-        resource_class=cast(ResourceClassId, run.resource_class),
+        resource_class=(
+            "cpu-standard"
+            if phase == DETECTION_FINALIZER_PHASE
+            else cast(ResourceClassId, run.resource_class)
+        ),
     )
     return ReservedStageJob(
         request=request,
@@ -595,8 +673,12 @@ def _reserved_job(
             active_deadline_seconds=settings.active_deadline_seconds,
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
             runtime_class_name=settings.runtime_class_name,
-            node_selector=executor.node_selector,
-            tolerations=executor.tolerations,
+            node_selector=(
+                () if phase == DETECTION_FINALIZER_PHASE else executor.node_selector
+            ),
+            tolerations=(
+                () if phase == DETECTION_FINALIZER_PHASE else executor.tolerations
+            ),
             environment=(
                 settings.job_environment
                 + detection_environment
@@ -614,9 +696,17 @@ def _reserved_job(
 
 
 def _repair_underprovisioned_resource_class(run: MissionStageRun) -> None:
-    """Upgrade queued legacy rows before they can be dispatched."""
+    """Upgrade legacy rows before they can be dispatched or reconstructed."""
     stage = cast(StageId, run.stage)
     actual = cast(ResourceClassId, run.resource_class)
+    if stage == "detection" and _detection_phase(run) == DETECTION_FINALIZER_PHASE:
+        if actual != "cpu-standard":
+            run.resource_class = "cpu-standard"
+            run.provenance = {
+                **cast(dict[str, Any], run.provenance or {}),
+                DETECTION_INFERENCE_RESOURCE_CLASS_KEY: actual,
+            }
+        return
     parameters = cast(dict[str, Any], run.parameters or {})
     required = resource_class_for_stage(stage, parameters)
     if resource_class_meets_gpu_envelope(actual, required):
@@ -683,8 +773,18 @@ def reserve_ready_jobs(
         MissionStageRun.created_at,
         MissionStageRun.run_id,
     ).with_for_update(skip_locked=True).limit(500).all()
-    for run, _mission in candidate_rows:
+    prepared_candidate_rows = []
+    for run, mission in candidate_rows:
         _repair_underprovisioned_resource_class(run)
+        try:
+            _prepare_detection_fanout(session, run, settings)
+        except ValueError as error:
+            run.status = "failed"
+            run.error_message = f"Invalid detection fan-out plan: {error}"
+            run.completed_at = now
+            continue
+        prepared_candidate_rows.append((run, mission))
+    candidate_rows = prepared_candidate_rows
     active = [
         StageAllocation(
             run_id=cast(str, run.run_id),
@@ -692,6 +792,7 @@ def reserve_ready_jobs(
             owner_subject=_scheduler_tenant(mission),
             stage=cast(StageId, run.stage),
             resource_class=cast(ResourceClassId, run.resource_class),
+            resource_units=_active_resource_units(run),
         )
         for run, mission in active_rows
     ]
@@ -702,26 +803,30 @@ def reserve_ready_jobs(
             owner_subject=_scheduler_tenant(mission),
             stage=cast(StageId, run.stage),
             resource_class=cast(ResourceClassId, run.resource_class),
+            resource_units=_requested_resource_units(run, settings),
             created_at=cast(datetime, run.created_at),
         )
         for run, mission in candidate_rows
     ]
-    selected_ids = {
-        item.run_id
+    selected = {
+        item.run_id: item
         for item in select_stage_candidates(candidates, active, settings.limits)
     }
     reserved: list[ReservedStageJob] = []
     for run, mission in candidate_rows:
-        if run.run_id not in selected_ids:
+        allocation = selected.get(cast(str, run.run_id))
+        if allocation is None:
             continue
         executor = settings.executors[cast(StageId, run.stage)]
-        try:
-            _prepare_detection_fanout(session, run, settings)
-        except ValueError as error:
-            run.status = "failed"
-            run.error_message = f"Invalid detection fan-out plan: {error}"
-            run.completed_at = now
-            continue
+        if run.stage == "detection" and _detection_phase(run) == DETECTION_SHARDS_PHASE:
+            run.provenance = {
+                **cast(dict[str, Any], run.provenance or {}),
+                DETECTION_REQUESTED_PARALLELISM_KEY: _requested_resource_units(
+                    run,
+                    settings,
+                ),
+                DETECTION_EFFECTIVE_PARALLELISM_KEY: allocation.resource_units,
+            }
         try:
             reserved_job = _reserved_job(run, mission, settings)
         except ValueError as error:
@@ -738,7 +843,12 @@ def reserve_ready_jobs(
             **cast(dict[str, Any], run.provenance or {}),
             "executor": EXECUTOR_NAME,
             "resource_class": run.resource_class,
-            "gpu_architecture": executor.gpu_architecture,
+            "resource_units": allocation.resource_units,
+            "gpu_architecture": (
+                None
+                if run.resource_class == "cpu-standard"
+                else executor.gpu_architecture
+            ),
         }
         reserved.append(reserved_job)
     return reserved
@@ -846,6 +956,7 @@ def reconcile_stage_jobs(
                     run.completed_at = now
                     continue
                 try:
+                    _repair_underprovisioned_resource_class(run)
                     _create_job(client, _reserved_job(run, mission, settings))
                     run.dispatch_error = None
                 except Exception as create_error:
@@ -889,30 +1000,24 @@ def reconcile_stage_jobs(
                         continue
                     shard_job_name = cast(str, run.job_name)
                     shard_dispatch_attempts = cast(int, run.dispatch_attempts)
+                    inference_resource_class = cast(str, run.resource_class)
                     run.provenance = {
                         **provenance,
                         DETECTION_PHASE_KEY: DETECTION_FINALIZER_PHASE,
                         "detection_shard_job_name": shard_job_name,
                         "detection_shard_dispatch_attempts": shard_dispatch_attempts,
+                        DETECTION_INFERENCE_RESOURCE_CLASS_KEY: (
+                            inference_resource_class
+                        ),
                     }
-                    run.job_name = _detection_job_name(run)
-                    run.dispatch_attempts = 1
+                    run.resource_class = "cpu-standard"
+                    run.executor = None
+                    run.job_name = None
+                    run.scheduled_at = None
+                    run.dispatch_attempts = 0
                     run.dispatch_error = None
+                    run.status = "queued"
                     run.current_step = "DETECTION_FINALIZING"
-                    try:
-                        _create_job(client, _reserved_job(run, mission, settings))
-                    except Exception as create_error:
-                        run.dispatch_error = str(create_error)[:4000]
-                        if (
-                            cast(int, run.dispatch_attempts)
-                            >= settings.maximum_dispatch_attempts
-                        ):
-                            run.status = "failed"
-                            run.error_message = (
-                                "Detection finalizer dispatch failed after "
-                                "bounded retries"
-                            )
-                            run.completed_at = now
                     continue
                 run.status = "failed"
                 run.error_message = "Stage Job exited without publishing its immutable artifact"

@@ -309,6 +309,8 @@ stageJobs:
   ttlSecondsAfterFinished: 3600
   scheduler:
     pollSeconds: 5
+    # Global and resource-class limits count physical pod units. Per-owner
+    # (organization) and per-mission limits count logical stage runs.
     globalConcurrency: 2
     perOwnerConcurrency: 1
     perMissionConcurrency: 1
