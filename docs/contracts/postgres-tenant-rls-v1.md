@@ -85,13 +85,14 @@ exact organization and matching member/credential transaction, never its data
 plane. Both values are transaction-local and cleared on completion.
 
 The realtime Kafka consumer needs an organization before applying one status
-event. New status events carry that organization. The consumer calls
-`droneai_mission_audience(vol_id)`, a stable `SECURITY DEFINER` function with a
-fixed search path that returns only organization and owner, and rejects the
-event if the returned organization differs. Persistence then runs in the
-resulting tenant transaction. Historical version-one events without an
-organization use the same narrow lookup for compatibility. The request-serving
-container never receives the operator database URL for this path.
+event. New status events carry that organization, so the consumer binds its RLS
+transaction first and looks up the exact `(organization_id, vol_id)` pair.
+Historical version-one events without an organization can only look inside the
+isolated `legacy-unassigned` tenant. Unknown and cross-tenant events are
+rejected before persistence. Migration `0031` removes the former
+`droneai_mission_audience(vol_id)` `SECURITY DEFINER` oracle. The
+request-serving container never receives the operator database URL for this
+path.
 
 The dashboard API schema-wait init container also uses `api-database-url`; no
 container in the request-serving Pod receives the operator URL.
@@ -140,14 +141,16 @@ API role is a release invariant, not an optional hardening suggestion.
 
 Migration `0029` adds separate RLS-protected platform member, credential and
 append-only audit tables. Migration `0030` adds capability-scoped tenant
-policies for invitation and recovery redemption. These policies do not widen
-the ordinary organization context.
+policies for invitation and recovery redemption. Migration `0031` removes the
+mission-to-tenant audience oracle. These changes do not widen the ordinary
+organization context.
 
 ## Migration, rollback and qualification
 
 Existing outbox rows are backfilled from their mission, then their event
-organization, then `legacy-unassigned`. Downgrade removes policies, the audience
-function and the outbox organization column; re-upgrade recreates them.
+organization, then `legacy-unassigned`. The `0026` downgrade removes policies,
+the historical audience function and the outbox organization column; its
+re-upgrade recreates them before `0031` removes the oracle again.
 
 The PostgreSQL CI test creates a real temporary non-owner `NOBYPASSRLS` role and
 proves:
@@ -161,7 +164,8 @@ proves:
 - invitation redemption sees only its exact organization/member transaction,
   produces one usable credential and cannot be replayed;
 - transaction context does not survive pool reuse;
-- the realtime audience function does not unlock tenant rows;
+- no mission-to-tenant audience oracle remains, while current and legacy
+  realtime lookups stay within their bound RLS tenant;
 - a tenant-bound executor can claim and update its own run but cannot read or
   update another organization run or publish an artifact for it;
 - the operator role still performs cross-organization worker work.
