@@ -29,6 +29,31 @@ def test_map_api_keeps_a_small_composition_router():
     assert all("confluent_kafka" not in _source(module) for module in [composition, *feature_modules])
 
 
+def test_gcp_api_separates_imports_queries_and_mutations():
+    composition = "app4-dashboard/api/routers/map_gcps.py"
+    route_modules = [
+        "app4-dashboard/api/routers/map_gcp_imports.py",
+        "app4-dashboard/api/routers/map_gcp_mutations.py",
+        "app4-dashboard/api/routers/map_gcp_queries.py",
+    ]
+    support_modules = [
+        "app4-dashboard/api/gcp_candidate_support.py",
+        "app4-dashboard/api/gcp_route_support.py",
+    ]
+
+    composition_source = _source(composition)
+    import_source = _source(route_modules[0])
+    assert _line_count(composition) < 40
+    assert all(_line_count(module) < 400 for module in route_modules)
+    assert all(_line_count(module) < 200 for module in support_modules)
+    assert composition_source.count("include_router") == 3
+    assert all("map_gcps" not in _source(module) for module in [*route_modules, *support_modules])
+    assert import_source.index("added_count += 1") < import_source.index(
+        'action="candidates_refreshed"'
+    )
+    assert '"candidate_count": added_count' in import_source
+
+
 def test_mission_catalog_is_separate_from_lifecycle_commands():
     catalog = "app4-dashboard/api/routers/mission_catalog.py"
     lifecycle = "app4-dashboard/api/routers/missions.py"

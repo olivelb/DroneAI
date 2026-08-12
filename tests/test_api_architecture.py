@@ -123,6 +123,16 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     assert "/maps/{vol_id}/styles/{layer}" in paths
     assert "/maps/{vol_id}/styles/{layer}/{style_id}" in paths
     assert "/maps/{vol_id}/search" in paths
+    assert {
+        "/maps/{vol_id}/gcps",
+        "/maps/{vol_id}/gcps/import",
+        "/maps/{vol_id}/gcps/{set_id}",
+        "/maps/{vol_id}/gcps/{set_id}/bundle",
+        "/maps/{vol_id}/gcps/{set_id}/candidates/refresh",
+        "/maps/{vol_id}/gcps/{set_id}/audit",
+        "/maps/{vol_id}/gcps/points/{point_id}",
+        "/maps/{vol_id}/gcps/observations/{observation_id}",
+    } <= paths
     assert "/operations/outbox/dead" in paths
     assert "/ws/status" in direct_paths
 
@@ -137,6 +147,22 @@ def test_every_map_route_exposes_the_explicit_admin_owner_scope():
                 parameter["name"] for parameter in operation.get("parameters", [])
             }
             assert "owner_subject" in parameter_names, path
+
+
+def test_gcp_import_and_refresh_keep_distinct_transport_contracts():
+    schema = main.app.openapi()
+    import_operation = schema["paths"]["/maps/{vol_id}/gcps/import"]["post"]
+    refresh_operation = schema["paths"][
+        "/maps/{vol_id}/gcps/{set_id}/candidates/refresh"
+    ]["post"]
+
+    assert import_operation["requestBody"]["required"] is True
+    refresh_parameters = {
+        (parameter["name"], parameter["in"])
+        for parameter in refresh_operation["parameters"]
+    }
+    assert ("candidate_radius_m", "query") in refresh_parameters
+    assert ("max_candidates", "query") in refresh_parameters
 
 
 def test_importing_the_api_does_not_create_a_kafka_producer():

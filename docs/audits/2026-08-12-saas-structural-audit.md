@@ -43,9 +43,10 @@ dataset qualification.
 | Tenant event plane | organization binds every new pipeline/status/control event, deterministic identity, trace correlation, Kafka key, cancellation cache and realtime audience check | cross-organization identity, routing, cancellation and fan-out tests plus exported JSON Schema |
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
+| GCP API ownership | import/refresh, queries/audit and optimistic mutations have separate routers behind a stable composition facade; candidate refresh audit records the actual post-mutation count | route/OpenAPI boundary tests plus audit-state regression test |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 1031 non-GPU/non-integration
+The qualified local baseline after these changes is 1039 non-GPU/non-integration
 Python tests, sixteen focused real-service integration tests (including one
 real HTTP control-plane journey), 32 frontend unit tests and 10 Playwright
 journeys. The full Python static gate, documentation links, schema sync,
@@ -97,8 +98,8 @@ deliberately separate from scientific qualification.
    `shared/database.py` (models by bounded context),
    `shared/pipeline_params.py` (contract/catalogue),
    `app4-dashboard/api/dataset_uploads.py` (commands, S3 gateway, recovery),
-   `app3-processing/analysis_workflow.py` (campaign, aggregation, publication)
-   and `app4-dashboard/api/routers/map_gcps.py` (read/write/audit routes).
+   and `app3-processing/analysis_workflow.py` (campaign, aggregation,
+   publication).
 2. **Mission identifier scope.** Once deployed legacy resources have been
    inventoried and adopted, replace global mission-name uniqueness and all
    remaining single-key lookups with `(organization_id, vol_id)`.
