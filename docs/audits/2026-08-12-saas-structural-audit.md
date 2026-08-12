@@ -44,6 +44,7 @@ dataset qualification.
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
 | GCP API ownership | import/refresh, queries/audit and optimistic mutations have separate routers behind a stable composition facade; candidate refresh audit records the actual post-mutation count | route/OpenAPI boundary tests plus audit-state regression test |
+| Analysis workflow ownership | bounded result loading/publication and stale-campaign recovery are isolated from tile ingestion and finalization orchestration | processing-service regressions, strict typing and module-boundary tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
 The qualified local baseline after these changes is 1039 non-GPU/non-integration
@@ -97,9 +98,8 @@ deliberately separate from scientific qualification.
 1. **Split remaining hotspots by ownership boundary.** Priority files are
    `shared/database.py` (models by bounded context),
    `shared/pipeline_params.py` (contract/catalogue),
-   `app4-dashboard/api/dataset_uploads.py` (commands, S3 gateway, recovery),
-   and `app3-processing/analysis_workflow.py` (campaign, aggregation,
-   publication).
+   and `app4-dashboard/api/dataset_uploads.py` (commands, S3 gateway,
+   recovery).
 2. **Mission identifier scope.** Once deployed legacy resources have been
    inventoried and adopted, replace global mission-name uniqueness and all
    remaining single-key lookups with `(organization_id, vol_id)`.

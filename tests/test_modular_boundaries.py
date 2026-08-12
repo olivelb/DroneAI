@@ -90,11 +90,16 @@ def test_storage_delegates_immutable_publication_algorithms():
 def test_processing_worker_delegates_long_running_workflows():
     main_source = _source("app3-processing/main.py")
     workflow_source = _source("app3-processing/analysis_workflow.py")
+    publication_source = _source("app3-processing/analysis_publication.py")
+    recovery_source = _source("app3-processing/analysis_recovery.py")
     tiler_source = _source("app3-processing/orthomosaic_tiler.py")
     dispatcher_source = _source("app3-processing/processing_dispatcher.py")
     legacy_source = _source("app3-processing/legacy_aggregation.py")
 
     assert _line_count("app3-processing/main.py") < 200
+    assert _line_count("app3-processing/analysis_workflow.py") < 750
+    assert _line_count("app3-processing/analysis_publication.py") < 350
+    assert _line_count("app3-processing/analysis_recovery.py") < 250
     assert "AnalysisWorkflow(" in main_source
     assert "OrthomosaicTiler(" in main_source
     assert "ProcessingDispatcher(" in main_source
@@ -105,6 +110,12 @@ def test_processing_worker_delegates_long_running_workflows():
     assert "shared.database" not in main_source
     assert "import cv2" not in main_source
     assert "import main" not in workflow_source
+    assert "publication.load_tile_payloads(" in workflow_source
+    assert "recovery.plan_recovery(" in workflow_source
+    assert "analysis_workflow" not in publication_source
+    assert "analysis_workflow" not in recovery_source
+    assert "confluent_kafka" not in publication_source
+    assert "confluent_kafka" not in recovery_source
     assert "import main" not in tiler_source
     assert "import main" not in dispatcher_source
     assert "import main" not in legacy_source
