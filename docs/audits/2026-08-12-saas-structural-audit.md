@@ -30,9 +30,10 @@ dataset qualification.
 | Immutable tenant data | tenant workspaces, GCP bundles and detection shards publish under organization-specific CAS identities while historical readers remain available | v3 canonicalization, identical-byte isolation and cross-tenant denial tests |
 | Protected compute | staging and production accept only bounded, immutable stage Jobs; the API, control worker, Helm overlays and compatibility workers all fail closed against fused execution | deployment-mode tests, protected Helm renders and worker startup guards |
 | Tenant event plane | organization binds every new pipeline/status/control event, deterministic identity, trace correlation, Kafka key, cancellation cache and realtime audience check | cross-organization identity, routing, cancellation and fan-out tests plus exported JSON Schema |
+| Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 940 non-GPU/non-integration
+The qualified local baseline after these changes is 943 non-GPU/non-integration
 Python tests, five real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
@@ -62,8 +63,12 @@ binds organization to all new pipeline, status and control events, their
 deterministic IDs, trace correlation, Kafka routing, cancellation and realtime
 audience validation. Historical version-one events without an organization
 remain readable; mission identifiers deliberately remain globally unique until
-the audited adoption migration exists. The remaining ordered phase is to
-account physical fan-out resource units and run the detection finalizer on CPU.
+the audited adoption migration exists. The sixth phase now separates logical
+stage-run concurrency from physical pod units, caps indexed detection
+parallelism against actual scheduler capacity and re-enters the
+receipt-verified finalizer through the CPU scheduler. The shared SaaS data-plane
+P0 sequence is complete; the control-plane and operability work below remains
+deliberately separate from scientific qualification.
 
 ### P1 — SaaS control plane
 

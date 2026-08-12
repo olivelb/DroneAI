@@ -118,9 +118,13 @@ both paths call the same scientific stage boundaries and this migration did not
 change CUDA, COLMAP or DroneGS versions.
 
 The scheduler policy is deterministic and tenant-aware: oldest work is kept in
-order within each owner, owners are served round-robin, and global, per-owner,
-per-mission and per-resource-class limits all apply. Same-mission concurrency
-is permitted only when neither DAG node is an ancestor of the other. Kubernetes
+order within each organization, organizations are served round-robin, and
+global, per-organization, per-mission and per-resource-class limits all apply.
+Organization and mission limits count logical stage runs. Global and resource
+limits count physical resource units: an ordinary Job consumes one unit, while
+an indexed detection Job consumes its effective pod parallelism. Same-mission
+concurrency is permitted only when neither DAG node is an ancestor of the
+other. Kubernetes
 Job manifests are bounded (`activeDeadlineSeconds`, no retry, automatic TTL),
 run as non-root with dropped capabilities and derive their requests/limits from
 the persisted resource class. Rasterization uses `gpu-high-memory` whenever
@@ -287,10 +291,19 @@ The guarded scheduling phase is now implemented. At reservation time the
 orchestrator resolves the exact raster artifact, reads its immutable width and
 height metrics, builds and persists the complete plan, and keeps a one-shard
 mission monolithic. A multi-shard plan creates an Indexed Job in `shard` mode.
+Its requested parallelism is capped by the remaining global and GPU-class
+units and by the shard count. Requested and effective parallelism plus the
+physical unit reservation are persisted in provenance, so multiple tenants can
+never create more simultaneous GPU pods than the configured envelope.
 Only after Kubernetes completion and durable receipt validation does the same
-stage run move to a separately named non-indexed Job in `finalizer` mode. Both
-the phase and previous Job identity remain in provenance, and deterministic
-names make recreation idempotent. `stageJobs.detectionFanout.enabled` remains
+stage run return to the scheduler for a separately named non-indexed Job in
+`finalizer` mode. Finalization is aggregation, validation, geolocation and
+publication rather than model inference, so it uses `cpu-standard` without GPU
+selectors, runtime class or model credentials. Both the phase, inference
+resource class and previous Job identity remain in provenance, and
+deterministic names make recreation idempotent. Pre-accounting shard Jobs are
+conservatively charged for every shard while active, and a missing legacy
+finalizer is reconstructed on CPU. `stageJobs.detectionFanout.enabled` remains
 `false` by default and the chart rejects it unless Manifest v2 writes and
 detection selective restore are already enabled.
 

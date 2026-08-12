@@ -1,5 +1,6 @@
 
 import importlib
+import hashlib
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from shared.database import (
 )
 from shared.detection_sharding import parse_detection_shard_plan_descriptor
 from shared.stage_scheduler import SchedulingLimits
+from shared.tenancy import mission_prefix
 
 orchestrator = importlib.import_module("app4-dashboard.api.stage_orchestrator")
 
@@ -120,13 +122,26 @@ def _add_run(
         )
 
 
-def _add_detection_run(scope, run_id, *, width, height, tile_size=1024):
+def _add_detection_run(
+    scope,
+    run_id,
+    *,
+    width,
+    height,
+    tile_size=1024,
+    owner="owner-detection",
+    organization_id="legacy-unassigned",
+):
     artifact_id = f"raster-{run_id}"
     with scope() as session:
         mission = Mission(
             vol_id=f"mission-{run_id}",
-            owner_subject="owner-detection",
-            workspace_prefix=f"missions/mission-{run_id}",
+            owner_subject=owner,
+            organization_id=organization_id,
+            workspace_prefix=mission_prefix(
+                organization_id,
+                f"mission-{run_id}",
+            ),
             status="pending",
         )
         session.add(mission)
@@ -137,7 +152,9 @@ def _add_detection_run(scope, run_id, *, width, height, tile_size=1024):
             stage="rasterization",
             attempt=0,
             status="succeeded",
-            idempotency_key="1" * 64,
+            idempotency_key=hashlib.sha256(
+                f"rasterization:{run_id}".encode()
+            ).hexdigest(),
             resource_class="gpu-standard",
             quality_metrics={"width": width, "height": height},
         )
@@ -161,7 +178,9 @@ def _add_detection_run(scope, run_id, *, width, height, tile_size=1024):
                 stage="detection",
                 attempt=0,
                 status="queued",
-                idempotency_key="3" * 64,
+                idempotency_key=hashlib.sha256(
+                    f"detection:{run_id}".encode()
+                ).hexdigest(),
                 resource_class="gpu-standard",
                 parameters={"ai": {"tile_size": tile_size}},
                 upstream_artifact_ids=[artifact_id],
@@ -467,6 +486,44 @@ def test_reconciliation_idempotently_recreates_a_disappeared_job(
         assert run.dispatch_error is None
 
 
+def test_reconciliation_recreates_a_legacy_detection_finalizer_on_cpu(
+    stage_sessions,
+    monkeypatch,
+):
+    run_id = "0" * 32
+    _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
+    settings = _settings(detection_fanout_enabled=True)
+    with stage_sessions() as session:
+        orchestrator.reserve_ready_jobs(session, settings, datetime.now(UTC))
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        run.provenance = {
+            **run.provenance,
+            orchestrator.DETECTION_PHASE_KEY: "finalizer",
+        }
+        run.job_name = orchestrator.stage_job_name(f"{run_id}-finalizer")
+        run.resource_class = "gpu-standard"
+
+    client = FakeJobClient()
+    monkeypatch.setattr(orchestrator, "get_session", stage_sessions)
+
+    orchestrator.reconcile_stage_jobs(client, settings)
+
+    assert len(client.created) == 1
+    pod = client.created[0]["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod
+    assert "tolerations" not in pod
+    assert "runtimeClassName" not in pod
+    assert "nvidia.com/gpu" not in (
+        pod["containers"][0]["resources"]["limits"]
+    )
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.resource_class == "cpu-standard"
+        assert run.provenance[
+            orchestrator.DETECTION_INFERENCE_RESOURCE_CLASS_KEY
+        ] == "gpu-standard"
+
+
 def test_enabled_settings_require_complete_immutable_one_shot_catalog(monkeypatch):
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_STAGE_EXECUTORS_JSON", "{}")
@@ -718,6 +775,77 @@ def test_large_detection_reservation_persists_plan_and_builds_indexed_job(
         )
         assert plan.shard_count == 5
         assert run.provenance[orchestrator.DETECTION_PHASE_KEY] == "shards"
+        assert run.provenance[
+            orchestrator.DETECTION_REQUESTED_PARALLELISM_KEY
+        ] == 2
+        assert run.provenance[
+            orchestrator.DETECTION_EFFECTIVE_PARALLELISM_KEY
+        ] == 2
+
+
+def test_detection_fanout_never_reserves_more_physical_gpu_units_than_capacity(
+    stage_sessions,
+):
+    first_run_id = "a" * 32
+    second_run_id = "b" * 32
+    _add_detection_run(
+        stage_sessions,
+        first_run_id,
+        width=55_000,
+        height=55_000,
+        owner="member-a",
+        organization_id="tenant-a",
+    )
+    _add_detection_run(
+        stage_sessions,
+        second_run_id,
+        width=55_000,
+        height=55_000,
+        owner="member-b",
+        organization_id="tenant-b",
+    )
+    settings = _settings(
+        limits=SchedulingLimits(
+            global_active=2,
+            resource_active={"gpu-standard": 2},
+        ),
+        detection_fanout_enabled=True,
+        detection_tiles_per_shard=1_024,
+        detection_shard_parallelism=4,
+    )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        )
+
+    assert len(reserved) == 1
+    assert reserved[0].request.organization_id == "tenant-a"
+    assert reserved[0].config.indexed is not None
+    assert reserved[0].config.indexed.parallelism == 2
+    with stage_sessions() as session:
+        first = session.query(MissionStageRun).filter_by(
+            run_id=first_run_id
+        ).one()
+        second = session.query(MissionStageRun).filter_by(
+            run_id=second_run_id
+        ).one()
+        assert first.provenance[
+            orchestrator.DETECTION_REQUESTED_PARALLELISM_KEY
+        ] == 4
+        assert first.provenance[
+            orchestrator.DETECTION_EFFECTIVE_PARALLELISM_KEY
+        ] == 2
+        assert first.provenance["resource_units"] == 2
+        assert second.executor is None
+
+        assert orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        ) == []
 
 
 def test_small_detection_reservation_remains_monolithic(stage_sessions):
@@ -743,13 +871,19 @@ def test_small_detection_reservation_remains_monolithic(stage_sessions):
         assert "detection_shard_plan" not in run.provenance
 
 
-def test_completed_detection_shards_dispatch_a_distinct_finalizer(
+def test_completed_detection_shards_queue_a_cpu_finalizer_through_scheduler(
     stage_sessions,
     monkeypatch,
 ):
     run_id = "6" * 32
     _add_detection_run(stage_sessions, run_id, width=55_000, height=55_000)
-    settings = _settings(detection_fanout_enabled=True)
+    settings = _settings(
+        detection_fanout_enabled=True,
+        detection_environment=(("SAM3_MODEL_ID", "facebook/sam3"),),
+        detection_secret_environment=(
+            orchestrator.SecretEnvironment("HF_TOKEN", "hf-token", "HF_TOKEN"),
+        ),
+    )
     with stage_sessions() as session:
         reserved = orchestrator.reserve_ready_jobs(
             session,
@@ -785,23 +919,65 @@ def test_completed_detection_shards_dispatch_a_distinct_finalizer(
     orchestrator.reconcile_stage_jobs(client, settings)
 
     finalizer_name = orchestrator.stage_job_name(f"{run_id}-finalizer")
-    assert client.created[0]["metadata"]["name"] == finalizer_name
-    assert "completionMode" not in client.created[0]["spec"]
-    environment = {
-        item["name"]: item.get("value")
-        for item in client.created[0]["spec"]["template"]["spec"]["containers"][0][
-            "env"
-        ]
-    }
-    assert environment["DRONEAI_DETECTION_EXECUTION_MODE"] == "finalizer"
-    assert environment["DRONEAI_STAGE_RUN_ID"] == run_id
+    assert client.created == []
     with stage_sessions() as session:
         run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
-        assert run.status == "running"
-        assert run.job_name == finalizer_name
+        assert run.status == "queued"
+        assert run.executor is None
+        assert run.job_name is None
+        assert run.resource_class == "cpu-standard"
         assert run.current_step == "DETECTION_FINALIZING"
         assert run.provenance[orchestrator.DETECTION_PHASE_KEY] == "finalizer"
         assert run.provenance["detection_shard_job_name"] == shard_job_name
+        assert run.provenance[
+            orchestrator.DETECTION_INFERENCE_RESOURCE_CLASS_KEY
+        ] == "gpu-standard"
+
+        finalizers = orchestrator.reserve_ready_jobs(
+            session,
+            settings,
+            datetime.now(UTC),
+        )
+
+    assert len(finalizers) == 1
+    finalizer = finalizers[0]
+    assert finalizer.job_name == finalizer_name
+    assert finalizer.request.resource_class == "cpu-standard"
+    assert finalizer.config.indexed is None
+    assert finalizer.config.node_selector == ()
+    assert finalizer.config.tolerations == ()
+    assert finalizer.config.secret_environment == ()
+    orchestrator.dispatch_reserved_jobs(
+        client,
+        finalizers,
+        settings.maximum_dispatch_attempts,
+    )
+
+    assert client.created[0]["metadata"]["name"] == finalizer_name
+    assert "completionMode" not in client.created[0]["spec"]
+    pod = client.created[0]["spec"]["template"]["spec"]
+    assert "nodeSelector" not in pod
+    assert "tolerations" not in pod
+    assert "runtimeClassName" not in pod
+    container = pod["containers"][0]
+    assert "nvidia.com/gpu" not in container["resources"]["limits"]
+    environment = {
+        item["name"]: item.get("value")
+        for item in container["env"]
+    }
+    assert environment["DRONEAI_DETECTION_EXECUTION_MODE"] == "finalizer"
+    assert environment["DRONEAI_STAGE_RUN_ID"] == run_id
+    assert environment["DRONEAI_RESOURCE_CLASS"] == "cpu-standard"
+    assert "SAM3_MODEL_ID" not in environment
+    assert "HF_TOKEN" not in environment
+    with stage_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.status == "queued"
+        assert run.job_name == finalizer_name
+        assert run.executor == orchestrator.EXECUTOR_NAME
+        assert run.provenance["resource_class"] == "cpu-standard"
+        assert run.provenance["resource_units"] == 1
+        assert run.provenance["gpu_architecture"] is None
 
 
 def test_completed_indexed_job_fails_closed_when_a_receipt_is_missing(
@@ -872,8 +1048,26 @@ def test_detection_job_alone_receives_model_configuration_and_hf_token():
         mission,
         settings,
     )
+    finalizer = orchestrator._reserved_job(
+        SimpleNamespace(
+            run_id="f" * 32,
+            stage="detection",
+            resource_class="gpu-high-memory",
+            provenance={
+                orchestrator.DETECTION_PHASE_KEY: "finalizer",
+            },
+        ),
+        mission,
+        settings,
+    )
 
     assert detection.config.environment == model_environment
     assert detection.config.secret_environment == model_secret
     assert reconstruction.config.environment == ()
     assert reconstruction.config.secret_environment == ()
+    assert finalizer.request.resource_class == "cpu-standard"
+    assert finalizer.config.environment == (
+        ("DRONEAI_DETECTION_EXECUTION_MODE", "finalizer"),
+    )
+    assert finalizer.config.secret_environment == ()
+    assert finalizer.config.tolerations == ()
