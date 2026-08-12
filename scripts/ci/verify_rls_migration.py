@@ -1,4 +1,4 @@
-"""Seed revision 0025 and verify the 0026 RLS/outbox migration."""
+"""Seed revision 0025 and verify the current RLS migration chain."""
 
 from __future__ import annotations
 
@@ -196,15 +196,14 @@ def verify() -> None:
                 "identity security functions are missing: "
                 + ", ".join(sorted(required_functions - functions))
             )
-        audience = connection.execute(
+        audience_function = connection.execute(
             text(
-                "SELECT audience_organization_id, audience_owner_subject "
-                "FROM droneai_mission_audience(:vol_id)"
-            ),
-            {"vol_id": MISSION_ID},
-        ).one()
-        if audience[0] != ORGANIZATION_ID:
-            raise RuntimeError("mission audience function returned the wrong tenant")
+                "SELECT to_regprocedure("
+                "'droneai_mission_audience(text)')"
+            )
+        ).scalar_one()
+        if audience_function is not None:
+            raise RuntimeError("mission audience SECURITY DEFINER still exists")
 
 
 def main() -> None:
