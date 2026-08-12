@@ -1,0 +1,77 @@
+{{- if .Values.observability.alerts.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: drone-ai-operational-slos
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  groups:
+  - name: drone-ai-operational-slos
+    rules:
+    - alert: DroneAIHttpErrorBudgetBurn
+      expr: |
+        sum(rate(droneai_http_requests_total{status_code=~"5.."}[5m]))
+        /
+        clamp_min(sum(rate(droneai_http_requests_total[5m])), 0.001)
+        > {{ .Values.observability.alerts.httpErrorRatio }}
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: Dashboard API 5xx ratio exceeds the operational objective
+    - alert: DroneAIHttpLatencyHigh
+      expr: |
+        histogram_quantile(
+          0.95,
+          sum by (le) (rate(droneai_http_request_duration_seconds_bucket[10m]))
+        ) > {{ .Values.observability.alerts.httpP95Seconds }}
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: Dashboard API p95 latency exceeds the operational objective
+    - alert: DroneAIOutboxBacklogStale
+      expr: droneai_outbox_oldest_unpublished_age_seconds > {{ .Values.observability.alerts.outboxAgeSeconds }}
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: Durable outbox publication is stale
+    - alert: DroneAIOutboxDeadLetters
+      expr: droneai_outbox_events{status="dead"} > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: Durable outbox contains dead events
+    - alert: DroneAIStageQueueStale
+      expr: droneai_stage_oldest_queued_age_seconds > {{ .Values.observability.alerts.stageQueueAgeSeconds }}
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Bounded stage queue wait exceeds the operational objective
+    - alert: DroneAIControlLoopFailures
+      expr: increase(droneai_control_loop_passes_total{outcome="failure"}[10m]) > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: A durable control-plane loop is failing
+    - alert: DroneAIKafkaLagHigh
+      expr: droneai_kafka_consumer_lag > {{ .Values.observability.alerts.kafkaLagRecords }}
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: Dashboard status consumer lag exceeds the operational objective
+    - alert: DroneAIS3Failures
+      expr: increase(droneai_s3_operation_failures_total[10m]) > 0
+      for: 1m
+      labels:
+        severity: warning
+      annotations:
+        summary: S3-compatible storage operations are failing
+{{- end }}

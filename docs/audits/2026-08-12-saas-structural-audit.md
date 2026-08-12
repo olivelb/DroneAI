@@ -32,6 +32,7 @@ dataset qualification.
 | Bootstrap retirement | production ignores static bootstrap credentials by default, fails startup on a forgotten registry and exposes only their active/inactive state in readiness | security policy, Helm overlays and HTTP readiness tests |
 | Identity abuse control | auth and platform identity lookups are preceded by shared peer and public-credential token buckets that store no raw token | middleware/direct-login tests and PostgreSQL-backed limiter qualification |
 | Delegated access audit | explicit admin access to another member's mission or dataset is tenant-scoped, fail-closed and durably append-only | API filtering tests, real PostgreSQL immutability and non-owner RLS denial |
+| Operational observability | API and control processes expose low-cardinality request, outbox, scheduler, reconciliation, Kafka and S3 metrics on a private pod port with explicit alert thresholds | metric boundary tests, protected Helm contracts and Prometheus rules |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
@@ -42,7 +43,7 @@ dataset qualification.
 | GCP import integrity | ODM/Metashape pixels are finite and non-negative, known image bounds gate imported marks, unknown dimensions require operator confirmation, and bundle materialisation revalidates every mark | malicious parser cases plus import-state and calculation-boundary tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 1007 non-GPU/non-integration
+The qualified local baseline after these changes is 1014 non-GPU/non-integration
 Python tests, eleven focused real-service integration tests, one real HTTP
 control-plane journey, 32 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and
@@ -97,13 +98,10 @@ deliberately separate from scientific qualification.
    `app3-processing/analysis_workflow.py` (campaign, aggregation, publication),
    `shared/storage.py` (client, CAS, multipart) and
    `app4-dashboard/api/routers/map_gcps.py` (read/write/audit routes).
-2. **Observability and SLOs.** Export request, outbox age, scheduler queue,
-   reconciliation, Kafka lag, S3 failure and organization-usage metrics with
-   trace correlation and alert thresholds.
-3. **Fault and concurrency qualification.** Exercise killed API/control
+2. **Fault and concurrency qualification.** Exercise killed API/control
    processes, duplicate Kafka delivery, stale leases, S3 timeouts, concurrent
    upload finalization and rolling migration compatibility.
-4. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
+3. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
    legacy storage into organizations and eventually make mission identifiers
    unique within an organization rather than globally.
 

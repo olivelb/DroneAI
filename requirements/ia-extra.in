@@ -3,6 +3,7 @@ boto3
 confluent-kafka
 geoalchemy2
 huggingface-hub
+prometheus-client
 psycopg2-binary
 pydantic
 pyproj

@@ -30,6 +30,7 @@ from shared.organization_saas import (
     record_storage_release,
     record_storage_reservation,
 )
+from shared.observability import observe_control_loop, observe_reconciliation
 from shared.tenancy import dataset_prefix
 
 from .security import Principal, upload_limits
@@ -108,7 +109,9 @@ class CompletedPartRequest(BaseModel):  # type: ignore[misc]
 
 
 class CompleteUploadFileRequest(BaseModel):  # type: ignore[misc]
-    parts: list[CompletedPartRequest] = Field(min_length=1, max_length=MAX_MULTIPART_PARTS)
+    parts: list[CompletedPartRequest] = Field(
+        min_length=1, max_length=MAX_MULTIPART_PARTS
+    )
 
 
 class UploadFileDescriptor(TypedDict):
@@ -159,7 +162,11 @@ class UploadFinalizeResponse(TypedDict):
 
 def sanitize_dataset_name(value: str) -> str:
     return "".join(
-        character if character.isascii() and (character.isalnum() or character in "_-") else "_"
+        (
+            character
+            if character.isascii() and (character.isalnum() or character in "_-")
+            else "_"
+        )
         for character in value.strip()
     )
 
@@ -189,7 +196,9 @@ def _session_lifetime() -> timedelta:
     try:
         seconds = int(os.getenv("DRONEAI_UPLOAD_SESSION_SECONDS", "86400"))
     except ValueError as error:
-        raise RuntimeError("DRONEAI_UPLOAD_SESSION_SECONDS must be an integer") from error
+        raise RuntimeError(
+            "DRONEAI_UPLOAD_SESSION_SECONDS must be an integer"
+        ) from error
     if not 900 <= seconds <= 7 * 86400:
         raise RuntimeError(
             "DRONEAI_UPLOAD_SESSION_SECONDS must be between 900 and 604800"
@@ -201,7 +210,9 @@ def _part_url_lifetime() -> int:
     try:
         seconds = int(os.getenv("DRONEAI_UPLOAD_PART_URL_SECONDS", "900"))
     except ValueError as error:
-        raise RuntimeError("DRONEAI_UPLOAD_PART_URL_SECONDS must be an integer") from error
+        raise RuntimeError(
+            "DRONEAI_UPLOAD_PART_URL_SECONDS must be an integer"
+        ) from error
     if not 60 <= seconds <= 3600:
         raise RuntimeError(
             "DRONEAI_UPLOAD_PART_URL_SECONDS must be between 60 and 3600"
@@ -232,7 +243,9 @@ def _validate_request(request: UploadSessionRequest) -> tuple[str, int]:
                 detail=f"Unsupported dataset file: {item.name}",
             )
         if item.name in filenames:
-            raise HTTPException(status_code=409, detail=f"Duplicate filename: {item.name}")
+            raise HTTPException(
+                status_code=409, detail=f"Duplicate filename: {item.name}"
+            )
         filenames.add(item.name)
         if item.size > limits["max_file_bytes"]:
             raise HTTPException(
@@ -431,9 +444,8 @@ def create_upload_session(
         principal.organization_id,
     )
     if existing is not None:
-        if (
-            existing.created_by != principal.subject
-            or not _matching_upload_request(existing, request)
+        if existing.created_by != principal.subject or not _matching_upload_request(
+            existing, request
         ):
             raise HTTPException(
                 status_code=409,
@@ -517,9 +529,8 @@ def create_upload_session(
         )
         if collision is None:
             raise
-        if (
-            collision.created_by != principal.subject
-            or not _matching_upload_request(collision, request)
+        if collision.created_by != principal.subject or not _matching_upload_request(
+            collision, request
         ):
             raise HTTPException(
                 status_code=409,
@@ -606,10 +617,7 @@ def _normalized_parts(
             status_code=400,
             detail="Completed parts must contain every part exactly once",
         )
-    return [
-        {"part_number": part.part_number, "etag": part.etag}
-        for part in ordered
-    ]
+    return [{"part_number": part.part_number, "etag": part.etag} for part in ordered]
 
 
 def _stored_s3_parts(file_record: DatasetUploadFile) -> list[dict[str, int | str]]:
@@ -618,9 +626,7 @@ def _stored_s3_parts(file_record: DatasetUploadFile) -> list[dict[str, int | str
         raise RuntimeError("Completing upload has no durable multipart part list")
     return [
         {
-            "PartNumber": int(
-                cast(dict[str, int | str], part)["part_number"]
-            ),
+            "PartNumber": int(cast(dict[str, int | str], part)["part_number"]),
             "ETag": str(cast(dict[str, int | str], part)["etag"]),
         }
         for part in raw_parts
@@ -633,14 +639,10 @@ def _object_identity(
     info: dict[str, int | str | dict[str, str]],
 ) -> tuple[bool, bool]:
     metadata = cast(dict[str, str], info["metadata"])
-    session_matches = metadata.get("droneai-upload-session") == str(
-        record.session_id
-    )
+    session_matches = metadata.get("droneai-upload-session") == str(record.session_id)
     persisted_file_id = metadata.get("droneai-upload-file")
     file_matches = persisted_file_id in {None, "", str(file_record.file_id)}
-    expected_size_matches = metadata.get("expected-size") == str(
-        file_record.size_bytes
-    )
+    expected_size_matches = metadata.get("expected-size") == str(file_record.size_bytes)
     owned = session_matches and file_matches
     valid = (
         owned
@@ -961,9 +963,7 @@ def _ensure_catalog_record(
 ) -> Dataset:
     existing = cast(
         Dataset | None,
-        session.query(Dataset)
-        .filter(Dataset.upload_session_id == record.id)
-        .first(),
+        session.query(Dataset).filter(Dataset.upload_session_id == record.id).first(),
     )
     if existing is not None:
         return existing
@@ -1028,7 +1028,10 @@ def _abort_record(record: DatasetUploadSession) -> None:
             item.status = "aborted"
             item.last_error = None
         except Exception as error:
-            if item.status == "uploading" and _storage_error_code(error) == "NoSuchUpload":
+            if (
+                item.status == "uploading"
+                and _storage_error_code(error) == "NoSuchUpload"
+            ):
                 item.status = "aborted"
                 continue
             errors.append(f"{item.filename}: {error}")
@@ -1047,10 +1050,10 @@ def abort_upload_session(
     if record.status == "aborted":
         return {"session_id": str(record.session_id), "status": str(record.status)}
     if record.status == "completed":
-        raise HTTPException(status_code=409, detail="Completed upload cannot be aborted")
-    has_uncertain_completion = any(
-        item.status == "completing" for item in record.files
-    )
+        raise HTTPException(
+            status_code=409, detail="Completed upload cannot be aborted"
+        )
+    has_uncertain_completion = any(item.status == "completing" for item in record.files)
     has_resumable_progress = record.status == "uploading" and any(
         item.status == "completed" for item in record.files
     )
@@ -1126,9 +1129,7 @@ def reconcile_pending_uploads() -> int:
                     .one(),
                 )
                 completing_ids = [
-                    int(item.id)
-                    for item in record.files
-                    if item.status == "completing"
+                    int(item.id) for item in record.files if item.status == "completing"
                 ]
                 for file_record_id in completing_ids:
                     _complete_file_from_intent(
@@ -1163,9 +1164,7 @@ def _expired_upload_query(
         .filter(
             DatasetUploadSession.status.in_(("initializing", "uploading", "failed")),
             DatasetUploadSession.expires_at <= now,
-            ~DatasetUploadSession.files.any(
-                DatasetUploadFile.status == "completing"
-            ),
+            ~DatasetUploadSession.files.any(DatasetUploadFile.status == "completing"),
         )
         .order_by(DatasetUploadSession.expires_at, DatasetUploadSession.id)
         .with_for_update(skip_locked=True)
@@ -1191,9 +1190,7 @@ def cleanup_expired_uploads() -> int:
                     resource_id=str(record.session_id),
                     released_bytes=int(record.total_bytes),
                     actor_subject="system:upload-cleanup",
-                    idempotency_key=(
-                        f"storage-released:upload:{record.session_id}"
-                    ),
+                    idempotency_key=(f"storage-released:upload:{record.session_id}"),
                 )
                 cleaned += 1
             except RuntimeError:
@@ -1215,8 +1212,12 @@ def run_upload_cleanup(stop_event: Event) -> None:
         return
     while not stop_event.is_set():
         try:
-            reconcile_pending_uploads()
-            cleanup_expired_uploads()
+            reconciled = reconcile_pending_uploads()
+            expired = cleanup_expired_uploads()
+            observe_reconciliation("uploads", "reconciled", reconciled)
+            observe_reconciliation("uploads", "expired", expired)
+            observe_control_loop("uploads", succeeded=True)
         except Exception:
+            observe_control_loop("uploads", succeeded=False)
             logger.exception("Dataset upload cleanup pass failed")
         stop_event.wait(interval)

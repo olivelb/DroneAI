@@ -25,6 +25,7 @@ from shared.config import (
     S3_REGION,
     S3_SECRET_KEY,
 )
+from shared.observability import metrics_enabled, observe_s3_failure
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,48 @@ class S3Client(Protocol):
     def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
 
 
+class _ObservedS3Paginator:
+    def __init__(self, paginator: Any, operation: str) -> None:
+        self._paginator = paginator
+        self._operation = operation
+
+    def paginate(self, **kwargs: Any) -> Iterable[dict[str, Any]]:
+        try:
+            yield from self._paginator.paginate(**kwargs)
+        except Exception as error:
+            observe_s3_failure(self._operation, error)
+            raise
+
+
+class _ObservedS3Client:
+    """Record failures without changing the boto3 client surface."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    def __getattr__(self, name: str) -> Any:
+        attribute = getattr(self._client, name)
+        if not callable(attribute):
+            return attribute
+
+        def observed(*args: Any, **kwargs: Any) -> Any:
+            try:
+                result = attribute(*args, **kwargs)
+                if name == "get_paginator":
+                    operation = str(args[0] if args else "unknown")
+                    return _ObservedS3Paginator(result, operation)
+                return result
+            except Exception as error:
+                observe_s3_failure(name, error)
+                raise
+
+        return observed
+
+
+def _observed_client(client: Any) -> Any:
+    return _ObservedS3Client(client) if metrics_enabled() else client
+
+
 # ---------------------------------------------------------------------------
 # Configuration from environment
 # ---------------------------------------------------------------------------
@@ -110,18 +153,20 @@ def _get_client() -> S3Client:
     if _client is None:
         _client = cast(
             S3Client,
-            boto3.client(
-                "s3",
-                endpoint_url=S3_ENDPOINT,
-                aws_access_key_id=S3_ACCESS_KEY,
-                aws_secret_access_key=S3_SECRET_KEY,
-                # OVH exposes uppercase region codes through its cloud API,
-                # while its S3 signature scope requires a lowercase region.
-                region_name=S3_REGION.lower(),
-                config=BotoConfig(
-                    signature_version="s3v4",
-                    retries={"max_attempts": 3, "mode": "standard"},
-                    response_checksum_validation="when_required",
+            _observed_client(
+                boto3.client(
+                    "s3",
+                    endpoint_url=S3_ENDPOINT,
+                    aws_access_key_id=S3_ACCESS_KEY,
+                    aws_secret_access_key=S3_SECRET_KEY,
+                    # OVH exposes uppercase region codes through its cloud API,
+                    # while its S3 signature scope requires a lowercase region.
+                    region_name=S3_REGION.lower(),
+                    config=BotoConfig(
+                        signature_version="s3v4",
+                        retries={"max_attempts": 3, "mode": "standard"},
+                        response_checksum_validation="when_required",
+                    ),
                 ),
             ),
         )
@@ -146,16 +191,18 @@ def _get_public_client() -> S3Client:
     if _public_client is None:
         _public_client = cast(
             S3Client,
-            boto3.client(
-                "s3",
-                endpoint_url=S3_PUBLIC_ENDPOINT,
-                aws_access_key_id=S3_ACCESS_KEY,
-                aws_secret_access_key=S3_SECRET_KEY,
-                region_name=S3_REGION.lower(),
-                config=BotoConfig(
-                    signature_version="s3v4",
-                    retries={"max_attempts": 3, "mode": "standard"},
-                    response_checksum_validation="when_required",
+            _observed_client(
+                boto3.client(
+                    "s3",
+                    endpoint_url=S3_PUBLIC_ENDPOINT,
+                    aws_access_key_id=S3_ACCESS_KEY,
+                    aws_secret_access_key=S3_SECRET_KEY,
+                    region_name=S3_REGION.lower(),
+                    config=BotoConfig(
+                        signature_version="s3v4",
+                        retries={"max_attempts": 3, "mode": "standard"},
+                        response_checksum_validation="when_required",
+                    ),
                 ),
             ),
         )
@@ -278,9 +325,7 @@ def publish_content_addressed_file(
         raise FileNotFoundError(f"Required local artifact not found: {path}")
     size = path.stat().st_size
     if size > S3_CAS_MAX_OBJECT_BYTES:
-        raise ValueError(
-            "CAS publication exceeds the 5 TiB S3 object limit"
-        )
+        raise ValueError("CAS publication exceeds the 5 TiB S3 object limit")
     digest = _sha256_file(path)
     key = content_addressed_blob_key(
         digest,
@@ -320,8 +365,7 @@ def publish_content_addressed_file(
                 expected_sha256=digest,
             ):
                 raise OSError(
-                    "Concurrent CAS publication did not create "
-                    f"s3://{selected_bucket}/{key}"
+                    f"Concurrent CAS publication did not create s3://{selected_bucket}/{key}"
                 ) from error
             return ContentAddressedUpload(key, size, digest, True, 0)
     else:
@@ -350,8 +394,7 @@ def publish_content_addressed_file(
                     return ContentAddressedUpload(key, size, digest, True, 0)
                 if attempt == S3_CAS_MULTIPART_MAX_ATTEMPTS:
                     raise OSError(
-                        "Concurrent multipart CAS publication did not create "
-                        f"s3://{selected_bucket}/{key}"
+                        f"Concurrent multipart CAS publication did not create s3://{selected_bucket}/{key}"
                     ) from error
 
     if not _verify_content_addressed_head(
@@ -494,12 +537,13 @@ def verify_object_checksum(
     remote_digest = str(head.get("Metadata", {}).get("sha256", ""))
     if remote_digest != expected_sha256:
         raise OSError(
-            f"S3 checksum verification failed for s3://{bucket}/{s3_key}: "
-            f"sha256={remote_digest}/{expected_sha256}"
+            f"S3 checksum verification failed for s3://{bucket}/{s3_key}: sha256={remote_digest}/{expected_sha256}"
         )
 
 
-def download_file(s3_key: str, local_path: str | Path, bucket: str | None = None) -> Path:
+def download_file(
+    s3_key: str, local_path: str | Path, bucket: str | None = None
+) -> Path:
     """Download a file from S3 to a local path. Creates parent dirs. Returns local Path."""
     bucket = bucket or S3_BUCKET
     client = _get_client()
@@ -510,7 +554,9 @@ def download_file(s3_key: str, local_path: str | Path, bucket: str | None = None
     return local_path
 
 
-def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: str | None = None) -> int:
+def upload_directory(
+    local_dir: str | Path, s3_prefix: str, bucket: str | None = None
+) -> int:
     """Upload all files in a local directory (recursively) to S3 under the given prefix.
 
     Returns the number of files uploaded.
@@ -526,11 +572,15 @@ def upload_directory(local_dir: str | Path, s3_prefix: str, bucket: str | None =
             s3_key = f"{s3_prefix.rstrip('/')}/{relative.as_posix()}"
             upload_file(file_path, s3_key, bucket)
             count += 1
-    logger.info("Uploaded %d files from %s → s3://%s/%s", count, local_dir, bucket, s3_prefix)
+    logger.info(
+        "Uploaded %d files from %s → s3://%s/%s", count, local_dir, bucket, s3_prefix
+    )
     return count
 
 
-def download_directory(s3_prefix: str, local_dir: str | Path, bucket: str | None = None) -> int:
+def download_directory(
+    s3_prefix: str, local_dir: str | Path, bucket: str | None = None
+) -> int:
     """Download all objects under an S3 prefix to a local directory.
 
     Returns the number of files downloaded.
@@ -549,11 +599,15 @@ def download_directory(s3_prefix: str, local_dir: str | Path, bucket: str | None
             raise ValueError(f"Unsafe S3 object key outside destination: {key}")
         download_file(key, local_path, bucket)
         count += 1
-    logger.info("Downloaded %d files from s3://%s/%s → %s", count, bucket, s3_prefix, local_dir)
+    logger.info(
+        "Downloaded %d files from s3://%s/%s → %s", count, bucket, s3_prefix, local_dir
+    )
     return count
 
 
-def list_objects(s3_prefix: str, bucket: str | None = None, delimiter: str = "") -> list[str]:
+def list_objects(
+    s3_prefix: str, bucket: str | None = None, delimiter: str = ""
+) -> list[str]:
     """List all object keys under a prefix.
 
     If *delimiter* is set (e.g. ``"/"``), returns only the common prefixes
@@ -664,9 +718,13 @@ def _delete_error_keys(
     errors: list[dict[str, Any]],
     requested_keys: set[str],
 ) -> set[str]:
-    failed = {str(error.get("Key")) for error in errors if error.get("Key") in requested_keys}
+    failed = {
+        str(error.get("Key")) for error in errors if error.get("Key") in requested_keys
+    }
     if len(failed) != len(errors):
-        raise RuntimeError("S3 DeleteObjects returned an error without a matching object key")
+        raise RuntimeError(
+            "S3 DeleteObjects returned an error without a matching object key"
+        )
     return failed
 
 
@@ -710,7 +768,10 @@ def delete_prefix(s3_prefix: str, bucket: str | None = None) -> int:
             s3_prefix,
         )
 
-    error_summary = ", ".join(f"{error.get('Key', '?')} ({error.get('Code', 'unknown')})" for error in last_errors[:5])
+    error_summary = ", ".join(
+        f"{error.get('Key', '?')} ({error.get('Code', 'unknown')})"
+        for error in last_errors[:5]
+    )
     detail = f"; last errors: {error_summary}" if error_summary else ""
     raise RuntimeError(
         f"Failed to delete {len(pending)} objects under s3://{bucket}/{s3_prefix} "
