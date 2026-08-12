@@ -15,7 +15,6 @@ from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready
 from .rate_limit import RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
-from .stage_orchestrator import start_stage_orchestrator
 from .routers.auth import router as auth_router
 from .routers.datasets import router as datasets_router
 from .routers.maps import router as maps_router
@@ -96,7 +95,10 @@ def create_app() -> FastAPI:
         principal = await security.authorize_websocket(websocket)
         if principal is None:
             return
-        await status_hub.connect(websocket, principal.subject)
+        await status_hub.connect(
+            websocket,
+            f"{principal.organization_id}:{principal.subject}",
+        )
         try:
             while True:
                 await websocket.receive_text()

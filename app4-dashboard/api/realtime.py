@@ -88,7 +88,11 @@ def mission_owner_subject(vol_id: str) -> str:
         return "legacy-unassigned"
     with get_session() as session:
         mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
-        return str(getattr(mission, "owner_subject", "legacy-unassigned"))
+        organization = str(
+            getattr(mission, "organization_id", "legacy-unassigned")
+        )
+        owner = str(getattr(mission, "owner_subject", "legacy-unassigned"))
+        return f"{organization}:{owner}"
 
 
 def handle_status_message(

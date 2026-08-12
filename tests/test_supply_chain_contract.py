@@ -139,7 +139,7 @@ def test_supported_python_locks_and_installers_require_hashes() -> None:
     bootstrap = (ROOT / "scripts" / "bootstrap-dev.sh").read_text(
         encoding="utf-8",
     )
-    assert workflow.count("pip install --require-hashes") == 2
+    assert workflow.count("pip install --require-hashes") == 3
     assert "--require-hashes" in bootstrap
 
 

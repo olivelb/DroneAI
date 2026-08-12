@@ -44,16 +44,31 @@ kubectl -n "${namespace}" create secret generic drone-ai-backup-preprod \
   --from-literal="s3-secret-key=${backup_secret_key}" \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-if ! kubectl -n "${namespace}" get secret drone-ai-api-auth >/dev/null 2>&1; then
+organization_id="${DRONEAI_ORGANIZATION_ID:-ovh-preprod}"
+if kubectl -n "${namespace}" get secret drone-ai-api-auth >/dev/null 2>&1; then
+  api_keys_json="$(kubectl -n "${namespace}" get secret drone-ai-api-auth \
+    -o jsonpath='{.data.api-keys\.json}' | base64 --decode \
+    | jq -c --arg organization_id "${organization_id}" \
+      'map(.organization_id = (.organization_id // $organization_id))')"
+  session_secret="$(kubectl -n "${namespace}" get secret drone-ai-api-auth \
+    -o jsonpath='{.data.session-secret}' | base64 --decode)"
+  test -n "${session_secret}"
+  kubectl -n "${namespace}" create secret generic drone-ai-api-auth \
+    --from-literal="api-keys.json=${api_keys_json}" \
+    --from-literal="session-secret=${session_secret}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+else
   api_key="$(openssl rand -hex 32)"
   session_secret="$(openssl rand -hex 32)"
-  api_keys_json="$(jq -cn --arg key "${api_key}" \
-    '[{key:$key,subject:"preprod-admin",role:"admin"}]')"
+  api_keys_json="$(jq -cn \
+    --arg key "${api_key}" \
+    --arg organization_id "${organization_id}" \
+    '[{key:$key,subject:"preprod-admin",role:"admin",organization_id:$organization_id}]')"
   kubectl -n "${namespace}" create secret generic drone-ai-api-auth \
     --from-literal="api-keys.json=${api_keys_json}" \
     --from-literal="session-secret=${session_secret}" >/dev/null
 fi
 
-unset api_key api_keys_json backup_access_key backup_secret_key database_url \
+unset api_key api_keys_json backup_access_key backup_secret_key database_url organization_id \
   postgres_password s3_access_key s3_secret_key session_secret
 printf 'PostgreSQL, application S3, backup S3 and API Secrets are ready in namespace %s.\n' "${namespace}"

@@ -597,6 +597,21 @@
           "default": null,
           "title": "Input Dataset"
         },
+        "organization_id": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "minLength": 1,
+              "pattern": "^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Organization Id"
+        },
         "owner_subject": {
           "anyOf": [
             {

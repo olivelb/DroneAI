@@ -144,6 +144,14 @@ class MissionStateTracker:
                     mission_context.vol_id,
                     status="processing",
                     pipeline=mission_context.mission.get("pipeline", "modern"),
+                    owner_subject=mission_context.mission.get(
+                        "owner_subject",
+                        "legacy-unassigned",
+                    ),
+                    organization_id=mission_context.mission.get(
+                        "organization_id",
+                        "legacy-unassigned",
+                    ),
                     params=mission_context.mission,
                     workspace_prefix=f"missions/{mission_context.vol_id}",
                     input_dataset=mission_context.mission.get("input_dataset"),

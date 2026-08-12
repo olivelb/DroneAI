@@ -17,6 +17,8 @@ from shared.inbox_outbox import enqueue_outbox
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.phase_dag import initialize_stage_runs
 from shared.stage_contracts import stage_dag_catalog
+from shared.tenancy import mission_prefix
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     QUALITY_PROFILES,
@@ -136,7 +138,7 @@ def status_summary(
             owner_subject,
             action="summary",
         )
-        return get_status_summary(owner)
+        return get_status_summary(owner, principal.organization_id)
     except HTTPException:
         raise
     except Exception as error:
@@ -159,7 +161,11 @@ def mission_state(
             action="state",
             vol_id=vol_id,
         )
-        return get_mission_state(vol_id, owner)
+        return get_mission_state(
+            vol_id,
+            owner,
+            principal.organization_id,
+        )
     except HTTPException:
         raise
     except Exception as error:
@@ -334,6 +340,7 @@ def _resume_mission(
                 session,
                 vol_id,
                 owner,
+                principal.organization_id,
             )
             if payload is not None:
                 enqueue_outbox(
@@ -401,6 +408,11 @@ def _start_mission(
     params: MissionParams,
     principal: Principal,
 ) -> StartMissionResponse:
+    organization_id = getattr(
+        principal,
+        "organization_id",
+        LEGACY_ORGANIZATION_ID,
+    )
     try:
         with get_session() as session:
             existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
@@ -418,6 +430,7 @@ def _start_mission(
             )
             payload = _mission_payload(params)
             payload["owner_subject"] = principal.subject
+            payload["organization_id"] = organization_id
             selected_profile = quality_profile(params.quality_profile)
             payload["colmap_params"] = {
                 **selected_profile.parameters,
@@ -435,11 +448,15 @@ def _start_mission(
             mission = Mission(
                 vol_id=params.vol_id,
                 owner_subject=principal.subject,
+                organization_id=organization_id,
                 status="pending",
                 pipeline=params.pipeline,
                 dataset_id=dataset.id,
                 input_dataset=params.input_dataset,
-                workspace_prefix=f"missions/{params.vol_id}",
+                workspace_prefix=mission_prefix(
+                    organization_id,
+                    params.vol_id,
+                ),
                 params=payload,
             )
             session.add(mission)

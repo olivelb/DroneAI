@@ -192,10 +192,13 @@ class AnalysisWorkflow:
             vol_id,
             field_name="vol_id",
         )
-        return safe_child_path(
-            mission_workspace,
-            run_id,
-            field_name="analysis_run_id",
+        return cast(
+            Path,
+            safe_child_path(
+                mission_workspace,
+                run_id,
+                field_name="analysis_run_id",
+            ),
         )
 
     @staticmethod

@@ -106,10 +106,13 @@ class OrthomosaicTiler:
             vol_id,
             field_name="vol_id",
         )
-        return safe_child_path(
-            mission_workspace,
-            analysis_run_id or "pipeline",
-            field_name="analysis_run_id",
+        return cast(
+            Path,
+            safe_child_path(
+                mission_workspace,
+                analysis_run_id or "pipeline",
+                field_name="analysis_run_id",
+            ),
         )
 
     def _cleanup_tiles(self, tiles_dir: Path) -> None:

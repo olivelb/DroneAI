@@ -184,6 +184,17 @@ def test_event_path_identifiers_reject_unsafe_segments(unsafe_value):
         )
 
 
+@pytest.mark.parametrize("organization_id", ["../escape", "Upper", "a/b"])
+def test_mission_events_reject_unsafe_organization_identifiers(organization_id):
+    with pytest.raises(EventValidationError, match="organization_id"):
+        make_event(
+            "mission",
+            {
+                "vol_id": "mission-safe",
+                "organization_id": organization_id,
+            },
+        )
+
 def test_status_events_accept_cancelled_and_reject_unknown_states():
     event = make_event(
         "status",

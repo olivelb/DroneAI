@@ -43,6 +43,7 @@ from sqlalchemy.orm import (
 
 from shared.config import DATABASE_URL
 from shared.stage_contracts import RESOURCE_CLASSES
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 logger = logging.getLogger(__name__)
 
@@ -294,8 +295,8 @@ class Dataset(RequiredTimestampMixin, Base):
     __tablename__ = "datasets"
     __table_args__ = (
         Index(
-            "uq_datasets_live_owner_name",
-            "owner_subject",
+            "uq_datasets_live_organization_name",
+            "organization_id",
             "name",
             unique=True,
             postgresql_where=text("status != 'deleted'"),
@@ -324,6 +325,13 @@ class Dataset(RequiredTimestampMixin, Base):
         index=True,
     )
     name = Column(String(256), nullable=False)
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        default=LEGACY_ORGANIZATION_ID,
+        server_default=LEGACY_ORGANIZATION_ID,
+        index=True,
+    )
     owner_subject = Column(String(256), nullable=False, index=True)
     prefix = Column(String(1024), nullable=False)
     status = Column(String(32), nullable=False, default="ready")
@@ -343,7 +351,8 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
     __table_args__ = (
         Index("ix_dataset_upload_sessions_expiry", "status", "expires_at"),
         Index(
-            "uq_dataset_upload_sessions_active_name",
+            "uq_dataset_upload_sessions_active_org_name",
+            "organization_id",
             "dataset_name",
             unique=True,
             postgresql_where=text(
@@ -368,6 +377,13 @@ class DatasetUploadSession(RequiredTimestampMixin, Base):
         index=True,
     )
     dataset_name = Column(String(256), nullable=False, index=True)
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        default=LEGACY_ORGANIZATION_ID,
+        server_default=LEGACY_ORGANIZATION_ID,
+        index=True,
+    )
     status = Column(String(32), nullable=False, default="initializing")
     total_bytes = Column(PORTABLE_BIGINT, nullable=False)
     file_count = Column(Integer, nullable=False)
@@ -455,6 +471,13 @@ class Mission(Base):
         nullable=False,
         default="local-development",
         server_default="legacy-unassigned",
+        index=True,
+    )
+    organization_id = Column(
+        String(64),
+        nullable=False,
+        default=LEGACY_ORGANIZATION_ID,
+        server_default=LEGACY_ORGANIZATION_ID,
         index=True,
     )
     status = Column(String(32), nullable=False, default="pending")

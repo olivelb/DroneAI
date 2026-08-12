@@ -16,6 +16,7 @@ from shared.stage_contracts import (
     validate_stage_selection,
 )
 from shared.validation import MISSION_ID_PATTERN, SAFE_SEGMENT_PATTERN
+from shared.tenancy import ORGANIZATION_ID_PATTERN
 
 
 JsonObject = dict[str, Any]
@@ -62,6 +63,12 @@ class MissionEvent(EventEnvelope):
     colmap_params: JsonObject | None = None
     work_drive: str | None = Field(default=None, max_length=256)
     owner_subject: str | None = Field(default=None, max_length=256)
+    organization_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=ORGANIZATION_ID_PATTERN,
+    )
     phases: list[StageId] | None = Field(default=None, min_length=1, max_length=5)
     stage_run_id: str | None = Field(default=None, max_length=36)
     upstream_artifact_ids: dict[StageId, str] | None = None

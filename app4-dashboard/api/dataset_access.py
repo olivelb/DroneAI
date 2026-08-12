@@ -9,6 +9,7 @@ from typing import Any, cast
 from fastapi import HTTPException, status
 
 from shared.database import Dataset
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 from .mission_access import get_owned_mission
 from .security import Principal
@@ -62,7 +63,13 @@ def dataset_query(
         action=action,
         dataset_name=dataset_name,
     )
+    organization_id = getattr(
+        principal,
+        "organization_id",
+        LEGACY_ORGANIZATION_ID,
+    )
     return session.query(Dataset).filter(
+        Dataset.organization_id == organization_id,
         Dataset.owner_subject == owner,
         Dataset.status.in_(tuple(statuses)),
     )
@@ -130,23 +137,51 @@ def authorize_storage_path(
     """Authorize one S3 path against its owning dataset or mission."""
 
     normalized = normalize_storage_path(path)
-    parts = normalized.split("/") if normalized else []
-    if len(parts) < 2:
+    if not normalized:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Path not found")
-    resource_prefix = "/".join(parts[:2])
-    if parts[0] == "datasets":
+    datasets = dataset_query(
+        session,
+        principal,
+        requested_owner=requested_owner,
+        action=action,
+    ).all()
+    matched_dataset = next(
+        (
+            dataset
+            for dataset in datasets
+            if normalized == str(dataset.prefix)
+            or normalized.startswith(f"{dataset.prefix}/")
+        ),
+        None,
+    )
+    if matched_dataset is not None:
         get_owned_dataset(
             session,
             principal,
-            prefix=resource_prefix,
+            prefix=str(matched_dataset.prefix),
             requested_owner=requested_owner,
             action=action,
         )
         return normalized
+    parts = normalized.split("/")
     if parts[0] == "missions":
         get_owned_mission(
             session,
             parts[1],
+            principal,
+            requested_owner=requested_owner,
+            action=action,
+        )
+        return normalized
+    if (
+        len(parts) >= 4
+        and parts[0] == "organizations"
+        and parts[1] == getattr(principal, "organization_id", LEGACY_ORGANIZATION_ID)
+        and parts[2] == "missions"
+    ):
+        get_owned_mission(
+            session,
+            parts[3],
             principal,
             requested_owner=requested_owner,
             action=action,

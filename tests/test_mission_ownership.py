@@ -92,6 +92,31 @@ def test_status_summary_only_contains_the_requested_owner(
     ]
 
 
+def test_mission_lookup_is_partitioned_by_organization(mission_sessions):
+    with mission_sessions() as session:
+        session.add(
+            Mission(
+                vol_id="north-flight",
+                owner_subject="alice",
+                organization_id="north-survey",
+            )
+        )
+
+    with mission_sessions() as session:
+        with pytest.raises(HTTPException) as error:
+            mission_access.get_owned_mission(
+                session,
+                "north-flight",
+                SimpleNamespace(
+                    subject="alice",
+                    role="admin",
+                    organization_id="south-survey",
+                ),
+            )
+
+    assert error.value.status_code == 404
+
+
 def test_realtime_history_and_broadcast_are_partitioned_by_owner():
     class WebSocket:
         def __init__(self):
