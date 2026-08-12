@@ -219,6 +219,17 @@ int main() {
             throw std::runtime_error(
                 "scaled-IDCT training image contract mismatch");
         }
+        const auto regions = dronegs::make_training_tiles(32U, 32U, 4U);
+        const auto cropped_decode = dronegs::load_training_image(
+            root / "images" / "frame.jpg", 1U, 32U, false,
+            regions.back());
+        if (cropped_decode.width != 16U || cropped_decode.height != 16U ||
+            cropped_decode.source_x != 16U ||
+            cropped_decode.source_y != 16U ||
+            cropped_decode.rgb.size() != 16U * 16U * 3U) {
+            throw std::runtime_error(
+                "cropped training image contract mismatch");
+        }
         const auto scene = make_scene();
         const auto initialized =
             dronegs::initialize_fixed_topology(scene);
@@ -1341,7 +1352,7 @@ int main() {
             .max_cap = 100U,
             .resize_factor = 1U,
             .max_width = 32U,
-            .tile_mode = 1U,
+            .tile_mode = 4U,
             .seed = 7U,
         };
         const auto additive_metrics = dronegs::train_fixed_topology(
@@ -1361,6 +1372,10 @@ int main() {
         }
         if (additive_metrics.iterations != options.iterations ||
             ordered_metrics.iterations != options.iterations ||
+            additive_metrics.training_image_count != 1U ||
+            ordered_metrics.training_image_count != 1U ||
+            additive_metrics.held_out_image_count != 0U ||
+            ordered_metrics.held_out_image_count != 0U ||
             additive_metrics.training_seconds <= 0.0 ||
             ordered_metrics.training_seconds <= 0.0) {
             throw std::runtime_error("invalid fixed-topology training metrics");

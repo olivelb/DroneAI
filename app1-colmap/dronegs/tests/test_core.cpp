@@ -668,6 +668,53 @@ void test_image_cache() {
           "parallel cache failed after refilling the bounded queue");
 }
 
+void test_training_tiles() {
+    const auto landscape = dronegs::make_training_tiles(6001U, 4001U, 4U);
+    check(landscape.size() == 4U, "four-tile mode count mismatch");
+    check(
+        landscape[0].source_x == 0U &&
+            landscape[0].source_y == 0U &&
+            landscape[0].width == 3000U &&
+            landscape[0].height == 2000U,
+        "four-tile mode first region mismatch");
+    check(
+        landscape[3].source_x == 3000U &&
+            landscape[3].source_y == 2000U &&
+            landscape[3].width == 3001U &&
+            landscape[3].height == 2001U,
+        "four-tile mode did not preserve odd image borders");
+
+    const auto wide = dronegs::make_training_tiles(6000U, 4000U, 2U);
+    check(
+        wide.size() == 2U && wide[0].width == 3000U &&
+            wide[1].source_x == 3000U && wide[1].height == 4000U,
+        "two-tile landscape split mismatch");
+    const auto portrait = dronegs::make_training_tiles(4000U, 6000U, 2U);
+    check(
+        portrait.size() == 2U && portrait[0].height == 3000U &&
+            portrait[1].source_y == 3000U && portrait[1].width == 4000U,
+        "two-tile portrait split mismatch");
+
+    const auto [native_width, native_height] =
+        dronegs::training_image_dimensions(landscape[0], 1U, 4096U);
+    check(
+        native_width == 3000U && native_height == 2000U,
+        "tile-local max-width unexpectedly downsampled a native tile");
+    const auto [scaled_width, scaled_height] =
+        dronegs::training_image_dimensions(landscape[3], 2U, 4096U);
+    check(
+        scaled_width == 1500U && scaled_height == 1000U,
+        "tile resize dimensions mismatch");
+
+    bool invalid_mode_rejected = false;
+    try {
+        static_cast<void>(dronegs::make_training_tiles(32U, 32U, 3U));
+    } catch (const std::invalid_argument&) {
+        invalid_mode_rejected = true;
+    }
+    check(invalid_mode_rejected, "invalid tile mode was accepted");
+}
+
 
 }  // namespace
 
@@ -683,6 +730,7 @@ int main() {
         test_local_scale_initialization();
         test_cli(data, output);
         test_image_cache();
+        test_training_tiles();
         std::filesystem::remove_all(base);
         std::cout << "DroneGS core tests passed\n";
         return 0;

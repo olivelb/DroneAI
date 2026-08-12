@@ -157,6 +157,12 @@ if(DRONEGS_BUILD_TESTS)
         dronegs_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
     add_test(NAME dronegs_training_tests COMMAND dronegs_training_tests)
 
+    add_executable(dronegs_tile_training_tests tests/test_tile_training.cu)
+    target_link_libraries(dronegs_tile_training_tests PRIVATE dronegs_cuda)
+    set_target_properties(
+        dronegs_tile_training_tests PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+    add_test(NAME dronegs_tile_training_tests COMMAND dronegs_tile_training_tests)
+
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(
         NAME dronegs_lpips_tool_tests

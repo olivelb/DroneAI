@@ -452,13 +452,21 @@ DeviceCamera make_device_camera(const Camera& camera, const Image& image,
     if (camera.model_id == 0) {
         result.fx = static_cast<float>(camera.parameters[0]) * decoded.source_to_image_x;
         result.fy = static_cast<float>(camera.parameters[0]) * decoded.source_to_image_y;
-        result.cx = static_cast<float>(camera.parameters[1]) * decoded.source_to_image_x;
-        result.cy = static_cast<float>(camera.parameters[2]) * decoded.source_to_image_y;
+        result.cx = static_cast<float>(
+            camera.parameters[1] - static_cast<double>(decoded.source_x)) *
+            decoded.source_to_image_x;
+        result.cy = static_cast<float>(
+            camera.parameters[2] - static_cast<double>(decoded.source_y)) *
+            decoded.source_to_image_y;
     } else {
         result.fx = static_cast<float>(camera.parameters[0]) * decoded.source_to_image_x;
         result.fy = static_cast<float>(camera.parameters[1]) * decoded.source_to_image_y;
-        result.cx = static_cast<float>(camera.parameters[2]) * decoded.source_to_image_x;
-        result.cy = static_cast<float>(camera.parameters[3]) * decoded.source_to_image_y;
+        result.cx = static_cast<float>(
+            camera.parameters[2] - static_cast<double>(decoded.source_x)) *
+            decoded.source_to_image_x;
+        result.cy = static_cast<float>(
+            camera.parameters[3] - static_cast<double>(decoded.source_y)) *
+            decoded.source_to_image_y;
     }
     result.width = decoded.width;
     result.height = decoded.height;
@@ -486,44 +494,98 @@ RasterCamera make_raster_camera(const DeviceCamera& camera) {
 struct FrameDescriptor {
     const Image* image = nullptr;
     const Camera* camera = nullptr;
+    ImageRegion region;
+    std::size_t scene_index = 0U;
+    std::uint32_t tile_index = 0U;
 };
 
 std::pair<std::uint32_t, std::uint32_t> training_dimensions(
-    const Camera& camera, const Options& options) {
-    double effective_factor = static_cast<double>(options.resize_factor);
-    if (camera.width > options.max_width) {
-        effective_factor = std::max(
-            effective_factor,
-            static_cast<double>(camera.width) / static_cast<double>(options.max_width));
-    }
-    const double width = static_cast<double>(camera.width) / effective_factor;
-    const double height = static_cast<double>(camera.height) / effective_factor;
-    if (width > static_cast<double>(std::numeric_limits<std::uint32_t>::max()) ||
-        height > static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
-        throw std::runtime_error("scaled training image dimensions exceed uint32");
-    }
-    return {
-        std::max(1U, static_cast<std::uint32_t>(width)),
-        std::max(1U, static_cast<std::uint32_t>(height)),
-    };
+    const FrameDescriptor& descriptor, const Options& options) {
+    return training_image_dimensions(
+        descriptor.region, options.resize_factor, options.max_width);
 }
 
 std::vector<FrameDescriptor> make_frame_descriptors(
     const Options& options, const Scene& scene, std::size_t& maximum_pixels) {
     std::vector<FrameDescriptor> descriptors;
-    descriptors.reserve(scene.images.size());
+    descriptors.reserve(
+        scene.images.size() * static_cast<std::size_t>(options.tile_mode));
     maximum_pixels = 0U;
-    for (const auto& image : scene.images) {
+    for (std::size_t scene_index = 0U;
+         scene_index < scene.images.size(); ++scene_index) {
+        const auto& image = scene.images[scene_index];
         const auto& camera = find_camera(scene, image.camera_id);
-        const auto [width, height] = training_dimensions(camera, options);
-        const std::size_t pixels = static_cast<std::size_t>(width) * height;
-        maximum_pixels = std::max(maximum_pixels, pixels);
-        descriptors.push_back({
-            .image = &image,
-            .camera = &camera,
-        });
+        if (camera.width > std::numeric_limits<std::uint32_t>::max() ||
+            camera.height > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "training camera dimensions exceed uint32");
+        }
+        const auto regions = make_training_tiles(
+            static_cast<std::uint32_t>(camera.width),
+            static_cast<std::uint32_t>(camera.height),
+            options.tile_mode);
+        for (std::size_t tile_index = 0U;
+             tile_index < regions.size(); ++tile_index) {
+            FrameDescriptor descriptor{
+                .image = &image,
+                .camera = &camera,
+                .region = regions[tile_index],
+                .scene_index = scene_index,
+                .tile_index = static_cast<std::uint32_t>(tile_index),
+            };
+            const auto [width, height] =
+                training_dimensions(descriptor, options);
+            const std::size_t pixels =
+                static_cast<std::size_t>(width) * height;
+            maximum_pixels = std::max(maximum_pixels, pixels);
+            descriptors.push_back(descriptor);
+        }
     }
     return descriptors;
+}
+
+DatasetSplit expand_frame_split(
+    const DatasetSplit& image_split,
+    const std::vector<FrameDescriptor>& descriptors) {
+    std::size_t image_count = 0U;
+    for (const auto& descriptor : descriptors) {
+        image_count = std::max(image_count, descriptor.scene_index + 1U);
+    }
+    std::vector<std::uint8_t> membership(image_count, 0U);
+    const auto assign = [&membership](
+                            const std::vector<std::size_t>& indices,
+                            std::uint8_t value) {
+        for (const auto index : indices) {
+            if (index >= membership.size() || membership[index] != 0U) {
+                throw std::logic_error(
+                    "dataset split contains an invalid or duplicate image");
+            }
+            membership[index] = value;
+        }
+    };
+    assign(image_split.training, 1U);
+    assign(image_split.held_out, 2U);
+    assign(image_split.ignored, 3U);
+
+    DatasetSplit frame_split;
+    for (std::size_t frame_index = 0U;
+         frame_index < descriptors.size(); ++frame_index) {
+        switch (membership.at(descriptors[frame_index].scene_index)) {
+            case 1U:
+                frame_split.training.push_back(frame_index);
+                break;
+            case 2U:
+                frame_split.held_out.push_back(frame_index);
+                break;
+            case 3U:
+                frame_split.ignored.push_back(frame_index);
+                break;
+            default:
+                throw std::logic_error(
+                    "dataset split does not classify every source image");
+        }
+    }
+    return frame_split;
 }
 
 std::size_t host_image_cache_capacity(
@@ -534,7 +596,7 @@ std::size_t host_image_cache_capacity(
     std::size_t decoded_bytes = 0U;
     for (const auto& descriptor : descriptors) {
         const auto [width, height] =
-            training_dimensions(*descriptor.camera, options);
+            training_dimensions(descriptor, options);
         const std::size_t pixels =
             static_cast<std::size_t>(width) * height;
         if (pixels > maximum_capacity / 3U ||
@@ -591,7 +653,7 @@ TrainingFrame frame_from_cache(ImageCache& cache,
     const auto& descriptor = descriptors.at(index);
     const auto& decoded = cache.get(index);
     const auto [expected_width, expected_height] =
-        training_dimensions(*descriptor.camera, options);
+        training_dimensions(descriptor, options);
     if (decoded.width != expected_width || decoded.height != expected_height) {
         throw std::runtime_error(
             "decoded training image dimensions do not match COLMAP camera");
@@ -701,7 +763,7 @@ HeldOutAggregate evaluate_held_out(
             "cannot create held-out metrics CSV: " + csv_path.string());
     }
     if (stage == "initial") {
-        csv << "stage,held_out_index,scene_index,image_name,"
+        csv << "stage,held_out_index,frame_index,scene_index,tile_index,image_name,"
                "psnr,ssim,active_pixel_fraction\n";
     }
     const auto prediction_directory = evaluation_directory / "predictions";
@@ -718,9 +780,9 @@ HeldOutAggregate evaluate_held_out(
         std::max<std::size_t>(1U, held_out_indices.size() / 10U);
     for (std::size_t held_out_index = 0U;
          held_out_index < held_out_indices.size(); ++held_out_index) {
-        const auto scene_index = held_out_indices[held_out_index];
+        const auto frame_index = held_out_indices[held_out_index];
         const auto frame = frame_from_cache(
-            cache, descriptors, scene_index, options);
+            cache, descriptors, frame_index, options);
         if (held_out_index + 1U < held_out_indices.size()) {
             cache.prefetch(held_out_indices[held_out_index + 1U]);
         }
@@ -735,8 +797,10 @@ HeldOutAggregate evaluate_held_out(
         ssim_sum += quality.ssim;
         csv << stage << ','
             << held_out_index << ','
-            << scene_index << ','
-            << csv_escape(descriptors[scene_index].image->name) << ','
+            << frame_index << ','
+            << descriptors[frame_index].scene_index << ','
+            << descriptors[frame_index].tile_index << ','
+            << csv_escape(descriptors[frame_index].image->name) << ','
             << std::setprecision(9) << quality.psnr << ','
             << quality.ssim << ','
             << quality.active_pixel_fraction << '\n';
@@ -1052,9 +1116,10 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const auto descriptors = make_frame_descriptors(options, scene, maximum_pixels);
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
-    const auto split = make_dataset_split(
+    const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
+    const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -1062,7 +1127,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
             return load_training_image(
                 options.data_path / "images" / image->name,
                 options.resize_factor, options.max_width,
-                options.jpeg_idct_scale != 0U);
+                options.jpeg_idct_scale != 0U,
+                descriptors.at(index).region);
         },
         options.prefetch_depth, options.decode_workers);
 
@@ -1070,19 +1136,18 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     TrainingWorkspace workspace(gaussians.size(), maximum_pixels);
     workspace.gaussians.copy_from_host(gaussians.data(), gaussians.size());
 
-    TrainingMetrics metrics{
-        .iterations = options.iterations,
-        .training_image_count =
-            static_cast<std::uint64_t>(split.training.size()),
-        .held_out_image_count =
-            static_cast<std::uint64_t>(split.held_out.size()),
-        .ignored_image_count =
-            static_cast<std::uint64_t>(split.ignored.size()),
-    };
+    TrainingMetrics metrics;
+    metrics.iterations = options.iterations;
+    metrics.training_image_count =
+        static_cast<std::uint64_t>(image_split.training.size());
+    metrics.held_out_image_count =
+        static_cast<std::uint64_t>(image_split.held_out.size());
+    metrics.ignored_image_count =
+        static_cast<std::uint64_t>(image_split.ignored.size());
     const auto schedule = make_training_schedule(
-        split.training, options.iterations, options.seed);
+        frame_split.training, options.iterations, options.seed);
     const auto initial_frame = frame_from_cache(
-        cache, descriptors, split.training.front(), options);
+        cache, descriptors, frame_split.training.front(), options);
     prefetch_schedule_window(
         cache, schedule, 0U, options.prefetch_depth);
     metrics.initial_loss =
@@ -1143,7 +1208,7 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     const auto final_evaluation_start = std::chrono::steady_clock::now();
     const double wait_seconds_before_final = cache.stats().wait_seconds;
     const auto final_frame = frame_from_cache(
-        cache, descriptors, split.training.front(), options);
+        cache, descriptors, frame_split.training.front(), options);
     metrics.final_loss =
         render_loss(workspace, final_frame, gaussians.size(), false);
     const double final_evaluation_wall_seconds = std::chrono::duration<double>(
@@ -1176,14 +1241,22 @@ TrainingMetrics train_ordered_mrnf(
         throw std::invalid_argument(
             "ordered training requires images and initialized Gaussians");
     }
+    std::cout
+        << "{\"event\":\"training_view_expansion\",\"source_images\":"
+        << scene.images.size() << ",\"tile_mode\":"
+        << options.tile_mode << ",\"training_views\":"
+        << scene.images.size() * static_cast<std::size_t>(options.tile_mode)
+        << "}\n"
+        << std::flush;
     std::size_t maximum_pixels = 0U;
     const auto descriptors =
         make_frame_descriptors(options, scene, maximum_pixels);
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
-    const auto split = make_dataset_split(
+    const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
+    const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
         descriptors.size(), host_cache_capacity,
         [&descriptors, &options](std::size_t index) {
@@ -1191,7 +1264,8 @@ TrainingMetrics train_ordered_mrnf(
             return load_training_image(
                 options.data_path / "images" / image->name,
                 options.resize_factor, options.max_width,
-                options.jpeg_idct_scale != 0U);
+                options.jpeg_idct_scale != 0U,
+                descriptors.at(index).region);
         },
         options.prefetch_depth, options.decode_workers);
 
@@ -1294,16 +1368,15 @@ TrainingMetrics train_ordered_mrnf(
         emit_family("rotation", telemetry->rotation);
         std::cout << std::flush;
     };
-    TrainingMetrics metrics{
-        .iterations = options.iterations,
-        .completed_iterations = 0U,
-        .training_image_count =
-            static_cast<std::uint64_t>(split.training.size()),
-        .held_out_image_count =
-            static_cast<std::uint64_t>(split.held_out.size()),
-        .ignored_image_count =
-            static_cast<std::uint64_t>(split.ignored.size()),
-    };
+    TrainingMetrics metrics;
+    metrics.iterations = options.iterations;
+    metrics.completed_iterations = 0U;
+    metrics.training_image_count =
+        static_cast<std::uint64_t>(image_split.training.size());
+    metrics.held_out_image_count =
+        static_cast<std::uint64_t>(image_split.held_out.size());
+    metrics.ignored_image_count =
+        static_cast<std::uint64_t>(image_split.ignored.size());
     TrainingCheckpointProgress checkpoint_progress;
     if (!options.resume_from.empty()) {
         checkpoint_progress = workspace.load_checkpoint(
@@ -1341,11 +1414,11 @@ TrainingMetrics train_ordered_mrnf(
             << std::flush;
     }
     const auto schedule = make_training_schedule(
-        split.training, options.iterations, options.seed);
+        frame_split.training, options.iterations, options.seed);
     if (options.resume_from.empty()) {
         const auto initial_frame =
             frame_from_cache(
-                cache, descriptors, split.training.front(), options);
+                cache, descriptors, frame_split.training.front(), options);
         const auto initial_camera =
             make_raster_camera(initial_frame.camera);
         metrics.initial_loss = workspace.evaluate(
@@ -1358,9 +1431,9 @@ TrainingMetrics train_ordered_mrnf(
             setup_end - setup_start).count();
     metrics.setup_seconds = std::max(
         0.0, setup_wall_seconds - cache.stats().wait_seconds);
-    if (!split.held_out.empty() && options.resume_from.empty()) {
+    if (!frame_split.held_out.empty() && options.resume_from.empty()) {
         const auto held_out = evaluate_held_out(
-            options, cache, descriptors, split.held_out,
+            options, cache, descriptors, frame_split.held_out,
             workspace, "initial",
             imported_model && options.save_eval_images != 0U);
         metrics.initial_held_out_psnr = held_out.psnr;
@@ -1600,7 +1673,7 @@ TrainingMetrics train_ordered_mrnf(
         cache.stats().wait_seconds;
     const auto final_frame =
         frame_from_cache(
-            cache, descriptors, split.training.front(), options);
+            cache, descriptors, frame_split.training.front(), options);
     const auto final_camera =
         make_raster_camera(final_frame.camera);
     metrics.final_loss = workspace.evaluate(
@@ -1616,9 +1689,9 @@ TrainingMetrics train_ordered_mrnf(
     metrics.setup_seconds += std::max(
         0.0,
         final_anchor_wall_seconds - final_anchor_wait_seconds);
-    if (!split.held_out.empty()) {
+    if (!frame_split.held_out.empty()) {
         const auto held_out = evaluate_held_out(
-            options, cache, descriptors, split.held_out,
+            options, cache, descriptors, frame_split.held_out,
             workspace, "final",
             !imported_model && options.save_eval_images != 0U);
         metrics.final_held_out_psnr = held_out.psnr;

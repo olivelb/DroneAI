@@ -246,6 +246,13 @@ allocation, projection, sorting, tile construction, rendering, and host readback
   --test-every 8 --save-eval-images 1
 ```
 
+`--tile-mode 4` expands every photograph into four independently decoded 2x2
+crops and adjusts the pinhole principal point for each crop. The width ceiling
+therefore applies per crop: a 6000x4000 source can train on four native
+3000x2000 views with `--max-width 4096`. Mode `2` splits the longest image axis;
+mode `1` keeps the full-frame behavior. Train/test assignment remains grouped
+by source photograph.
+
 `--test-every 0` (the default) preserves the previous all-images training
 behavior. With `--test-every 8`, scene indices `0, 8, 16, ...` are held out,
 matching LichtFeld. `--save-eval-images 1` writes final predictions and their
