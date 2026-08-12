@@ -23,9 +23,12 @@ audited adoption workflow.
 
 ## Tenant boundary
 
-Ordinary accounts see only rows whose `owner_subject` equals the authenticated
-principal subject. Storage browse, preview and download endpoints authorize the
-requested key before querying S3. An accepted key must be contained by either:
+Organization isolation is defined by the
+[`organization-boundary-v1`](organization-boundary-v1.md) contract. Ordinary
+accounts see only rows whose `organization_id` matches the authenticated
+organization and whose `owner_subject` equals the authenticated principal
+subject. Storage browse, preview and download endpoints authorize the requested
+key before querying S3. An accepted key must be contained by either:
 
 - a `ready` dataset owned by the selected tenant; or
 - a mission owned by the selected tenant.
@@ -33,8 +36,8 @@ requested key before querying S3. An accepted key must be contained by either:
 Other roots, unmanaged dataset prefixes and cross-owner keys return `404`.
 Preview responses use private cache semantics.
 
-Administrators default to their own subject. Cross-tenant support requires an
-explicit `owner_subject` parameter and emits a structured
+Administrators default to their own subject. Cross-owner support within their
+organization requires an explicit `owner_subject` parameter and emits a structured
 `droneai.audit.dataset_access` warning. This follows the mission ownership
 contract and prevents an administrator UI from silently becoming a global
 tenant browser.
@@ -52,12 +55,11 @@ The row transitions through `deleting` before S3 mutation. A storage failure is
 recorded as `deletion_failed` and may be retried; success leaves a `deleted`
 tombstone that is excluded from ordinary access.
 
-## Deliberate v1 limits
+## v1 compatibility limits
 
-- S3 prefixes remain `datasets/{name}` and therefore active names are still
-  globally exclusive even though catalogue ownership is tenant-scoped. A later
-  contract may move new writes to opaque dataset IDs without weakening this
-  authorization boundary.
+- Historical S3 prefixes remain `datasets/{name}`. New explicit organizations
+  write `organizations/{organization_id}/datasets/{name}`; migration `0024`
+  does not copy or silently adopt historical objects.
 - The browser upload currently accepts plain filenames rather than relative
   paths and records multipart ETags rather than full-file SHA-256 values.
 - Recovery from a database commit failure immediately after an S3 multipart

@@ -163,6 +163,7 @@ frontend-check:
 	$(NPM) run duplication && \
 	$(NPM) run test && \
 	$(NPM) run lint && \
+	$(NPM) run typecheck && \
 	$(NPM) run build
 
 frontend-e2e:
