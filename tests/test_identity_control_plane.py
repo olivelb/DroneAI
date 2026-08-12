@@ -14,6 +14,7 @@ from sqlalchemy.pool import StaticPool
 
 from shared.database import (
     ApiCredential,
+    IdentityCapability,
     IdentityAuditEvent,
     Organization,
     OrganizationMember,
@@ -25,6 +26,9 @@ identity_routes = importlib.import_module("app4-dashboard.api.routers.identity")
 member_routes = importlib.import_module("app4-dashboard.api.routers.identity_members")
 credential_routes = importlib.import_module(
     "app4-dashboard.api.routers.identity_credentials"
+)
+capability_routes = importlib.import_module(
+    "app4-dashboard.api.routers.identity_capabilities"
 )
 
 ADMIN_KEY = "bootstrap-admin-key-with-at-least-32-characters"
@@ -44,6 +48,7 @@ def identity_platform(monkeypatch):
         OrganizationMember.__table__,
         ApiCredential.__table__,
         IdentityAuditEvent.__table__,
+        IdentityCapability.__table__,
     ):
         table.create(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -63,6 +68,7 @@ def identity_platform(monkeypatch):
     monkeypatch.setattr(security, "get_session", session_scope)
     monkeypatch.setattr(member_routes, "get_session", session_scope)
     monkeypatch.setattr(credential_routes, "get_session", session_scope)
+    monkeypatch.setattr(capability_routes, "get_session", session_scope)
     monkeypatch.setenv("DRONEAI_ENV", "development")
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
@@ -204,6 +210,151 @@ def test_member_permissions_suspension_and_last_admin_invariant(identity_platfor
     assert suspended.status_code == 200
     assert security.authenticate_token(own_rotation.json()["token"]) is None
     assert security.authenticate_token(viewer_session) is None
+
+
+def test_one_time_invitation_creates_member_and_hashed_credential(
+    identity_platform,
+):
+    client, session_scope = identity_platform
+    _bootstrap(client)
+
+    invitation = client.post(
+        "/auth/invitations",
+        headers=_admin_headers(),
+        json={
+            "subject": "invited-operator",
+            "role": "operator",
+            "expires_in_hours": 24,
+        },
+    )
+    assert invitation.status_code == 201
+    capability_token = invitation.json()["token"]
+    capability_id = invitation.json()["id"]
+    assert capability_token.startswith(f"dic.{capability_id}.")
+    listing = client.get("/auth/invitations", headers=_admin_headers())
+    assert listing.status_code == 200
+    assert capability_token not in listing.text
+
+    redeemed = client.post(
+        "/auth/capabilities/redeem",
+        json={
+            "token": capability_token,
+            "credential_name": "invited workstation",
+        },
+    )
+    assert redeemed.status_code == 201
+    assert redeemed.json()["purpose"] == "invitation"
+    assert redeemed.json()["member"]["role"] == "operator"
+    credential_token = redeemed.json()["credential"]["token"]
+    principal = security.authenticate_token(credential_token)
+    assert principal is not None
+    assert principal.subject == "invited-operator"
+    assert principal.organization_id == "acme-survey"
+    assert client.post(
+        "/auth/capabilities/redeem",
+        json={
+            "token": capability_token,
+            "credential_name": "replay",
+        },
+    ).status_code == 401
+
+    with session_scope() as session:
+        capability = session.get(IdentityCapability, capability_id)
+        assert capability.status == "redeemed"
+        assert capability.secret_hash != capability_token
+        actions = {
+            item.action for item in session.query(IdentityAuditEvent).all()
+        }
+        assert {"invitation_created", "invitation_accepted"} <= actions
+        assert capability_token not in str(
+            [item.after_state for item in session.query(IdentityAuditEvent).all()]
+        )
+
+
+def test_revoked_invitation_cannot_be_redeemed(identity_platform):
+    client, session_scope = identity_platform
+    _bootstrap(client)
+    invitation = client.post(
+        "/auth/invitations",
+        headers=_admin_headers(),
+        json={
+            "subject": "revoked-invitee",
+            "role": "viewer",
+            "expires_in_hours": 24,
+        },
+    ).json()
+
+    revoked = client.delete(
+        f"/auth/invitations/{invitation['id']}",
+        headers=_admin_headers(),
+    )
+
+    assert revoked.status_code == 200
+    assert revoked.json()["status"] == "revoked"
+    assert client.post(
+        "/auth/capabilities/redeem",
+        json={"token": invitation["token"], "credential_name": "forbidden"},
+    ).status_code == 401
+    with session_scope() as session:
+        assert session.query(OrganizationMember).filter_by(
+            subject="revoked-invitee",
+        ).count() == 0
+        assert session.query(IdentityAuditEvent).filter_by(
+            action="invitation_revoked",
+        ).count() == 1
+
+
+def test_self_issued_recovery_restores_access_without_platform_impersonation(
+    identity_platform,
+):
+    client, session_scope = identity_platform
+    _bootstrap(client)
+    credential = client.post(
+        "/auth/credentials",
+        headers=_admin_headers(),
+        json={"name": "primary credential"},
+    ).json()
+    primary_token = credential["token"]
+    primary_headers = {"Authorization": f"Bearer {primary_token}"}
+
+    recovery = client.post(
+        "/auth/recovery-tokens",
+        headers=primary_headers,
+        json={"expires_in_hours": 24},
+    )
+    assert recovery.status_code == 201
+    recovery_token = recovery.json()["token"]
+    assert recovery_token.startswith("dic.")
+    with session_scope() as session:
+        member = session.query(OrganizationMember).filter_by(
+            subject="bootstrap-admin",
+        ).one()
+        member.role = "viewer"
+        member.auth_version += 1
+    assert client.delete(
+        f"/auth/credentials/{credential['id']}",
+        headers=primary_headers,
+    ).status_code == 200
+    assert security.authenticate_token(primary_token) is None
+
+    restored = client.post(
+        "/auth/capabilities/redeem",
+        json={
+            "token": recovery_token,
+            "credential_name": "recovered credential",
+        },
+    )
+    assert restored.status_code == 201
+    replacement = restored.json()["credential"]["token"]
+    principal = security.authenticate_token(replacement)
+    assert principal is not None
+    assert principal.subject == "bootstrap-admin"
+    assert principal.role == "viewer"
+    with session_scope() as session:
+        actions = {
+            item.action for item in session.query(IdentityAuditEvent).all()
+        }
+        assert {"recovery_created", "recovery_redeemed"} <= actions
 
 
 def test_credentials_are_hidden_across_organization_boundaries(identity_platform):

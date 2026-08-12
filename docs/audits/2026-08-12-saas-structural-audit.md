@@ -27,6 +27,8 @@ dataset qualification.
 | SaaS policy | storage, logical stage concurrency, shared request rate and terminal-mission retention are explicit per-organization controls, separate from science | PostgreSQL policy/RLS, append-only usage ledger, scheduler/upload/middleware/retention tests and operator-only provisioning CLI |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
 | Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
+| Identity recovery | organization-admin invitations and member-owned recovery capabilities are hashed, expiring, single-use and transactionally redeemed | HTTP replay/revocation tests plus capability-scoped PostgreSQL RLS |
+| Platform support | durable `support` identities can inspect organization metadata and state only, without tenant-admin or data-plane privilege | separate realm tests, SQL update restriction, RLS denial and append-only platform audit |
 | Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage control plane | datasets and missions persist organization-scoped prefixes while historical rows remain readable | tenancy helper, migration round trip and upload recovery tests |
 | Mission data plane | the durable mission prefix is authoritative across stages, COLMAP/GCP products, tiling, AI results, map fallbacks, frontend browsing, recovery and deletion | real-service composition, tenant/legacy key tests and production source guard |
@@ -36,7 +38,7 @@ dataset qualification.
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 975 non-GPU/non-integration
+The qualified local baseline after these changes is 983 non-GPU/non-integration
 Python tests, eight focused real-service integration tests, one real HTTP
 control-plane journey, 29 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and
@@ -76,10 +78,11 @@ deliberately separate from scientific qualification.
 
 ### P1 — SaaS control plane
 
-1. **Identity federation and platform support.** Durable memberships, hashed
-   credentials and rotation/revocation are implemented. Add invitations, OIDC
-   federation, recovery flows and a distinct platform-support role without
-   widening the organization `admin` role.
+1. **Identity federation.** Durable memberships, hashed credentials,
+   rotation/revocation, one-time invitations, self-issued recovery and the
+   separate metadata-only support realm are implemented without widening the
+   organization `admin` role. OIDC remains pending until a concrete provider,
+   issuer/audience/JWKS policy and claims/account-linking contract are selected.
 
 ### P2 — Maintainability and operability
 

@@ -60,13 +60,18 @@ credentials cannot and must not be reconstructed from their digests.
   organization.
 - The final active organization admin cannot be demoted or suspended.
 - Credential lookup outside the caller's organization returns `404`.
-- No current role is platform-global; platform support remains a separate
-  future role and must not be inferred from organization `admin`.
+- No tenant role is platform-global. The separate durable support realm must
+  not be inferred from organization `admin` and has no tenant data access.
+
+Organization admins issue one-time invitations; durable active members issue
+only their own recovery capabilities. Tokens are shown once, stored as
+peppered digests, expire within 30 days and are consumed atomically with the
+replacement credential. The complete cross-realm boundary is defined in
+[`platform-identity-boundary-v1.md`](platform-identity-boundary-v1.md).
 
 ## Deliberate limits
 
-This version does not provide invitations, OIDC federation, recovery codes, a
-platform-support role or a management UI. PostgreSQL row-level security now
-provides a second identity/tenant enforcement layer under
+This version does not provide OIDC federation or a management UI. PostgreSQL
+row-level security provides a second identity/tenant enforcement layer under
 [`postgres-tenant-rls-v1.md`](postgres-tenant-rls-v1.md); application queries
 and foreign keys remain mandatory.

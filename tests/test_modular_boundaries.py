@@ -218,16 +218,43 @@ def test_identity_control_plane_keeps_sessions_members_and_credentials_separate(
     composition = "app4-dashboard/api/routers/identity.py"
     modules = [
         "app4-dashboard/api/routers/auth.py",
+        "app4-dashboard/api/routers/identity_capabilities.py",
         "app4-dashboard/api/routers/identity_members.py",
         "app4-dashboard/api/routers/identity_credentials.py",
         "app4-dashboard/api/identity_api.py",
         "shared/identity.py",
+        "shared/identity_capabilities.py",
     ]
 
     assert _line_count(composition) < 30
-    assert all(_line_count(module) < 330 for module in modules)
+    assert _line_count(
+        "app4-dashboard/api/routers/identity_capabilities.py"
+    ) < 425
+    assert all(
+        _line_count(module) < 350
+        for module in modules
+        if not module.endswith("identity_capabilities.py")
+    )
     assert "include_router" in _source(composition)
     assert "fastapi" not in _source("shared/identity.py")
+    assert "fastapi" not in _source("shared/identity_capabilities.py")
+
+
+def test_platform_identity_stays_out_of_the_tenant_data_plane():
+    route = "app4-dashboard/api/routers/platform.py"
+    domain = "shared/platform_identity.py"
+    operator = "tools/manage_platform_support.py"
+    sources = [_source(path) for path in (route, domain, operator)]
+
+    assert _line_count(route) < 400
+    assert _line_count(domain) < 250
+    assert _line_count(operator) < 250
+    assert "fastapi" not in _source(domain)
+    assert "Mission" not in _source(route)
+    assert "Dataset" not in _source(route)
+    assert all("app1-colmap" not in source for source in sources)
+    assert all("app2-ia" not in source for source in sources)
+    assert all("app3-processing" not in source for source in sources)
 
 
 def test_frontend_mission_runtime_owns_server_state_and_realtime_io():

@@ -30,7 +30,11 @@ from shared.database import (
     OrganizationUsageEvent,
     ApiCredential,
     IdentityAuditEvent,
+    IdentityCapability,
     OutboxEvent,
+    PlatformAuditEvent,
+    PlatformCredential,
+    PlatformMember,
     RasterLayerStyle,
 )
 
@@ -44,6 +48,19 @@ EXPECTED_CHECKS = {
     },
     ApiCredential: {"ck_api_credentials_status"},
     IdentityAuditEvent: {"ck_identity_audit_action"},
+    IdentityCapability: {
+        "ck_identity_capabilities_purpose",
+        "ck_identity_capabilities_status",
+        "ck_identity_capabilities_role",
+        "ck_identity_capabilities_member_purpose",
+    },
+    PlatformMember: {
+        "ck_platform_members_role",
+        "ck_platform_members_status",
+        "ck_platform_members_auth_version",
+    },
+    PlatformCredential: {"ck_platform_credentials_status"},
+    PlatformAuditEvent: {"ck_platform_audit_action"},
     OrganizationSaasPolicy: {
         "ck_organization_saas_policy_storage_limit",
         "ck_organization_saas_policy_stage_limit",

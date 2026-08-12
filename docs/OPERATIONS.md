@@ -19,6 +19,40 @@ merge with no relevant CUDA, COLMAP, GPU-architecture or CTest change must not
 repeat those long tests. The CI selector and its skipped result are part of the
 evidence.
 
+## Platform support and tenant access recovery
+
+Provision a platform support identity only from an audited operator database
+session. First run the preview, then repeat with `--apply` after review:
+
+```bash
+python3 -m tools.manage_platform_support \
+  --action provision \
+  --subject support@example.com \
+  --credential-name primary-workstation \
+  --actor-subject platform-operator
+```
+
+Store the one-time `dps` token immediately in the approved secret manager.
+Support can inspect organization metadata and suspend/reactivate a customer,
+but cannot see missions, datasets, tenant identities, policies or usage. It
+rotates or revokes only its own credentials under `/platform/credentials`.
+Review every mutation through `/platform/audit-events`.
+
+If a support identity is suspected compromised, run the same command first
+with `--action suspend` and no credential name, inspect the revocation count,
+then repeat with `--apply`. This invalidates all raw tokens and signed sessions.
+After incident review, `--action reactivate --credential-name <new-name>`
+creates a new token; it never revives a previously revoked credential.
+
+Tenant admins distribute one-time invitations from `/auth/invitations`.
+Durable members should create a personal recovery token under
+`/auth/recovery-tokens`, store it offline and revoke it after replacement.
+Both use the public `/auth/capabilities/redeem` endpoint and are single-use.
+Platform privilege alone cannot mint a tenant capability or impersonate its
+holder; redemption still requires possession of the one-time bearer secret.
+The full invariants and emergency limits are in
+[`contracts/platform-identity-boundary-v1.md`](contracts/platform-identity-boundary-v1.md).
+
 ## Conditional multipart storage gate
 
 Before enabling `stageJobs.artifactManifestV2WriteEnabled` on an S3-compatible

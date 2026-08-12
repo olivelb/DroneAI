@@ -95,7 +95,7 @@ class OrganizationRequestQuotaMiddleware(BaseHTTPMiddleware):  # type: ignore[mi
         }:
             return await call_next(request)
         principal = security.authenticate_request(request)
-        if principal is None:
+        if principal is None or principal.realm != "tenant":
             return await call_next(request)
         try:
             decision = await run_in_threadpool(

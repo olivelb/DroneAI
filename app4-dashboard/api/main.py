@@ -21,6 +21,7 @@ from .routers.maps import router as maps_router
 from .routers.missions import router as missions_router
 from .routers.operations import router as operations_router
 from .routers.organization_saas import router as organization_saas_router
+from .routers.platform import router as platform_router
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
@@ -75,6 +76,7 @@ def create_app() -> FastAPI:
     application.include_router(maps_router)
     application.include_router(operations_router)
     application.include_router(organization_saas_router)
+    application.include_router(platform_router)
 
     @application.get("/")
     def read_root():

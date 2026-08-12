@@ -16,6 +16,7 @@ PROTECTED_TABLES = {
     "organization_members",
     "api_credentials",
     "identity_audit_events",
+    "identity_capabilities",
     "organization_saas_policies",
     "organization_request_buckets",
     "organization_usage_events",
@@ -40,6 +41,11 @@ PROTECTED_TABLES = {
     "raster_layer_styles",
     "mission_logs",
     "outbox_events",
+}
+PLATFORM_TABLE_POLICIES = {
+    "platform_members": "platform_identity",
+    "platform_credentials": "platform_identity",
+    "platform_audit_events": "platform_identity",
 }
 
 
@@ -109,16 +115,87 @@ def verify() -> None:
             raise RuntimeError(
                 "tenant policies are missing for: " + ", ".join(sorted(missing))
             )
-        append_only = connection.execute(
+        platform_policy_rows = connection.execute(
             text(
-                "SELECT EXISTS ("
-                "SELECT 1 FROM pg_trigger "
-                "WHERE tgname = 'trg_organization_usage_append_only' "
-                "AND NOT tgisinternal)"
+                "SELECT tablename, policyname FROM pg_policies "
+                "WHERE schemaname = 'public' "
+                "AND tablename = ANY(:tables)"
+            ),
+            {"tables": list(PLATFORM_TABLE_POLICIES)},
+        )
+        platform_policies = {
+            row.tablename: row.policyname for row in platform_policy_rows
+        }
+        missing_platform = {
+            table
+            for table, policy in PLATFORM_TABLE_POLICIES.items()
+            if platform_policies.get(table) != policy
+        }
+        if missing_platform:
+            raise RuntimeError(
+                "platform identity policies are missing for: "
+                + ", ".join(sorted(missing_platform))
             )
-        ).scalar_one()
-        if not append_only:
-            raise RuntimeError("organization usage append-only trigger is missing")
+        row_security_tables = set(
+            connection.execute(
+                text(
+                    "SELECT relname FROM pg_class "
+                    "WHERE relname = ANY(:tables) AND relrowsecurity"
+                ),
+                {
+                    "tables": list(
+                        PROTECTED_TABLES | set(PLATFORM_TABLE_POLICIES)
+                    )
+                },
+            ).scalars()
+        )
+        missing_row_security = (
+            PROTECTED_TABLES | set(PLATFORM_TABLE_POLICIES)
+        ) - row_security_tables
+        if missing_row_security:
+            raise RuntimeError(
+                "row security is disabled for: "
+                + ", ".join(sorted(missing_row_security))
+            )
+        required_triggers = {
+            "trg_identity_audit_append_only",
+            "trg_organization_usage_append_only",
+            "trg_platform_audit_append_only",
+            "trg_platform_organization_update_scope",
+        }
+        triggers = set(
+            connection.execute(
+                text(
+                    "SELECT tgname FROM pg_trigger "
+                    "WHERE tgname = ANY(:triggers) AND NOT tgisinternal"
+                ),
+                {"triggers": list(required_triggers)},
+            ).scalars()
+        )
+        if triggers != required_triggers:
+            raise RuntimeError(
+                "database protection triggers are missing: "
+                + ", ".join(sorted(required_triggers - triggers))
+            )
+        required_functions = {
+            "droneai_identity_capability",
+            "droneai_identity_capability_member",
+            "droneai_platform_identity",
+        }
+        functions = set(
+            connection.execute(
+                text(
+                    "SELECT proname FROM pg_proc "
+                    "WHERE proname = ANY(:functions)"
+                ),
+                {"functions": list(required_functions)},
+            ).scalars()
+        )
+        if functions != required_functions:
+            raise RuntimeError(
+                "identity security functions are missing: "
+                + ", ".join(sorted(required_functions - functions))
+            )
         audience = connection.execute(
             text(
                 "SELECT audience_organization_id, audience_owner_subject "

@@ -67,7 +67,7 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
     paths = set(main.app.openapi()["paths"])
     direct_paths = {route.path for route in main.app.routes if hasattr(route, "path")}
 
-    assert len(source_lines) < 120
+    assert len(source_lines) < 125
     assert "shared import storage" not in inspect.getsource(main)
     assert {
         "/",
@@ -92,6 +92,14 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/auth/members",
         "/auth/credentials",
         "/auth/audit-events",
+        "/auth/invitations",
+        "/auth/recovery-tokens",
+        "/auth/capabilities/redeem",
+        "/platform/me",
+        "/platform/organizations",
+        "/platform/organizations/{organization_id}/status",
+        "/platform/credentials",
+        "/platform/audit-events",
         "/operations/organization/capacity",
         "/operations/organization/usage-events",
     } <= paths

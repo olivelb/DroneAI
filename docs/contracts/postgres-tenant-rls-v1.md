@@ -74,6 +74,16 @@ its member and organization long enough to validate the peppered digest,
 status, expiry and authorization version. It does not expose missions,
 datasets, outbox records or another credential.
 
+Platform support authentication sets only
+`droneai.platform_credential_id`. Its RLS policy exposes the nominated active
+support member and own credentials plus organization metadata. It exposes no
+tenant member, credential, mission, dataset, policy, usage or outbox row. The
+organization update policy is further constrained by a trigger to state changes
+only. One-time invitation/recovery redemption similarly sets only
+`droneai.identity_capability_id`; the capability-scoped policies expose the
+exact organization and matching member/credential transaction, never its data
+plane. Both values are transaction-local and cleared on completion.
+
 The realtime Kafka consumer needs an organization before applying one status
 event. New status events carry that organization. The consumer calls
 `droneai_mission_audience(vol_id)`, a stable `SECURITY DEFINER` function with a
@@ -108,6 +118,7 @@ the distinct stage roles keep compromise blast radius explicit.
 Migration `0026` enables one fail-closed policy on:
 
 - organizations, members, API credentials and identity audit;
+- one-time identity capabilities;
 - dataset upload sessions/files and datasets;
 - missions, logs, stage runs, shard receipts and artifacts/parents;
 - analyses/tiles, detections, processed tiles and map features/audit;
@@ -127,6 +138,11 @@ forced through RLS so migrations and
 system workers can operate across tenants. This is why the distinct non-owner
 API role is a release invariant, not an optional hardening suggestion.
 
+Migration `0029` adds separate RLS-protected platform member, credential and
+append-only audit tables. Migration `0030` adds capability-scoped tenant
+policies for invitation and recovery redemption. These policies do not widen
+the ordinary organization context.
+
 ## Migration, rollback and qualification
 
 Existing outbox rows are backfilled from their mission, then their event
@@ -140,6 +156,10 @@ proves:
 - organization A cannot read or insert organization B data;
 - descendant and outbox policies follow the root organization;
 - authentication sees only the nominated credential identity;
+- support sees organization metadata but zero tenant-owned data and cannot
+  rename an organization;
+- invitation redemption sees only its exact organization/member transaction,
+  produces one usable credential and cannot be replayed;
 - transaction context does not survive pool reuse;
 - the realtime audience function does not unlock tenant rows;
 - a tenant-bound executor can claim and update its own run but cannot read or

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from sqlalchemy.orm.exc import NoResultFound
 import shared.database as database
 from shared.database import (
     ApiCredential,
+    IdentityCapability,
     Mission,
     MissionArtifact,
     MissionLog,
@@ -23,8 +25,21 @@ from shared.database import (
     OrganizationSaasPolicy,
     OrganizationUsageEvent,
     OutboxEvent,
+    PlatformAuditEvent,
+    PlatformCredential,
+    PlatformMember,
 )
-from shared.identity import issue_credential
+from shared.identity import append_audit_event, issue_credential
+from shared.identity_capabilities import (
+    authenticate_capability,
+    issue_capability,
+    redeem_capability,
+)
+from shared.platform_identity import (
+    append_platform_audit_event,
+    issue_platform_credential,
+    revoke_platform_credential,
+)
 from shared.stage_execution import load_stage_execution_context
 from shared.tenancy import mission_prefix
 
@@ -36,9 +51,13 @@ PROTECTED_TABLES = (
     "organization_members",
     "api_credentials",
     "identity_audit_events",
+    "identity_capabilities",
     "organization_saas_policies",
     "organization_request_buckets",
     "organization_usage_events",
+    "platform_members",
+    "platform_credentials",
+    "platform_audit_events",
     "dataset_upload_sessions",
     "dataset_upload_files",
     "datasets",
@@ -130,6 +149,35 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         )
         credential_a = issued_a.record.id
         token_a = issued_a.token
+        platform_member = PlatformMember(
+            subject=f"support-{suffix}@example.com",
+            role="support",
+            status="active",
+            created_by="integration",
+            updated_by="integration",
+        )
+        session.add(platform_member)
+        session.flush()
+        platform_issued = issue_platform_credential(
+            session,
+            member=platform_member,
+            name="RLS support credential",
+            actor_subject="integration",
+        )
+        platform_credential_id = str(platform_issued.record.id)
+        platform_token = platform_issued.token
+        invited_subject = f"invited-{suffix}"
+        capability_issued = issue_capability(
+            session,
+            organization_id=organization_a,
+            purpose="invitation",
+            subject=invited_subject,
+            role="operator",
+            actor_subject=member_a.subject,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+        capability_id = str(capability_issued.record.id)
+        capability_token = capability_issued.token
         session.add(
             ApiCredential(
                 id=credential_b,
@@ -334,6 +382,155 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
                 member_a.id
             ]
             assert session.query(Mission).count() == 0
+
+        with database.get_session(
+            platform_credential_id=platform_credential_id,
+        ) as session:
+            assert {item.id for item in session.query(Organization).all()} >= {
+                organization_a,
+                organization_b,
+            }
+            assert [
+                item.id for item in session.query(PlatformMember).all()
+            ] == [platform_member.id]
+            assert [
+                item.id for item in session.query(PlatformCredential).all()
+            ] == [platform_credential_id]
+            assert session.query(Mission).count() == 0
+            assert session.query(OrganizationMember).count() == 0
+            assert session.query(ApiCredential).count() == 0
+            assert session.query(OrganizationSaasPolicy).count() == 0
+            assert session.query(OrganizationUsageEvent).count() == 0
+            assert session.query(OutboxEvent).count() == 0
+            target = session.get(Organization, organization_b)
+            assert target is not None
+            target.status = "suspended"
+            session.add(
+                PlatformAuditEvent(
+                    actor_subject=platform_member.subject,
+                    action="organization_status_updated",
+                    target_type="organization",
+                    target_id=organization_b,
+                    before_state={"status": "active"},
+                    after_state={"status": "suspended"},
+                )
+            )
+
+        platform_principal = security.authenticate_api_key(platform_token)
+        assert platform_principal is not None
+        assert platform_principal.realm == "platform"
+        assert platform_principal.role == "support"
+        assert platform_principal.organization_id == "platform-control"
+        with database.get_session(
+            platform_credential_id=platform_credential_id,
+        ) as session:
+            current_credential = session.get(
+                PlatformCredential,
+                platform_credential_id,
+            )
+            current_member = session.get(PlatformMember, platform_member.id)
+            assert current_credential is not None
+            assert current_member is not None
+            replacement = issue_platform_credential(
+                session,
+                member=current_member,
+                name="RLS rotated support credential",
+                actor_subject=current_member.subject,
+                rotated_from_id=platform_credential_id,
+            )
+            revoked_at = datetime.now(UTC)
+            append_platform_audit_event(
+                session,
+                actor_subject=current_member.subject,
+                action="platform_credential_rotated",
+                target_type="platform_credential",
+                target_id=platform_credential_id,
+                after_state={
+                    "status": "revoked",
+                    "replacement_id": replacement.record.id,
+                },
+            )
+            session.flush()
+            revoke_platform_credential(
+                current_credential,
+                actor_subject=current_member.subject,
+                reason="rotated",
+                revoked_at=revoked_at,
+            )
+            session.flush()
+            replacement_platform_token = replacement.token
+            replacement_platform_credential_id = replacement.record.id
+        assert security.authenticate_api_key(platform_token) is None
+        replacement_platform_principal = security.authenticate_api_key(
+            replacement_platform_token
+        )
+        assert replacement_platform_principal is not None
+        assert replacement_platform_principal.realm == "platform"
+        with pytest.raises(DBAPIError):
+            with database.get_session(
+                platform_credential_id=replacement_platform_credential_id,
+            ) as session:
+                target = session.get(Organization, organization_b)
+                assert target is not None
+                target.display_name = "Support must not rename customers"
+                session.flush()
+
+        with database.get_session(
+            identity_capability_id=capability_id,
+        ) as session:
+            capability = authenticate_capability(
+                session,
+                capability_token,
+                lock=True,
+            )
+            assert capability is not None
+            assert [item.id for item in session.query(Organization).all()] == [
+                organization_a
+            ]
+            assert session.query(Mission).count() == 0
+            invited_member = OrganizationMember(
+                organization_id=organization_a,
+                subject=invited_subject,
+                role="operator",
+                status="active",
+                created_by=member_a.subject,
+                updated_by=member_a.subject,
+            )
+            session.add(invited_member)
+            session.flush()
+            invited_credential = issue_credential(
+                session,
+                member=invited_member,
+                name="invited credential",
+                actor_subject=invited_subject,
+            )
+            capability_context = session.execute(
+                text(
+                    "SELECT current_setting("
+                    "'droneai.identity_capability_id', true), "
+                    "(SELECT capability_organization_id "
+                    "FROM droneai_identity_capability())"
+                )
+            ).one()
+            assert capability_context == (capability_id, organization_a)
+            append_audit_event(
+                session,
+                organization_id=organization_a,
+                actor_subject=invited_subject,
+                action="invitation_accepted",
+                target_type="identity_capability",
+                target_id=capability_id,
+                after_state={"status": "redeemed"},
+            )
+            session.flush()
+            redeem_capability(capability)
+            session.flush()
+            invited_token = invited_credential.token
+
+        invited_principal = security.authenticate_api_key(invited_token)
+        assert invited_principal is not None
+        assert invited_principal.organization_id == organization_a
+        assert invited_principal.role == "operator"
 
         principal = security.authenticate_api_key(token_a)
         assert principal is not None

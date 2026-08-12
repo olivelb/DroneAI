@@ -82,6 +82,7 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/auth.py \
 	app4-dashboard/api/routers/datasets.py \
 	app4-dashboard/api/routers/identity.py \
+	app4-dashboard/api/routers/identity_capabilities.py \
 	app4-dashboard/api/routers/identity_credentials.py \
 	app4-dashboard/api/routers/identity_members.py \
 	app4-dashboard/api/routers/map_analyses.py \
@@ -96,7 +97,8 @@ API_ROUTE_TYPED_PATHS := \
 	app4-dashboard/api/routers/mission_stages.py \
 	app4-dashboard/api/routers/missions.py \
 	app4-dashboard/api/routers/operations.py \
-	app4-dashboard/api/routers/organization_saas.py
+	app4-dashboard/api/routers/organization_saas.py \
+	app4-dashboard/api/routers/platform.py
 SERVICE_CORE_PATHS := $(GAUSSIAN_ORTHO_TYPED_PATHS) $(APP2_TYPED_PATHS) $(APP3_TYPED_PATHS)
 SHELL_SCRIPTS := scripts/bootstrap-dev.sh scripts/ci/*.sh scripts/deploy/*.sh
 
