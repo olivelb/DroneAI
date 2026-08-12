@@ -1389,7 +1389,8 @@ Pipeline steps:
 
 1. Load COLMAP sparse reconstruction and alignment transform from `dense/sparse/`
 2. Extract drone EXIF GPS altitudes from undistorted images
-3. Optionally partition the scene into an m×n grid (VastGaussian divide-and-conquer)
+3. Optionally partition the projected ground footprint into explicit core and
+   training-buffer cells (requires the geographic Sim3 transform)
 4. Train a 3DGS model per cell via the native DroneGS CLI (MRNF strategy, C++/CUDA)
 5. Merge cell models (retain only Gaussians in core, non-overlap region)
 6. Geo-alignment:
@@ -1416,7 +1417,10 @@ The implementation draws from several key papers:
 - **3DGS as MCMC** (Kheradmand et al. 2024): bounded-cap stochastic topology refinement rather than unbounded clone/split
 - **DroneGS**: standalone C++/CUDA MRNF training with structural FastGS buckets/checkpoints, warp-cooperative backward, fused L1/SSIM loss, progressive SH, bounded scene-resident image caching, and deterministic manifests
 - **CuPy** with custom CUDA RawKernels: lightweight GPU-accelerated orthographic rasteriser for TDOM rendering
-- **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
+- **VastGaussian** (Lin et al. 2024): motivates the staged
+  divide-and-conquer path. DroneAI currently defines projected-ground
+  core/buffer cells and independent training; calibrated footprint-based
+  camera assignment and native crops are the next qualification step.
 - **TOrtho-Gaussian** (Wang et al. 2024): DroneAI implements its opacity-only
   SH ablation (`opacity-SH-v1`) and orthographic projection formulation. The
   full view-dependent scale/rotation FAGK is not implemented.
@@ -1450,7 +1454,13 @@ keeps model-relative Z.
 
 #### Step 2: Scene partitioning (optional)
 
-For very large scenes, the model can be split into an m×n grid of overlapping cells (VastGaussian-style). Each cell gets its own set of cameras (assigned by visibility overlap) and local point cloud. Cells are trained independently. For typical drone missions (≤2000 images), a single partition (1×1) is sufficient and is the default.
+For large map scenes with a geographic Sim3, the surveyed point footprint can
+be split into an m×n grid in projected ground coordinates. Every cell records
+an exclusive core and an expanded training buffer, while its COLMAP subset
+remains in numerically stable local coordinates. Camera-centre assignment is
+still transitional; the production HQ path will replace it with calibrated
+ground-footprint visibility and native-image crops before partitioning is
+enabled by default. A single partition (1×1) remains the default.
 
 #### Step 3: Training
 
@@ -1501,7 +1511,11 @@ Default training parameters (configurable via dashboard UI):
 
 #### Step 4: Merge
 
-If partitioning was used, cell models are merged by retaining only Gaussians whose centres fall within the core (non-overlap) region of each cell. This discards duplicates in overlapping borders.
+If partitioning was used, each Gaussian centre is projected through the same
+Sim3 XY transform used to create the grid. Only the unique owner of its
+half-open core retains it; the outermost cells include their maximum edge.
+This removes duplicates deterministically without comparing UTM coordinates
+in float32 during training.
 
 #### Step 5: Geo-alignment
 
@@ -1741,8 +1755,8 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |
 | `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |
 | `scene_info.py` | Scene metadata (cameras, point cloud, bounds, radius) |
-| `partition.py` | VastGaussian-style m×n grid partitioning with overlap |
-| `merge.py` | Overlap-aware model merging (keep core-region Gaussians only) |
+| `partition.py` | Projected-ground m×n core/buffer partition contract |
+| `merge.py` | Deterministic geographic core ownership for partition models |
 | `geo_writer.py` | GeoTIFF writer for RGB + height map, with embedded sRGB ICC profile |
 | `exif_altitude.py` | EXIF GPS altitude extraction from drone images |
 

@@ -1,128 +1,277 @@
-"""
-VastGaussian-style divide-and-conquer partitioning.
+"""Geographic core/buffer partitioning for resident Gaussian training blocks."""
 
-Splits a large scene into an m-by-n grid of overlapping cells, assigns
-cameras via visibility, and creates per-cell SceneInfo objects for
-independent training.
-"""
+from __future__ import annotations
+
+import math
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
-from .colmap_loader import CameraInfo, PointCloud
+from .colmap_loader import CameraInfo, PointCloud, Sim3Transform
 from .scene_info import SceneInfo, build_scene_info
 
 
-@dataclass
+type GroundLinear = tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+]
+type GroundOffset = tuple[float, float]
+
+
+IDENTITY_GROUND_LINEAR: GroundLinear = (
+    (1.0, 0.0, 0.0),
+    (0.0, 1.0, 0.0),
+)
+ZERO_GROUND_OFFSET: GroundOffset = (0.0, 0.0)
+
+
+@dataclass(frozen=True)
 class CellBounds:
-    """Axis-aligned bounding box for a partition cell (X-Y plane)."""
-    x_min: float
-    x_max: float
-    y_min: float
-    y_max: float
+    """One projected-ground core and its expanded training buffer."""
+
+    core_x_min: float
+    core_x_max: float
+    core_y_min: float
+    core_y_max: float
+    buffer_x_min: float
+    buffer_x_max: float
+    buffer_y_min: float
+    buffer_y_max: float
     row: int
     col: int
+    include_core_x_max: bool = False
+    include_core_y_max: bool = False
+    model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR
+    model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET
+
+    def project_model_points(self, points: Any, *, array_module: Any) -> Any:
+        """Project model XYZ coordinates into the cell's ground XY frame."""
+        linear = array_module.asarray(
+            self.model_to_ground_linear,
+            dtype=points.dtype,
+        )
+        offset = array_module.asarray(
+            self.model_to_ground_offset,
+            dtype=points.dtype,
+        )
+        return points @ linear.T + offset
+
+    def core_mask(self, points: Any, *, array_module: Any) -> Any:
+        ground = self.project_model_points(points, array_module=array_module)
+        x_upper = (
+            ground[:, 0] <= self.core_x_max
+            if self.include_core_x_max
+            else ground[:, 0] < self.core_x_max
+        )
+        y_upper = (
+            ground[:, 1] <= self.core_y_max
+            if self.include_core_y_max
+            else ground[:, 1] < self.core_y_max
+        )
+        return (
+            (ground[:, 0] >= self.core_x_min)
+            & x_upper
+            & (ground[:, 1] >= self.core_y_min)
+            & y_upper
+        )
+
+    def buffer_mask(self, points: Any, *, array_module: Any) -> Any:
+        ground = self.project_model_points(points, array_module=array_module)
+        return (
+            (ground[:, 0] >= self.buffer_x_min)
+            & (ground[:, 0] <= self.buffer_x_max)
+            & (ground[:, 1] >= self.buffer_y_min)
+            & (ground[:, 1] <= self.buffer_y_max)
+        )
 
 
-def compute_partition_grid(scene: SceneInfo, m: int = 2, n: int = 2,
-                           overlap: float = 0.20) -> list[CellBounds]:
-    """
-    Compute an m-by-n partition grid over the scene extent.
+def ground_projection_from_sim3(
+    transform_data: Sim3Transform,
+) -> tuple[GroundLinear, GroundOffset]:
+    """Extract the projected XY affine map from a validated geographic Sim3."""
+    rotation = np.asarray(transform_data.get("R"), dtype=np.float64)
+    translation = np.asarray(transform_data.get("t"), dtype=np.float64)
+    scale = float(transform_data.get("scale", 0.0))
+    if rotation.shape != (3, 3) or translation.shape != (3,):
+        raise ValueError("geographic partitioning requires a 3D Sim3 transform")
+    if (
+        not np.isfinite(rotation).all()
+        or not np.isfinite(translation).all()
+        or not math.isfinite(scale)
+        or scale <= 0.0
+    ):
+        raise ValueError("geographic partitioning requires a finite positive Sim3")
+    linear_array = scale * rotation[:2, :]
+    linear: GroundLinear = (
+        (
+            float(linear_array[0, 0]),
+            float(linear_array[0, 1]),
+            float(linear_array[0, 2]),
+        ),
+        (
+            float(linear_array[1, 0]),
+            float(linear_array[1, 1]),
+            float(linear_array[1, 2]),
+        ),
+    )
+    offset: GroundOffset = (float(translation[0]), float(translation[1]))
+    return linear, offset
 
-    The grid is laid out in the X-Y plane of the geo-aligned coordinate
-    system.  Each cell is expanded by *overlap* fraction on each side
-    for seamless merging.
 
-    Parameters
-    ----------
-    scene : SceneInfo
-    m : int - rows (Y partitions)
-    n : int - cols (X partitions)
-    overlap : float - fractional overlap on each side (default 20%)
+def _project_points(
+    points: np.ndarray,
+    linear: GroundLinear,
+    offset: GroundOffset,
+) -> np.ndarray:
+    xyz = np.asarray(points, dtype=np.float64)
+    if xyz.ndim != 2 or xyz.shape[1] != 3 or xyz.shape[0] < 1:
+        raise ValueError("geographic partitioning requires model points shaped (N, 3)")
+    if not np.isfinite(xyz).all():
+        raise ValueError("geographic partition points must be finite")
+    projected: np.ndarray = (
+        xyz @ np.asarray(linear, dtype=np.float64).T
+        + np.asarray(offset, dtype=np.float64)
+    )
+    return projected
 
-    Returns
-    -------
-    list[CellBounds]
-    """
-    pts = scene.point_cloud.points  # (N, 3)
-    cam_pos = np.stack([c.T for c in scene.train_cameras], axis=0)
-    all_xy = np.concatenate([pts[:, :2], cam_pos[:, :2]], axis=0)
 
-    x_lo, y_lo = all_xy.min(axis=0)
-    x_hi, y_hi = all_xy.max(axis=0)
+def _ground_extent(
+    ground_xy: np.ndarray,
+    *,
+    quantile: float,
+) -> tuple[float, float, float, float]:
+    if not 0.0 <= quantile < 0.5:
+        raise ValueError("partition extent quantile must be in [0, 0.5)")
+    effective_quantile = quantile if ground_xy.shape[0] >= 200 else 0.0
+    lower = np.quantile(ground_xy, effective_quantile, axis=0)
+    upper = np.quantile(ground_xy, 1.0 - effective_quantile, axis=0)
+    if not np.all(upper > lower):
+        raise ValueError("geographic partition ground extent is degenerate")
+    return float(lower[0]), float(upper[0]), float(lower[1]), float(upper[1])
 
-    dx = (x_hi - x_lo) / n
-    dy = (y_hi - y_lo) / m
-    pad_x = dx * overlap
-    pad_y = dy * overlap
 
-    cells = []
+def compute_partition_grid(
+    scene: SceneInfo,
+    m: int = 2,
+    n: int = 2,
+    overlap: float = 0.20,
+    *,
+    model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR,
+    model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET,
+    extent_quantile: float = 0.005,
+) -> list[CellBounds]:
+    """Create an explicit core/buffer grid in projected ground coordinates."""
+    if m < 1 or n < 1:
+        raise ValueError("partition grid dimensions must be positive")
+    if not math.isfinite(overlap) or not 0.0 <= overlap < 1.0:
+        raise ValueError("partition overlap must be in [0, 1)")
+    ground_xy = _project_points(
+        scene.point_cloud.points,
+        model_to_ground_linear,
+        model_to_ground_offset,
+    )
+    x_lo, x_hi, y_lo, y_hi = _ground_extent(
+        ground_xy,
+        quantile=extent_quantile,
+    )
+    width = (x_hi - x_lo) / n
+    height = (y_hi - y_lo) / m
+    pad_x = width * overlap
+    pad_y = height * overlap
+
+    cells: list[CellBounds] = []
     for row in range(m):
         for col in range(n):
-            cells.append(CellBounds(
-                x_min=x_lo + col * dx - pad_x,
-                x_max=x_lo + (col + 1) * dx + pad_x,
-                y_min=y_lo + row * dy - pad_y,
-                y_max=y_lo + (row + 1) * dy + pad_y,
-                row=row, col=col,
-            ))
+            core_x_min = x_lo + col * width
+            core_x_max = x_lo + (col + 1) * width
+            core_y_min = y_lo + row * height
+            core_y_max = y_lo + (row + 1) * height
+            cells.append(
+                CellBounds(
+                    core_x_min=core_x_min,
+                    core_x_max=core_x_max,
+                    core_y_min=core_y_min,
+                    core_y_max=core_y_max,
+                    buffer_x_min=core_x_min - pad_x,
+                    buffer_x_max=core_x_max + pad_x,
+                    buffer_y_min=core_y_min - pad_y,
+                    buffer_y_max=core_y_max + pad_y,
+                    row=row,
+                    col=col,
+                    include_core_x_max=col == n - 1,
+                    include_core_y_max=row == m - 1,
+                    model_to_ground_linear=model_to_ground_linear,
+                    model_to_ground_offset=model_to_ground_offset,
+                )
+            )
     return cells
 
 
-def _camera_in_cell(cam: CameraInfo, cell: CellBounds) -> bool:
-    """Check if camera centre (X-Y) lies within the cell bounds."""
-    x, y = cam.T[0], cam.T[1]
+def _camera_in_buffer(camera: CameraInfo, cell: CellBounds) -> bool:
+    """Temporary centre-based assignment in the correct ground frame."""
+    center = cell.project_model_points(
+        np.asarray(camera.T, dtype=np.float64)[None, :],
+        array_module=np,
+    )[0]
     return bool(
-        cell.x_min <= x <= cell.x_max and cell.y_min <= y <= cell.y_max
+        cell.buffer_x_min <= center[0] <= cell.buffer_x_max
+        and cell.buffer_y_min <= center[1] <= cell.buffer_y_max
     )
 
 
-def _filter_points_in_cell(pc: PointCloud, cell: CellBounds) -> PointCloud:
-    """Keep only points whose X-Y lies within the cell."""
-    mask = (
-        (pc.points[:, 0] >= cell.x_min) & (pc.points[:, 0] <= cell.x_max) &
-        (pc.points[:, 1] >= cell.y_min) & (pc.points[:, 1] <= cell.y_max)
-    )
+def _filter_points_in_buffer(point_cloud: PointCloud, cell: CellBounds) -> PointCloud:
+    mask = cell.buffer_mask(point_cloud.points, array_module=np)
     return PointCloud(
-        points=pc.points[mask],
-        colors=pc.colors[mask],
-        normals=pc.normals[mask],
+        points=point_cloud.points[mask],
+        colors=point_cloud.colors[mask],
+        normals=point_cloud.normals[mask],
     )
 
 
-def partition_scene(scene: SceneInfo, m: int = 2, n: int = 2,
-                    overlap: float = 0.20, min_cameras: int = 5
-                    ) -> list[tuple[CellBounds, SceneInfo]]:
-    """
-    Partition a scene into m-by-n cells.
-
-    For each cell:
-      1. Select cameras whose centre is within the (padded) cell.
-      2. Filter points within the cell.
-      3. Build a SceneInfo for independent training.
-
-    Cells with fewer than *min_cameras* are merged into their neighbour.
-
-    Returns list of (CellBounds, SceneInfo) pairs.
-    """
-    cells = compute_partition_grid(scene, m, n, overlap)
+def partition_scene(
+    scene: SceneInfo,
+    m: int = 2,
+    n: int = 2,
+    overlap: float = 0.20,
+    min_cameras: int = 5,
+    *,
+    model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR,
+    model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET,
+) -> list[tuple[CellBounds, SceneInfo]]:
+    """Build resident training scenes from projected-ground buffers."""
+    if min_cameras < 1:
+        raise ValueError("minimum partition camera count must be positive")
+    cells = compute_partition_grid(
+        scene,
+        m,
+        n,
+        overlap,
+        model_to_ground_linear=model_to_ground_linear,
+        model_to_ground_offset=model_to_ground_offset,
+    )
     result: list[tuple[CellBounds, SceneInfo]] = []
-
     for cell in cells:
-        cams = [c for c in scene.train_cameras if _camera_in_cell(c, cell)]
-        if len(cams) < min_cameras:
-            # Skip tiny cells — points will be covered by overlapping neighbours
+        cameras = [
+            camera
+            for camera in scene.train_cameras
+            if _camera_in_buffer(camera, cell)
+        ]
+        if len(cameras) < min_cameras:
             continue
-        pc = _filter_points_in_cell(scene.point_cloud, cell)
-        if pc.points.shape[0] < 100:
+        point_cloud = _filter_points_in_buffer(scene.point_cloud, cell)
+        if point_cloud.points.shape[0] < 100:
             continue
-        cell_scene = build_scene_info(
-            train_cameras=cams,
-            test_cameras=[],  # test only on full scene
-            point_cloud=pc,
-            dense_path=scene.dense_path,
-            images_dir=scene.images_dir,
+        result.append(
+            (
+                cell,
+                build_scene_info(
+                    train_cameras=cameras,
+                    test_cameras=[],
+                    point_cloud=point_cloud,
+                    dense_path=scene.dense_path,
+                    images_dir=scene.images_dir,
+                ),
+            )
         )
-        result.append((cell, cell_scene))
-
     return result

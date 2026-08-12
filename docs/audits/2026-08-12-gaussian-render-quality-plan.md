@@ -34,10 +34,12 @@ Qualification evidence:
 
 ## Phase 2 — Geographic HQ blocks
 
-Status: next implementation phase.
+Status: in progress. Projected-ground core/buffer cells and deterministic
+geographic core ownership are implemented and component-qualified. Camera
+footprints, native crops, resident-cap planning and streamed products remain.
 
 1. Define the partition in projected ground coordinates, independently of the
-   reconstruction's local axes.
+   reconstruction's local axes. **Implemented.**
 2. Derive each camera's ground footprint from calibrated rays and an explicit
    terrain-height envelope. Assign cameras only when their footprint
    intersects a block buffer and their view is geometrically usable.

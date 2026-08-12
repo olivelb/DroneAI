@@ -114,7 +114,8 @@ internals.
 - Adam with parameter-specific schedules and progressive spherical harmonics.
 - A strategy interface with MRNF-compatible behavior.
 - Checkpoint/resume, deterministic seeds, cancellation, metrics, and PLY export.
-- Single-GPU training first; bounded large-scene partitioning after parity.
+- Single-GPU resident blocks in projected-ground core/buffer partitions. The
+  camera-footprint/crop and streamed-product stages remain gated work.
 
 ## Out of scope before 1.0
 

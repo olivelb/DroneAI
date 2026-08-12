@@ -60,7 +60,7 @@ from gaussian_training.manifest_contract import (
     manifest_matches_ply,
     validate_run_manifest,
 )
-from .partition import partition_scene
+from .partition import ground_projection_from_sim3, partition_scene
 from .exif_altitude import (
     extract_exif_altitudes,
     compute_colmap_scale,
@@ -472,6 +472,12 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
     use_partition = config.partition_m > 1 or config.partition_n > 1
     cells: list[tuple[CellBounds | None, SceneInfo]]
     if use_partition:
+        if config.render_mode != "map" or transform_data is None:
+            raise ValueError(
+                "Partitioned Gaussian training requires a geographic Sim3 "
+                "transform so blocks are defined in projected ground coordinates"
+            )
+        ground_linear, ground_offset = ground_projection_from_sim3(transform_data)
         _report(
             config.vol_id,
             "GAUSS",
@@ -482,10 +488,12 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         cells = [
             (bounds, cell_scene)
             for bounds, cell_scene in partition_scene(
-            scene,
-            config.partition_m,
-            config.partition_n,
-            config.partition_overlap,
+                scene,
+                config.partition_m,
+                config.partition_n,
+                config.partition_overlap,
+                model_to_ground_linear=ground_linear,
+                model_to_ground_offset=ground_offset,
             )
         ]
         _report(
@@ -833,16 +841,12 @@ def train_and_merge_gaussian_models(
             "Merging cell models…",
             config.report_fn,
         )
-        camera_positions = np.stack([camera.T for camera in scene_state.train_cameras])
-        points_xy = np.concatenate([scene_state.point_cloud.points[:, :2], camera_positions[:, :2]])
-        merged_model = merge_models_fn(
-            cell_models,
-            (float(points_xy[:, 0].min()), float(points_xy[:, 0].max())),
-            (float(points_xy[:, 1].min()), float(points_xy[:, 1].max())),
-            config.partition_m,
-            config.partition_n,
-            config.partition_overlap,
-        )
+        partition_models = [
+            (cell, model)
+            for cell, model in cell_models
+            if cell is not None
+        ]
+        merged_model = merge_models_fn(partition_models)
         _report(
             config.vol_id,
             "GAUSS",

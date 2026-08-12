@@ -24,7 +24,12 @@ from gaussian_ortho.colmap_loader import (
     CameraInfo, PointCloud, apply_sim3_to_points, apply_sim3_to_camera,
 )
 from gaussian_ortho.scene_info import build_scene_info
-from gaussian_ortho.partition import compute_partition_grid, partition_scene
+from gaussian_ortho.partition import (
+    CellBounds,
+    compute_partition_grid,
+    ground_projection_from_sim3,
+    partition_scene,
+)
 from gaussian_ortho.geo_writer import _geotiff_creation_options, write_geotiff
 
 if cp is not None:
@@ -36,6 +41,7 @@ if cp is not None:
     )
     from gaussian_ortho.rasterizer import make_view_matrix, make_ortho_proj
     from gaussian_ortho.ortho_renderer import compute_ortho_extent, render_orthophoto
+    from gaussian_ortho.merge import merge_models
 
 
 requires_gpu = pytest.mark.skipif(cp is None, reason="CuPy is not installed")
@@ -244,6 +250,120 @@ class TestPartition:
         scene = _make_scene()
         cells = partition_scene(scene, m=1, n=1)
         assert len(cells) == 1
+
+    def test_grid_extent_comes_from_ground_points_not_camera_centres(self):
+        point_cloud = PointCloud(
+            points=np.array(
+                [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 20.0, 0.0]],
+                dtype=np.float32,
+            ),
+            colors=np.ones((3, 3), dtype=np.float32),
+            normals=np.zeros((3, 3), dtype=np.float32),
+        )
+        cameras = _make_cameras(5)
+        for camera in cameras:
+            camera.T[:] = 10_000.0
+        scene = build_scene_info(cameras, [], point_cloud)
+
+        cells = compute_partition_grid(
+            scene,
+            m=1,
+            n=2,
+            overlap=0.2,
+        )
+
+        assert cells[0].core_x_min == pytest.approx(0.0)
+        assert cells[-1].core_x_max == pytest.approx(10.0)
+        assert cells[-1].core_y_max == pytest.approx(20.0)
+        assert cells[0].buffer_x_min == pytest.approx(-1.0)
+
+    def test_sim3_projection_defines_projected_ground_grid(self):
+        transform = {
+            "R": [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+            "scale": 2.0,
+            "t": [100.0, 200.0, 10.0],
+        }
+        linear, offset = ground_projection_from_sim3(transform)
+        point_cloud = PointCloud(
+            points=np.array(
+                [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 20.0, 0.0]],
+                dtype=np.float32,
+            ),
+            colors=np.ones((3, 3), dtype=np.float32),
+            normals=np.zeros((3, 3), dtype=np.float32),
+        )
+        scene = build_scene_info(_make_cameras(5), [], point_cloud)
+
+        cell = compute_partition_grid(
+            scene,
+            m=1,
+            n=1,
+            overlap=0.0,
+            model_to_ground_linear=linear,
+            model_to_ground_offset=offset,
+        )[0]
+
+        assert cell.core_x_min == pytest.approx(60.0)
+        assert cell.core_x_max == pytest.approx(100.0)
+        assert cell.core_y_min == pytest.approx(200.0)
+        assert cell.core_y_max == pytest.approx(220.0)
+
+    def test_adjacent_cores_have_single_boundary_owner(self):
+        scene = _make_scene(n_points=500)
+        left, right = compute_partition_grid(
+            scene,
+            m=1,
+            n=2,
+            overlap=0.2,
+        )
+        boundary = np.array(
+            [[left.core_x_max, left.core_y_min, 0.0]],
+            dtype=np.float32,
+        )
+
+        assert not bool(left.core_mask(boundary, array_module=np)[0])
+        assert bool(right.core_mask(boundary, array_module=np)[0])
+
+    @pytest.mark.gpu
+    @requires_gpu
+    def test_merge_uses_projected_ground_core(self):
+        ground_linear = ((0.0, 1.0, 0.0), (1.0, 0.0, 0.0))
+        common = {
+            "core_y_min": -1.0,
+            "core_y_max": 1.0,
+            "buffer_x_min": -1.0,
+            "buffer_x_max": 11.0,
+            "buffer_y_min": -2.0,
+            "buffer_y_max": 2.0,
+            "row": 0,
+            "model_to_ground_linear": ground_linear,
+        }
+        left_cell = CellBounds(
+            core_x_min=0.0,
+            core_x_max=5.0,
+            col=0,
+            **common,
+        )
+        right_cell = CellBounds(
+            core_x_min=5.0,
+            core_x_max=10.0,
+            col=1,
+            include_core_x_max=True,
+            **common,
+        )
+        left_model = _make_gpu_model(1)
+        right_model = _make_gpu_model(1)
+        left_model._xyz[:] = cp.asarray([[0.0, 8.0, 0.0]], dtype=cp.float32)
+        right_model._xyz[:] = cp.asarray([[0.0, 8.0, 0.0]], dtype=cp.float32)
+        left_model._features_dc[:] = 1.0
+        right_model._features_dc[:] = 2.0
+
+        merged = merge_models(
+            [(left_cell, left_model), (right_cell, right_model)]
+        )
+
+        assert merged.num_gaussians == 1
+        assert float(cp.asnumpy(merged._features_dc)[0, 0, 0]) == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------------------
