@@ -41,7 +41,7 @@ from shared.platform_identity import (
     revoke_platform_credential,
 )
 from shared.stage_execution import load_stage_execution_context
-from shared.tenancy import mission_prefix
+from shared.tenancy import LEGACY_ORGANIZATION_ID, mission_prefix
 
 security = importlib.import_module("app4-dashboard.api.security")
 
@@ -94,6 +94,7 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
     credential_b = str(uuid4())
     mission_a = f"rls-mission-a-{suffix}"
     mission_b = f"rls-mission-b-{suffix}"
+    legacy_mission = f"rls-legacy-mission-{suffix}"
     run_a = str(uuid4())
     run_b = str(uuid4())
     owner_url = database.DATABASE_URL
@@ -201,7 +202,16 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
             owner_subject=member_b.subject,
             workspace_prefix=mission_prefix(organization_b, mission_b),
         )
-        session.add_all([first_mission, second_mission])
+        historical_mission = Mission(
+            vol_id=legacy_mission,
+            organization_id=LEGACY_ORGANIZATION_ID,
+            owner_subject="legacy-operator",
+            workspace_prefix=mission_prefix(
+                LEGACY_ORGANIZATION_ID,
+                legacy_mission,
+            ),
+        )
+        session.add_all([first_mission, second_mission, historical_mission])
         session.flush()
         session.add_all(
             [
@@ -538,15 +548,26 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         browser_session = security.issue_session_token(principal, 60)
         assert security.authenticate_token(browser_session) == principal
 
-        assert database.get_mission_audience(mission_b) == (
-            organization_b,
-            member_b.subject,
-        )
+        assert database.get_mission_audience(mission_b) is None
         assert database.get_mission_audience(mission_b, organization_b) == (
             organization_b,
             member_b.subject,
         )
         assert database.get_mission_audience(mission_b, organization_a) is None
+        assert database.get_mission_audience(legacy_mission) == (
+            LEGACY_ORGANIZATION_ID,
+            "legacy-operator",
+        )
+        with database.get_session() as session:
+            assert (
+                session.execute(
+                    text(
+                        "SELECT to_regprocedure("
+                        "'droneai_mission_audience(text)')"
+                    )
+                ).scalar_one()
+                is None
+            )
 
         database.reset_engine()
         database.DATABASE_URL = stage_url.render_as_string(hide_password=False)

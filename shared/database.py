@@ -2110,32 +2110,27 @@ def get_mission_audience(
     vol_id: str,
     organization_id: str | None = None,
 ) -> tuple[str, str] | None:
-    """Resolve only the tenant audience needed by the realtime consumer.
+    """Resolve a realtime audience inside one explicit RLS tenant.
 
-    PostgreSQL uses a narrow ``SECURITY DEFINER`` function so the low-privilege
-    API role can bind the correct RLS context without receiving an operator
-    database credential.
+    Version-one status events did not carry an organization. Only those
+    historical events may fall back to the isolated legacy organization; a
+    mission identifier alone must never reveal its current tenant.
     """
 
-    with get_session() as session:
-        if session.get_bind().dialect.name == "postgresql":
-            row = session.execute(
-                text(
-                    "SELECT audience_organization_id, audience_owner_subject "
-                    "FROM droneai_mission_audience(:vol_id)"
-                ),
-                {"vol_id": vol_id},
-            ).first()
-            if row is None:
-                return None
-            audience = str(row[0]), str(row[1])
-            if organization_id is not None and audience[0] != organization_id:
-                return None
-            return audience
-        query = session.query(Mission).filter(Mission.vol_id == vol_id)
-        if organization_id is not None:
-            query = query.filter(Mission.organization_id == organization_id)
-        mission = query.first()
+    target_organization_id = (
+        LEGACY_ORGANIZATION_ID
+        if organization_id is None
+        else validate_organization_id(organization_id)
+    )
+    with get_session(organization_id=target_organization_id) as session:
+        mission = (
+            session.query(Mission)
+            .filter(
+                Mission.organization_id == target_organization_id,
+                Mission.vol_id == vol_id,
+            )
+            .first()
+        )
         if mission is None:
             return None
         return str(mission.organization_id), str(mission.owner_subject)

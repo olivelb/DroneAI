@@ -92,11 +92,13 @@ def mission_owner_subject(
         return "legacy-unassigned"
     audience = get_mission_audience(vol_id, organization_id)
     if audience is None:
-        if organization_id is not None:
+        if organization_id is None:
             raise LookupError(
-                "Status event organization does not match its durable mission"
+                "Legacy status event does not match a legacy mission"
             )
-        return "legacy-unassigned:legacy-unassigned"
+        raise LookupError(
+            "Status event organization does not match its durable mission"
+        )
     return f"{audience[0]}:{audience[1]}"
 
 
