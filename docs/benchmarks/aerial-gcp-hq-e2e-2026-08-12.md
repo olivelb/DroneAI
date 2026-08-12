@@ -233,6 +233,22 @@ orthomosaic is justified. The experimental ROI products and metrics remain on
 BIGZEN under `Y:\BenchGCP\droneai-hq-20260812\sh-ab`; they are not production
 artifacts and were not published to the mission.
 
+The retained model explains that remaining boundary. Its median maximum
+Gaussian scale is 0.359 m, its 75th percentile is 0.629 m, and median
+anisotropy is 8.20. About 10.0% of the splats have a maximum scale above 1 m.
+These supports span many pixels on a 0.02 m grid, so their elongated structure
+is visible even though coverage is complete. Downsampling the corrected ROI
+improves PSNR and correlation monotonically, but still reaches only 23.55 dB
+and 0.446 grayscale correlation at 0.20 m/pixel. A coarser export therefore
+cannot recover the missing local texture.
+
+The next renderer phase should orthorectify source-camera pixels onto the
+qualified height surface, with view selection, exposure compensation,
+seamlines and multiband blending. Gaussian RGB remains appropriate for fast
+preview and uncovered-pixel fallback; increasing the Gaussian cap alone is
+not a credible route to a survey orthomosaic at source-image GSD on a 24 GiB
+GPU.
+
 ## Reproducing the comparison
 
 The reusable tool performs CRS validation, shared-grid DEM and RGB comparison,
