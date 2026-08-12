@@ -541,14 +541,12 @@ def test_dead_outbox_replay_resets_delivery_state(monkeypatch):
 
 
 def test_frontend_uses_direct_presigned_multipart_upload():
-    source = (Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib" / "api.ts").read_text(
-        encoding="utf-8"
-    )
-    upload_source = source.split(
-        "export const uploadDataset = async",
-        1,
-    )[1].split("const encodeS3Key", 1)[0]
+    api_root = Path(__file__).resolve().parents[1] / "app4-dashboard" / "frontend" / "app" / "lib"
+    source = (api_root / "api-upload.ts").read_text(encoding="utf-8")
+    barrel_source = (api_root / "api.ts").read_text(encoding="utf-8")
+    upload_source = source.split("export const uploadDataset = async", 1)[1]
 
+    assert 'export { uploadDataset } from "./api-upload"' in barrel_source
     assert '"/datasets/upload-sessions"' in upload_source
     assert "signed.url" in source
     assert 'credentials: "omit"' in source
