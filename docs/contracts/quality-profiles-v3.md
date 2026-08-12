@@ -44,8 +44,13 @@ block records all of the following:
 - no missing or duplicate pixel rows/columns at core boundaries;
 - bounded seam colour and height discontinuities;
 - deterministic artifact replay through training, filtering and raster Stage
-  Jobs;
+Jobs;
 - acceptable wall time and existing PSNR/SSIM canary results.
+
+The raster Job writes `gaussian_seam_report.json` with per-core-boundary RGB
+and height mean/p95 jumps plus a boundary-to-nearby-interior gradient ratio.
+Those measurements are evidence-only until the representative block defines
+defensible thresholds; they cannot silently pass or fail a production run.
 
 Only after this short gate is it useful to run a complete BIGZEN E2E. The
 historical v2 formula, runs and SAM3 policy remain documented in

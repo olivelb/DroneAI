@@ -610,12 +610,21 @@ def run_rasterization_stage(
             if result.get("gaussian_coverage_report")
             else None
         )
+        seam_relative = (
+            Path(result["gaussian_seam_report"])
+            .relative_to(workspace)
+            .as_posix()
+            if result.get("gaussian_seam_report")
+            else None
+        )
         raster_roles = {
             ortho_relative: "raster-orthomosaic",
             height_relative: "raster-height",
         }
         if coverage_relative is not None:
             raster_roles[coverage_relative] = "raster-coverage-report"
+        if seam_relative is not None:
+            raster_roles[seam_relative] = "raster-seam-report"
         published = _publish_stage_workspace(
             context,
             control,
@@ -633,6 +642,8 @@ def run_rasterization_stage(
             quality_metrics["coverage"] = coverage
         if result.get("gaussian_density") is not None:
             quality_metrics["gaussian_density"] = result["gaussian_density"]
+        if result.get("gaussian_seams") is not None:
+            quality_metrics["gaussian_seams"] = result["gaussian_seams"]
         return StageExecutionResult(
             kind="raster_product_workspace",
             uri=published.uri,
@@ -644,6 +655,7 @@ def run_rasterization_stage(
                 "ortho_file": ortho_relative,
                 "height_file": height_relative,
                 "coverage_report": coverage_relative,
+                "seam_report": seam_relative,
                 "crs": result["coordinate_system"],
                 "raster_extent": result["raster_extent"],
             },

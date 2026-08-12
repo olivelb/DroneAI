@@ -29,6 +29,7 @@ GAUSSIAN_ORTHO_TYPED_PATHS := \
 	app1-colmap/gaussian_ortho/raster_product.py \
 	app1-colmap/gaussian_ortho/render_geometry.py \
 	app1-colmap/gaussian_ortho/scene_info.py \
+	app1-colmap/gaussian_ortho/seam_quality.py \
 	app1-colmap/gaussian_ortho/sh_basis.py
 SHARED_FRAMEWORK_TYPED_PATHS := shared/event_schemas.py shared/tile_results.py
 SHARED_TYPED_PATHS := $(filter-out $(SHARED_FRAMEWORK_TYPED_PATHS),$(wildcard shared/*.py))

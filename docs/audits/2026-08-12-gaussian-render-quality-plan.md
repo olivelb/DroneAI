@@ -66,7 +66,9 @@ profile can be enabled.
 5. Merge only buffer-supported content into each core. Record overlap,
    per-core density and seam evidence in the stage artifacts. **Buffer/core
    ownership, portable per-cell counts, extents and model checks are
-   implemented. Seam-image metrics remain the representative-block gate.**
+   implemented. The raster Job now publishes per-boundary RGB/height jump
+   distributions and boundary-to-interior ratios as evidence-only metrics;
+   qualification thresholds remain the representative-block gate.**
 
 The first validation is a short representative native block. A full BIGZEN
 E2E becomes useful only after that block passes memory, density, seam and

@@ -110,6 +110,47 @@ def _write_coverage_report(
     return report_path, report
 
 
+def _write_seam_report(
+    config: GaussianOrthoConfig,
+    filtering_phase: GaussianFilteringPhaseState,
+    rgb: Any,
+    height: Any,
+    extent: tuple[float, float, float, float],
+) -> tuple[str | None, dict[str, Any] | None]:
+    if not getattr(filtering_phase, "partition_models", ()):
+        return None, None
+    from .seam_quality import evaluate_core_seams
+
+    render = _render_geometry(filtering_phase)
+    report = evaluate_core_seams(
+        rgb,
+        height,
+        extent=extent,
+        gsd=render.local_gsd,
+        geo_origin=render.geo_origin,
+        partitions=filtering_phase.partition_models,
+    )
+    report_path = str(
+        Path(config.ortho_file).with_name("gaussian_seam_report.json")
+    )
+    path = Path(report_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.tmp")
+    temporary.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+    _report(
+        config.vol_id,
+        "GAUSS",
+        97,
+        f"Recorded evidence for {report['seam_count']} resident core seams.",
+        config.report_fn,
+    )
+    return report_path, report
+
+
 def _write_facade_report(
     config: GaussianOrthoConfig,
     summary: GaussianSceneSummary,
@@ -225,6 +266,13 @@ def finalize_gaussian_raster_product(
         height_map,
         (x_min, x_max, y_min, y_max),
     )
+    seam_path, seam_report = _write_seam_report(
+        config,
+        filtering_phase,
+        rgb,
+        height_map,
+        (x_min, x_max, y_min, y_max),
+    )
     render = _render_geometry(filtering_phase)
     geo_x_min, geo_y_max = georeference_raster_origin(
         x_min,
@@ -311,6 +359,8 @@ def finalize_gaussian_raster_product(
         "facade_frame_report": str(report_path) if report_path else None,
         "gaussian_coverage_report": coverage_path,
         "gaussian_coverage": coverage,
+        "gaussian_seam_report": seam_path,
+        "gaussian_seams": seam_report,
         "scale_source": summary.scale_source,
         "meters_per_model_unit": summary.colmap_to_meters,
         "registered_cameras": summary.registered_camera_count,

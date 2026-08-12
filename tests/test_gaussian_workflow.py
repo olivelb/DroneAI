@@ -15,6 +15,7 @@ if str(APP1_ROOT) not in sys.path:
 
 workflow = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 raster_product = importlib.import_module("gaussian_ortho.raster_product")
+seam_quality = importlib.import_module("gaussian_ortho.seam_quality")
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
@@ -337,6 +338,20 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
     assert np.all(result.result["rgb"][:, :10] == 40)
     assert np.all(result.result["rgb"][:, 10:] == 180)
     assert np.isfinite(result.result["height"]).all()
+
+    seam_report = seam_quality.evaluate_core_seams(
+        result.result["rgb"],
+        result.result["height"],
+        extent=result.result["extent"],
+        gsd=1.0,
+        geo_origin=np.zeros(3),
+        partitions=partitions,
+    )
+    assert seam_report["seam_count"] == 1
+    seam = seam_report["seams"][0]
+    assert seam["orientation"] == "vertical"
+    assert seam["rgb_absolute_8bit"]["mean"] == pytest.approx(140.0)
+    assert seam["height_absolute"]["p95"] == pytest.approx(140.0)
 
 
 def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
