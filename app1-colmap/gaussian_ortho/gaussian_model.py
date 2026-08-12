@@ -8,8 +8,8 @@ Each Gaussian is parametrised by:
   - colour via spherical harmonics (SH) coefficients
   - optional SH coefficients for view-dependent opacity (`opacity-SH-v1`)
 
-Based on Kerbl et al. 2023 (3DGS), with the opacity-only FAGK ablation from
-TOrtho-Gaussian. Scale and rotation remain view-independent.
+Based on Kerbl et al. 2023 (3DGS), with DroneAI's directional opacity-logit
+extension. Scale and rotation remain view-independent; this is not FAGK.
 """
 from __future__ import annotations
 

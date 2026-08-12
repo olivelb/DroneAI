@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -49,6 +49,31 @@ class CellBounds:
     model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR
     model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET
 
+    def as_dict(self) -> dict[str, object]:
+        """Return a portable representation for cross-Job artifacts."""
+        return {
+            "core": [
+                self.core_x_min,
+                self.core_x_max,
+                self.core_y_min,
+                self.core_y_max,
+            ],
+            "buffer": [
+                self.buffer_x_min,
+                self.buffer_x_max,
+                self.buffer_y_min,
+                self.buffer_y_max,
+            ],
+            "row": self.row,
+            "col": self.col,
+            "include_core_x_max": self.include_core_x_max,
+            "include_core_y_max": self.include_core_y_max,
+            "model_to_ground_linear": [
+                list(row) for row in self.model_to_ground_linear
+            ],
+            "model_to_ground_offset": list(self.model_to_ground_offset),
+        }
+
     def project_model_points(self, points: Any, *, array_module: Any) -> Any:
         """Project model XYZ coordinates into the cell's ground XY frame."""
         linear = array_module.asarray(
@@ -89,6 +114,86 @@ class CellBounds:
             & (ground[:, 1] <= self.buffer_y_max)
         )
 
+
+def _finite_vector(
+    payload: object,
+    *,
+    name: str,
+    length: int,
+) -> tuple[float, ...]:
+    if (
+        not isinstance(payload, list)
+        or len(payload) != length
+        or any(
+            isinstance(value, bool) or not isinstance(value, (float, int))
+            for value in payload
+        )
+    ):
+        raise ValueError(f"Gaussian partition {name} is invalid")
+    result = tuple(float(value) for value in payload)
+    if not all(math.isfinite(value) for value in result):
+        raise ValueError(f"Gaussian partition {name} must be finite")
+    return result
+
+
+def cell_bounds_from_dict(payload: object) -> CellBounds:
+    """Validate and hydrate a projected-ground cell artifact."""
+    if not isinstance(payload, dict):
+        raise ValueError("Gaussian partition bounds are invalid")
+    core = _finite_vector(payload.get("core"), name="core", length=4)
+    buffer = _finite_vector(payload.get("buffer"), name="buffer", length=4)
+    linear_raw = payload.get("model_to_ground_linear")
+    if not isinstance(linear_raw, list) or len(linear_raw) != 2:
+        raise ValueError("Gaussian partition ground transform is invalid")
+    linear_rows = tuple(
+        _finite_vector(row, name="ground transform", length=3)
+        for row in linear_raw
+    )
+    offset = _finite_vector(
+        payload.get("model_to_ground_offset"),
+        name="ground offset",
+        length=2,
+    )
+    row = payload.get("row")
+    col = payload.get("col")
+    include_x = payload.get("include_core_x_max")
+    include_y = payload.get("include_core_y_max")
+    if (
+        isinstance(row, bool)
+        or not isinstance(row, int)
+        or row < 0
+        or isinstance(col, bool)
+        or not isinstance(col, int)
+        or col < 0
+        or not isinstance(include_x, bool)
+        or not isinstance(include_y, bool)
+    ):
+        raise ValueError("Gaussian partition grid metadata is invalid")
+    if not (
+        core[0] < core[1]
+        and core[2] < core[3]
+        and buffer[0] <= core[0]
+        and buffer[1] >= core[1]
+        and buffer[2] <= core[2]
+        and buffer[3] >= core[3]
+    ):
+        raise ValueError("Gaussian partition core/buffer ordering is invalid")
+    return CellBounds(
+        core_x_min=core[0],
+        core_x_max=core[1],
+        core_y_min=core[2],
+        core_y_max=core[3],
+        buffer_x_min=buffer[0],
+        buffer_x_max=buffer[1],
+        buffer_y_min=buffer[2],
+        buffer_y_max=buffer[3],
+        row=row,
+        col=col,
+        include_core_x_max=include_x,
+        include_core_y_max=include_y,
+        model_to_ground_linear=cast(GroundLinear, linear_rows),
+        model_to_ground_offset=cast(GroundOffset, offset),
+    )
 
 def ground_projection_from_sim3(
     transform_data: Sim3Transform,

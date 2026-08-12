@@ -7,9 +7,9 @@ to swap in from the existing pipeline.
 
 Pipeline:
   1. Load COLMAP reconstruction + alignment transform
-  2. Partition scene (VastGaussian, if m x n > 1 x 1)
+  2. Plan projected-ground resident core/buffer partitions when required
   3. Train Gaussian model per cell via the selected headless backend
-  4. Merge cell models
+  4. Persist core-owned cell models without a global GPU merge
   5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
   6. Write GeoTIFF
 """
@@ -567,10 +567,28 @@ def _apply_required_geographic_partition(
 
 
 @dataclass
+class GaussianPartitionModel:
+    """One core-owned model that can be loaded independently on a GPU."""
+
+    bounds: CellBounds
+    model_path: str
+    gaussian_count: int
+
+
+@dataclass
 class GaussianTrainingState:
-    merged_model: GaussianModel
-    final_ply: str
+    merged_model: GaussianModel | None
+    final_ply: str | None
     facade_subset_result: dict[str, object] | None
+    partition_models: tuple[GaussianPartitionModel, ...] = ()
+
+    @property
+    def total_gaussians(self) -> int:
+        if self.partition_models:
+            return sum(part.gaussian_count for part in self.partition_models)
+        if self.merged_model is None:
+            return 0
+        return int(self.merged_model.num_gaussians)
 
 
 @dataclass(frozen=True)
@@ -722,10 +740,11 @@ def train_and_merge_gaussian_models(
     merge_models_fn: MergeModels,
     cupy_module: Any,
 ) -> GaussianTrainingState:
-    """Train/reuse every cell, merge it, and persist the local-frame PLY."""
+    """Train cells and persist core-owned models within the resident cap."""
     if scene_state.point_cloud is None:
         raise RuntimeError("Sparse point cloud is unavailable for training")
     cell_models: list[tuple[CellBounds | None, GaussianModel]] = []
+    partition_models: list[GaussianPartitionModel] = []
     n_cells = len(scene_state.cells)
     facade_subset_result: dict[str, object] | None = None
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
@@ -898,43 +917,71 @@ def train_and_merge_gaussian_models(
             f"[{backend.name}] Loaded {model.num_gaussians} Gaussians from {training_result.ply_path}",
             config.report_fn,
         )
-        cell_models.append((cell_bounds, model))
+        if scene_state.use_partition:
+            if cell_bounds is None:
+                raise RuntimeError("Partitioned Gaussian cell has no core bounds")
+            core_mask = cell_bounds.core_mask(
+                model.positions,
+                array_module=cupy_module,
+            )
+            model.filter_by_mask(core_mask)
+            if model.num_gaussians == 0:
+                raise RuntimeError(f"Gaussian {cell_label} core retained no splats")
+            core_path = os.path.join(cell_output, "core.ply")
+            model.active_sh_degree = config.sh_degree
+            model.save_ply(core_path)
+            partition_models.append(
+                GaussianPartitionModel(
+                    bounds=cell_bounds,
+                    model_path=core_path,
+                    gaussian_count=model.num_gaussians,
+                )
+            )
+            _report(
+                config.vol_id,
+                "GAUSS",
+                pct_end,
+                f"[{backend.name}] Persisted {model.num_gaussians} "
+                f"core-owned Gaussians for {cell_label}",
+                config.report_fn,
+            )
+            del model
+            import gc
 
-    if scene_state.use_partition and len(cell_models) > 1:
-        _report(
-            config.vol_id,
-            "GAUSS",
-            82,
-            "Merging cell models…",
-            config.report_fn,
-        )
-        partition_models = [
-            (cell, model)
-            for cell, model in cell_models
-            if cell is not None
-        ]
-        merged_model = merge_models_fn(partition_models)
+            gc.collect()
+            cupy_module.get_default_memory_pool().free_all_blocks()
+        else:
+            cell_models.append((cell_bounds, model))
+
+    if scene_state.use_partition:
+        if not partition_models:
+            raise RuntimeError("Partitioned training produced no resident core models")
+        merged_model = None
+        final_ply = None
         _report(
             config.vol_id,
             "GAUSS",
             85,
-            f"Merged model: {merged_model.num_gaussians} Gaussians",
+            f"Resident training complete: {len(partition_models)} core models, "
+            f"{sum(part.gaussian_count for part in partition_models):,} "
+            "Gaussians total without a global GPU merge",
             config.report_fn,
         )
     else:
+        if not cell_models:
+            raise RuntimeError("Gaussian training produced no model")
         merged_model = cell_models[0][1]
-
-    final_ply = os.path.join(config.checkpoint_dir, "final.ply")
-    os.makedirs(config.checkpoint_dir, exist_ok=True)
-    merged_model.active_sh_degree = config.sh_degree
-    merged_model.save_ply(final_ply)
-    _report(
-        config.vol_id,
-        "GAUSS",
-        88,
-        f"Saved final model: {final_ply}",
-        config.report_fn,
-    )
+        final_ply = os.path.join(config.checkpoint_dir, "final.ply")
+        os.makedirs(config.checkpoint_dir, exist_ok=True)
+        merged_model.active_sh_degree = config.sh_degree
+        merged_model.save_ply(final_ply)
+        _report(
+            config.vol_id,
+            "GAUSS",
+            88,
+            f"Saved final model: {final_ply}",
+            config.report_fn,
+        )
     scene_state.cells = []
     del cell_models
     import gc
@@ -945,6 +992,7 @@ def train_and_merge_gaussian_models(
         merged_model=merged_model,
         final_ply=final_ply,
         facade_subset_result=facade_subset_result,
+        partition_models=tuple(partition_models),
     )
 
 
@@ -962,6 +1010,11 @@ def prepare_gaussian_render_state(
 ) -> GaussianRenderState:
     """Align, filter, and bound the trained model for raster rendering."""
     model = training_state.merged_model
+    if model is None or training_state.final_ply is None:
+        raise RuntimeError(
+            "Partitioned Gaussian models require the resident streamed "
+            "filtering path; a global GPU merge is intentionally forbidden."
+        )
     cameras = scene_state.registered_cameras
     geo_origin: np.ndarray = np.zeros(3, dtype=np.float64)
     frame_origin: np.ndarray | None = None
@@ -1232,6 +1285,10 @@ def execute_gaussian_filtering_phase(
         import cupy as cp
 
         cupy_module = cp
+    if training_phase.training_state.merged_model is None:
+        raise RuntimeError(
+            "Partitioned Gaussian filtering must stream resident core models"
+        )
     input_gaussians = int(training_phase.training_state.merged_model.num_gaussians)
     render_state = prepare_gaussian_render_state(
         config,
@@ -1604,6 +1661,6 @@ def generate_gaussian_orthophoto(
         filtering_phase,
         rasterization_phase,
         summary,
-        final_ply=training_phase.training_state.final_ply,
+        final_ply=cast(str, training_phase.training_state.final_ply),
         cupy_version=cp.__version__,
     )

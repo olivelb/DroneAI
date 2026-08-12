@@ -8,7 +8,11 @@ from gaussian_ortho.camera_footprint import (
     geographic_scene_frame,
 )
 from gaussian_ortho.colmap_loader import CameraInfo, PointCloud
-from gaussian_ortho.partition import partition_scene, plan_partition_grid
+from gaussian_ortho.partition import (
+    cell_bounds_from_dict,
+    partition_scene,
+    plan_partition_grid,
+)
 from gaussian_ortho.scene_info import build_scene_info
 
 
@@ -45,6 +49,34 @@ def _flat_points() -> np.ndarray:
     return np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size))).astype(
         np.float32
     )
+
+
+def test_projected_cell_bounds_have_a_strict_portable_round_trip() -> None:
+    points = _flat_points()
+    cloud = PointCloud(
+        points,
+        np.zeros((points.shape[0], 3)),
+        np.zeros((points.shape[0], 3)),
+    )
+    scene = build_scene_info([_camera()], [], cloud)
+    cell, _cell_scene = partition_scene(
+        scene,
+        1,
+        2,
+        0.2,
+        min_cameras=1,
+        geographic_frame=geographic_scene_frame(
+            points,
+            IDENTITY_SIM3,
+            terrain_margin_m=0.0,
+        ),
+    )[0]
+
+    assert cell_bounds_from_dict(cell.as_dict()) == cell
+    malformed = cell.as_dict()
+    malformed["core"] = [1.0, 0.0, 0.0, 1.0]
+    with pytest.raises(ValueError, match="ordering"):
+        cell_bounds_from_dict(malformed)
 
 
 def test_calibrated_ground_buffer_produces_native_crop_with_margin() -> None:

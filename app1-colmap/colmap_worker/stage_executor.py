@@ -244,6 +244,7 @@ def run_gaussian_training_stage(
         )
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         from gaussian_ortho.generate_gaussian_orthophoto import (
+            GaussianPartitionModel,
             execute_gaussian_training_phase,
         )
         from gaussian_ortho.phase_artifacts import write_training_artifact
@@ -262,30 +263,75 @@ def run_gaussian_training_stage(
             trainer_backend=product.trainer_backend,
         )
         control.raise_if_cancelled()
-        model_path = workspace / ".droneai" / "gaussian" / "training" / "final.ply"
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(phase.training_state.final_ply, model_path)
+        model_root = workspace / ".droneai" / "gaussian" / "training"
+        model_root.mkdir(parents=True, exist_ok=True)
+        model_path: Path | None = None
+        partition_models = tuple(
+            getattr(phase.training_state, "partition_models", ())
+        )
+        if partition_models:
+            copied_partitions: list[GaussianPartitionModel] = []
+            for partition in partition_models:
+                target = (
+                    model_root
+                    / "partitions"
+                    / f"cell-{partition.bounds.row}-{partition.bounds.col}.ply"
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(partition.model_path, target)
+                copied_partitions.append(
+                    replace(partition, model_path=str(target))
+                )
+            phase = replace(
+                phase,
+                training_state=replace(
+                    phase.training_state,
+                    partition_models=tuple(copied_partitions),
+                ),
+            )
+        else:
+            if phase.training_state.final_ply is None:
+                raise RuntimeError("Gaussian training produced no publishable model")
+            model_path = model_root / "final.ply"
+            shutil.copy2(phase.training_state.final_ply, model_path)
         write_training_artifact(
             workspace,
             product.config,
             phase,
             model_path=model_path,
         )
+        role_overrides = {
+            ".droneai/gaussian-training-state.json": "gaussian-training-state",
+        }
+        if model_path is not None:
+            role_overrides[model_path.relative_to(workspace).as_posix()] = (
+                "gaussian-model"
+            )
+        for partition in getattr(phase.training_state, "partition_models", ()):
+            role_overrides[
+                Path(partition.model_path).relative_to(workspace).as_posix()
+            ] = "gaussian-partition-model"
         published = _publish_stage_workspace(
             context,
             control,
             workspace,
             stage="gaussian-training",
-            role_overrides={
-                ".droneai/gaussian-training-state.json": "gaussian-training-state",
-                model_path.relative_to(workspace).as_posix(): "gaussian-model",
-            },
+            role_overrides=role_overrides,
         )
         capacity_plan = (
             phase.capacity_plan.as_dict()
             if phase.capacity_plan is not None
             else None
         )
+        training_gaussian_count = getattr(
+            phase.training_state,
+            "total_gaussians",
+            None,
+        )
+        if training_gaussian_count is None:
+            training_gaussian_count = (
+                phase.training_state.merged_model.num_gaussians
+            )
         return StageExecutionResult(
             kind="gaussian_training_workspace",
             uri=published.uri,
@@ -295,12 +341,24 @@ def run_gaussian_training_stage(
                 "manifest_key": published.manifest_key,
                 "file_count": published.file_count,
                 "state_file": ".droneai/gaussian-training-state.json",
-                "model_file": model_path.relative_to(workspace).as_posix(),
-                "gaussian_count": phase.training_state.merged_model.num_gaussians,
+                "model_file": (
+                    model_path.relative_to(workspace).as_posix()
+                    if model_path is not None
+                    else None
+                ),
+                "model_files": [
+                    Path(partition.model_path).relative_to(workspace).as_posix()
+                    for partition in getattr(
+                        phase.training_state,
+                        "partition_models",
+                        (),
+                    )
+                ],
+                "gaussian_count": int(training_gaussian_count),
                 "gaussian_capacity": capacity_plan,
             },
             quality_metrics={
-                "gaussian_count": phase.training_state.merged_model.num_gaussians,
+                "gaussian_count": int(training_gaussian_count),
             },
             provenance={
                 "stage_adapter": "gaussian-training-v1",
@@ -354,6 +412,13 @@ def run_gaussian_filtering_stage(
             prepare_checkpoints=False,
         )
         artifact = read_training_artifact(workspace, product.config)
+        if getattr(artifact, "partition_models", ()):
+            raise RuntimeError(
+                "Partitioned Gaussian filtering is not enabled until the "
+                "resident streamed filter/raster handoff is qualified"
+            )
+        if artifact.model_path is None:
+            raise RuntimeError("Gaussian training artifact has no global model")
         model = GaussianModel(
             sh_degree=product.config.sh_degree,
             opacity_sh_enabled=product.config.opacity_sh_enabled,

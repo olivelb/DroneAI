@@ -56,8 +56,9 @@ remain before the new HQ profile can be enabled.
    automatic compact geographic grid are implemented. For the 209,400 m²
    reference case at 2 cm and 3.6 px spacing, it resolves about 40.4 M merged
    Gaussians, seven minimum resident cells with 20% buffer, and a 12 M hard
-   per-cell cap. Runtime activation remains blocked on streamed products so a
-   later merge cannot defeat that resident bound.**
+   per-cell cap. Training now persists each core-owned model and releases its
+   GPU allocation before the next cell; the old global GPU merge is forbidden.
+   Runtime activation remains blocked on streamed filtering/raster products.**
 5. Merge only buffer-supported content into each core. Record overlap,
    per-core density and seam evidence in the stage artifacts.
 

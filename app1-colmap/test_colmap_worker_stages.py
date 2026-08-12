@@ -26,6 +26,11 @@ from gaussian_ortho.capacity_planning import (
     GaussianCapacityPlan,
     GaussianDensityAssessment,
 )
+from gaussian_ortho.generate_gaussian_orthophoto import (
+    GaussianPartitionModel,
+    GaussianTrainingState,
+)
+from gaussian_ortho.partition import CellBounds
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
@@ -358,6 +363,54 @@ class TestColmapStageHelpers(unittest.TestCase):
                     tmp_dir,
                     replace(config, cap_max=config.cap_max + 1),
                 )
+
+            partition_path = Path(tmp_dir, "training", "cell-0-0.ply")
+            partition_path.write_bytes(b"core-ply")
+            bounds = CellBounds(
+                core_x_min=0.0,
+                core_x_max=10.0,
+                core_y_min=0.0,
+                core_y_max=10.0,
+                buffer_x_min=-2.0,
+                buffer_x_max=12.0,
+                buffer_y_min=-2.0,
+                buffer_y_max=12.0,
+                row=0,
+                col=0,
+                include_core_x_max=True,
+                include_core_y_max=True,
+            )
+            partition_phase = types.SimpleNamespace(
+                backend_name="dronegs",
+                trainer_binary_sha256="a" * 64,
+                training_state=GaussianTrainingState(
+                    merged_model=None,
+                    final_ply=None,
+                    facade_subset_result=None,
+                    partition_models=(
+                        GaussianPartitionModel(
+                            bounds=bounds,
+                            model_path=str(partition_path),
+                            gaussian_count=1_200_000,
+                        ),
+                    ),
+                ),
+                capacity_plan=phase.capacity_plan,
+            )
+            phase_artifacts.write_training_artifact(
+                tmp_dir,
+                config,
+                partition_phase,
+                model_path=None,
+            )
+            partition_artifact = phase_artifacts.read_training_artifact(
+                tmp_dir,
+                config,
+            )
+            self.assertIsNone(partition_artifact.model_path)
+            self.assertEqual(partition_artifact.gaussian_count, 1_200_000)
+            self.assertEqual(len(partition_artifact.partition_models), 1)
+            self.assertEqual(partition_artifact.partition_models[0].bounds, bounds)
 
             filtered_model_path = Path(tmp_dir, "filtering", "filtered.ply")
             filtered_model_path.parent.mkdir()
