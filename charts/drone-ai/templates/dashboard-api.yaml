@@ -18,6 +18,9 @@
 {{- fail "dashboardApi.controlWorker.enabled must remain true when the HTTP API uses an RLS database role" }}
 {{- end }}
 {{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
+{{- if eq .Values.stageJobs.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey }}
+{{- fail "stageJobs.databaseUrlSecretKey must identify a non-owner PostgreSQL role distinct from the operator role in staging and production" }}
+{{- end }}
 {{- $seenCredentialSecrets := dict }}
 {{- range $stage := list "reconstruction" "gaussian_training" "gaussian_filtering" "rasterization" "detection" }}
 {{- $secretName := index $.Values.stageJobs.credentialSecrets $stage | default "" }}
@@ -139,7 +142,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: {{ include "drone-ai.storageSecretName" . }}
-              key: {{ .Values.storage.databaseUrlSecretKey }}
+              key: {{ .Values.dashboardApi.databaseUrlSecretKey }}
         volumeMounts:
         - name: tmp
           mountPath: /tmp

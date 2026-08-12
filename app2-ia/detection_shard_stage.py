@@ -95,7 +95,7 @@ def run_detection_shard_subtask(
             plan,
         )
         control.raise_if_cancelled()
-        with get_session() as session:
+        with get_session(organization_id=context.organization_id) as session:
             publish_detection_shard_result(
                 session,
                 run_id=context.run_id,
@@ -115,7 +115,7 @@ def run_detection_finalizer(
     if not artifact_selective_restore_enabled():
         raise ValueError("Indexed detection finalizer requires Manifest v2 restore")
     plan = _durable_plan(context)
-    with get_session() as session:
+    with get_session(organization_id=context.organization_id) as session:
         receipts = complete_detection_shard_receipts(
             session,
             run_id=context.run_id,

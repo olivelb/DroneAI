@@ -19,12 +19,15 @@ The request-serving dashboard API must connect as a PostgreSQL role that is:
 - `NOSUPERUSER` and `NOBYPASSRLS`;
 - limited to `CONNECT`, schema `USAGE`, table DML and sequence use.
 
-Migrations and background workers use the operator connection because they
+Migrations and control workers use the operator connection because they
 perform schema changes or intentionally reconcile work across organizations.
-Helm therefore reads two URLs from the storage Secret:
+Bounded compute Jobs are not control workers: they are tenant-bound and must
+also use RLS. Helm therefore separates three credential classes:
 
-- `database-url`: migration and worker role;
+- `database-url`: migration and cross-tenant control-worker role;
 - `api-database-url`: non-owner dashboard API role.
+- `stage-database-url`: non-owner bounded-executor role, supplied in each
+  stage-specific Secret.
 
 Staging and production rendering fails if both workloads reference the same
 Secret key. API readiness also evaluates
@@ -77,6 +80,26 @@ function with a fixed search path that returns only organization and owner.
 Persistence then runs in the resulting tenant transaction. The request-serving
 container never receives the operator database URL for this path.
 
+The dashboard API schema-wait init container also uses `api-database-url`; no
+container in the request-serving Pod receives the operator URL.
+
+## Bounded executor transaction context
+
+The control worker injects `DRONEAI_ORGANIZATION_ID`, the durable mission ID,
+`vol_id`, owner and `Mission.workspace_prefix` into every Job. The executor
+opens every claim, heartbeat, cancellation, shard-receipt and publication
+transaction with that organization. It rejects any mismatch between the Job
+binding and the durable mission, and in protected environments verifies that
+PostgreSQL reports RLS active for the stage graph. An owner, superuser or
+`BYPASSRLS` credential therefore fails before scientific work starts.
+
+Provision each stage role as `NOSUPERUSER`, `NOBYPASSRLS`, non-owner. Grant
+only `SELECT` on `missions`; `SELECT, UPDATE` on `mission_stage_runs`;
+`SELECT, INSERT` on `mission_artifacts` and `mission_artifact_parents`; and the
+corresponding sequences. Detection additionally needs `SELECT, INSERT` on
+`detection_shard_receipts` and its sequence. RLS supplies the tenant boundary;
+the distinct stage roles keep compromise blast radius explicit.
+
 ## Protected graph
 
 Migration `0026` enables one fail-closed policy on:
@@ -112,6 +135,8 @@ proves:
 - authentication sees only the nominated credential identity;
 - transaction context does not survive pool reuse;
 - the realtime audience function does not unlock tenant rows;
+- a tenant-bound executor can claim and update its own run but cannot read or
+  update another organization run or publish an artifact for it;
 - the operator role still performs cross-organization worker work.
 
 These checks complement, rather than replace, HTTP authorization tests and the

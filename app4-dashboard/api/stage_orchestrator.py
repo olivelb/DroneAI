@@ -237,7 +237,11 @@ def _storage_secret_environment(secret_name: str) -> tuple[SecretEnvironment, ..
             os.getenv(key_variable, default_key),
         )
         for environment_name, key_variable, default_key in (
-            ("DATABASE_URL", "DRONEAI_STAGE_DATABASE_URL_SECRET_KEY", "database-url"),
+            (
+                "DATABASE_URL",
+                "DRONEAI_STAGE_DATABASE_URL_SECRET_KEY",
+                "stage-database-url",
+            ),
             ("S3_ACCESS_KEY", "DRONEAI_STAGE_S3_ACCESS_KEY_SECRET_KEY", "s3-access-key"),
             ("S3_SECRET_KEY", "DRONEAI_STAGE_S3_SECRET_KEY_SECRET_KEY", "s3-secret-key"),
         )
@@ -287,6 +291,8 @@ def _scoped_stage_secret_environment(
 
 def settings_from_environment() -> StageOrchestratorSettings:
     enabled = stage_jobs_enabled()
+    deployment_environment = os.getenv("DRONEAI_ENV", "development").strip().lower()
+    protected_environment = deployment_environment in {"staging", "production"}
     detection_fanout_enabled = _strict_bool(
         "DRONEAI_DETECTION_FANOUT_ENABLED"
     )
@@ -329,6 +335,8 @@ def settings_from_environment() -> StageOrchestratorSettings:
         )
         if name in os.environ
     )
+    if enabled and protected_environment:
+        plain_environment += (("DRONEAI_STAGE_RLS_REQUIRED", "true"),)
     secret_environment = _storage_secret_environment(storage_secret)
     detection_environment = (
         ("HF_HOME", "/cache/huggingface"),
@@ -559,10 +567,19 @@ def _reserved_job(
         if not isinstance(work_drive, str) or work_drive not in settings.work_drives:
             raise ValueError("Stage Job work_drive is not configured")
         work_volume = settings.work_drives[work_drive]
+    organization_id = cast(str | None, mission.organization_id)
+    workspace_prefix = cast(str | None, mission.workspace_prefix)
+    if not organization_id or not workspace_prefix:
+        raise ValueError(
+            "Bounded stage execution requires a durable organization and "
+            "mission workspace prefix"
+        )
     request = StageJobRequest(
         run_id=cast(str, run.run_id),
         mission_id=cast(int, mission.id),
+        organization_id=organization_id,
         vol_id=cast(str, mission.vol_id),
+        workspace_prefix=workspace_prefix,
         owner_subject=cast(str, mission.owner_subject),
         stage=stage,
         resource_class=cast(ResourceClassId, run.resource_class),

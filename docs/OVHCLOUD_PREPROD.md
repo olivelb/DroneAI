@@ -447,8 +447,9 @@ durable credential.
 The shared storage Secret is sufficient only while bounded stage Jobs remain
 disabled. Before setting `stageJobs.enabled=true`, provision the five existing
 Secrets named by `stageJobs.credentialSecrets` in the preproduction values.
-Each must contain `database-url`, `s3-access-key` and `s3-secret-key`, using a
-distinct least-privilege database and object-storage principal. Helm rejects a
+Each must contain `stage-database-url`, `s3-access-key` and `s3-secret-key`,
+using a distinct non-owner `NOBYPASSRLS` database role and least-privilege
+object-storage principal. Helm rejects a
 missing entry or a reused Secret name; the activation review must additionally
 verify that the underlying principals are not copies of the same credentials.
 See the [scoped credential gate](OPERATIONS.md#scoped-credential-gate-for-stage-jobs).

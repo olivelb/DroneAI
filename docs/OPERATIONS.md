@@ -61,8 +61,10 @@ filtering or rasterization without a separate contract and qualification.
 Every one-shot executor in `staging` or `production` must use its own existing
 Kubernetes Secret. Configure all five names under
 `stageJobs.credentialSecrets`; Helm and the API both fail closed if an entry is
-missing or if two stages share a Secret. Each Secret exposes the standard
-`database-url`, `s3-access-key` and `s3-secret-key` keys. Detection receives its
+missing or if two stages share a Secret. Each Secret exposes
+`stage-database-url`, `s3-access-key` and `s3-secret-key`. The database URL must
+authenticate as a non-owner `NOBYPASSRLS` stage role; protected executors fail
+before claiming work when PostgreSQL reports that RLS is inactive. Detection receives its
 separate read-only Hugging Face token in addition to its stage credentials.
 
 The distinct Secret names are only the enforceable deployment boundary. Before

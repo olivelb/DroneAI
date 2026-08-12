@@ -9,6 +9,8 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, cast
 from uuid import NAMESPACE_URL, uuid5
 
+from sqlalchemy import text
+
 from shared.database import (
     Mission,
     MissionArtifact,
@@ -18,6 +20,7 @@ from shared.database import (
 )
 from shared.stage_artifacts import mark_stage_run_succeeded, release_ready_stage_runs
 from shared.stage_contracts import STAGE_ARTIFACT_KINDS, StageId
+from shared.tenancy import mission_prefix
 
 
 class StageExecutionCancelled(RuntimeError):
@@ -53,7 +56,9 @@ class StageArtifactInput:
 class StageExecutionContext:
     run_id: str
     mission_id: int
+    organization_id: str
     vol_id: str
+    workspace_prefix: str
     owner_subject: str
     stage: StageId
     attempt: int
@@ -102,17 +107,86 @@ class StageSubtaskHandler(Protocol):
     ) -> None: ...
 
 
+_STAGE_RLS_TABLES = (
+    "missions",
+    "mission_stage_runs",
+    "mission_artifacts",
+    "mission_artifact_parents",
+    "detection_shard_receipts",
+)
+
+
+def _require_stage_rls(session: Any) -> None:
+    if os.getenv("DRONEAI_STAGE_RLS_REQUIRED", "").strip().lower() != "true":
+        return
+    if session.get_bind().dialect.name != "postgresql":
+        raise RuntimeError("Stage row-level security requires PostgreSQL")
+    active = session.execute(
+        text(
+            "SELECT bool_and(row_security_active(table_name::regclass)) "
+            "FROM unnest(CAST(:tables AS text[])) AS table_name"
+        ),
+        {"tables": list(_STAGE_RLS_TABLES)},
+    ).scalar_one()
+    if active is not True:
+        raise RuntimeError(
+            "Stage database role must be non-owner, NOBYPASSRLS, and "
+            "covered by tenant row-level security"
+        )
+
+
 def load_stage_execution_context(
     run_id: str,
     expected_stage: StageId,
+    *,
+    expected_organization_id: str | None = None,
+    expected_mission_id: int | None = None,
+    expected_vol_id: str | None = None,
+    expected_workspace_prefix: str | None = None,
+    expected_owner_subject: str | None = None,
 ) -> StageExecutionContext:
     """Claim or rejoin one durable Kubernetes stage execution."""
 
-    with get_session() as session:
+    with get_session(organization_id=expected_organization_id) as session:
+        _require_stage_rls(session)
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == run_id
         ).with_for_update().one()
         mission = session.query(Mission).filter(Mission.id == run.mission_id).one()
+        durable_binding = {
+            "organization_id": cast(str, mission.organization_id),
+            "mission_id": cast(int, mission.id),
+            "vol_id": cast(str, mission.vol_id),
+            "workspace_prefix": cast(str | None, mission.workspace_prefix),
+            "owner_subject": cast(str, mission.owner_subject),
+        }
+        expected_binding = {
+            "organization_id": expected_organization_id,
+            "mission_id": expected_mission_id,
+            "vol_id": expected_vol_id,
+            "workspace_prefix": expected_workspace_prefix,
+            "owner_subject": expected_owner_subject,
+        }
+        if not durable_binding["workspace_prefix"]:
+            raise ValueError("Mission has no durable workspace prefix")
+        canonical_prefix = mission_prefix(
+            cast(str, durable_binding["organization_id"]),
+            cast(str, durable_binding["vol_id"]),
+        )
+        if durable_binding["workspace_prefix"] != canonical_prefix:
+            raise ValueError(
+                "Mission workspace prefix is outside its tenant namespace"
+            )
+        mismatches = [
+            name
+            for name, expected in expected_binding.items()
+            if expected is not None and durable_binding[name] != expected
+        ]
+        if mismatches:
+            raise ValueError(
+                "Stage Job binding does not match durable mission fields: "
+                + ", ".join(mismatches)
+            )
         if run.stage != expected_stage:
             raise ValueError(
                 f"Stage Job expected {expected_stage}, durable run is {run.stage}"
@@ -146,7 +220,9 @@ def load_stage_execution_context(
         return StageExecutionContext(
             run_id=cast(str, run.run_id),
             mission_id=cast(int, mission.id),
+            organization_id=cast(str, mission.organization_id),
             vol_id=cast(str, mission.vol_id),
+            workspace_prefix=cast(str, mission.workspace_prefix),
             owner_subject=cast(str, mission.owner_subject),
             stage=cast(StageId, run.stage),
             attempt=cast(int, run.attempt),
@@ -180,10 +256,16 @@ def load_stage_execution_context(
 class StageExecutionControl:
     """Background heartbeat and cooperative cancellation signal."""
 
-    def __init__(self, run_id: str, interval_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        run_id: str,
+        organization_id: str | None,
+        interval_seconds: float = 15.0,
+    ) -> None:
         if interval_seconds <= 0:
             raise ValueError("Heartbeat interval must be positive")
         self.run_id = run_id
+        self.organization_id = organization_id
         self.interval_seconds = interval_seconds
         self._stop_event = threading.Event()
         self._cancelled = threading.Event()
@@ -196,7 +278,7 @@ class StageExecutionControl:
         return self._cancelled.is_set()
 
     def heartbeat(self) -> bool:
-        with get_session() as session:
+        with get_session(organization_id=self.organization_id) as session:
             run = session.query(MissionStageRun).filter(
                 MissionStageRun.run_id == self.run_id
             ).with_for_update().one()
@@ -264,7 +346,7 @@ def _publish_result(
             f"not {result.kind}"
         )
     artifact_id = _artifact_id(context, result)
-    with get_session() as session:
+    with get_session(organization_id=context.organization_id) as session:
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == context.run_id
         ).with_for_update().one()
@@ -332,13 +414,14 @@ def _publish_result(
 
 def _mark_terminal(
     run_id: str,
+    organization_id: str | None,
     status: str,
     message: str | None,
     *,
     quality_metrics: dict[str, Any] | None = None,
     rejection_evidence: dict[str, Any] | None = None,
 ) -> str:
-    with get_session() as session:
+    with get_session(organization_id=organization_id) as session:
         run = session.query(MissionStageRun).filter(
             MissionStageRun.run_id == run_id
         ).with_for_update().one()
@@ -373,7 +456,27 @@ def _prepare_execution(
     durable_run_id = run_id or os.getenv("DRONEAI_STAGE_RUN_ID", "").strip()
     if not durable_run_id:
         raise ValueError("DRONEAI_STAGE_RUN_ID is required")
-    context = load_stage_execution_context(durable_run_id, expected_stage)
+    organization_id = os.getenv("DRONEAI_ORGANIZATION_ID", "").strip() or None
+    raw_mission_id = os.getenv("DRONEAI_MISSION_ID", "").strip()
+    if raw_mission_id:
+        if not raw_mission_id.isdigit() or int(raw_mission_id) < 1:
+            raise ValueError("DRONEAI_MISSION_ID must be a positive integer")
+        mission_id = int(raw_mission_id)
+    else:
+        mission_id = None
+    context = load_stage_execution_context(
+        durable_run_id,
+        expected_stage,
+        expected_organization_id=organization_id,
+        expected_mission_id=mission_id,
+        expected_vol_id=os.getenv("DRONEAI_VOL_ID", "").strip() or None,
+        expected_workspace_prefix=(
+            os.getenv("DRONEAI_WORKSPACE_PREFIX", "").strip() or None
+        ),
+        expected_owner_subject=(
+            os.getenv("DRONEAI_OWNER_SUBJECT", "").strip() or None
+        ),
+    )
     interval = heartbeat_interval_seconds
     if interval is None:
         interval = float(os.getenv("DRONEAI_STAGE_HEARTBEAT_SECONDS", "15"))
@@ -382,6 +485,7 @@ def _prepare_execution(
 
 def _record_execution_failure(
     durable_run_id: str,
+    organization_id: str | None,
     error: Exception,
 ) -> None:
     """Persist the shared terminal failure policy for every stage executor."""
@@ -389,6 +493,7 @@ def _record_execution_failure(
     rejection = error if isinstance(error, StageQualityGateRejected) else None
     terminal_status = _mark_terminal(
         durable_run_id,
+        organization_id,
         "failed",
         str(error)[:4000],
         quality_metrics=(
@@ -417,15 +522,28 @@ def execute_one_shot_stage(
         heartbeat_interval_seconds,
     )
     try:
-        with StageExecutionControl(durable_run_id, interval) as control:
+        with StageExecutionControl(
+            durable_run_id,
+            context.organization_id,
+            interval,
+        ) as control:
             result = handler(context, control)
             control.raise_if_cancelled()
         return _publish_result(context, result)
     except StageExecutionCancelled:
-        _mark_terminal(durable_run_id, "cancelled", None)
+        _mark_terminal(
+            durable_run_id,
+            context.organization_id,
+            "cancelled",
+            None,
+        )
         raise
     except Exception as error:
-        _record_execution_failure(durable_run_id, error)
+        _record_execution_failure(
+            durable_run_id,
+            context.organization_id,
+            error,
+        )
         raise
 
 
@@ -444,12 +562,25 @@ def execute_stage_subtask(
         heartbeat_interval_seconds,
     )
     try:
-        with StageExecutionControl(durable_run_id, interval) as control:
+        with StageExecutionControl(
+            durable_run_id,
+            context.organization_id,
+            interval,
+        ) as control:
             handler(context, control)
             control.raise_if_cancelled()
     except StageExecutionCancelled:
-        _mark_terminal(durable_run_id, "cancelled", None)
+        _mark_terminal(
+            durable_run_id,
+            context.organization_id,
+            "cancelled",
+            None,
+        )
         raise
     except Exception as error:
-        _record_execution_failure(durable_run_id, error)
+        _record_execution_failure(
+            durable_run_id,
+            context.organization_id,
+            error,
+        )
         raise
