@@ -18,6 +18,7 @@ SCOPES: Final = (
     "docs",
     "dronegs",
     "migrations",
+    "integration",
     "frontend",
     "frontend_container",
     "containers",
@@ -115,6 +116,21 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             "requirements/dev.txt",
         }:
             selected["migrations"] = True
+        if (
+            _under(path, "shared")
+            or _under(path, "app4-dashboard/api")
+            or _under(path, "alembic")
+            or _under(path, "tests/integration")
+            or path
+            in {
+                ".github/compose.integration.yaml",
+                "alembic.ini",
+                "compose.local.yaml",
+                "requirements/dev.in",
+                "requirements/dev.txt",
+            }
+        ):
+            selected["integration"] = True
         if _under(path, "app4-dashboard/frontend"):
             selected["frontend"] = True
         if path == ".dockerignore" or path in {

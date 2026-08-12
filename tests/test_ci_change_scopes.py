@@ -51,6 +51,7 @@ def test_shared_change_runs_python_and_service_image_jobs() -> None:
         "python",
         "duplication",
         "containers",
+        "integration",
     }
 
 
@@ -60,11 +61,13 @@ def test_schema_change_runs_python_migrations_and_service_images() -> None:
         "duplication",
         "migrations",
         "containers",
+        "integration",
     }
     assert _enabled("alembic/versions/20260806_revision.py") == {
         "python",
         "migrations",
         "containers",
+        "integration",
     }
 
 
@@ -74,11 +77,27 @@ def test_scheduler_changes_run_postgres_locking_contract() -> None:
         "duplication",
         "migrations",
         "containers",
+        "integration",
     }
     assert _enabled("tests/integration/test_stage_scheduler_postgres.py") == {
         "python",
         "migrations",
+        "integration",
     }
+
+
+def test_platform_composition_changes_run_real_service_integration() -> None:
+    assert _enabled("shared/storage.py") == {
+        "python",
+        "duplication",
+        "containers",
+        "integration",
+    }
+    assert _enabled("tests/integration/test_platform_composition.py") == {
+        "python",
+        "integration",
+    }
+    assert _enabled(".github/compose.integration.yaml") == {"integration"}
 
 
 def test_native_dronegs_change_runs_python_and_native_jobs_when_relevant() -> None:

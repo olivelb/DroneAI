@@ -23,6 +23,7 @@ jobs:
       docs: ${{ steps.scopes.outputs.docs }}
       dronegs: ${{ steps.scopes.outputs.dronegs }}
       migrations: ${{ steps.scopes.outputs.migrations }}
+      integration: ${{ steps.scopes.outputs.integration }}
       frontend: ${{ steps.scopes.outputs.frontend }}
       frontend_container: ${{ steps.scopes.outputs.frontend_container }}
       containers: ${{ steps.scopes.outputs.containers }}
@@ -157,6 +158,60 @@ jobs:
         run: >-
           python -m pytest -q -m integration
           tests/integration/test_stage_scheduler_postgres.py
+
+  integration:
+    name: PostgreSQL, Kafka and S3 composition
+    needs: changes
+    if: needs.changes.outputs.integration == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+psycopg2://droneai:droneai-local@localhost:5432/droneai
+      KAFKA_BROKER: localhost:29092
+      S3_ENDPOINT: http://localhost:9000
+      S3_BUCKET: drone-ai
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements/dev.txt
+      - run: python -m pip install --require-hashes --requirement requirements/dev.txt
+      - name: Start real platform dependencies
+        run: |
+          compose=(
+            docker compose
+            --project-name droneai-integration
+            --file compose.local.yaml
+            --file .github/compose.integration.yaml
+          )
+          "${compose[@]}" up --detach --wait postgres kafka minio
+          "${compose[@]}" run --rm --no-deps kafka-init
+          "${compose[@]}" run --rm --no-deps minio-init
+      - name: Apply schema and exercise service composition
+        run: |
+          alembic upgrade head
+          make integration-test PYTHON=python
+      - name: Show dependency logs on failure
+        if: failure()
+        run: >-
+          docker compose
+          --project-name droneai-integration
+          --file compose.local.yaml
+          --file .github/compose.integration.yaml
+          logs --no-color postgres kafka minio
+      - name: Stop integration dependencies
+        if: always()
+        run: >-
+          docker compose
+          --project-name droneai-integration
+          --file compose.local.yaml
+          --file .github/compose.integration.yaml
+          down --volumes
 
   duplication:
     name: Python production duplication
@@ -450,6 +505,7 @@ jobs:
       - python
       - duplication
       - migrations
+      - integration
       - frontend
       - frontend-container
       - container-smoke
@@ -468,6 +524,7 @@ jobs:
             "${{ needs.python.result }}" \
             "${{ needs.duplication.result }}" \
             "${{ needs.migrations.result }}" \
+            "${{ needs.integration.result }}" \
             "${{ needs.frontend.result }}" \
             "${{ needs.frontend-container.result }}" \
             "${{ needs.container-smoke.result }}" \
