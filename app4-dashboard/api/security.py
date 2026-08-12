@@ -28,6 +28,13 @@ from shared.identity import (
     database_authentication_enabled,
     validate_session_identity,
 )
+from shared.platform_identity import (
+    PLATFORM_PRINCIPAL_ORGANIZATION,
+    AuthenticatedPlatformIdentity,
+    authenticate_platform_credential,
+    platform_credential_id_from_token,
+    validate_platform_session_identity,
+)
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
     LOCAL_ORGANIZATION_ID,
@@ -59,6 +66,7 @@ class Principal:
     credential_id: str | None = None
     auth_version: int | None = None
     authentication_method: str = "static"
+    realm: str = "tenant"
 
 
 def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
@@ -70,6 +78,21 @@ def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
         credential_id=identity.credential_id,
         auth_version=identity.auth_version,
         authentication_method="database",
+    )
+
+
+def _principal_from_platform_identity(
+    identity: AuthenticatedPlatformIdentity,
+) -> Principal:
+    return Principal(
+        subject=identity.subject,
+        role=identity.role,
+        organization_id=PLATFORM_PRINCIPAL_ORGANIZATION,
+        member_id=identity.member_id,
+        credential_id=identity.credential_id,
+        auth_version=identity.auth_version,
+        authentication_method="platform-database",
+        realm="platform",
     )
 
 
@@ -246,6 +269,7 @@ def issue_session_token(
         "role": principal.role,
         "organization_id": principal.organization_id,
         "authentication_method": principal.authentication_method,
+        "realm": principal.realm,
         "expires_at": int(time.time()) + max_age_seconds,
     }
     if principal.member_id is not None:
@@ -307,16 +331,36 @@ def _authenticate_session_token(token: str) -> Principal | None:
             auth_version = int(payload["auth_version"])
         except (TypeError, ValueError):
             return None
-        with get_session(
-            authentication_credential_id=credential_id
-        ) as session:
-            identity = validate_session_identity(
-                session,
-                member_id=member_id,
-                credential_id=credential_id,
-                auth_version=auth_version,
+        realm = str(payload.get("realm", "tenant"))
+        if realm == "tenant":
+            with get_session(
+                authentication_credential_id=credential_id
+            ) as session:
+                identity = validate_session_identity(
+                    session,
+                    member_id=member_id,
+                    credential_id=credential_id,
+                    auth_version=auth_version,
+                )
+            return (
+                _principal_from_identity(identity)
+                if identity is not None
+                else None
             )
-        return _principal_from_identity(identity) if identity is not None else None
+        if realm == "platform":
+            with get_session(platform_credential_id=credential_id) as session:
+                platform_identity = validate_platform_session_identity(
+                    session,
+                    member_id=member_id,
+                    credential_id=credential_id,
+                    auth_version=auth_version,
+                )
+            return (
+                _principal_from_platform_identity(platform_identity)
+                if platform_identity is not None
+                else None
+            )
+        return None
     try:
         subject = str(payload["subject"])
         role = str(payload["role"])
@@ -331,6 +375,7 @@ def _authenticate_session_token(token: str) -> Principal | None:
         role=role,
         organization_id=organization_id,
         authentication_method="static-session",
+        realm="tenant",
     )
     if authentication_method == "local":
         return principal if not authentication_enabled() and not is_production() else None
@@ -361,14 +406,24 @@ def authenticate_api_key(token: str | None) -> Principal | None:
             return principal
     if database_authentication_enabled(production=is_production()):
         credential_id = credential_id_from_token(token)
-        if credential_id is None:
-            return None
-        with get_session(
-            authentication_credential_id=credential_id
-        ) as session:
-            identity = authenticate_credential(session, token)
-        if identity is not None:
-            return _principal_from_identity(identity)
+        if credential_id is not None:
+            with get_session(
+                authentication_credential_id=credential_id
+            ) as session:
+                identity = authenticate_credential(session, token)
+            if identity is not None:
+                return _principal_from_identity(identity)
+        platform_credential_id = platform_credential_id_from_token(token)
+        if platform_credential_id is not None:
+            with get_session(
+                platform_credential_id=platform_credential_id,
+            ) as session:
+                platform_identity = authenticate_platform_credential(
+                    session,
+                    token,
+                )
+            if platform_identity is not None:
+                return _principal_from_platform_identity(platform_identity)
     return None
 
 
@@ -390,30 +445,40 @@ def authenticate_request(request: Request) -> Principal | None:
     )
 
 
+def _require_request_principal(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    droneai_api_key: str | None = Cookie(
+        default=None,
+        alias=SESSION_COOKIE_NAME,
+    ),
+) -> Principal:
+    principal = authenticate_token(
+        _extract_token(authorization, x_api_key, droneai_api_key)
+    )
+    if principal is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid API credential",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return principal
+
+
 def require_role(minimum_role: str) -> Callable[..., Principal]:
     if minimum_role not in ROLE_RANK:
         raise ValueError("unknown API role")
 
     def dependency(
-        authorization: str | None = Header(default=None),
-        x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-        droneai_api_key: str | None = Cookie(
-            default=None,
-            alias=SESSION_COOKIE_NAME,
-        ),
+        principal: Annotated[
+            Principal,
+            Depends(_require_request_principal),
+        ],
     ) -> Principal:
-        principal = authenticate_token(
-            _extract_token(
-                authorization,
-                x_api_key,
-                droneai_api_key,
-            )
-        )
-        if principal is None:
+        if principal.realm != "tenant":
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Missing or invalid API credential",
-                headers={"WWW-Authenticate": "Bearer"},
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Tenant identity required",
             )
         if ROLE_RANK[principal.role] < ROLE_RANK[minimum_role]:
             raise HTTPException(
@@ -428,6 +493,20 @@ def require_role(minimum_role: str) -> Callable[..., Principal]:
 require_authenticated = require_role("viewer")
 require_operator = require_role("operator")
 require_admin = require_role("admin")
+
+
+def require_platform_support(
+    principal: Annotated[
+        Principal,
+        Depends(_require_request_principal),
+    ],
+) -> Principal:
+    if principal.realm != "platform" or principal.role != "support":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Platform support identity required",
+        )
+    return principal
 
 
 async def bind_tenant_context(
@@ -467,7 +546,7 @@ async def authorize_websocket(websocket: WebSocket) -> Principal | None:
     if token is None and not is_production():
         token = websocket.query_params.get("access_token")
     principal = authenticate_token(token)
-    if principal is not None:
+    if principal is not None and principal.realm == "tenant":
         return principal
     await websocket.close(code=4401, reason="Authentication required")
     return None

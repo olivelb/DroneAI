@@ -6,9 +6,12 @@ Last verified: 2026-08-12
 
 The repository now provides an authenticated, role-separated multi-organization
 baseline with durable members, hashed credentials, organization-scoped data and
-object-prefix isolation, plus PostgreSQL row-level security. It is not yet a
-public self-service SaaS: invitations, OIDC federation and a durable
-platform-support identity/recovery workflow remain explicit follow-up work.
+object-prefix isolation, plus PostgreSQL row-level security. One-time tenant
+invitations, self-issued recovery and an isolated durable support realm are now
+implemented. It is not yet a federated public SaaS: OIDC remains explicit
+follow-up work until an identity provider and claims contract are selected.
+The support boundary is defined in
+[`contracts/platform-identity-boundary-v1.md`](contracts/platform-identity-boundary-v1.md).
 Commercial capacity and retention are now enforced by the versioned
 organization policy described in
 [`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md).
@@ -106,6 +109,10 @@ After migration `0025`, use the bootstrap key once to call
 `POST /auth/credentials`, then remove `api-keys.json` from the Secret. Full
 rotation, revocation and suspension behavior is defined in
 [`contracts/identity-control-plane-v1.md`](contracts/identity-control-plane-v1.md).
+Provision platform support only with the operator-side dry-run/apply procedure
+in
+[`contracts/platform-identity-boundary-v1.md`](contracts/platform-identity-boundary-v1.md);
+never encode `support` in `DRONEAI_API_KEYS_JSON`.
 
 Roles are cumulative:
 

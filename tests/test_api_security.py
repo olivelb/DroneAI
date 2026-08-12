@@ -47,17 +47,19 @@ def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
 
-    admin = security.require_admin(
-        authorization="Bearer admin-secret-key-with-at-least-32-bytes!",
-        x_api_key=None,
+    admin_principal = security.authenticate_token(
+        "admin-secret-key-with-at-least-32-bytes!"
     )
+    assert admin_principal is not None
+    admin = security.require_admin(admin_principal)
     assert admin.subject == "operations"
     assert admin.organization_id == "acme-survey"
     with pytest.raises(HTTPException) as error:
-        security.require_operator(
-            authorization=None,
-            x_api_key="viewer-secret-key-with-at-least-32-bytes",
+        viewer = security.authenticate_token(
+            "viewer-secret-key-with-at-least-32-bytes"
         )
+        assert viewer is not None
+        security.require_operator(viewer)
     assert error.value.status_code == 403
 
 
@@ -113,11 +115,8 @@ def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
     assert "admin-secret-key" not in session_token
 
     # TestClient does not send Secure cookies over its default HTTP origin.
-    principal = security.require_authenticated(
-        authorization=None,
-        x_api_key=None,
-        droneai_api_key=session_token,
-    )
+    principal = security.authenticate_token(session_token)
+    assert principal is not None
     assert principal.subject == "operations"
     assert principal.organization_id == "acme-survey"
     assert security.authenticate_token(f"{session_token}tampered") is None
@@ -438,3 +437,37 @@ def test_organization_request_quota_middleware_is_tenant_wide(monkeypatch):
     assert response.headers["Retry-After"] == "2"
     assert response.headers["X-RateLimit-Scope"] == "organization"
     assert observed == [("tenant-a", "operator-1")]
+
+
+def test_organization_request_quota_does_not_treat_platform_as_tenant(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
+    monkeypatch.setattr(
+        security,
+        "authenticate_request",
+        lambda _request: security.Principal(
+            "support-1",
+            "support",
+            "platform-control",
+            realm="platform",
+        ),
+    )
+    monkeypatch.setattr(
+        rate_limit,
+        "_consume_organization_request",
+        lambda *_args: pytest.fail("platform support has no tenant quota"),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
+
+    @application.get("/platform/organizations")
+    def organizations():
+        return []
+
+    response = TestClient(application).get("/platform/organizations")
+
+    assert response.status_code == 200

@@ -55,7 +55,7 @@ def credential_pepper() -> bytes:
     return value.encode("utf-8")
 
 
-def _credential_hash(token: str) -> str:
+def credential_hash(token: str) -> str:
     return hmac_new(credential_pepper(), token.encode("utf-8"), sha256).hexdigest()
 
 
@@ -74,7 +74,7 @@ def credential_id_from_token(token: str) -> str | None:
         return None
 
 
-def _is_expired(value: datetime | None, now: datetime) -> bool:
+def credential_is_expired(value: datetime | None, now: datetime) -> bool:
     if value is None:
         return False
     if value.tzinfo is None:
@@ -82,7 +82,10 @@ def _is_expired(value: datetime | None, now: datetime) -> bool:
     return value <= now
 
 
-def _should_update_last_used(value: datetime | None, now: datetime) -> bool:
+def should_update_credential_last_used(
+    value: datetime | None,
+    now: datetime,
+) -> bool:
     raw_interval = os.getenv(
         "DRONEAI_CREDENTIAL_LAST_USED_WRITE_INTERVAL_SECONDS",
         "300",
@@ -120,7 +123,7 @@ def issue_credential(
         organization_id=member.organization_id,
         member_id=member.id,
         name=name,
-        secret_hash=_credential_hash(token),
+        secret_hash=credential_hash(token),
         status="active",
         expires_at=expires_at,
         rotated_from_id=rotated_from_id,
@@ -181,10 +184,10 @@ def authenticate_credential(
     credential = session.get(ApiCredential, credential_id)
     if credential is None or credential.status != "active":
         return None
-    if not secrets.compare_digest(credential.secret_hash, _credential_hash(token)):
+    if not secrets.compare_digest(credential.secret_hash, credential_hash(token)):
         return None
     now = datetime.now(UTC)
-    if _is_expired(credential.expires_at, now):
+    if credential_is_expired(credential.expires_at, now):
         return None
     member = session.get(OrganizationMember, credential.member_id)
     organization = session.get(Organization, credential.organization_id)
@@ -196,7 +199,10 @@ def authenticate_credential(
         or organization.status != "active"
     ):
         return None
-    if update_last_used and _should_update_last_used(credential.last_used_at, now):
+    if update_last_used and should_update_credential_last_used(
+        credential.last_used_at,
+        now,
+    ):
         credential.last_used_at = now
     return AuthenticatedIdentity(
         subject=member.subject,
@@ -221,7 +227,7 @@ def validate_session_identity(
         credential is None
         or credential.member_id != member_id
         or credential.status != "active"
-        or _is_expired(credential.expires_at, datetime.now(UTC))
+        or credential_is_expired(credential.expires_at, datetime.now(UTC))
         or member is None
         or member.status != "active"
         or member.auth_version != auth_version

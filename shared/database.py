@@ -90,6 +90,8 @@ def _set_postgres_session_context(
     *,
     organization_id: str | None,
     authentication_credential_id: str | None,
+    platform_credential_id: str | None,
+    identity_capability_id: str | None,
 ) -> None:
     """Set transaction-local RLS inputs without leaking them through the pool."""
 
@@ -112,6 +114,24 @@ def _set_postgres_session_context(
             ),
             {"credential_id": authentication_credential_id},
         )
+    if platform_credential_id is not None:
+        session.execute(
+            text(
+                "SELECT set_config("
+                "'droneai.platform_credential_id', "
+                ":credential_id, true)"
+            ),
+            {"credential_id": platform_credential_id},
+        )
+    if identity_capability_id is not None:
+        session.execute(
+            text(
+                "SELECT set_config("
+                "'droneai.identity_capability_id', "
+                ":capability_id, true)"
+            ),
+            {"capability_id": identity_capability_id},
+        )
 
 
 @contextmanager
@@ -119,6 +139,8 @@ def get_session(
     *,
     organization_id: str | None = None,
     authentication_credential_id: str | None = None,
+    platform_credential_id: str | None = None,
+    identity_capability_id: str | None = None,
 ) -> Iterator[Session]:
     """Yield an atomic session with transaction-local PostgreSQL RLS context."""
 
@@ -139,6 +161,8 @@ def get_session(
             session,
             organization_id=organization_id or contextual_organization,
             authentication_credential_id=authentication_credential_id,
+            platform_credential_id=platform_credential_id,
+            identity_capability_id=identity_capability_id,
         )
         yield session
         session.commit()
@@ -185,6 +209,20 @@ class RequiredTimestampMixin:
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+
+
+class RevocableCredentialMixin:
+    """Shared secret lifecycle fields for tenant and platform credentials."""
+
+    name = Column(String(160), nullable=False)
+    secret_hash = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="active")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    last_used_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(256), nullable=True)
+    revocation_reason = Column(String(500), nullable=True)
+    created_by = Column(String(256), nullable=False)
 
 
 class AppendOnlyAuditMixin:
@@ -332,6 +370,26 @@ IDENTITY_AUDIT_ACTIONS = (
     "credential_created",
     "credential_revoked",
     "credential_rotated",
+    "invitation_created",
+    "invitation_revoked",
+    "invitation_accepted",
+    "recovery_created",
+    "recovery_revoked",
+    "recovery_redeemed",
+)
+IDENTITY_CAPABILITY_PURPOSES = ("invitation", "recovery")
+IDENTITY_CAPABILITY_STATUSES = ("pending", "redeemed", "revoked")
+PLATFORM_MEMBER_STATUSES = ("active", "suspended")
+PLATFORM_MEMBER_ROLES = ("support",)
+PLATFORM_CREDENTIAL_STATUSES = ("active", "revoked")
+PLATFORM_AUDIT_ACTIONS = (
+    "platform_member_provisioned",
+    "platform_member_suspended",
+    "platform_member_reactivated",
+    "platform_credential_created",
+    "platform_credential_revoked",
+    "platform_credential_rotated",
+    "organization_status_updated",
 )
 ORGANIZATION_USAGE_ACTIONS = (
     "policy_updated",
@@ -429,7 +487,7 @@ class OrganizationMember(RequiredTimestampMixin, Base):
     updated_by = Column(String(256), nullable=False)
 
 
-class ApiCredential(RequiredTimestampMixin, Base):
+class ApiCredential(RevocableCredentialMixin, RequiredTimestampMixin, Base):
     """Revocable API credential; only its peppered digest is persisted."""
 
     __tablename__ = "api_credentials"
@@ -459,20 +517,11 @@ class ApiCredential(RequiredTimestampMixin, Base):
         nullable=False,
         index=True,
     )
-    name = Column(String(160), nullable=False)
-    secret_hash = Column(String(64), nullable=False)
-    status = Column(String(32), nullable=False, default="active")
-    expires_at = Column(DateTime(timezone=True), nullable=True)
-    last_used_at = Column(DateTime(timezone=True), nullable=True)
-    revoked_at = Column(DateTime(timezone=True), nullable=True)
-    revoked_by = Column(String(256), nullable=True)
-    revocation_reason = Column(String(500), nullable=True)
     rotated_from_id = Column(
         String(36),
         ForeignKey("api_credentials.id", ondelete="SET NULL"),
         nullable=True,
     )
-    created_by = Column(String(256), nullable=False)
 
 
 class IdentityAuditEvent(AppendOnlyAuditMixin, Base):
@@ -504,6 +553,150 @@ class IdentityAuditEvent(AppendOnlyAuditMixin, Base):
         index=True,
     )
     action = Column(String(48), nullable=False)
+    target_type = Column(String(32), nullable=False)
+    target_id = Column(String(256), nullable=False)
+
+
+class IdentityCapability(RequiredTimestampMixin, Base):
+    """One-time invitation or self-issued recovery capability."""
+
+    __tablename__ = "identity_capabilities"
+    __table_args__ = (
+        Index(
+            "ix_identity_capabilities_org_purpose_status",
+            "organization_id",
+            "purpose",
+            "status",
+        ),
+        CheckConstraint(
+            _values_check("purpose", IDENTITY_CAPABILITY_PURPOSES),
+            name="ck_identity_capabilities_purpose",
+        ),
+        CheckConstraint(
+            _values_check("status", IDENTITY_CAPABILITY_STATUSES),
+            name="ck_identity_capabilities_status",
+        ),
+        CheckConstraint(
+            _values_check("role", ORGANIZATION_MEMBER_ROLES),
+            name="ck_identity_capabilities_role",
+        ),
+        CheckConstraint(
+            "(purpose = 'invitation' AND member_id IS NULL) "
+            "OR (purpose = 'recovery' AND member_id IS NOT NULL)",
+            name="ck_identity_capabilities_member_purpose",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    member_id = Column(
+        String(36),
+        ForeignKey("organization_members.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    purpose = Column(String(32), nullable=False)
+    subject = Column(String(256), nullable=False)
+    role = Column(String(32), nullable=False)
+    secret_hash = Column(String(64), nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+    redeemed_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_at = Column(DateTime(timezone=True), nullable=True)
+    revoked_by = Column(String(256), nullable=True)
+    created_by = Column(String(256), nullable=False)
+
+
+class PlatformMember(RequiredTimestampMixin, Base):
+    """Global support identity with no implicit tenant membership."""
+
+    __tablename__ = "platform_members"
+    __table_args__ = (
+        CheckConstraint(
+            _values_check("role", PLATFORM_MEMBER_ROLES),
+            name="ck_platform_members_role",
+        ),
+        CheckConstraint(
+            _values_check("status", PLATFORM_MEMBER_STATUSES),
+            name="ck_platform_members_status",
+        ),
+        CheckConstraint(
+            "auth_version >= 1",
+            name="ck_platform_members_auth_version",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    subject = Column(String(256), nullable=False, unique=True, index=True)
+    role = Column(String(32), nullable=False, default="support")
+    status = Column(String(32), nullable=False, default="active")
+    auth_version = Column(Integer, nullable=False, default=1)
+    created_by = Column(String(256), nullable=False)
+    updated_by = Column(String(256), nullable=False)
+
+
+class PlatformCredential(
+    RevocableCredentialMixin,
+    RequiredTimestampMixin,
+    Base,
+):
+    """Revocable credential for the isolated platform-support realm."""
+
+    __tablename__ = "platform_credentials"
+    __table_args__ = (
+        Index(
+            "ix_platform_credentials_member_status",
+            "member_id",
+            "status",
+        ),
+        CheckConstraint(
+            _values_check("status", PLATFORM_CREDENTIAL_STATUSES),
+            name="ck_platform_credentials_status",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True)
+    member_id = Column(
+        String(36),
+        ForeignKey("platform_members.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+    rotated_from_id = Column(
+        String(36),
+        ForeignKey("platform_credentials.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+
+class PlatformAuditEvent(AppendOnlyAuditMixin, Base):
+    """Global append-only support action history, separate from tenants."""
+
+    __tablename__ = "platform_audit_events"
+    __table_args__ = (
+        Index(
+            "ix_platform_audit_action_created",
+            "action",
+            "created_at",
+        ),
+        Index(
+            "ix_platform_audit_target_created",
+            "target_type",
+            "target_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            _values_check("action", PLATFORM_AUDIT_ACTIONS),
+            name="ck_platform_audit_action",
+        ),
+    )
+
+    action = Column(String(64), nullable=False)
     target_type = Column(String(32), nullable=False)
     target_id = Column(String(256), nullable=False)
 
