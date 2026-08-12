@@ -26,7 +26,11 @@ from ..identity_api import (
     find_member,
 )
 
-router = APIRouter(prefix="/auth/credentials", tags=["identity administration"])
+router = APIRouter(
+    prefix="/auth/credentials",
+    tags=["identity administration"],
+    dependencies=[Depends(security.bind_tenant_context)],
+)
 
 
 class CredentialCreateRequest(BaseModel):

@@ -66,6 +66,7 @@ credentials cannot and must not be reconstructed from their digests.
 ## Deliberate limits
 
 This version does not provide invitations, OIDC federation, recovery codes, a
-platform-support role or a management UI. PostgreSQL row-level security is also
-still pending as a second tenancy enforcement layer; application queries and
-foreign keys are authoritative in this version.
+platform-support role or a management UI. PostgreSQL row-level security now
+provides a second identity/tenant enforcement layer under
+[`postgres-tenant-rls-v1.md`](postgres-tenant-rls-v1.md); application queries
+and foreign keys remain mandatory.

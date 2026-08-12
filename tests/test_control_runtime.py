@@ -107,6 +107,30 @@ def test_database_readiness_fails_closed(monkeypatch):
     assert health.database_is_ready() is False
 
 
+def test_database_readiness_requires_active_rls_when_configured(monkeypatch):
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one(self):
+            return self.value
+
+    class Session:
+        def execute(self, statement):
+            return Result("row_security_active" in str(statement))
+
+    @contextmanager
+    def session_scope():
+        yield Session()
+
+    monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+    monkeypatch.setattr(health, "get_session", session_scope)
+    assert health.database_is_ready() is True
+
+    Session.execute = lambda _self, _statement: Result(False)
+    assert health.database_is_ready() is False
+
+
 def test_http_probes_distinguish_liveness_from_readiness(monkeypatch):
     routes = {
         route.path: route.endpoint

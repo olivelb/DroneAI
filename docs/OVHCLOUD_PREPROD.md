@@ -423,13 +423,21 @@ For the first test, the required keys and names are:
 kubectl -n drone-ai-preprod create secret generic drone-ai-storage-preprod \
   --from-literal=s3-access-key='<S3_ACCESS_KEY>' \
   --from-literal=s3-secret-key='<S3_SECRET_KEY>' \
-  --from-literal=database-url='<TLS_POSTGRESQL_URI>'
+  --from-literal=database-url='<TLS_POSTGRESQL_OPERATOR_URI>' \
+  --from-literal=api-database-url='<TLS_POSTGRESQL_API_RLS_URI>'
 
 kubectl -n drone-ai-preprod create secret generic drone-ai-api-auth \
   --from-literal=api-keys.json='[{"key":"<RANDOM_32_PLUS_CHAR_KEY>","subject":"preprod-admin","role":"admin","organization_id":"ovh-preprod"}]' \
   --from-literal=session-secret='<RANDOM_32_PLUS_CHAR_SESSION_SECRET>' \
   --from-literal=credential-pepper='<DISTINCT_RANDOM_32_PLUS_CHAR_PEPPER>'
 ```
+
+`api-database-url` must authenticate as a non-owner role with `NOSUPERUSER`
+and `NOBYPASSRLS`. `database-url` remains the migration/worker connection.
+Provision the role and grants before this Secret by following the
+[PostgreSQL tenant RLS contract](contracts/postgres-tenant-rls-v1.md). The
+staging Helm render rejects a shared key and API readiness rejects a role for
+which RLS is inactive.
 
 After migration `0025`, bootstrap `ovh-preprod`, issue and verify at least one
 durable admin credential, then remove `api-keys.json`. Keep `session-secret` and

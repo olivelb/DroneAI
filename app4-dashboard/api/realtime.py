@@ -8,6 +8,7 @@ import os
 import socket
 import threading
 from collections import deque
+from functools import partial
 from typing import Any
 
 from confluent_kafka import Consumer
@@ -18,7 +19,7 @@ from shared.config import (
     TOPIC_DEAD_LETTER,
     TOPIC_STATUS,
 )
-from shared.database import Mission, get_session
+from shared.database import get_mission_audience, get_session
 from shared.inbox_outbox import process_inbox_transaction
 from shared.kafka_reliability import (
     message_location,
@@ -86,13 +87,10 @@ status_hub = StatusHub()
 def mission_owner_subject(vol_id: str) -> str:
     if not vol_id:
         return "legacy-unassigned"
-    with get_session() as session:
-        mission = session.query(Mission).filter(Mission.vol_id == vol_id).first()
-        organization = str(
-            getattr(mission, "organization_id", "legacy-unassigned")
-        )
-        owner = str(getattr(mission, "owner_subject", "legacy-unassigned"))
-        return f"{organization}:{owner}"
+    audience = get_mission_audience(vol_id)
+    if audience is None:
+        return "legacy-unassigned:legacy-unassigned"
+    return f"{audience[0]}:{audience[1]}"
 
 
 def handle_status_message(
@@ -105,15 +103,16 @@ def handle_status_message(
     consumer_group: str = "dashboard-api-realtime",
 ) -> bool:
     def persist_and_broadcast(event: JsonObject) -> None:
+        vol_id = str(event.get("vol_id") or "")
+        owner_subject = mission_owner_subject(vol_id)
+        organization_id = owner_subject.partition(":")[0] or "legacy-unassigned"
         process_inbox_transaction(
-            get_session,
+            partial(get_session, organization_id=organization_id),
             consumer_group=STATUS_STATE_INBOX_GROUP,
             event=event,
             source=message_location(message),
             handler=apply_mission_state,
         )
-        vol_id = str(event.get("vol_id") or "")
-        owner_subject = mission_owner_subject(vol_id)
         payload = hub.remember(event, owner_subject)
         print(f"STATUS {payload}")
         future = asyncio.run_coroutine_threadsafe(

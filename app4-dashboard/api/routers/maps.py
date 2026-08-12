@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter, Depends
 
-from ..security import require_authenticated
+from ..security import bind_tenant_context
 from .map_analyses import router as analyses_router
 from .map_exports import router as exports_router
 from .map_features import router as features_router
@@ -14,7 +14,7 @@ from .map_styles import router as styles_router
 router = APIRouter(
     prefix="/maps",
     tags=["maps"],
-    dependencies=[Depends(require_authenticated)],
+    dependencies=[Depends(bind_tenant_context)],
 )
 router.include_router(rasters_router)
 router.include_router(exports_router)

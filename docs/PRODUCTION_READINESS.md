@@ -6,20 +6,29 @@ Last verified: 2026-08-12
 
 The repository now provides an authenticated, role-separated multi-organization
 baseline with durable members, hashed credentials, organization-scoped data and
-object-prefix isolation. It is not yet a public self-service SaaS: invitations,
-OIDC federation, a platform-support role, PostgreSQL row-level security and
-commercial quota ledgers remain explicit follow-up work.
+object-prefix isolation, plus PostgreSQL row-level security. It is not yet a
+public self-service SaaS: invitations, OIDC federation, a platform-support role
+and commercial quota ledgers remain explicit follow-up work.
 
 ## Required production configuration
 
 Deploy with `charts/drone-ai/values-production.example.yaml` as a reviewed
 overlay. Before installation, create:
 
-- the storage Secret with `s3-access-key`, `s3-secret-key` and `database-url`;
+- the storage Secret with `s3-access-key`, `s3-secret-key`, operator
+  `database-url` and non-owner `api-database-url`;
 - the API auth Secret with a distinct random `session-secret` and
   `credential-pepper`, each at least 32 characters;
 - during first adoption only, an `api-keys.json` bootstrap admin entry;
 - the ingress TLS Secret.
+
+The API database role must be `NOSUPERUSER`, `NOBYPASSRLS` and must not own
+application tables. Provisioning grants, transaction semantics and the
+synthetic PostgreSQL qualification are defined in
+[`contracts/postgres-tenant-rls-v1.md`](contracts/postgres-tenant-rls-v1.md).
+Migrations and workers keep `database-url`; only the HTTP API receives
+`api-database-url`. Protected Helm overlays require this split and readiness
+fails when PostgreSQL reports that RLS is inactive for the API role.
 
 The production example intentionally does not activate bounded stage Jobs.
 Those executors are qualified for controlled preproduction, but a production
@@ -93,7 +102,8 @@ Production startup fails when:
 - `CORS_ORIGINS` contains `*`;
 - authentication or database-backed credentials are disabled;
 - the session signing secret or credential pepper is missing or too short;
-- S3/database variables are missing or use known local defaults.
+- S3/database variables are missing or use known local defaults;
+- `DRONEAI_RLS_REQUIRED` is not enabled.
 
 Cookie-authenticated mutations also require a configured trusted `Origin`.
 

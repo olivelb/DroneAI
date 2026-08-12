@@ -2252,7 +2252,8 @@ The remaining distributed limitations are deliberate and explicit:
 - no multi-replica or broker-failover integration test in CI
 
 The local orchestrator is the deterministic, infrastructure-free execution
-path. The authenticated distributed stack is supported as a single-tenant
-production baseline behind TLS. Public multi-tenant exposure still requires
-OIDC, ownership filters and object-prefix isolation; high-availability claims
-still require broker-rebalance, replica and service-restart fault campaigns.
+path. The authenticated distributed stack now provides organization-scoped
+ownership, object prefixes and PostgreSQL RLS. Public self-service exposure
+still requires OIDC/invitations and a distinct platform-support role;
+high-availability claims still require broker-rebalance, replica and
+service-restart fault campaigns.

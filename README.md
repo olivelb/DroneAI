@@ -5,9 +5,10 @@ products. It combines photogrammetric reconstruction, DroneGS 3D Gaussian
 Splatting, raster generation, optional AI inference and an operator dashboard.
 
 > [!IMPORTANT]
-> The current production baseline is designed for one organization behind TLS.
-> Multi-tenant isolation, identity federation, exactly-once delivery and high
-> availability are outside its present scope.
+> The production baseline now separates organizations in authentication,
+> storage and PostgreSQL RLS. It is not yet a public self-service SaaS: OIDC,
+> invitations, platform-support access, commercial quota ledgers and qualified
+> high availability remain outside its present scope.
 
 ## Production processes
 

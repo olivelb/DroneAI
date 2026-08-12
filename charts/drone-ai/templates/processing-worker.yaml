@@ -61,7 +61,7 @@ spec:
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.processingWorker.image "tag" .Values.processingWorker.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         env:
-        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.storage.databaseUrlSecretKey) | nindent 8 }}
         - name: UNTILER_DEDUPE_CENTER_THRESHOLD
           value: "40"
         - name: UNTILER_DEDUPE_IOU_THRESHOLD

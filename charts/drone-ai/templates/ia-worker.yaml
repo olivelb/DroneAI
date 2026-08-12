@@ -119,7 +119,7 @@ spec:
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.iaWorker.image "tag" .Values.iaWorker.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         env:
-        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.storage.databaseUrlSecretKey) | nindent 8 }}
         - name: HF_TOKEN
           valueFrom:
             secretKeyRef:

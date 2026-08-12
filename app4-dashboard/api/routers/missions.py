@@ -48,6 +48,7 @@ from ..mission_state import (
 from ..schemas import MissionParams
 from ..security import (
     Principal,
+    bind_tenant_context,
     require_admin,
     require_authenticated,
     require_operator,
@@ -58,7 +59,7 @@ from .mission_stages import router as mission_stages_router
 
 router = APIRouter(
     tags=["missions"],
-    dependencies=[Depends(require_authenticated)],
+    dependencies=[Depends(bind_tenant_context)],
 )
 router.include_router(mission_catalog_router)
 router.include_router(mission_stages_router)

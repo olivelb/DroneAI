@@ -5,6 +5,18 @@
 {{- fail "stageJobs.detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true" }}
 {{- end }}
 {{- $protectedStageJobEnvironment := or (eq .Values.dashboardApi.environment "staging") (eq .Values.dashboardApi.environment "production") }}
+{{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.rowLevelSecurityRequired) }}
+{{- fail "dashboardApi.rowLevelSecurityRequired must be true in staging and production" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.storage.existingSecret) }}
+{{- fail "storage.existingSecret is required in staging and production" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (eq .Values.dashboardApi.databaseUrlSecretKey .Values.storage.databaseUrlSecretKey) }}
+{{- fail "dashboardApi.databaseUrlSecretKey must use a distinct non-owner PostgreSQL role in staging and production" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.controlWorker.enabled) }}
+{{- fail "dashboardApi.controlWorker.enabled must remain true when the HTTP API uses an RLS database role" }}
+{{- end }}
 {{- if and .Values.stageJobs.enabled $protectedStageJobEnvironment }}
 {{- $seenCredentialSecrets := dict }}
 {{- range $stage := list "reconstruction" "gaussian_training" "gaussian_filtering" "rasterization" "detection" }}
@@ -141,7 +153,7 @@ spec:
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.dashboardApi.image "tag" .Values.dashboardApi.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         env:
-        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.dashboardApi.databaseUrlSecretKey) | nindent 8 }}
         - name: CORS_ORIGINS
           value: {{ .Values.dashboardApi.cors.origins | quote }}
         - name: DRONEAI_ENV
@@ -152,6 +164,8 @@ spec:
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
         - name: DRONEAI_DATABASE_AUTH_ENABLED
           value: {{ .Values.dashboardApi.auth.databaseAuthEnabled | quote }}
+        - name: DRONEAI_RLS_REQUIRED
+          value: {{ .Values.dashboardApi.rowLevelSecurityRequired | quote }}
         - name: DRONEAI_SESSION_MAX_AGE_SECONDS
           value: {{ .Values.dashboardApi.auth.sessionMaxAgeSeconds | quote }}
         {{- if .Values.dashboardApi.auth.existingSecret }}

@@ -23,6 +23,7 @@ from shared.database import InboxEvent, OutboxEvent
 from shared.event_contracts import validate_event
 from shared.inbox_records import build_inbox_record
 from shared.kafka_reliability import RetryPolicy, message_location
+from shared.tenancy import LEGACY_ORGANIZATION_ID, current_organization_id
 
 SessionScope = Callable[[], AbstractContextManager[Any]]
 DomainHandler = Callable[[Any, dict[str, Any]], None]
@@ -52,6 +53,11 @@ def enqueue_outbox(
     if existing is not None:
         return cast(OutboxEvent, existing)
     record = OutboxEvent(
+        organization_id=(
+            current_organization_id()
+            or normalized.get("organization_id")
+            or LEGACY_ORGANIZATION_ID
+        ),
         event_id=normalized["event_id"],
         event_type=normalized["event_type"],
         topic=topic,

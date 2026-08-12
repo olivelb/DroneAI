@@ -50,6 +50,12 @@ rows use `local-development`. Scheduler fairness falls back to the historical
 owner for legacy rows, while new rows share concurrency quotas at organization
 level.
 
+Migration `0026` adds PostgreSQL RLS across the complete organization-owned
+table graph. The non-owner API role receives a transaction-local organization
+identity; application predicates remain mandatory as the first layer. The
+database-role, authentication and rollback rules are defined in
+[`postgres-tenant-rls-v1.md`](postgres-tenant-rls-v1.md).
+
 ## Versioned storage layout
 
 New organization-scoped writes use:
@@ -78,8 +84,6 @@ for attribution.
 - A Kubernetes Secret may still provide a transitional bootstrap key; normal
   members and hashed credentials are durable. Invitations, OIDC, a management
   UI and a distinct platform-support role are not implemented.
-- PostgreSQL row-level security is not yet a second enforcement layer; the API
-  query boundary is authoritative in v1.
 - Mission IDs remain globally unique in the database.
 - Existing v1 storage is not automatically adopted into an explicit
   organization; such adoption needs an audited administrative workflow.

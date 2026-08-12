@@ -77,7 +77,7 @@ spec:
         image: {{ include "drone-ai.image" (dict "root" . "image" .Values.colmapWorker.image "tag" .Values.colmapWorker.tag) }}
         imagePullPolicy: {{ .Values.global.imagePullPolicy }}
         env:
-        {{- include "drone-ai.commonEnv" . | nindent 8 }}
+        {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.storage.databaseUrlSecretKey) | nindent 8 }}
         - name: QT_QPA_PLATFORM
           value: "offscreen"
         - name: WORK_DRIVES

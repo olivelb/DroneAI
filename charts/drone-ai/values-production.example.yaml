@@ -38,6 +38,8 @@ dashboardApi:
   replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: production
+  databaseUrlSecretKey: api-database-url
+  rowLevelSecurityRequired: true
   service:
     type: ClusterIP
   cors:
