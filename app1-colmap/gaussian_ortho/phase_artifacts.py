@@ -12,6 +12,13 @@ import numpy as np
 
 from shared.json_io import atomic_write_json
 
+from .capacity_planning import (
+    GaussianCapacityPlan,
+    GaussianDensityAssessment,
+    capacity_plan_from_dict,
+    density_assessment_from_dict,
+)
+
 from .generate_gaussian_orthophoto import (
     GaussianFilteringPhaseState,
     GaussianOrthoConfig,
@@ -54,6 +61,7 @@ class GaussianTrainingArtifact:
     trainer_binary_sha256: str
     gaussian_count: int
     facade_subset_result: dict[str, object] | None
+    capacity_plan: GaussianCapacityPlan | None = None
 
 @dataclass(frozen=True)
 class GaussianFilteringArtifact(GaussianRenderGeometry):
@@ -62,6 +70,7 @@ class GaussianFilteringArtifact(GaussianRenderGeometry):
     input_gaussians: int
     output_gaussians: int
     scene_summary: GaussianSceneSummary
+    density_assessment: GaussianDensityAssessment | None = None
 
 
 def _canonical(payload: dict[str, object]) -> bytes:
@@ -161,6 +170,7 @@ def write_training_artifact(
 ) -> Path:
     workspace = Path(workspace_dir).resolve(strict=True)
     identity = gaussian_config_identity(config)
+    capacity_plan = getattr(phase, "capacity_plan", None)
     payload: dict[str, object] = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "kind": "training",
@@ -171,6 +181,11 @@ def write_training_artifact(
         "trainer_binary_sha256": phase.trainer_binary_sha256,
         "gaussian_count": int(phase.training_state.merged_model.num_gaussians),
         "facade_subset_result": phase.training_state.facade_subset_result,
+        "capacity_plan": (
+            capacity_plan.as_dict()
+            if capacity_plan is not None
+            else None
+        ),
     }
     path = workspace / TRAINING_ARTIFACT_PATH
     atomic_write_json(path, payload)
@@ -194,6 +209,11 @@ def read_training_artifact(
         trainer_binary_sha256=_required_str(payload, "trainer_binary_sha256"),
         gaussian_count=_required_int(payload, "gaussian_count"),
         facade_subset_result=cast(dict[str, object] | None, subset),
+        capacity_plan=(
+            capacity_plan_from_dict(payload["capacity_plan"])
+            if payload.get("capacity_plan") is not None
+            else None
+        ),
     )
 
 
@@ -214,6 +234,7 @@ def hydrate_training_phase(
         ),
         backend_name=artifact.backend_name,
         trainer_binary_sha256=artifact.trainer_binary_sha256,
+        capacity_plan=artifact.capacity_plan,
     )
 
 
@@ -252,6 +273,7 @@ def write_filtering_artifact(
     workspace = Path(workspace_dir).resolve(strict=True)
     identity = gaussian_config_identity(config)
     render = filtering_phase.render_state
+    density_assessment = getattr(filtering_phase, "density_assessment", None)
     payload: dict[str, object] = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "kind": "filtering",
@@ -276,6 +298,11 @@ def write_filtering_artifact(
             list[object], render.coverage_camera_positions.tolist()
         ),
         "scene_summary": _scene_summary(training_phase),
+        "density_assessment": (
+            density_assessment.as_dict()
+            if density_assessment is not None
+            else None
+        ),
     }
     path = workspace / FILTERING_ARTIFACT_PATH
     atomic_write_json(path, payload)
@@ -373,6 +400,11 @@ def read_filtering_artifact(
         resolution_units=_required_str(payload, "resolution_units"),
         coverage_camera_positions=coverage_positions,
         scene_summary=_scene_summary_from_payload(payload.get("scene_summary")),
+        density_assessment=(
+            density_assessment_from_dict(payload["density_assessment"])
+            if payload.get("density_assessment") is not None
+            else None
+        ),
     )
 
 
@@ -398,4 +430,5 @@ def hydrate_filtering_phase(
         ),
         input_gaussians=artifact.input_gaussians,
         output_gaussians=artifact.output_gaussians,
+        density_assessment=artifact.density_assessment,
     )

@@ -46,7 +46,8 @@ Production V1 deliberately retains modulo parity while custom/V2 experiments
 measure spatial generalization.
 Dev.48 turns `tile_mode` into real source-image crops with crop-relative
 intrinsics and grouped train/test assignment. It also adds the explicitly
-scoped `opacity-SH-v1` FAGK capability: SH degrees 1 through 3 learn
+scoped `opacity-SH-v1` capability from the opacity-only FAGK ablation: SH
+degrees 1 through 3 learn
 view-dependent opacity-logit residuals, persist them as `opacity_sh_*` PLY
 properties, and render them consistently in the native and orthomosaic CUDA
 paths. Scale and rotation remain view-independent and are not claimed as full

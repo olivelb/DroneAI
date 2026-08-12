@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 
 
 APP1_ROOT = Path(__file__).resolve().parents[1] / "app1-colmap"
@@ -95,7 +96,11 @@ def test_filtering_phase_applies_render_preparation_once_and_records_counts(
         return SimpleNamespace(merged_model=filtered_model)
 
     monkeypatch.setattr(workflow, "prepare_gaussian_render_state", prepare)
-    config = SimpleNamespace(name="config")
+    config = SimpleNamespace(
+        name="config",
+        render_mode="map",
+        capacity_mode="fixed",
+    )
     cupy = SimpleNamespace(name="cupy")
 
     result = workflow.execute_gaussian_filtering_phase(
@@ -146,6 +151,8 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
         SimpleNamespace(
             vol_id="mission",
             resolution=0.02,
+            render_mode="map",
+            capacity_mode="fixed",
             report_fn=None,
             ortho_mip_filter_variance=0.03,
             ortho_mip_filter_compensation=True,
@@ -160,6 +167,36 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
     assert calls[0][1]["extent"] == render_state.render_extent
     assert result.width == 20
     assert result.height == 12
+
+
+def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
+    density = workflow.GaussianDensityAssessment(
+        robust_ground_area_m2=250_000.0,
+        requested_gsd_m=0.015,
+        target_spacing_pixels=8.0,
+        actual_gaussian_count=10_000_000,
+        required_gaussian_count=17_361_112,
+        achieved_spacing_m=0.1581,
+        achieved_spacing_pixels=10.54,
+        minimum_compatible_gsd_m=0.01976,
+        accepted=False,
+    )
+    filtering_phase = workflow.GaussianFilteringPhaseState(
+        render_state=SimpleNamespace(),
+        input_gaussians=12_000_000,
+        output_gaussians=10_000_000,
+        density_assessment=density,
+    )
+
+    with pytest.raises(RuntimeError, match="Use at least 0.0198 m/px"):
+        workflow.execute_gaussian_rasterization_phase(
+            SimpleNamespace(
+                render_mode="map",
+                capacity_mode="adaptive",
+            ),
+            filtering_phase,
+            render_fn=lambda *_args, **_kwargs: {},
+        )
 
 
 def test_raster_product_applies_shared_coverage_and_geotiff_contract(
@@ -220,6 +257,7 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     )
     filtering = SimpleNamespace(
         output_gaussians=1_200_000,
+        density_assessment=None,
         render_state=SimpleNamespace(
             coverage_camera_positions=np.array([[0.0, 0.0, 10.0]]),
             geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),

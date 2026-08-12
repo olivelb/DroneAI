@@ -41,8 +41,10 @@ Each completed phase has one focused commit and an annotated
   reuse identity, a native production-profile registry and optional
   spatial-block/guard-ring evaluation.
 - Dev.48 implements source-image tile views and the scoped opacity-SH-v1
-  appearance model. Component/CUDA gates pass; a representative full-quality
-  E2E comparison remains required before changing production quality claims.
+  appearance model, area-filtered image reduction, cross-language SH parity
+  and a post-filter achieved-density GSD gate. Component/CUDA gates pass; a
+  representative full-quality E2E comparison remains required before changing
+  production quality claims.
 - The independent Savères 15,000-step qualification passed on 1,065 images:
   19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS, 1.5 million splats and
   40.93 minutes of training. Its PSNR/SSIM production canary passed.

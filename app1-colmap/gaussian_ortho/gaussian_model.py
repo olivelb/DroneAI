@@ -6,9 +6,10 @@ Each Gaussian is parametrised by:
   - covariance via rotation quaternion (4) + log-scale (3)
   - opacity (logit-space)
   - colour via spherical harmonics (SH) coefficients
-  - [FAGK] optional SH coefficients for view-dependent opacity
+  - optional SH coefficients for view-dependent opacity (`opacity-SH-v1`)
 
-Based on Kerbl et al. 2023 (3DGS) with FAGK from Tortho-Gaussian.
+Based on Kerbl et al. 2023 (3DGS), with the opacity-only FAGK ablation from
+TOrtho-Gaussian. Scale and rotation remain view-independent.
 """
 from __future__ import annotations
 
@@ -27,13 +28,13 @@ def num_sh_coefficients(degree: int) -> int:
 class GaussianModel:
     """Set of 3D Gaussians stored as CuPy GPU arrays (no PyTorch)."""
 
-    def __init__(self, sh_degree: int = 3, fagk_enabled: bool = True,
-                 fagk_max_degree: int = 3):
+    def __init__(self, sh_degree: int = 3, opacity_sh_enabled: bool = True,
+                 opacity_sh_max_degree: int = 3):
         self.max_sh_degree = sh_degree
         self.active_sh_degree = 0
-        self.fagk_enabled = fagk_enabled
-        self.fagk_max_degree = fagk_max_degree
-        self.active_fagk_degree = 0
+        self.opacity_sh_enabled = opacity_sh_enabled
+        self.opacity_sh_max_degree = opacity_sh_max_degree
+        self.active_opacity_sh_degree = 0
 
         # Data arrays (CuPy, on current GPU device)
         self._xyz = cp.empty((0, 3), dtype=cp.float32)
@@ -132,12 +133,12 @@ class GaussianModel:
         opas = vertex['opacity'].reshape(-1, 1)
         self._opacity = cp.array(opas, dtype=cp.float32)
 
-        # FAGK opacity SH
+        # View-dependent opacity-logit SH residuals.
         opa_sh_names = sorted(
             [p.name for p in vertex.properties if p.name.startswith('opacity_sh_')],
             key=lambda s: int(s.split('_')[-1]),
         )
-        if opa_sh_names and self.fagk_enabled:
+        if opa_sh_names and self.opacity_sh_enabled:
             expected_counts = {3, 8, 15}
             if len(opa_sh_names) not in expected_counts:
                 raise ValueError(
@@ -149,10 +150,10 @@ class GaussianModel:
                 )
             opa_sh = np.stack([vertex[on] for on in opa_sh_names], axis=1)
             self._opacity_sh = cp.array(opa_sh, dtype=cp.float32)
-            self.active_fagk_degree = int(np.sqrt(len(opa_sh_names) + 1)) - 1
+            self.active_opacity_sh_degree = int(np.sqrt(len(opa_sh_names) + 1)) - 1
         else:
             self._opacity_sh = cp.empty((n, 0), dtype=cp.float32)
-            self.active_fagk_degree = 0
+            self.active_opacity_sh_degree = 0
 
     def save_ply(self, path: str) -> None:
         """Save Gaussian parameters to a PLY file."""
@@ -174,7 +175,7 @@ class GaussianModel:
         attrs += [(f'rot_{i}', 'f4') for i in range(4)]
         attrs += [('opacity', 'f4')]
 
-        if self.fagk_enabled and self._opacity_sh.shape[1] > 0:
+        if self.opacity_sh_enabled and self._opacity_sh.shape[1] > 0:
             opa_sh = cp.asnumpy(self._opacity_sh)
             attrs += [(f'opacity_sh_{i}', 'f4') for i in range(opa_sh.shape[1])]
 
@@ -192,7 +193,7 @@ class GaussianModel:
         for i in range(4):
             elements[f'rot_{i}'] = rots[:, i]
         elements['opacity'] = opas.squeeze()
-        if self.fagk_enabled and self._opacity_sh.shape[1] > 0:
+        if self.opacity_sh_enabled and self._opacity_sh.shape[1] > 0:
             for i in range(opa_sh.shape[1]):
                 elements[f'opacity_sh_{i}'] = opa_sh[:, i]
 

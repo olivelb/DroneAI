@@ -73,6 +73,8 @@ from .scene_info import SceneInfo
 from .render_geometry import GaussianRenderGeometry
 from .capacity_planning import (
     GaussianCapacityPlan,
+    GaussianDensityAssessment,
+    assess_gaussian_density,
     detected_vram_bytes,
     plan_gaussian_capacity,
 )
@@ -247,7 +249,7 @@ class GaussianOrthoConfig:
     partition_n: int
     partition_overlap: float
     sh_degree: int
-    fagk: bool
+    opacity_sh_enabled: bool
     checkpoint_dir: str
     data_factor: int
     max_width: int
@@ -811,7 +813,7 @@ def train_and_merge_gaussian_models(
 
         model = model_class(
             sh_degree=config.sh_degree,
-            fagk_enabled=config.fagk,
+            opacity_sh_enabled=config.opacity_sh_enabled,
         )
         model.load_ply(str(training_result.ply_path))
         _report(
@@ -1145,6 +1147,7 @@ class GaussianFilteringPhaseState:
     render_state: GaussianRenderState
     input_gaussians: int
     output_gaussians: int
+    density_assessment: GaussianDensityAssessment | None = None
 
 
 def execute_gaussian_filtering_phase(
@@ -1165,10 +1168,35 @@ def execute_gaussian_filtering_phase(
         training_phase.training_state,
         cupy_module=cupy_module,
     )
+    output_gaussians = int(render_state.merged_model.num_gaussians)
+    density_assessment = None
+    if config.render_mode == "map" and config.capacity_mode == "adaptive":
+        if training_phase.capacity_plan is None:
+            raise RuntimeError(
+                "Adaptive Gaussian density cannot be verified because the "
+                "training artifact has no capacity plan; rerun Gaussian training."
+            )
+        density_assessment = assess_gaussian_density(
+            training_phase.capacity_plan,
+            actual_gaussian_count=output_gaussians,
+        )
+        _report(
+            config.vol_id,
+            "GAUSS",
+            95,
+            "Achieved Gaussian density: "
+            f"{density_assessment.actual_gaussian_count:,}/"
+            f"{density_assessment.required_gaussian_count:,} required; "
+            f"mean spacing {density_assessment.achieved_spacing_pixels:.2f} px "
+            f"for target {density_assessment.target_spacing_pixels:.2f} px "
+            f"({'accepted' if density_assessment.accepted else 'rejected'}).",
+            config.report_fn,
+        )
     return GaussianFilteringPhaseState(
         render_state=render_state,
         input_gaussians=input_gaussians,
-        output_gaussians=int(render_state.merged_model.num_gaussians),
+        output_gaussians=output_gaussians,
+        density_assessment=density_assessment,
     )
 
 
@@ -1188,6 +1216,22 @@ def execute_gaussian_rasterization_phase(
     render_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> GaussianRasterizationPhaseState:
     """Render RGB/height buffers without training or filtering side effects."""
+    density = filtering_phase.density_assessment
+    if config.render_mode == "map" and config.capacity_mode == "adaptive":
+        if density is None:
+            raise RuntimeError(
+                "Adaptive Gaussian rasterization requires a post-filter "
+                "density assessment; rerun training and filtering."
+            )
+        if not density.accepted:
+            raise RuntimeError(
+                f"Requested GSD {density.requested_gsd_m:.4f} m/px is "
+                "incompatible with the achieved Gaussian density: "
+                f"{density.actual_gaussian_count:,} retained versus "
+                f"{density.required_gaussian_count:,} required. Use at least "
+                f"{density.minimum_compatible_gsd_m:.4f} m/px or increase "
+                "resident capacity through geographic partitioning."
+            )
     if render_fn is None:
         from .ortho_renderer import render_orthophoto
 
@@ -1242,7 +1286,7 @@ def generate_gaussian_orthophoto(
     partition_n: int = 1,
     partition_overlap: float = 0.20,
     sh_degree: int = 3,
-    fagk: bool = True,
+    opacity_sh_enabled: bool = True,
     checkpoint_dir: str | None = None,
     data_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
     max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width,
@@ -1326,8 +1370,9 @@ def generate_gaussian_orthophoto(
         Overlap fraction for partitioning.
     sh_degree : int
         Maximum spherical harmonics degree.
-    fagk : bool
-        Enable Fully Anisotropic Gaussian Kernel.
+    opacity_sh_enabled : bool
+        Enable view-dependent opacity-logit SH residuals. Scale and rotation
+        remain view-independent; this is not full FAGK.
     checkpoint_dir : str, optional
         Directory for training checkpoints.
     data_factor : int
@@ -1388,7 +1433,7 @@ def generate_gaussian_orthophoto(
         partition_n=partition_n,
         partition_overlap=partition_overlap,
         sh_degree=sh_degree,
-        fagk=fagk,
+        opacity_sh_enabled=opacity_sh_enabled,
         checkpoint_dir=checkpoint_dir,
         data_factor=data_factor,
         max_width=max_width,

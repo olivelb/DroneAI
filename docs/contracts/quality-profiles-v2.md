@@ -39,6 +39,26 @@ map one Metashape dense point to one Gaussian. Dense multi-view points and
 optimized anisotropic Gaussians represent different primitives and have very
 different training-memory costs.
 
+## Achieved-density GSD gate
+
+Normal and High Quality no longer publish a raster merely because the
+requested capacity was plausible before training. After filtering, the worker
+compares the retained Gaussian count with the robust scene area and the
+profile's target pixel spacing:
+
+`required = ceil(area_m2 / (requested_gsd_m * spacing_px)^2)`
+
+If the retained count is below this requirement, rasterization fails closed.
+The error reports the achieved mean spacing and the coarsest safe remedy:
+
+`minimum_gsd_m = sqrt(area_m2 / retained_gaussians) / spacing_px`
+
+The operator must either use at least that GSD or increase total scene
+capacity through geographic resident-block partitioning. This global check is
+a necessary lower bound; the future core/buffer partition gate will add local
+density checks so a dense region cannot conceal a sparse one. `fast-v1` is
+exempt because it is an explicitly non-qualifying preview with fixed capacity.
+
 ## Villesèque reference calculation and qualification
 
 The current robust Villesèque reconstruction footprint measures 209,414 m².
@@ -58,6 +78,12 @@ peak VRAM. Its 30,000-iteration training took 14,401 seconds and produced a
 on the RTX 3090; it does not qualify survey accuracy or eliminate visible
 low-texture smoothing. See the
 [15 mm Villesèque HQ v2 benchmark](../benchmarks/villeseque-p4-hq-v2-15mm-2026-08-11.md).
+
+That historical 15 mm product predates the achieved-density gate. Its retained
+10.27 M population is below the approximately 14.5 M global target implied by
+209,414 m² and an 8 px spacing, so the same monolithic request would now be
+rejected instead of being labelled HQ. The intended remedy is the planned
+geographic multi-block HQ path, not removal of the gate.
 
 OVHcloud remains unqualified until the project has a real GPU quota and the
 exact GPU SKU passes the same run.

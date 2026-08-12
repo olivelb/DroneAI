@@ -103,3 +103,53 @@ def test_fixed_preview_keeps_its_reproducible_cap():
 
 def test_detected_vram_is_optional_for_cpu_contract_tests():
     assert capacity.detected_vram_bytes(SimpleNamespace()) is None
+
+
+def test_achieved_density_rejects_an_unsupported_requested_gsd():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=8.0,
+        points=_surface(500.0, 500.0),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.015,
+        total_vram_bytes=24 * capacity.GIB,
+    )
+
+    assessment = capacity.assess_gaussian_density(
+        plan,
+        actual_gaussian_count=10_000_000,
+    )
+
+    assert not assessment.accepted
+    assert assessment.required_gaussian_count > 17_000_000
+    assert assessment.achieved_spacing_pixels > 8.0
+    assert assessment.minimum_compatible_gsd_m > 0.019
+
+
+def test_achieved_density_accepts_a_supported_requested_gsd():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=20_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=8.0,
+        points=_surface(500.0, 500.0),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=48 * capacity.GIB,
+    )
+
+    assessment = capacity.assess_gaussian_density(
+        plan,
+        actual_gaussian_count=10_000_000,
+    )
+
+    assert assessment.accepted
+    assert assessment.achieved_spacing_pixels < 8.0
+
+    assert capacity.capacity_plan_from_dict(plan.as_dict()) == plan
+    assert (
+        capacity.density_assessment_from_dict(assessment.as_dict())
+        == assessment
+    )

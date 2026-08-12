@@ -25,6 +25,11 @@ This changelog covers the standalone Gaussian trainer project.
   training from their source dataset or final PLY.
 - Add focused CPU/CUDA parity, four-crop training, opacity-SH learning and
   checkpoint round-trip canaries.
+- Rename the Python boundary from ambiguous `fagk` flags to
+  `opacity_sh_enabled`, and document that scale/rotation remain static.
+- Refuse adaptive Normal/HQ rasterization when the post-filter Gaussian count
+  cannot support the requested GSD at the profile's declared spacing; persist
+  the capacity plan and density verdict through Stage Job artifacts.
 
 ## 0.5.0-dev.47 - Production identity and spatial canary
 

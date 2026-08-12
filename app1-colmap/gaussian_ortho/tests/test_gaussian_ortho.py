@@ -77,7 +77,7 @@ def _make_scene(n_cams=10, n_points=500):
 def _make_gpu_model(n=200, sh_degree=0, seed=42):
     """Create a GaussianModel on GPU with random data (no training)."""
     rng = np.random.RandomState(seed)
-    model = GaussianModel(sh_degree=sh_degree, fagk_enabled=False)
+    model = GaussianModel(sh_degree=sh_degree, opacity_sh_enabled=False)
     model._xyz = cp.array(rng.randn(n, 3).astype(np.float32) * 5)
     n_sh = num_sh_coefficients(sh_degree)
     model._features_dc = cp.array(rng.randn(n, 1, 3).astype(np.float32) * 0.1)
@@ -162,7 +162,7 @@ class TestGaussianModel:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "test.ply")
             model.save_ply(path)
-            model2 = GaussianModel(sh_degree=2, fagk_enabled=False)
+            model2 = GaussianModel(sh_degree=2, opacity_sh_enabled=False)
             model2.load_ply(path)
             assert model2.num_gaussians == 30
             np.testing.assert_allclose(
@@ -272,7 +272,7 @@ class TestOrthoRenderer:
 
     def test_translucent_surface_color_is_not_composited_on_white(self):
         """Ortho RGB represents surface colour independently of opacity."""
-        model = GaussianModel(sh_degree=0, fagk_enabled=False)
+        model = GaussianModel(sh_degree=0, opacity_sh_enabled=False)
         model._xyz = cp.array([[0.0, 0.0, 10.0]], dtype=cp.float32)
         model._features_dc = cp.zeros((1, 1, 3), dtype=cp.float32)
         model._features_rest = cp.empty((1, 0, 3), dtype=cp.float32)

@@ -22,6 +22,10 @@ from colmap_worker.stages import gaussian as gaussian_stage
 from colmap_worker.stages import preparation as preparation_stage
 from colmap_worker.stages import publication as publication_stage
 from gaussian_ortho import phase_artifacts
+from gaussian_ortho.capacity_planning import (
+    GaussianCapacityPlan,
+    GaussianDensityAssessment,
+)
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
@@ -316,6 +320,23 @@ class TestColmapStageHelpers(unittest.TestCase):
                     merged_model=types.SimpleNamespace(num_gaussians=1_500_000),
                     facade_subset_result=None,
                 ),
+                capacity_plan=GaussianCapacityPlan(
+                    mode="adaptive",
+                    requested_cap=1_500_000,
+                    capacity_floor=1_000_000,
+                    target_spacing_pixels=8.0,
+                    robust_ground_area_m2=2_500.0,
+                    requested_gsd_m=0.025,
+                    target_output_pixels=4_000_000,
+                    surface_target=100_000,
+                    free_vram_bytes=None,
+                    total_vram_bytes=None,
+                    vram_cap=None,
+                    effective_scene_cap=1_000_000,
+                    effective_cell_cap=1_000_000,
+                    cell_count=1,
+                    estimated_capacity_bytes=1_280_000_000,
+                ),
             )
             phase_artifacts.write_training_artifact(
                 tmp_dir,
@@ -326,6 +347,7 @@ class TestColmapStageHelpers(unittest.TestCase):
             artifact = phase_artifacts.read_training_artifact(tmp_dir, config)
             self.assertEqual(artifact.model_path, model_path)
             self.assertEqual(artifact.gaussian_count, 1_500_000)
+            self.assertEqual(artifact.capacity_plan, phase.capacity_plan)
             with self.assertRaisesRegex(ValueError, "config identity"):
                 phase_artifacts.read_training_artifact(
                     tmp_dir,
@@ -351,6 +373,17 @@ class TestColmapStageHelpers(unittest.TestCase):
                         [[0.0, 0.0, 10.0], [2.0, 1.0, 11.0]]
                     ),
                 ),
+                density_assessment=GaussianDensityAssessment(
+                    robust_ground_area_m2=2_500.0,
+                    requested_gsd_m=0.025,
+                    target_spacing_pixels=8.0,
+                    actual_gaussian_count=1_200_000,
+                    required_gaussian_count=62_500,
+                    achieved_spacing_m=0.04564,
+                    achieved_spacing_pixels=1.8256,
+                    minimum_compatible_gsd_m=0.005705,
+                    accepted=True,
+                ),
             )
             phase_artifacts.write_filtering_artifact(
                 tmp_dir,
@@ -362,6 +395,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             filtered = phase_artifacts.read_filtering_artifact(tmp_dir, config)
             self.assertEqual(filtered.model_path, filtered_model_path)
             self.assertEqual(filtered.output_gaussians, 1_200_000)
+            self.assertEqual(
+                filtered.density_assessment,
+                filtering_phase.density_assessment,
+            )
             self.assertEqual(filtered.render_extent, (-10.0, 10.0, -5.0, 5.0, 0.0, 8.0))
             self.assertEqual(filtered.scene_summary.registered_camera_count, 2)
             loaded_model = types.SimpleNamespace(num_gaussians=1_200_000)

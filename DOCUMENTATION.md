@@ -1417,7 +1417,9 @@ The implementation draws from several key papers:
 - **DroneGS**: standalone C++/CUDA MRNF training with structural FastGS buckets/checkpoints, warp-cooperative backward, fused L1/SSIM loss, progressive SH, bounded scene-resident image caching, and deterministic manifests
 - **CuPy** with custom CUDA RawKernels: lightweight GPU-accelerated orthographic rasteriser for TDOM rendering
 - **VastGaussian** (Lin et al. 2024): divide-and-conquer scene partitioning into overlapping grid cells with visibility-based camera assignment, independent per-cell training, and overlap-aware merging
-- **Tortho-Gaussian** (Wang et al. 2024): Fully Anisotropic Gaussian Kernel (FAGK) with SH-based view-dependent opacity, and orthographic projection matrix formulation (Equation 9)
+- **TOrtho-Gaussian** (Wang et al. 2024): DroneAI implements its opacity-only
+  SH ablation (`opacity-SH-v1`) and orthographic projection formulation. The
+  full view-dependent scale/rotation FAGK is not implemented.
 
 #### Key design decisions
 
@@ -1734,7 +1736,7 @@ The GS pipeline is implemented as a Python package at `app1-colmap/gaussian_orth
 | `dronegs/` | Native C++23/CUDA trainer, tests, portable build, and LPIPS tool |
 | `model_filtering.py` | Multi-stage spatial filtering: max-scale, distance crop, opacity, needle, SOR, connected-component, Z-floater |
 | `pca_alignment.py` | PCA-based geo-alignment: compute R_geo rotation matrix from camera positions |
-| `gaussian_model.py` | Gaussian model class with FAGK opacity SH, PLY I/O |
+| `gaussian_model.py` | Gaussian model with opacity-SH-v1 and PLY I/O; no full FAGK scale/rotation |
 | `cuda_rasterizer.py` | CuPy CUDA rasteriser for orthographic Gaussian splatting |
 | `ortho_renderer.py` | Orthographic camera setup, auto-adaptive chunked rendering (chunk_size based on available VRAM), height map extraction |
 | `colmap_loader.py` | COLMAP binary/pycolmap loader, Sim3 transform utilities |

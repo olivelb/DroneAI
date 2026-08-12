@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from scipy.spatial import ConvexHull, QhullError
@@ -38,6 +38,24 @@ class GaussianCapacityPlan:
     estimated_capacity_bytes: int
 
     def as_dict(self) -> dict[str, int | float | str | None]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class GaussianDensityAssessment:
+    """Post-filter evidence that an adaptive output GSD is supportable."""
+
+    robust_ground_area_m2: float
+    requested_gsd_m: float
+    target_spacing_pixels: float
+    actual_gaussian_count: int
+    required_gaussian_count: int
+    achieved_spacing_m: float
+    achieved_spacing_pixels: float
+    minimum_compatible_gsd_m: float
+    accepted: bool
+
+    def as_dict(self) -> dict[str, int | float | bool]:
         return asdict(self)
 
 
@@ -194,4 +212,158 @@ def plan_gaussian_capacity(
         effective_cell_cap=per_cell,
         cell_count=cell_count,
         estimated_capacity_bytes=effective * GAUSSIAN_CAPACITY_BYTES,
+    )
+
+
+def assess_gaussian_density(
+    plan: GaussianCapacityPlan,
+    *,
+    actual_gaussian_count: int,
+) -> GaussianDensityAssessment:
+    """Compare achieved adaptive density with the requested raster sampling."""
+
+    if plan.mode != "adaptive":
+        raise ValueError("density assessment requires an adaptive capacity plan")
+    area = plan.robust_ground_area_m2
+    if area is None or area <= 0 or not math.isfinite(area):
+        raise ValueError("adaptive density assessment requires a valid ground area")
+    if plan.target_spacing_pixels <= 0 or not math.isfinite(
+        plan.target_spacing_pixels
+    ):
+        raise ValueError("adaptive density assessment requires target spacing")
+    if actual_gaussian_count <= 0:
+        raise ValueError("actual Gaussian count must be positive")
+
+    achieved_spacing_m = math.sqrt(area / actual_gaussian_count)
+    achieved_spacing_pixels = achieved_spacing_m / plan.requested_gsd_m
+    required_gaussian_count = math.ceil(
+        area
+        / (plan.requested_gsd_m * plan.target_spacing_pixels) ** 2
+    )
+    minimum_compatible_gsd_m = (
+        achieved_spacing_m / plan.target_spacing_pixels
+    )
+    return GaussianDensityAssessment(
+        robust_ground_area_m2=area,
+        requested_gsd_m=plan.requested_gsd_m,
+        target_spacing_pixels=plan.target_spacing_pixels,
+        actual_gaussian_count=actual_gaussian_count,
+        required_gaussian_count=required_gaussian_count,
+        achieved_spacing_m=achieved_spacing_m,
+        achieved_spacing_pixels=achieved_spacing_pixels,
+        minimum_compatible_gsd_m=minimum_compatible_gsd_m,
+        accepted=actual_gaussian_count >= required_gaussian_count,
+    )
+
+
+def _stored_int(
+    payload: dict[str, Any],
+    name: str,
+    *,
+    optional: bool = False,
+) -> int | None:
+    value = payload.get(name)
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"stored Gaussian capacity integer is invalid: {name}")
+    return value
+
+
+def _stored_float(
+    payload: dict[str, Any],
+    name: str,
+    *,
+    optional: bool = False,
+) -> float | None:
+    value = payload.get(name)
+    if value is None and optional:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (float, int)):
+        raise ValueError(f"stored Gaussian capacity number is invalid: {name}")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError(f"stored Gaussian capacity number is not finite: {name}")
+    return result
+
+
+def capacity_plan_from_dict(payload: object) -> GaussianCapacityPlan:
+    """Validate and hydrate a capacity plan crossing a Stage Job boundary."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("stored Gaussian capacity plan is invalid")
+    mode = payload.get("mode")
+    if mode not in {"fixed", "adaptive"}:
+        raise ValueError("stored Gaussian capacity mode is invalid")
+    return GaussianCapacityPlan(
+        mode=mode,
+        requested_cap=cast(int, _stored_int(payload, "requested_cap")),
+        capacity_floor=cast(int, _stored_int(payload, "capacity_floor")),
+        target_spacing_pixels=cast(
+            float, _stored_float(payload, "target_spacing_pixels")
+        ),
+        robust_ground_area_m2=_stored_float(
+            payload, "robust_ground_area_m2", optional=True
+        ),
+        requested_gsd_m=cast(float, _stored_float(payload, "requested_gsd_m")),
+        target_output_pixels=_stored_int(
+            payload, "target_output_pixels", optional=True
+        ),
+        surface_target=_stored_int(payload, "surface_target", optional=True),
+        free_vram_bytes=_stored_int(payload, "free_vram_bytes", optional=True),
+        total_vram_bytes=_stored_int(payload, "total_vram_bytes", optional=True),
+        vram_cap=_stored_int(payload, "vram_cap", optional=True),
+        effective_scene_cap=cast(
+            int, _stored_int(payload, "effective_scene_cap")
+        ),
+        effective_cell_cap=cast(
+            int, _stored_int(payload, "effective_cell_cap")
+        ),
+        cell_count=cast(int, _stored_int(payload, "cell_count")),
+        estimated_capacity_bytes=cast(
+            int,
+            _stored_int(payload, "estimated_capacity_bytes")
+        ),
+    )
+
+
+def density_assessment_from_dict(payload: object) -> GaussianDensityAssessment:
+    """Validate and hydrate post-filter density evidence."""
+
+    if not isinstance(payload, dict):
+        raise ValueError("stored Gaussian density assessment is invalid")
+    accepted = payload.get("accepted")
+    if not isinstance(accepted, bool):
+        raise ValueError("stored Gaussian density verdict is invalid")
+    return GaussianDensityAssessment(
+        robust_ground_area_m2=cast(
+            float,
+            _stored_float(payload, "robust_ground_area_m2")
+        ),
+        requested_gsd_m=cast(float, _stored_float(payload, "requested_gsd_m")),
+        target_spacing_pixels=cast(
+            float,
+            _stored_float(payload, "target_spacing_pixels")
+        ),
+        actual_gaussian_count=cast(
+            int,
+            _stored_int(payload, "actual_gaussian_count")
+        ),
+        required_gaussian_count=cast(
+            int,
+            _stored_int(payload, "required_gaussian_count")
+        ),
+        achieved_spacing_m=cast(
+            float,
+            _stored_float(payload, "achieved_spacing_m")
+        ),
+        achieved_spacing_pixels=cast(
+            float,
+            _stored_float(payload, "achieved_spacing_pixels")
+        ),
+        minimum_compatible_gsd_m=cast(
+            float,
+            _stored_float(payload, "minimum_compatible_gsd_m")
+        ),
+        accepted=accepted,
     )

@@ -305,6 +305,11 @@ def finalize_gaussian_raster_product(
         "renderer_contract": "cupy-ortho-v3-surface-color",
         "cupy_version": cupy_version,
         "n_gaussians": filtering_phase.output_gaussians,
+        "gaussian_density": (
+            filtering_phase.density_assessment.as_dict()
+            if filtering_phase.density_assessment is not None
+            else None
+        ),
         "ortho_mip_filter_variance": config.ortho_mip_filter_variance,
         "ortho_mip_filter_compensation": config.ortho_mip_filter_compensation,
     }

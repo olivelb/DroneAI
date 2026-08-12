@@ -96,8 +96,8 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
 
     merged = GaussianModel(
         sh_degree=reference_model.max_sh_degree,
-        fagk_enabled=reference_model.fagk_enabled,
-        fagk_max_degree=reference_model.fagk_max_degree,
+        opacity_sh_enabled=reference_model.opacity_sh_enabled,
+        opacity_sh_max_degree=reference_model.opacity_sh_max_degree,
     )
 
     merged._xyz = cp.concatenate(all_xyz, axis=0)
@@ -113,6 +113,6 @@ def merge_models(cell_models: list[tuple[CellBounds, GaussianModel]],
         merged._opacity_sh = cp.empty((merged._xyz.shape[0], 0), dtype=cp.float32)
 
     merged.active_sh_degree = reference_model.max_sh_degree
-    merged.active_fagk_degree = reference_model.fagk_max_degree
+    merged.active_opacity_sh_degree = reference_model.opacity_sh_max_degree
 
     return merged

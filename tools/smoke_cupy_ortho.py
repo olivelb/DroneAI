@@ -119,7 +119,7 @@ else:
 
 # --- 3. Load existing PLY ---
 log("MODEL", 15, f"Loading PLY: {CHECKPOINT_PLY}")
-merged_model = GaussianModel(sh_degree=SH_DEGREE, fagk_enabled=True)
+merged_model = GaussianModel(sh_degree=SH_DEGREE, opacity_sh_enabled=True)
 merged_model.load_ply(CHECKPOINT_PLY)
 merged_model.active_sh_degree = SH_DEGREE
 log("MODEL", 20, f"Loaded {merged_model.num_gaussians} Gaussians")

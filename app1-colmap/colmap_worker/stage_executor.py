@@ -356,7 +356,7 @@ def run_gaussian_filtering_stage(
         artifact = read_training_artifact(workspace, product.config)
         model = GaussianModel(
             sh_degree=product.config.sh_degree,
-            fagk_enabled=product.config.fagk,
+            opacity_sh_enabled=product.config.opacity_sh_enabled,
         )
         model.load_ply(str(artifact.model_path))
         scene = prepare_gaussian_scene(product.config)
@@ -465,7 +465,7 @@ def run_rasterization_stage(
         artifact = read_filtering_artifact(workspace, product.config)
         model = GaussianModel(
             sh_degree=product.config.sh_degree,
-            fagk_enabled=product.config.fagk,
+            opacity_sh_enabled=product.config.opacity_sh_enabled,
         )
         model.load_ply(str(artifact.model_path))
         filtering_phase = hydrate_filtering_phase(artifact, model)
@@ -514,6 +514,8 @@ def run_rasterization_stage(
         }
         if coverage is not None:
             quality_metrics["coverage"] = coverage
+        if result.get("gaussian_density") is not None:
+            quality_metrics["gaussian_density"] = result["gaussian_density"]
         return StageExecutionResult(
             kind="raster_product_workspace",
             uri=published.uri,

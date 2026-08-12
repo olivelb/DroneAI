@@ -257,6 +257,7 @@ def rasterize_ortho(
         if direction_rotation.shape != (3, 3):
             raise ValueError("sh_direction_rotation must be a 3x3 matrix")
         cam_fwd = direction_rotation @ cam_fwd
+    cam_fwd = cam_fwd / cp.maximum(cp.linalg.norm(cam_fwd), 1.0e-10)
     dirs = cp.broadcast_to(cam_fwd[None, :], (N, 3)).copy()
 
     if opacity_sh is not None and opacity_sh.shape[1] > 0:
