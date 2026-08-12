@@ -1,20 +1,6 @@
 import type {
   FeatureBulkAction,
-  GcpAuditEvent,
-  GcpCollection,
-  GcpBundle,
-  GcpFeature,
   GcpImportOptions,
-  GcpObservation,
-  GcpSetSummary,
-  DatasetItem,
-  MissionCatalogResponse,
-  MissionDetail,
-  MissionSummary,
-  ParameterConfigResponse,
-  PodState,
-  RasterLayerStyle,
-  RasterMetadata,
   RasterStyleRecipe,
 } from "./types";
 import {
@@ -24,6 +10,36 @@ import {
   getApiBaseUrl,
 } from "./api-client";
 import { parseSessionPrincipal } from "./api-contracts";
+import { parseNoContent } from "./contract-decoder";
+import {
+  parseGcpAudit,
+  parseGcpBundle,
+  parseGcpCandidateRefresh,
+  parseGcpCollection,
+  parseGcpFeature,
+  parseGcpImport,
+  parseGcpObservation,
+} from "./gcp-api-contracts";
+import {
+  parseAnalysisList,
+  parseAnalysisRun,
+  parseBulkFeatureResponse,
+  parseFeature,
+  parseFeatureCollection,
+  parseRasterMetadata,
+  parseRasterStyle,
+  parseRasterStyleList,
+  parseSearchFeatureCollection,
+} from "./map-api-contracts";
+import {
+  parseCommandResponse,
+  parseDatasetItems,
+  parseMissionCatalog,
+  parseMissionDetail,
+  parseMissionSummaryResponse,
+  parseParameterConfig,
+  parsePods,
+} from "./mission-api-contracts";
 
 export {
   ApiError,
@@ -52,45 +68,40 @@ export const createSession = async (apiKey: string) => {
 };
 
 export const fetchSession = async () =>
-  parseSessionPrincipal(await api<unknown>("/auth/session"));
+  api("/auth/session", parseSessionPrincipal);
 
 export const deleteSession = () =>
-  api<{ status: string }>("/auth/session", { method: "DELETE" });
+  api("/auth/session", parseCommandResponse, { method: "DELETE" });
 
-export const fetchSummary = () => api<{
-  missions: MissionSummary[];
-  active_vol_id: string | null;
-}>("/status/summary");
+export const fetchSummary = () =>
+  api("/status/summary", parseMissionSummaryResponse);
 export const fetchMissionCatalog = (limit = 25, offset = 0) =>
-  api<MissionCatalogResponse>(`/missions?${new URLSearchParams({
+  api(`/missions?${new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
-  }).toString()}`);
+  }).toString()}`, parseMissionCatalog);
 export const fetchMissionDetail = (volId: string) =>
-  api<MissionDetail>(`/missions/${encodeURIComponent(volId)}`);
-export const fetchPods = () => api<{
-  pods: PodState[];
-  error: string | null;
-}>("/pods");
+  api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail);
+export const fetchPods = () => api("/pods", parsePods);
 export const fetchParameters = () =>
-  api<ParameterConfigResponse>("/mission/parameters");
+  api("/mission/parameters", parseParameterConfig);
 export const fetchBrowse = (prefix: string) =>
-  api<DatasetItem[]>(`/browse?prefix=${encodeURIComponent(prefix)}`);
+  api(`/browse?prefix=${encodeURIComponent(prefix)}`, parseDatasetItems);
 
 export const postMission = (params: Record<string, unknown>) =>
-  api("/mission", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
+  api("/mission", parseCommandResponse, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
 
 export const postCancel = (volId: string) =>
-  api(`/mission/cancel?vol_id=${encodeURIComponent(volId)}`, { method: "POST" });
+  api(`/mission/cancel?vol_id=${encodeURIComponent(volId)}`, parseCommandResponse, { method: "POST" });
 
 export const deleteMission = (volId: string) =>
-  api<{ status: string; message: string }>(`/mission/${encodeURIComponent(volId)}`, { method: "DELETE" });
+  api(`/mission/${encodeURIComponent(volId)}`, parseCommandResponse, { method: "DELETE" });
 
 export const deleteDataset = (name: string) =>
-  api<{ status: string; message: string }>(`/datasets/${encodeURIComponent(name)}`, { method: "DELETE" });
+  api(`/datasets/${encodeURIComponent(name)}`, parseCommandResponse, { method: "DELETE" });
 
 export const postResume = (volId: string) =>
-  api(`/mission/resume?vol_id=${encodeURIComponent(volId)}`, { method: "POST" });
+  api(`/mission/resume?vol_id=${encodeURIComponent(volId)}`, parseCommandResponse, { method: "POST" });
 
 const encodeS3Key = (s3Key: string) => s3Key.split("/").map(encodeURIComponent).join("/");
 
@@ -104,7 +115,10 @@ export const getPreviewUrl = (s3Key: string, maxSize = 4096, colormap = "") => {
 export const getMapMetadata = (
   missionId: string,
   layer: "ortho" | "depth",
-) => api<RasterMetadata>(`/maps/${encodeURIComponent(missionId)}/metadata/${layer}`);
+) => api(
+  `/maps/${encodeURIComponent(missionId)}/metadata/${layer}`,
+  parseRasterMetadata,
+);
 
 export const getMapTileUrl = (
   missionId: string,
@@ -132,7 +146,7 @@ export const getVectorLayer = (
   missionId: string,
   bbox: [number, number, number, number],
   options?: { sources?: string[]; runIds?: string[] },
-) => api<import("geojson").FeatureCollection>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/vectors.geojson?${new URLSearchParams({
     bbox: bbox.join(","),
     sources: (options?.sources ?? ["legacy", "manual"]).join(","),
@@ -140,18 +154,21 @@ export const getVectorLayer = (
       ? { run_ids: options.runIds.join(",") }
       : {}),
   }).toString()}`,
+  parseFeatureCollection,
 );
 
 export const fetchAnalyses = (missionId: string) =>
-  api<{ runs: import("./types").AnalysisRun[] }>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/analyses`,
+    parseAnalysisList,
   );
 
 export const createAnalysis = (
   missionId: string,
   request: import("./types").AnalysisCreate,
-) => api<import("./types").AnalysisRun>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/analyses`,
+  parseAnalysisRun,
   {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -160,14 +177,16 @@ export const createAnalysis = (
 );
 
 export const retryAnalysis = (missionId: string, runId: string) =>
-  api<import("./types").AnalysisRun>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/retry`,
+    parseAnalysisRun,
     { method: "POST" },
   );
 
 export const cancelAnalysis = (missionId: string, runId: string) =>
-  api<import("./types").AnalysisRun>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/cancel`,
+    parseAnalysisRun,
     { method: "POST" },
   );
 
@@ -175,8 +194,9 @@ export const getAnalysisVectors = (
   missionId: string,
   runId: string,
   bbox: [number, number, number, number],
-) => api<import("geojson").FeatureCollection>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/analyses/${encodeURIComponent(runId)}/vectors.geojson?bbox=${bbox.join(",")}`,
+  parseFeatureCollection,
 );
 
 export const searchMapFeatures = (
@@ -205,8 +225,9 @@ export const searchMapFeatures = (
   if (filters.deleted !== undefined) {
     params.set("deleted", String(filters.deleted));
   }
-  return api<import("geojson").FeatureCollection & { bounds?: [number, number, number, number] | null }>(
+  return api(
     `/maps/${encodeURIComponent(missionId)}/search?${params.toString()}`,
+    parseSearchFeatureCollection,
   );
 };
 
@@ -220,8 +241,9 @@ export const createMapFeature = (
     tags: string[];
     properties?: Record<string, unknown>;
   },
-) => api<import("geojson").Feature>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/features`,
+  parseFeature,
   {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -233,8 +255,9 @@ export const updateMapFeature = (
   missionId: string,
   featureId: string,
   request: Record<string, unknown>,
-) => api<import("geojson").Feature>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}`,
+  parseFeature,
   {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -247,8 +270,9 @@ export const deleteMapFeature = (
   featureId: string,
   reason = "",
 ) =>
-  api<void>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/features/${encodeURIComponent(featureId)}?${new URLSearchParams({ reason }).toString()}`,
+    parseNoContent,
     { method: "DELETE" },
   );
 
@@ -260,12 +284,7 @@ export const mutateMapFeaturesBulk = (
     expected_versions?: Record<string, number>;
     reason?: string;
   },
-) => api<{
-  action: FeatureBulkAction;
-  requested_count: number;
-  changed_count: number;
-  features: import("geojson").Feature[];
-}>(`/maps/${encodeURIComponent(missionId)}/features/bulk`, {
+) => api(`/maps/${encodeURIComponent(missionId)}/features/bulk`, parseBulkFeatureResponse, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify(request),
@@ -274,16 +293,18 @@ export const mutateMapFeaturesBulk = (
 export const fetchRasterStyles = (
   missionId: string,
   layer: "ortho" | "depth",
-) => api<{ layer: string; styles: RasterLayerStyle[] }>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/styles/${layer}`,
+  parseRasterStyleList,
 );
 
 export const createRasterStyle = (
   missionId: string,
   layer: "ortho" | "depth",
   request: { name: string; style: RasterStyleRecipe; is_default?: boolean },
-) => api<RasterLayerStyle>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/styles/${layer}`,
+  parseRasterStyle,
   {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -292,7 +313,7 @@ export const createRasterStyle = (
 );
 
 export const fetchGroundControl = (missionId: string) =>
-  api<GcpCollection>(`/maps/${encodeURIComponent(missionId)}/gcps`);
+  api(`/maps/${encodeURIComponent(missionId)}/gcps`, parseGcpCollection);
 
 export const importGroundControl = (
   missionId: string,
@@ -313,8 +334,9 @@ export const importGroundControl = (
   if (options.columnMapping && Object.values(options.columnMapping).some(Boolean)) {
     body.set("column_mapping", JSON.stringify(options.columnMapping));
   }
-  return api<{ gcp_set: GcpSetSummary; candidate_generation: Record<string, unknown> }>(
+  return api(
     `/maps/${encodeURIComponent(missionId)}/gcps/import`,
+    parseGcpImport,
     { method: "POST", body },
   );
 };
@@ -323,8 +345,9 @@ export const updateGroundControlPoint = (
   missionId: string,
   pointId: string,
   request: Record<string, unknown>,
-) => api<GcpFeature>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/gcps/points/${encodeURIComponent(pointId)}`,
+  parseGcpFeature,
   {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -341,8 +364,9 @@ export const updateGroundControlObservation = (
     pixel_y?: number;
     version: number;
   },
-) => api<GcpObservation>(
+) => api(
   `/maps/${encodeURIComponent(missionId)}/gcps/observations/${encodeURIComponent(observationId)}`,
+  parseGcpObservation,
   {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
@@ -351,8 +375,9 @@ export const updateGroundControlObservation = (
 );
 
 export const prepareGroundControlBundle = (missionId: string, setId: string) =>
-  api<GcpBundle>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/bundle`,
+    parseGcpBundle,
     { method: "POST" },
   );
 
@@ -366,18 +391,17 @@ export const refreshGroundControlCandidates = (
     candidate_radius_m: String(candidateRadiusM),
     max_candidates: String(maxCandidates),
   });
-  return api<{
-    gcp_set: GcpCollection;
-    candidate_generation: { added_observation_count: number };
-  }>(
+  return api(
     `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/candidates/refresh?${query}`,
+    parseGcpCandidateRefresh,
     { method: "POST" },
   );
 };
 
 export const fetchGroundControlAudit = (missionId: string, setId: string) =>
-  api<{ set_id: string; events: GcpAuditEvent[] }>(
+  api(
     `/maps/${encodeURIComponent(missionId)}/gcps/${encodeURIComponent(setId)}/audit`,
+    parseGcpAudit,
   );
 
 type SaveFilePickerType = {

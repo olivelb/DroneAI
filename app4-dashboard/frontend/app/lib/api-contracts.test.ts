@@ -21,6 +21,6 @@ describe("authentication API contract", () => {
     expect(() => parseSessionPrincipal({
       subject: "operator@example.test",
       role: "operator",
-    })).toThrow("Invalid authentication response contract");
+    })).toThrow("Invalid authentication response at $.organization_id");
   });
 });

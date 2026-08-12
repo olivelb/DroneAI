@@ -36,11 +36,11 @@ dataset qualification.
 | Protected compute | staging and production accept only bounded, immutable stage Jobs; the API, control worker, Helm overlays and compatibility workers all fail closed against fused execution | deployment-mode tests, protected Helm renders and worker startup guards |
 | Tenant event plane | organization binds every new pipeline/status/control event, deterministic identity, trace correlation, Kafka key, cancellation cache and realtime audience check | cross-organization identity, routing, cancellation and fan-out tests plus exported JSON Schema |
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
-| Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
+| Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
 The qualified local baseline after these changes is 983 non-GPU/non-integration
 Python tests, eight focused real-service integration tests, one real HTTP
-control-plane journey, 29 frontend unit tests and 10 Playwright journeys. The
+control-plane journey, 32 frontend unit tests and 10 Playwright journeys. The
 full Python static gate, documentation links, schema sync, shellcheck and
 actionlint also pass.
 
@@ -93,17 +93,13 @@ deliberately separate from scientific qualification.
    `app3-processing/analysis_workflow.py` (campaign, aggregation, publication),
    `shared/storage.py` (client, CAS, multipart) and
    `app4-dashboard/api/routers/map_gcps.py` (read/write/audit routes).
-2. **Complete runtime response validation.** Authentication now fails closed,
-   but other frontend endpoints still trust the generic JSON transport after
-   compile-time typing. Add generated or lightweight decoders for mission,
-   map, GCP, upload and pod responses.
-3. **Observability and SLOs.** Export request, outbox age, scheduler queue,
+2. **Observability and SLOs.** Export request, outbox age, scheduler queue,
    reconciliation, Kafka lag, S3 failure and organization-usage metrics with
    trace correlation and alert thresholds.
-4. **Fault and concurrency qualification.** Exercise killed API/control
+3. **Fault and concurrency qualification.** Exercise killed API/control
    processes, duplicate Kafka delivery, stale leases, S3 timeouts, concurrent
    upload finalization and rolling migration compatibility.
-5. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
+4. **Data migration tooling.** Provide dry-run, resumable, audited adoption of
    legacy storage into organizations and eventually make mission identifiers
    unique within an organization rather than globally.
 

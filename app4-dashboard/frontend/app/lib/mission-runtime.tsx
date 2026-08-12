@@ -16,10 +16,10 @@ import {
   missionSummaryFromDetail,
   summaryLogMessages,
 } from "./mission-runtime-state";
+import { parseStatusPayload } from "./mission-api-contracts";
 import type {
   MissionLog,
   MissionSummary,
-  StatusPayload,
 } from "./types";
 import { overallStatusFor } from "./types";
 
@@ -156,8 +156,7 @@ export function MissionRuntimeProvider({
       ws.onopen = () => setWsConnected(true);
       ws.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data) as StatusPayload;
-          if (!payload.vol_id) return;
+          const payload = parseStatusPayload(JSON.parse(event.data));
           const existing = missionsRef.current[payload.vol_id];
           if (!existing || existing.stage_runs?.length) return;
           const services = {

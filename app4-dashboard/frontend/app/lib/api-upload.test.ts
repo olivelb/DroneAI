@@ -41,7 +41,12 @@ describe("uploadDataset", () => {
         }, 201);
       }
       if (url.includes("/parts/1")) {
-        return jsonResponse({ method: "PUT", url: "https://objects.example/part-1" });
+        return jsonResponse({
+          method: "PUT",
+          url: "https://objects.example/part-1",
+          expires_in: 900,
+          part_number: 1,
+        });
       }
       if (url === "https://objects.example/part-1") {
         expect(init?.credentials).toBe("omit");
@@ -52,7 +57,14 @@ describe("uploadDataset", () => {
         expect(JSON.parse(String(init?.body))).toEqual({
           parts: [{ part_number: 1, etag: '"etag-1"' }],
         });
-        return jsonResponse({ status: "completed" });
+        return jsonResponse({
+          file_id: "file-1",
+          name: "image.jpg",
+          s3_key: "datasets/quarry/image.jpg",
+          size: 3,
+          etag: '"etag-1"',
+          status: "completed",
+        });
       }
       if (url.endsWith("/upload-sessions/session-1/complete")) {
         return jsonResponse({ total: 1, completed: 1, failed: 0, status: "done" });
