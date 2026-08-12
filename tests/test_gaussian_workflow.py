@@ -74,6 +74,83 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
     assert calls["trainer_binary_sha256"] == "a" * 64
 
 
+def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
+    x, y = np.meshgrid(
+        np.linspace(0.0, 500.0, 40),
+        np.linspace(0.0, 418.8, 40),
+    )
+    points = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+    scene_state = SimpleNamespace(
+        point_cloud=SimpleNamespace(points=points),
+        colmap_to_meters=1.0,
+        cells=[(None, SimpleNamespace())],
+        use_partition=False,
+    )
+    backend = SimpleNamespace(
+        name="dronegs",
+        binary_sha256=lambda: "b" * 64,
+    )
+    trained_caps = []
+    monkeypatch.setattr(
+        workflow,
+        "prepare_gaussian_scene",
+        lambda _config: scene_state,
+    )
+
+    def apply_partition(scene, _config, *, required_cell_count):
+        assert required_cell_count == 7
+        scene.cells = [(SimpleNamespace(), SimpleNamespace())] * 9
+        scene.use_partition = True
+
+    monkeypatch.setattr(
+        workflow,
+        "_apply_required_geographic_partition",
+        apply_partition,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "replace",
+        lambda config, **changes: SimpleNamespace(**(vars(config) | changes)),
+    )
+
+    def train(config, _scene, **_kwargs):
+        trained_caps.append(config.cap_max)
+        return SimpleNamespace(final_ply="final.ply")
+
+    monkeypatch.setattr(workflow, "train_and_merge_gaussian_models", train)
+    config = SimpleNamespace(
+        capacity_mode="adaptive",
+        cap_max=12_000_000,
+        capacity_floor=5_000_000,
+        target_gaussian_spacing_pixels=3.6,
+        resolution=0.02,
+        partition_overlap=0.2,
+        partition_m=1,
+        partition_n=1,
+        vol_id="mission",
+        report_fn=None,
+    )
+
+    result = workflow.execute_gaussian_training_phase(
+        config,
+        backend=backend,
+        model_class=lambda: None,
+        merge_models_fn=lambda: None,
+        cupy_module=SimpleNamespace(),
+    )
+
+    assert result.capacity_plan is not None
+    assert result.capacity_plan.effective_scene_cap == pytest.approx(
+        40_400_000,
+        rel=0.03,
+    )
+    assert result.capacity_plan.cell_count == 9
+    assert result.capacity_plan.resident_cap == 12_000_000
+    assert result.capacity_plan.cells_sufficient
+    assert trained_caps == [result.capacity_plan.effective_cell_cap]
+    assert trained_caps[0] < result.capacity_plan.resident_cap
+
+
 def test_filtering_phase_applies_render_preparation_once_and_records_counts(
     monkeypatch,
 ):

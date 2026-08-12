@@ -60,7 +60,7 @@ from gaussian_training.manifest_contract import (
     manifest_matches_ply,
     validate_run_manifest,
 )
-from .partition import partition_scene
+from .partition import partition_scene, plan_partition_grid
 from .camera_footprint import geographic_scene_frame
 from .exif_altitude import (
     extract_exif_altitudes,
@@ -470,48 +470,6 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         point_cloud,
         dense_path=config.dense_path,
     )
-    use_partition = config.partition_m > 1 or config.partition_n > 1
-    cells: list[tuple[CellBounds | None, SceneInfo]]
-    if use_partition:
-        if config.render_mode != "map" or transform_data is None:
-            raise ValueError(
-                "Partitioned Gaussian training requires a geographic Sim3 "
-                "transform so blocks are defined in projected ground coordinates"
-            )
-        geographic_frame = geographic_scene_frame(
-            point_cloud.points,
-            transform_data,
-        )
-        ground_linear = geographic_frame.ground_linear
-        ground_offset = geographic_frame.ground_offset
-        _report(
-            config.vol_id,
-            "GAUSS",
-            12,
-            f"Partitioning scene into {config.partition_m}x{config.partition_n} cells…",
-            config.report_fn,
-        )
-        cells = [
-            (bounds, cell_scene)
-            for bounds, cell_scene in partition_scene(
-                scene,
-                config.partition_m,
-                config.partition_n,
-                config.partition_overlap,
-                model_to_ground_linear=ground_linear,
-                model_to_ground_offset=ground_offset,
-                geographic_frame=geographic_frame,
-            )
-        ]
-        _report(
-            config.vol_id,
-            "GAUSS",
-            15,
-            f"Created {len(cells)} active cells",
-            config.report_fn,
-        )
-    else:
-        cells = [(None, scene)]
     return GaussianSceneState(
         train_cameras=train_cameras,
         test_cameras=test_cameras,
@@ -530,8 +488,81 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
         gaussian_seed_point_count=gaussian_seed_point_count,
         images_dir=images_dir,
         scene=scene,
-        cells=cells,
-        use_partition=use_partition,
+        cells=[(None, scene)],
+        use_partition=False,
+    )
+
+
+def _apply_required_geographic_partition(
+    scene_state: GaussianSceneState,
+    config: GaussianOrthoConfig,
+    *,
+    required_cell_count: int,
+) -> None:
+    """Materialize the requested or density-required geographic grid."""
+    requested_rows = max(1, int(getattr(config, "partition_m", 1)))
+    requested_columns = max(1, int(getattr(config, "partition_n", 1)))
+    target_cell_count = max(
+        required_cell_count,
+        requested_rows * requested_columns,
+    )
+    if target_cell_count == 1:
+        return
+    if (
+        getattr(config, "render_mode", "map") != "map"
+        or scene_state.transform_data is None
+        or scene_state.scene is None
+        or scene_state.point_cloud is None
+    ):
+        raise ValueError(
+            "Partitioned Gaussian training requires a geographic Sim3 "
+            "transform so blocks are defined in projected ground coordinates"
+        )
+    frame = geographic_scene_frame(
+        scene_state.point_cloud.points,
+        scene_state.transform_data,
+    )
+    if requested_rows * requested_columns >= target_cell_count:
+        rows, columns = requested_rows, requested_columns
+    else:
+        rows, columns = plan_partition_grid(
+            scene_state.scene,
+            target_cell_count,
+            model_to_ground_linear=frame.ground_linear,
+            model_to_ground_offset=frame.ground_offset,
+        )
+    overlap = float(getattr(config, "partition_overlap", 0.20))
+    _report(
+        config.vol_id,
+        "GAUSS",
+        12,
+        f"Partitioning projected ground into {rows}x{columns} "
+        f"core/buffer cells (minimum {required_cell_count})…",
+        config.report_fn,
+    )
+    cells = partition_scene(
+        scene_state.scene,
+        rows,
+        columns,
+        overlap,
+        model_to_ground_linear=frame.ground_linear,
+        model_to_ground_offset=frame.ground_offset,
+        geographic_frame=frame,
+    )
+    if len(cells) < required_cell_count:
+        raise RuntimeError(
+            "Geographic camera visibility produced only "
+            f"{len(cells)} active cells but Gaussian density requires "
+            f"{required_cell_count}; inspect coverage or use a coarser GSD."
+        )
+    scene_state.cells = [(bounds, cell_scene) for bounds, cell_scene in cells]
+    scene_state.use_partition = True
+    _report(
+        config.vol_id,
+        "GAUSS",
+        15,
+        f"Created {len(cells)} footprint-visible resident cells",
+        config.report_fn,
     )
 
 
@@ -582,6 +613,25 @@ def execute_gaussian_training_phase(
     if scene_state.point_cloud is None:
         raise RuntimeError("Sparse point cloud is unavailable for capacity planning")
     detected_vram = detected_vram_bytes(cupy_module)
+    overlap = float(getattr(config, "partition_overlap", 0.20))
+    preliminary_plan = plan_gaussian_capacity(
+        mode=config.capacity_mode,
+        requested_cap=config.cap_max,
+        capacity_floor=config.capacity_floor,
+        target_spacing_pixels=config.target_gaussian_spacing_pixels,
+        points=scene_state.point_cloud.points,
+        meters_per_model_unit=scene_state.colmap_to_meters,
+        requested_gsd_m=config.resolution,
+        free_vram_bytes=detected_vram[0] if detected_vram else None,
+        total_vram_bytes=detected_vram[1] if detected_vram else None,
+        cell_count=1,
+        partition_overlap=overlap,
+    )
+    _apply_required_geographic_partition(
+        scene_state,
+        config,
+        required_cell_count=preliminary_plan.required_cell_count,
+    )
     capacity_plan = plan_gaussian_capacity(
         mode=config.capacity_mode,
         requested_cap=config.cap_max,
@@ -593,7 +643,14 @@ def execute_gaussian_training_phase(
         free_vram_bytes=detected_vram[0] if detected_vram else None,
         total_vram_bytes=detected_vram[1] if detected_vram else None,
         cell_count=len(scene_state.cells),
+        partition_overlap=overlap,
     )
+    if not capacity_plan.cells_sufficient:
+        raise RuntimeError(
+            "Gaussian resident grid is insufficient after camera selection: "
+            f"{capacity_plan.cell_count} active versus "
+            f"{capacity_plan.required_cell_count} required cells."
+        )
     if capacity_plan.mode == "adaptive":
         area = capacity_plan.robust_ground_area_m2 or 0.0
         vram_cap = (
@@ -608,9 +665,11 @@ def execute_gaussian_training_phase(
             "Adaptive capacity: "
             f"{area:,.0f} m² at {config.resolution:.4f} m/px, "
             f"surface target {capacity_plan.surface_target:,}, "
-            f"VRAM cap {vram_cap}, effective scene cap "
+            f"VRAM cap {vram_cap}, merged scene target "
             f"{capacity_plan.effective_scene_cap:,} "
-            f"({capacity_plan.effective_cell_cap:,} per active cell).",
+            f"with {capacity_plan.cell_count} cells at up to "
+            f"{capacity_plan.effective_cell_cap:,} resident Gaussians each "
+            f"(hard resident cap {capacity_plan.resident_cap:,}).",
             config.report_fn,
         )
     training_config = replace(

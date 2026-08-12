@@ -46,7 +46,7 @@ def test_robust_area_is_orientation_independent_and_rejects_outliers():
     assert area == pytest.approx(250_000.0, rel=0.08)
 
 
-def test_villeseque_sized_hq_plan_uses_surface_then_rtx3090_ceiling():
+def test_hq_plan_separates_merged_target_from_resident_rtx3090_cap():
     plan = capacity.plan_gaussian_capacity(
         mode="adaptive",
         requested_cap=12_000_000,
@@ -62,11 +62,30 @@ def test_villeseque_sized_hq_plan_uses_surface_then_rtx3090_ceiling():
     assert plan.surface_target > 12_000_000
     assert plan.vram_cap is not None
     assert plan.vram_cap > 12_000_000
-    assert plan.effective_scene_cap == 12_000_000
+    assert plan.effective_scene_cap > 17_000_000
+    assert plan.resident_cap == 12_000_000
+    assert plan.required_cell_count == 3
+    assert not plan.cells_sufficient
     assert plan.effective_cell_cap == 12_000_000
 
 
-def test_adaptive_plan_reduces_capacity_on_a_smaller_gpu_and_partitions_scene():
+def test_adaptive_plan_adds_cells_for_a_smaller_gpu():
+    preliminary = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=8.0,
+        points=_surface(500.0, 500.0),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.015,
+        total_vram_bytes=12 * capacity.GIB,
+    )
+
+    assert preliminary.vram_cap is not None
+    assert preliminary.resident_cap == preliminary.vram_cap
+    assert preliminary.required_cell_count > 4
+    assert preliminary.effective_scene_cap > preliminary.resident_cap
+
     plan = capacity.plan_gaussian_capacity(
         mode="adaptive",
         requested_cap=12_000_000,
@@ -76,13 +95,28 @@ def test_adaptive_plan_reduces_capacity_on_a_smaller_gpu_and_partitions_scene():
         meters_per_model_unit=1.0,
         requested_gsd_m=0.015,
         total_vram_bytes=12 * capacity.GIB,
-        cell_count=4,
+        cell_count=preliminary.required_cell_count,
     )
 
-    assert plan.vram_cap is not None
-    assert plan.effective_scene_cap == plan.vram_cap
-    assert plan.effective_cell_cap * 4 >= plan.effective_scene_cap
-    assert plan.effective_cell_cap < plan.effective_scene_cap
+    assert plan.cells_sufficient
+    assert plan.effective_cell_cap <= plan.resident_cap
+
+
+def test_two_centimeter_hq_candidate_targets_about_40m_merged_gaussians():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        points=_surface(500.0, 418.8),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=24 * capacity.GIB,
+    )
+
+    assert plan.effective_scene_cap == pytest.approx(40_400_000, rel=0.03)
+    assert plan.resident_cap == 12_000_000
+    assert plan.required_cell_count == 7
 
 
 def test_fixed_preview_keeps_its_reproducible_cap():

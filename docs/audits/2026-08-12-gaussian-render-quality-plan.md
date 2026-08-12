@@ -36,8 +36,9 @@ Qualification evidence:
 
 Status: in progress. Projected-ground core/buffer cells and deterministic
 geographic core ownership, calibrated terrain-envelope camera footprints and
-native JPEG crops are implemented and component-qualified. Resident-cap
-planning and streamed products remain.
+native JPEG crops are implemented and component-qualified. Area/GSD/VRAM-aware
+resident-cap planning is also implemented; streamed filtering and products
+remain before the new HQ profile can be enabled.
 
 1. Define the partition in projected ground coordinates, independently of the
    reconstruction's local axes. **Implemented.**
@@ -51,7 +52,12 @@ planning and streamed products remain.
    deferred until the representative-block gate shows a need.**
 4. Train one resident core/buffer block at a time with a 12 M hard resident
    cap. Plan the number of blocks from area, requested GSD, target spacing and
-   available VRAM; do not encode a universal 40 M constant.
+   available VRAM; do not encode a universal 40 M constant. **The planner and
+   automatic compact geographic grid are implemented. For the 209,400 m²
+   reference case at 2 cm and 3.6 px spacing, it resolves about 40.4 M merged
+   Gaussians, seven minimum resident cells with 20% buffer, and a 12 M hard
+   per-cell cap. Runtime activation remains blocked on streamed products so a
+   later merge cannot defeat that resident bound.**
 5. Merge only buffer-supported content into each core. Record overlap,
    per-core density and seam evidence in the stage artifacts.
 

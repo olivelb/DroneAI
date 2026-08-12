@@ -32,6 +32,11 @@ class GaussianCapacityPlan:
     free_vram_bytes: int | None
     total_vram_bytes: int | None
     vram_cap: int | None
+    resident_cap: int
+    partition_overlap: float
+    buffer_capacity_factor: float
+    required_cell_count: int
+    cells_sufficient: bool
     effective_scene_cap: int
     effective_cell_cap: int
     cell_count: int
@@ -153,8 +158,9 @@ def plan_gaussian_capacity(
     total_vram_bytes: int | None,
     free_vram_bytes: int | None = None,
     cell_count: int = 1,
+    partition_overlap: float = 0.20,
 ) -> GaussianCapacityPlan:
-    """Resolve a global scene cap and an equal per-partition cap."""
+    """Resolve merged-scene density and a safe resident-block capacity."""
 
     if mode not in {"fixed", "adaptive"}:
         raise ValueError("Gaussian capacity mode must be fixed or adaptive")
@@ -164,6 +170,10 @@ def plan_gaussian_capacity(
         raise ValueError("Gaussian capacity floor must not exceed its cap")
     if cell_count < 1:
         raise ValueError("Gaussian capacity cell count must be positive")
+    if not 0.0 <= partition_overlap < 1.0 or not math.isfinite(
+        partition_overlap
+    ):
+        raise ValueError("Gaussian partition overlap must be in [0, 1)")
     if requested_gsd_m <= 0 or not math.isfinite(requested_gsd_m):
         raise ValueError("requested GSD must be positive and finite")
 
@@ -176,8 +186,12 @@ def plan_gaussian_capacity(
         else None
     )
 
+    buffer_capacity_factor = 1.0
+    required_cell_count = 1
+    resident_cap = requested_cap
     if mode == "fixed":
-        effective = requested_cap
+        effective_scene = requested_cap
+        effective_cell = _round_up(effective_scene / cell_count)
     else:
         if target_spacing_pixels <= 0 or not math.isfinite(target_spacing_pixels):
             raise ValueError("adaptive Gaussian spacing must be positive and finite")
@@ -189,13 +203,28 @@ def plan_gaussian_capacity(
         surface_target = _round_up(
             output_pixels / target_spacing_pixels**2
         )
-        desired = max(capacity_floor, surface_target)
-        effective = min(requested_cap, desired)
+        effective_scene = max(capacity_floor, surface_target)
         if memory_cap is not None:
-            effective = min(effective, memory_cap)
-        effective = max(CAPACITY_QUANTUM, _round_down(effective))
-
-    per_cell = _round_up(effective / cell_count)
+            resident_cap = min(resident_cap, memory_cap)
+        resident_cap = max(CAPACITY_QUANTUM, _round_down(resident_cap))
+        buffer_capacity_factor = (1.0 + 2.0 * partition_overlap) ** 2
+        required_cell_count = max(
+            1,
+            math.ceil(
+                effective_scene
+                * buffer_capacity_factor
+                / resident_cap
+            ),
+        )
+        effective_cell = min(
+            resident_cap,
+            _round_up(
+                effective_scene
+                * buffer_capacity_factor
+                / cell_count
+            ),
+        )
+    cells_sufficient = cell_count >= required_cell_count
     return GaussianCapacityPlan(
         mode=mode,
         requested_cap=requested_cap,
@@ -208,10 +237,15 @@ def plan_gaussian_capacity(
         free_vram_bytes=free_vram_bytes,
         total_vram_bytes=total_vram_bytes,
         vram_cap=memory_cap,
-        effective_scene_cap=effective,
-        effective_cell_cap=per_cell,
+        resident_cap=resident_cap,
+        partition_overlap=partition_overlap,
+        buffer_capacity_factor=buffer_capacity_factor,
+        required_cell_count=required_cell_count,
+        cells_sufficient=cells_sufficient,
+        effective_scene_cap=effective_scene,
+        effective_cell_cap=effective_cell,
         cell_count=cell_count,
-        estimated_capacity_bytes=effective * GAUSSIAN_CAPACITY_BYTES,
+        estimated_capacity_bytes=effective_cell * GAUSSIAN_CAPACITY_BYTES,
     )
 
 
@@ -287,6 +321,13 @@ def _stored_float(
     return result
 
 
+def _stored_bool(payload: dict[str, Any], name: str) -> bool:
+    value = payload.get(name)
+    if not isinstance(value, bool):
+        raise ValueError(f"stored Gaussian capacity boolean is invalid: {name}")
+    return value
+
+
 def capacity_plan_from_dict(payload: object) -> GaussianCapacityPlan:
     """Validate and hydrate a capacity plan crossing a Stage Job boundary."""
 
@@ -313,6 +354,17 @@ def capacity_plan_from_dict(payload: object) -> GaussianCapacityPlan:
         free_vram_bytes=_stored_int(payload, "free_vram_bytes", optional=True),
         total_vram_bytes=_stored_int(payload, "total_vram_bytes", optional=True),
         vram_cap=_stored_int(payload, "vram_cap", optional=True),
+        resident_cap=cast(int, _stored_int(payload, "resident_cap")),
+        partition_overlap=cast(
+            float, _stored_float(payload, "partition_overlap")
+        ),
+        buffer_capacity_factor=cast(
+            float, _stored_float(payload, "buffer_capacity_factor")
+        ),
+        required_cell_count=cast(
+            int, _stored_int(payload, "required_cell_count")
+        ),
+        cells_sufficient=_stored_bool(payload, "cells_sufficient"),
         effective_scene_cap=cast(
             int, _stored_int(payload, "effective_scene_cap")
         ),

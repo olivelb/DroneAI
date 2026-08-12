@@ -8,7 +8,7 @@ from gaussian_ortho.camera_footprint import (
     geographic_scene_frame,
 )
 from gaussian_ortho.colmap_loader import CameraInfo, PointCloud
-from gaussian_ortho.partition import partition_scene
+from gaussian_ortho.partition import partition_scene, plan_partition_grid
 from gaussian_ortho.scene_info import build_scene_info
 
 
@@ -125,3 +125,24 @@ def test_partition_assigns_camera_by_footprint_not_camera_center() -> None:
         crop.source_x > 0 and crop.width < crop.source_width
         for crop in second_scene.image_crops.values()
     )
+
+
+def test_partition_grid_planner_follows_projected_scene_aspect() -> None:
+    points = _flat_points()
+    point_cloud = PointCloud(
+        points=points,
+        colors=np.ones_like(points),
+        normals=np.zeros_like(points),
+    )
+    square_scene = build_scene_info([_camera()], [], point_cloud)
+    assert plan_partition_grid(square_scene, 3) == (2, 2)
+
+    wide_points = points.copy()
+    wide_points[:, 0] *= 4.0
+    wide_cloud = PointCloud(
+        points=wide_points,
+        colors=np.ones_like(wide_points),
+        normals=np.zeros_like(wide_points),
+    )
+    wide_scene = build_scene_info([_camera()], [], wide_cloud)
+    assert plan_partition_grid(wide_scene, 4) == (1, 4)

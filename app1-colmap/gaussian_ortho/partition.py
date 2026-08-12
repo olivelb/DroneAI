@@ -212,6 +212,52 @@ def compute_partition_grid(
     return cells
 
 
+def plan_partition_grid(
+    scene: SceneInfo,
+    required_cell_count: int,
+    *,
+    model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR,
+    model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET,
+    extent_quantile: float = 0.005,
+) -> tuple[int, int]:
+    """Choose rows/columns that keep projected resident blocks compact."""
+    if required_cell_count < 1:
+        raise ValueError("required partition cell count must be positive")
+    if required_cell_count == 1:
+        return 1, 1
+    ground_xy = _project_points(
+        scene.point_cloud.points,
+        model_to_ground_linear,
+        model_to_ground_offset,
+    )
+    x_min, x_max, y_min, y_max = _ground_extent(
+        ground_xy,
+        quantile=extent_quantile,
+    )
+    scene_aspect = (x_max - x_min) / (y_max - y_min)
+    best: tuple[float, int, int, int] | None = None
+    maximum_axis = max(2, required_cell_count)
+    for rows in range(1, maximum_axis + 1):
+        columns = math.ceil(required_cell_count / rows)
+        cell_count = rows * columns
+        cell_aspect = scene_aspect * rows / columns
+        shape_penalty = abs(math.log(max(cell_aspect, 1.0e-12)))
+        overprovision_penalty = (
+            2.0 * (cell_count - required_cell_count) / required_cell_count
+        )
+        candidate = (
+            shape_penalty + overprovision_penalty,
+            cell_count,
+            rows,
+            columns,
+        )
+        if best is None or candidate < best:
+            best = candidate
+    if best is None:
+        raise RuntimeError("unable to plan a geographic partition grid")
+    return best[2], best[3]
+
+
 def _filter_points_in_buffer(point_cloud: PointCloud, cell: CellBounds) -> PointCloud:
     mask = cell.buffer_mask(point_cloud.points, array_module=np)
     return PointCloud(

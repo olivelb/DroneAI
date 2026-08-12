@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 TRAINING_ARTIFACT_PATH = Path(".droneai/gaussian-training-state.json")
 FILTERING_ARTIFACT_PATH = Path(".droneai/gaussian-filtering-state.json")
-ARTIFACT_SCHEMA_VERSION = 1
+ARTIFACT_SCHEMA_VERSION = 2
 
 _RUNTIME_CONFIG_FIELDS = frozenset(
     {
