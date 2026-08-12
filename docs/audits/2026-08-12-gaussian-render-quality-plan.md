@@ -127,6 +127,14 @@ peak VRAM and wall time. No default changes without a recorded win. This phase
 is motivated by [AbsGS](https://arxiv.org/abs/2404.10484), which targets
 gradient cancellation that can prevent large Gaussians from splitting.
 
+The completed native manifests are compared with
+`tools/compare_gaussian_qualification_runs.py`. It fails closed if the
+dataset fingerprint, trainer binary, seed, iteration budget, density target or
+any other controlled parameter differs, and accepts only the versioned
+reference/AbsGrad parameter fields as experimental variables. Raster/DEM
+residuals and edge evidence remain separate product-level gates because they
+operate on the final GeoTIFFs, not on trainer telemetry.
+
 ## Phase 4 — 2D Gaussian backend evaluation
 
 Status: research spike after the densification gate.
