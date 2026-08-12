@@ -47,9 +47,10 @@ dataset qualification.
 | Analysis workflow ownership | bounded result loading/publication and stale-campaign recovery are isolated from tile ingestion and finalization orchestration | processing-service regressions, strict typing and module-boundary tests |
 | Dataset upload ownership | HTTP contracts, transactional commands, crash-safe S3 transitions and background reconciliation have independent boundaries behind a stable API facade | upload-session recovery regressions, real fault/concurrency qualification, strict typing and module-boundary tests |
 | Pipeline parameter ownership | declarative defaults/dashboard metadata and normalization/merge rules are isolated behind the stable shared contract | validation, worker-support and module-boundary regressions plus strict typing |
+| Database model ownership | engine/session lifecycle, shared schema primitives, identity, SaaS/datasets, missions, analysis/map and delivery models are separate behind the stable database facade and one metadata registry | 35-table registry guard, SQLite domain regressions, real RLS and migration round-trip qualification |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; every JSON endpoint and websocket status event now requires a domain runtime decoder | 32 Vitest tests, ESLint, explicit TypeScript gate, production build and 10 browser journeys |
 
-The qualified local baseline after these changes is 1064 non-GPU/non-integration
+The qualified local baseline after these changes is 1065 non-GPU/non-integration
 Python tests, sixteen focused real-service integration tests (including one
 real HTTP control-plane journey), 32 frontend unit tests and 10 Playwright
 journeys. The full Python static gate, documentation links, schema sync,
@@ -97,12 +98,7 @@ deliberately separate from scientific qualification.
 
 ### P2 — Maintainability and operability
 
-1. **Split the remaining database hotspot by bounded context.**
-   `shared/database.py` still owns models for identity, tenancy, missions,
-   scheduling, uploads, operations and the event ledger. Dataset uploads and
-   pipeline parameter catalogue/normalization now have separate ownership
-   boundaries behind their existing facades.
-2. **Mission identifier scope.** Once deployed legacy resources have been
+1. **Mission identifier scope.** Once deployed legacy resources have been
    inventoried and adopted, replace global mission-name uniqueness and all
    remaining single-key lookups with `(organization_id, vol_id)`.
 

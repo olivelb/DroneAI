@@ -1,4 +1,5 @@
 import ast
+import importlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -177,6 +178,36 @@ def test_pipeline_parameter_contract_separates_catalogue_from_merge_rules():
     assert "merge_pipeline_params" in normalization_source
     assert "from shared.pipeline_params" not in catalogue_source
     assert "from shared.pipeline_params" not in normalization_source
+
+
+def test_database_facade_loads_models_from_bounded_contexts():
+    facade = "shared/database.py"
+    schema = "shared/database_schema.py"
+    model_modules = [
+        "shared/database_identity_models.py",
+        "shared/database_saas_models.py",
+        "shared/database_mission_models.py",
+        "shared/database_analysis_models.py",
+        "shared/database_delivery_models.py",
+    ]
+    facade_source = _source(facade)
+
+    assert _line_count(facade) < 500
+    assert _line_count(schema) < 300
+    assert all(_line_count(module) < 550 for module in model_modules)
+    assert "create_engine" in facade_source
+    assert "DeclarativeBase" not in facade_source
+    assert "DeclarativeBase" in _source(schema)
+    assert all("create_engine" not in _source(module) for module in model_modules)
+    assert all("get_session" not in _source(module) for module in model_modules)
+
+    database = importlib.import_module("shared.database")
+    assert len(database.Base.metadata.tables) == 35
+    assert database.Organization.__module__ == "shared.database_identity_models"
+    assert database.Dataset.__module__ == "shared.database_saas_models"
+    assert database.Mission.__module__ == "shared.database_mission_models"
+    assert database.AIAnalysisRun.__module__ == "shared.database_analysis_models"
+    assert database.OutboxEvent.__module__ == "shared.database_delivery_models"
 
 
 def test_ai_worker_keeps_model_and_tile_workflow_out_of_composition_root():
