@@ -86,6 +86,26 @@ dronegs::Scene make_scene() {
     return scene;
 }
 
+dronegs::Scene make_corner_supported_scene() {
+    auto scene = make_scene();
+    scene.points.clear();
+    std::uint64_t id = 1U;
+    for (int y = 0; y < 3; ++y) {
+        for (int x = 0; x < 3; ++x) {
+            scene.points.push_back({
+                .id = id++,
+                .xyz = {
+                    -0.45 + static_cast<double>(x) * 0.03,
+                    -0.45 + static_cast<double>(y) * 0.03,
+                    2.0,
+                },
+                .rgb = {128U, 180U, 128U},
+            });
+        }
+    }
+    return scene;
+}
+
 }  // namespace
 
 int main() {
@@ -129,6 +149,22 @@ int main() {
                 std::to_string(metrics.held_out_image_count) +
                 " cache_misses=" +
                 std::to_string(metrics.image_cache_misses));
+        }
+        auto corner_gaussians = dronegs::initialize_fixed_topology(
+            make_corner_supported_scene());
+        auto corner_options = options;
+        corner_options.output_path = root / "corner-output";
+        corner_options.run_manifest =
+            corner_options.output_path / "trainer_run.json";
+        corner_options.iterations = 1U;
+        const auto corner_metrics = dronegs::train_ordered_mrnf(
+            corner_options, make_corner_supported_scene(),
+            corner_gaussians);
+        if (corner_metrics.completed_iterations != 1U ||
+            corner_metrics.image_cache_misses != 1U) {
+            throw std::runtime_error(
+                "unsupported training tiles were not removed: misses=" +
+                std::to_string(corner_metrics.image_cache_misses));
         }
         bool learned_directional_opacity = false;
         for (const auto& gaussian : gaussians) {

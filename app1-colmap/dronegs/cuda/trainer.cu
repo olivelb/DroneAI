@@ -141,8 +141,8 @@ __device__ float sigmoid(float value) {
     return 1.0F / (1.0F + expf(-value));
 }
 
-__device__ ProjectedGaussian project_gaussian(const Gaussian& gaussian,
-                                              const DeviceCamera& camera) {
+__host__ __device__ ProjectedGaussian project_gaussian(
+    const Gaussian& gaussian, const DeviceCamera& camera) {
     const float world_x = gaussian.xyz[0];
     const float world_y = gaussian.xyz[1];
     const float world_z = gaussian.xyz[2];
@@ -506,7 +506,9 @@ std::pair<std::uint32_t, std::uint32_t> training_dimensions(
 }
 
 std::vector<FrameDescriptor> make_frame_descriptors(
-    const Options& options, const Scene& scene, std::size_t& maximum_pixels) {
+    const Options& options, const Scene& scene,
+    const std::vector<Gaussian>& gaussians,
+    std::size_t& maximum_pixels) {
     std::vector<FrameDescriptor> descriptors;
     descriptors.reserve(
         scene.images.size() * static_cast<std::size_t>(options.tile_mode));
@@ -547,11 +549,35 @@ std::vector<FrameDescriptor> make_frame_descriptors(
             };
             const auto [width, height] =
                 training_dimensions(descriptor, options);
+            const ImageData geometry{
+                .width = width,
+                .height = height,
+                .source_x = descriptor.region.source_x,
+                .source_y = descriptor.region.source_y,
+                .source_to_image_x =
+                    static_cast<float>(width) / descriptor.region.width,
+                .source_to_image_y =
+                    static_cast<float>(height) / descriptor.region.height,
+            };
+            const auto device_camera = make_device_camera(
+                camera, image, geometry);
+            const bool supported = std::any_of(
+                gaussians.begin(), gaussians.end(),
+                [&device_camera](const Gaussian& gaussian) {
+                    return project_gaussian(gaussian, device_camera).visible;
+                });
+            if (!supported) {
+                continue;
+            }
             const std::size_t pixels =
                 static_cast<std::size_t>(width) * height;
             maximum_pixels = std::max(maximum_pixels, pixels);
             descriptors.push_back(descriptor);
         }
+    }
+    if (descriptors.empty()) {
+        throw std::runtime_error(
+            "no training tile has sparse Gaussian support");
     }
     return descriptors;
 }
@@ -1125,7 +1151,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         throw std::invalid_argument("training requires images and initialized Gaussians");
     }
     std::size_t maximum_pixels = 0U;
-    const auto descriptors = make_frame_descriptors(options, scene, maximum_pixels);
+    const auto descriptors = make_frame_descriptors(
+        options, scene, gaussians, maximum_pixels);
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
     const auto image_split = make_dataset_split(
@@ -1253,16 +1280,19 @@ TrainingMetrics train_ordered_mrnf(
         throw std::invalid_argument(
             "ordered training requires images and initialized Gaussians");
     }
+    std::size_t maximum_pixels = 0U;
+    const auto descriptors = make_frame_descriptors(
+        options, scene, gaussians, maximum_pixels);
+    const auto requested_views =
+        scene.images.size() * static_cast<std::size_t>(options.tile_mode);
     std::cout
         << "{\"event\":\"training_view_expansion\",\"source_images\":"
         << scene.images.size() << ",\"tile_mode\":"
         << options.tile_mode << ",\"training_views\":"
-        << scene.images.size() * static_cast<std::size_t>(options.tile_mode)
+        << descriptors.size() << ",\"unsupported_views\":"
+        << requested_views - descriptors.size()
         << "}\n"
         << std::flush;
-    std::size_t maximum_pixels = 0U;
-    const auto descriptors =
-        make_frame_descriptors(options, scene, maximum_pixels);
     const auto host_cache_capacity =
         host_image_cache_capacity(descriptors, options);
     const auto image_split = make_dataset_split(

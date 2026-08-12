@@ -14,8 +14,10 @@ Status: implemented and component-qualified on BIGZEN (RTX 3090).
   harmonic convention. A cross-language CTest compares representative
   directions and degrees.
 - `tile_mode` values 1, 2 and 4 create real native-image crops with adjusted
-  intrinsics and grouped train/test assignment. Unsupported values fail
-  closed.
+  intrinsics and grouped train/test assignment. Individual subviews without
+  any projected sparse-Gaussian support are discarded before scheduling;
+  a dataset with no supported view still fails closed. Unsupported tile-mode
+  values also fail closed.
 - The public configuration calls the implemented appearance extension
   `opacity-SH-v1`. DroneAI does not claim view-dependent FAGK scale or
   rotation.

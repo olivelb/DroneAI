@@ -136,6 +136,8 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   validation views from every shuffled training schedule;
 - supports a deterministic central spatial block and training guard ring,
   recording training, held-out and ignored camera counts;
+- removes native-image subtiles with no projected sparse-Gaussian support
+  before scheduling, while rejecting an entirely unsupported dataset;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
   and after training, with a tested CPU oracle;
 - writes per-view quality CSV data and can export exactly paired final
