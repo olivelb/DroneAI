@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from . import security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
-from .health import database_is_ready
+from .health import database_is_ready, readiness_payload
 from .rate_limit import OrganizationRequestQuotaMiddleware, RasterTileRateLimitMiddleware
 from .realtime import consume_status_events, status_hub
 from .routers.datasets import router as datasets_router
@@ -91,9 +91,9 @@ def create_app() -> FastAPI:
         if not database_is_ready():
             return JSONResponse(
                 status_code=503,
-                content={"status": "unavailable"},
+                content=readiness_payload("unavailable"),
             )
-        return {"status": "ok"}
+        return readiness_payload("ok")
 
     @application.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):

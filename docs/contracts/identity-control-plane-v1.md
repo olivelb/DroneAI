@@ -52,6 +52,13 @@ cutover, recover by rolling forward. If an old application image must be
 restored, first provision a new static break-glass key because durable plaintext
 credentials cannot and must not be reconstructed from their digests.
 
+Static bootstrap authentication is disabled by default in production through
+`DRONEAI_ALLOW_STATIC_BOOTSTRAP=false`. Initial adoption may temporarily set it
+to `true`; `/ready` then reports `bootstrap_credentials_active: true` without
+exposing credential material. After a durable admin credential is tested,
+remove `api-keys.json` and restore the flag to `false`. A production process
+fails at startup if a static registry is still present while the flag is off.
+
 ## Authorization invariants
 
 - Member and credential queries always include `organization_id`.

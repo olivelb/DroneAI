@@ -39,6 +39,7 @@ def _enable_production_rls(monkeypatch):
         "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
         "true",
     )
+    monkeypatch.setenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", "true")
 
 
 def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
@@ -87,6 +88,7 @@ def test_authenticated_router_binds_and_resets_tenant_context(monkeypatch):
 def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", "true")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
     monkeypatch.setenv("DRONEAI_SESSION_MAX_AGE_SECONDS", "3600")
     monkeypatch.setenv(
@@ -245,9 +247,39 @@ def test_production_configuration_requires_explicit_organizations(monkeypatch):
         security.validate_production_configuration()
 
 
+def test_production_rejects_static_bootstrap_without_explicit_adoption_flag(
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
+    monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+    monkeypatch.delenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", raising=False)
+
+    assert security.authenticate_api_key(
+        "admin-secret-key-with-at-least-32-bytes!"
+    ) is None
+    with pytest.raises(RuntimeError, match="Static bootstrap credentials"):
+        security.validate_production_configuration()
+
+
+def test_static_bootstrap_flag_must_be_boolean(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", "eventually")
+
+    with pytest.raises(RuntimeError, match="must be true or false"):
+        security.static_bootstrap_allowed()
+
+
 def test_cookie_authenticated_mutation_requires_trusted_origin(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", "true")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
     monkeypatch.setenv(
         "DRONEAI_SESSION_SECRET",

@@ -255,6 +255,9 @@ dashboardApi:
   auth:
     disabled: true
     databaseAuthEnabled: false
+    # Transitional local/development registry. Protected deployments should
+    # disable it after issuing the first durable administrator credential.
+    allowStaticBootstrap: true
     existingSecret: ""
     secretKey: api-keys.json
     sessionSecretKey: session-secret

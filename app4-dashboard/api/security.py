@@ -134,15 +134,37 @@ def build_tile_rate_limiter() -> RateLimiter:
 tile_rate_limiter = build_tile_rate_limiter()
 
 
+def static_bootstrap_allowed() -> bool:
+    """Return whether transitional static credentials may authenticate."""
+
+    raw = os.getenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP")
+    if raw is None:
+        return not is_production()
+    normalized = raw.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise RuntimeError(
+            "DRONEAI_ALLOW_STATIC_BOOTSTRAP must be true or false"
+        )
+    return normalized == "true"
+
+
+def static_bootstrap_credentials_active() -> bool:
+    """Expose only whether the transitional registry is currently usable."""
+
+    return static_bootstrap_allowed() and bool(
+        os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
+    )
+
+
 def configured_cors_origins() -> list[str]:
     origins = [value.strip() for value in os.getenv("CORS_ORIGINS", "*").split(",") if value.strip()]
     return origins or ["*"]
 
 
 def _configured_keys() -> list[tuple[str, Principal]]:
-    raw = os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
-    if not raw:
+    if not static_bootstrap_credentials_active():
         return []
+    raw = os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -218,6 +240,16 @@ def validate_production_configuration() -> None:
         raise RuntimeError(
             "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED must be enabled "
             "in production"
+        )
+    static_bootstrap_configured = bool(
+        os.getenv("DRONEAI_API_KEYS_JSON", "").strip()
+    )
+    allow_static_bootstrap = static_bootstrap_allowed()
+    if static_bootstrap_configured and not allow_static_bootstrap:
+        raise RuntimeError(
+            "Static bootstrap credentials are disabled in production; remove "
+            "DRONEAI_API_KEYS_JSON or temporarily set "
+            "DRONEAI_ALLOW_STATIC_BOOTSTRAP=true during adoption"
         )
     configured_keys = _configured_keys()
     if any(

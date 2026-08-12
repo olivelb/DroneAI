@@ -9,8 +9,21 @@ from sqlalchemy import text
 
 from shared.database import get_session
 
+from . import security
+
 
 logger = logging.getLogger("droneai.health")
+
+
+def readiness_payload(status: str) -> dict[str, object]:
+    """Return dependency status without exposing bootstrap credential data."""
+
+    return {
+        "status": status,
+        "bootstrap_credentials_active": (
+            security.static_bootstrap_credentials_active()
+        ),
+    }
 
 
 def database_is_ready() -> bool:
