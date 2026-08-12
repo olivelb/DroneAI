@@ -80,8 +80,9 @@ to the crop rather than the full photograph, and the camera principal point is
 translated into crop coordinates before rasterization. Dataset splitting is
 performed on source photographs before expansion, so all tiles from one photo
 remain together in training, held-out evaluation, or the spatial guard set.
-The resize after JPEG decode uses bilinear sampling; it no longer uses nearest
-neighbour sampling.
+The reduction after JPEG decode uses area resampling with exact fractional
+source-pixel coverage; it no longer uses nearest-neighbour or bilinear point
+sampling. Images that already match the requested dimensions are not filtered.
 
 `spatial-block` computes camera centers from COLMAP world-to-camera poses,
 selects the two dominant spatial axes, reserves a deterministic central block

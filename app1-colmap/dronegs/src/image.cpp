@@ -2,6 +2,7 @@
 #include "dronegs/image.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -269,6 +270,90 @@ std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
     };
 }
 
+std::vector<std::uint8_t> resample_rgb_area(
+    const std::vector<std::uint8_t>& source,
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t target_width, std::uint32_t target_height) {
+    if (source_width == 0U || source_height == 0U ||
+        target_width == 0U || target_height == 0U) {
+        throw std::invalid_argument(
+            "RGB resampling dimensions must be positive");
+    }
+    const auto source_pixels =
+        static_cast<std::size_t>(source_width) * source_height;
+    if (source_pixels > std::numeric_limits<std::size_t>::max() / 3U ||
+        source.size() != source_pixels * 3U) {
+        throw std::invalid_argument(
+            "RGB resampling source size does not match its dimensions");
+    }
+    if (target_width > source_width || target_height > source_height) {
+        throw std::invalid_argument(
+            "area resampling only supports image reduction");
+    }
+    if (source_width == target_width && source_height == target_height) {
+        return source;
+    }
+
+    std::vector<std::uint8_t> target(
+        static_cast<std::size_t>(target_width) * target_height * 3U);
+    const double scale_x =
+        static_cast<double>(source_width) / target_width;
+    const double scale_y =
+        static_cast<double>(source_height) / target_height;
+    const double target_area = scale_x * scale_y;
+    for (std::uint32_t target_y = 0U; target_y < target_height; ++target_y) {
+        const double source_y_begin = target_y * scale_y;
+        const double source_y_end = (target_y + 1U) * scale_y;
+        const auto first_y = static_cast<std::uint32_t>(
+            std::floor(source_y_begin));
+        const auto last_y = std::min(
+            source_height,
+            static_cast<std::uint32_t>(std::ceil(source_y_end)));
+        for (std::uint32_t target_x = 0U; target_x < target_width; ++target_x) {
+            const double source_x_begin = target_x * scale_x;
+            const double source_x_end = (target_x + 1U) * scale_x;
+            const auto first_x = static_cast<std::uint32_t>(
+                std::floor(source_x_begin));
+            const auto last_x = std::min(
+                source_width,
+                static_cast<std::uint32_t>(std::ceil(source_x_end)));
+            std::array<double, 3> sum{};
+            for (std::uint32_t source_y = first_y;
+                 source_y < last_y; ++source_y) {
+                const double overlap_y = std::max(
+                    0.0,
+                    std::min(source_y_end, static_cast<double>(source_y + 1U)) -
+                        std::max(source_y_begin, static_cast<double>(source_y)));
+                for (std::uint32_t source_x = first_x;
+                     source_x < last_x; ++source_x) {
+                    const double overlap_x = std::max(
+                        0.0,
+                        std::min(source_x_end, static_cast<double>(source_x + 1U)) -
+                            std::max(source_x_begin, static_cast<double>(source_x)));
+                    const double weight = overlap_x * overlap_y;
+                    const auto source_offset =
+                        (static_cast<std::size_t>(source_y) * source_width +
+                         source_x) * 3U;
+                    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                        sum[channel] +=
+                            static_cast<double>(source[source_offset + channel]) *
+                            weight;
+                    }
+                }
+            }
+            const auto target_offset =
+                (static_cast<std::size_t>(target_y) * target_width +
+                 target_x) * 3U;
+            for (std::size_t channel = 0U; channel < 3U; ++channel) {
+                target[target_offset + channel] =
+                    static_cast<std::uint8_t>(std::clamp(
+                        std::lround(sum[channel] / target_area), 0L, 255L));
+            }
+        }
+    }
+    return target;
+}
+
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
                               std::uint32_t max_width,
@@ -296,43 +381,9 @@ ImageData load_training_image(const std::filesystem::path& path,
         result.rgb = std::move(source.rgb);
         return result;
     }
-    result.rgb.resize(static_cast<std::size_t>(target_width) * target_height * 3U);
-    for (std::uint32_t y = 0; y < target_height; ++y) {
-        const double source_y = std::clamp(
-            (static_cast<double>(y) + 0.5) * source.height / target_height - 0.5,
-            0.0, static_cast<double>(source.height - 1U));
-        const auto y0 = static_cast<std::uint32_t>(std::floor(source_y));
-        const auto y1 = std::min(y0 + 1U, source.height - 1U);
-        const double y_weight = source_y - static_cast<double>(y0);
-        for (std::uint32_t x = 0; x < target_width; ++x) {
-            const double source_x = std::clamp(
-                (static_cast<double>(x) + 0.5) * source.width / target_width - 0.5,
-                0.0, static_cast<double>(source.width - 1U));
-            const auto x0 = static_cast<std::uint32_t>(std::floor(source_x));
-            const auto x1 = std::min(x0 + 1U, source.width - 1U);
-            const double x_weight = source_x - static_cast<double>(x0);
-            const auto target_offset =
-                (static_cast<std::size_t>(y) * target_width + x) * 3U;
-            for (std::size_t channel = 0; channel < 3U; ++channel) {
-                const auto sample = [&source, channel](
-                                        std::uint32_t sample_x,
-                                        std::uint32_t sample_y) {
-                    return static_cast<double>(source.rgb[
-                        (static_cast<std::size_t>(sample_y) * source.width +
-                         sample_x) * 3U + channel]);
-                };
-                const double top =
-                    sample(x0, y0) * (1.0 - x_weight) +
-                    sample(x1, y0) * x_weight;
-                const double bottom =
-                    sample(x0, y1) * (1.0 - x_weight) +
-                    sample(x1, y1) * x_weight;
-                result.rgb[target_offset + channel] =
-                    static_cast<std::uint8_t>(std::lround(
-                        top * (1.0 - y_weight) + bottom * y_weight));
-            }
-        }
-    }
+    result.rgb = resample_rgb_area(
+        source.rgb, source.width, source.height,
+        target_width, target_height);
     return result;
 }
 

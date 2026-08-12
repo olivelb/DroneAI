@@ -7,7 +7,9 @@ This changelog covers the standalone Gaussian trainer project.
 - Make tile modes operational: mode 2 splits the longest image axis and mode
   4 trains on a 2-by-2 crop grid with crop-relative principal points.
 - Apply the width ceiling per crop, retain all source pixels when a crop fits,
-  and replace nearest-neighbour resize with bilinear sampling.
+  and replace nearest-neighbour resize with area resampling. Fractional source
+  coverage is integrated explicitly so high-frequency image energy is not
+  aliased into the training target.
 - Split datasets by source photograph before expanding tiles, preventing
   train/held-out leakage while evaluating every held-out crop.
 - Add directional opacity-logit SH coefficients through CPU/CUDA forward,

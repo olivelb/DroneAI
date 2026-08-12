@@ -44,6 +44,11 @@ std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
     const ImageRegion& region, std::uint32_t resize_factor,
     std::uint32_t max_width);
 
+std::vector<std::uint8_t> resample_rgb_area(
+    const std::vector<std::uint8_t>& source,
+    std::uint32_t source_width, std::uint32_t source_height,
+    std::uint32_t target_width, std::uint32_t target_height);
+
 ImageData load_training_image(const std::filesystem::path& path,
                               std::uint32_t resize_factor,
                               std::uint32_t max_width,

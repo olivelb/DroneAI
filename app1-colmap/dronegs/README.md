@@ -81,6 +81,8 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - decodes JPEG training images and scales pinhole intrinsics;
 - expands tile modes 2 and 4 into crop-relative training views without
   leaking a source photograph across train/test partitions;
+- reduces oversized crop targets with an area filter that integrates
+  fractional source-pixel coverage instead of point-sampling them;
 - stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;

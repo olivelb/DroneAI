@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -724,6 +725,34 @@ void test_training_tiles() {
     check(invalid_mode_rejected, "invalid tile mode was accepted");
 }
 
+void test_area_image_resampling() {
+    std::vector<std::uint8_t> checkerboard;
+    checkerboard.reserve(4U * 4U * 3U);
+    for (std::uint32_t y = 0U; y < 4U; ++y) {
+        for (std::uint32_t x = 0U; x < 4U; ++x) {
+            const auto value = static_cast<std::uint8_t>(
+                ((x + y) % 2U == 0U) ? 0U : 255U);
+            checkerboard.insert(checkerboard.end(), 3U, value);
+        }
+    }
+    const auto reduced = dronegs::resample_rgb_area(
+        checkerboard, 4U, 4U, 2U, 2U);
+    check(reduced.size() == 12U, "area resampling size mismatch");
+    check(
+        std::all_of(
+            reduced.begin(), reduced.end(),
+            [](std::uint8_t value) { return value == 128U; }),
+        "area resampling did not preserve checkerboard energy");
+
+    const std::vector<std::uint8_t> weighted{
+        0U, 0U, 0U, 0U, 0U, 0U, 255U, 255U, 255U};
+    const auto uneven = dronegs::resample_rgb_area(
+        weighted, 3U, 1U, 2U, 1U);
+    check(
+        uneven[0] == 0U && uneven[3] == 170U,
+        "area resampling fractional overlap mismatch");
+}
+
 
 }  // namespace
 
@@ -740,6 +769,7 @@ int main() {
         test_cli(data, output);
         test_image_cache();
         test_training_tiles();
+        test_area_image_resampling();
         std::filesystem::remove_all(base);
         std::cout << "DroneGS core tests passed\n";
         return 0;
