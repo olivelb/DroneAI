@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import threading
@@ -11,7 +12,7 @@ from collections import deque
 from functools import partial
 from typing import Any
 
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, TopicPartition
 from fastapi import WebSocket
 
 from shared.config import (
@@ -26,6 +27,7 @@ from shared.kafka_reliability import (
     process_message,
     reliable_consumer_config,
 )
+from shared.observability import observe_kafka_error, observe_kafka_lag
 
 from .messaging import get_producer
 from .mission_state import apply_mission_state
@@ -33,6 +35,7 @@ from .mission_state import apply_mission_state
 
 JsonObject = dict[str, Any]
 STATUS_STATE_INBOX_GROUP = "dashboard-api-status-state"
+logger = logging.getLogger("droneai.realtime")
 
 
 def status_consumer_group(instance_id: str | None = None) -> str:
@@ -93,9 +96,7 @@ def mission_owner_subject(
     audience = get_mission_audience(vol_id, organization_id)
     if audience is None:
         if organization_id is None:
-            raise LookupError(
-                "Legacy status event does not match a legacy mission"
-            )
+            raise LookupError("Legacy status event does not match a legacy mission")
         raise LookupError(
             "Status event organization does not match its durable mission"
         )
@@ -115,15 +116,11 @@ def handle_status_message(
         vol_id = str(event.get("vol_id") or "")
         event_organization_id = event.get("organization_id")
         organization_id = (
-            str(event_organization_id)
-            if event_organization_id is not None
-            else None
+            str(event_organization_id) if event_organization_id is not None else None
         )
         owner_subject = mission_owner_subject(vol_id, organization_id)
         organization_id = (
-            organization_id
-            or owner_subject.partition(":")[0]
-            or "legacy-unassigned"
+            organization_id or owner_subject.partition(":")[0] or "legacy-unassigned"
         )
         process_inbox_transaction(
             partial(get_session, organization_id=organization_id),
@@ -133,7 +130,7 @@ def handle_status_message(
             handler=apply_mission_state,
         )
         payload = hub.remember(event, owner_subject)
-        print(f"STATUS {payload}")
+        logger.debug("Broadcasting tenant status event %s", payload)
         future = asyncio.run_coroutine_threadsafe(
             hub.broadcast(payload, owner_subject),
             loop,
@@ -177,9 +174,10 @@ def consume_status_events(
                 if message is None:
                     continue
                 if message.error():
-                    print(f"Kafka status consumer error: {message.error()}")
+                    observe_kafka_error("status", message.error())
+                    logger.error("Kafka status consumer error: %s", message.error())
                     continue
-                handle_status_message(
+                succeeded = handle_status_message(
                     consumer=status_consumer,
                     producer=status_producer,
                     message=message,
@@ -187,7 +185,29 @@ def consume_status_events(
                     loop=loop,
                     consumer_group=consumer_group,
                 )
+                if succeeded:
+                    try:
+                        topic = str(message.topic())
+                        partition = int(message.partition())
+                        _, high = status_consumer.get_watermark_offsets(
+                            TopicPartition(topic, partition),
+                            cached=True,
+                        )
+                        observe_kafka_lag(
+                            consumer_group,
+                            topic,
+                            partition,
+                            int(high) - int(message.offset()) - 1,
+                        )
+                    except Exception:
+                        # Lag is an operational signal only: a broker/client
+                        # telemetry failure must never affect message handling.
+                        logger.debug(
+                            "Kafka lag unavailable for the current consumer",
+                            exc_info=True,
+                        )
             except Exception as error:
-                print(f"Kafka status consumer loop error: {error}")
+                observe_kafka_error("status", error)
+                logger.exception("Kafka status consumer loop error")
     finally:
         status_consumer.close()

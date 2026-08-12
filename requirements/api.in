@@ -5,6 +5,7 @@ fastapi
 geoalchemy2
 numpy
 pillow
+prometheus-client
 psycopg2-binary
 pydantic
 python-multipart

@@ -7,6 +7,7 @@ import signal
 import threading
 
 from shared.deployment_mode import bounded_stage_jobs_enabled
+from shared.observability import start_metrics_server
 
 from .control_leadership import (
     ControlLeadershipError,
@@ -77,13 +78,18 @@ def run(stop_event: threading.Event | None = None) -> None:
     # Every replica validates the protected deployment contract before it can
     # become a follower. A failover must never activate a misconfigured pod.
     bounded_stage_jobs_enabled()
-    if control_leader_election_enabled():
-        _run_elected_loops(
-            process_stop_event,
-            control_leader_poll_seconds(),
-        )
-    else:
-        _run_supervised_loops(process_stop_event)
+    metrics_server = start_metrics_server()
+    try:
+        if control_leader_election_enabled():
+            _run_elected_loops(
+                process_stop_event,
+                control_leader_poll_seconds(),
+            )
+        else:
+            _run_supervised_loops(process_stop_event)
+    finally:
+        if metrics_server is not None:
+            metrics_server.stop()
 
 
 if __name__ == "__main__":

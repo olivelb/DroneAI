@@ -113,3 +113,54 @@ def test_duplicate_state_receipts_are_still_fanned_out_locally(monkeypatch):
         "consumer_groups": ["dashboard-api-realtime-pod-b"],
         "broadcasts": ["status-1"],
     }
+
+
+def test_lag_telemetry_failure_does_not_fail_consumed_message(monkeypatch):
+    class StopAfterOne:
+        calls = 0
+
+        def is_set(self):
+            self.calls += 1
+            return self.calls > 1
+
+    class Consumer:
+        closed = False
+
+        @staticmethod
+        def subscribe(_topics):
+            return None
+
+        @staticmethod
+        def poll(_timeout):
+            return SimpleNamespace(
+                error=lambda: None,
+                topic=lambda: "status",
+                partition=lambda: 0,
+                offset=lambda: 42,
+            )
+
+        @staticmethod
+        def get_watermark_offsets(*_args, **_kwargs):
+            raise RuntimeError("telemetry unavailable")
+
+        def close(self):
+            self.closed = True
+
+    consumer = Consumer()
+    observed_errors = []
+    monkeypatch.setattr(realtime, "get_producer", SimpleNamespace)
+    monkeypatch.setattr(realtime, "handle_status_message", lambda **_kwargs: True)
+    monkeypatch.setattr(
+        realtime,
+        "observe_kafka_error",
+        lambda *args: observed_errors.append(args),
+    )
+
+    realtime.consume_status_events(
+        SimpleNamespace(),
+        consumer=consumer,
+        stop_event=StopAfterOne(),
+    )
+
+    assert observed_errors == []
+    assert consumer.closed is True

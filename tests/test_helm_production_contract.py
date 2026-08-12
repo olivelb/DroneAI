@@ -29,13 +29,11 @@ def test_browser_upload_cors_exposes_multipart_etag() -> None:
     defaults = _read(CHART / "values.yaml")
     minio = _read(CHART / "templates" / "minio.yaml")
     compose = _read(ROOT / "compose.local.yaml")
-    external_script = _read(
-        ROOT / "scripts" / "deploy" / "configure-s3-upload-cors.sh"
-    )
+    external_script = _read(ROOT / "scripts" / "deploy" / "configure-s3-upload-cors.sh")
 
     assert "browserUploadCors:" in defaults
     assert "MINIO_API_CORS_ALLOW_ORIGIN" in minio
-    assert 'join \",\" .Values.minio.browserUploadCors.allowedOrigins' in minio
+    assert 'join "," .Values.minio.browserUploadCors.allowedOrigins' in minio
     assert "mc cors set" not in minio
     assert "MINIO_API_CORS_ALLOW_ORIGIN" in compose
     assert "http://localhost:3000,http://127.0.0.1:3000" in compose
@@ -72,12 +70,31 @@ def test_protected_overlays_enable_organization_quota_and_retention_controls() -
     for values in (production, preproduction):
         assert "organizationRequestQuotasEnabled: true" in values
     assert "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED" in api
-    assert (
-        "dashboardApi.saas.organizationRequestQuotasEnabled must be true"
-        in api
-    )
+    assert "dashboardApi.saas.organizationRequestQuotasEnabled must be true" in api
     assert "DRONEAI_RETENTION_CLEANUP_SECONDS" in control
     assert "DRONEAI_RETENTION_FAILURE_RETRY_SECONDS" in control
+
+
+def test_protected_overlays_expose_operational_metrics_and_alert_thresholds() -> None:
+    defaults = _read(CHART / "values.yaml")
+    production = _read(CHART / "values-production.example.yaml")
+    preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
+    api = _read(CHART / "templates" / "dashboard-api.yaml")
+    control_worker = _read(CHART / "templates" / "dashboard-control-worker.yaml")
+    alerts = _read(CHART / "templates" / "operational-alerts.yaml")
+
+    assert "metricsEnabled: false" in defaults
+    for values in (production, preproduction):
+        assert "metricsEnabled: true" in values
+    assert "metricsEnabled must be true in staging and production" in api
+    for workload in (api, control_worker):
+        assert "prometheus.io/scrape" in workload
+        assert "DRONEAI_METRICS_ENABLED" in workload
+        assert "DRONEAI_METRICS_PORT" in workload
+    assert "kind: PrometheusRule" in alerts
+    assert "droneai_outbox_oldest_unpublished_age_seconds" in alerts
+    assert "droneai_stage_oldest_queued_age_seconds" in alerts
+    assert "droneai_s3_operation_failures_total" in alerts
 
 
 def test_production_identity_uses_database_credentials_and_rotatable_secrets() -> None:
@@ -174,12 +191,10 @@ def test_bounded_stage_jobs_are_opt_in_and_have_least_privilege_rbac() -> None:
     assert "DRONEAI_DETECTION_MAXIMUM_TILES" in control_env
     assert "DRONEAI_ARTIFACT_SELECTIVE_RESTORE_ENABLED" in control_env
     assert (
-        "artifactSelectiveRestoreEnabled requires "
-        "stageJobs.artifactManifestV2WriteEnabled=true"
+        "artifactSelectiveRestoreEnabled requires stageJobs.artifactManifestV2WriteEnabled=true"
     ) in deployment
     assert (
-        "detectionFanout.enabled requires "
-        "stageJobs.artifactSelectiveRestoreEnabled=true"
+        "detectionFanout.enabled requires stageJobs.artifactSelectiveRestoreEnabled=true"
     ) in deployment
     assert "automountServiceAccountToken: false" in deployment
 
@@ -202,9 +217,7 @@ def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
             "detection",
         ):
             assert f"    {stage}:\n" in stage_values
-        assert stage_values.count(
-            "gpu_architecture: REPLACE_GPU_ARCHITECTURE"
-        ) == 5
+        assert stage_values.count("gpu_architecture: REPLACE_GPU_ARCHITECTURE") == 5
         assert "colmapWorker:\n  enabled: false" in values
         assert "iaWorker:\n  enabled: false" in values
         assert "processingWorker:\n  replicaCount: 0" in values
