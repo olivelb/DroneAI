@@ -153,9 +153,14 @@ jobs:
         run: |
           alembic upgrade 0024
           python scripts/ci/verify_identity_migration.py seed
-          alembic upgrade head
+          alembic upgrade 0025
           python scripts/ci/verify_identity_migration.py verify
-          python -m pytest -q -m integration tests/integration/test_identity_postgres.py
+          python scripts/ci/verify_rls_migration.py seed
+          alembic upgrade head
+          python scripts/ci/verify_rls_migration.py verify
+          python -m pytest -q -m integration \
+            tests/integration/test_identity_postgres.py \
+            tests/integration/test_tenant_rls_postgres.py
           alembic downgrade base
           alembic upgrade head
       - name: Exercise PostgreSQL scheduler transaction boundary

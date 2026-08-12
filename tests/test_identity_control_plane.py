@@ -49,7 +49,7 @@ def identity_platform(monkeypatch):
     factory = sessionmaker(bind=engine, expire_on_commit=False)
 
     @contextmanager
-    def session_scope():
+    def session_scope(**_context):
         session = factory()
         try:
             yield session
@@ -274,6 +274,7 @@ def test_expiry_and_organization_suspension_fail_closed(identity_platform):
 
 def test_production_can_run_without_static_bootstrap_keys(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
     monkeypatch.setenv("DRONEAI_CREDENTIAL_PEPPER", PEPPER)

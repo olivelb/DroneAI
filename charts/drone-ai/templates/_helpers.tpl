@@ -49,40 +49,43 @@ production.
 {{- end }}
 
 {{/*
-Common environment variables injected into all worker pods
+Common storage and database environment variables. Callers choose the database
+Secret key so the HTTP API can use a non-owner RLS role while migrations and
+workers retain their operator connection.
 */}}
 {{- define "drone-ai.commonEnv" -}}
+{{- $root := .root -}}
 - name: KAFKA_BROKER
-  value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" .Values.global.namespace) .Values.kafka.broker | quote }}
+  value: {{ default (printf "my-kafka.%s.svc.cluster.local:9092" $root.Values.global.namespace) $root.Values.kafka.broker | quote }}
 - name: INBOX_LEASE_SECONDS
-  value: {{ .Values.kafka.workerInbox.leaseSeconds | quote }}
+  value: {{ $root.Values.kafka.workerInbox.leaseSeconds | quote }}
 - name: INBOX_BUSY_RETRY_SECONDS
-  value: {{ .Values.kafka.workerInbox.busyRetrySeconds | quote }}
+  value: {{ $root.Values.kafka.workerInbox.busyRetrySeconds | quote }}
 - name: CANCELLATION_POLL_SECONDS
-  value: {{ .Values.kafka.cancellationPollSeconds | quote }}
+  value: {{ $root.Values.kafka.cancellationPollSeconds | quote }}
 - name: S3_ENDPOINT
-  value: {{ .Values.storage.s3Endpoint | quote }}
+  value: {{ $root.Values.storage.s3Endpoint | quote }}
 - name: S3_BUCKET
-  value: {{ .Values.storage.s3Bucket | quote }}
+  value: {{ $root.Values.storage.s3Bucket | quote }}
 - name: S3_ACCESS_KEY
   valueFrom:
     secretKeyRef:
-      name: {{ include "drone-ai.storageSecretName" . }}
-      key: {{ .Values.storage.accessKeySecretKey }}
+      name: {{ include "drone-ai.storageSecretName" $root }}
+      key: {{ $root.Values.storage.accessKeySecretKey }}
 - name: S3_SECRET_KEY
   valueFrom:
     secretKeyRef:
-      name: {{ include "drone-ai.storageSecretName" . }}
-      key: {{ .Values.storage.secretKeySecretKey }}
+      name: {{ include "drone-ai.storageSecretName" $root }}
+      key: {{ $root.Values.storage.secretKeySecretKey }}
 - name: S3_REGION
-  value: {{ .Values.storage.s3Region | quote }}
+  value: {{ $root.Values.storage.s3Region | quote }}
 - name: S3_PUBLIC_ENDPOINT
-  value: {{ .Values.storage.s3PublicEndpoint | quote }}
+  value: {{ $root.Values.storage.s3PublicEndpoint | quote }}
 - name: DATABASE_URL
   valueFrom:
     secretKeyRef:
-      name: {{ include "drone-ai.storageSecretName" . }}
-      key: {{ .Values.storage.databaseUrlSecretKey }}
+      name: {{ include "drone-ai.storageSecretName" $root }}
+      key: {{ .databaseUrlSecretKey }}
 {{- end }}
 
 {{/*

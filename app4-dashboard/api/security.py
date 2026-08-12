@@ -7,17 +7,19 @@ import os
 import secrets
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from hmac import new as hmac_new
+from typing import Annotated
 
-from fastapi import Cookie, Header, HTTPException, Request, WebSocket, status
+from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
 
 from shared.database import get_session
 from shared.identity import (
     AuthenticatedIdentity,
     authenticate_credential,
+    credential_id_from_token,
     credential_pepper,
     database_authentication_enabled,
     validate_session_identity,
@@ -25,6 +27,8 @@ from shared.identity import (
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
     LOCAL_ORGANIZATION_ID,
+    bind_organization_id,
+    reset_organization_id,
     validate_organization_id,
 )
 from shared.rate_limiting import (
@@ -176,6 +180,8 @@ def validate_production_configuration() -> None:
         raise RuntimeError(
             "DRONEAI_DATABASE_AUTH_ENABLED must be enabled in production"
         )
+    if os.getenv("DRONEAI_RLS_REQUIRED", "").strip().lower() != "true":
+        raise RuntimeError("DRONEAI_RLS_REQUIRED must be enabled in production")
     configured_keys = _configured_keys()
     if any(
         principal.organization_id == LEGACY_ORGANIZATION_ID
@@ -287,7 +293,9 @@ def _authenticate_session_token(token: str) -> Principal | None:
             auth_version = int(payload["auth_version"])
         except (TypeError, ValueError):
             return None
-        with get_session() as session:
+        with get_session(
+            authentication_credential_id=credential_id
+        ) as session:
             identity = validate_session_identity(
                 session,
                 member_id=member_id,
@@ -338,7 +346,12 @@ def authenticate_api_key(token: str | None) -> Principal | None:
         if secrets.compare_digest(token, configured_key):
             return principal
     if database_authentication_enabled(production=is_production()):
-        with get_session() as session:
+        credential_id = credential_id_from_token(token)
+        if credential_id is None:
+            return None
+        with get_session(
+            authentication_credential_id=credential_id
+        ) as session:
             identity = authenticate_credential(session, token)
         if identity is not None:
             return _principal_from_identity(identity)
@@ -401,6 +414,18 @@ def require_role(minimum_role: str) -> Callable[..., Principal]:
 require_authenticated = require_role("viewer")
 require_operator = require_role("operator")
 require_admin = require_role("admin")
+
+
+async def bind_tenant_context(
+    principal: Annotated[Principal, Depends(require_authenticated)],
+) -> AsyncIterator[None]:
+    """Bind the authenticated organization around all route database work."""
+
+    token = bind_organization_id(principal.organization_id)
+    try:
+        yield
+    finally:
+        reset_organization_id(token)
 
 
 def enforce_cookie_csrf(request: Request) -> None:

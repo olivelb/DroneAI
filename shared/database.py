@@ -43,7 +43,11 @@ from sqlalchemy.orm import (
 
 from shared.config import DATABASE_URL
 from shared.stage_contracts import RESOURCE_CLASSES
-from shared.tenancy import LEGACY_ORGANIZATION_ID
+from shared.tenancy import (
+    LEGACY_ORGANIZATION_ID,
+    current_organization_id,
+    validate_organization_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +83,61 @@ def get_session_factory() -> Callable[[], Session]:
     return _SessionFactory
 
 
+def _set_postgres_session_context(
+    session: Session,
+    *,
+    organization_id: str | None,
+    authentication_credential_id: str | None,
+) -> None:
+    """Set transaction-local RLS inputs without leaking them through the pool."""
+
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    if organization_id is not None:
+        session.execute(
+            text(
+                "SELECT set_config("
+                "'droneai.organization_id', :organization_id, true)"
+            ),
+            {"organization_id": validate_organization_id(organization_id)},
+        )
+    if authentication_credential_id is not None:
+        session.execute(
+            text(
+                "SELECT set_config("
+                "'droneai.authentication_credential_id', "
+                ":credential_id, true)"
+            ),
+            {"credential_id": authentication_credential_id},
+        )
+
+
 @contextmanager
-def get_session() -> Iterator[Session]:
-    """Context manager yielding a SQLAlchemy session with auto-commit/rollback."""
+def get_session(
+    *,
+    organization_id: str | None = None,
+    authentication_credential_id: str | None = None,
+) -> Iterator[Session]:
+    """Yield an atomic session with transaction-local PostgreSQL RLS context."""
+
     factory = get_session_factory()
     session: Session = factory()
     try:
+        contextual_organization = current_organization_id()
+        if (
+            organization_id is not None
+            and contextual_organization is not None
+            and validate_organization_id(organization_id)
+            != contextual_organization
+        ):
+            raise ValueError(
+                "Explicit organization_id conflicts with the request context"
+            )
+        _set_postgres_session_context(
+            session,
+            organization_id=organization_id or contextual_organization,
+            authentication_credential_id=authentication_credential_id,
+        )
         yield session
         session.commit()
     except Exception:
@@ -1612,6 +1665,14 @@ class OutboxEvent(Base):
     )
 
     id = Column(PORTABLE_BIGINT, primary_key=True, autoincrement=True)
+    organization_id = Column(
+        String(64),
+        ForeignKey("organizations.id", ondelete="RESTRICT"),
+        nullable=False,
+        default=LEGACY_ORGANIZATION_ID,
+        server_default=LEGACY_ORGANIZATION_ID,
+        index=True,
+    )
     event_id = Column(String(128), nullable=False)
     event_type = Column(String(64), nullable=False)
     topic = Column(String(256), nullable=False)
@@ -1710,3 +1771,31 @@ def get_mission_detections(session: Session, vol_id: str) -> list[Detection]:
         list[Detection],
         session.query(Detection).filter(Detection.vol_id == vol_id).order_by(Detection.tile_index, Detection.id).all(),
     )
+
+
+def get_mission_audience(vol_id: str) -> tuple[str, str] | None:
+    """Resolve only the tenant audience needed by the realtime consumer.
+
+    PostgreSQL uses a narrow ``SECURITY DEFINER`` function so the low-privilege
+    API role can bind the correct RLS context without receiving an operator
+    database credential.
+    """
+
+    with get_session() as session:
+        if session.get_bind().dialect.name == "postgresql":
+            row = session.execute(
+                text(
+                    "SELECT audience_organization_id, audience_owner_subject "
+                    "FROM droneai_mission_audience(:vol_id)"
+                ),
+                {"vol_id": vol_id},
+            ).first()
+            if row is None:
+                return None
+            return str(row[0]), str(row[1])
+        mission = (
+            session.query(Mission).filter(Mission.vol_id == vol_id).first()
+        )
+        if mission is None:
+            return None
+        return str(mission.organization_id), str(mission.owner_subject)

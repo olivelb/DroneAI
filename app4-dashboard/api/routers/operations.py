@@ -7,12 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from shared.database import OutboxEvent, get_session
 
-from ..security import require_admin
+from ..security import bind_tenant_context, require_admin
 
 router = APIRouter(
     prefix="/operations",
     tags=["operations"],
-    dependencies=[Depends(require_admin)],
+    dependencies=[Depends(require_admin), Depends(bind_tenant_context)],
 )
 
 

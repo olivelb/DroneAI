@@ -22,6 +22,8 @@ implemented system as it exists now.
 | Adaptive quality profiles and AI confidence policy | [`contracts/quality-profiles-v2.md`](contracts/quality-profiles-v2.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Organization isolation and versioned storage | [`contracts/organization-boundary-v1.md`](contracts/organization-boundary-v1.md) |
+| Durable members, credentials and identity audit | [`contracts/identity-control-plane-v1.md`](contracts/identity-control-plane-v1.md) |
+| PostgreSQL tenant RLS and database-role split | [`contracts/postgres-tenant-rls-v1.md`](contracts/postgres-tenant-rls-v1.md) |
 | Tenant-owned dataset catalogue and storage boundary | [`contracts/tenant-datasets-v1.md`](contracts/tenant-datasets-v1.md) |
 | Versioned stage attempts and immutable artifact DAG | [`contracts/versioned-stage-dag-v1.md`](contracts/versioned-stage-dag-v1.md) |
 | Incremental content-addressed artifact manifest | [`contracts/artifact-manifest-v2.md`](contracts/artifact-manifest-v2.md) |

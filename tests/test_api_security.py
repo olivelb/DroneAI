@@ -2,8 +2,10 @@ import importlib
 import json
 
 import pytest
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
+
+from shared.tenancy import current_organization_id
 
 security = importlib.import_module("app4-dashboard.api.security")
 dataset_uploads = importlib.import_module("app4-dashboard.api.dataset_uploads")
@@ -30,6 +32,10 @@ def _keys():
     )
 
 
+def _enable_production_rls(monkeypatch):
+    monkeypatch.setenv("DRONEAI_RLS_REQUIRED", "true")
+
+
 def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
     monkeypatch,
 ):
@@ -48,6 +54,27 @@ def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
             x_api_key="viewer-secret-key-with-at-least-32-bytes",
         )
     assert error.value.status_code == 403
+
+
+def test_authenticated_router_binds_and_resets_tenant_context(monkeypatch):
+    monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
+    application = FastAPI()
+
+    @application.get(
+        "/tenant-context",
+        dependencies=[Depends(security.bind_tenant_context)],
+    )
+    def tenant_context():
+        return {"organization_id": current_organization_id()}
+
+    response = TestClient(application).get(
+        "/tenant-context",
+        headers={"X-API-Key": "viewer-secret-key-with-at-least-32-bytes"},
+    )
+
+    assert response.json() == {"organization_id": "acme-survey"}
+    assert current_organization_id() is None
 
 
 def test_http_only_session_authenticates_http_and_can_be_cleared(monkeypatch):
@@ -101,6 +128,7 @@ def test_production_configuration_rejects_wildcard_and_local_secrets(
     monkeypatch,
 ):
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    _enable_production_rls(monkeypatch)
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
     monkeypatch.setenv(
@@ -128,6 +156,7 @@ def test_production_configuration_rejects_wildcard_and_local_secrets(
 
 def test_production_configuration_requires_a_session_secret(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    _enable_production_rls(monkeypatch)
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
     monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
@@ -137,8 +166,21 @@ def test_production_configuration_requires_a_session_secret(monkeypatch):
         security.validate_production_configuration()
 
 
+def test_production_configuration_requires_rls(monkeypatch):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
+    monkeypatch.setenv("DRONEAI_DATABASE_AUTH_ENABLED", "true")
+    monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
+    monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
+    monkeypatch.delenv("DRONEAI_RLS_REQUIRED", raising=False)
+
+    with pytest.raises(RuntimeError, match="DRONEAI_RLS_REQUIRED"):
+        security.validate_production_configuration()
+
+
 def test_production_configuration_requires_a_credential_pepper(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    _enable_production_rls(monkeypatch)
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
     monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
@@ -157,6 +199,7 @@ def test_production_configuration_requires_explicit_organizations(monkeypatch):
     for item in legacy_keys:
         item.pop("organization_id")
     monkeypatch.setenv("DRONEAI_ENV", "production")
+    _enable_production_rls(monkeypatch)
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", json.dumps(legacy_keys))
     monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")

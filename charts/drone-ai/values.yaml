@@ -221,6 +221,11 @@ dashboardApi:
   replicaCount: 1
   image: drone-dashboard-api
   tag: latest
+  # Local development may reuse database-url. Protected environments must use
+  # a separate Secret key whose URL authenticates as a non-owner, NOBYPASSRLS
+  # PostgreSQL role.
+  databaseUrlSecretKey: database-url
+  rowLevelSecurityRequired: false
   controlWorker:
     # Durable outbox delivery, upload reconciliation, and stage scheduling run
     # outside the request-serving API so API rollouts cannot stop control work.

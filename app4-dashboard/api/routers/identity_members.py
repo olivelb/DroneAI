@@ -29,7 +29,11 @@ from ..identity_api import (
     organization_response,
 )
 
-router = APIRouter(prefix="/auth", tags=["identity administration"])
+router = APIRouter(
+    prefix="/auth",
+    tags=["identity administration"],
+    dependencies=[Depends(security.bind_tenant_context)],
+)
 
 
 class BootstrapRequest(BaseModel):

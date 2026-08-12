@@ -659,7 +659,7 @@ Deployments. Dynamic executor Jobs use the complete immutable image stored in
 
 | Secret | Created by | Contains |
 |--------|-----------|----------|
-| `drone-ai-storage` | Helm chart (auto) | `s3-access-key`, `s3-secret-key`, `database-url` |
+| `drone-ai-storage` | Helm chart locally; external secret manager in protected environments | `s3-access-key`, `s3-secret-key`, operator `database-url`; staging/production also require non-owner `api-database-url` |
 | `hf-token` | `deploy.sh` locally; manual/cloud secret manager in production | Optional `HF_TOKEN` for Hugging Face gated models |
 | `regcred` | Manual (if private registry) | Docker registry credentials |
 

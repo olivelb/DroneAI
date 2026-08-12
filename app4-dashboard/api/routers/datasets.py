@@ -30,6 +30,7 @@ from ..dataset_access import (
 from ..image_preview import PreviewTooLargeError, render_preview
 from ..security import (
     Principal,
+    bind_tenant_context,
     require_admin,
     require_authenticated,
     require_operator,
@@ -37,7 +38,7 @@ from ..security import (
 
 router = APIRouter(
     tags=["datasets"],
-    dependencies=[Depends(require_authenticated)],
+    dependencies=[Depends(bind_tenant_context)],
 )
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 MAX_INLINE_PREVIEW_BYTES = 64 * 1024 * 1024

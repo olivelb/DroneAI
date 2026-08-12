@@ -74,6 +74,25 @@ def test_production_identity_uses_database_credentials_and_rotatable_secrets() -
     assert "optional: true" in deployment
 
 
+def test_production_api_uses_a_distinct_rls_database_role() -> None:
+    defaults = _read(CHART / "values.yaml")
+    production = _read(CHART / "values-production.example.yaml")
+    preproduction = _read(CHART / "values-ovh-preprod.example.yaml")
+    deployment = _read(CHART / "templates" / "dashboard-api.yaml")
+    helpers = _read(CHART / "templates" / "_helpers.tpl")
+
+    assert "databaseUrlSecretKey: database-url" in defaults
+    assert "rowLevelSecurityRequired: false" in defaults
+    for values in (production, preproduction):
+        assert "databaseUrlSecretKey: api-database-url" in values
+        assert "rowLevelSecurityRequired: true" in values
+    assert "DRONEAI_RLS_REQUIRED" in deployment
+    assert "storage.existingSecret is required" in deployment
+    assert "distinct non-owner PostgreSQL role" in deployment
+    assert "controlWorker.enabled must remain true" in deployment
+    assert ".databaseUrlSecretKey" in helpers
+
+
 def test_tile_result_size_limit_is_shared_by_producer_and_consumer() -> None:
     defaults = _read(CHART / "values.yaml")
     ia_deployment = _read(CHART / "templates" / "ia-worker.yaml")

@@ -59,7 +59,9 @@ def _credential_hash(token: str) -> str:
     return hmac_new(credential_pepper(), token.encode("utf-8"), sha256).hexdigest()
 
 
-def _parse_credential_id(token: str) -> str | None:
+def credential_id_from_token(token: str) -> str | None:
+    """Return the public credential UUID without authenticating its secret."""
+
     prefix, separator, remainder = token.partition(".")
     credential_id, second_separator, secret = remainder.partition(".")
     if prefix != CREDENTIAL_TOKEN_PREFIX or not separator or not second_separator:
@@ -173,7 +175,7 @@ def authenticate_credential(
     *,
     update_last_used: bool = True,
 ) -> AuthenticatedIdentity | None:
-    credential_id = _parse_credential_id(token)
+    credential_id = credential_id_from_token(token)
     if credential_id is None:
         return None
     credential = session.get(ApiCredential, credential_id)

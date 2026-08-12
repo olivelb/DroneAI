@@ -24,11 +24,12 @@ dataset qualification.
 | Integration | one test crosses a real Postgres outbox transaction, Kafka delivery/consumption and verified MinIO round trip | isolated Compose integration CI job |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
 | Identity control plane | durable members, one-time hashed credentials, transactional rotation/revocation and append-only lifecycle audit | HTTP lifecycle tests plus PostgreSQL migration and immutability checks |
+| Database tenant defense | transaction-local organization context plus PostgreSQL RLS over roots and descendants | real non-owner-role denial tests plus migration round trip |
 | Storage evolution | new organizations use versioned namespaced keys while historical keys remain readable | tenancy helper and upload recovery tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 892 non-GPU/non-integration
-Python tests, four real-service integration tests, 29 frontend unit tests and 10
+The qualified local baseline after these changes is 897 non-GPU/non-integration
+Python tests, five real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
 
@@ -40,17 +41,14 @@ sync, shellcheck and actionlint also pass.
    credentials and rotation/revocation are implemented. Add invitations, OIDC
    federation, recovery flows and a distinct platform-support role without
    widening the organization `admin` role.
-2. **Defense-in-depth tenancy.** Add PostgreSQL row-level-security policies and
-   set a transaction-local organization identity. Keep application filters and
-   add negative tests proving both layers reject cross-organization access.
-3. **Real HTTP black-box composition.** The browser suite mocks the API and the
+2. **Real HTTP black-box composition.** The browser suite mocks the API and the
    new integration suite exercises service clients below HTTP. Add a small
    Compose profile running migrations, API and control worker against real
    services, then launch/cancel a synthetic mission without GPU work.
-4. **Control-worker availability.** The first deployment is a non-overlapping
+3. **Control-worker availability.** The first deployment is a non-overlapping
    singleton (`Recreate`). Add leader election or qualify all reconciliation
    loops for active-active replicas before claiming control-plane HA.
-5. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
+4. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
    request and retention policies with auditable usage records. Do not reuse
    scientific quality profiles as commercial quotas.
 

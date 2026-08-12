@@ -96,6 +96,8 @@ processingWorker:
 dashboardApi:
   tag: "REPLACE_GIT_SHA"
   environment: staging
+  databaseUrlSecretKey: api-database-url
+  rowLevelSecurityRequired: true
   service:
     type: ClusterIP
   cors:
