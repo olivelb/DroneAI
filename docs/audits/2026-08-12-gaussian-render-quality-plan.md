@@ -114,9 +114,26 @@ Current representative-block evidence on BIGZEN:
   capacity target. The interrupted run is retained under its distinct label
   and is not quality evidence.
 
-The next gate is a repeat complete reference-absolute run with the retention
-reserve. AbsGrad A/B runs start only if the reference reaches the retained
-density target without exceeding the resident memory budget.
+The corrected `reference-absolute-retention98-finalrestore` run completed all
+30,000 iterations in 6,310 seconds on the BIGZEN RTX 3090. The final topology
+freeze restored exactly 5.8 M Gaussians after pruning, peak observed VRAM was
+about 10.3 GiB, and filtering retained 5,739,213 Gaussians. The strict density
+gate accepted that population against 5,683,256 required at 2 cm. The held-out
+canary also passed at 22.94 dB PSNR and 0.524 SSIM.
+
+The raster was nevertheless rejected by the independent spatial-coverage
+gate. It rendered 10,978 x 13,331 pixels with 87.0% valid pixels and 93.4% of
+the 16 x 16 cells above the 25% coverage threshold, but two right-hand corner
+cells were empty and three additional border cells were below 1%. Therefore
+`worst_cell_ratio` was 0.0 against the required 0.01. The filtered model,
+checkpoint, canary, run manifest and coverage report remain retained under the
+distinct run label. This is negative qualification evidence: training density
+is now validated, but the HQ raster path is not accepted and the PR must not be
+merged until the edge-coverage failure is explained and corrected.
+
+The next gate is a raster-only diagnosis from the retained model, followed by
+a repeat coverage check. AbsGrad A/B runs start only after the reference raster
+passes; they must not obscure this independent product-coverage defect.
 
 ## Phase 3 — Densification A/B
 
