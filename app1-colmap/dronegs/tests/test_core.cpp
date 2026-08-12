@@ -589,8 +589,12 @@ void test_adaptive_capacity_growth() {
         "adaptive initial growth fraction mismatch");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'800U) == 0.0F,
-        "adaptive growth did not stop at capacity");
+            5'700'000U, 5'700'000U, 14'600U) == 0.0F,
+        "adaptive growth continued at capacity before the final window");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            5'700'000U, 5'700'000U, 14'800U) == 0.07F,
+        "adaptive final window did not reserve pruning replacement");
     check(
         dronegs::adaptive_capacity_growth_fraction(
             1U, 5'700'000U, 14'800U) == 0.25F,

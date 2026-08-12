@@ -284,7 +284,9 @@ blocks. It recomputes the growth fraction needed to approach `--max-cap` by
 iteration 14,800, clamps each request to 7–25%, and emits the fraction and
 capacity target in every topology-refinement event. It then freezes topology
 for convergence, preventing post-growth pruning from violating the GSD-backed
-density plan. Its default is `0`, so existing standalone and production
+density plan. The final adaptive refinement always reserves the minimum split
+budget so Gaussians pruned in that window are replaced before topology freezes.
+Its default is `0`, so existing standalone and production
 recipes keep the fixed 7% schedule and their configured pruning window.
 The resident HQ wrapper passes a pre-filter cap sized for 98% retention and
 records both that training target and the strict GSD-backed retained target;

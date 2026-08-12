@@ -106,6 +106,13 @@ Current representative-block evidence on BIGZEN:
   this representative block therefore targets 5.8 M before filtering. The
   failed run and its checkpoint/model remain retained as qualification
   evidence.
+- an interrupted retention-reserve rerun exposed a final-window edge case: if
+  the target was reached at iteration 14,600, the iteration-14,800 refinement
+  requested zero growth and then pruned 60,015 Gaussians immediately before
+  topology freeze. The final adaptive window now always reserves the minimum
+  split budget, allowing those freed slots to be recycled back to the exact
+  capacity target. The interrupted run is retained under its distinct label
+  and is not quality evidence.
 
 The next gate is a repeat complete reference-absolute run with the retention
 reserve. AbsGrad A/B runs start only if the reference reaches the retained

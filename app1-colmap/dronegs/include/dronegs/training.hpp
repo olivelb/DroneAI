@@ -201,9 +201,16 @@ inline float adaptive_capacity_growth_fraction(
         throw std::invalid_argument(
             "adaptive growth requires a non-empty Gaussian model");
     }
-    if (target_gaussians <= current_gaussians ||
-        iteration > adaptive_growth_last_iteration) {
+    if (iteration > adaptive_growth_last_iteration) {
         return 0.0F;
+    }
+    if (target_gaussians <= current_gaussians) {
+        // The final refinement still prunes before it grows. Request the
+        // minimum split budget so capacity freed by that pruning is recycled
+        // and the frozen topology finishes at the target instead of below it.
+        return iteration == adaptive_growth_last_iteration
+            ? minimum_growth_fraction
+            : 0.0F;
     }
 
     const auto remaining_windows =
