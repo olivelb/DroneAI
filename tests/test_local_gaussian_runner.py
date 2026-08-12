@@ -88,6 +88,7 @@ def test_high_quality_profile_matches_versioned_quality_envelope():
     assert profile.capacity_floor == 5_000_000
     assert profile.target_gaussian_spacing_pixels == 3.6
     assert profile.resident_partitioning is True
+    assert profile.resolution == 0.02
 
 
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():

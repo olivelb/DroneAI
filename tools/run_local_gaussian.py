@@ -234,7 +234,13 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
 PROFILES["normal"] = versioned_quality_profile("normal-v2")
-PROFILES["high-quality"] = versioned_quality_profile("high-quality-v3")
+PROFILES["high-quality"] = replace(
+    versioned_quality_profile("high-quality-v3"),
+    # Production missions inherit the 2 cm default from pipeline_params.
+    # Keep the standalone qualification runner on that same output contract
+    # instead of silently retaining the balanced runner's 5 cm preview GSD.
+    resolution=0.02,
+)
 
 
 def parse_args() -> argparse.Namespace:
