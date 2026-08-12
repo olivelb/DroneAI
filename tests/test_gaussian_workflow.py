@@ -246,6 +246,98 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
     assert result.height == 12
 
 
+def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
+    tmp_path,
+):
+    left_path = tmp_path / "left.ply"
+    right_path = tmp_path / "right.ply"
+    left_path.write_bytes(b"left")
+    right_path.write_bytes(b"right")
+    left_bounds = workflow.CellBounds(
+        0.0, 10.0, 0.0, 10.0,
+        -2.0, 12.0, -2.0, 12.0,
+        0, 0,
+    )
+    right_bounds = workflow.CellBounds(
+        10.0, 20.0, 0.0, 10.0,
+        8.0, 22.0, -2.0, 12.0,
+        0, 1,
+        include_core_x_max=True,
+        include_core_y_max=True,
+    )
+    geometry = workflow.GaussianRenderGeometry(
+        geo_origin=np.zeros(3),
+        frame_origin=None,
+        rotation_geo=None,
+        sh_direction_rotation=None,
+        facade_depth_bounds_model=None,
+        render_extent=(0.0, 20.0, 0.0, 10.0, -1.0, 2.0),
+        local_gsd=1.0,
+        resolution_units="metres",
+        coverage_camera_positions=np.empty((0, 3)),
+    )
+    partitions = tuple(
+        workflow.GaussianFilteredPartition(
+            bounds=bounds,
+            model_path=str(path),
+            gaussian_count=8,
+            core_gaussian_count=5,
+            render_extent=geometry.render_extent,
+        )
+        for bounds, path in ((left_bounds, left_path), (right_bounds, right_path))
+    )
+    filtering = workflow.GaussianFilteringPhaseState(
+        render_state=None,
+        input_gaussians=10,
+        output_gaussians=10,
+        partition_geometry=geometry,
+        partition_models=partitions,
+    )
+
+    class FakeModel:
+        def __init__(self, **_kwargs):
+            self.path = ""
+
+        def load_ply(self, path):
+            self.path = path
+
+    def render(model, *, extent, gsd, **_kwargs):
+        width = round((extent[1] - extent[0]) / gsd)
+        height = round((extent[3] - extent[2]) / gsd)
+        value = 40 if model.path.endswith("left.ply") else 180
+        return {
+            "rgb": np.full((height, width, 3), value, dtype=np.uint8),
+            "height": np.full((height, width), value, dtype=np.float32),
+            "extent": extent[:4],
+            "gsd": gsd,
+        }
+
+    pool = SimpleNamespace(free_all_blocks=lambda: None)
+    config = SimpleNamespace(
+        capacity_mode="fixed",
+        sh_degree=3,
+        opacity_sh_enabled=True,
+        ortho_mip_filter_variance=0.03,
+        ortho_mip_filter_compensation=True,
+        vol_id="mission",
+        report_fn=None,
+    )
+    result = workflow.execute_partitioned_gaussian_rasterization_phase(
+        config,
+        filtering,
+        model_class=FakeModel,
+        render_fn=render,
+        cupy_module=SimpleNamespace(
+            get_default_memory_pool=lambda: pool,
+        ),
+    )
+
+    assert result.result["rgb"].shape == (10, 20, 3)
+    assert np.all(result.result["rgb"][:, :10] == 40)
+    assert np.all(result.result["rgb"][:, 10:] == 180)
+    assert np.isfinite(result.result["height"]).all()
+
+
 def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
     density = workflow.GaussianDensityAssessment(
         robust_ground_area_m2=250_000.0,

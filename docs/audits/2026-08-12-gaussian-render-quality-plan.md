@@ -37,8 +37,9 @@ Qualification evidence:
 Status: in progress. Projected-ground core/buffer cells and deterministic
 geographic core ownership, calibrated terrain-envelope camera footprints and
 native JPEG crops are implemented and component-qualified. Area/GSD/VRAM-aware
-resident-cap planning is also implemented; streamed filtering and products
-remain before the new HQ profile can be enabled.
+resident-cap planning and cross-Job resident streaming are also implemented.
+Seam qualification on a representative native block remains before the new HQ
+profile can be enabled.
 
 1. Define the partition in projected ground coordinates, independently of the
    reconstruction's local axes. **Implemented.**
@@ -56,11 +57,16 @@ remain before the new HQ profile can be enabled.
    automatic compact geographic grid are implemented. For the 209,400 m²
    reference case at 2 cm and 3.6 px spacing, it resolves about 40.4 M merged
    Gaussians, seven minimum resident cells with 20% buffer, and a 12 M hard
-   per-cell cap. Training now persists each core-owned model and releases its
-   GPU allocation before the next cell; the old global GPU merge is forbidden.
-   Runtime activation remains blocked on streamed filtering/raster products.**
+   per-cell cap. Training now persists each resident buffer model, records its
+   uniquely owned core population, then releases its GPU allocation before the
+   next cell; the old global GPU merge is forbidden. Filtering and
+   rasterization reload one buffer at a time across Stage Jobs. Raster
+   publication writes only the corresponding pixel-snapped core so overlap
+   support remains available at seams without duplicate ownership.**
 5. Merge only buffer-supported content into each core. Record overlap,
-   per-core density and seam evidence in the stage artifacts.
+   per-core density and seam evidence in the stage artifacts. **Buffer/core
+   ownership, portable per-cell counts, extents and model checks are
+   implemented. Seam-image metrics remain the representative-block gate.**
 
 The first validation is a short representative native block. A full BIGZEN
 E2E becomes useful only after that block passes memory, density, seam and

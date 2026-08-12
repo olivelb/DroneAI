@@ -21,7 +21,9 @@ from .capacity_planning import (
 
 from .generate_gaussian_orthophoto import (
     GaussianFilteringPhaseState,
+    GaussianFilteredPartition,
     GaussianOrthoConfig,
+    GaussianPartitionModel,
     GaussianRenderState,
     GaussianSceneState,
     GaussianTrainingPhaseState,
@@ -59,6 +61,7 @@ class GaussianPartitionArtifact:
     bounds: CellBounds
     model_path: Path
     gaussian_count: int
+    core_gaussian_count: int
 
 
 @dataclass(frozen=True)
@@ -73,13 +76,23 @@ class GaussianTrainingArtifact:
     partition_models: tuple[GaussianPartitionArtifact, ...] = ()
 
 @dataclass(frozen=True)
-class GaussianFilteringArtifact(GaussianRenderGeometry):
+class GaussianFilteredPartitionArtifact:
+    bounds: CellBounds
     model_path: Path
+    gaussian_count: int
+    core_gaussian_count: int
+    render_extent: tuple[float, float, float, float, float, float]
+
+
+@dataclass(frozen=True)
+class GaussianFilteringArtifact(GaussianRenderGeometry):
+    model_path: Path | None
     config_sha256: str
     input_gaussians: int
     output_gaussians: int
     scene_summary: GaussianSceneSummary
     density_assessment: GaussianDensityAssessment | None = None
+    partition_models: tuple[GaussianFilteredPartitionArtifact, ...] = ()
 
 
 def _canonical(payload: dict[str, object]) -> bytes:
@@ -185,6 +198,7 @@ def write_training_artifact(
             "bounds": partition.bounds.as_dict(),
             "model_file": _relative_file(workspace, partition.model_path),
             "gaussian_count": partition.gaussian_count,
+            "core_gaussian_count": partition.core_gaussian_count,
         }
         for partition in getattr(phase.training_state, "partition_models", ())
     ]
@@ -247,6 +261,7 @@ def read_training_artifact(
                 bounds=cell_bounds_from_dict(entry.get("bounds")),
                 model_path=_workspace_file(workspace, entry.get("model_file")),
                 gaussian_count=_required_int(entry, "gaussian_count"),
+                core_gaussian_count=_required_int(entry, "core_gaussian_count"),
             )
         )
     raw_model = payload.get("model_file")
@@ -271,7 +286,7 @@ def read_training_artifact(
         ),
         partition_models=tuple(partitions),
     )
-    if sum(part.gaussian_count for part in partitions) not in {
+    if sum(part.core_gaussian_count for part in partitions) not in {
         0,
         artifact.gaussian_count,
     }:
@@ -296,6 +311,35 @@ def hydrate_training_phase(
             final_ply=str(artifact.model_path),
             facade_subset_result=artifact.facade_subset_result,
             partition_models=(),
+        ),
+        backend_name=artifact.backend_name,
+        trainer_binary_sha256=artifact.trainer_binary_sha256,
+        capacity_plan=artifact.capacity_plan,
+    )
+
+
+def hydrate_partitioned_training_phase(
+    artifact: GaussianTrainingArtifact,
+    scene_state: GaussianSceneState,
+) -> GaussianTrainingPhaseState:
+    """Rebuild resident training metadata without loading every GPU model."""
+    if artifact.model_path is not None or not artifact.partition_models:
+        raise ValueError("Gaussian training artifact is not partitioned")
+    return GaussianTrainingPhaseState(
+        scene_state=scene_state,
+        training_state=GaussianTrainingState(
+            merged_model=None,
+            final_ply=None,
+            facade_subset_result=artifact.facade_subset_result,
+            partition_models=tuple(
+                GaussianPartitionModel(
+                    bounds=partition.bounds,
+                    model_path=str(partition.model_path),
+                    gaussian_count=partition.gaussian_count,
+                    core_gaussian_count=partition.core_gaussian_count,
+                )
+                for partition in artifact.partition_models
+            ),
         ),
         backend_name=artifact.backend_name,
         trainer_binary_sha256=artifact.trainer_binary_sha256,
@@ -333,18 +377,43 @@ def write_filtering_artifact(
     training_phase: GaussianTrainingPhaseState,
     filtering_phase: GaussianFilteringPhaseState,
     *,
-    model_path: str | Path,
+    model_path: str | Path | None,
 ) -> Path:
     workspace = Path(workspace_dir).resolve(strict=True)
     identity = gaussian_config_identity(config)
-    render = filtering_phase.render_state
+    render = filtering_phase.render_state or getattr(
+        filtering_phase,
+        "partition_geometry",
+        None,
+    )
+    if render is None:
+        raise ValueError("Gaussian filtering phase has no render geometry")
+    partitions = [
+        {
+            "bounds": partition.bounds.as_dict(),
+            "model_file": _relative_file(workspace, partition.model_path),
+            "gaussian_count": partition.gaussian_count,
+            "core_gaussian_count": partition.core_gaussian_count,
+            "render_extent": list(partition.render_extent),
+        }
+        for partition in getattr(filtering_phase, "partition_models", ())
+    ]
+    if model_path is None and not partitions:
+        raise ValueError("Gaussian filtering artifact has no resident model")
+    if model_path is not None and partitions:
+        raise ValueError("Gaussian filtering artifact cannot mix model layouts")
     density_assessment = getattr(filtering_phase, "density_assessment", None)
     payload: dict[str, object] = {
         "schema_version": ARTIFACT_SCHEMA_VERSION,
         "kind": "filtering",
         "config_identity": identity,
         "config_sha256": hashlib.sha256(_canonical(identity)).hexdigest(),
-        "model_file": _relative_file(workspace, model_path),
+        "model_file": (
+            _relative_file(workspace, model_path)
+            if model_path is not None
+            else None
+        ),
+        "partition_models": partitions,
         "input_gaussians": filtering_phase.input_gaussians,
         "output_gaussians": filtering_phase.output_gaussians,
         "geo_origin": cast(list[object], render.geo_origin.tolist()),
@@ -438,8 +507,39 @@ def read_filtering_artifact(
     depth_bounds = _array(payload, "facade_depth_bounds_model", (2,), optional=True)
     if geo_origin is None or render_extent is None or coverage_positions is None:
         raise ValueError("Gaussian filtering artifact is incomplete")
+    raw_partitions = payload.get("partition_models", [])
+    if not isinstance(raw_partitions, list):
+        raise ValueError("Gaussian filtering partition list is invalid")
+    partitions: list[GaussianFilteredPartitionArtifact] = []
+    for raw in raw_partitions:
+        if not isinstance(raw, dict):
+            raise ValueError("Gaussian filtering partition entry is invalid")
+        entry = cast(dict[str, Any], raw)
+        extent = _array(entry, "render_extent", (6,))
+        if extent is None:
+            raise ValueError("Gaussian partition render extent is missing")
+        partitions.append(
+            GaussianFilteredPartitionArtifact(
+                bounds=cell_bounds_from_dict(entry.get("bounds")),
+                model_path=_workspace_file(workspace, entry.get("model_file")),
+                gaussian_count=_required_int(entry, "gaussian_count"),
+                core_gaussian_count=_required_int(entry, "core_gaussian_count"),
+                render_extent=cast(
+                    tuple[float, float, float, float, float, float],
+                    tuple(float(value) for value in extent),
+                ),
+            )
+        )
+    raw_model = payload.get("model_file")
+    model_path = (
+        _workspace_file(workspace, raw_model)
+        if raw_model is not None
+        else None
+    )
+    if (model_path is None) == (not partitions):
+        raise ValueError("Gaussian filtering artifact model layout is ambiguous")
     return GaussianFilteringArtifact(
-        model_path=_workspace_file(workspace, payload.get("model_file")),
+        model_path=model_path,
         config_sha256=digest,
         input_gaussians=_required_int(payload, "input_gaussians"),
         output_gaussians=_required_int(payload, "output_gaussians"),
@@ -470,6 +570,7 @@ def read_filtering_artifact(
             if payload.get("density_assessment") is not None
             else None
         ),
+        partition_models=tuple(partitions),
     )
 
 
@@ -478,6 +579,8 @@ def hydrate_filtering_phase(
     model: GaussianModel,
 ) -> GaussianFilteringPhaseState:
     """Rebuild a raster-ready state without repeating alignment or filtering."""
+    if artifact.model_path is None or artifact.partition_models:
+        raise ValueError("A partitioned filtering artifact cannot be globally hydrated")
     if model.num_gaussians != artifact.output_gaussians:
         raise ValueError("Loaded Gaussian count does not match the filtering artifact")
     return GaussianFilteringPhaseState(
@@ -496,4 +599,40 @@ def hydrate_filtering_phase(
         input_gaussians=artifact.input_gaussians,
         output_gaussians=artifact.output_gaussians,
         density_assessment=artifact.density_assessment,
+    )
+
+
+def hydrate_partitioned_filtering_phase(
+    artifact: GaussianFilteringArtifact,
+) -> GaussianFilteringPhaseState:
+    """Rebuild a streamable resident raster boundary without loading a model."""
+    if artifact.model_path is not None or not artifact.partition_models:
+        raise ValueError("Gaussian filtering artifact is not partitioned")
+    geometry = GaussianRenderGeometry(
+        geo_origin=artifact.geo_origin,
+        frame_origin=artifact.frame_origin,
+        rotation_geo=artifact.rotation_geo,
+        sh_direction_rotation=artifact.sh_direction_rotation,
+        facade_depth_bounds_model=artifact.facade_depth_bounds_model,
+        render_extent=artifact.render_extent,
+        local_gsd=artifact.local_gsd,
+        resolution_units=artifact.resolution_units,
+        coverage_camera_positions=artifact.coverage_camera_positions,
+    )
+    return GaussianFilteringPhaseState(
+        render_state=None,
+        input_gaussians=artifact.input_gaussians,
+        output_gaussians=artifact.output_gaussians,
+        density_assessment=artifact.density_assessment,
+        partition_geometry=geometry,
+        partition_models=tuple(
+            GaussianFilteredPartition(
+                bounds=partition.bounds,
+                model_path=str(partition.model_path),
+                gaussian_count=partition.gaussian_count,
+                core_gaussian_count=partition.core_gaussian_count,
+                render_extent=partition.render_extent,
+            )
+            for partition in artifact.partition_models
+        ),
     )

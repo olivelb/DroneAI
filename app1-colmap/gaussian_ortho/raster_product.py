@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         GaussianOrthoConfig,
         GaussianRasterizationPhaseState,
     )
+    from .render_geometry import GaussianRenderGeometry
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,15 @@ class GaussianSceneSummary:
     facade_subset_result: dict[str, object] | None
 
 
+def _render_geometry(
+    filtering_phase: GaussianFilteringPhaseState,
+) -> GaussianRenderGeometry:
+    render = filtering_phase.render_state or filtering_phase.partition_geometry
+    if render is None:
+        raise RuntimeError("Gaussian raster product has no render geometry")
+    return render
+
+
 def _write_coverage_report(
     config: GaussianOrthoConfig,
     filtering_phase: GaussianFilteringPhaseState,
@@ -63,9 +73,9 @@ def _write_coverage_report(
     report = evaluate_spatial_coverage(
         height,
         extent=extent,
-        camera_positions=(
-            filtering_phase.render_state.coverage_camera_positions
-        ),
+        camera_positions=_render_geometry(
+            filtering_phase
+        ).coverage_camera_positions,
         policy=policy,
         enforced=config.coverage_gate_enabled,
     )
@@ -112,7 +122,10 @@ def _write_facade_report(
 ) -> Path:
     if summary.facade_frame is None:
         raise RuntimeError("Facade frame is unavailable for reporting")
-    depth_bounds = filtering_phase.render_state.facade_depth_bounds_model
+    render = filtering_phase.render_state
+    if render is None:
+        raise RuntimeError("Facade raster product has no global render state")
+    depth_bounds = render.facade_depth_bounds_model
     subset = summary.facade_subset_result
     report_path = Path(
         config.facade_frame_report
@@ -170,7 +183,7 @@ def _write_facade_report(
             "width": width,
             "height": height,
             "pixel_size": config.resolution,
-            "pixel_size_units": filtering_phase.render_state.resolution_units,
+            "pixel_size_units": render.resolution_units,
             "extent": [
                 geo_x_min,
                 geo_y_max - height * config.resolution,
@@ -196,7 +209,7 @@ def finalize_gaussian_raster_product(
     rasterization_phase: GaussianRasterizationPhaseState,
     summary: GaussianSceneSummary,
     *,
-    final_ply: str,
+    final_ply: str | None,
     cupy_version: str,
 ) -> dict[str, Any]:
     """Apply quality gates and publish RGB/height products identically."""
@@ -212,7 +225,7 @@ def finalize_gaussian_raster_product(
         height_map,
         (x_min, x_max, y_min, y_max),
     )
-    render = filtering_phase.render_state
+    render = _render_geometry(filtering_phase)
     geo_x_min, geo_y_max = georeference_raster_origin(
         x_min,
         y_max,

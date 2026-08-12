@@ -27,10 +27,13 @@ from gaussian_ortho.capacity_planning import (
     GaussianDensityAssessment,
 )
 from gaussian_ortho.generate_gaussian_orthophoto import (
+    GaussianFilteredPartition,
+    GaussianFilteringPhaseState,
     GaussianPartitionModel,
     GaussianTrainingState,
 )
 from gaussian_ortho.partition import CellBounds
+from gaussian_ortho.render_geometry import GaussianRenderGeometry
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
@@ -383,6 +386,7 @@ class TestColmapStageHelpers(unittest.TestCase):
             partition_phase = types.SimpleNamespace(
                 backend_name="dronegs",
                 trainer_binary_sha256="a" * 64,
+                scene_state=phase.scene_state,
                 training_state=GaussianTrainingState(
                     merged_model=None,
                     final_ply=None,
@@ -392,6 +396,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                             bounds=bounds,
                             model_path=str(partition_path),
                             gaussian_count=1_200_000,
+                            core_gaussian_count=1_200_000,
                         ),
                     ),
                 ),
@@ -411,6 +416,53 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(partition_artifact.gaussian_count, 1_200_000)
             self.assertEqual(len(partition_artifact.partition_models), 1)
             self.assertEqual(partition_artifact.partition_models[0].bounds, bounds)
+
+            partition_geometry = GaussianRenderGeometry(
+                geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
+                frame_origin=None,
+                rotation_geo=None,
+                sh_direction_rotation=np.eye(3),
+                facade_depth_bounds_model=None,
+                render_extent=(0.0, 10.0, 0.0, 10.0, 0.0, 8.0),
+                local_gsd=0.025,
+                resolution_units="metres",
+                coverage_camera_positions=np.array([[1.0, 1.0, 10.0]]),
+            )
+            partition_filtering = GaussianFilteringPhaseState(
+                render_state=None,
+                input_gaussians=1_200_000,
+                output_gaussians=1_100_000,
+                density_assessment=None,
+                partition_geometry=partition_geometry,
+                partition_models=(
+                    GaussianFilteredPartition(
+                        bounds=bounds,
+                        model_path=str(partition_path),
+                        gaussian_count=1_150_000,
+                        core_gaussian_count=1_100_000,
+                        render_extent=partition_geometry.render_extent,
+                    ),
+                ),
+            )
+            phase_artifacts.write_filtering_artifact(
+                tmp_dir,
+                config,
+                partition_phase,
+                partition_filtering,
+                model_path=None,
+            )
+            partition_filter_artifact = phase_artifacts.read_filtering_artifact(
+                tmp_dir,
+                config,
+            )
+            hydrated_partitions = (
+                phase_artifacts.hydrate_partitioned_filtering_phase(
+                    partition_filter_artifact
+                )
+            )
+            self.assertIsNone(partition_filter_artifact.model_path)
+            self.assertEqual(len(hydrated_partitions.partition_models), 1)
+            self.assertEqual(hydrated_partitions.output_gaussians, 1_100_000)
 
             filtered_model_path = Path(tmp_dir, "filtering", "filtered.ply")
             filtered_model_path.parent.mkdir()

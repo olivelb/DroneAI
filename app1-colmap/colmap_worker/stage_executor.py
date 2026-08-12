@@ -392,11 +392,13 @@ def run_gaussian_filtering_stage(
         preparation, reconstruction, alignment = load_reconstruction_state(workspace)
         from gaussian_ortho.generate_gaussian_orthophoto import (
             execute_gaussian_filtering_phase,
+            execute_partitioned_gaussian_filtering_phase,
             prepare_gaussian_scene,
         )
         from gaussian_ortho.gaussian_model import GaussianModel
         from gaussian_ortho.phase_artifacts import (
             hydrate_training_phase,
+            hydrate_partitioned_training_phase,
             read_training_artifact,
             write_filtering_artifact,
         )
@@ -412,33 +414,55 @@ def run_gaussian_filtering_stage(
             prepare_checkpoints=False,
         )
         artifact = read_training_artifact(workspace, product.config)
-        if getattr(artifact, "partition_models", ()):
-            raise RuntimeError(
-                "Partitioned Gaussian filtering is not enabled until the "
-                "resident streamed filter/raster handoff is qualified"
-            )
-        if artifact.model_path is None:
-            raise RuntimeError("Gaussian training artifact has no global model")
-        model = GaussianModel(
-            sh_degree=product.config.sh_degree,
-            opacity_sh_enabled=product.config.opacity_sh_enabled,
-        )
-        model.load_ply(str(artifact.model_path))
         scene = prepare_gaussian_scene(product.config)
-        filtered_model_path = (
-            workspace / ".droneai" / "gaussian" / "filtering" / "filtered.ply"
-        )
-        filtered_model_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact.model_path, filtered_model_path)
-        training_phase = hydrate_training_phase(
-            replace(artifact, model_path=filtered_model_path),
-            scene,
-            model,
-        )
-        filtering_phase = execute_gaussian_filtering_phase(
-            product.config,
-            training_phase,
-        )
+        filtered_root = workspace / ".droneai" / "gaussian" / "filtering"
+        filtered_root.mkdir(parents=True, exist_ok=True)
+        filtered_model_path: Path | None = None
+        if getattr(artifact, "partition_models", ()):
+            if artifact.capacity_plan is None:
+                raise RuntimeError("Resident Gaussian artifact has no capacity plan")
+            copied_artifact_partitions = []
+            for partition in artifact.partition_models:
+                target = (
+                    filtered_root
+                    / "partitions"
+                    / f"cell-{partition.bounds.row}-{partition.bounds.col}.ply"
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(partition.model_path, target)
+                copied_artifact_partitions.append(
+                    replace(partition, model_path=target)
+                )
+            artifact = replace(
+                artifact,
+                partition_models=tuple(copied_artifact_partitions),
+            )
+            training_phase = hydrate_partitioned_training_phase(artifact, scene)
+            filtering_phase = execute_partitioned_gaussian_filtering_phase(
+                product.config,
+                scene,
+                training_phase.training_state.partition_models,
+                artifact.capacity_plan,
+            )
+        else:
+            if artifact.model_path is None:
+                raise RuntimeError("Gaussian training artifact has no global model")
+            model = GaussianModel(
+                sh_degree=product.config.sh_degree,
+                opacity_sh_enabled=product.config.opacity_sh_enabled,
+            )
+            model.load_ply(str(artifact.model_path))
+            filtered_model_path = filtered_root / "filtered.ply"
+            shutil.copy2(artifact.model_path, filtered_model_path)
+            training_phase = hydrate_training_phase(
+                replace(artifact, model_path=filtered_model_path),
+                scene,
+                model,
+            )
+            filtering_phase = execute_gaussian_filtering_phase(
+                product.config,
+                training_phase,
+            )
         control.raise_if_cancelled()
         write_filtering_artifact(
             workspace,
@@ -447,17 +471,23 @@ def run_gaussian_filtering_stage(
             filtering_phase,
             model_path=filtered_model_path,
         )
+        role_overrides = {
+            ".droneai/gaussian-filtering-state.json": "gaussian-filtering-state",
+        }
+        if filtered_model_path is not None:
+            role_overrides[
+                filtered_model_path.relative_to(workspace).as_posix()
+            ] = "filtered-gaussian-model"
+        for partition in getattr(filtering_phase, "partition_models", ()):
+            role_overrides[
+                Path(partition.model_path).relative_to(workspace).as_posix()
+            ] = "filtered-gaussian-partition-model"
         published = _publish_stage_workspace(
             context,
             control,
             workspace,
             stage="gaussian-filtering",
-            role_overrides={
-                ".droneai/gaussian-filtering-state.json": "gaussian-filtering-state",
-                filtered_model_path.relative_to(workspace).as_posix(): (
-                    "filtered-gaussian-model"
-                ),
-            },
+            role_overrides=role_overrides,
         )
         return StageExecutionResult(
             kind="gaussian_filtering_workspace",
@@ -468,7 +498,19 @@ def run_gaussian_filtering_stage(
                 "manifest_key": published.manifest_key,
                 "file_count": published.file_count,
                 "state_file": ".droneai/gaussian-filtering-state.json",
-                "model_file": filtered_model_path.relative_to(workspace).as_posix(),
+                "model_file": (
+                    filtered_model_path.relative_to(workspace).as_posix()
+                    if filtered_model_path is not None
+                    else None
+                ),
+                "model_files": [
+                    Path(partition.model_path).relative_to(workspace).as_posix()
+                    for partition in getattr(
+                        filtering_phase,
+                        "partition_models",
+                        (),
+                    )
+                ],
                 "input_gaussians": filtering_phase.input_gaussians,
                 "output_gaussians": filtering_phase.output_gaussians,
             },
@@ -513,6 +555,7 @@ def run_rasterization_stage(
         from gaussian_ortho.gaussian_model import GaussianModel
         from gaussian_ortho.phase_artifacts import (
             hydrate_filtering_phase,
+            hydrate_partitioned_filtering_phase,
             read_filtering_artifact,
         )
         from gaussian_ortho.raster_product import finalize_gaussian_raster_product
@@ -528,12 +571,17 @@ def run_rasterization_stage(
             prepare_checkpoints=False,
         )
         artifact = read_filtering_artifact(workspace, product.config)
-        model = GaussianModel(
-            sh_degree=product.config.sh_degree,
-            opacity_sh_enabled=product.config.opacity_sh_enabled,
-        )
-        model.load_ply(str(artifact.model_path))
-        filtering_phase = hydrate_filtering_phase(artifact, model)
+        if getattr(artifact, "partition_models", ()):
+            filtering_phase = hydrate_partitioned_filtering_phase(artifact)
+        else:
+            if artifact.model_path is None:
+                raise RuntimeError("Gaussian filtering artifact has no global model")
+            model = GaussianModel(
+                sh_degree=product.config.sh_degree,
+                opacity_sh_enabled=product.config.opacity_sh_enabled,
+            )
+            model.load_ply(str(artifact.model_path))
+            filtering_phase = hydrate_filtering_phase(artifact, model)
         rasterization_phase = execute_gaussian_rasterization_phase(
             product.config,
             filtering_phase,
@@ -546,7 +594,11 @@ def run_rasterization_stage(
             filtering_phase,
             rasterization_phase,
             artifact.scene_summary,
-            final_ply=str(artifact.model_path),
+            final_ply=(
+                str(artifact.model_path)
+                if artifact.model_path is not None
+                else None
+            ),
             cupy_version=cp.__version__,
         )
         ortho_relative = Path(result["ortho_file"]).relative_to(workspace).as_posix()
