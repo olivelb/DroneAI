@@ -65,7 +65,7 @@ _engine: Any = None
 _SessionFactory: Callable[[], Session] | None = None
 
 
-def _get_engine() -> Any:
+def get_engine() -> Any:
     global _engine
     if _engine is None:
         _engine = create_engine(
@@ -81,7 +81,7 @@ def _get_engine() -> Any:
 def get_session_factory() -> Callable[[], Session]:
     global _SessionFactory
     if _SessionFactory is None:
-        _SessionFactory = sessionmaker(bind=_get_engine(), expire_on_commit=False)
+        _SessionFactory = sessionmaker(bind=get_engine(), expire_on_commit=False)
     return _SessionFactory
 
 

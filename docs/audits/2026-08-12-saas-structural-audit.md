@@ -20,6 +20,7 @@ dataset qualification.
 | CI closure | Python duplication and the IA container can no longer be skipped by an affected change; merge queues execute the full gate | path-classifier tests, actionlint, container matrix |
 | Input boundaries | mission/run identifiers are constrained before becoming local paths or object keys | event, tile and workspace tests; exported JSON Schema |
 | API lifecycle | durable outbox, upload reconciliation and stage scheduling run in a dedicated control worker | lifecycle tests, Compose config, Helm render and least-privilege RBAC |
+| Control-worker availability | protected overlays run two rolling replicas with PostgreSQL session-lock leadership and a disruption budget | real two-connection exclusion, forced-connection-loss takeover and Helm render tests |
 | Health | liveness is process health and readiness executes a real DB query | HTTP probe tests and Helm contract |
 | Integration | one test crosses a real Postgres outbox transaction, Kafka delivery/consumption and verified MinIO round trip | isolated Compose integration CI job |
 | SaaS isolation | organization is distinct from member identity across auth, DB queries, storage, realtime and quotas | migration round trip plus cross-organization tests |
@@ -33,8 +34,8 @@ dataset qualification.
 | Physical compute accounting | organization/mission concurrency counts logical runs while global/resource budgets count physical units; detection finalization is CPU-only | two-tenant/four-shard/two-GPU scheduler test, CPU manifest and rolling-upgrade recreation tests |
 | Frontend structure | HTTP transport and multipart upload are isolated from domain API calls; auth responses are runtime-validated | 29 Vitest tests, ESLint, explicit TypeScript gate and build |
 
-The qualified local baseline after these changes is 943 non-GPU/non-integration
-Python tests, five real-service integration tests, 29 frontend unit tests and 10
+The qualified local baseline after these changes is 951 non-GPU/non-integration
+Python tests, six real-service integration tests, 29 frontend unit tests and 10
 Playwright journeys. The full Python static gate, documentation links, schema
 sync, shellcheck and actionlint also pass.
 
@@ -80,10 +81,7 @@ deliberately separate from scientific qualification.
    new integration suite exercises service clients below HTTP. Add a small
    Compose profile running migrations, API and control worker against real
    services, then launch/cancel a synthetic mission without GPU work.
-3. **Control-worker availability.** The first deployment is a non-overlapping
-   singleton (`Recreate`). Add leader election or qualify all reconciliation
-   loops for active-active replicas before claiming control-plane HA.
-4. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
+3. **Quota and retention ledger.** Enforce organization storage, concurrent-job,
    request and retention policies with auditable usage records. Do not reuse
    scientific quality profiles as commercial quotas.
 

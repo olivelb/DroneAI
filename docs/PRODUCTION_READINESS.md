@@ -34,6 +34,15 @@ Bounded Jobs receive only their stage Secret and verify RLS at startup.
 Protected Helm overlays require this split and readiness
 fails when PostgreSQL reports that RLS is inactive for the API role.
 
+Protected environments run two control-worker replicas with a rolling update
+and a one-pod disruption budget. A dedicated PostgreSQL connection owns one
+session-level advisory leadership lock; only that replica starts outbox,
+upload-recovery and stage-orchestration loops. Followers poll without executing
+control work and take over after the leader connection or pod disappears.
+Every leadership health check executes through the held connection, and loss
+stops all local loops before the replica competes again. Development keeps the
+single-worker mode available for SQLite and lightweight Compose use.
+
 The production example activates bounded stage Jobs and disables every fused
 Kafka compute worker. Staging and production now fail at application startup
 and Helm render if that invariant is weakened. Replace every executor image

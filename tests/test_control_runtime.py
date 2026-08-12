@@ -8,6 +8,7 @@ import pytest
 
 
 control_runtime = importlib.import_module("app4-dashboard.api.control_runtime")
+control_worker = importlib.import_module("app4-dashboard.api.control_worker")
 health = importlib.import_module("app4-dashboard.api.health")
 main = importlib.import_module("app4-dashboard.api.main")
 
@@ -97,6 +98,53 @@ def test_control_supervisor_reports_an_unexpected_exit():
     )
     with pytest.raises(RuntimeError, match="exited-loop"):
         supervisor.raise_if_unhealthy()
+
+
+def test_elected_worker_waits_then_runs_and_releases_leadership(monkeypatch):
+    process_stop = threading.Event()
+    acquisition_attempts = []
+
+    class Leadership:
+        released = False
+
+        def raise_if_unhealthy(self):
+            return None
+
+        def release(self):
+            self.released = True
+
+    lease = Leadership()
+
+    def acquire():
+        acquisition_attempts.append(True)
+        return None if len(acquisition_attempts) == 1 else lease
+
+    class Supervisor:
+        stopped = False
+
+        def raise_if_unhealthy(self):
+            process_stop.set()
+
+        def stop(self):
+            self.stopped = True
+
+    supervisor = Supervisor()
+    monkeypatch.setattr(
+        control_worker,
+        "try_acquire_control_leadership",
+        acquire,
+    )
+    monkeypatch.setattr(
+        control_worker,
+        "start_control_loops",
+        lambda _stop_event: supervisor,
+    )
+
+    control_worker._run_elected_loops(process_stop, 0.001)
+
+    assert len(acquisition_attempts) == 2
+    assert supervisor.stopped is True
+    assert lease.released is True
 
 
 def test_database_readiness_executes_a_real_query(monkeypatch):

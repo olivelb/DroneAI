@@ -17,6 +17,12 @@
 {{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.controlWorker.enabled) }}
 {{- fail "dashboardApi.controlWorker.enabled must remain true when the HTTP API uses an RLS database role" }}
 {{- end }}
+{{- if and $protectedStageJobEnvironment (lt (int .Values.dashboardApi.controlWorker.replicaCount) 2) }}
+{{- fail "dashboardApi.controlWorker.replicaCount must be at least 2 in staging and production" }}
+{{- end }}
+{{- if and $protectedStageJobEnvironment (not .Values.dashboardApi.controlWorker.leaderElection.enabled) }}
+{{- fail "dashboardApi.controlWorker.leaderElection.enabled must be true in staging and production" }}
+{{- end }}
 {{- if and $protectedStageJobEnvironment (not .Values.stageJobs.enabled) }}
 {{- fail "stageJobs.enabled must be true in staging and production; fused Kafka compute is development-only" }}
 {{- end }}

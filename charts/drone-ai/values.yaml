@@ -231,6 +231,11 @@ dashboardApi:
     # outside the request-serving API so API rollouts cannot stop control work.
     enabled: true
     replicaCount: 1
+    leaderElection:
+      # Protected overlays enable PostgreSQL advisory leadership and run two
+      # replicas. Local single-process development can keep it disabled.
+      enabled: false
+      pollSeconds: 2
     resources:
       limits:
         memory: "1Gi"

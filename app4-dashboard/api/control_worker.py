@@ -6,27 +6,84 @@ import logging
 import signal
 import threading
 
+from shared.deployment_mode import bounded_stage_jobs_enabled
+
+from .control_leadership import (
+    ControlLeadershipError,
+    control_leader_election_enabled,
+    control_leader_poll_seconds,
+    try_acquire_control_leadership,
+)
 from .control_runtime import start_control_loops
 
 
 logger = logging.getLogger("droneai.control-worker")
 
 
-def run() -> None:
-    stop_event = threading.Event()
-
-    def request_stop(signum: int, _frame: object) -> None:
-        logger.info("Control worker received signal %s", signum)
-        stop_event.set()
-
-    signal.signal(signal.SIGINT, request_stop)
-    signal.signal(signal.SIGTERM, request_stop)
+def _run_supervised_loops(stop_event: threading.Event) -> None:
     supervisor = start_control_loops(stop_event)
     try:
         while not stop_event.wait(5):
             supervisor.raise_if_unhealthy()
     finally:
         supervisor.stop()
+
+
+def _run_elected_loops(
+    process_stop_event: threading.Event,
+    poll_seconds: float,
+) -> None:
+    while not process_stop_event.is_set():
+        try:
+            leadership = try_acquire_control_leadership()
+        except RuntimeError:
+            raise
+        except Exception:
+            logger.exception("Control leadership acquisition failed")
+            process_stop_event.wait(poll_seconds)
+            continue
+        if leadership is None:
+            process_stop_event.wait(poll_seconds)
+            continue
+
+        leader_stop_event = threading.Event()
+        supervisor = None
+        logger.info("Control worker acquired PostgreSQL leadership")
+        try:
+            supervisor = start_control_loops(leader_stop_event)
+            while not process_stop_event.wait(poll_seconds):
+                leadership.raise_if_unhealthy()
+                supervisor.raise_if_unhealthy()
+        except ControlLeadershipError:
+            logger.exception("Control worker lost PostgreSQL leadership")
+        finally:
+            if supervisor is not None:
+                supervisor.stop()
+            leadership.release()
+            logger.info("Control worker released PostgreSQL leadership")
+
+
+def run(stop_event: threading.Event | None = None) -> None:
+    process_stop_event = stop_event or threading.Event()
+
+    def request_stop(signum: int, _frame: object) -> None:
+        logger.info("Control worker received signal %s", signum)
+        process_stop_event.set()
+
+    if stop_event is None:
+        signal.signal(signal.SIGINT, request_stop)
+        signal.signal(signal.SIGTERM, request_stop)
+
+    # Every replica validates the protected deployment contract before it can
+    # become a follower. A failover must never activate a misconfigured pod.
+    bounded_stage_jobs_enabled()
+    if control_leader_election_enabled():
+        _run_elected_loops(
+            process_stop_event,
+            control_leader_poll_seconds(),
+        )
+    else:
+        _run_supervised_loops(process_stop_event)
 
 
 if __name__ == "__main__":

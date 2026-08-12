@@ -38,6 +38,21 @@ roleRef:
   name: dashboard-control-worker-jobs
 {{- end }}
 ---
+{{- if gt (int .Values.dashboardApi.controlWorker.replicaCount) 1 }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: dashboard-control-worker
+  namespace: {{ include "drone-ai.namespace" . }}
+  labels:
+    {{- include "drone-ai.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: dashboard-control-worker
+---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -49,7 +64,10 @@ metadata:
 spec:
   replicas: {{ .Values.dashboardApi.controlWorker.replicaCount }}
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
   selector:
     matchLabels:
       app: dashboard-control-worker
@@ -105,6 +123,10 @@ spec:
         env:
         {{- include "drone-ai.commonEnv" (dict "root" . "databaseUrlSecretKey" .Values.storage.databaseUrlSecretKey) | nindent 8 }}
         {{- include "drone-ai.controlEnv" . | nindent 8 }}
+        - name: DRONEAI_CONTROL_LEADER_ELECTION
+          value: {{ .Values.dashboardApi.controlWorker.leaderElection.enabled | quote }}
+        - name: DRONEAI_CONTROL_LEADER_POLL_SECONDS
+          value: {{ .Values.dashboardApi.controlWorker.leaderElection.pollSeconds | quote }}
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:
