@@ -208,6 +208,7 @@ def prepare_gaussian_product_run(
         partition_m=1,
         partition_n=1,
         partition_overlap=0.20,
+        resident_partitioning=resolved.resident_partitioning,
         sh_degree=resolved.sh_degree,
         opacity_sh_enabled=True,
         checkpoint_dir=checkpoint_dir,

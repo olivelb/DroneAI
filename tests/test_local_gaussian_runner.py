@@ -83,9 +83,11 @@ def test_high_quality_profile_matches_versioned_quality_envelope():
     assert profile.cap_max == 12_000_000
     assert profile.data_factor == 1
     assert profile.max_width == 4096
-    assert profile.profile_id == "high-quality-v2"
+    assert profile.profile_id == "high-quality-v3"
     assert profile.capacity_mode == "adaptive"
     assert profile.capacity_floor == 5_000_000
+    assert profile.target_gaussian_spacing_pixels == 3.6
+    assert profile.resident_partitioning is True
 
 
 def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():

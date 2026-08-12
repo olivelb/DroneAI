@@ -1679,7 +1679,7 @@ default to `normal-v2`. Fast remains a fixed 1.5 M preview; Normal and High
 Quality derive their effective capacity from robust scene area, requested GSD
 and detected VRAM, with respective operator ceilings of 8 M and 12 M. The
 complete immutable envelopes and the memory formula are in
-[`docs/contracts/quality-profiles-v2.md`](docs/contracts/quality-profiles-v2.md).
+[`docs/contracts/quality-profiles-v3.md`](docs/contracts/quality-profiles-v3.md).
 
 | UI Label | Key | Type | Default | Range |
 | --- | --- | --- | --- | --- |

@@ -29,6 +29,7 @@ class DroneGsRunConfig:
     capacity_mode: str
     capacity_floor: int
     target_gaussian_spacing_pixels: float
+    resident_partitioning: bool
     sh_degree: int
     backend: str
     seed: int
@@ -70,6 +71,14 @@ class DroneGsRunConfig:
     coverage_min_camera_cell_ratio: float
 
 
+def _boolean_parameter(value: object, *, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ValueError(f"{name} must be a boolean")
+
+
 def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
     return {
         "iterations": config.iterations,
@@ -80,6 +89,7 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "capacity_mode": config.capacity_mode,
         "capacity_floor": config.capacity_floor,
         "target_gaussian_spacing_pixels": config.target_gaussian_spacing_pixels,
+        "resident_partitioning": config.resident_partitioning,
         "sh_degree": config.sh_degree,
         "seed": config.seed,
         "optimizer_profile": config.optimizer_profile,
@@ -104,6 +114,7 @@ def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> di
                 "capacity_mode": "fixed",
                 "capacity_floor": int(expected["cap_max"]),
                 "target_gaussian_spacing_pixels": 0.0,
+                "resident_partitioning": False,
             }
         )
         return expected
@@ -118,6 +129,7 @@ def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> di
                 "capacity_mode": "fixed",
                 "capacity_floor": DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
                 "target_gaussian_spacing_pixels": 0.0,
+                "resident_partitioning": False,
             }
         )
         return expected
@@ -140,6 +152,9 @@ def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> di
                 "capacity_floor": int(parameters["gs_capacity_floor"]),
                 "target_gaussian_spacing_pixels": float(
                     parameters["gs_target_gaussian_spacing_pixels"]
+                ),
+                "resident_partitioning": bool(
+                    parameters["gs_resident_partitioning"]
                 ),
             }
         )
@@ -196,6 +211,13 @@ def resolve_dronegs_config(
                 "gs_target_gaussian_spacing_pixels",
                 selected_parameters.get("gs_target_gaussian_spacing_pixels", 0.0),
             )
+        ),
+        resident_partitioning=_boolean_parameter(
+            params.get(
+                "gs_resident_partitioning",
+                selected_parameters.get("gs_resident_partitioning", False),
+            ),
+            name="gs_resident_partitioning",
         ),
         sh_degree=int(params.get("gs_sh_degree", DRONEGS_PRODUCTION_PROFILE_V1.sh_degree)),
         backend=str(params.get("gs_backend", "dronegs")),

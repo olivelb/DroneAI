@@ -56,6 +56,7 @@ def test_hq_plan_separates_merged_target_from_resident_rtx3090_cap():
         meters_per_model_unit=1.0,
         requested_gsd_m=0.015,
         total_vram_bytes=24 * capacity.GIB,
+        resident_partitioning=True,
     )
 
     assert plan.surface_target is not None
@@ -79,6 +80,7 @@ def test_adaptive_plan_adds_cells_for_a_smaller_gpu():
         meters_per_model_unit=1.0,
         requested_gsd_m=0.015,
         total_vram_bytes=12 * capacity.GIB,
+        resident_partitioning=True,
     )
 
     assert preliminary.vram_cap is not None
@@ -96,6 +98,7 @@ def test_adaptive_plan_adds_cells_for_a_smaller_gpu():
         requested_gsd_m=0.015,
         total_vram_bytes=12 * capacity.GIB,
         cell_count=preliminary.required_cell_count,
+        resident_partitioning=True,
     )
 
     assert plan.cells_sufficient
@@ -112,6 +115,7 @@ def test_two_centimeter_hq_candidate_targets_about_40m_merged_gaussians():
         meters_per_model_unit=1.0,
         requested_gsd_m=0.02,
         total_vram_bytes=24 * capacity.GIB,
+        resident_partitioning=True,
     )
 
     assert plan.effective_scene_cap == pytest.approx(40_400_000, rel=0.03)
@@ -133,6 +137,23 @@ def test_fixed_preview_keeps_its_reproducible_cap():
 
     assert plan.robust_ground_area_m2 is None
     assert plan.effective_scene_cap == 1_500_000
+
+
+def test_legacy_adaptive_profile_keeps_its_monolithic_operator_cap():
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=12_000_000,
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        points=_surface(500.0, 418.8),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=24 * capacity.GIB,
+        resident_partitioning=False,
+    )
+
+    assert plan.effective_scene_cap == 12_000_000
+    assert plan.required_cell_count == 1
 
 
 def test_detected_vram_is_optional_for_cpu_contract_tests():

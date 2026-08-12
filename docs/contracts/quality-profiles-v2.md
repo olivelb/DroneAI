@@ -1,5 +1,9 @@
 # Quality profiles v2
 
+> Historical v2 contract. The resident-block HQ qualification candidate and
+> its promotion gate are defined in
+> [`quality-profiles-v3.md`](quality-profiles-v3.md).
+
 DroneAI exposes three active end-to-end profiles through
 `GET /mission/parameters`. `fast-v1` remains the reproducible preview envelope;
 the new Normal and High Quality profiles calculate Gaussian capacity from the

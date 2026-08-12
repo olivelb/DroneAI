@@ -159,6 +159,7 @@ def plan_gaussian_capacity(
     free_vram_bytes: int | None = None,
     cell_count: int = 1,
     partition_overlap: float = 0.20,
+    resident_partitioning: bool = False,
 ) -> GaussianCapacityPlan:
     """Resolve merged-scene density and a safe resident-block capacity."""
 
@@ -203,27 +204,39 @@ def plan_gaussian_capacity(
         surface_target = _round_up(
             output_pixels / target_spacing_pixels**2
         )
-        effective_scene = max(capacity_floor, surface_target)
-        if memory_cap is not None:
-            resident_cap = min(resident_cap, memory_cap)
-        resident_cap = max(CAPACITY_QUANTUM, _round_down(resident_cap))
-        buffer_capacity_factor = (1.0 + 2.0 * partition_overlap) ** 2
-        required_cell_count = max(
-            1,
-            math.ceil(
-                effective_scene
-                * buffer_capacity_factor
-                / resident_cap
-            ),
-        )
-        effective_cell = min(
-            resident_cap,
-            _round_up(
-                effective_scene
-                * buffer_capacity_factor
-                / cell_count
-            ),
-        )
+        desired = max(capacity_floor, surface_target)
+        if resident_partitioning:
+            effective_scene = desired
+            if memory_cap is not None:
+                resident_cap = min(resident_cap, memory_cap)
+            resident_cap = max(CAPACITY_QUANTUM, _round_down(resident_cap))
+            buffer_capacity_factor = (1.0 + 2.0 * partition_overlap) ** 2
+            required_cell_count = max(
+                1,
+                math.ceil(
+                    effective_scene
+                    * buffer_capacity_factor
+                    / resident_cap
+                ),
+            )
+            effective_cell = min(
+                resident_cap,
+                _round_up(
+                    effective_scene
+                    * buffer_capacity_factor
+                    / cell_count
+                ),
+            )
+        else:
+            effective_scene = min(requested_cap, desired)
+            if memory_cap is not None:
+                effective_scene = min(effective_scene, memory_cap)
+            effective_scene = max(
+                CAPACITY_QUANTUM,
+                _round_down(effective_scene),
+            )
+            resident_cap = effective_scene
+            effective_cell = _round_up(effective_scene / cell_count)
     cells_sufficient = cell_count >= required_cell_count
     return GaussianCapacityPlan(
         mode=mode,

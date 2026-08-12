@@ -69,6 +69,7 @@ class GaussianProfile:
     capacity_mode: str = "fixed"
     capacity_floor: int = 0
     target_gaussian_spacing_pixels: float = 0.0
+    resident_partitioning: bool = False
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
 
 
@@ -227,12 +228,13 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
         target_gaussian_spacing_pixels=float(
             parameters["gs_target_gaussian_spacing_pixels"]
         ),
+        resident_partitioning=bool(parameters["gs_resident_partitioning"]),
     )
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
 PROFILES["normal"] = versioned_quality_profile("normal-v2")
-PROFILES["high-quality"] = versioned_quality_profile("high-quality-v2")
+PROFILES["high-quality"] = versioned_quality_profile("high-quality-v3")
 
 
 def parse_args() -> argparse.Namespace:
@@ -521,6 +523,7 @@ def main() -> int:
             target_gaussian_spacing_pixels=(
                 profile.target_gaussian_spacing_pixels
             ),
+            resident_partitioning=profile.resident_partitioning,
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
             verbose=args.verbose,

@@ -10,7 +10,8 @@ export type QualityProfileId =
   | "normal-v1"
   | "high-quality-v1"
   | "normal-v2"
-  | "high-quality-v2";
+  | "high-quality-v2"
+  | "high-quality-v3";
 export type ParamValue = string | boolean;
 export type ParameterOption = string | {
   value: string;

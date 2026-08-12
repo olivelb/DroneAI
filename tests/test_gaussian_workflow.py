@@ -127,6 +127,7 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
         partition_overlap=0.2,
         partition_m=1,
         partition_n=1,
+        resident_partitioning=True,
         vol_id="mission",
         report_fn=None,
     )

@@ -249,6 +249,7 @@ class GaussianOrthoConfig:
     partition_m: int
     partition_n: int
     partition_overlap: float
+    resident_partitioning: bool
     sh_degree: int
     opacity_sh_enabled: bool
     checkpoint_dir: str
@@ -645,6 +646,9 @@ def execute_gaussian_training_phase(
         total_vram_bytes=detected_vram[1] if detected_vram else None,
         cell_count=1,
         partition_overlap=overlap,
+        resident_partitioning=bool(
+            getattr(config, "resident_partitioning", False)
+        ),
     )
     _apply_required_geographic_partition(
         scene_state,
@@ -663,6 +667,9 @@ def execute_gaussian_training_phase(
         total_vram_bytes=detected_vram[1] if detected_vram else None,
         cell_count=len(scene_state.cells),
         partition_overlap=overlap,
+        resident_partitioning=bool(
+            getattr(config, "resident_partitioning", False)
+        ),
     )
     if not capacity_plan.cells_sufficient:
         raise RuntimeError(
@@ -1741,6 +1748,7 @@ def generate_gaussian_orthophoto(
     partition_m: int = 1,
     partition_n: int = 1,
     partition_overlap: float = 0.20,
+    resident_partitioning: bool = False,
     sh_degree: int = 3,
     opacity_sh_enabled: bool = True,
     checkpoint_dir: str | None = None,
@@ -1824,6 +1832,9 @@ def generate_gaussian_orthophoto(
         Grid partition dimensions (1 x 1 = no partition).
     partition_overlap : float
         Overlap fraction for partitioning.
+    resident_partitioning : bool
+        Enable projected geographic core/buffer streaming. Versioned legacy
+        profiles keep this disabled; the HQ v3 candidate enables it.
     sh_degree : int
         Maximum spherical harmonics degree.
     opacity_sh_enabled : bool
@@ -1888,6 +1899,7 @@ def generate_gaussian_orthophoto(
         partition_m=partition_m,
         partition_n=partition_n,
         partition_overlap=partition_overlap,
+        resident_partitioning=resident_partitioning,
         sh_degree=sh_degree,
         opacity_sh_enabled=opacity_sh_enabled,
         checkpoint_dir=checkpoint_dir,
