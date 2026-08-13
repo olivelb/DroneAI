@@ -36,6 +36,10 @@ def _manifest(ply: Path) -> dict:
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",
             "effective_raster_profile": "fastgs",
+            "initial_scale_policy": "local-knn",
+            "initial_max_projected_sigma_pixels": 2.0,
+            "maximum_scale_growth_factor": 54.59815,
+            "adaptive_native_crop_tiles": 0,
             "test_split": "modulo",
             "test_guard_percent": 0,
         },
@@ -54,8 +58,7 @@ def _manifest(ply: Path) -> dict:
 def test_manifest_loader_rejects_duplicate_keys(tmp_path):
     path = tmp_path / "trainer_run.json"
     path.write_text(
-        '{"contract_version":1,"parameters":{"raster_profile":"bounded",'
-        '"raster_profile":"fastgs"}}',
+        '{"contract_version":1,"parameters":{"raster_profile":"bounded","raster_profile":"fastgs"}}',
         encoding="utf-8",
     )
 
@@ -79,9 +82,7 @@ def test_manifest_promotion_hashes_ply_and_detects_tampering(tmp_path):
     )
 
     assert manifest_matches_ply(promoted, ply)
-    assert promoted["artifacts"]["point_cloud.ply"]["bytes"] == len(
-        b"ply\nfixture"
-    )
+    assert promoted["artifacts"]["point_cloud.ply"]["bytes"] == len(b"ply\nfixture")
     ply.write_bytes(b"ply\ntampered")
     assert not manifest_matches_ply(promoted, ply)
 

@@ -1585,6 +1585,8 @@ TrainingMetrics train_ordered_mrnf(
         topology_refinement_end_iteration(
             options.iterations, options.topology_cooldown,
             options.adaptive_growth_target != 0U);
+    const std::uint64_t topology_growth_end =
+        topology_growth_end_iteration(options.iterations);
     if (topology_refine_end < options.iterations) {
         std::cout
             << "{\"event\":\"topology_cooldown\",\"refine_through_iteration\":"
@@ -1643,9 +1645,10 @@ TrainingMetrics train_ordered_mrnf(
         }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
-        if (iteration % 200U == 0U && iteration < 28'500U &&
+        if (iteration % topology_refinement_interval == 0U &&
             iteration <= topology_refine_end) {
-            float growth_fraction = iteration < 15'000U ? 0.07F : 0.0F;
+            float growth_fraction =
+                iteration <= topology_growth_end ? 0.07F : 0.0F;
             if (growth_fraction > 0.0F &&
                 options.adaptive_growth_target != 0U) {
                 growth_fraction = adaptive_capacity_growth_fraction(

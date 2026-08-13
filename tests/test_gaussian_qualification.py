@@ -45,6 +45,9 @@ def _manifest(
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",
             "effective_raster_profile": "fastgs",
+            "initial_scale_policy": "local-knn",
+            "initial_max_projected_sigma_pixels": 2.0,
+            "maximum_scale_growth_factor": 54.59815,
             "test_split": "modulo",
             "test_guard_percent": 0,
             "seed": seed,
@@ -55,9 +58,7 @@ def _manifest(
             "absgrad_normalization": None if weight == 0 else "median",
             "adaptive_native_crop_tiles": adaptive_native_crop_tiles,
             "native_crop_tile_policy": (
-                "sensor-pixel-budget-up-to-tile-mode-v1"
-                if adaptive_native_crop_tiles
-                else "fixed-tile-mode-v1"
+                "sensor-pixel-budget-up-to-tile-mode-v1" if adaptive_native_crop_tiles else "fixed-tile-mode-v1"
             ),
         },
         "timings": {"training_seconds": 12.0, "wall_seconds": 14.0},
@@ -70,15 +71,9 @@ def _manifest(
             "pixel_weighted_ssim": 0.55 + weight / 10,
             "lpips": None,
             "image_cache_working_set_bytes": 8_000_000_000,
-            "frame_descriptor_count": (
-                241 if adaptive_native_crop_tiles else 485
-            ),
-            "training_frame_count": (
-                205 if adaptive_native_crop_tiles else 421
-            ),
-            "held_out_frame_count": (
-                36 if adaptive_native_crop_tiles else 64
-            ),
+            "frame_descriptor_count": (241 if adaptive_native_crop_tiles else 485),
+            "training_frame_count": (205 if adaptive_native_crop_tiles else 421),
+            "held_out_frame_count": (36 if adaptive_native_crop_tiles else 64),
         },
         "artifacts": {"point_cloud.ply": {"path": "point_cloud.ply"}},
     }
@@ -103,13 +98,9 @@ def test_compare_controlled_qualification_runs(tmp_path):
     )
 
     assert report["baseline_optimizer_profile"] == "reference-absolute"
-    assert report["runs"][1]["delta_from_baseline"]["psnr"] == pytest.approx(
-        0.25
-    )
+    assert report["runs"][1]["delta_from_baseline"]["psnr"] == pytest.approx(0.25)
     assert report["runs"][1]["lpips"] is None
-    assert report["runs"][1]["delta_from_baseline"][
-        "pixel_weighted_psnr"
-    ] == pytest.approx(0.25)
+    assert report["runs"][1]["delta_from_baseline"]["pixel_weighted_psnr"] == pytest.approx(0.25)
 
 
 def test_compare_rejects_uncontrolled_parameter_drift(tmp_path):
@@ -151,17 +142,11 @@ def test_compare_native_crop_tiling_runs(tmp_path):
     )
 
     assert report["baseline_policy"] == "fixed-tile-mode-v1"
-    assert report["runs"][1]["native_crop_tile_policy"] == (
-        "sensor-pixel-budget-up-to-tile-mode-v1"
-    )
+    assert report["runs"][1]["native_crop_tile_policy"] == ("sensor-pixel-budget-up-to-tile-mode-v1")
     assert report["runs"][1]["training_image_count"] == 107
     assert report["runs"][1]["held_out_image_count"] == 16
-    assert report["runs"][1]["delta_from_fixed"][
-        "frame_descriptor_count"
-    ] == -244
-    assert report["runs"][1]["delta_from_fixed"][
-        "training_frame_count"
-    ] == -216
+    assert report["runs"][1]["delta_from_fixed"]["frame_descriptor_count"] == -244
+    assert report["runs"][1]["delta_from_fixed"]["training_frame_count"] == -216
 
 
 def test_compare_native_crop_tiling_rejects_parameter_drift(tmp_path):
@@ -213,9 +198,7 @@ def _performance_manifest(
     digest: str = "b" * 64,
     seed: int = 42,
 ) -> Path:
-    payload = json.loads(
-        _manifest(path, "reference-absolute", 0.0, seed=seed).read_text()
-    )
+    payload = json.loads(_manifest(path, "reference-absolute", 0.0, seed=seed).read_text())
     payload["parameters"].update(
         prefetch_depth=prefetch_depth,
         decode_workers=decode_workers,
@@ -356,13 +339,9 @@ def test_compare_resident_seed_contract_runs(tmp_path):
         [baseline_report, candidate_report],
     )
 
-    assert report["runs"][1]["track_scope"] == (
-        "selected-cameras-and-native-crops-v1"
-    )
+    assert report["runs"][1]["track_scope"] == ("selected-cameras-and-native-crops-v1")
     assert report["runs"][1]["crop_rejected_observations"] == 20_000
-    assert report["runs"][1]["delta_from_camera_only"]["psnr"] == (
-        pytest.approx(0.4)
-    )
+    assert report["runs"][1]["delta_from_camera_only"]["psnr"] == (pytest.approx(0.4))
 
 
 def test_compare_resident_seed_rejects_frame_drift(tmp_path):
@@ -396,6 +375,4 @@ def test_compare_resident_seed_rejects_frame_drift(tmp_path):
         reports.append(path)
 
     with pytest.raises(ValueError, match="expanded frames"):
-        compare_resident_seed_contract_manifests(
-            [baseline, candidate], reports
-        )
+        compare_resident_seed_contract_manifests([baseline, candidate], reports)

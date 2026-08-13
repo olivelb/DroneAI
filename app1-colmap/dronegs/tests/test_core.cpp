@@ -706,10 +706,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
 
 void test_adaptive_capacity_growth() {
     const std::array<std::array<std::uint64_t, 2>, 4> schedule_cases{{
-        {7'500U, 6'500U},
-        {15'000U, 14'000U},
+        {7'500U, 3'600U},
+        {15'000U, 7'400U},
         {30'000U, 14'800U},
-        {9'100U, 8'100U},
+        {9'100U, 4'400U},
     }};
     for (const auto& schedule_case : schedule_cases) {
         check(
@@ -721,6 +721,12 @@ void test_adaptive_capacity_growth() {
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, false) == 29'000U,
         "legacy topology cooldown changed");
+    check(
+        dronegs::topology_growth_end_iteration(7'500U) == 3'600U &&
+            dronegs::topology_growth_end_iteration(15'000U) == 7'400U &&
+            dronegs::topology_growth_end_iteration(30'000U) == 14'800U &&
+            dronegs::topology_growth_end_iteration(9'100U) == 4'400U,
+        "growth schedule is not derived from the operator iteration budget");
     check(
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, true) == 14'800U,
@@ -743,18 +749,18 @@ void test_adaptive_capacity_growth() {
             1U, 5'700'000U, 14'800U, 14'800U) == 0.25F,
         "adaptive growth upper bound mismatch");
     const auto short_initial = dronegs::adaptive_capacity_growth_fraction(
-        22'547U, 1'500'000U, 200U, 6'500U);
+        22'547U, 1'500'000U, 200U, 3'600U);
     check(
         short_initial > initial,
         "short training budget did not accelerate adaptive growth");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            1'500'000U, 1'500'000U, 6'400U, 6'500U) == 0.07F,
+            1'500'000U, 1'500'000U, 3'600U, 3'600U) == 0.07F,
         "short training budget did not reserve its final growth window");
     bool empty_model_rejected = false;
     try {
         static_cast<void>(dronegs::adaptive_capacity_growth_fraction(
-            0U, 100U, 200U, 6'500U));
+            0U, 100U, 200U, 3'600U));
     } catch (const std::invalid_argument&) {
         empty_model_rejected = true;
     }

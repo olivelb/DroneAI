@@ -325,9 +325,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                   topology_refinement_end_iteration(
                       options.iterations, options.topology_cooldown,
                       options.adaptive_growth_target != 0U),
-                  adaptive_growth_last_iteration)
+                  topology_growth_end_iteration(options.iterations))
            << ",\n"
-           << "    \"prune_until_iteration\": 28500,\n"
+           << "    \"prune_until_iteration\": "
+           << topology_refinement_end_iteration(
+                  options.iterations, options.topology_cooldown,
+                  options.adaptive_growth_target != 0U)
+           << ",\n"
            << "    \"growth_threshold\": 0.003,\n"
            << "    \"growth_fraction\": "
            << (options.adaptive_growth_target != 0U ? "null" : "0.07")

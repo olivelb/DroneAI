@@ -189,17 +189,33 @@ struct TrainingMetrics {
     std::optional<float> final_pixel_weighted_ssim;
 };
 
-inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;
 inline constexpr std::uint64_t topology_refinement_interval = 200U;
+
+inline std::uint64_t topology_growth_end_iteration(
+    std::uint64_t iterations) {
+    const auto half_budget = iterations / 2U;
+    if (half_budget == 0U) {
+        return 0U;
+    }
+    // Refinement runs on multiples of 200 and must remain strictly inside
+    // the first half of the requested budget. This reproduces iteration
+    // 14,800 for 30k while scaling to every operator-selected duration.
+    return ((half_budget - 1U) / topology_refinement_interval) *
+        topology_refinement_interval;
+}
 
 inline std::uint64_t topology_refinement_end_iteration(
     std::uint64_t iterations,
     std::uint64_t topology_cooldown,
     bool adaptive_growth_target) {
     const auto configured_end = iterations - topology_cooldown;
-    return adaptive_growth_target
-        ? std::min(configured_end, adaptive_growth_last_iteration)
-        : configured_end;
+    if (!adaptive_growth_target) {
+        return configured_end;
+    }
+    const auto target_end = std::min(
+        configured_end, topology_growth_end_iteration(iterations));
+    return (target_end / topology_refinement_interval) *
+        topology_refinement_interval;
 }
 
 inline float adaptive_capacity_growth_fraction(
