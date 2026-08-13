@@ -306,10 +306,10 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
 def test_parameter_catalog_exposes_profiles_and_model_capabilities():
     response = mission_routes.mission_parameters()
 
-    assert response["quality_profile_default"] == "normal-v2"
+    assert response["quality_profile_default"] == "normal-v3"
     assert [profile["id"] for profile in response["quality_profiles"]] == [
         "fast-v1",
-        "normal-v2",
+        "normal-v3",
         "high-quality-v2",
     ]
     assert len(response["yolo_models"]) == 8

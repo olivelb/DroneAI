@@ -22,6 +22,7 @@ from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
@@ -1783,7 +1784,8 @@ def _axis_feather_weights(
         ).astype(np.float32)
     else:
         weights[upper] = 0.0
-    return np.clip(weights, 0.0, 1.0)
+    clipped: np.ndarray = np.clip(weights, 0.0, 1.0)
+    return clipped
 
 
 def execute_partitioned_gaussian_rasterization_phase(
@@ -1827,9 +1829,15 @@ def execute_partitioned_gaussian_rasterization_phase(
     height = int(np.ceil((y_max - y_min) / geometry.local_gsd))
     if width < 1 or height < 1:
         raise RuntimeError("Resident Gaussian raster extent is empty")
-    rgb_accumulator = np.zeros((height, width, 3), dtype=np.float32)
-    height_accumulator = np.zeros((height, width), dtype=np.float32)
-    weight_accumulator = np.zeros((height, width), dtype=np.float32)
+    rgb_accumulator: np.ndarray = np.zeros(
+        (height, width, 3), dtype=np.float32
+    )
+    height_accumulator: np.ndarray = np.zeros(
+        (height, width), dtype=np.float32
+    )
+    weight_accumulator: np.ndarray = np.zeros(
+        (height, width), dtype=np.float32
+    )
     for index, partition in enumerate(partitions):
         px0, px1, py0, py1 = _partition_pixel_window(
             config,
@@ -2193,12 +2201,16 @@ def generate_gaussian_orthophoto(
         facade_seed_max_reprojection_error=facade_seed_max_reprojection_error,
         facade_seed_min_track_length=facade_seed_min_track_length,
     )
+    phase_timings: dict[str, float] = {}
+    phase_started = perf_counter()
     training_phase = execute_gaussian_training_phase(
         config,
         trainer_backend=trainer_backend,
         cupy_module=cp,
     )
+    phase_timings["training_and_scene_preparation"] = perf_counter() - phase_started
     scene_state = training_phase.scene_state
+    phase_started = perf_counter()
     if training_phase.training_state.partition_models:
         if training_phase.capacity_plan is None:
             raise RuntimeError("Resident Gaussian training produced no capacity plan")
@@ -2215,10 +2227,13 @@ def generate_gaussian_orthophoto(
             training_phase,
             cupy_module=cp,
         )
+    phase_timings["filtering"] = perf_counter() - phase_started
+    phase_started = perf_counter()
     rasterization_phase = execute_gaussian_rasterization_phase(
         config,
         filtering_phase,
     )
+    phase_timings["rasterization"] = perf_counter() - phase_started
     from .raster_product import (
         GaussianSceneSummary,
         finalize_gaussian_raster_product,
@@ -2243,7 +2258,8 @@ def generate_gaussian_orthophoto(
         gaussian_seed_point_count=scene_state.gaussian_seed_point_count,
         facade_subset_result=training_phase.training_state.facade_subset_result,
     )
-    return finalize_gaussian_raster_product(
+    phase_started = perf_counter()
+    result = finalize_gaussian_raster_product(
         config,
         filtering_phase,
         rasterization_phase,
@@ -2251,3 +2267,11 @@ def generate_gaussian_orthophoto(
         final_ply=training_phase.training_state.final_ply,
         cupy_version=cp.__version__,
     )
+    phase_timings["quality_and_geotiff_publication"] = (
+        perf_counter() - phase_started
+    )
+    result["phase_timings_seconds"] = {
+        name: round(seconds, 6)
+        for name, seconds in phase_timings.items()
+    }
+    return result

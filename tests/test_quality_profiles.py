@@ -25,7 +25,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
         "high-quality-v3": ("4096", "16384", "30000", "12000000"),
     }
 
-    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v2"
+    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v3"
     assert set(expected) < set(QUALITY_PROFILE_BY_ID)
     for profile_id, values in expected.items():
         parameters = quality_profile(profile_id).parameters
@@ -60,7 +60,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     assert "high-quality-v3" not in {
         profile.profile_id for profile in QUALITY_PROFILES
     }
-    assert "normal-v3" not in {
+    assert "normal-v3" in {
         profile.profile_id for profile in QUALITY_PROFILES
     }
     assert quality_profile("normal-v2").version == 2

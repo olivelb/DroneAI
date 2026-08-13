@@ -31,7 +31,7 @@ export function useQualityProfileState(
   setParameters: ParameterSetter,
 ) {
   const [qualityProfileId, setQualityProfileId] =
-    useState<QualityProfileId>("normal-v1");
+    useState<QualityProfileId>("normal-v3");
 
   const synchronizeQualityProfile = useCallback(
     (nextSchema: ParameterConfigResponse) => {

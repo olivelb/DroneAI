@@ -32,6 +32,8 @@ const qualityProfile = oneOf(
   "high-quality-v1",
   "normal-v2",
   "high-quality-v2",
+  "normal-v3",
+  "high-quality-v3",
 );
 const stageId = oneOf(
   "reconstruction",

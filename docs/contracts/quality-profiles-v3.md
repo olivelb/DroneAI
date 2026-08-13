@@ -1,23 +1,24 @@
 # Quality profiles v3
 
-DroneAI retains the three publicly selectable v2 envelopes while it qualifies
-the planar resident-block implementations. `fast-v1`, `normal-v2` and
-`high-quality-v2` therefore remain the profiles returned by
-`GET /mission/parameters`; stored v1/v2 missions keep their exact recipes.
+DroneAI exposes `fast-v1`, the resident `normal-v3` and `high-quality-v2` from
+`GET /mission/parameters`. Stored v1/v2 missions keep their exact recipes;
+`normal-v2` remains available for replay but is no longer offered for new
+missions.
 
-The reproducible `normal-v3` and `high-quality-v3` candidates are available to
-the local BIGZEN runner and internal qualification tooling, but are deliberately
-not advertised by the API or Dashboard before their target-GPU gates pass.
+`normal-v3` passed its real multi-block BIGZEN gate on 13 August 2026 and is
+the default profile. `high-quality-v3` remains an internal candidate until its
+full target-GPU gates pass.
 
-| Candidate | Native image width | SIFT features | Iterations | Resident policy | Density target |
+| Profile | Native image width | SIFT features | Iterations | Resident policy | Density target |
 |---|---:|---:|---:|---|---:|
-| `normal-v3` | 2,400 px | 4,096 | 15,000 | adaptive, 3 M floor, 8 M operator cap; VRAM-bounded per buffer | 8 output pixels per unique core Gaussian |
+| `normal-v3` (qualified) | 2,400 px | 4,096 | 15,000 | adaptive, 3 M floor, 8 M operator cap; VRAM-bounded per buffer | 8 output pixels per unique core Gaussian |
 | `high-quality-v3` | 4,096 px | 16,384 | 30,000 | adaptive, 5 M floor, 12 M hard cap per buffer | 3.6 output pixels per unique core Gaussian |
 
-For a representative 209,400 m² scene at 2 cm/pixel, an 8 GiB device resolves
-`normal-v3` to about 8.2 M retained Gaussians across eight resident buffers.
-Each buffer targets about 2.1 M Gaussians below the conservative 2.3 M detected
-VRAM ceiling. This is a planning contract, not yet a real-GPU qualification.
+The real Normal qualification covered 88,239.71 m² at 2 cm/pixel. The 8 GiB
+planner envelope resolved it to four buffers of at most 1.8 M Gaussians and
+3,501,321 retained unique-core Gaussians. Peak sampled VRAM was 3,859 MiB;
+all held-out, retention, density and coverage gates passed. See
+[`aerial-gcp-normal-v3-resident-8g-2026-08-13.md`](../benchmarks/aerial-gcp-normal-v3-resident-8g-2026-08-13.md).
 
 For qualification on a larger GPU, operators can set
 `DRONEAI_GAUSSIAN_VRAM_BUDGET_GIB=8`. The planner clamps the detected free and
@@ -53,14 +54,16 @@ For maps, that plane is projected ground from the geographic Sim3. For facades,
 it is the fitted horizontal/vertical wall frame converted to metres. Each cell
 is trained from calibrated footprint-visible native image crops.
 Training, filtering and rasterization persist and reload one buffer model at a
-time across Stage Jobs. The rasterizer snaps adjacent geographic cores to one
-global pixel grid and writes each pixel from exactly one core while retaining
-the surrounding buffer splats for boundary support. Artifacts record resident
-and unique-core populations, bounds, transforms and per-cell model paths; a
-global GPU merge is intentionally forbidden. PLY reads and writes use bounded
-250,000-row host staging; filtering queries camera distance in the same bounded
-chunks. Raster culling geometry is transformed once per resident model and the
-CuPy pool is reused between output tiles.
+time across Stage Jobs. The rasterizer snaps every buffer to one global pixel
+grid, gives each core unit weight and linearly fades through its margins.
+Overlapping RGB and height samples are accumulated and normalized in bounded
+row chunks. This `linear-core-buffer-v1` contract avoids hard seams without
+spatial resampling. Artifacts record resident and unique-core populations,
+bounds, transforms and per-cell model paths; a global GPU merge is
+intentionally forbidden. PLY reads and writes use bounded 250,000-row host
+staging; filtering queries camera distance in the same bounded chunks. Raster
+culling geometry is transformed once per resident model and the CuPy pool is
+reused between output tiles.
 
 ## Promotion gate
 
@@ -78,10 +81,12 @@ Jobs;
 
 The raster Job writes `gaussian_seam_report.json` with per-core-boundary RGB
 and height mean/p95 jumps plus a boundary-to-nearby-interior gradient ratio.
-Those measurements are evidence-only until a multi-block run defines
-defensible thresholds; they cannot silently pass or fail a production run.
+Those measurements remain evidence-only until several independent datasets
+define defensible thresholds; they cannot silently pass or fail a production
+run. On the Normal qualification, feathering reduced boundary-to-neighbouring
+gradient ratios to 1.00–1.06 for RGB and 1.00–1.02 for height.
 
-The 12 August HQ run qualifies one resident block only. A multi-block HQ run,
-the real 8 GiB Normal run and a resident facade run remain required. The
-historical v2 formula, runs and SAM3 policy remain documented in
+The 12 August HQ run qualifies one resident block only. A multi-block HQ run
+and a resident facade run remain required. The historical v2 formula, runs and
+SAM3 policy remain documented in
 [`quality-profiles-v2.md`](quality-profiles-v2.md).
