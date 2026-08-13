@@ -52,6 +52,7 @@ const char* help_text() {
         "Usage: dronegs --data-path PATH --output-path PATH --iter N "
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
+        "[--adaptive-native-crop-tiles 0|1] "
         "[--initial-ply PATH] "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--host-image-cache-mib N] "
@@ -100,6 +101,7 @@ Options parse_options(int argc, char** argv) {
     const std::unordered_set<std::string> known{
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
+        "--adaptive-native-crop-tiles",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--host-image-cache-mib",
         "--jpeg-idct-scale", "--test-every", "--test-split",
@@ -153,6 +155,11 @@ Options parse_options(int argc, char** argv) {
     options.resize_factor = parse_u32(values.at("--resize-factor"), "--resize-factor");
     options.max_width = parse_u32(values.at("--max-width"), "--max-width");
     options.tile_mode = parse_u32(values.at("--tile-mode"), "--tile-mode");
+    if (values.contains("--adaptive-native-crop-tiles")) {
+        options.adaptive_native_crop_tiles = parse_u32(
+            values.at("--adaptive-native-crop-tiles"),
+            "--adaptive-native-crop-tiles");
+    }
     options.seed = parse_unsigned(values.at("--seed"), "--seed");
     if (values.contains("--prefetch-depth")) {
         options.prefetch_depth =
@@ -265,6 +272,10 @@ void validate_options(const Options& options) {
     }
     if (options.tile_mode != 1 && options.tile_mode != 2 && options.tile_mode != 4) {
         throw std::invalid_argument("--tile-mode must be 1, 2, or 4");
+    }
+    if (options.adaptive_native_crop_tiles > 1U) {
+        throw std::invalid_argument(
+            "--adaptive-native-crop-tiles must be 0 or 1");
     }
     if (options.prefetch_depth == 0U || options.prefetch_depth > 64U) {
         throw std::invalid_argument("--prefetch-depth must be between 1 and 64");

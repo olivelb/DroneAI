@@ -535,9 +535,13 @@ std::vector<FrameDescriptor> make_frame_descriptors(
                   .width = static_cast<std::uint32_t>(camera.width),
                   .height = static_cast<std::uint32_t>(camera.height),
               };
-        const auto regions = make_training_tiles(
-            source_region,
-            options.tile_mode);
+        const auto regions = options.adaptive_native_crop_tiles != 0U
+            ? make_adaptive_training_tiles(
+                  source_region,
+                  static_cast<std::uint32_t>(camera.width),
+                  static_cast<std::uint32_t>(camera.height),
+                  options.tile_mode)
+            : make_training_tiles(source_region, options.tile_mode);
         for (std::size_t tile_index = 0U;
              tile_index < regions.size(); ++tile_index) {
             FrameDescriptor descriptor{
@@ -1388,7 +1392,7 @@ TrainingMetrics train_ordered_mrnf(
             : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
-        << "contract=3"
+        << "contract=4"
         << ";iterations=" << options.iterations
         << ";strategy=" << options.strategy
         << ";sh=" << options.sh_degree
@@ -1397,6 +1401,8 @@ TrainingMetrics train_ordered_mrnf(
         << ";resize=" << options.resize_factor
         << ";max_width=" << options.max_width
         << ";tile=" << options.tile_mode
+        << ";adaptive_native_crop_tiles="
+        << options.adaptive_native_crop_tiles
         << ";seed=" << options.seed
         << ";test_every=" << options.test_every
         << ";test_split=" << options.test_split

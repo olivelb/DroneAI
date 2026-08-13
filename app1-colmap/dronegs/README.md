@@ -282,6 +282,14 @@ therefore applies per crop: a 6000x4000 source can train on four native
 mode `1` keeps the full-frame behavior. Train/test assignment remains grouped
 by source photograph.
 
+`--adaptive-native-crop-tiles 1` is an experimental resident-facade policy.
+The configured tile mode becomes a maximum: a native crop uses 1, 2, or 4
+tiles so that each tile stays within the full-sensor pixel budget implied by
+that maximum. Full images therefore preserve the existing memory envelope,
+while small boundary crops retain useful spatial context instead of being
+split into four tiny views. The default remains `0` until controlled facade
+canary and VRAM evidence support promotion.
+
 `--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
 blocks. It recomputes the growth fraction needed to approach `--max-cap` by
 iteration 14,800, clamps each request to 7–25%, and emits the fraction and

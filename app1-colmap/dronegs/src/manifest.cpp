@@ -238,6 +238,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"resize_factor\": " << options.resize_factor << ",\n"
            << "    \"max_width\": " << options.max_width << ",\n"
            << "    \"tile_mode\": " << options.tile_mode << ",\n"
+           << "    \"adaptive_native_crop_tiles\": "
+           << options.adaptive_native_crop_tiles << ",\n"
+           << "    \"native_crop_tile_policy\": \""
+           << (options.adaptive_native_crop_tiles != 0U
+                   ? "sensor-pixel-budget-up-to-tile-mode-v1"
+                   : "fixed-tile-mode-v1")
+           << "\",\n"
            << "    \"seed\": " << options.seed << ",\n"
            << "    \"profile_id\": \""
            << json_escape(options.profile_id) << "\",\n"

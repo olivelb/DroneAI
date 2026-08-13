@@ -482,6 +482,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
     check(
+        parsed.adaptive_native_crop_tiles == 0U,
+        "CLI adaptive native crop tile default mismatch");
+    check(
         parsed.sh_degree_interval == 1000U,
         "CLI SH interval default mismatch");
     check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
@@ -531,6 +534,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--photometric-finish", "1",
         "--photometric-mse-percent", "50",
         "--adaptive-growth-target", "1",
+        "--adaptive-native-crop-tiles", "1",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -570,6 +574,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         tuned.adaptive_growth_target == 1U,
         "CLI adaptive growth mismatch");
+    check(
+        tuned.adaptive_native_crop_tiles == 1U,
+        "CLI adaptive native crop tiles mismatch");
     check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
@@ -873,6 +880,57 @@ void test_training_tiles() {
         portrait.size() == 2U && portrait[0].height == 3000U &&
             portrait[1].source_y == 3000U && portrait[1].width == 4000U,
         "two-tile portrait split mismatch");
+
+    const dronegs::ImageRegion small_crop{
+        .source_x = 1986U,
+        .source_y = 2211U,
+        .width = 2210U,
+        .height = 832U,
+    };
+    const auto adaptive_small = dronegs::make_adaptive_training_tiles(
+        small_crop, 4200U, 3043U, 4U);
+    check(
+        adaptive_small.size() == 1U &&
+            adaptive_small.front().source_x == small_crop.source_x &&
+            adaptive_small.front().source_y == small_crop.source_y,
+        "small native crop should retain one contextual tile");
+    const dronegs::ImageRegion half_crop{
+        .source_x = 0U,
+        .source_y = 0U,
+        .width = 4200U,
+        .height = 1603U,
+    };
+    check(
+        dronegs::make_adaptive_training_tiles(
+            half_crop, 4200U, 3043U, 4U).size() == 4U,
+        "crop above half-sensor budget should retain four tiles");
+    const dronegs::ImageRegion narrow_half_crop{
+        .source_x = 0U,
+        .source_y = 0U,
+        .width = 4200U,
+        .height = 1400U,
+    };
+    check(
+        dronegs::make_adaptive_training_tiles(
+            narrow_half_crop, 4200U, 3043U, 4U).size() == 2U,
+        "crop within half-sensor budget should use two tiles");
+
+    bool out_of_bounds_crop_rejected = false;
+    try {
+        static_cast<void>(dronegs::make_adaptive_training_tiles(
+            dronegs::ImageRegion{
+                .source_x = 4190U,
+                .source_y = 0U,
+                .width = 20U,
+                .height = 100U,
+            },
+            4200U, 3043U, 4U));
+    } catch (const std::invalid_argument&) {
+        out_of_bounds_crop_rejected = true;
+    }
+    check(
+        out_of_bounds_crop_rejected,
+        "adaptive crop outside the source image was accepted");
 
     const auto [native_width, native_height] =
         dronegs::training_image_dimensions(landscape[0], 1U, 4096U);

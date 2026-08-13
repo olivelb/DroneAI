@@ -31,6 +31,7 @@ struct Options {
     std::uint32_t resize_factor = 0;
     std::uint32_t max_width = 0;
     std::uint32_t tile_mode = 0;
+    std::uint32_t adaptive_native_crop_tiles = 0;
     std::uint64_t seed = 0;
     std::uint32_t prefetch_depth = 1;
     std::uint32_t decode_workers = 1;
