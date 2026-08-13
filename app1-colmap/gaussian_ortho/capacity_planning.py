@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import asdict, dataclass
 from typing import Any, cast
 
@@ -16,6 +17,7 @@ GAUSSIAN_CAPACITY_BYTES = 1_280
 VRAM_USABLE_FRACTION = 0.85
 VRAM_FIXED_RESERVE_BYTES = 4 * GIB
 RESIDENT_POST_FILTER_RETENTION_TARGET = 0.98
+VRAM_BUDGET_ENV = "DRONEAI_GAUSSIAN_VRAM_BUDGET_GIB"
 
 
 @dataclass(frozen=True)
@@ -117,7 +119,13 @@ def robust_ground_area_m2(
 
 
 def detected_vram_bytes(cupy_module: Any) -> tuple[int, int] | None:
-    """Return free and total device memory without allocating a buffer."""
+    """Return effective free and total device memory without allocation.
+
+    Operators may lower, but never raise, the detected envelope with
+    ``DRONEAI_GAUSSIAN_VRAM_BUDGET_GIB``. This makes an 8 GiB qualification
+    reproducible on a larger GPU and supports co-scheduled devices while the
+    capacity plan still records the effective byte values.
+    """
 
     try:
         free_bytes, total_bytes = cupy_module.cuda.Device(0).mem_info
@@ -125,7 +133,26 @@ def detected_vram_bytes(cupy_module: Any) -> tuple[int, int] | None:
         return None
     free = int(free_bytes)
     total = int(total_bytes)
-    return (free, total) if 0 < free <= total else None
+    if not 0 < free <= total:
+        return None
+
+    raw_budget = os.getenv(VRAM_BUDGET_ENV, "").strip()
+    if not raw_budget:
+        return free, total
+    try:
+        budget_gib = float(raw_budget)
+    except ValueError as error:
+        raise ValueError(
+            f"{VRAM_BUDGET_ENV} must be a positive finite GiB value"
+        ) from error
+    if not math.isfinite(budget_gib) or budget_gib <= 0:
+        raise ValueError(
+            f"{VRAM_BUDGET_ENV} must be a positive finite GiB value"
+        )
+    budget_bytes = int(budget_gib * GIB)
+    effective_total = min(total, budget_bytes)
+    effective_free = min(free, effective_total)
+    return effective_free, effective_total
 
 
 def vram_gaussian_cap(

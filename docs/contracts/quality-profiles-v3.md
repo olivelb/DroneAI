@@ -19,6 +19,13 @@ For a representative 209,400 m² scene at 2 cm/pixel, an 8 GiB device resolves
 Each buffer targets about 2.1 M Gaussians below the conservative 2.3 M detected
 VRAM ceiling. This is a planning contract, not yet a real-GPU qualification.
 
+For qualification on a larger GPU, operators can set
+`DRONEAI_GAUSSIAN_VRAM_BUDGET_GIB=8`. The planner clamps the detected free and
+total memory to that lower envelope, never raises the hardware limit, and
+records the effective byte values in the capacity artifact. The override
+changes partition sizing only; it does not fake or cap the native CUDA
+allocator, so promotion still requires sampled peak VRAM at or below 8 GiB.
+
 ## Resident sizing and execution
 
 The worker estimates the robust surveyed area and calculates a merged-scene
