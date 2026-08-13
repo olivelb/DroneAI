@@ -72,6 +72,10 @@ class GaussianProfile:
     capacity_floor: int = 0
     target_gaussian_spacing_pixels: float = 0.0
     resident_partitioning: bool = False
+    initial_scale_policy: str = "local-knn"
+    initial_max_projected_sigma_pixels: float = 2.0
+    maximum_scale_growth_factor: float = 54.59815
+    capacity_targeted_growth: bool = False
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
 
 
@@ -144,37 +148,19 @@ PROFILES: dict[str, GaussianProfile] = {
         filter_enabled=True,
         seed=42,
         profile_id=DRONEGS_PRODUCTION_PROFILE_V1.profile_id,
-        optimizer_profile=(
-            DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile
-        ),
+        optimizer_profile=(DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile),
         pruning_policy=DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy,
         raster_profile=DRONEGS_PRODUCTION_PROFILE_V1.raster_profile,
-        sh_degree_interval=(
-            DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval
-        ),
-        topology_cooldown=(
-            DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown
-        ),
-        photometric_finish=(
-            DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish
-        ),
-        photometric_mse_percent=(
-            DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
-        ),
-        checkpoint_every=(
-            DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every
-        ),
+        sh_degree_interval=(DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
+        topology_cooldown=(DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
+        photometric_finish=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
+        photometric_mse_percent=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
+        checkpoint_every=(DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every),
         test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
         test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
-        test_guard_percent=(
-            DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent
-        ),
-        canary_min_psnr=(
-            DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr
-        ),
-        canary_min_ssim=(
-            DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim
-        ),
+        test_guard_percent=(DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent),
+        canary_min_psnr=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr),
+        canary_min_ssim=(DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
     ),
     # Close-range facade production profile. Full 4K training detail is kept
     # and the capacity can retain a coverage-balanced 1.7M-point COLMAP
@@ -197,30 +183,25 @@ PROFILES: dict[str, GaussianProfile] = {
         sh_degree_interval=DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval,
         topology_cooldown=DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown,
         photometric_finish=DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish,
-        photometric_mse_percent=(
-            DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent
-        ),
+        photometric_mse_percent=(DRONEGS_PRODUCTION_PROFILE_V1.photometric_mse_percent),
         checkpoint_every=DRONEGS_PRODUCTION_PROFILE_V1.checkpoint_every,
         test_every=DRONEGS_PRODUCTION_PROFILE_V1.test_every,
         test_split=DRONEGS_PRODUCTION_PROFILE_V1.test_split,
         test_guard_percent=DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent,
-        canary_min_psnr=float(
-            FACADE_PROCESS_OVERRIDES["facade_canary_min_psnr"]
-        ),
-        canary_min_ssim=float(
-            FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]
-        ),
+        canary_min_psnr=float(FACADE_PROCESS_OVERRIDES["facade_canary_min_psnr"]),
+        canary_min_ssim=float(FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]),
         capacity_mode=str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
         capacity_floor=int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
-        target_gaussian_spacing_pixels=float(
-            FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]
-        ),
-        resident_partitioning=bool(
-            FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
-        ),
+        target_gaussian_spacing_pixels=float(FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]),
+        resident_partitioning=bool(FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]),
+        initial_scale_policy=str(FACADE_PROCESS_OVERRIDES["gs_initial_scale_policy"]),
+        initial_max_projected_sigma_pixels=float(FACADE_PROCESS_OVERRIDES["gs_initial_max_projected_sigma_pixels"]),
+        maximum_scale_growth_factor=float(FACADE_PROCESS_OVERRIDES["gs_maximum_scale_growth_factor"]),
+        capacity_targeted_growth=bool(FACADE_PROCESS_OVERRIDES["gs_capacity_targeted_growth"]),
         qualification_policy_id=FACADE_QUALIFICATION_POLICY_ID,
     ),
 }
+
 
 def versioned_quality_profile(profile_id: str) -> GaussianProfile:
     """Derive a local runner profile from the shared product envelope."""
@@ -235,10 +216,12 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
         profile_id=profile_id,
         capacity_mode=str(parameters["gs_capacity_mode"]),
         capacity_floor=int(parameters["gs_capacity_floor"]),
-        target_gaussian_spacing_pixels=float(
-            parameters["gs_target_gaussian_spacing_pixels"]
-        ),
+        target_gaussian_spacing_pixels=float(parameters["gs_target_gaussian_spacing_pixels"]),
         resident_partitioning=bool(parameters["gs_resident_partitioning"]),
+        initial_scale_policy=str(parameters["gs_initial_scale_policy"]),
+        initial_max_projected_sigma_pixels=float(parameters["gs_initial_max_projected_sigma_pixels"]),
+        maximum_scale_growth_factor=float(parameters["gs_maximum_scale_growth_factor"]),
+        capacity_targeted_growth=bool(parameters["gs_capacity_targeted_growth"]),
     )
 
 
@@ -248,7 +231,7 @@ PROFILES["normal"] = replace(
     resolution=0.02,
 )
 PROFILES["high-quality"] = replace(
-    versioned_quality_profile("high-quality-v3"),
+    versioned_quality_profile("high-quality-v4"),
     # Production missions inherit the 2 cm default from pipeline_params.
     # Keep the standalone qualification runner on that same output contract
     # instead of silently retaining the balanced runner's 5 cm preview GSD.
@@ -263,10 +246,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--run-label",
         type=validated_run_label,
-        help=(
-            "isolated artifact/checkpoint label for reproducible A/B runs "
-            "that share one input workspace"
-        ),
+        help=("isolated artifact/checkpoint label for reproducible A/B runs that share one input workspace"),
     )
     parser.add_argument("--backend", choices=("dronegs",))
     parser.add_argument("--iterations", type=int)
@@ -300,6 +280,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--canary-min-psnr", type=float)
     parser.add_argument("--canary-min-ssim", type=float)
+    parser.add_argument(
+        "--initial-scale-policy",
+        choices=("local-knn", "projected-knn"),
+    )
+    parser.add_argument("--initial-max-projected-sigma-pixels", type=float)
+    parser.add_argument("--maximum-scale-growth-factor", type=float)
+    parser.add_argument(
+        "--capacity-targeted-growth",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument(
         "--filter",
         dest="filter_enabled",
@@ -343,32 +334,29 @@ def validated_run_label(value: str) -> str:
     """Reject path-like or ambiguous labels before constructing artifacts."""
 
     if not RUN_LABEL_PATTERN.fullmatch(value):
-        raise argparse.ArgumentTypeError(
-            "run-label must match [a-z0-9][a-z0-9._-]{0,63}"
-        )
+        raise argparse.ArgumentTypeError("run-label must match [a-z0-9][a-z0-9._-]{0,63}")
     return value
 
 
 def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
     profile = PROFILES[args.profile]
-    overrides = {
-        field: getattr(args, field)
-        for field in asdict(profile)
-        if getattr(args, field, None) is not None
-    }
+    overrides = {field: getattr(args, field) for field in asdict(profile) if getattr(args, field, None) is not None}
     resolved = replace(profile, **overrides)
-    training_identity_fields = set(
-        DRONEGS_PRODUCTION_PROFILE_V1.training_identity_parameters()
+    training_identity_fields = set(DRONEGS_PRODUCTION_PROFILE_V1.training_identity_parameters())
+    training_identity_fields.update(
+        {
+            "initial_scale_policy",
+            "initial_max_projected_sigma_pixels",
+            "maximum_scale_growth_factor",
+            "capacity_targeted_growth",
+        }
     )
     if any(
-        name in training_identity_fields
-        and getattr(resolved, name) != getattr(profile, name)
-        for name in overrides
+        name in training_identity_fields and getattr(resolved, name) != getattr(profile, name) for name in overrides
     ):
         resolved = replace(resolved, profile_id="custom")
     if any(
-        name in {"canary_min_psnr", "canary_min_ssim"}
-        and getattr(resolved, name) != getattr(profile, name)
+        name in {"canary_min_psnr", "canary_min_ssim"} and getattr(resolved, name) != getattr(profile, name)
         for name in overrides
     ):
         resolved = replace(resolved, qualification_policy_id="custom")
@@ -382,11 +370,12 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
     if not 1 <= effective_floor <= resolved.cap_max:
         raise ValueError("capacity-floor must not exceed cap-max")
     resolved = replace(resolved, capacity_floor=effective_floor)
-    if (
-        resolved.capacity_mode == "adaptive"
-        and resolved.target_gaussian_spacing_pixels <= 0
-    ):
+    if resolved.capacity_mode == "adaptive" and resolved.target_gaussian_spacing_pixels <= 0:
         raise ValueError("adaptive capacity requires a positive target spacing")
+    if resolved.initial_max_projected_sigma_pixels <= 0:
+        raise ValueError("initial-max-projected-sigma-pixels must be positive")
+    if resolved.maximum_scale_growth_factor < 1:
+        raise ValueError("maximum-scale-growth-factor must be at least one")
     if not 1 <= resolved.max_width <= 4096:
         raise ValueError("max-width must be between 1 and 4096")
     if resolved.resolution <= 0:
@@ -428,14 +417,9 @@ def validate_workspace(workspace: Path, *, facade: bool = False) -> tuple[Path, 
         if not (dense_path / "sparse" / filename).is_file()
     ]
     if missing:
-        raise ValueError(
-            "workspace is not undistorted; missing " + ", ".join(missing)
-        )
+        raise ValueError("workspace is not undistorted; missing " + ", ".join(missing))
     if not sparse_path.is_dir() or (not facade and not aligned_path.is_dir()):
-        raise ValueError(
-            "workspace needs a sparse model"
-            + ("" if facade else " and a sparse_geo model")
-        )
+        raise ValueError("workspace needs a sparse model" + ("" if facade else " and a sparse_geo model"))
     image_count = sum(1 for path in (dense_path / "images").rglob("*") if path.is_file())
     if image_count < 3:
         raise ValueError("workspace needs at least three undistorted images")
@@ -453,9 +437,7 @@ def ensure_transform(workspace: Path, aligned_path: Path) -> Path:
     if transform_path.is_file():
         return transform_path
     sparse_candidates = sorted(
-        path
-        for path in (workspace / "sparse").iterdir()
-        if path.is_dir() and (path / "cameras.bin").is_file()
+        path for path in (workspace / "sparse").iterdir() if path.is_dir() and (path / "cameras.bin").is_file()
     )
     if not sparse_candidates:
         raise ValueError("workspace has no source sparse model")
@@ -473,22 +455,15 @@ def output_paths(
     ortho_path = (
         requested_output.resolve()
         if requested_output
-        else workspace / (
-            f"facade_orthophoto.{profile_name}.tif"
-            if render_mode == "facade"
-            else f"orthomosaic.{profile_name}.tif"
-        )
+        else workspace
+        / (f"facade_orthophoto.{profile_name}.tif" if render_mode == "facade" else f"orthomosaic.{profile_name}.tif")
     )
     try:
         ortho_path.relative_to(workspace)
     except ValueError as error:
         raise ValueError("output must stay inside the marked workspace") from error
     height_path = ortho_path.with_suffix(".height.tif")
-    checkpoint_parent = (
-        checkpoint_root.resolve()
-        if checkpoint_root is not None
-        else workspace / "gaussian_checkpoints"
-    )
+    checkpoint_parent = checkpoint_root.resolve() if checkpoint_root is not None else workspace / "gaussian_checkpoints"
     checkpoint_path = checkpoint_parent / profile_name
     return ortho_path, height_path, checkpoint_path
 
@@ -517,9 +492,7 @@ def main() -> int:
     profile = resolve_profile(args)
     workspace = args.workspace.resolve()
     facade_mode = args.render_mode == "facade"
-    dense_path, aligned_path, projected_crs = validate_workspace(
-        workspace, facade=facade_mode
-    )
+    dense_path, aligned_path, projected_crs = validate_workspace(workspace, facade=facade_mode)
     if facade_mode:
         transform_path = None
     else:
@@ -537,8 +510,7 @@ def main() -> int:
     if ortho_path.exists() or height_path.exists():
         if not args.force:
             raise ValueError(
-                "generated outputs already exist; pass --force to replace only "
-                f"the {args.profile!r} profile artifacts"
+                f"generated outputs already exist; pass --force to replace only the {args.profile!r} profile artifacts"
             )
         clear_generated_outputs(ortho_path, height_path, checkpoint_path)
     elif checkpoint_path.exists() and args.force:
@@ -551,9 +523,7 @@ def main() -> int:
 
     backend = resolve_training_backend(profile.backend)
     if not backend.is_available():
-        raise RuntimeError(
-            f"{profile.backend} trainer is missing from the local Gaussian image"
-        )
+        raise RuntimeError(f"{profile.backend} trainer is missing from the local Gaussian image")
 
     report_path = workspace / f"gaussian_run.{run_label}.json"
     started_at = time.time()
@@ -585,9 +555,7 @@ def main() -> int:
             cap_max=profile.cap_max,
             capacity_mode=profile.capacity_mode,
             capacity_floor=profile.capacity_floor or profile.cap_max,
-            target_gaussian_spacing_pixels=(
-                profile.target_gaussian_spacing_pixels
-            ),
+            target_gaussian_spacing_pixels=(profile.target_gaussian_spacing_pixels),
             resident_partitioning=profile.resident_partitioning,
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
@@ -609,15 +577,17 @@ def main() -> int:
             dronegs_test_guard_percent=profile.test_guard_percent,
             dronegs_canary_min_psnr=profile.canary_min_psnr,
             dronegs_canary_min_ssim=profile.canary_min_ssim,
+            dronegs_initial_scale_policy=profile.initial_scale_policy,
+            dronegs_initial_max_projected_sigma_pixels=(profile.initial_max_projected_sigma_pixels),
+            dronegs_maximum_scale_growth_factor=profile.maximum_scale_growth_factor,
+            dronegs_capacity_targeted_growth=profile.capacity_targeted_growth,
             render_mode=args.render_mode,
             facade_scale_mode=args.facade_scale_mode,
             facade_meters_per_model_unit=args.facade_meters_per_model_unit,
             facade_frame_report=str(workspace / "facade_frame.json"),
             facade_texture_max_incidence_deg=args.facade_texture_max_incidence_deg,
             facade_depth_iqr_multiplier=args.facade_depth_iqr_multiplier,
-            facade_seed_max_reprojection_error=(
-                args.facade_seed_max_reprojection_error
-            ),
+            facade_seed_max_reprojection_error=(args.facade_seed_max_reprojection_error),
             facade_seed_min_track_length=args.facade_seed_min_track_length,
         )
     except Exception as error:

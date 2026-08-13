@@ -7,6 +7,7 @@ from shared.quality_profiles import QUALITY_PROFILE_BY_ID
 from shared.facade_process import (
     FACADE_DRONEGS_PROFILE_ID,
     FACADE_PARAMETER_DEFAULTS,
+    FACADE_PREVIOUS_DRONEGS_PROFILE_ID,
     FACADE_QUALIFICATION_POLICY_ID,
 )
 
@@ -812,6 +813,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "options": [
             "DRONEGS_PRODUCTION_PROFILE_V1",
             FACADE_DRONEGS_PROFILE_ID,
+            FACADE_PREVIOUS_DRONEGS_PROFILE_ID,
             *QUALITY_PROFILE_BY_ID,
             "custom",
         ],

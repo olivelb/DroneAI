@@ -89,14 +89,17 @@ def test_high_quality_profile_matches_versioned_quality_envelope():
     profile = PROFILES["high-quality"]
 
     assert profile.iterations == 30_000
-    assert profile.cap_max == 12_000_000
+    assert profile.cap_max == 6_000_000
     assert profile.data_factor == 1
     assert profile.max_width == 4096
-    assert profile.profile_id == "high-quality-v3"
+    assert profile.profile_id == "high-quality-v4"
     assert profile.capacity_mode == "adaptive"
     assert profile.capacity_floor == 5_000_000
     assert profile.target_gaussian_spacing_pixels == 3.6
     assert profile.resident_partitioning is True
+    assert profile.initial_scale_policy == "projected-knn"
+    assert profile.initial_max_projected_sigma_pixels == 8.0
+    assert profile.capacity_targeted_growth is True
     assert profile.resolution == 0.02
 
 
@@ -113,7 +116,7 @@ def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     assert profile.resolution == 0.01
     assert profile.data_factor == 1
     assert profile.max_width == 4096
-    assert profile.cap_max == 12_000_000
+    assert profile.cap_max == 6_000_000
     assert profile.sh_degree == 3
     assert profile.iterations == 30_000
     assert profile.test_split == "modulo"
@@ -123,12 +126,13 @@ def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     assert profile.capacity_floor == 5_000_000
     assert profile.target_gaussian_spacing_pixels == 3.6
     assert profile.resident_partitioning is True
+    assert profile.initial_scale_policy == "projected-knn"
+    assert profile.initial_max_projected_sigma_pixels == 8.0
+    assert profile.capacity_targeted_growth is True
 
 
 def test_profile_overrides_are_explicit_and_validated():
-    profile = resolve_profile(
-        _arguments(iterations=750, max_width=1200, filter_enabled=False)
-    )
+    profile = resolve_profile(_arguments(iterations=750, max_width=1200, filter_enabled=False))
 
     assert profile.iterations == 750
     assert profile.max_width == 1200
@@ -154,9 +158,7 @@ def test_balanced_training_overrides_become_custom_recipe():
 
 
 def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
-    profile = resolve_profile(
-        _arguments(profile="normal", checkpoint_every=4_000)
-    )
+    profile = resolve_profile(_arguments(profile="normal", checkpoint_every=4_000))
 
     assert profile.checkpoint_every == 4_000
     assert profile.profile_id == "custom"
@@ -165,35 +167,42 @@ def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
         resolve_profile(_arguments(checkpoint_every=0))
 
 
-def test_facade_hd_overrides_preserve_separate_recipe_identities():
-    training_override = resolve_profile(
-        _arguments(profile="facade-hd", iterations=20_000)
-    )
-    qualification_override = resolve_profile(
-        _arguments(profile="facade-hd", canary_min_psnr=20.0)
+def test_projected_initialization_override_is_an_explicit_training_recipe():
+    profile = resolve_profile(
+        _arguments(
+            profile="normal",
+            initial_scale_policy="projected-knn",
+            initial_max_projected_sigma_pixels=4.0,
+            maximum_scale_growth_factor=8.0,
+            capacity_targeted_growth=True,
+        )
     )
 
+    assert profile.profile_id == "custom"
+    assert profile.initial_scale_policy == "projected-knn"
+    assert profile.initial_max_projected_sigma_pixels == 4.0
+    assert profile.maximum_scale_growth_factor == 8.0
+    assert profile.capacity_targeted_growth is True
+
+
+def test_facade_hd_overrides_preserve_separate_recipe_identities():
+    training_override = resolve_profile(_arguments(profile="facade-hd", iterations=20_000))
+    qualification_override = resolve_profile(_arguments(profile="facade-hd", canary_min_psnr=20.0))
+
     assert training_override.profile_id == "custom"
-    assert (
-        training_override.qualification_policy_id
-        == FACADE_QUALIFICATION_POLICY_ID
-    )
+    assert training_override.qualification_policy_id == FACADE_QUALIFICATION_POLICY_ID
     assert qualification_override.profile_id == FACADE_DRONEGS_PROFILE_ID
     assert qualification_override.qualification_policy_id == "custom"
 
 
 def test_balanced_raster_only_override_keeps_production_recipe():
-    profile = resolve_profile(
-        _arguments(profile="balanced", resolution=0.005)
-    )
+    profile = resolve_profile(_arguments(profile="balanced", resolution=0.005))
 
     assert profile.profile_id == "DRONEGS_PRODUCTION_PROFILE_V1"
 
 
 def test_canary_overrides_are_validated():
-    profile = resolve_profile(
-        _arguments(canary_min_psnr=18.0, canary_min_ssim=0.25)
-    )
+    profile = resolve_profile(_arguments(canary_min_psnr=18.0, canary_min_ssim=0.25))
 
     assert profile.canary_min_psnr == 18.0
     assert profile.canary_min_ssim == 0.25

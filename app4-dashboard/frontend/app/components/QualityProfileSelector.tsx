@@ -16,7 +16,7 @@ const DESCRIPTION_KEYS: Record<QualityProfileId, MessageKey> = {
   "normal-v3": "profile.normal.description",
   "normal-v4": "profile.normal.description",
   "high-quality-v3": "profile.highQualityResident.description",
-  "high-quality-v4": "profile.highQualityResident.description",
+  "high-quality-v4": "profile.highQualityProjected.description",
 };
 
 const NAME_KEYS: Record<QualityProfileId, MessageKey> = {
