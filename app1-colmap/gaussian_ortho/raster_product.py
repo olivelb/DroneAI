@@ -6,7 +6,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -171,11 +171,35 @@ def _write_facade_report(
 ) -> Path:
     if summary.facade_frame is None:
         raise RuntimeError("Facade frame is unavailable for reporting")
-    render = filtering_phase.render_state
-    if render is None:
-        raise RuntimeError("Facade raster product has no global render state")
+    render = _render_geometry(filtering_phase)
     depth_bounds = render.facade_depth_bounds_model
     subset = summary.facade_subset_result
+    if subset is not None and bool(subset.get("partitioned")):
+        raw_cells = subset.get("cells", [])
+        cells = [
+            cast(dict[str, Any], cell)
+            for cell in (raw_cells if isinstance(raw_cells, list) else [])
+            if isinstance(cell, dict)
+        ]
+        training_workspace_points = sum(
+            int(cell.get("exported_points", 0))
+            for cell in cells
+        )
+        coverage_balanced = any(
+            bool(cell.get("coverage_balanced"))
+            for cell in cells
+        )
+        resident_cell_count = len(cells)
+    else:
+        training_workspace_points = (
+            int(cast(Any, subset["exported_points"]))
+            if subset is not None
+            else summary.gaussian_seed_point_count
+        )
+        coverage_balanced = bool(
+            subset and subset.get("coverage_balanced")
+        )
+        resident_cell_count = 1
     report_path = Path(
         config.facade_frame_report
         or str(Path(config.ortho_file).with_name("facade_frame.json"))
@@ -207,14 +231,10 @@ def _write_facade_report(
             "maximum_reprojection_error_px": summary.seed_max_error,
             "minimum_track_length": summary.seed_min_track,
             "points_after_loader_filter": summary.gaussian_seed_point_count,
-            "training_workspace_points": (
-                subset["exported_points"]
-                if subset is not None
-                else summary.gaussian_seed_point_count
-            ),
-            "coverage_balanced_cap_applied": bool(
-                subset and subset["coverage_balanced"]
-            ),
+            "training_workspace_points": training_workspace_points,
+            "coverage_balanced_cap_applied": coverage_balanced,
+            "resident_partitioned": resident_cell_count > 1,
+            "resident_cell_count": resident_cell_count,
         },
         "depth_filter": {
             "iqr_multiplier": config.facade_depth_iqr_multiplier,

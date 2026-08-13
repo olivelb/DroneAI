@@ -216,6 +216,78 @@ def test_local_raster_metadata_does_not_invent_a_crs(tmp_path):
     assert metadata["bounds"]["wgs84"] is None
 
 
+def test_facade_report_supports_resident_partition_geometry(tmp_path):
+    import json
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parents[1] / "app1-colmap"))
+    from gaussian_ortho.raster_product import (
+        GaussianSceneSummary,
+        _write_facade_report,
+    )
+
+    report_path = tmp_path / "facade_frame.json"
+    config = SimpleNamespace(
+        facade_frame_report=str(report_path),
+        ortho_file=str(tmp_path / "facade.tif"),
+        facade_texture_max_incidence_deg=45.0,
+        facade_depth_iqr_multiplier=1.0,
+        resolution=0.01,
+    )
+    summary = GaussianSceneSummary(
+        sim3_aligned=False,
+        exif_altitude_available=True,
+        colmap_to_meters=2.0,
+        scale_source="relative-gps-baselines",
+        facade_frame={"origin": [0.0, 0.0, 0.0]},
+        registered_camera_count=20,
+        texture_camera_count=18,
+        texture_filter_applied=True,
+        minimum_sparse_observations=3,
+        seed_max_error=2.0,
+        seed_min_track=2,
+        gaussian_seed_point_count=1_000,
+        facade_subset_result={
+            "partitioned": True,
+            "cell_count": 2,
+            "cells": [
+                {"exported_points": 600, "coverage_balanced": True},
+                {"exported_points": 700, "coverage_balanced": False},
+            ],
+        },
+    )
+    geometry = SimpleNamespace(
+        facade_depth_bounds_model=(-0.5, 0.75),
+        resolution_units="metres",
+    )
+    filtering = SimpleNamespace(
+        render_state=None,
+        partition_geometry=geometry,
+    )
+
+    _write_facade_report(
+        config,
+        summary,
+        filtering,
+        width=200,
+        height=100,
+        geo_x_min=0.0,
+        geo_y_max=1.0,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["gaussian_seed"] == {
+        "maximum_reprojection_error_px": 2.0,
+        "minimum_track_length": 2,
+        "points_after_loader_filter": 1_000,
+        "training_workspace_points": 1_300,
+        "coverage_balanced_cap_applied": True,
+        "resident_partitioned": True,
+        "resident_cell_count": 2,
+    }
+    assert report["depth_filter"]["bounds_metres"] == [-1.0, 1.5]
+
+
 def test_facade_override_does_not_require_hidden_custom_crs():
     validated = validate_pipeline_overrides(
         {"orthophoto_mode": "facade", "projected_crs_mode": "custom"}
