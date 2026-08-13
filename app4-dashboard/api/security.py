@@ -384,7 +384,9 @@ def issue_session_token(
     return f"{encoded}.{signature}"
 
 
-def _authenticate_session_token(token: str) -> Principal | None:
+def _verified_session_payload(token: str) -> dict[str, object] | None:
+    """Decode a session token only after its signature has been verified."""
+
     secret = os.getenv("DRONEAI_SESSION_SECRET", "")
     if len(secret) < 32:
         return None
@@ -402,8 +404,18 @@ def _authenticate_session_token(token: str) -> Principal | None:
         return None
     try:
         payload = json.loads(_decode_base64(encoded))
-        expires_at = int(payload["expires_at"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _authenticate_session_token(token: str) -> Principal | None:
+    payload = _verified_session_payload(token)
+    if payload is None:
+        return None
+    try:
+        expires_at = int(str(payload["expires_at"]))
+    except (KeyError, TypeError, ValueError):
         return None
     if expires_at <= int(time.time()):
         return None
@@ -415,7 +427,7 @@ def _authenticate_session_token(token: str) -> Principal | None:
         try:
             member_id = str(payload["member_id"])
             credential_id = str(payload["credential_id"])
-            auth_version = int(payload["auth_version"])
+            auth_version = int(str(payload["auth_version"]))
         except (TypeError, ValueError):
             return None
         realm = str(payload.get("realm", "tenant"))
@@ -481,26 +493,13 @@ def _authenticate_session_token(token: str) -> Principal | None:
 def _session_public_credential_identity(token: str) -> str | None:
     """Read a signed session's public credential ID without database work."""
 
-    secret = os.getenv("DRONEAI_SESSION_SECRET", "")
-    if len(secret) < 32:
-        return None
-    encoded, separator, signature = token.partition(".")
-    if not separator or not encoded or not signature:
-        return None
-    expected = _encode_base64(
-        hmac_new(
-            secret.encode("utf-8"),
-            encoded.encode("ascii"),
-            sha256,
-        ).digest()
-    )
-    if not secrets.compare_digest(signature, expected):
+    payload = _verified_session_payload(token)
+    if payload is None:
         return None
     try:
-        payload = json.loads(_decode_base64(encoded))
         credential_id = str(payload["credential_id"])
         realm = str(payload.get("realm", "tenant"))
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, TypeError, ValueError):
         return None
     if realm != "tenant" or not credential_id:
         return None
