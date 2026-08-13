@@ -232,6 +232,8 @@ def preview_image(
 def list_datasets(
     principal: Annotated[Principal, Depends(require_authenticated)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> list[DatasetItem]:
     try:
         with get_session() as session:
@@ -240,7 +242,7 @@ def list_datasets(
                 principal,
                 requested_owner=owner_subject,
                 action="list",
-            ).order_by(Dataset.name).all()
+            ).order_by(Dataset.name).offset(offset).limit(limit).all()
             return [
                 {
                     "name": str(dataset.name),

@@ -376,6 +376,8 @@ processingWorker:
 # --- Qualified bounded stage DAG ---
 stageJobs:
   enabled: true
+  # gpu_architecture automatically adds the enforceable node selector
+  # droneai.io/gpu-architecture=<value>. Label every GPU node accordingly.
   executors:
     reconstruction:
       image: "ghcr.io/<your-org>/drone-colmap:REPLACE_GIT_SHA"

@@ -65,7 +65,10 @@ def _serialize_stage_run(run: MissionStageRun) -> dict[str, Any]:
 
 def _request_key(principal: Principal, raw_key: str) -> str:
     return hashlib.sha256(
-        f"{principal.subject}:{raw_key}".encode()
+        (
+            f"stage-request-v2:{principal.organization_id}:"
+            f"{principal.subject}:{raw_key}"
+        ).encode()
     ).hexdigest()
 
 

@@ -73,6 +73,8 @@ DETECTION_REQUESTED_PARALLELISM_KEY = "requested_shard_parallelism"
 DETECTION_EFFECTIVE_PARALLELISM_KEY = "effective_shard_parallelism"
 DETECTION_INFERENCE_RESOURCE_CLASS_KEY = "detection_inference_resource_class"
 CANCELLATION_JOB_CLEANUP_AT_KEY = "cancellation_job_cleanup_at"
+GPU_ARCHITECTURE_LABEL = "droneai.io/gpu-architecture"
+SCHEDULER_CANDIDATE_PAGE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,7 @@ class StageOrchestratorSettings:
     ttl_seconds_after_finished: int = 3_600
     runtime_class_name: str | None = None
     maximum_dispatch_attempts: int = 3
+    maximum_candidates_per_pass: int = 5_000
     detection_fanout_enabled: bool = False
     detection_tiles_per_shard: int = 1_024
     detection_shard_parallelism: int = 2
@@ -432,6 +435,9 @@ def settings_from_environment() -> StageOrchestratorSettings:
         maximum_dispatch_attempts=_positive_int(
             "DRONEAI_STAGE_MAX_DISPATCH_ATTEMPTS", 3
         ),
+        maximum_candidates_per_pass=_positive_int(
+            "DRONEAI_STAGE_SCHEDULER_MAX_CANDIDATES", 5_000
+        ),
         detection_fanout_enabled=detection_fanout_enabled,
         detection_tiles_per_shard=_positive_int(
             "DRONEAI_DETECTION_TILES_PER_SHARD",
@@ -690,6 +696,14 @@ def _reserved_job(
             else cast(ResourceClassId, run.resource_class)
         ),
     )
+    node_selector = dict(executor.node_selector)
+    if phase != DETECTION_FINALIZER_PHASE and executor.gpu_architecture:
+        configured_architecture = node_selector.get(GPU_ARCHITECTURE_LABEL)
+        if configured_architecture not in {None, executor.gpu_architecture}:
+            raise ValueError(
+                "Executor GPU architecture conflicts with its node selector"
+            )
+        node_selector[GPU_ARCHITECTURE_LABEL] = executor.gpu_architecture
     return ReservedStageJob(
         request=request,
         config=StageJobConfig(
@@ -701,7 +715,9 @@ def _reserved_job(
             ttl_seconds_after_finished=settings.ttl_seconds_after_finished,
             runtime_class_name=settings.runtime_class_name,
             node_selector=(
-                () if phase == DETECTION_FINALIZER_PHASE else executor.node_selector
+                ()
+                if phase == DETECTION_FINALIZER_PHASE
+                else tuple(sorted(node_selector.items()))
             ),
             tolerations=(
                 () if phase == DETECTION_FINALIZER_PHASE else executor.tolerations
@@ -791,7 +807,7 @@ def reserve_ready_jobs(
         )
         .all()
     )
-    candidate_rows = (
+    candidate_query = (
         session.query(MissionStageRun, Mission)
         .join(
             Mission,
@@ -816,9 +832,19 @@ def reserve_ready_jobs(
             MissionStageRun.run_id,
         )
         .with_for_update(skip_locked=True)
-        .limit(500)
-        .all()
     )
+    candidate_rows: list[tuple[MissionStageRun, Mission]] = []
+    offset = 0
+    while len(candidate_rows) < settings.maximum_candidates_per_pass:
+        page_limit = min(
+            SCHEDULER_CANDIDATE_PAGE_SIZE,
+            settings.maximum_candidates_per_pass - len(candidate_rows),
+        )
+        page = candidate_query.offset(offset).limit(page_limit).all()
+        candidate_rows.extend(page)
+        if len(page) < page_limit:
+            break
+        offset += len(page)
     prepared_candidate_rows = []
     for run, mission in candidate_rows:
         _repair_underprovisioned_resource_class(run)

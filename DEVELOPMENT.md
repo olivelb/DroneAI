@@ -62,7 +62,8 @@ this aggregate check instead of every conditional matrix entry.
 
 Coverage uses branch measurement across the
 application and local tools, with a repository-wide non-regression floor of
-55%. That floor is a ratchet, not a completeness claim: new or changed pure
+60%. The current CPU suite measures 68%, leaving eight points of headroom.
+That floor is a ratchet, not a completeness claim: new or changed pure
 logic is expected to receive focused unit tests even when subprocess, CUDA or
 external-service boundaries require integration tests.
 
