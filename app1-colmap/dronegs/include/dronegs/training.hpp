@@ -232,6 +232,26 @@ inline float adaptive_capacity_growth_fraction(
         minimum_growth_fraction, maximum_growth_fraction);
 }
 
+// Return the same floor-index percentile as sorting the complete input, while
+// avoiding an O(N log N) sort during every topology refinement. Callers pass
+// finite values; keeping this helper exact is important because the result is
+// used by scientific pruning gates.
+inline float exact_floor_percentile(
+    std::vector<float> values, float fraction) {
+    if (values.empty()) {
+        return 0.0F;
+    }
+    if (!std::isfinite(fraction) || fraction < 0.0F || fraction > 1.0F) {
+        throw std::invalid_argument(
+            "percentile fraction must be finite and between zero and one");
+    }
+    const auto index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * fraction));
+    std::nth_element(
+        values.begin(), values.begin() + index, values.end());
+    return values[index];
+}
+
 DatasetSplit make_dataset_split(
     std::size_t image_count, std::uint32_t test_every);
 DatasetSplit make_dataset_split(

@@ -632,6 +632,31 @@ void test_adaptive_capacity_growth() {
     check(empty_model_rejected, "adaptive growth accepted an empty model");
 }
 
+void test_exact_floor_percentile() {
+    const std::vector<float> unsorted{
+        8.0F, 1.0F, 5.0F, 3.0F, 9.0F, 2.0F,
+        7.0F, 4.0F, 6.0F, 0.0F, 5.0F};
+    check(
+        dronegs::exact_floor_percentile({}, 0.5F) == 0.0F,
+        "empty percentile fallback mismatch");
+    check(
+        dronegs::exact_floor_percentile(unsorted, 0.0F) == 0.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.1F) == 1.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.5F) == 5.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.9F) == 8.0F &&
+            dronegs::exact_floor_percentile(unsorted, 1.0F) == 9.0F,
+        "exact floor percentile differs from sorted order statistics");
+    bool invalid_fraction_rejected = false;
+    try {
+        static_cast<void>(
+            dronegs::exact_floor_percentile(unsorted, 1.01F));
+    } catch (const std::invalid_argument&) {
+        invalid_fraction_rejected = true;
+    }
+    check(invalid_fraction_rejected,
+          "invalid percentile fraction was accepted");
+}
+
 void test_image_cache() {
     std::uint64_t loads = 0U;
     dronegs::ImageCache cache(
@@ -894,6 +919,7 @@ int main() {
         test_local_scale_initialization();
         test_cli(data, output);
         test_adaptive_capacity_growth();
+        test_exact_floor_percentile();
         test_image_cache();
         test_training_tiles();
         test_area_image_resampling();

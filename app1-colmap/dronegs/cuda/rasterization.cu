@@ -5258,18 +5258,6 @@ struct OrderedAlphaTrainingContext::Impl {
         absgrad_observation_count.copy_to_host(
             host_absgrad_count.data(), previous_count);
 
-        const auto percentile = [](
-            std::vector<float> values, float fraction) {
-            if (values.empty()) {
-                return 0.0F;
-            }
-            std::sort(values.begin(), values.end());
-            const auto index = static_cast<std::size_t>(
-                std::floor(
-                    static_cast<float>(values.size() - 1U) *
-                    fraction));
-            return values[index];
-        };
         std::array<float, 3> lower_bound{
             -std::numeric_limits<float>::infinity(),
             -std::numeric_limits<float>::infinity(),
@@ -5291,8 +5279,10 @@ struct OrderedAlphaTrainingContext::Impl {
                         coordinates.push_back(gaussian.xyz[axis]);
                     }
                 }
-                const float q10 = percentile(coordinates, 0.1F);
-                const float q90 = percentile(coordinates, 0.9F);
+                const float q10 = exact_floor_percentile(
+                    coordinates, 0.1F);
+                const float q90 = exact_floor_percentile(
+                    coordinates, 0.9F);
                 percentile_center[axis] = 0.5F * (q10 + q90);
                 percentile_max_extent = std::max(
                     percentile_max_extent, 0.5F * (q90 - q10));
@@ -5328,7 +5318,8 @@ struct OrderedAlphaTrainingContext::Impl {
                        : std::max(
                              1.0e-10F,
                              10.0F *
-                                 percentile(maximum_scales, 0.8F)));
+                                 exact_floor_percentile(
+                                     maximum_scales, 0.8F)));
         constexpr float minimum_opacity_logit = -5.541263545158426F;
         constexpr float minimum_surviving_log_scale =
             -23.025850929940457F;
