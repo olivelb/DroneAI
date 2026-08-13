@@ -445,7 +445,16 @@ def finalize_gaussian_raster_product(
         "meters_per_model_unit": summary.colmap_to_meters,
         "registered_cameras": summary.registered_camera_count,
         "texture_cameras": summary.texture_camera_count,
-        "renderer_contract": "cupy-ortho-v3-surface-color",
+        "renderer_contract": (
+            "cupy-ortho-v4-resident-feather"
+            if filtering_phase.partition_models
+            else "cupy-ortho-v3-surface-color"
+        ),
+        "resident_compositing": (
+            "linear-core-buffer-v1"
+            if filtering_phase.partition_models
+            else None
+        ),
         "cupy_version": cupy_version,
         "n_gaussians": filtering_phase.output_gaussians,
         "gaussian_density": (

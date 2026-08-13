@@ -497,6 +497,8 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     assert result["vertical_reference"] == "sim3"
     assert result["n_gaussians"] == 1_200_000
     assert result["gaussian_coverage"] is coverage
+    assert result["renderer_contract"] == "cupy-ortho-v3-surface-color"
+    assert result["resident_compositing"] is None
     assert Path(result["gaussian_coverage_report"]).is_file()
 
 
