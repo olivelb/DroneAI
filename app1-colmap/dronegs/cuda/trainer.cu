@@ -1234,6 +1234,14 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         static_cast<std::uint64_t>(image_split.held_out.size());
     metrics.ignored_image_count =
         static_cast<std::uint64_t>(image_split.ignored.size());
+    metrics.frame_descriptor_count =
+        static_cast<std::uint64_t>(descriptors.size());
+    metrics.training_frame_count =
+        static_cast<std::uint64_t>(frame_split.training.size());
+    metrics.held_out_frame_count =
+        static_cast<std::uint64_t>(frame_split.held_out.size());
+    metrics.ignored_frame_count =
+        static_cast<std::uint64_t>(frame_split.ignored.size());
     const auto schedule = make_training_schedule(
         frame_split.training, options.iterations, options.seed);
     const auto initial_frame = frame_from_cache(
@@ -1476,6 +1484,14 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::uint64_t>(image_split.held_out.size());
     metrics.ignored_image_count =
         static_cast<std::uint64_t>(image_split.ignored.size());
+    metrics.frame_descriptor_count =
+        static_cast<std::uint64_t>(descriptors.size());
+    metrics.training_frame_count =
+        static_cast<std::uint64_t>(frame_split.training.size());
+    metrics.held_out_frame_count =
+        static_cast<std::uint64_t>(frame_split.held_out.size());
+    metrics.ignored_frame_count =
+        static_cast<std::uint64_t>(frame_split.ignored.size());
     TrainingCheckpointProgress checkpoint_progress;
     if (!options.resume_from.empty()) {
         checkpoint_progress = workspace.load_checkpoint(

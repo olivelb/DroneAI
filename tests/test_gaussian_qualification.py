@@ -33,7 +33,11 @@ def _manifest(
         "trainer_binary_sha256": "a" * 64,
         "git_revision": "test",
         "status": "completed",
-        "dataset": {"fingerprint": "dataset"},
+        "dataset": {
+            "fingerprint": "dataset",
+            "training_image_count": 107,
+            "held_out_image_count": 16,
+        },
         "parameters": {
             "profile_id": "high-quality-v3",
             "optimizer_profile": profile,
@@ -65,8 +69,14 @@ def _manifest(
             "pixel_weighted_ssim": 0.55 + weight / 10,
             "lpips": None,
             "image_cache_working_set_bytes": 8_000_000_000,
-            "training_image_count": (
+            "frame_descriptor_count": (
                 241 if adaptive_native_crop_tiles else 485
+            ),
+            "training_frame_count": (
+                205 if adaptive_native_crop_tiles else 421
+            ),
+            "held_out_frame_count": (
+                36 if adaptive_native_crop_tiles else 64
             ),
         },
         "artifacts": {"point_cloud.ply": {"path": "point_cloud.ply"}},
@@ -143,9 +153,14 @@ def test_compare_native_crop_tiling_runs(tmp_path):
     assert report["runs"][1]["native_crop_tile_policy"] == (
         "sensor-pixel-budget-up-to-tile-mode-v1"
     )
+    assert report["runs"][1]["training_image_count"] == 107
+    assert report["runs"][1]["held_out_image_count"] == 16
     assert report["runs"][1]["delta_from_fixed"][
-        "training_image_count"
+        "frame_descriptor_count"
     ] == -244
+    assert report["runs"][1]["delta_from_fixed"][
+        "training_frame_count"
+    ] == -216
 
 
 def test_compare_native_crop_tiling_rejects_parameter_drift(tmp_path):

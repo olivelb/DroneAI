@@ -396,6 +396,7 @@ def compare_native_crop_tiling_manifests(
         parameters = manifest["parameters"]
         metrics = manifest["metrics"]
         timings = manifest["timings"]
+        dataset = manifest["dataset"]
         runs.append(
             {
                 "manifest": str(path),
@@ -407,8 +408,24 @@ def compare_native_crop_tiling_manifests(
                     "native_crop_tile_policy"
                 ),
                 "training_image_count": _number(
-                    metrics,
+                    dataset,
                     "training_image_count",
+                ),
+                "held_out_image_count": _number(
+                    dataset,
+                    "held_out_image_count",
+                ),
+                "frame_descriptor_count": _number(
+                    metrics,
+                    "frame_descriptor_count",
+                ),
+                "training_frame_count": _number(
+                    metrics,
+                    "training_frame_count",
+                ),
+                "held_out_frame_count": _number(
+                    metrics,
+                    "held_out_frame_count",
                 ),
                 "final_gaussians": _number(metrics, "final_gaussians"),
                 "final_loss": _number(metrics, "final_loss"),
@@ -440,6 +457,10 @@ def compare_native_crop_tiling_manifests(
             )
             for metric in (
                 "training_image_count",
+                "held_out_image_count",
+                "frame_descriptor_count",
+                "training_frame_count",
+                "held_out_frame_count",
                 "final_gaussians",
                 "final_loss",
                 "psnr",

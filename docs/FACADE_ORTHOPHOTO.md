@@ -49,6 +49,9 @@ each COLMAP track to the cameras assigned to that cell. The exported subset
 report records the rejected points and the resulting observation-count
 distribution, so a globally multi-view point cannot silently become a
 mono-view seed inside one resident block.
+Native run manifests distinguish source-image split counts from expanded
+frame/tile counts; fixed and adaptive crop policies can therefore be compared
+without treating four tiles as four independent photos.
 The thresholds are recorded in `facade_frame.json` and can be tightened with
 `facade_seed_max_reprojection_error` and `facade_seed_min_track_length` when a
 mission has noisier poses. The facade training workspace is always exported

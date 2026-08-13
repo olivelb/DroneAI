@@ -139,6 +139,9 @@ int main() {
         if (metrics.completed_iterations != 2U ||
             metrics.training_image_count != 1U ||
             metrics.held_out_image_count != 0U ||
+            metrics.frame_descriptor_count != 4U ||
+            metrics.training_frame_count != 4U ||
+            metrics.held_out_frame_count != 0U ||
             metrics.image_cache_misses < 2U) {
             throw std::runtime_error(
                 "four-tile MRNF training metrics mismatch: completed=" +
@@ -147,6 +150,10 @@ int main() {
                 std::to_string(metrics.training_image_count) +
                 " held_out_images=" +
                 std::to_string(metrics.held_out_image_count) +
+                " frame_descriptors=" +
+                std::to_string(metrics.frame_descriptor_count) +
+                " training_frames=" +
+                std::to_string(metrics.training_frame_count) +
                 " cache_misses=" +
                 std::to_string(metrics.image_cache_misses));
         }

@@ -243,6 +243,9 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .image_prefetch_ready = 2U,
         .training_image_count = 7U,
         .held_out_image_count = 1U,
+        .frame_descriptor_count = 25U,
+        .training_frame_count = 21U,
+        .held_out_frame_count = 4U,
         .topology_refinements = 2U,
         .gaussians_added = 15U,
         .initial_held_out_psnr = 10.0F,
@@ -316,6 +319,15 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
           "manifest held-out split count missing");
+    check(manifest_text.find("\"frame_descriptor_count\": 25") !=
+              std::string::npos,
+          "manifest frame descriptor count missing");
+    check(manifest_text.find("\"training_frame_count\": 21") !=
+              std::string::npos,
+          "manifest training frame count missing");
+    check(manifest_text.find("\"held_out_frame_count\": 4") !=
+              std::string::npos,
+          "manifest held-out frame count missing");
     check(manifest_text.find("\"topology_refinements\": 2") !=
               std::string::npos,
           "manifest topology refinement count missing");

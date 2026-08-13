@@ -141,6 +141,14 @@ int main(int argc, char** argv) {
             training.held_out_image_count;
         measurements.ignored_image_count =
             training.ignored_image_count;
+        measurements.frame_descriptor_count =
+            training.frame_descriptor_count;
+        measurements.training_frame_count =
+            training.training_frame_count;
+        measurements.held_out_frame_count =
+            training.held_out_frame_count;
+        measurements.ignored_frame_count =
+            training.ignored_frame_count;
         measurements.topology_refinements =
             training.topology_refinements;
         measurements.gaussians_added =
