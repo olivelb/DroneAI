@@ -87,6 +87,7 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--test-split") + 1] == "modulo"
     assert command[command.index("--test-guard-percent") + 1] == "0"
     assert command[command.index("--adaptive-growth-target") + 1] == "0"
+    assert command[command.index("--host-image-cache-mib") + 1] == "2048"
     assert "--resize_factor" not in command
 
 
@@ -121,6 +122,12 @@ def test_dronegs_adapter_passes_validated_production_tuning():
 def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
     with pytest.raises(ValueError, match="adaptive_growth_target"):
         DroneGSTuning(adaptive_growth_target=1)
+
+
+@pytest.mark.parametrize("value", [255, 65_537, True])
+def test_dronegs_tuning_rejects_invalid_host_image_cache(value):
+    with pytest.raises(ValueError, match="host_image_cache_mib"):
+        DroneGSTuning(host_image_cache_mib=value)
 
 
 def test_dronegs_adapter_runs_contract_executable(tmp_path):

@@ -330,8 +330,11 @@ inherit the evaluation directory owner with mode `0644`, including when the
 container runs as root.
 
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
-and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
-the dev.8 decode behavior.
+`--host-image-cache-mib`, and `--jpeg-idct-scale 0|1`. Their defaults are
+`1`, `1`, `2048`, and `0`, preserving the dev.8 decode behavior. The requested
+host-cache bound and its effective byte capacity are recorded in the run
+manifest. Changing the bound is an operational performance experiment and
+requires exact final-PLY parity before promotion.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated

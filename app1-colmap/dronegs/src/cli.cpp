@@ -54,6 +54,7 @@ const char* help_text() {
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--initial-ply PATH] "
         "[--prefetch-depth N] [--decode-workers N] "
+        "[--host-image-cache-mib N] "
         "[--jpeg-idct-scale 0|1] [--test-every 0|N] "
         "[--test-split modulo|spatial-block] "
         "[--test-guard-percent 0..100] "
@@ -100,6 +101,7 @@ Options parse_options(int argc, char** argv) {
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
+        "--host-image-cache-mib",
         "--jpeg-idct-scale", "--test-every", "--test-split",
         "--test-guard-percent", "--save-eval-images",
         "--checkpoint-every", "--checkpoint-path", "--resume-from",
@@ -159,6 +161,11 @@ Options parse_options(int argc, char** argv) {
     if (values.contains("--decode-workers")) {
         options.decode_workers =
             parse_u32(values.at("--decode-workers"), "--decode-workers");
+    }
+    if (values.contains("--host-image-cache-mib")) {
+        options.host_image_cache_mib = parse_u32(
+            values.at("--host-image-cache-mib"),
+            "--host-image-cache-mib");
     }
     if (values.contains("--jpeg-idct-scale")) {
         options.jpeg_idct_scale =
@@ -268,6 +275,11 @@ void validate_options(const Options& options) {
     if (options.decode_workers > options.prefetch_depth) {
         throw std::invalid_argument(
             "--decode-workers must not exceed --prefetch-depth");
+    }
+    if (options.host_image_cache_mib < 256U ||
+        options.host_image_cache_mib > 65'536U) {
+        throw std::invalid_argument(
+            "--host-image-cache-mib must be between 256 and 65536");
     }
     if (options.jpeg_idct_scale > 1U) {
         throw std::invalid_argument("--jpeg-idct-scale must be 0 or 1");

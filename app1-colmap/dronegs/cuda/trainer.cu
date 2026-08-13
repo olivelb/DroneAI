@@ -630,7 +630,9 @@ std::size_t host_image_cache_capacity(
     const std::vector<FrameDescriptor>& descriptors,
     const Options& options) {
     constexpr std::size_t minimum_capacity = 256U * 1024U * 1024U;
-    constexpr std::size_t maximum_capacity = 2ULL * 1024U * 1024U * 1024U;
+    const std::size_t maximum_capacity =
+        static_cast<std::size_t>(options.host_image_cache_mib) *
+        1024U * 1024U;
     std::size_t decoded_bytes = 0U;
     for (const auto& descriptor : descriptors) {
         const auto [width, height] =

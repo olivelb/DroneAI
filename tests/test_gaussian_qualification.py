@@ -105,6 +105,7 @@ def _performance_manifest(
     prefetch_depth: int,
     decode_workers: int,
     wall_seconds: float,
+    host_image_cache_mib: int = 2_048,
     digest: str = "b" * 64,
     seed: int = 42,
 ) -> Path:
@@ -114,6 +115,8 @@ def _performance_manifest(
     payload["parameters"].update(
         prefetch_depth=prefetch_depth,
         decode_workers=decode_workers,
+        host_image_cache_limit_mib=host_image_cache_mib,
+        host_image_cache_bytes=host_image_cache_mib * 1024 * 1024,
         checkpoint_path=f"/run-{prefetch_depth}/training.ckpt",
         resumed_from_checkpoint=False,
     )
@@ -141,6 +144,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
                 prefetch_depth=8,
                 decode_workers=8,
                 wall_seconds=16.0,
+                host_image_cache_mib=4_096,
             ),
         ]
     )
@@ -148,6 +152,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
     assert report["scientific_output_parity"] is True
     assert report["runs"][1]["speedup_from_baseline"] == pytest.approx(1.25)
     assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
+    assert report["runs"][1]["host_image_cache_limit_mib"] == 4_096
 
 
 def test_compare_performance_rejects_changed_ply(tmp_path):

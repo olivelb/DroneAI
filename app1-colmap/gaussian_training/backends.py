@@ -60,6 +60,7 @@ class DroneGSTuning:
     adaptive_growth_target: bool = False
     prefetch_depth: int = 1
     decode_workers: int = 1
+    host_image_cache_mib: int = 2_048
     jpeg_idct_scale: int = 0
     test_every: int = DRONEGS_PRODUCTION_PROFILE_V1.test_every
     test_split: str = DRONEGS_PRODUCTION_PROFILE_V1.test_split
@@ -113,6 +114,11 @@ class DroneGSTuning:
             ),
             "prefetch_depth": (self.prefetch_depth, 1, 64),
             "decode_workers": (self.decode_workers, 1, 16),
+            "host_image_cache_mib": (
+                self.host_image_cache_mib,
+                256,
+                65_536,
+            ),
             "jpeg_idct_scale": (self.jpeg_idct_scale, 0, 1),
             "test_every": (self.test_every, 0, None),
             "test_guard_percent": (self.test_guard_percent, 0, 100),
@@ -450,6 +456,8 @@ class DroneGSBackend:
                 "1" if tuning.adaptive_growth_target else "0",
                 "--prefetch-depth", str(tuning.prefetch_depth),
                 "--decode-workers", str(tuning.decode_workers),
+                "--host-image-cache-mib",
+                str(tuning.host_image_cache_mib),
                 "--jpeg-idct-scale", str(tuning.jpeg_idct_scale),
                 "--test-every", str(tuning.test_every),
                 "--test-split", tuning.test_split,

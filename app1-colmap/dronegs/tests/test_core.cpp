@@ -462,6 +462,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "CLI SH interval default mismatch");
     check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
     check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
+    check(
+        parsed.host_image_cache_mib == 2048U,
+        "CLI host image cache default mismatch");
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
     check(parsed.test_every == 0U, "CLI held-out split default mismatch");
     check(parsed.test_split == "modulo", "CLI split policy default mismatch");
@@ -494,6 +497,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     values.insert(values.end(), {
         "--prefetch-depth", "12",
         "--decode-workers", "3",
+        "--host-image-cache-mib", "4096",
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--test-split", "spatial-block",
@@ -520,6 +524,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         static_cast<int>(arguments.size()), arguments.data());
     check(tuned.prefetch_depth == 12U, "CLI prefetch depth mismatch");
     check(tuned.decode_workers == 3U, "CLI decode worker count mismatch");
+    check(
+        tuned.host_image_cache_mib == 4096U,
+        "CLI host image cache limit mismatch");
     check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(
@@ -559,7 +566,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 36U);
+    values.resize(values.size() - 38U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);

@@ -457,6 +457,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"
            << "    \"host_image_storage\": \"rgb8\",\n"
+           << "    \"host_image_cache_limit_mib\": "
+           << options.host_image_cache_mib << ",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
            << "    \"mode\": "
               "\"mrnf-intermediate-dc-calibration-anisotropic-dssim-held-out-prototype\"\n"

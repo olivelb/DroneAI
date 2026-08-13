@@ -34,6 +34,7 @@ struct Options {
     std::uint64_t seed = 0;
     std::uint32_t prefetch_depth = 1;
     std::uint32_t decode_workers = 1;
+    std::uint32_t host_image_cache_mib = 2048;
     std::uint32_t jpeg_idct_scale = 0;
     std::uint32_t test_every = 0;
     std::string test_split = "modulo";

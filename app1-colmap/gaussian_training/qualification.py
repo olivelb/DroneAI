@@ -24,6 +24,8 @@ PERFORMANCE_VARIANT_PARAMETERS = frozenset(
     {
         "prefetch_depth",
         "decode_workers",
+        "host_image_cache_limit_mib",
+        "host_image_cache_bytes",
         "checkpoint_path",
         "resumed_from_checkpoint",
     }
@@ -200,6 +202,14 @@ def compare_performance_manifests(
                 "manifest": str(path),
                 "prefetch_depth": _number(parameters, "prefetch_depth"),
                 "decode_workers": _number(parameters, "decode_workers"),
+                "host_image_cache_limit_mib": _number(
+                    parameters,
+                    "host_image_cache_limit_mib",
+                ),
+                "host_image_cache_bytes": _number(
+                    parameters,
+                    "host_image_cache_bytes",
+                ),
                 "point_cloud_sha256": digest,
                 "final_gaussians": _number(metrics, "final_gaussians"),
                 "final_loss": _number(metrics, "final_loss"),
