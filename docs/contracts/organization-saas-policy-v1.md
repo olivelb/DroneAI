@@ -99,6 +99,13 @@ by several missions; dataset deletion remains an explicit admin operation.
 Tenant CAS garbage collection and legal hold are outside v1 and must be added
 before policies requiring either behavior are sold.
 
+Manual mission deletion enters the same elected-worker state machine without
+waiting for the age policy. It first cancels queued/running stage runs, waits
+for Kubernetes Job cleanup evidence, and only then deletes the exact mission
+prefix and database graph. Its immutable ledger action is `storage_released`
+with `deletion_reason=manual`; therefore a successful DELETE response means
+"requested", not "physically erased".
+
 ## Isolation and audit
 
 Migration `0028` applies PostgreSQL RLS to the policy, request bucket and ledger.

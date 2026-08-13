@@ -38,6 +38,12 @@ but cannot see missions, datasets, tenant identities, policies or usage. It
 rotates or revokes only its own credentials under `/platform/credentials`.
 Review every mutation through `/platform/audit-events`.
 
+Suspending an organization rejects new authentication and prevents its queued
+Stage Jobs from being dispatched. Already running Jobs are allowed to finish;
+their dependants remain queued and cannot be released while the organization is
+suspended. Use mission cancellation/deletion when compute must stop immediately.
+Previously issued presigned object URLs remain usable until their short expiry.
+
 If a support identity is suspected compromised, run the same command first
 with `--action suspend` and no credential name, inspect the revocation count,
 then repeat with `--apply`. This invalidates all raw tokens and signed sessions.
@@ -352,6 +358,13 @@ product. Dataset inputs are retained separately because several missions may
 reference the same catalogue row. The full v1 boundary and provisioning command
 are in
 [`contracts/organization-saas-policy-v1.md`](contracts/organization-saas-policy-v1.md).
+
+Manual `DELETE /mission/{vol_id}` uses the same cleanup worker. The API first
+persists cancellation, cancels queued/running stage runs and returns a pending
+response. Kubernetes reconciliation must record deletion of every dispatched
+Job before the cleanup worker can remove S3 or the database graph. Completion
+writes a `storage_released` usage event. Never interpret the HTTP response as
+proof of physical deletion; use the mission disappearance and usage ledger.
 
 ### Legacy resource adoption
 

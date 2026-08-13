@@ -27,6 +27,8 @@ from shared.database import (
 
 ACTIVE_UPLOAD_STATUSES = ("initializing", "uploading", "finalizing", "failed")
 ACTIVE_STAGE_STATUSES = ("queued", "running")
+MANUAL_DELETION_STEP = "DELETION_REQUESTED"
+MANUAL_DELETION_FAILED_STEP = "MANUAL_DELETION_FAILED"
 RETENTION_TERMINAL_STATUSES = (
     "success",
     "completed",

@@ -11,9 +11,15 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import text
+from sqlalchemy import or_, text
 
-from shared.database import Mission, MissionArtifact, MissionStageRun, get_session
+from shared.database import (
+    Mission,
+    MissionArtifact,
+    MissionStageRun,
+    Organization,
+    get_session,
+)
 from shared.deployment_mode import bounded_stage_jobs_enabled
 from shared.detection_shard_receipts import complete_detection_shard_receipts
 from shared.detection_sharding import (
@@ -791,11 +797,19 @@ def reserve_ready_jobs(
             Mission,
             Mission.id == MissionStageRun.mission_id,
         )
+        .outerjoin(
+            Organization,
+            Organization.id == Mission.organization_id,
+        )
         .filter(
             MissionStageRun.status == "queued",
             MissionStageRun.executor.is_(None),
             MissionStageRun.dispatch_attempts < settings.maximum_dispatch_attempts,
-            Mission.status != "cancelled",
+            Mission.status.notin_(("cancelled", "deleting", "deletion_failed")),
+            or_(
+                Organization.status == "active",
+                Mission.organization_id == LEGACY_ORGANIZATION_ID,
+            ),
         )
         .order_by(
             MissionStageRun.created_at,
