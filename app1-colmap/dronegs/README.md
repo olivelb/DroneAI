@@ -23,8 +23,9 @@ selection, MRNF lifecycle, optimizer, CLI, manifests, and process
 orchestration remain native DroneGS code and do not invoke LichtFeld.
 Dev.43 replaces the fixed 256 MiB decoded-image LRU budget with an
 auto-sized RGB8 budget: enough for the complete resized scene when it fits,
-bounded between 256 MiB and 2 GiB. This removes repeated JPEG decoding on
-thousand-view datasets while keeping host memory use explicit and bounded.
+bounded between 256 MiB and a configurable ceiling whose default is 2 GiB.
+This removes repeated JPEG decoding on thousand-view datasets while keeping
+host memory use explicit and bounded.
 Dev.44 adds an opt-in `--topology-cooldown N`: topology refinement stops
 after `iterations - N`, leaving the final `N` steps for fixed-topology
 optimizer convergence without increasing the training budget. Its default is
@@ -87,7 +88,8 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   leaking a source photograph across train/test partitions;
 - reduces oversized crop targets with an area filter that integrates
   fractional source-pixel coverage instead of point-sampling them;
-- stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
+- stores decoded RGB as bytes in an auto-sized scene cache with a 256 MiB
+  floor and a configurable 2 GiB default ceiling;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;
 - exposes an opt-in libjpeg reduced-IDCT path for reproducible decode A/B tests;
@@ -374,7 +376,11 @@ evaluation, training and wall time. This prevents I/O tuning from being
 credited with compute improvements and keeps performance A/B runs auditable.
 It also records the decoded-image working-set size independently of the cache
 limit, so a deployment can choose a host-RAM envelope from evidence rather
-than from image count alone.
+than from image count alone. When the working set exceeds the configured
+ceiling and host-memory headroom is available, a cache ceiling rounded above
+that working set is the first lossless performance candidate. Promotion still
+requires an exact same-binary final-PLY comparison; container memory limits
+must include the larger cache plus decoder and orchestration overhead.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated
