@@ -60,6 +60,66 @@ def test_product_verification_accepts_complete_non_gcp_assets(tmp_path):
     assert convert.call_count == 2
 
 
+def test_product_verification_accepts_resident_gaussian_models(tmp_path):
+    preparation, rtk_state, alignment_state, gaussian_state = _verified_context(
+        tmp_path
+    )
+    Path(gaussian_state.result["final_ply"]).unlink()
+    partition_root = tmp_path / "checkpoints"
+    partitions = []
+    for row, column in ((0, 0), (0, 1)):
+        path = partition_root / f"cell_{column}" / "buffer.ply"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"partition")
+        (path.parent / "trainer_run.json").write_text("{}", encoding="utf-8")
+        (path.parent / "canary_result.json").write_text("{}", encoding="utf-8")
+        partitions.append(
+            {
+                "path": str(path),
+                "row": row,
+                "column": column,
+                "gaussian_count": 1_500_000,
+                "core_gaussian_count": 1_200_000,
+            }
+        )
+    gaussian_state.result["final_ply"] = None
+    gaussian_state.result["gaussian_partition_models"] = partitions
+
+    with patch.object(publication_stage, "convert_to_cog"):
+        assets = publication_stage._verify_product_assets(
+            preparation,
+            rtk_state,
+            alignment_state,
+            gaussian_state,
+            str(tmp_path),
+        )
+
+    assert assets.final_ply is None
+    assert [
+        (partition.row, partition.column)
+        for partition in assets.gaussian_partitions
+    ] == [(0, 0), (0, 1)]
+    assert len(assets.trainer_manifests) == 3
+    assert len(assets.qualification_manifests) == 3
+
+
+def test_product_verification_rejects_mixed_gaussian_model_layout(tmp_path):
+    context = _verified_context(tmp_path)
+    context[3].result["gaussian_partition_models"] = [
+        {
+            "path": context[3].result["final_ply"],
+            "row": 0,
+            "column": 0,
+            "gaussian_count": 10,
+            "core_gaussian_count": 8,
+        }
+    ]
+
+    with patch.object(publication_stage, "convert_to_cog"):
+        with pytest.raises(ValueError, match="cannot mix"):
+            publication_stage._verify_product_assets(*context, str(tmp_path))
+
+
 def test_aerial_product_requires_spatial_coverage_report(tmp_path):
     context = _verified_context(tmp_path)
     context[3].result["gaussian_coverage_report"] = None
@@ -230,6 +290,7 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
     assets = publication_stage.VerifiedProductAssets(
         height_tif=str(tmp_path / "height.tif"),
         final_ply=str(tmp_path / "final.ply"),
+        gaussian_partitions=(),
         trainer_manifests=(trainer,),
         qualification_manifests=(qualification,),
         required_reports={"rtk_prior_report": None},

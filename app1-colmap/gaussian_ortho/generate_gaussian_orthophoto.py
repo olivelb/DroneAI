@@ -2134,6 +2134,6 @@ def generate_gaussian_orthophoto(
         filtering_phase,
         rasterization_phase,
         summary,
-        final_ply=cast(str, training_phase.training_state.final_ply),
+        final_ply=training_phase.training_state.final_ply,
         cupy_version=cp.__version__,
     )

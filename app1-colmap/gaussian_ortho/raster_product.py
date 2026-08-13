@@ -414,6 +414,16 @@ def finalize_gaussian_raster_product(
         "height_file": height_file,
         "checkpoint_dir": config.checkpoint_dir,
         "final_ply": final_ply,
+        "gaussian_partition_models": [
+            {
+                "path": partition.model_path,
+                "row": partition.bounds.row,
+                "column": partition.bounds.col,
+                "gaussian_count": partition.gaussian_count,
+                "core_gaussian_count": partition.core_gaussian_count,
+            }
+            for partition in filtering_phase.partition_models
+        ],
         "width": width,
         "height": height,
         "gsd": config.resolution,
