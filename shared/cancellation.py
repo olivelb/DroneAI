@@ -11,6 +11,7 @@ from typing import Any
 from collections.abc import Callable, Hashable
 
 from shared.database import AIAnalysisRun, Mission, get_session
+from shared.tenancy import LEGACY_ORGANIZATION_ID
 
 
 SessionScope = Callable[[], AbstractContextManager[Any]]
@@ -88,20 +89,21 @@ def _cancellation_record(
     organization_id: str | None = None,
     for_update: bool = False,
 ) -> Any | None:
+    target_organization_id = organization_id or LEGACY_ORGANIZATION_ID
     if run_id is None:
-        query = session.query(Mission).filter(Mission.vol_id == vol_id)
+        query = session.query(Mission).filter(
+            Mission.vol_id == vol_id,
+            Mission.organization_id == target_organization_id,
+        )
     else:
         query = session.query(AIAnalysisRun).filter(
             AIAnalysisRun.vol_id == vol_id,
             AIAnalysisRun.run_id == run_id,
         )
-    if organization_id is not None:
-        if run_id is None:
-            query = query.filter(Mission.organization_id == organization_id)
-        else:
-            query = query.join(Mission, AIAnalysisRun.mission_id == Mission.id).filter(
-                Mission.organization_id == organization_id
-            )
+    if run_id is not None:
+        query = query.join(Mission, AIAnalysisRun.mission_id == Mission.id).filter(
+            Mission.organization_id == target_organization_id
+        )
     if for_update:
         query = query.with_for_update()
     return query.first()

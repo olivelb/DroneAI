@@ -17,7 +17,6 @@ import {
   parseMissionCatalog,
   parseMissionDetail,
   parseParameterConfig,
-  parsePods,
   parseStatusPayload,
 } from "./mission-api-contracts";
 import {
@@ -75,7 +74,6 @@ describe("runtime API response contracts", () => {
       logs: [{ message: null, details: {} }],
       products: [],
     }).vol_id).toBe("mission-1");
-    expect(parsePods({ pods: [], error: null }).pods).toEqual([]);
     expect(parseParameterConfig({
       pipelines: { modern: {}, legacy: {} },
       processes: [],
@@ -163,6 +161,7 @@ describe("runtime API response contracts", () => {
       url: "https://objects.example/part",
       expires_in: 900,
       part_number: 1,
+      expected_size: 1024,
     }).part_number).toBe(1);
     expect(parseUploadFileCompletion({
       file_id: "file-1",

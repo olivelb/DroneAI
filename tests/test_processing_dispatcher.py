@@ -221,7 +221,7 @@ def test_legacy_publication_failure_always_cleans_workspace(monkeypatch):
     monkeypatch.setattr(
         legacy_module,
         "get_mission_detections",
-        lambda _session, _vol_id: [],
+        lambda _session, _vol_id, _organization_id: [],
     )
     monkeypatch.setattr(
         legacy_module.storage,
@@ -273,7 +273,7 @@ def test_legacy_completion_publishes_durable_ia_terminal(monkeypatch):
     monkeypatch.setattr(
         legacy_module,
         "get_mission_detections",
-        lambda _session, _vol_id: [],
+        lambda _session, _vol_id, _organization_id: [],
     )
     monkeypatch.setattr(
         legacy_module.storage,

@@ -9,10 +9,15 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from shared.database import (
+    Dataset,
+    DatasetUploadSession,
     Mission,
     MissionArtifact,
     MissionArtifactParent,
     MissionStageRun,
+    Organization,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
     OutboxEvent,
 )
 from shared.phase_dag import (
@@ -32,7 +37,11 @@ from shared.stage_contracts import (
 
 stage_routes = importlib.import_module("app4-dashboard.api.routers.mission_stages")
 stage_schemas = importlib.import_module("app4-dashboard.api.stage_schemas")
-PRINCIPAL = SimpleNamespace(subject="dag-operator", role="operator")
+PRINCIPAL = SimpleNamespace(
+    subject="dag-operator",
+    role="operator",
+    organization_id="legacy-unassigned",
+)
 
 
 def _gcp_bundle():
@@ -108,6 +117,7 @@ def _reconstruction_artifact_request(
         kind="reconstruction_workspace",
         uri=f"s3://{stage_routes.S3_BUCKET}/{key}",
         checksum_sha256=checksum,
+        size_bytes=100,
         metadata={"manifest_key": key},
         parent_artifact_ids=parent_artifact_ids or [],
     )
@@ -116,6 +126,11 @@ def _reconstruction_artifact_request(
 @pytest.fixture
 def dag_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    Organization.__table__.create(engine)
+    OrganizationSaasPolicy.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
+    DatasetUploadSession.__table__.create(engine)
+    Dataset.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     MissionArtifact.__table__.create(engine)
@@ -607,6 +622,73 @@ def test_artifact_publication_queues_the_next_ready_stage(
         assert training.upstream_artifact_ids == [artifact_id]
         assert session.query(MissionArtifactParent).count() == 0
         assert session.query(OutboxEvent).count() == 1
+
+
+def test_recovery_artifact_publication_blocks_storage_overage(
+    dag_sessions,
+    monkeypatch,
+):
+    with dag_sessions() as session:
+        session.add(
+            Organization(
+                id="legacy-unassigned",
+                display_name="Legacy",
+                status="active",
+                created_by="test",
+                updated_by="test",
+            )
+        )
+        session.add(
+            OrganizationSaasPolicy(
+                organization_id="legacy-unassigned",
+                storage_limit_bytes=50,
+                version=1,
+                created_by="test",
+                updated_by="test",
+            )
+        )
+        mission = Mission(
+            vol_id="mission-overage",
+            owner_subject="dag-operator",
+        )
+        session.add(mission)
+        session.flush()
+        run = MissionStageRun(
+            mission_id=mission.id,
+            stage="reconstruction",
+            attempt=0,
+            status="running",
+            idempotency_key="8" * 64,
+        )
+        session.add(run)
+        session.flush()
+        run_id = run.run_id
+    monkeypatch.setattr(stage_routes, "get_session", dag_sessions)
+    monkeypatch.setattr(
+        stage_routes.storage,
+        "verify_object_checksum",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with pytest.raises(HTTPException) as error:
+        stage_routes.publish_stage_artifact(
+            "mission-overage",
+            run_id,
+            _reconstruction_artifact_request(
+                "mission-overage",
+                run_id,
+                str(uuid4()),
+            ),
+            PRINCIPAL,
+            None,
+        )
+
+    assert error.value.status_code == 409
+    assert "storage quota exceeded" in error.value.detail.lower()
+    with dag_sessions() as session:
+        assert session.query(MissionArtifact).count() == 0
+        assert session.query(OrganizationUsageEvent).count() == 0
+        assert session.query(MissionStageRun).one().status == "running"
 
 
 def test_artifact_identity_rejects_changed_immutable_content(

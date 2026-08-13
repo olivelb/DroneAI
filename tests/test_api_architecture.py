@@ -81,7 +81,6 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/missions/{vol_id}",
         "/missions/{vol_id}/stages/{stage}/runs",
         "/missions/{vol_id}/stages/runs/{run_id}/artifacts",
-        "/pods",
         "/datasets",
         "/datasets/upload",
         "/datasets/upload-sessions",
@@ -446,7 +445,7 @@ def test_sync_io_handlers_are_threadpool_eligible():
 
 
 def test_manual_feature_update_rejects_a_stale_version(monkeypatch):
-    feature = SimpleNamespace(version=3)
+    feature = SimpleNamespace(id=7, version=3)
 
     class Query:
         def filter(self, *_criteria):
@@ -856,7 +855,7 @@ def test_terminal_success_clears_an_earlier_transient_error(monkeypatch):
     monkeypatch.setattr(
         mission_state,
         "get_or_create_mission",
-        lambda _session, _vol_id: mission,
+        lambda _session, _vol_id, **_kwargs: mission,
     )
 
     mission_state.apply_mission_state(
@@ -890,7 +889,7 @@ def test_processing_retry_clears_a_recovered_service_error(monkeypatch):
     monkeypatch.setattr(
         mission_state,
         "get_or_create_mission",
-        lambda _session, _vol_id: mission,
+        lambda _session, _vol_id, **_kwargs: mission,
     )
 
     mission_state.apply_mission_state(
@@ -922,7 +921,7 @@ def test_delayed_progress_does_not_resurrect_a_cancelled_mission(monkeypatch):
     monkeypatch.setattr(
         mission_state,
         "get_or_create_mission",
-        lambda _session, _vol_id: mission,
+        lambda _session, _vol_id, **_kwargs: mission,
     )
 
     mission_state.apply_mission_state(

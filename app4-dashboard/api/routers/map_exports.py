@@ -90,7 +90,7 @@ def _legacy_features(
     records = cast(
         Iterator[Detection],
         session.query(Detection)
-        .filter(Detection.vol_id == vol_id)
+        .filter(Detection.mission_id == mission.id)
         .order_by(Detection.id)
         .yield_per(1_000),
     )
@@ -132,7 +132,7 @@ def _legacy_batch(
 
 def _stored_features(
     session: RouteSession,
-    vol_id: str,
+    mission_id: int,
     sources: set[str],
     run_ids: set[str],
 ) -> Iterator[JsonObject]:
@@ -144,7 +144,7 @@ def _stored_features(
         )
         .outerjoin(AIAnalysisRun, MapFeature.analysis_run_id == AIAnalysisRun.id)
         .filter(
-            MapFeature.vol_id == vol_id,
+            MapFeature.mission_id == mission_id,
             MapFeature.source.in_(sources),
             MapFeature.deleted_at.is_(None),
         )
@@ -176,7 +176,7 @@ def _export_features(
         yield from _legacy_features(session, mission, vol_id)
     stored_sources = sources.intersection({"manual", "ai"})
     if stored_sources:
-        yield from _stored_features(session, vol_id, stored_sources, run_ids)
+        yield from _stored_features(session, mission.id, stored_sources, run_ids)
 
 
 @router.get("/{vol_id}/export/raster/{layer}")

@@ -59,6 +59,8 @@ class S3Client(ImmutableS3Client, Protocol):
 
     def create_bucket(self, **kwargs: Any) -> dict[str, Any]: ...
 
+    def list_parts(self, **kwargs: Any) -> dict[str, Any]: ...
+
 class _ObservedS3Paginator:
     def __init__(self, paginator: Any, operation: str) -> None:
         self._paginator = paginator
@@ -694,6 +696,7 @@ def get_presigned_upload_part_url(
     upload_id: str,
     part_number: int,
     *,
+    content_length: int | None = None,
     expires: int = 900,
     bucket: str | None = None,
 ) -> str:
@@ -702,17 +705,61 @@ def get_presigned_upload_part_url(
     if not 1 <= part_number <= 10_000:
         raise ValueError("S3 multipart part number must be between 1 and 10000")
     bucket = bucket or S3_BUCKET
+    if content_length is not None and content_length < 1:
+        raise ValueError("S3 multipart content length must be positive")
+    params: dict[str, Any] = {
+        "Bucket": bucket,
+        "Key": s3_key,
+        "UploadId": upload_id,
+        "PartNumber": part_number,
+    }
+    if content_length is not None:
+        params["ContentLength"] = content_length
     return _get_public_client().generate_presigned_url(
         "upload_part",
-        Params={
-            "Bucket": bucket,
-            "Key": s3_key,
-            "UploadId": upload_id,
-            "PartNumber": part_number,
-        },
+        Params=params,
         ExpiresIn=expires,
         HttpMethod="PUT",
     )
+
+
+def list_multipart_parts(
+    s3_key: str,
+    upload_id: str,
+    *,
+    bucket: str | None = None,
+) -> list[dict[str, int | str]]:
+    """Return every uploaded part with provider-observed size and ETag."""
+
+    client = _get_client()
+    marker = 0
+    parts: list[dict[str, int | str]] = []
+    while True:
+        response = client.list_parts(
+            Bucket=bucket or S3_BUCKET,
+            Key=s3_key,
+            UploadId=upload_id,
+            PartNumberMarker=marker,
+        )
+        page = response.get("Parts") or []
+        if not isinstance(page, list):
+            raise RuntimeError("S3 ListParts returned an invalid Parts payload")
+        for part in page:
+            if not isinstance(part, dict):
+                raise RuntimeError("S3 ListParts returned an invalid part")
+            parts.append(
+                {
+                    "PartNumber": int(part["PartNumber"]),
+                    "Size": int(part["Size"]),
+                    "ETag": str(part.get("ETag") or ""),
+                }
+            )
+        if not response.get("IsTruncated"):
+            return parts
+        next_marker = int(response.get("NextPartNumberMarker") or 0)
+        if next_marker <= marker:
+            raise RuntimeError("S3 ListParts pagination did not advance")
+        marker = next_marker
 
 
 def complete_multipart_upload(

@@ -22,6 +22,10 @@ from shared.database import (
 from shared.inbox_outbox import enqueue_outbox
 from shared.kafka_partitioning import tenant_mission_key
 from shared.gcp_bundle import validate_gcp_bundle
+from shared.organization_saas import (
+    StorageQuotaExceeded,
+    reserve_stage_output_storage,
+)
 from shared.stage_artifacts import (
     mark_stage_run_succeeded,
     release_ready_stage_runs,
@@ -65,7 +69,10 @@ def _serialize_stage_run(run: MissionStageRun) -> dict[str, Any]:
 
 def _request_key(principal: Principal, raw_key: str) -> str:
     return hashlib.sha256(
-        f"{principal.subject}:{raw_key}".encode()
+        (
+            f"stage-request-v2:{principal.organization_id}:"
+            f"{principal.subject}:{raw_key}"
+        ).encode()
     ).hexdigest()
 
 
@@ -467,6 +474,20 @@ def publish_stage_artifact(
             mission,
             request.parent_artifact_ids,
         )
+        try:
+            reserve_stage_output_storage(
+                session,
+                organization_id=cast(str, mission.organization_id),
+                stage_run_id=cast(str, run.run_id),
+                artifact_id=request.artifact_id,
+                output_bytes=request.size_bytes,
+                actor_subject=principal.subject,
+            )
+        except StorageQuotaExceeded as error:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(error),
+            ) from error
         artifact = MissionArtifact(
             artifact_id=request.artifact_id,
             mission_id=mission.id,

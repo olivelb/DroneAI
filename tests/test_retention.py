@@ -144,3 +144,63 @@ def test_retention_failure_is_durable_and_retried_after_backoff(monkeypatch):
         retry_seconds=3_600,
         delete_prefix=lambda _prefix: 0,
     ) == 1
+
+
+def test_manual_deletion_waits_for_job_cleanup_and_releases_usage(monkeypatch):
+    scope = _retention_scope(monkeypatch)
+    now = datetime.now(UTC)
+    with scope() as session:
+        mission = _mission(session, "manual-delete", updated_at=now)
+        mission.status = "cancelled"
+        mission.current_step = "DELETION_REQUESTED"
+        session.flush()
+        run = MissionStageRun(
+            run_id="d" * 32,
+            mission_id=mission.id,
+            stage="reconstruction",
+            attempt=0,
+            status="cancelled",
+            idempotency_key="d" * 64,
+            executor="kubernetes-job",
+            job_name="stage-delete-me",
+            completed_at=now,
+        )
+        session.add(run)
+        session.flush()
+        session.add(
+            MissionArtifact(
+                artifact_id="artifact-delete-me",
+                mission_id=mission.id,
+                stage_run_id=run.id,
+                kind="reconstruction_workspace",
+                uri="s3://drone-ai/delete-me",
+                checksum_sha256="a" * 64,
+                size_bytes=42,
+            )
+        )
+
+    deleted_prefixes: list[str] = []
+    assert retention.retention_cleanup_once(
+        now=now,
+        delete_prefix=lambda prefix: deleted_prefixes.append(prefix) or 2,
+    ) == 0
+    assert deleted_prefixes == []
+
+    with scope() as session:
+        run = session.query(MissionStageRun).one()
+        run.provenance = {"cancellation_job_cleanup_at": now.isoformat()}
+
+    assert retention.retention_cleanup_once(
+        now=now,
+        delete_prefix=lambda prefix: deleted_prefixes.append(prefix) or 2,
+    ) == 1
+    assert deleted_prefixes == [
+        "organizations/tenant-a/missions/manual-delete/"
+    ]
+    with scope() as session:
+        event = session.query(OrganizationUsageEvent).filter_by(
+            action="storage_released"
+        ).one()
+        assert event.action == "storage_released"
+        assert event.quantity == -42
+        assert event.details["deletion_reason"] == "manual"

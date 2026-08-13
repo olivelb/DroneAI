@@ -13,7 +13,8 @@ from hashlib import sha256
 from hmac import new as hmac_new
 from typing import Annotated
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
+from fastapi import Depends, HTTPException, Request, WebSocket, status
+from starlette.concurrency import run_in_threadpool
 
 from shared.database import get_session
 from shared.deployment_mode import (
@@ -68,6 +69,13 @@ class Principal:
     auth_version: int | None = None
     authentication_method: str = "static"
     realm: str = "tenant"
+
+
+@dataclass(frozen=True)
+class WebSocketAuthorization:
+    principal: Principal
+    token: str
+    peer: str
 
 
 def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
@@ -381,7 +389,9 @@ def issue_session_token(
     return f"{encoded}.{signature}"
 
 
-def _authenticate_session_token(token: str) -> Principal | None:
+def _verified_session_payload(token: str) -> dict[str, object] | None:
+    """Decode a session token only after its signature has been verified."""
+
     secret = os.getenv("DRONEAI_SESSION_SECRET", "")
     if len(secret) < 32:
         return None
@@ -399,8 +409,18 @@ def _authenticate_session_token(token: str) -> Principal | None:
         return None
     try:
         payload = json.loads(_decode_base64(encoded))
-        expires_at = int(payload["expires_at"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _authenticate_session_token(token: str) -> Principal | None:
+    payload = _verified_session_payload(token)
+    if payload is None:
+        return None
+    try:
+        expires_at = int(str(payload["expires_at"]))
+    except (KeyError, TypeError, ValueError):
         return None
     if expires_at <= int(time.time()):
         return None
@@ -412,7 +432,7 @@ def _authenticate_session_token(token: str) -> Principal | None:
         try:
             member_id = str(payload["member_id"])
             credential_id = str(payload["credential_id"])
-            auth_version = int(payload["auth_version"])
+            auth_version = int(str(payload["auth_version"]))
         except (TypeError, ValueError):
             return None
         realm = str(payload.get("realm", "tenant"))
@@ -475,6 +495,22 @@ def _authenticate_session_token(token: str) -> Principal | None:
     return None
 
 
+def _session_public_credential_identity(token: str) -> str | None:
+    """Read a signed session's public credential ID without database work."""
+
+    payload = _verified_session_payload(token)
+    if payload is None:
+        return None
+    try:
+        credential_id = str(payload["credential_id"])
+        realm = str(payload.get("realm", "tenant"))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if realm != "tenant" or not credential_id:
+        return None
+    return f"tenant:{credential_id}"
+
+
 def authenticate_api_key(token: str | None) -> Principal | None:
     if not authentication_enabled():
         return Principal(
@@ -519,27 +555,29 @@ def authenticate_token(token: str | None) -> Principal | None:
 
 
 def authenticate_request(request: Request) -> Principal | None:
-    """Resolve the authenticated rate-limit identity without trusting proxy headers."""
-    return authenticate_token(
+    """Authenticate once per request without trusting proxy headers."""
+
+    cached = getattr(request.state, "droneai_principal", None)
+    if isinstance(cached, Principal):
+        return cached
+    if getattr(request.state, "droneai_authentication_attempted", False):
+        return None
+    principal = authenticate_token(
         _extract_token(
             request.headers.get("authorization"),
             request.headers.get("x-api-key"),
             request.cookies.get(SESSION_COOKIE_NAME),
         )
     )
+    request.state.droneai_authentication_attempted = True
+    request.state.droneai_principal = principal
+    return principal
 
 
 def _require_request_principal(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-    droneai_api_key: str | None = Cookie(
-        default=None,
-        alias=SESSION_COOKIE_NAME,
-    ),
+    request: Request,
 ) -> Principal:
-    principal = authenticate_token(
-        _extract_token(authorization, x_api_key, droneai_api_key)
-    )
+    principal = authenticate_request(request)
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -625,15 +663,84 @@ def enforce_cookie_csrf(request: Request) -> None:
         )
 
 
-async def authorize_websocket(websocket: WebSocket) -> Principal | None:
+async def authorize_websocket(
+    websocket: WebSocket,
+) -> WebSocketAuthorization | None:
+    origin = websocket.headers.get("origin", "").rstrip("/")
+    trusted = {
+        configured.rstrip("/")
+        for configured in configured_cors_origins()
+        if configured != "*"
+    }
+    if (is_production() and (not origin or origin not in trusted)) or (
+        origin and trusted and origin not in trusted
+    ):
+        await websocket.close(code=4403, reason="Untrusted request origin")
+        return None
+
     token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if token is None and not is_production():
         token = websocket.query_params.get("access_token")
-    principal = authenticate_token(token)
-    if principal is not None and principal.realm == "tenant":
-        return principal
+    peer = websocket.client.host if websocket.client else "unknown"
+    try:
+        retry_after = await run_in_threadpool(
+            identity_peer_rate_limiter.consume,
+            f"identity:peer:{peer}",
+        )
+        if retry_after is None and token:
+            credential_id = credential_id_from_token(token)
+            public_identity = (
+                f"tenant:{credential_id}"
+                if credential_id is not None
+                else _session_public_credential_identity(token)
+            )
+            if public_identity is not None:
+                retry_after = await run_in_threadpool(
+                    identity_credential_rate_limiter.consume,
+                    f"identity:credential:{public_identity}",
+                )
+    except Exception:
+        await websocket.close(code=1013, reason="Identity rate limiter unavailable")
+        return None
+    if retry_after is not None:
+        await websocket.close(code=4429, reason="Identity rate limit exceeded")
+        return None
+
+    principal = await run_in_threadpool(authenticate_token, token)
+    if principal is not None and principal.realm == "tenant" and token:
+        return WebSocketAuthorization(principal=principal, token=token, peer=peer)
     await websocket.close(code=4401, reason="Authentication required")
     return None
+
+
+def websocket_authorization_status(
+    authorization: WebSocketAuthorization,
+) -> str:
+    """Revalidate durable identity state for a long-lived connection."""
+
+    principal = authenticate_token(authorization.token)
+    if principal is None:
+        return "unauthenticated"
+    expected = authorization.principal
+    if (
+        principal.realm,
+        principal.organization_id,
+        principal.subject,
+        principal.role,
+        principal.member_id,
+        principal.credential_id,
+        principal.auth_version,
+    ) != (
+        expected.realm,
+        expected.organization_id,
+        expected.subject,
+        expected.role,
+        expected.member_id,
+        expected.credential_id,
+        expected.auth_version,
+    ):
+        return "forbidden"
+    return "valid"
 
 
 def upload_limits() -> dict[str, int]:

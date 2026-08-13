@@ -40,6 +40,14 @@ Bounded Jobs receive only their stage Secret and verify RLS at startup.
 Protected Helm overlays require this split and readiness
 fails when PostgreSQL reports that RLS is inactive for the API role.
 
+The tenant API does not expose Kubernetes Pod inventory. The former `/pods`
+route and frontend polling were removed because cluster names, placement and
+failure reasons are an operator boundary, not tenant data. With the standalone
+control worker enabled, the request-serving Pod also receives no Kubernetes
+service-account token or Pod RBAC. Tenant progress remains available through
+mission and stage-run status; operators use Kubernetes and metrics tooling
+outside the tenant API.
+
 Protected environments run two control-worker replicas with a rolling update
 and a one-pod disruption budget. A dedicated PostgreSQL connection owns one
 session-level advisory leadership lock; only that replica starts outbox,
@@ -64,7 +72,9 @@ an operational E2E; it does not replace dataset-backed scientific validation.
 The production example activates bounded stage Jobs and disables every fused
 Kafka compute worker. Staging and production now fail at application startup
 and Helm render if that invariant is weakened. Replace every executor image
-placeholder with the promoted immutable Git SHA or digest before install.
+placeholder with the promoted OCI digest before install. A Git-SHA tag is
+useful provenance but remains mutable in a registry and is therefore rejected
+at Helm render and scheduler startup.
 
 Replace `REPLACE_GPU_ARCHITECTURE` with the reviewed target architecture; CUDA
 12.9 runtime qualification does not by itself identify the OVH GPU SKU.
@@ -126,7 +136,13 @@ the human or service identity used for attribution and per-member access.
 
 Clients use `Authorization: Bearer <key>` or `X-API-Key`. Production WebSocket
 clients use the `droneai_api_key` secure cookie; query-string tokens are
-accepted only in development.
+accepted only in development. The handshake rejects an absent/untrusted
+`Origin`, consumes peer and public-credential rate-limit buckets before any
+identity lookup, and enforces bounded connection counts per API pod, peer,
+credential and organization. Durable identity state is revalidated every 45
+seconds by default; revocation, suspension, role/auth-version changes and
+organization suspension close the connection. Idle and oversized clients are
+closed, and status replay uses a bounded per-audience history.
 Mission Studio prompts for the provisioned key and exchanges it through
 `POST /auth/session` for an eight-hour HttpOnly, Secure, SameSite=Lax cookie.
 The cookie contains a signed expiry-bearing session token, not the raw key.
@@ -200,7 +216,9 @@ The browser CORS policy must allow `PUT` from the exact frontend origin and
 expose the `ETag` response header. The API storage principal also needs object
 `PUT`, `GET`, `HEAD` and `DELETE`, plus create/complete/abort and list-multipart
 permissions on the dataset prefix; orphan recovery depends on exact-key
-multipart listing. Local MinIO receives the browser rule automatically. For an
+multipart listing. Part signing binds exact `Content-Length`, and completion
+requires provider-observed `ListParts` sizes/ETags to match the durable upload
+intent. Local MinIO receives the browser rule automatically. For an
 external S3-compatible bucket, apply it with
 `scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
 origin. The previous API-proxied `/datasets/upload` endpoint now returns `404`

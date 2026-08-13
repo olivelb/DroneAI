@@ -72,7 +72,8 @@ topics described later in this document. It is not the bounded stage-Job path.
 Both topologies build the same five application images and expose the same
 dashboard API contract. Local mode uses the compatibility workers. Distributed
 mode uses those workers when `STAGE_JOBS_IMAGE_TAG` is absent and activates the
-qualified five-Job DAG when the variable supplies an immutable Git-SHA tag.
+qualified five-Job DAG when the variable supplies a traceable local Git-SHA
+tag. Staging and production executor maps require promoted OCI digests.
 Kafka, MinIO and PostgreSQL/PostGIS remain deployed in either mode.
 
 Main runtime objects:
@@ -237,7 +238,6 @@ Primary endpoints:
 - `POST /missions/{vol_id}/stages/runs/{run_id}/artifacts` (admin-only,
   verified recovery/import path)
 - `GET /status/summary` (compatibility missions)
-- `GET /pods`
 - `GET /mission/parameters`
 - `POST /mission/resume`
 - `DELETE /mission/{vol_id}`
@@ -277,8 +277,8 @@ Primary responsibilities:
   checksums, quality metrics and durable lifecycle logs
 - retain Kafka mission/control/status publication, compatibility completion
   (`COLMAP -> TILER -> IA`) and bounded WebSocket replay for legacy missions
-- expose pod health and restart information through `GET /pods`
-- fall back to a static pod list when Kubernetes service-account credentials are unavailable
+- keep Kubernetes Pod inventory outside the tenant HTTP boundary; tenant
+  progress is derived from durable mission and stage-run state
 - expose pipeline defaults, the map/facade process catalog and parameter
   metadata through `GET /mission/parameters`
 - expose bounded COG map tiles, rerunnable AI campaigns, indexed feature
@@ -306,7 +306,6 @@ The API package is split by responsibility:
 | `mission_state.py` | mission persistence, status policy, serialization, resume policy |
 | `messaging.py` | mission/control event construction and outbox publisher gateway |
 | `realtime.py` | status consumer, bounded history, WebSocket fan-out |
-| `kubernetes_status.py` | read-only Kubernetes pod adapter |
 | `image_preview.py` | framework-independent image conversion |
 | `routers/missions.py` | mission and operational HTTP endpoints |
 | `routers/datasets.py` | S3 browsing, preview, upload, download, deletion |

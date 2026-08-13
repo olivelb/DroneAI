@@ -16,6 +16,7 @@ from shared.database import (
     Mission,
     MissionArtifact,
     MissionStageRun,
+    Organization,
     OrganizationSaasPolicy,
     OrganizationUsageEvent,
 )
@@ -67,6 +68,7 @@ def _settings(**kwargs):
 @pytest.fixture
 def stage_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    Organization.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     DetectionShardReceipt.__table__.create(engine)
@@ -104,6 +106,16 @@ def _add_run(
     organization_id="legacy-unassigned",
 ):
     with scope() as session:
+        if session.get(Organization, organization_id) is None:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    display_name=organization_id,
+                    status="active",
+                    created_by="test",
+                    updated_by="test",
+                )
+            )
         mission = Mission(
             vol_id=vol_id,
             owner_subject=owner,
@@ -140,6 +152,16 @@ def _add_detection_run(
 ):
     artifact_id = f"raster-{run_id}"
     with scope() as session:
+        if session.get(Organization, organization_id) is None:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    display_name=organization_id,
+                    status="active",
+                    created_by="test",
+                    updated_by="test",
+                )
+            )
         mission = Mission(
             vol_id=f"mission-{run_id}",
             owner_subject=owner,
@@ -212,6 +234,11 @@ def test_reservation_is_fair_persistent_and_records_executor_provenance(stage_se
         item.config.tolerations == _executors()[item.request.stage].tolerations
         for item in reserved
     )
+    assert all(
+        dict(item.config.node_selector)[orchestrator.GPU_ARCHITECTURE_LABEL]
+        == "ampere"
+        for item in reserved
+    )
     with stage_sessions() as session:
         scheduled = session.query(MissionStageRun).filter(
             MissionStageRun.executor == "kubernetes-job"
@@ -275,6 +302,112 @@ def test_reservation_enforces_organization_policy_and_audits_usage(stage_session
         assert session.query(OrganizationUsageEvent).filter_by(
             action="stage_scheduled"
         ).count() == 2
+
+
+def test_suspended_organization_runs_are_not_dispatched(stage_sessions):
+    _add_run(
+        stage_sessions,
+        "mission-suspended",
+        "member-a",
+        "6" * 32,
+        organization_id="tenant-suspended",
+    )
+    _add_run(
+        stage_sessions,
+        "mission-active",
+        "member-b",
+        "7" * 32,
+        organization_id="tenant-active",
+    )
+    with stage_sessions() as session:
+        session.get(Organization, "tenant-suspended").status = "suspended"
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+
+    assert [item.request.organization_id for item in reserved] == [
+        "tenant-active"
+    ]
+
+
+def test_scheduler_scans_beyond_first_candidate_page(stage_sessions):
+    with stage_sessions() as session:
+        for organization_id in ("tenant-a", "tenant-b"):
+            session.add(
+                Organization(
+                    id=organization_id,
+                    display_name=organization_id,
+                    status="active",
+                    created_by="test",
+                    updated_by="test",
+                )
+            )
+        mission_a = Mission(
+            vol_id="backlogged",
+            owner_subject="member-a",
+            organization_id="tenant-a",
+            workspace_prefix=mission_prefix("tenant-a", "backlogged"),
+            status="pending",
+        )
+        mission_b = Mission(
+            vol_id="runnable",
+            owner_subject="member-b",
+            organization_id="tenant-b",
+            workspace_prefix=mission_prefix("tenant-b", "runnable"),
+            status="pending",
+        )
+        session.add_all((mission_a, mission_b))
+        session.flush()
+        session.add(
+            MissionStageRun(
+                run_id="f" * 32,
+                mission_id=mission_a.id,
+                stage="reconstruction",
+                attempt=1_000,
+                status="running",
+                idempotency_key="f" * 64,
+                executor="kubernetes-job",
+                job_name="active-owner-a",
+                resource_class="gpu-geometry",
+            )
+        )
+        for attempt in range(500):
+            run_id = f"{attempt:032x}"
+            session.add(
+                MissionStageRun(
+                    run_id=run_id,
+                    mission_id=mission_a.id,
+                    stage="reconstruction",
+                    attempt=attempt,
+                    status="queued",
+                    idempotency_key=hashlib.sha256(run_id.encode()).hexdigest(),
+                    resource_class="gpu-geometry",
+                )
+            )
+        session.add(
+            MissionStageRun(
+                run_id="e" * 32,
+                mission_id=mission_b.id,
+                stage="reconstruction",
+                attempt=0,
+                status="queued",
+                idempotency_key="e" * 64,
+                resource_class="gpu-geometry",
+            )
+        )
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+
+    assert [item.request.organization_id for item in reserved] == ["tenant-b"]
 
 
 def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sessions):
@@ -628,6 +761,24 @@ def test_executor_catalog_parses_stage_tolerations():
             value="present",
             effect="NoSchedule",
         ),
+    )
+
+
+def test_protected_executor_catalog_rejects_mutable_git_sha_tags():
+    payload = {
+        stage: {
+            "image": "registry.example/worker:0123456789abcdef",
+            "command": ["python", "-m", f"{stage}_executor"],
+            "gpu_architecture": "ampere",
+        }
+        for stage in _executors()
+    }
+
+    with pytest.raises(ValueError, match="must use an OCI digest"):
+        orchestrator._executor_catalog(json.dumps(payload), require_digest=True)
+
+    assert orchestrator._executor_catalog(json.dumps(payload))["detection"].image == (
+        "registry.example/worker:0123456789abcdef"
     )
 
 

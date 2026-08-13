@@ -12,6 +12,8 @@ creates the catalogue row only after every file is completed and the verified
 `dataset-manifest.json` has been published. Only a `ready` dataset may be
 listed, browsed or attached to a new mission. New missions store both the
 compatibility `input_dataset` prefix and a foreign key to the catalogue row.
+`GET /datasets` is bounded to 100 rows by default and accepts `limit` (1–200)
+plus `offset`; clients must page rather than assuming an unbounded catalogue.
 The legacy API-proxied `/datasets/upload` path returns `404` in every
 environment so local development follows the same catalogue-producing flow.
 
@@ -21,6 +23,14 @@ Raw S3 prefixes without a catalogue row are intentionally not assigned to a
 tenant. They must be re-ingested. Existing catalogue-backed legacy datasets
 can use the explicit audited workflow in
 [`legacy-adoption-v1.md`](legacy-adoption-v1.md).
+
+Every presigned part binds the exact expected `Content-Length`; the browser
+also checks its Blob slice against the signed size. Before completion, the API
+calls provider `ListParts` and compares every observed part number, size and
+ETag with the durable intent. Any mismatch aborts the whole multipart upload
+and marks it failed, so declared logical reservation cannot hide oversized
+provider-side parts. The bucket lifecycle rule for incomplete multipart
+uploads remains the final recovery boundary for clients that never finalize.
 
 ## Tenant boundary
 

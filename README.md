@@ -33,7 +33,7 @@ more uniform seed because DroneGS performs the later densification. See the
 | Mode | Intended use | Entry point |
 |---|---|---|
 | Local dashboard | Complete workstation deployment with Docker Compose | `./deploy.sh local` |
-| Distributed dashboard | Single-node K3s deployment managed by Helm; qualified bounded stage Jobs with an immutable Git-SHA tag | `STAGE_JOBS_IMAGE_TAG=<git-sha> ./deploy.sh distributed` |
+| Distributed dashboard | Single-node K3s deployment managed by Helm; local Jobs use a Git-SHA tag, protected environments require OCI digests | `STAGE_JOBS_IMAGE_TAG=<git-sha> ./deploy.sh distributed` |
 | Local runner | Infrastructure-free scientific diagnostics | `./tools/run_local_pipeline.sh` |
 
 DroneAI uses S3-compatible object storage for datasets and mission artifacts,

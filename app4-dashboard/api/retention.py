@@ -17,10 +17,14 @@ from shared import storage
 from shared.database import (
     Mission,
     MissionArtifact,
+    MissionStageRun,
     OrganizationSaasPolicy,
     get_session,
 )
 from shared.organization_saas import (
+    ACTIVE_STAGE_STATUSES,
+    MANUAL_DELETION_FAILED_STEP,
+    MANUAL_DELETION_STEP,
     RETENTION_TERMINAL_STATUSES,
     append_usage_event,
 )
@@ -37,6 +41,28 @@ class RetentionCandidate:
     organization_id: str
     vol_id: str
     prefix: str
+    reason: str
+
+
+def _compute_is_quiescent(session: Session, mission_id: int) -> bool:
+    """Require durable Kubernetes cleanup evidence before object deletion."""
+
+    runs = (
+        session.query(MissionStageRun)
+        .filter(
+            MissionStageRun.mission_id == mission_id,
+        )
+        .all()
+    )
+    for run in runs:
+        if run.status in ACTIVE_STAGE_STATUSES:
+            return False
+        if run.executor != "kubernetes-job" or not run.job_name:
+            continue
+        provenance = cast(dict[str, object], run.provenance or {})
+        if not provenance.get("cancellation_job_cleanup_at"):
+            return False
+    return True
 
 
 def _locked_deleting_mission(
@@ -79,6 +105,9 @@ def claim_retention_candidates(
                     OrganizationSaasPolicy.retention_days.isnot(None),
                     Mission.status.in_(RETENTION_TERMINAL_STATUSES),
                 ),
+                Mission.current_step.in_(
+                    (MANUAL_DELETION_STEP, MANUAL_DELETION_FAILED_STEP)
+                ),
                 Mission.status.in_(RETRYABLE_RETENTION_STATUSES),
             ),
         )
@@ -92,8 +121,17 @@ def claim_retention_candidates(
     )
     candidates: list[RetentionCandidate] = []
     for mission, policy in rows:
+        manual_deletion = mission.current_step in (
+            MANUAL_DELETION_STEP,
+            MANUAL_DELETION_FAILED_STEP,
+        )
+        manual_retry = mission.current_step == MANUAL_DELETION_FAILED_STEP
         updated_at = _aware(cast(datetime, mission.updated_at))
-        if mission.status in RETRYABLE_RETENTION_STATUSES:
+        if manual_deletion:
+            eligible = _compute_is_quiescent(session, cast(int, mission.id)) and (
+                not manual_retry or updated_at <= now - timedelta(seconds=retry_seconds)
+            )
+        elif mission.status in RETRYABLE_RETENTION_STATUSES:
             eligible = updated_at <= now - timedelta(seconds=retry_seconds)
         else:
             if policy is None or policy.retention_days is None:
@@ -109,7 +147,9 @@ def claim_retention_candidates(
             cast(str, mission.workspace_prefix),
         )
         mission.status = "deleting"
-        mission.current_step = "RETENTION_DELETING"
+        mission.current_step = (
+            "DELETION_DRAINED" if manual_deletion else "RETENTION_DELETING"
+        )
         mission.error_message = None
         candidates.append(
             RetentionCandidate(
@@ -117,6 +157,7 @@ def claim_retention_candidates(
                 organization_id=cast(str, mission.organization_id),
                 vol_id=cast(str, mission.vol_id),
                 prefix=namespace.prefix(),
+                reason="manual" if manual_deletion else "retention",
             )
         )
         if len(candidates) >= limit:
@@ -141,17 +182,27 @@ def _complete_retention(
             .scalar()
             or 0
         )
+        is_manual = candidate.reason == "manual"
         append_usage_event(
             session,
             organization_id=candidate.organization_id,
-            action="retention_deleted",
+            action="storage_released" if is_manual else "retention_deleted",
             resource_type="mission",
             resource_id=candidate.vol_id,
-            actor_subject="system:retention",
+            actor_subject=(
+                "system:mission-deletion" if is_manual else "system:retention"
+            ),
             quantity=-artifact_bytes,
             unit="bytes",
-            idempotency_key=f"retention-deleted:mission:{candidate.mission_id}",
-            details={"objects_deleted": objects_deleted},
+            idempotency_key=(
+                f"storage-released:mission:{candidate.mission_id}"
+                if is_manual
+                else f"retention-deleted:mission:{candidate.mission_id}"
+            ),
+            details={
+                "objects_deleted": objects_deleted,
+                "deletion_reason": candidate.reason,
+            },
         )
         session.query(Mission).filter(
             Mission.id == candidate.mission_id,
@@ -165,7 +216,11 @@ def _fail_retention(candidate: RetentionCandidate, error: Exception) -> None:
         if mission is None:
             return
         mission.status = "deletion_failed"
-        mission.current_step = "RETENTION_FAILED"
+        mission.current_step = (
+            MANUAL_DELETION_FAILED_STEP
+            if candidate.reason == "manual"
+            else "RETENTION_FAILED"
+        )
         mission.error_message = f"Retention object deletion failed: {error}"[:4000]
         append_usage_event(
             session,

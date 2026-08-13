@@ -218,7 +218,9 @@ def _legacy_features(
     )
     if immutable is not None:
         return immutable
-    query = session.query(Detection).filter(Detection.vol_id == vol_id)
+    query = session.query(Detection).filter(
+        Detection.mission_id == mission.id
+    )
     query = apply_detection_spatial_filter(query, bounds)
     records = query.order_by(Detection.id).limit(limit + 1).all()
     metadata = mission.tiling_metadata or {}
@@ -237,14 +239,14 @@ def _legacy_features(
 
 def _stored_features(
     session: RouteSession,
-    vol_id: str,
+    mission_id: int,
     bounds: Bounds | None,
     requested_sources: set[str],
     requested_runs: set[str],
     limit: int,
 ) -> tuple[list[JsonObject], bool]:
     query = session.query(MapFeature).filter(
-        MapFeature.vol_id == vol_id,
+        MapFeature.mission_id == mission_id,
         MapFeature.source.in_(requested_sources),
         MapFeature.deleted_at.is_(None),
     )
@@ -302,7 +304,7 @@ def vector_layer(
         if remaining and requested_sources.intersection({"manual", "ai"}):
             stored, stored_truncated = _stored_features(
                 typed_session,
-                vol_id,
+                mission.id,
                 bounds,
                 requested_sources,
                 requested_runs,

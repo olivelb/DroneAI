@@ -60,11 +60,15 @@ cannot both consume the same remaining allowance. An idempotent
 expiry cleanup and dataset deletion write `storage_released` only after object
 cleanup has succeeded.
 
-Stage output sizes are post-accounted because their size is not known before
-compute. Missing artifact sizes count as zero and are an observability defect;
-they never justify treating an unverified S3 inventory as exact billing. A
-future physical-byte inventory may replace this logical v1 definition through
-a versioned contract.
+Stage output size is not known before compute, but it is mandatory in every new
+publication. The executor or admin recovery path locks the policy and reserves
+that logical size before the artifact enters the durable graph or releases its
+dependant stage. An overage leaves the run failed (or still running on the
+recovery path), publishes no artifact row and writes no usage event; the
+already-uploaded deterministic object can be retried after capacity changes.
+Historical artifacts with a null size remain readable but cannot be produced
+by the current contract. A future physical-byte inventory may replace this
+logical v1 definition through a versioned contract.
 
 ## Compute and request enforcement
 
@@ -98,6 +102,13 @@ inputs are not automatically deleted with a mission because they may be shared
 by several missions; dataset deletion remains an explicit admin operation.
 Tenant CAS garbage collection and legal hold are outside v1 and must be added
 before policies requiring either behavior are sold.
+
+Manual mission deletion enters the same elected-worker state machine without
+waiting for the age policy. It first cancels queued/running stage runs, waits
+for Kubernetes Job cleanup evidence, and only then deletes the exact mission
+prefix and database graph. Its immutable ledger action is `storage_released`
+with `deletion_reason=manual`; therefore a successful DELETE response means
+"requested", not "physically erased".
 
 ## Isolation and audit
 

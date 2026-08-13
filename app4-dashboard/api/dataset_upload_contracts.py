@@ -107,6 +107,7 @@ class UploadPartUrlResponse(TypedDict):
     url: str
     expires_in: int
     part_number: int
+    expected_size: int
 
 
 class UploadFileCompleteResponse(TypedDict):

@@ -29,6 +29,7 @@ from shared.database import (
     PlatformAuditEvent,
     PlatformCredential,
     PlatformMember,
+    ProcessedTile,
 )
 from shared.access_audit import append_access_audit_event
 from shared.identity import append_audit_event, issue_credential
@@ -83,6 +84,75 @@ PROTECTED_TABLES = (
     "mission_logs",
     "outbox_events",
 )
+
+
+@pytest.mark.integration
+def test_mission_and_tile_identity_are_tenant_scoped() -> None:
+    suffix = uuid4().hex[:12]
+    shared_vol_id = f"shared-flight-{suffix}"
+    organization_a = f"identity-a-{suffix}"
+    organization_b = f"identity-b-{suffix}"
+
+    with database.get_session() as session:
+        session.add_all(
+            [
+                Organization(
+                    id=organization_a,
+                    display_name="Identity tenant A",
+                    status="active",
+                    created_by="integration",
+                    updated_by="integration",
+                ),
+                Organization(
+                    id=organization_b,
+                    display_name="Identity tenant B",
+                    status="active",
+                    created_by="integration",
+                    updated_by="integration",
+                ),
+            ]
+        )
+        session.flush()
+        mission_a = Mission(
+            vol_id=shared_vol_id,
+            organization_id=organization_a,
+            owner_subject="operator-a",
+            workspace_prefix=mission_prefix(organization_a, shared_vol_id),
+        )
+        mission_b = Mission(
+            vol_id=shared_vol_id,
+            organization_id=organization_b,
+            owner_subject="operator-b",
+            workspace_prefix=mission_prefix(organization_b, shared_vol_id),
+        )
+        session.add_all([mission_a, mission_b])
+        session.flush()
+        session.add_all(
+            [
+                ProcessedTile(
+                    mission_id=mission_a.id,
+                    vol_id=shared_vol_id,
+                    tile_index=0,
+                    detection_count=0,
+                ),
+                ProcessedTile(
+                    mission_id=mission_b.id,
+                    vol_id=shared_vol_id,
+                    tile_index=0,
+                    detection_count=0,
+                ),
+            ]
+        )
+        session.flush()
+
+        assert mission_a.id != mission_b.id
+        assert (
+            session.query(ProcessedTile)
+            .filter(ProcessedTile.mission_id.in_([mission_a.id, mission_b.id]))
+            .count()
+            == 2
+        )
+        session.rollback()
 
 
 @pytest.mark.integration
@@ -348,6 +418,13 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         )
         session.execute(
             text(f'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO "{role}"')
+        )
+        session.execute(
+            text(
+                "GRANT EXECUTE ON FUNCTION droneai_platform_identity(), "
+                "droneai_identity_capability(), "
+                f'droneai_identity_capability_member(text) TO "{role}"'
+            )
         )
         session.execute(
             text(

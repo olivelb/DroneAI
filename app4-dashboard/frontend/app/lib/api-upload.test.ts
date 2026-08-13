@@ -46,6 +46,7 @@ describe("uploadDataset", () => {
           url: "https://objects.example/part-1",
           expires_in: 900,
           part_number: 1,
+          expected_size: 3,
         });
       }
       if (url === "https://objects.example/part-1") {

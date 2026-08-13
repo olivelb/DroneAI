@@ -136,23 +136,23 @@ stageJobs:
   artifactManifestV2WriteEnabled: true
   executors:
     reconstruction:
-      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app1-colmap/stage_executor.py", "reconstruction"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
     gaussian_training:
-      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app1-colmap/stage_executor.py", "gaussian_training"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
     gaussian_filtering:
-      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app1-colmap/stage_executor.py", "gaussian_filtering"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
     rasterization:
-      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap:REPLACE_GIT_SHA"
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app1-colmap/stage_executor.py", "rasterization"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
     detection:
-      image: "REPLACE_REGISTRY_URL/droneai/drone-ia:REPLACE_GIT_SHA"
+      image: "REPLACE_REGISTRY_URL/droneai/drone-ia@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app2-ia/stage_executor.py"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
   credentialSecrets:

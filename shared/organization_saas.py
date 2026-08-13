@@ -27,6 +27,8 @@ from shared.database import (
 
 ACTIVE_UPLOAD_STATUSES = ("initializing", "uploading", "finalizing", "failed")
 ACTIVE_STAGE_STATUSES = ("queued", "running")
+MANUAL_DELETION_STEP = "DELETION_REQUESTED"
+MANUAL_DELETION_FAILED_STEP = "MANUAL_DELETION_FAILED"
 RETENTION_TERMINAL_STATUSES = (
     "success",
     "completed",
@@ -270,6 +272,39 @@ def record_storage_reservation(
         idempotency_key=f"storage-reserved:upload:{upload_session_id}",
         details={
             "usage_after_bytes": storage_usage_bytes(session, organization_id),
+        },
+    )
+
+
+def reserve_stage_output_storage(
+    session: Session,
+    *,
+    organization_id: str,
+    stage_run_id: str,
+    artifact_id: str,
+    output_bytes: int,
+    actor_subject: str,
+) -> None:
+    """Atomically reserve a stage output before it enters the durable graph."""
+
+    current = check_storage_reservation(
+        session,
+        organization_id=organization_id,
+        requested_bytes=output_bytes,
+    )
+    append_usage_event(
+        session,
+        organization_id=organization_id,
+        action="storage_reserved",
+        resource_type="stage_artifact",
+        resource_id=artifact_id,
+        actor_subject=actor_subject,
+        quantity=output_bytes,
+        unit="bytes",
+        idempotency_key=f"storage-reserved:stage-artifact:{artifact_id}",
+        details={
+            "stage_run_id": stage_run_id,
+            "usage_after_bytes": current + output_bytes,
         },
     )
 

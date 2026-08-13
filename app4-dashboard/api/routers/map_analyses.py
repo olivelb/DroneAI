@@ -58,13 +58,13 @@ def list_analyses(
 ) -> AnalysisListResponse:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        get_mission(
+        mission = get_mission(
             typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_list"
         )
         runs = cast(
             list[AnalysisRunRecord],
             typed_session.query(AIAnalysisRun)
-            .filter(AIAnalysisRun.vol_id == vol_id)
+            .filter(AIAnalysisRun.mission_id == mission.id)
             .order_by(AIAnalysisRun.created_at.desc())
             .all(),
         )

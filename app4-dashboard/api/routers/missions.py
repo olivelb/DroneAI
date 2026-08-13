@@ -3,24 +3,24 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from typing import Annotated, Any, Protocol, TypedDict, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.exc import IntegrityError
 
-from shared import storage
 from shared.cancellation import mark_cancellation_requested
 from shared.config import TOPIC_CONTROL, TOPIC_MISSION
-from shared.database import Mission, get_session
+from shared.database import Mission, MissionStageRun, get_session
 from shared.facade_process import product_process_catalog
 from shared.inbox_outbox import enqueue_outbox
 from shared.kafka_partitioning import tenant_mission_key
+from shared.organization_saas import MANUAL_DELETION_STEP
 from shared.pipeline_params import PARAMETER_METADATA, PIPELINE_DEFAULTS
 from shared.phase_dag import initialize_stage_runs
 from shared.stage_contracts import stage_dag_catalog
 from shared.tenancy import (
     LEGACY_ORGANIZATION_ID,
-    MissionObjectNamespace,
     mission_prefix,
 )
 from shared.quality_profiles import (
@@ -34,7 +34,6 @@ from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 from shared.sam3_capabilities import Sam3Capability, sam3_capability
 
-from ..kubernetes_status import KubernetesStatus, get_pod_states
 from ..dataset_access import get_owned_dataset
 from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
@@ -71,6 +70,7 @@ router.include_router(mission_stages_router)
 
 
 class MissionMutationRecord(Protocol):
+    id: int
     vol_id: str
     organization_id: str
     workspace_prefix: str | None
@@ -88,6 +88,7 @@ class CommandResponse(TypedDict):
 class DeleteMissionResponse(CommandResponse):
     s3_objects_deleted: int
     db_deleted: bool
+    deletion_pending: bool
 
 
 class StartMissionResponse(TypedDict):
@@ -276,6 +277,7 @@ def _cancel_mission(
 @router.delete(
     "/mission/{vol_id}",
     dependencies=[Depends(require_admin)],
+    status_code=status.HTTP_202_ACCEPTED,
 )
 def delete_mission(
     vol_id: str,
@@ -291,7 +293,6 @@ def _delete_mission(
     owner_subject: str | None = None,
 ) -> DeleteMissionResponse:
     mission_exists = False
-    delete_prefix: str | None = None
     with get_session() as session:
         mission = _find_mission(
             session,
@@ -303,60 +304,57 @@ def _delete_mission(
         )
         if mission is not None:
             mission_exists = True
-            delete_prefix = MissionObjectNamespace.from_binding(
-                mission.organization_id,
-                mission.vol_id,
-                mission.workspace_prefix,
-            ).prefix()
-            mission.status = "deleting"
-            mission.current_step = "DELETING"
-            mission.error_message = None
-
-    deleted_count = 0
-    try:
-        if delete_prefix is not None:
-            deleted_count = storage.delete_prefix(delete_prefix)
-    except Exception as error:
-        if mission_exists:
-            with get_session() as session:
-                mission = _find_mission(
+            if mission.current_step != MANUAL_DELETION_STEP and mission.status not in {
+                "deleting",
+                "deletion_failed",
+            }:
+                attempt = int(mission.retry_count or 0)
+                if not mark_cancellation_requested(
                     session,
-                    vol_id,
-                    principal,
-                    requested_owner=owner_subject,
-                    action="delete_failure",
-                    for_update=True,
+                    vol_id=vol_id,
+                    attempt=attempt,
+                    organization_id=mission.organization_id,
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(f"Mission {vol_id} changed generation before deletion"),
+                    )
+                now = datetime.now(UTC)
+                (
+                    session.query(MissionStageRun)
+                    .filter(
+                        MissionStageRun.mission_id == mission.id,
+                        MissionStageRun.status.in_(("queued", "running")),
+                    )
+                    .update(
+                        {
+                            MissionStageRun.status: "cancelled",
+                            MissionStageRun.completed_at: now,
+                        },
+                        synchronize_session=False,
+                    )
                 )
-                if mission is not None:
-                    mission.status = "deletion_failed"
-                    mission.current_step = "DELETION_FAILED"
-                    mission.error_message = f"S3 delete failed: {error}"
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"S3 delete failed: {error}",
-        ) from error
-
-    try:
-        with get_session() as session:
-            mission = _find_mission(
-                session,
-                vol_id,
-                principal,
-                requested_owner=owner_subject,
-                action="delete_commit",
-            )
-            if mission:
-                session.delete(mission)
-    except Exception as error:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=(f"S3 cleaned ({deleted_count} objects) but DB delete failed: {error}"),
-        ) from error
+                mission.current_step = MANUAL_DELETION_STEP
+                enqueue_outbox(
+                    session,
+                    topic=TOPIC_CONTROL,
+                    event=build_cancel_event(
+                        vol_id,
+                        organization_id=mission.organization_id,
+                        attempt=attempt,
+                    ),
+                    key=tenant_mission_key(mission.organization_id, vol_id),
+                )
     return {
         "status": "success",
-        "message": f"Mission {vol_id} deleted.",
-        "s3_objects_deleted": deleted_count,
-        "db_deleted": mission_exists,
+        "message": (
+            f"Mission {vol_id} deletion queued. Storage will be removed after compute has stopped."
+            if mission_exists
+            else f"Mission {vol_id} does not exist."
+        ),
+        "s3_objects_deleted": 0,
+        "db_deleted": False,
+        "deletion_pending": mission_exists,
     }
 
 
@@ -418,11 +416,6 @@ def _resume_mission(
     return response
 
 
-@router.get("/pods")
-def pod_statuses() -> KubernetesStatus:
-    return get_pod_states()
-
-
 @router.get("/mission/parameters")
 def mission_parameters() -> MissionParametersResponse:
     work_drives = configured_work_drives()
@@ -469,7 +462,14 @@ def _start_mission(
     )
     try:
         with get_session() as session:
-            existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
+            existing = (
+                session.query(Mission)
+                .filter(
+                    Mission.vol_id == params.vol_id,
+                    Mission.organization_id == organization_id,
+                )
+                .first()
+            )
             if existing is not None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

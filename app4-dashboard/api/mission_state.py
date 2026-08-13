@@ -125,7 +125,17 @@ def apply_mission_state(session: SessionProtocol, payload: JsonObject) -> None:
     raw_details = payload.get("details")
     details = cast(JsonObject, raw_details) if isinstance(raw_details, dict) else None
 
-    mission = cast(MissionRecord, get_or_create_mission(session, vol_id))
+    organization_id = str(
+        payload.get("organization_id") or LEGACY_ORGANIZATION_ID
+    )
+    mission = cast(
+        MissionRecord,
+        get_or_create_mission(
+            session,
+            vol_id,
+            organization_id=organization_id,
+        ),
+    )
     states: JsonObject = dict(mission.service_states or {})
     states[service] = payload
     mission.service_states = states

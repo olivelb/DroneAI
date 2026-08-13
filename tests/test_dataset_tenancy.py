@@ -88,6 +88,25 @@ def test_dataset_listing_is_partitioned_by_owner(tenant_sessions):
     ]
 
 
+def test_dataset_listing_is_bounded_and_pageable(tenant_sessions):
+    with tenant_sessions() as session:
+        session.add_all(
+            [
+                _dataset("alice", "alpha"),
+                _dataset("alice", "bravo"),
+                _dataset("alice", "charlie"),
+            ]
+        )
+
+    result = dataset_routes.list_datasets(
+        security.Principal("alice", "operator"),
+        limit=1,
+        offset=1,
+    )
+
+    assert [item["name"] for item in result] == ["bravo"]
+
+
 def test_dataset_listing_is_partitioned_by_organization_even_for_same_subject(
     tenant_sessions,
 ):

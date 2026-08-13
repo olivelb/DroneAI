@@ -4,7 +4,6 @@ import type {
   MissionDetail,
   MissionSummary,
   ParameterConfigResponse,
-  PodState,
   StatusPayload,
 } from "./types";
 import {
@@ -213,29 +212,6 @@ export const parseMissionDetail = decoder<MissionDetail>(
       stage_runs: arrayOf(stageRun),
     })(value, path);
   },
-);
-
-export const parsePods = decoder<{
-  pods: PodState[];
-  error: string | null;
-}>(
-  "pod status",
-  objectWith({
-    pods: arrayOf(objectWith({
-      name: nonEmptyString,
-      phase: nonEmptyString,
-      ready: nullable(stringValue),
-      restarts: nullable(integerValue),
-    }, {
-      reason: nullish(stringValue),
-      last_terminated_reason: nullish(stringValue),
-      last_terminated_exit_code: nullish(integerValue),
-      oom_killed: booleanValue,
-      memory_limit: nullish(stringValue),
-      memory_request: nullish(stringValue),
-    })),
-    error: nullable(stringValue),
-  }),
 );
 
 const processConfig = objectWith({

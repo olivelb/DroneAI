@@ -48,6 +48,9 @@ GRANT USAGE ON SCHEMA public TO droneai_api;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
   TO droneai_api;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO droneai_api;
+GRANT EXECUTE ON FUNCTION droneai_platform_identity(),
+  droneai_identity_capability(),
+  droneai_identity_capability_member(text) TO droneai_api;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO droneai_api;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
@@ -56,7 +59,11 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 
 The default privileges must be owned by the same migration role that creates
 future tables. Reapply the current-object grants after migration `0026` when
-adopting RLS on an existing database.
+adopting RLS on an existing database. Migration `0034` revokes the implicit
+`PUBLIC` execution privilege on the three identity `SECURITY DEFINER`
+functions. Apply the explicit function grant above to the request-serving API
+role before rolling out that migration. Do not grant these functions to stage
+roles or other database users.
 
 ## Transaction context
 

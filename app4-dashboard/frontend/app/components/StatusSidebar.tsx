@@ -4,7 +4,6 @@ import React, { useEffect, useRef, useState } from "react";
 import {
   Activity,
   CircleDot,
-  Cpu,
   Radio,
   Terminal,
   Trash2,
@@ -13,9 +12,8 @@ import { deleteMission } from "../lib/api";
 import type { MessageKey } from "../lib/i18n/catalog";
 import { useI18n } from "../lib/i18n/provider";
 import { useMissionRuntime } from "../lib/mission-runtime";
-import { useWorkspaceData } from "../lib/workspace-data";
 import { serviceOrderFor } from "../lib/types";
-import type { PodState, ServiceName, StatusPayload } from "../lib/types";
+import type { ServiceName, StatusPayload } from "../lib/types";
 import MissionStageProgress from "./MissionStageProgress";
 
 const SERVICE_LABELS: Record<ServiceName, MessageKey> = {
@@ -83,27 +81,6 @@ function ServiceProgress({
   );
 }
 
-function PodRow({ pod }: { pod: PodState }) {
-  const { t } = useI18n();
-  const healthy = pod.phase === "Running" && !pod.oom_killed;
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-[#edf1ef] py-2.5 last:border-0">
-      <span className="min-w-0 truncate text-[11px] font-semibold text-[#4d5a56]">
-        {pod.name}
-      </span>
-      <span
-        className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold ${
-          healthy
-            ? "bg-emerald-100 text-emerald-700"
-            : "bg-amber-100 text-amber-700"
-        }`}
-      >
-        {pod.oom_killed ? "OOM" : pod.phase || pod.reason || t("common.unknown")}
-      </span>
-    </div>
-  );
-}
-
 export default function StatusSidebar() {
   const { t } = useI18n();
   const {
@@ -116,7 +93,6 @@ export default function StatusSidebar() {
     wsConnected,
     refreshSummary,
   } = useMissionRuntime();
-  const { pods, podsError } = useWorkspaceData();
   const logRef = useRef<HTMLDivElement>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -303,31 +279,6 @@ export default function StatusSidebar() {
           </pre>
         </details>
       )}
-
-      <details className="surface">
-        <summary className="flex cursor-pointer list-none items-center justify-between px-4 py-4">
-          <span className="flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-[#65726e]">
-            <Cpu size={14} className="text-[#0f766e]" />
-            {t("monitor.workers")}
-          </span>
-          <span className="rounded-full bg-[#edf3f1] px-2 py-0.5 text-[10px] font-bold text-[#66736f]">
-            {pods.length}
-          </span>
-        </summary>
-        <div className="border-t border-[#e7ecea] px-4 py-2">
-          {pods.map((pod) => (
-            <PodRow key={pod.name} pod={pod} />
-          ))}
-          {pods.length === 0 && (
-            <p className="py-3 text-xs text-[#8a9692]">
-              {t("monitor.noWorkers")}
-            </p>
-          )}
-          {podsError && (
-            <p className="pb-2 text-[11px] text-amber-700">{podsError}</p>
-          )}
-        </div>
-      </details>
 
       <section className="overflow-hidden rounded-[1.25rem] border border-[#263632] bg-[#18221f] shadow-[0_18px_50px_rgba(20,32,28,0.14)]">
         <div className="flex items-center justify-between border-b border-white/8 px-4 py-3">

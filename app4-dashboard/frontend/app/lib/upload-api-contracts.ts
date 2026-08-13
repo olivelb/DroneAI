@@ -61,6 +61,7 @@ export const parseSignedUploadPart = decoder<{
   url: string;
   expires_in: number;
   part_number: number;
+  expected_size: number;
 }>(
   "signed upload part",
   objectWith({
@@ -68,6 +69,7 @@ export const parseSignedUploadPart = decoder<{
     url: nonEmptyString,
     expires_in: integerValue,
     part_number: integerValue,
+    expected_size: integerValue,
   }),
 );
 

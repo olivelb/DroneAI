@@ -241,7 +241,11 @@ class OrthomosaicTiler:
                 return False
             mission.ortho_s3_key = ortho_s3_key
             mission.total_tiles = plan["total_tiles"]
-            mission.tiles_received = count_received_tiles(session, vol_id)
+            mission.tiles_received = count_received_tiles(
+                session,
+                vol_id,
+                namespace.organization_id,
+            )
             mission.tiling_metadata = metadata
             mission.aggregation_status = "collecting"
             return True
@@ -442,6 +446,7 @@ class OrthomosaicTiler:
         analysis_run_id: str | None,
         analysis_attempt: int,
         tile_count: int,
+        organization_id: str,
     ) -> bool:
         with get_session() as session:
             if analysis_run_id:
@@ -459,7 +464,15 @@ class OrthomosaicTiler:
                     int(100 * run.tiles_completed / max(run.total_tiles, 1)),
                 )
                 return True
-            mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().one()
+            mission = (
+                session.query(Mission)
+                .filter(
+                    Mission.vol_id == vol_id,
+                    Mission.organization_id == organization_id,
+                )
+                .with_for_update()
+                .one()
+            )
             if int(mission.retry_count or 0) != int(analysis_attempt):
                 return False
             mission.total_tiles = tile_count
@@ -639,6 +652,7 @@ class OrthomosaicTiler:
                 analysis_run_id,
                 analysis_attempt,
                 tile_count,
+                namespace.organization_id,
             ):
                 return
             if self.producer.flush():

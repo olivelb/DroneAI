@@ -825,6 +825,15 @@ class _MultipartClient:
         assert kwargs["HttpMethod"] == "PUT"
         return "https://objects.example/upload-part"
 
+    def list_parts(self, **kwargs):
+        self.listed = kwargs
+        return {
+            "Parts": [
+                {"PartNumber": 1, "Size": 123, "ETag": '"part-etag"'}
+            ],
+            "IsTruncated": False,
+        }
+
     def complete_multipart_upload(self, **kwargs):
         self.completed = kwargs
         return {"ETag": '"multipart-etag"'}
@@ -847,6 +856,11 @@ def test_multipart_upload_helpers_presign_complete_and_abort(monkeypatch):
         "datasets/site/image.jpg",
         upload_id,
         1,
+        content_length=123,
+    )
+    parts = storage.list_multipart_parts(
+        "datasets/site/image.jpg",
+        upload_id,
     )
     result = storage.complete_multipart_upload(
         "datasets/site/image.jpg",
@@ -861,6 +875,10 @@ def test_multipart_upload_helpers_presign_complete_and_abort(monkeypatch):
         "size": 123,
         "etag": '"multipart-etag"',
     }
+    assert parts == [
+        {"PartNumber": 1, "Size": 123, "ETag": '"part-etag"'}
+    ]
+    assert client.listed["UploadId"] == "upload-123"
     assert client.completed["MultipartUpload"]["Parts"] == [
         {"PartNumber": 1, "ETag": '"part-etag"'}
     ]
