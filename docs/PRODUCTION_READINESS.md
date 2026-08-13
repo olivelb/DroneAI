@@ -126,7 +126,13 @@ the human or service identity used for attribution and per-member access.
 
 Clients use `Authorization: Bearer <key>` or `X-API-Key`. Production WebSocket
 clients use the `droneai_api_key` secure cookie; query-string tokens are
-accepted only in development.
+accepted only in development. The handshake rejects an absent/untrusted
+`Origin`, consumes peer and public-credential rate-limit buckets before any
+identity lookup, and enforces bounded connection counts per API pod, peer,
+credential and organization. Durable identity state is revalidated every 45
+seconds by default; revocation, suspension, role/auth-version changes and
+organization suspension close the connection. Idle and oversized clients are
+closed, and status replay uses a bounded per-audience history.
 Mission Studio prompts for the provisioned key and exchanges it through
 `POST /auth/session` for an eight-hour HttpOnly, Secure, SameSite=Lax cookie.
 The cookie contains a signed expiry-bearing session token, not the raw key.

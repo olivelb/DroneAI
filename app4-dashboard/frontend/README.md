@@ -112,6 +112,10 @@ validates it and returns a bounded HttpOnly, Secure, SameSite=Lax cookie used
 for both credentialed CORS requests and WebSocket authentication. The key is
 never compiled into the frontend, written to local/session storage, stored in
 the signed cookie or added to the WebSocket URL. Sign-out clears the cookie.
+The API also validates the browser `Origin` during the WebSocket handshake and
+periodically revalidates the durable session. Revocation, suspension or a role
+change closes the socket; the existing reconnect flow then returns to normal
+HTTP authentication instead of continuing with stale privileges.
 
 Session lifecycle is isolated in `app/lib/auth.tsx` behind `AuthProvider` and
 `useAuth`; it owns API credentials, login errors and session renewal state.
