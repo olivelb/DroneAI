@@ -336,6 +336,11 @@ host-cache bound and its effective byte capacity are recorded in the run
 manifest. Changing the bound is an operational performance experiment and
 requires exact final-PLY parity before promotion.
 
+The manifest separates foreground image wait, cumulative parallel decode,
+topology refinement, periodic checkpoint serialization, final PLY export,
+evaluation, training and wall time. This prevents I/O tuning from being
+credited with compute improvements and keeps performance A/B runs auditable.
+
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated
 production optimizer selected explicitly by DroneAI.

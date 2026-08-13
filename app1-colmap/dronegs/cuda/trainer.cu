@@ -1577,12 +1577,18 @@ TrainingMetrics train_ordered_mrnf(
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
                 (iteration * 0x9E3779B97F4A7C15ULL);
+            const auto topology_start =
+                std::chrono::steady_clock::now();
             const auto refinement =
                 workspace.refine_topology(
                     0.003F,
                     growth_fraction,
                     refinement_seed,
                     options.pruning_policy == "spatial-bounds");
+            metrics.topology_refinement_seconds +=
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - topology_start)
+                    .count();
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
@@ -1639,10 +1645,16 @@ TrainingMetrics train_ordered_mrnf(
             options.stop_after != 0U &&
             iteration == options.stop_after;
         if (periodic_checkpoint || requested_stop) {
+            const auto checkpoint_start =
+                std::chrono::steady_clock::now();
             workspace.save_checkpoint(
                 options.checkpoint_path, checkpoint_progress,
                 checkpoint_dataset_fingerprint,
                 checkpoint_configuration_fingerprint);
+            metrics.periodic_checkpoint_seconds +=
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - checkpoint_start)
+                    .count();
             std::cout
                 << "{\"event\":\"checkpoint_saved\",\"iteration\":"
                 << iteration << ",\"path\":\""

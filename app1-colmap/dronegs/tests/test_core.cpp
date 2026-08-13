@@ -272,6 +272,18 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest prefetch depth missing");
     check(manifest_text.find("\"decode_workers\": 1") != std::string::npos,
           "manifest decode worker count missing");
+    check(
+        manifest_text.find("\"topology_refinement_seconds\": 0") !=
+            std::string::npos,
+        "manifest topology timing missing");
+    check(
+        manifest_text.find("\"periodic_checkpoint_seconds\": 0") !=
+            std::string::npos,
+        "manifest checkpoint timing missing");
+    check(
+        manifest_text.find("\"final_ply_export_seconds\": 0") !=
+            std::string::npos,
+        "manifest final PLY export timing missing");
     check(manifest_text.find("\"jpeg_idct_scale\": 0") != std::string::npos,
           "manifest JPEG IDCT mode missing");
     check(manifest_text.find("\"checkpoint_every\": 0") !=

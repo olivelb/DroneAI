@@ -126,6 +126,14 @@ def compare_qualification_manifests(
                 "ssim": _number(metrics, "ssim"),
                 "lpips": _number(metrics, "lpips"),
                 "training_seconds": _number(timings, "training_seconds"),
+                "topology_refinement_seconds": _number(
+                    timings,
+                    "topology_refinement_seconds",
+                ),
+                "periodic_checkpoint_seconds": _number(
+                    timings,
+                    "periodic_checkpoint_seconds",
+                ),
                 "wall_seconds": _number(timings, "wall_seconds"),
             }
         )
@@ -145,6 +153,8 @@ def compare_qualification_manifests(
                 "ssim",
                 "lpips",
                 "training_seconds",
+                "topology_refinement_seconds",
+                "periodic_checkpoint_seconds",
                 "wall_seconds",
             )
         }
@@ -216,6 +226,14 @@ def compare_performance_manifests(
                 "psnr": _number(metrics, "psnr"),
                 "ssim": _number(metrics, "ssim"),
                 "training_seconds": _number(timings, "training_seconds"),
+                "topology_refinement_seconds": _number(
+                    timings,
+                    "topology_refinement_seconds",
+                ),
+                "periodic_checkpoint_seconds": _number(
+                    timings,
+                    "periodic_checkpoint_seconds",
+                ),
                 "wall_seconds": _number(timings, "wall_seconds"),
                 "foreground_image_wait_seconds": _number(
                     timings,
@@ -251,6 +269,8 @@ def compare_performance_manifests(
                 "psnr",
                 "ssim",
                 "training_seconds",
+                "topology_refinement_seconds",
+                "periodic_checkpoint_seconds",
                 "wall_seconds",
                 "foreground_image_wait_seconds",
             )

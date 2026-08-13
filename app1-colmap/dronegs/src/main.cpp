@@ -117,6 +117,10 @@ int main(int argc, char** argv) {
         measurements.image_decode_seconds = training.image_decode_seconds;
         measurements.image_wait_seconds = training.image_loading_seconds;
         measurements.training_seconds = training.training_seconds;
+        measurements.topology_refinement_seconds =
+            training.topology_refinement_seconds;
+        measurements.periodic_checkpoint_seconds =
+            training.periodic_checkpoint_seconds;
         measurements.evaluation_seconds = training.evaluation_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;

@@ -19,6 +19,8 @@ struct RunMeasurements {
     double image_wait_seconds = 0.0;
     double startup_seconds = 0.0;
     double training_seconds = 0.0;
+    double topology_refinement_seconds = 0.0;
+    double periodic_checkpoint_seconds = 0.0;
     double evaluation_seconds = 0.0;
     double export_seconds = 0.0;
     double wall_seconds = 0.0;

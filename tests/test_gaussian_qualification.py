@@ -124,6 +124,8 @@ def _performance_manifest(
         wall_seconds=wall_seconds,
         data_loading_seconds=2.5 / prefetch_depth,
         image_decode_seconds=4.0,
+        topology_refinement_seconds=1.5,
+        periodic_checkpoint_seconds=0.5,
     )
     payload["artifacts"]["point_cloud.ply"]["sha256"] = digest
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -153,6 +155,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
     assert report["runs"][1]["speedup_from_baseline"] == pytest.approx(1.25)
     assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
     assert report["runs"][1]["host_image_cache_limit_mib"] == 4_096
+    assert report["runs"][1]["topology_refinement_seconds"] == 1.5
 
 
 def test_compare_performance_rejects_changed_ply(tmp_path):
