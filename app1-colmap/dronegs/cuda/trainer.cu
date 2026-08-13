@@ -1600,15 +1600,16 @@ TrainingMetrics train_ordered_mrnf(
                     growth_fraction,
                     refinement_seed,
                     options.pruning_policy == "spatial-bounds");
-            metrics.topology_refinement_seconds +=
+            const double topology_seconds =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - topology_start)
                     .count();
+            metrics.topology_refinement_seconds += topology_seconds;
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
             metrics.gaussian_slots_reused += refinement.reused;
-            ++metrics.topology_compactions;
+            metrics.topology_compactions += refinement.compacted ? 1U : 0U;
             std::cout
                 << "{\"event\":\"topology_refinement\",\"iteration\":"
                 << iteration
@@ -1632,12 +1633,15 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"added\":" << refinement.added
                 << ",\"reused\":" << refinement.reused
                 << ",\"appended\":" << refinement.appended
+                << ",\"compacted\":"
+                << (refinement.compacted ? "true" : "false")
                 << ",\"in_place_recycled\":"
                 << (refinement.in_place_recycled
                         ? "true"
                         : "false")
                 << ",\"gaussians\":" << refinement.gaussian_count
                 << ",\"selection_seed\":" << refinement_seed
+                << ",\"seconds\":" << topology_seconds
                 << "}\n"
                 << std::flush;
         }
@@ -1666,15 +1670,17 @@ TrainingMetrics train_ordered_mrnf(
                 options.checkpoint_path, checkpoint_progress,
                 checkpoint_dataset_fingerprint,
                 checkpoint_configuration_fingerprint);
-            metrics.periodic_checkpoint_seconds +=
+            const double checkpoint_seconds =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - checkpoint_start)
                     .count();
+            metrics.periodic_checkpoint_seconds += checkpoint_seconds;
             std::cout
                 << "{\"event\":\"checkpoint_saved\",\"iteration\":"
                 << iteration << ",\"path\":\""
                 << options.checkpoint_path.string()
-                << "\",\"gaussians\":" << workspace.size() << "}\n"
+                << "\",\"gaussians\":" << workspace.size()
+                << ",\"seconds\":" << checkpoint_seconds << "}\n"
                 << std::flush;
         }
         if (iteration == 1U ||

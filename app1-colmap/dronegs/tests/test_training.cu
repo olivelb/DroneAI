@@ -1127,9 +1127,24 @@ int main() {
             reuse_refinement.reused != 1U ||
             reuse_refinement.appended != 0U ||
             reuse_refinement.gaussian_count != 2U ||
+            reuse_refinement.compacted ||
             !reuse_refinement.in_place_recycled) {
             throw std::runtime_error(
                 "MRNF prune/compact/reuse count mismatch");
+        }
+        dronegs::OrderedAlphaTrainingContext compact_context(
+            {split_parent, pruned_parent},
+            32U * 32U, 2U, 3U);
+        static_cast<void>(compact_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto compact_refinement =
+            compact_context.refine_topology(
+                0.0F, 1.0F, 7U, true);
+        if (!compact_refinement.compacted ||
+            compact_refinement.in_place_recycled ||
+            compact_refinement.pruned != 1U) {
+            throw std::runtime_error(
+                "MRNF hard compaction telemetry mismatch");
         }
         std::vector<dronegs::Gaussian> gumbel_parents(8U, split_parent);
         for (std::size_t index = 0U;

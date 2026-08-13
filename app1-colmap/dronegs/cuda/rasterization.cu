@@ -5402,7 +5402,8 @@ struct OrderedAlphaTrainingContext::Impl {
             previous_count == gaussian_capacity &&
             pruned != 0U &&
             requested_recycle >= pruned;
-        if (pruned != 0U && !in_place_recycle) {
+        const bool compacted = pruned != 0U && !in_place_recycle;
+        if (compacted) {
             std::vector<Gaussian> compact_gaussians;
             compact_gaussians.reserve(survivors.size());
             std::vector<float> compact_weights;
@@ -5653,6 +5654,7 @@ struct OrderedAlphaTrainingContext::Impl {
             .reused = reported_reused,
             .appended = reported_appended,
             .gaussian_count = gaussian_count,
+            .compacted = compacted,
             .in_place_recycled = in_place_recycle,
         };
     }
