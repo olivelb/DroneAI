@@ -13,7 +13,7 @@ from hashlib import sha256
 from hmac import new as hmac_new
 from typing import Annotated
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
+from fastapi import Depends, HTTPException, Request, WebSocket, status
 from starlette.concurrency import run_in_threadpool
 
 from shared.database import get_session
