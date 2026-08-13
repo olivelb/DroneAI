@@ -11,16 +11,12 @@ from shared.dronegs_profile import (
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
 from shared.facade_process import (
-    FACADE_DRONEGS_IDENTITY_PARAMETERS,
     FACADE_DRONEGS_PROFILE_ID,
-    FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS,
-    FACADE_LEGACY_DRONEGS_PROFILE_ID,
-    FACADE_PROCESS_OVERRIDES,
-    FACADE_QUALIFICATION_POLICY_ID,
-    FACADE_QUALIFICATION_THRESHOLDS,
 )
 from shared.quality_profiles import QUALITY_PROFILE_BY_ID, QualityProfileId
 from gaussian_ortho.coverage_quality import SpatialCoveragePolicy
+
+from .dronegs_identity import expected_profile_identity, qualification_identity
 
 
 @dataclass(frozen=True)
@@ -107,88 +103,6 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "test_split": config.test_split,
         "test_guard_percent": config.test_guard_percent,
     }
-
-
-def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> dict[str, Any] | None:
-    if profile_id == FACADE_DRONEGS_PROFILE_ID:
-        expected = dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
-        expected.update(
-            {
-                "capacity_mode": str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
-                "capacity_floor": int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
-                "target_gaussian_spacing_pixels": float(
-                    FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]
-                ),
-                "resident_partitioning": bool(
-                    FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
-                ),
-            }
-        )
-        return expected
-    if profile_id == FACADE_LEGACY_DRONEGS_PROFILE_ID:
-        expected = dict(FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS)
-        expected.update(
-            {
-                "capacity_mode": "fixed",
-                "capacity_floor": int(expected["cap_max"]),
-                "target_gaussian_spacing_pixels": 0.0,
-                "resident_partitioning": False,
-            }
-        )
-        return expected
-    if profile_id == DRONEGS_PRODUCTION_PROFILE_V1.profile_id:
-        expected = {
-            name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
-            for name in fields
-            if hasattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
-        }
-        expected.update(
-            {
-                "capacity_mode": "fixed",
-                "capacity_floor": DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
-                "target_gaussian_spacing_pixels": 0.0,
-                "resident_partitioning": False,
-            }
-        )
-        return expected
-    if profile_id in QUALITY_PROFILE_BY_ID:
-        expected = {
-            name: getattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
-            for name in fields
-            if hasattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
-        }
-        parameters = QUALITY_PROFILE_BY_ID[
-            cast(QualityProfileId, profile_id)
-        ].parameters
-        expected.update(
-            {
-                "iterations": int(parameters["gs_iterations"]),
-                "data_factor": int(parameters["gs_data_factor"]),
-                "max_width": int(parameters["gs_max_width"]),
-                "cap_max": int(parameters["gs_cap_max"]),
-                "capacity_mode": str(parameters["gs_capacity_mode"]),
-                "capacity_floor": int(parameters["gs_capacity_floor"]),
-                "target_gaussian_spacing_pixels": float(
-                    parameters["gs_target_gaussian_spacing_pixels"]
-                ),
-                "resident_partitioning": bool(
-                    parameters["gs_resident_partitioning"]
-                ),
-            }
-        )
-        return expected
-    return None
-
-
-def _qualification_identity(policy_id: str) -> dict[str, float] | None:
-    if policy_id == DRONEGS_QUALIFICATION_POLICY_ID:
-        return {
-            "canary_min_psnr": DRONEGS_PRODUCTION_PROFILE_V1.canary_min_psnr,
-            "canary_min_ssim": DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim,
-        }
-    if policy_id == FACADE_QUALIFICATION_POLICY_ID:
-        return dict(FACADE_QUALIFICATION_THRESHOLDS)
-    return None
 
 
 def resolve_dronegs_config(
@@ -344,14 +258,14 @@ def resolve_dronegs_config(
 
     warnings: list[str] = []
     profile_identity = _profile_identity(config)
-    expected_profile = _expected_profile_identity(config.profile_id, profile_identity)
+    expected_profile = expected_profile_identity(config.profile_id, profile_identity)
     if expected_profile is not None and profile_identity != expected_profile:
         config = replace(config, profile_id="custom")
         warnings.append(
             "DroneGS expert overrides detected; the run is recorded as custom instead of its named profile."
         )
 
-    expected_qualification = _qualification_identity(config.qualification_policy_id)
+    expected_qualification = qualification_identity(config.qualification_policy_id)
     actual_qualification = {
         "canary_min_psnr": config.canary_min_psnr,
         "canary_min_ssim": config.canary_min_ssim,

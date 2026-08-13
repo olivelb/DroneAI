@@ -13,6 +13,7 @@ for module_path in (APP_DIR, ROOT_DIR):
         sys.path.append(str(module_path))
 
 from colmap_worker import runtime as worker_runtime
+from colmap_worker import recovery_publication as recovery_stage
 from colmap_worker.stages import publication as publication_stage
 
 
@@ -184,15 +185,15 @@ def test_optional_recovery_uploads_are_counted_but_remain_best_effort(tmp_path):
         path.write_bytes(b"asset")
 
     with (
-        patch.object(publication_stage.storage, "upload_file"),
+        patch.object(recovery_stage.storage, "upload_file"),
         patch.object(
-            publication_stage.storage,
+            recovery_stage.storage,
             "upload_directory",
             side_effect=[2, 3, 4, 5],
         ) as upload_directory,
         patch.object(worker_runtime, "report_mission_progress"),
     ):
-        count, complete = publication_stage._upload_optional_recovery_artifacts(
+        count, complete = recovery_stage.upload_optional_recovery_artifacts(
             geo_data_file=str(geo_data),
             mission_s3_prefix="missions/vol",
             vol_id="vol",
@@ -210,10 +211,14 @@ def test_optional_recovery_uploads_are_counted_but_remain_best_effort(tmp_path):
     assert upload_directory.call_count == 4
 
     with (
-        patch.object(publication_stage.storage, "upload_file", side_effect=OSError("offline")),
+        patch.object(
+            recovery_stage.storage,
+            "upload_file",
+            side_effect=OSError("offline"),
+        ),
         patch.object(worker_runtime, "report_mission_progress") as progress,
     ):
-        count, complete = publication_stage._upload_optional_recovery_artifacts(
+        count, complete = recovery_stage.upload_optional_recovery_artifacts(
             geo_data_file=str(geo_data),
             mission_s3_prefix="missions/vol",
             vol_id="vol",
@@ -326,7 +331,7 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
         patch.object(publication_stage.storage, "upload_verified_file") as verified_upload,
         patch.object(
             publication_stage,
-            "_upload_optional_recovery_artifacts",
+            "upload_optional_recovery_artifacts",
             return_value=(10, True),
         ) as optional_upload,
         patch.object(
