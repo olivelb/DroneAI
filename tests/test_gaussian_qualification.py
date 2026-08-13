@@ -15,6 +15,7 @@ from gaussian_training.qualification import (  # noqa: E402
     compare_native_crop_tiling_manifests,
     compare_performance_manifests,
     compare_qualification_manifests,
+    compare_resident_seed_contract_manifests,
 )
 
 
@@ -304,3 +305,97 @@ def test_compare_performance_rejects_scientific_drift(tmp_path):
 
     with pytest.raises(ValueError, match="outside the allowed"):
         compare_performance_manifests([first, second])
+
+
+def test_compare_resident_seed_contract_runs(tmp_path):
+    baseline = _manifest(
+        tmp_path / "camera-only.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    candidate = _manifest(
+        tmp_path / "crop-aware.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["dataset"]["fingerprint"] = "crop-aware-dataset"
+    payload["metrics"]["psnr"] = 20.4
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+    baseline_report = tmp_path / "camera-only-subset.json"
+    baseline_report.write_text(
+        json.dumps(
+            {
+                "selected_images": 123,
+                "exported_points": 64_996,
+                "exported_observations": 189_148,
+                "mean_exported_track_length": 2.91,
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate_report = tmp_path / "crop-aware-subset.json"
+    candidate_report.write_text(
+        json.dumps(
+            {
+                "track_scope": "selected-cameras-and-native-crops-v1",
+                "selected_images": 123,
+                "exported_points": 60_000,
+                "exported_observations": 170_000,
+                "observations_rejected_outside_native_crops": 20_000,
+                "mean_exported_track_length": 2.83,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = compare_resident_seed_contract_manifests(
+        [baseline, candidate],
+        [baseline_report, candidate_report],
+    )
+
+    assert report["runs"][1]["track_scope"] == (
+        "selected-cameras-and-native-crops-v1"
+    )
+    assert report["runs"][1]["crop_rejected_observations"] == 20_000
+    assert report["runs"][1]["delta_from_camera_only"]["psnr"] == (
+        pytest.approx(0.4)
+    )
+
+
+def test_compare_resident_seed_rejects_frame_drift(tmp_path):
+    baseline = _manifest(
+        tmp_path / "camera-only.json",
+        "reference-absolute",
+        0.0,
+    )
+    candidate = _manifest(
+        tmp_path / "crop-aware.json",
+        "reference-absolute",
+        0.0,
+    )
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["dataset"]["fingerprint"] = "crop-aware-dataset"
+    payload["metrics"]["frame_descriptor_count"] += 1
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+    reports = []
+    for name, scope in (
+        ("camera-only-subset.json", "selected-cameras-v1"),
+        (
+            "crop-aware-subset.json",
+            "selected-cameras-and-native-crops-v1",
+        ),
+    ):
+        path = tmp_path / name
+        path.write_text(
+            json.dumps({"track_scope": scope, "selected_images": 123}),
+            encoding="utf-8",
+        )
+        reports.append(path)
+
+    with pytest.raises(ValueError, match="expanded frames"):
+        compare_resident_seed_contract_manifests(
+            [baseline, candidate], reports
+        )

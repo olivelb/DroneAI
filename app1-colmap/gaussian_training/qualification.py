@@ -484,3 +484,157 @@ def compare_native_crop_tiling_manifests(
         "baseline_policy": "fixed-tile-mode-v1",
         "runs": runs,
     }
+
+
+def compare_resident_seed_contract_manifests(
+    manifest_paths: Iterable[str | Path],
+    subset_report_paths: Iterable[str | Path],
+) -> dict[str, Any]:
+    """Compare camera-only and crop-aware resident seed contracts."""
+
+    paths = [Path(path).resolve() for path in manifest_paths]
+    report_paths = [Path(path).resolve() for path in subset_report_paths]
+    if len(paths) != 2 or len(report_paths) != 2:
+        raise ValueError(
+            "resident seed comparison requires exactly two runs and reports"
+        )
+    manifests = [load_run_manifest(path) for path in paths]
+    for manifest in manifests:
+        validate_run_manifest(manifest)
+    reports = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in report_paths
+    ]
+    if not all(isinstance(report, dict) for report in reports):
+        raise ValueError("resident seed subset report is invalid")
+
+    baseline, candidate = manifests
+    if (
+        baseline["trainer_binary_sha256"]
+        != candidate["trainer_binary_sha256"]
+    ):
+        raise ValueError("resident seed runs use different trainer binaries")
+    if baseline["parameters"] != candidate["parameters"]:
+        raise ValueError("resident seed runs changed scientific parameters")
+    source_count_fields = (
+        "image_count",
+        "training_image_count",
+        "held_out_image_count",
+        "ignored_image_count",
+    )
+    for field in source_count_fields:
+        if baseline["dataset"].get(field) != candidate["dataset"].get(field):
+            raise ValueError("resident seed runs changed source image splits")
+    frame_count_fields = (
+        "frame_descriptor_count",
+        "training_frame_count",
+        "held_out_frame_count",
+    )
+    for field in frame_count_fields:
+        baseline_count = baseline["metrics"].get(field)
+        candidate_count = candidate["metrics"].get(field)
+        if (
+            baseline_count is None
+            or candidate_count is None
+            or baseline_count != candidate_count
+        ):
+            raise ValueError("resident seed runs changed expanded frames")
+    if (
+        baseline["dataset"]["fingerprint"]
+        == candidate["dataset"]["fingerprint"]
+    ):
+        raise ValueError("resident seed contract did not change the dataset")
+
+    scopes = [
+        report.get("track_scope", "selected-cameras-v1")
+        for report in reports
+    ]
+    if scopes != [
+        "selected-cameras-v1",
+        "selected-cameras-and-native-crops-v1",
+    ]:
+        raise ValueError("resident seed reports use invalid track scopes")
+    if reports[0].get("selected_images") != reports[1].get(
+        "selected_images"
+    ):
+        raise ValueError("resident seed reports changed selected images")
+
+    runs: list[dict[str, Any]] = []
+    for path, report_path, manifest, report, scope in zip(
+        paths,
+        report_paths,
+        manifests,
+        reports,
+        scopes,
+        strict=True,
+    ):
+        metrics = manifest["metrics"]
+        timings = manifest["timings"]
+        runs.append(
+            {
+                "manifest": str(path),
+                "subset_report": str(report_path),
+                "dataset_fingerprint": manifest["dataset"]["fingerprint"],
+                "track_scope": scope,
+                "exported_points": _number(report, "exported_points"),
+                "exported_observations": _number(
+                    report,
+                    "exported_observations",
+                ),
+                "crop_rejected_observations": _number(
+                    report,
+                    "observations_rejected_outside_native_crops",
+                ),
+                "mean_exported_track_length": _number(
+                    report,
+                    "mean_exported_track_length",
+                ),
+                "frame_descriptor_count": _number(
+                    metrics,
+                    "frame_descriptor_count",
+                ),
+                "final_gaussians": _number(metrics, "final_gaussians"),
+                "final_loss": _number(metrics, "final_loss"),
+                "psnr": _number(metrics, "psnr"),
+                "ssim": _number(metrics, "ssim"),
+                "pixel_weighted_psnr": _number(
+                    metrics,
+                    "pixel_weighted_psnr",
+                ),
+                "pixel_weighted_ssim": _number(
+                    metrics,
+                    "pixel_weighted_ssim",
+                ),
+                "wall_seconds": _number(timings, "wall_seconds"),
+            }
+        )
+    baseline_run = runs[0]
+    for run in runs:
+        run["delta_from_camera_only"] = {
+            metric: (
+                None
+                if run[metric] is None or baseline_run[metric] is None
+                else run[metric] - baseline_run[metric]
+            )
+            for metric in (
+                "exported_points",
+                "exported_observations",
+                "mean_exported_track_length",
+                "frame_descriptor_count",
+                "final_gaussians",
+                "final_loss",
+                "psnr",
+                "ssim",
+                "pixel_weighted_psnr",
+                "pixel_weighted_ssim",
+                "wall_seconds",
+            )
+        }
+    return {
+        "schema_version": 1,
+        "trainer_binary_sha256": baseline["trainer_binary_sha256"],
+        "controlled_parameters_sha256": _canonical_digest(
+            baseline["parameters"]
+        ),
+        "runs": runs,
+    }
