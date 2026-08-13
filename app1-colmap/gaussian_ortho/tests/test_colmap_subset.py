@@ -208,6 +208,8 @@ def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
         "max_points": None,
         "coverage_balanced": False,
         "points_rejected_for_restricted_track": 1,
+        "observations_rejected_outside_native_crops": 0,
+        "track_scope": "selected-cameras-and-native-crops-v1",
         "exported_observations": 2,
         "minimum_exported_track_length": 2,
         "median_exported_track_length": 2.0,
@@ -215,3 +217,29 @@ def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
         "points_with_at_least_three_observations": 0,
         "points_with_at_least_five_observations": 0,
     }
+
+    cropped_report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cropped-cell"),
+        ["keep-a.jpg", "keep-b.jpg"],
+        image_crops={
+            "keep-b.jpg": NativeImageCrop(
+                source_x=0,
+                source_y=0,
+                width=3,
+                height=12,
+                source_width=16,
+                source_height=12,
+            )
+        },
+        min_track_length=2,
+        return_report=True,
+    )
+
+    assert isinstance(cropped_report, dict)
+    cropped_points = _read_colmap_points3d_bin(
+        tmp_path / "cropped-cell" / "sparse" / "0" / "points3D.bin"
+    )
+    assert cropped_points == {}
+    assert cropped_report["points_rejected_for_restricted_track"] == 2
+    assert cropped_report["observations_rejected_outside_native_crops"] == 1

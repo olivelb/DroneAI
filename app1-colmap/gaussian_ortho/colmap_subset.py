@@ -116,6 +116,38 @@ def _coverage_balanced_point_ids(
     return set(point_ids[coverage_indices].tolist())
 
 
+def _restrict_track_to_training_regions(
+    track: list[tuple[int, int]],
+    images: Mapping[int, ColmapImageRecord],
+    crops: Mapping[str, NativeImageCrop],
+) -> tuple[list[tuple[int, int]], int]:
+    """Keep observations available to this resident cell's actual frames."""
+
+    retained: list[tuple[int, int]] = []
+    crop_rejections = 0
+    for observation in track:
+        image = images.get(observation[0])
+        if image is None:
+            continue
+        crop = crops.get(image["name"])
+        if crop is None:
+            retained.append(observation)
+            continue
+        point2d_index = observation[1]
+        if not 0 <= point2d_index < len(image["xys"]):
+            crop_rejections += 1
+            continue
+        x, y = image["xys"][point2d_index]
+        if (
+            crop.source_x <= x < crop.source_x + crop.width
+            and crop.source_y <= y < crop.source_y + crop.height
+        ):
+            retained.append(observation)
+        else:
+            crop_rejections += 1
+    return retained, crop_rejections
+
+
 def export_colmap_subset(
     source_sparse_dir: str,
     target_dir: str,
@@ -161,22 +193,27 @@ def export_colmap_subset(
         }
     else:
         visible_point_ids = point_ids
+    crops = image_crops or {}
     filtered_points: dict[int, ColmapPointRecord] = {}
     rejected_for_restricted_track = 0
+    observations_rejected_outside_native_crops = 0
     for point_id, point in points.items():
         if point_id not in visible_point_ids:
             continue
         if max_point_error is not None and point["error"] > float(max_point_error):
             continue
-        restricted_track = [
-            observation
-            for observation in point["track"]
-            if observation[0] in filtered_images
-        ]
+        restricted_track, crop_rejections = (
+            _restrict_track_to_training_regions(
+                point["track"],
+                filtered_images,
+                crops,
+            )
+        )
+        observations_rejected_outside_native_crops += crop_rejections
         # A source point can satisfy the global COLMAP track gate while only
-        # one of its observations belongs to this resident cell. Apply the
-        # invariant after camera restriction so the exported training seed
-        # never claims a multi-view point that is mono-view in its own model.
+        # one of its observations belongs to this resident cell or falls in
+        # its native image crops. Apply the invariant after both restrictions
+        # so the exported training seed never claims unavailable evidence.
         if len(restricted_track) < int(min_track_length):
             rejected_for_restricted_track += 1
             continue
@@ -218,7 +255,7 @@ def export_colmap_subset(
         Path(target_dir) / "image_regions.tsv",
         filtered_images,
         filtered_cameras,
-        image_crops or {},
+        crops,
     )
 
     target_images = Path(target_dir) / "images"
@@ -238,6 +275,10 @@ def export_colmap_subset(
         "points_rejected_for_restricted_track": (
             rejected_for_restricted_track
         ),
+        "observations_rejected_outside_native_crops": (
+            observations_rejected_outside_native_crops
+        ),
+        "track_scope": "selected-cameras-and-native-crops-v1",
         "exported_observations": sum(exported_track_lengths),
         "minimum_exported_track_length": (
             min(exported_track_lengths) if exported_track_lengths else None

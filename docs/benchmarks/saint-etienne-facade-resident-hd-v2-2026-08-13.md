@@ -81,9 +81,25 @@ become mono-view seeds inside a cell. The proportions were 11.5% for cell 0,
 13.2% for cell 1 and 15.6% for cell 2.
 
 The exporter now applies the minimum-track gate after camera restriction and
-records the resulting track distribution. Historical workspaces and their A/B
+after checking that every retained 2D observation falls inside the native crop
+actually used for training. It records both the resulting track distribution
+and the crop-rejected observation count. Historical workspaces and their A/B
 outputs remain frozen. A new cell-2 replay must isolate this corrected seed
 contract before increasing Gaussian capacity.
+
+The retained subsets confirm that cell 2 does not lack source photos. It has
+more selected views than cells 0 and 1, but less useful projected coverage and
+substantially weaker multi-view redundancy:
+
+| Cell | Selected photos | Mean native crop | Crops below 10% | Sparse points | Mean track | Track >= 3 | Track >= 5 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 118 | 75.04% | 11 | 107,952 | 3.249 | 67.79% | 15.90% |
+| 1 | 118 | 68.15% | 8 | 123,826 | 3.686 | 64.41% | 24.34% |
+| 2 | 123 | 63.22% | 16 | 77,054 | 2.611 | 55.83% | 4.13% |
+
+This distinguishes raw image count from usable cross-view evidence. Raising
+the Gaussian cap cannot repair missing overlap by itself, so capacity is only
+the next variable after the corrected-track replay.
 
 ## Controlled follow-up
 
