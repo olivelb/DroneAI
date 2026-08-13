@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "dronegs/types.hpp"
@@ -250,6 +251,37 @@ inline float exact_floor_percentile(
     std::nth_element(
         values.begin(), values.begin() + index, values.end());
     return values[index];
+}
+
+inline std::pair<float, float> exact_floor_percentile_pair(
+    std::vector<float> values,
+    float lower_fraction,
+    float upper_fraction) {
+    if (values.empty()) {
+        return {0.0F, 0.0F};
+    }
+    if (!std::isfinite(lower_fraction) ||
+        !std::isfinite(upper_fraction) ||
+        lower_fraction < 0.0F || upper_fraction > 1.0F ||
+        lower_fraction > upper_fraction) {
+        throw std::invalid_argument(
+            "percentile fractions must be finite, ordered and between zero and one");
+    }
+    const auto lower_index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * lower_fraction));
+    const auto upper_index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * upper_fraction));
+    std::nth_element(
+        values.begin(), values.begin() + lower_index, values.end());
+    const float lower = values[lower_index];
+    if (upper_index == lower_index) {
+        return {lower, lower};
+    }
+    std::nth_element(
+        values.begin() + lower_index + 1U,
+        values.begin() + upper_index,
+        values.end());
+    return {lower, values[upper_index]};
 }
 
 DatasetSplit make_dataset_split(

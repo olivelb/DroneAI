@@ -646,6 +646,16 @@ void test_exact_floor_percentile() {
             dronegs::exact_floor_percentile(unsorted, 0.9F) == 8.0F &&
             dronegs::exact_floor_percentile(unsorted, 1.0F) == 9.0F,
         "exact floor percentile differs from sorted order statistics");
+    const auto [q10, q90] = dronegs::exact_floor_percentile_pair(
+        unsorted, 0.1F, 0.9F);
+    check(
+        q10 == 1.0F && q90 == 8.0F,
+        "paired percentile differs from sorted order statistics");
+    const auto [same_lower, same_upper] =
+        dronegs::exact_floor_percentile_pair(unsorted, 0.5F, 0.5F);
+    check(
+        same_lower == 5.0F && same_upper == 5.0F,
+        "paired percentile equal-index result mismatch");
     bool invalid_fraction_rejected = false;
     try {
         static_cast<void>(

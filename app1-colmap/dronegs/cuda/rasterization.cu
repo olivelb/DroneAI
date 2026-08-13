@@ -5268,21 +5268,28 @@ struct OrderedAlphaTrainingContext::Impl {
             std::numeric_limits<float>::infinity()};
         std::array<float, 3> percentile_center{};
         float percentile_max_extent = 0.0F;
+        std::array<std::vector<float>, 3> coordinates_by_axis;
+        for (auto& coordinates : coordinates_by_axis) {
+            coordinates.reserve(previous_count);
+        }
         std::vector<float> maximum_scales;
         maximum_scales.reserve(previous_count);
+        for (const auto& gaussian : host_gaussians) {
+            for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                if (std::isfinite(gaussian.xyz[axis])) {
+                    coordinates_by_axis[axis].push_back(
+                        gaussian.xyz[axis]);
+                }
+            }
+            maximum_scales.push_back(std::exp(std::max({
+                gaussian.log_scale[0],
+                gaussian.log_scale[1],
+                gaussian.log_scale[2]})));
+        }
         if (previous_count >= 8U) {
             for (std::size_t axis = 0U; axis < 3U; ++axis) {
-                std::vector<float> coordinates;
-                coordinates.reserve(previous_count);
-                for (const auto& gaussian : host_gaussians) {
-                    if (std::isfinite(gaussian.xyz[axis])) {
-                        coordinates.push_back(gaussian.xyz[axis]);
-                    }
-                }
-                const float q10 = exact_floor_percentile(
-                    coordinates, 0.1F);
-                const float q90 = exact_floor_percentile(
-                    coordinates, 0.9F);
+                const auto [q10, q90] = exact_floor_percentile_pair(
+                    std::move(coordinates_by_axis[axis]), 0.1F, 0.9F);
                 percentile_center[axis] = 0.5F * (q10 + q90);
                 percentile_max_extent = std::max(
                     percentile_max_extent, 0.5F * (q90 - q10));
@@ -5301,12 +5308,6 @@ struct OrderedAlphaTrainingContext::Impl {
                         percentile_center[axis] + max_allowed;
                 }
             }
-        }
-        for (const auto& gaussian : host_gaussians) {
-            maximum_scales.push_back(std::exp(std::max({
-                gaussian.log_scale[0],
-                gaussian.log_scale[1],
-                gaussian.log_scale[2]})));
         }
         const float scale_limit =
             previous_count < 8U
