@@ -11,6 +11,9 @@ def test_identity_security_definer_functions_revoke_public_execution() -> None:
     verifier = (ROOT / "scripts" / "ci" / "verify_rls_migration.py").read_text(
         encoding="utf-8"
     )
+    contract = (
+        ROOT / "docs" / "contracts" / "postgres-tenant-rls-v1.md"
+    ).read_text(encoding="utf-8")
 
     for function in (
         "droneai_platform_identity()",
@@ -21,3 +24,5 @@ def test_identity_security_definer_functions_revoke_public_execution() -> None:
     assert "REVOKE ALL ON FUNCTION" in migration
     assert "information_schema.routine_privileges" in verifier
     assert "grantee = 'PUBLIC'" in verifier
+    assert "GRANT EXECUTE ON FUNCTION droneai_platform_identity()" in contract
+    assert "Do not grant these functions to stage" in contract
