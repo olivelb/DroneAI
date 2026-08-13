@@ -220,6 +220,10 @@ def compare_performance_manifests(
                     parameters,
                     "host_image_cache_bytes",
                 ),
+                "image_cache_working_set_bytes": _number(
+                    metrics,
+                    "image_cache_working_set_bytes",
+                ),
                 "point_cloud_sha256": digest,
                 "final_gaussians": _number(metrics, "final_gaussians"),
                 "final_loss": _number(metrics, "final_loss"),

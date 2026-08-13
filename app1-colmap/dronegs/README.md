@@ -340,6 +340,9 @@ The manifest separates foreground image wait, cumulative parallel decode,
 topology refinement, periodic checkpoint serialization, final PLY export,
 evaluation, training and wall time. This prevents I/O tuning from being
 credited with compute improvements and keeps performance A/B runs auditable.
+It also records the decoded-image working-set size independently of the cache
+limit, so a deployment can choose a host-RAM envelope from evidence rather
+than from image count alone.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated

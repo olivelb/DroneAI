@@ -129,6 +129,8 @@ int main(int argc, char** argv) {
         measurements.image_cache_misses = training.image_cache_misses;
         measurements.image_cache_evictions = training.image_cache_evictions;
         measurements.image_cache_capacity_bytes = training.image_cache_capacity_bytes;
+        measurements.image_cache_working_set_bytes =
+            training.image_cache_working_set_bytes;
         measurements.peak_image_cache_bytes = training.peak_image_cache_bytes;
         measurements.image_prefetch_started = training.image_prefetch_started;
         measurements.image_prefetch_consumed = training.image_prefetch_consumed;

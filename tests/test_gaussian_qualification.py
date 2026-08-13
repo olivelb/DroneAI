@@ -48,6 +48,7 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "psnr": 20.0 + weight,
             "ssim": 0.5 + weight / 10,
             "lpips": None,
+            "image_cache_working_set_bytes": 8_000_000_000,
         },
         "artifacts": {"point_cloud.ply": {"path": "point_cloud.ply"}},
     }
@@ -156,6 +157,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
     assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
     assert report["runs"][1]["host_image_cache_limit_mib"] == 4_096
     assert report["runs"][1]["topology_refinement_seconds"] == 1.5
+    assert report["runs"][1]["image_cache_working_set_bytes"] == 8_000_000_000
 
 
 def test_compare_performance_rejects_changed_ply(tmp_path):

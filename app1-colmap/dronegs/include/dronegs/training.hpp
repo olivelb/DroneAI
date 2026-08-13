@@ -157,6 +157,7 @@ struct TrainingMetrics {
     std::uint64_t image_cache_misses = 0;
     std::uint64_t image_cache_evictions = 0;
     std::uint64_t image_cache_capacity_bytes = 0;
+    std::uint64_t image_cache_working_set_bytes = 0;
     std::uint64_t peak_image_cache_bytes = 0;
     std::uint64_t image_prefetch_started = 0;
     std::uint64_t image_prefetch_consumed = 0;

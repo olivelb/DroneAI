@@ -490,6 +490,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"image_cache_hits\": " << measurements.image_cache_hits << ",\n"
            << "    \"image_cache_misses\": " << measurements.image_cache_misses << ",\n"
            << "    \"image_cache_evictions\": " << measurements.image_cache_evictions << ",\n"
+           << "    \"image_cache_working_set_bytes\": "
+           << measurements.image_cache_working_set_bytes << ",\n"
            << "    \"peak_image_cache_bytes\": "
            << measurements.peak_image_cache_bytes << ",\n"
            << "    \"image_prefetch_started\": "

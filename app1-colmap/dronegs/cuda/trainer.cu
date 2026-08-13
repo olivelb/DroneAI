@@ -626,27 +626,40 @@ DatasetSplit expand_frame_split(
     return frame_split;
 }
 
-std::size_t host_image_cache_capacity(
+struct HostImageCachePlan {
+    std::size_t working_set_bytes = 0U;
+    std::size_t capacity_bytes = 0U;
+};
+
+HostImageCachePlan host_image_cache_plan(
     const std::vector<FrameDescriptor>& descriptors,
     const Options& options) {
     constexpr std::size_t minimum_capacity = 256U * 1024U * 1024U;
     const std::size_t maximum_capacity =
         static_cast<std::size_t>(options.host_image_cache_mib) *
         1024U * 1024U;
-    std::size_t decoded_bytes = 0U;
+    std::size_t working_set_bytes = 0U;
     for (const auto& descriptor : descriptors) {
         const auto [width, height] =
             training_dimensions(descriptor, options);
         const std::size_t pixels =
             static_cast<std::size_t>(width) * height;
-        if (pixels > maximum_capacity / 3U ||
-            decoded_bytes > maximum_capacity - pixels * 3U) {
-            return maximum_capacity;
+        if (pixels > std::numeric_limits<std::size_t>::max() / 3U ||
+            working_set_bytes >
+                std::numeric_limits<std::size_t>::max() - pixels * 3U) {
+            working_set_bytes =
+                std::numeric_limits<std::size_t>::max();
+            break;
         }
-        decoded_bytes += pixels * 3U;
+        working_set_bytes += pixels * 3U;
     }
-    return std::clamp(
-        decoded_bytes, minimum_capacity, maximum_capacity);
+    return {
+        .working_set_bytes = working_set_bytes,
+        .capacity_bytes = std::clamp(
+            working_set_bytes,
+            minimum_capacity,
+            maximum_capacity),
+    };
 }
 
 std::vector<std::size_t> make_training_schedule(
@@ -1155,14 +1168,14 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     std::size_t maximum_pixels = 0U;
     const auto descriptors = make_frame_descriptors(
         options, scene, gaussians, maximum_pixels);
-    const auto host_cache_capacity =
-        host_image_cache_capacity(descriptors, options);
+    const auto host_cache_plan =
+        host_image_cache_plan(descriptors, options);
     const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
-        descriptors.size(), host_cache_capacity,
+        descriptors.size(), host_cache_plan.capacity_bytes,
         [&descriptors, &options](std::size_t index) {
             const auto* image = descriptors.at(index).image;
             return load_training_image(
@@ -1266,6 +1279,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     metrics.image_cache_evictions = cache.stats().evictions;
     metrics.image_cache_capacity_bytes =
         static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.image_cache_working_set_bytes =
+        static_cast<std::uint64_t>(host_cache_plan.working_set_bytes);
     metrics.peak_image_cache_bytes =
         static_cast<std::uint64_t>(cache.stats().peak_resident_bytes);
     metrics.image_prefetch_started = cache.stats().prefetch_started;
@@ -1295,14 +1310,14 @@ TrainingMetrics train_ordered_mrnf(
         << requested_views - descriptors.size()
         << "}\n"
         << std::flush;
-    const auto host_cache_capacity =
-        host_image_cache_capacity(descriptors, options);
+    const auto host_cache_plan =
+        host_image_cache_plan(descriptors, options);
     const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
-        descriptors.size(), host_cache_capacity,
+        descriptors.size(), host_cache_plan.capacity_bytes,
         [&descriptors, &options](std::size_t index) {
             const auto* image = descriptors.at(index).image;
             return load_training_image(
@@ -1726,6 +1741,9 @@ TrainingMetrics train_ordered_mrnf(
         metrics.image_cache_evictions = cache.stats().evictions;
         metrics.image_cache_capacity_bytes =
             static_cast<std::uint64_t>(cache.capacity_bytes());
+        metrics.image_cache_working_set_bytes =
+            static_cast<std::uint64_t>(
+                host_cache_plan.working_set_bytes);
         metrics.peak_image_cache_bytes =
             static_cast<std::uint64_t>(
                 cache.stats().peak_resident_bytes);
@@ -1778,6 +1796,8 @@ TrainingMetrics train_ordered_mrnf(
     metrics.image_cache_evictions = cache.stats().evictions;
     metrics.image_cache_capacity_bytes =
         static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.image_cache_working_set_bytes =
+        static_cast<std::uint64_t>(host_cache_plan.working_set_bytes);
     metrics.peak_image_cache_bytes =
         static_cast<std::uint64_t>(
             cache.stats().peak_resident_bytes);
