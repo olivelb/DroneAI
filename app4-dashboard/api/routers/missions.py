@@ -26,6 +26,7 @@ from shared.tenancy import (
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
     profile_overrides,
+    quality_profile_candidates_enabled,
     quality_profile,
     selectable_quality_profiles,
 )
@@ -429,15 +430,8 @@ def mission_parameters() -> MissionParametersResponse:
     work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
     if work_drive_default not in configured_names:
         work_drive_default = work_drives[0]["name"] if work_drives else ""
-    raw_candidate_flag = os.getenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "false"
-    ).strip().lower()
-    if raw_candidate_flag not in {"true", "false"}:
-        raise RuntimeError(
-            "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED must be true or false"
-        )
     profiles = selectable_quality_profiles(
-        include_candidates=raw_candidate_flag == "true"
+        include_candidates=quality_profile_candidates_enabled()
     )
     return {
         "pipelines": PIPELINE_DEFAULTS,

@@ -5,6 +5,7 @@ from shared.quality_profiles import (
     QUALITY_PROFILES,
     QUALITY_PROFILE_BY_ID,
     profile_overrides,
+    quality_profile_candidates_enabled,
     quality_profile,
     selectable_quality_profiles,
 )
@@ -82,6 +83,22 @@ def test_candidate_profiles_require_explicit_catalog_exposure():
     assert "high-quality-v3" not in {
         profile.profile_id for profile in selectable_quality_profiles()
     }
+
+
+def test_candidate_profile_flag_is_strict(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False
+    )
+    assert quality_profile_candidates_enabled() is False
+    monkeypatch.setenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "TRUE"
+    )
+    assert quality_profile_candidates_enabled() is True
+    monkeypatch.setenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes"
+    )
+    with pytest.raises(RuntimeError, match="must be true or false"):
+        quality_profile_candidates_enabled()
     assert "high-quality-v3" in {
         profile.profile_id
         for profile in selectable_quality_profiles(include_candidates=True)

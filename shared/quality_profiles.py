@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
@@ -16,6 +17,9 @@ QualityProfileId = Literal[
     "high-quality-v3",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v3"
+QUALITY_PROFILE_CANDIDATES_FLAG = (
+    "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
+)
 
 
 @dataclass(frozen=True)
@@ -200,6 +204,17 @@ def selectable_quality_profiles(
     if include_candidates:
         return (*QUALITY_PROFILES, *_CANDIDATE_QUALITY_PROFILES)
     return QUALITY_PROFILES
+
+
+def quality_profile_candidates_enabled() -> bool:
+    """Resolve the strict opt-in for candidate catalog exposure."""
+
+    raw = os.getenv(QUALITY_PROFILE_CANDIDATES_FLAG, "false").strip().lower()
+    if raw not in {"true", "false"}:
+        raise RuntimeError(
+            f"{QUALITY_PROFILE_CANDIDATES_FLAG} must be true or false"
+        )
+    return raw == "true"
 
 
 def profile_overrides(

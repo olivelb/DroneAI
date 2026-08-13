@@ -28,6 +28,7 @@ from shared.identity import (
     database_authentication_enabled,
     validate_session_identity,
 )
+from shared.quality_profiles import quality_profile_candidates_enabled
 from shared.platform_identity import (
     PLATFORM_PRINCIPAL_ORGANIZATION,
     AuthenticatedPlatformIdentity,
@@ -267,14 +268,7 @@ def validate_production_configuration() -> None:
     if not is_production():
         return
     bounded_stage_jobs_enabled()
-    candidate_profiles = os.getenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "false"
-    ).strip().lower()
-    if candidate_profiles not in {"true", "false"}:
-        raise RuntimeError(
-            "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED must be true or false"
-        )
-    if candidate_profiles == "true":
+    if quality_profile_candidates_enabled():
         raise RuntimeError(
             "Candidate quality profiles cannot be exposed in production"
         )
