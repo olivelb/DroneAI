@@ -16,8 +16,14 @@ def test_pair_sampling_is_deterministic_and_bounded():
 
 
 def test_exif_coordinates_accept_byte_references(tmp_path, monkeypatch):
-    for name in ("north.jpg", "south.jpg", "ignored.txt"):
-        (tmp_path / name).write_bytes(b"fixture")
+    nested = tmp_path / "flight"
+    nested.mkdir()
+    for path in (
+        tmp_path / "north.jpg",
+        nested / "south.jpg",
+        tmp_path / "ignored.txt",
+    ):
+        path.write_bytes(b"fixture")
 
     metadata = {
         "north.jpg": {
@@ -45,11 +51,11 @@ def test_exif_coordinates_accept_byte_references(tmp_path, monkeypatch):
 
     assert exif_altitude.extract_exif_gps(tmp_path) == {
         "north.jpg": (45.5, 1.25),
-        "south.jpg": (-12.0, -77.0),
+        "flight/south.jpg": (-12.0, -77.0),
     }
     assert exif_altitude.extract_exif_altitudes(tmp_path) == {
         "north.jpg": 120.0,
-        "south.jpg": -15.0,
+        "flight/south.jpg": -15.0,
     }
 
 

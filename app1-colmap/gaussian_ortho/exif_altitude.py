@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Protocol, cast
 
 import numpy as np
@@ -62,6 +63,18 @@ def _gps_reference(value: object) -> str:
     return str(value or "").upper()
 
 
+def _image_paths(images_dir: ImageDirectory) -> list[tuple[str, Path]]:
+    """Return recursive image paths keyed like COLMAP image names."""
+
+    root = Path(images_dir)
+    return [
+        (path.relative_to(root).as_posix(), path)
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+        and path.suffix.lower() in {".jpg", ".jpeg", ".tif", ".tiff"}
+    ]
+
+
 def extract_exif_altitudes(
     images_dir: ImageDirectory,
 ) -> dict[str, float | None]:
@@ -70,18 +83,16 @@ def extract_exif_altitudes(
     Returns a dict: {filename: altitude (float or None)}
     """
     altitudes: dict[str, float | None] = {}
-    for fname in sorted(os.listdir(images_dir)):
-        if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
-            continue
-        gps = _get_gps_info(os.path.join(images_dir, fname))
+    for image_name, path in _image_paths(images_dir):
+        gps = _get_gps_info(str(path))
         if gps and "GPSAltitude" in gps:
             alt = float(gps["GPSAltitude"])
             ref = gps.get("GPSAltitudeRef", 0)
             if ref == 1 or _gps_reference(ref) in {"1", "\x01"}:
                 alt = -alt
-            altitudes[fname] = alt
+            altitudes[image_name] = alt
         else:
-            altitudes[fname] = None
+            altitudes[image_name] = None
     return altitudes
 
 
@@ -93,10 +104,8 @@ def extract_exif_gps(
     Returns a dict: {filename: (lat_deg, lon_deg) or None}
     """
     positions: dict[str, tuple[float, float] | None] = {}
-    for fname in sorted(os.listdir(images_dir)):
-        if not fname.lower().endswith((".jpg", ".jpeg", ".tif", ".tiff")):
-            continue
-        gps = _get_gps_info(os.path.join(images_dir, fname))
+    for image_name, path in _image_paths(images_dir):
+        gps = _get_gps_info(str(path))
         if gps and "GPSLatitude" in gps and "GPSLongitude" in gps:
             lat = _dms_to_deg(gps["GPSLatitude"])
             if _gps_reference(gps.get("GPSLatitudeRef")) == "S":
@@ -104,9 +113,9 @@ def extract_exif_gps(
             lon = _dms_to_deg(gps["GPSLongitude"])
             if _gps_reference(gps.get("GPSLongitudeRef")) == "W":
                 lon = -lon
-            positions[fname] = (lat, lon)
+            positions[image_name] = (lat, lon)
         else:
-            positions[fname] = None
+            positions[image_name] = None
     return positions
 
 

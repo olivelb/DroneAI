@@ -563,6 +563,47 @@ def test_prepare_gaussian_scene_keeps_loading_and_scale_contracts(
     assert any("Loaded 3 cameras" in report for report in reports)
 
 
+def test_prepare_facade_scene_rejects_implicit_model_unit_scale(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    cameras = [
+        SimpleNamespace(
+            image_name=f"flight/DJI_{index:04d}.JPG",
+            T=np.array([float(index), 0.0, 10.0]),
+            R=np.eye(3),
+        )
+        for index in range(12)
+    ]
+    point_cloud = SimpleNamespace(points=np.ones((12, 3), dtype=np.float32))
+    monkeypatch.setattr(
+        workflow,
+        "load_colmap_reconstruction",
+        lambda *_args, **_kwargs: (cameras, [], point_cloud, None),
+    )
+    monkeypatch.setattr(workflow, "extract_exif_altitudes", lambda _path: {})
+    monkeypatch.setattr(
+        workflow,
+        "_compute_facade_gps_scale",
+        lambda *_args: (1.0, "model-units", str(tmp_path / "images")),
+    )
+    config = SimpleNamespace(
+        facade_seed_max_reprojection_error=2.0,
+        facade_seed_min_track_length=2,
+        render_mode="facade",
+        vol_id="mission",
+        report_fn=None,
+        dense_path=str(tmp_path / "dense"),
+        transform_file=None,
+        utm_crs=None,
+        facade_scale_mode="gps-baseline",
+        facade_meters_per_model_unit=1.0,
+    )
+
+    with pytest.raises(RuntimeError, match="requires metadata"):
+        workflow.prepare_gaussian_scene(config)
+
+
 def test_prepare_gaussian_render_state_preserves_facade_frame_and_extent(
     monkeypatch,
     tmp_path,

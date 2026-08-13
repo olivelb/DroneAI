@@ -382,8 +382,13 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
             colmap_to_meters, scale_source, scale_images_dir = _compute_facade_gps_scale(
                 train_cameras, config.dense_path
             )
-            if scale_source != "model-units":
-                scale_source = f"{scale_source}:{Path(scale_images_dir).name}"
+            if scale_source == "model-units":
+                raise RuntimeError(
+                    "Facade GPS-baseline scale requires metadata for at least "
+                    "10 registered images; choose manual or model-units "
+                    "explicitly when metric GPS scale is unavailable."
+                )
+            scale_source = f"{scale_source}:{Path(scale_images_dir).name}"
         else:
             raise ValueError(f"Unsupported facade scale mode: {scale_mode}")
         _report(
