@@ -196,6 +196,23 @@ def verify() -> None:
                 "identity security functions are missing: "
                 + ", ".join(sorted(required_functions - functions))
             )
+        public_function_acls = set(
+            connection.execute(
+                text(
+                    "SELECT DISTINCT routine_name "
+                    "FROM information_schema.routine_privileges "
+                    "WHERE grantee = 'PUBLIC' "
+                    "AND privilege_type = 'EXECUTE' "
+                    "AND routine_name = ANY(:functions)"
+                ),
+                {"functions": list(required_functions)},
+            ).scalars()
+        )
+        if public_function_acls:
+            raise RuntimeError(
+                "identity SECURITY DEFINER functions remain executable by PUBLIC: "
+                + ", ".join(sorted(public_function_acls))
+            )
         audience_function = connection.execute(
             text(
                 "SELECT to_regprocedure("

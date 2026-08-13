@@ -351,6 +351,13 @@ def test_non_owner_role_is_fail_closed_and_transaction_scoped(monkeypatch) -> No
         )
         session.execute(
             text(
+                "GRANT EXECUTE ON FUNCTION droneai_platform_identity(), "
+                "droneai_identity_capability(), "
+                f'droneai_identity_capability_member(text) TO "{role}"'
+            )
+        )
+        session.execute(
+            text(
                 f'CREATE ROLE "{stage_role}" LOGIN PASSWORD :password '
                 "NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS"
             ),
