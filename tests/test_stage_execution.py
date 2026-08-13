@@ -6,11 +6,17 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from shared.database import (
+    Dataset,
+    DatasetUploadSession,
     Mission,
     MissionArtifact,
     MissionArtifactParent,
     MissionStageRun,
+    Organization,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
 )
+from shared.organization_saas import StorageQuotaExceeded
 from shared import stage_execution
 from shared.stage_execution import (
     StageExecutionCancelled,
@@ -24,6 +30,11 @@ from shared.stage_execution import (
 @pytest.fixture
 def execution_sessions(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    Organization.__table__.create(engine)
+    OrganizationSaasPolicy.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
+    DatasetUploadSession.__table__.create(engine)
+    Dataset.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     MissionArtifact.__table__.create(engine)
@@ -124,6 +135,58 @@ def test_one_shot_success_publishes_immutable_artifact_and_releases_next_stage(
         assert reconstruction.provenance["colmap_version"] == "4.0"
         assert training.status == "queued"
         assert training.upstream_artifact_ids == [artifact_id]
+        usage = session.query(OrganizationUsageEvent).one()
+        assert usage.action == "storage_reserved"
+        assert usage.quantity == 1234
+
+
+def test_stage_output_over_quota_is_terminal_and_never_enters_graph(
+    execution_sessions,
+):
+    run_id = "e" * 32
+    _mission_with_reconstruction(execution_sessions, run_id)
+    with execution_sessions() as session:
+        session.add(
+            Organization(
+                id="legacy-unassigned",
+                display_name="Legacy",
+                status="active",
+                created_by="test",
+                updated_by="test",
+            )
+        )
+        session.add(
+            OrganizationSaasPolicy(
+                organization_id="legacy-unassigned",
+                storage_limit_bytes=1000,
+                version=1,
+                created_by="test",
+                updated_by="test",
+            )
+        )
+
+    def handler(_context, _control):
+        return StageExecutionResult(
+            kind="reconstruction_workspace",
+            uri="s3://drone-ai/too-large/manifest.json",
+            checksum_sha256="e" * 64,
+            size_bytes=1001,
+        )
+
+    with pytest.raises(StorageQuotaExceeded):
+        execute_one_shot_stage(
+            "reconstruction",
+            handler,
+            run_id=run_id,
+            heartbeat_interval_seconds=60,
+        )
+
+    with execution_sessions() as session:
+        run = session.query(MissionStageRun).filter_by(run_id=run_id).one()
+        assert run.status == "failed"
+        assert "storage quota exceeded" in run.error_message.lower()
+        assert session.query(MissionArtifact).count() == 0
+        assert session.query(OrganizationUsageEvent).count() == 0
 
 
 def test_one_shot_failure_is_terminal_and_keeps_dependants_blocked(
@@ -239,6 +302,7 @@ def test_one_shot_loads_exact_inputs_and_persists_parent_edges(execution_session
             kind="gaussian_training_workspace",
             uri="s3://drone-ai/checkpoint.ply",
             checksum_sha256="2" * 64,
+            size_bytes=128,
         )
 
     execute_one_shot_stage(
@@ -267,6 +331,7 @@ def test_one_shot_rejects_wrong_artifact_kind(execution_sessions):
                 kind="detection_workspace",
                 uri="s3://drone-ai/wrong.json",
                 checksum_sha256="9" * 64,
+                size_bytes=1,
             ),
             run_id=run_id,
             heartbeat_interval_seconds=60,
@@ -393,4 +458,5 @@ def test_result_contract_rejects_non_sha256_content():
             kind="orthomosaic",
             uri="s3://bucket/ortho.tif",
             checksum_sha256="NOT-A-CHECKSUM",
+            size_bytes=1,
         )

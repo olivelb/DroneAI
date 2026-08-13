@@ -18,6 +18,7 @@ from shared.database import (
     MissionStageRun,
     get_session,
 )
+from shared.organization_saas import reserve_stage_output_storage
 from shared.stage_artifacts import mark_stage_run_succeeded, release_ready_stage_runs
 from shared.stage_contracts import STAGE_ARTIFACT_KINDS, StageId
 from shared.tenancy import MissionObjectNamespace
@@ -82,7 +83,7 @@ class StageExecutionResult:
     kind: str
     uri: str
     checksum_sha256: str
-    size_bytes: int | None = None
+    size_bytes: int
     metadata: dict[str, Any] = field(default_factory=dict)
     quality_metrics: dict[str, Any] = field(default_factory=dict)
     provenance: dict[str, Any] = field(default_factory=dict)
@@ -95,7 +96,7 @@ class StageExecutionResult:
             for character in self.checksum_sha256
         ):
             raise ValueError("A stage result requires a lower-case SHA-256")
-        if self.size_bytes is not None and self.size_bytes < 0:
+        if self.size_bytes < 0:
             raise ValueError("A stage result size cannot be negative")
 
 
@@ -362,6 +363,14 @@ def _publish_result(
             MissionArtifact.artifact_id == artifact_id
         ).first()
         if existing is None:
+            reserve_stage_output_storage(
+                session,
+                organization_id=context.organization_id,
+                stage_run_id=context.run_id,
+                artifact_id=artifact_id,
+                output_bytes=result.size_bytes,
+                actor_subject="system:stage-executor",
+            )
             artifact = MissionArtifact(
                 artifact_id=artifact_id,
                 mission_id=mission.id,

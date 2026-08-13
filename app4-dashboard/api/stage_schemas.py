@@ -34,7 +34,7 @@ class ArtifactCreate(BaseModel):
     kind: str = Field(min_length=1, max_length=64)
     uri: str = Field(min_length=1, max_length=2048)
     checksum_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    size_bytes: int | None = Field(default=None, ge=0)
+    size_bytes: int = Field(ge=0)
     metadata: dict[str, Any] = Field(default_factory=dict)
     parent_artifact_ids: list[str] = Field(default_factory=list, max_length=32)
 

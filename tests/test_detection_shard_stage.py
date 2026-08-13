@@ -193,6 +193,7 @@ def test_finalizer_requires_receipts_and_delegates_only_validated_fan_in(
         kind="detection_workspace",
         uri="s3://drone-ai/result/manifest.json",
         checksum_sha256="c" * 64,
+        size_bytes=64,
     )
     observed = {}
 

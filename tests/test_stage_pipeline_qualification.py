@@ -12,10 +12,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from shared import stage_execution
 from shared.database import (
+    Dataset,
+    DatasetUploadSession,
     Mission,
     MissionArtifact,
     MissionArtifactParent,
     MissionStageRun,
+    Organization,
+    OrganizationSaasPolicy,
+    OrganizationUsageEvent,
 )
 from shared.stage_contracts import STAGE_ARTIFACT_KINDS, STAGE_ORDER, StageId
 from shared.stage_execution import StageExecutionContext, StageExecutionResult
@@ -33,6 +38,11 @@ RESOURCE_CLASS_BY_STAGE = {
 @pytest.fixture
 def qualification_sessions(monkeypatch):
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    Organization.__table__.create(engine)
+    OrganizationSaasPolicy.__table__.create(engine)
+    OrganizationUsageEvent.__table__.create(engine)
+    DatasetUploadSession.__table__.create(engine)
+    Dataset.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     MissionArtifact.__table__.create(engine)
@@ -90,6 +100,7 @@ def _result(stage: StageId, checksum_digit: str) -> StageExecutionResult:
         kind=STAGE_ARTIFACT_KINDS[stage],
         uri=f"s3://drone-ai/qualification/{checksum_digit}/{stage}.json",
         checksum_sha256=checksum_digit * 64,
+        size_bytes=1,
         quality_metrics={"qualified": True},
         provenance={"qualification": "cpu-contract-v1"},
     )
