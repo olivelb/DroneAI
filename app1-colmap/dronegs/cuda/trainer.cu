@@ -1393,7 +1393,7 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
         options.sh_degree_interval, options.seed,
-        raster_override);
+        raster_override, options.maximum_scale_growth_factor);
     const auto checkpoint_dataset_fingerprint =
         options.dataset_fingerprint.empty()
             ? dataset_fingerprint(scene, options.data_path)
@@ -1411,6 +1411,11 @@ TrainingMetrics train_ordered_mrnf(
         << ";tile=" << options.tile_mode
         << ";adaptive_native_crop_tiles="
         << options.adaptive_native_crop_tiles
+        << ";initial_scale_policy=" << options.initial_scale_policy
+        << ";initial_max_projected_sigma_pixels="
+        << options.initial_max_projected_sigma_pixels
+        << ";maximum_scale_growth_factor="
+        << options.maximum_scale_growth_factor
         << ";seed=" << options.seed
         << ";test_every=" << options.test_every
         << ";test_split=" << options.test_split
@@ -1645,7 +1650,8 @@ TrainingMetrics train_ordered_mrnf(
                 options.adaptive_growth_target != 0U) {
                 growth_fraction = adaptive_capacity_growth_fraction(
                     workspace.size(),
-                    static_cast<std::size_t>(options.max_cap), iteration);
+                    static_cast<std::size_t>(options.max_cap), iteration,
+                    topology_refine_end);
             }
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^

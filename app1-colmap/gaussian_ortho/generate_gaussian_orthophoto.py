@@ -219,6 +219,10 @@ def _reusable_dronegs_result(
         "photometric_finish_iterations": request.dronegs.photometric_finish,
         "photometric_final_mse_percent": (request.dronegs.photometric_mse_percent),
         "adaptive_growth_target": request.dronegs.adaptive_growth_target,
+        "adaptive_native_crop_tiles": int(request.dronegs.adaptive_native_crop_tiles),
+        "initial_scale_policy": request.dronegs.initial_scale_policy,
+        "initial_max_projected_sigma_pixels": (request.dronegs.initial_max_projected_sigma_pixels),
+        "maximum_scale_growth_factor": (request.dronegs.maximum_scale_growth_factor),
     }
     parameters = manifest.get("parameters", {})
     if (
@@ -317,6 +321,9 @@ class GaussianOrthoConfig:
     dronegs_optimizer_profile: str
     dronegs_pruning_policy: str
     dronegs_raster_profile: str
+    dronegs_initial_scale_policy: str
+    dronegs_initial_max_projected_sigma_pixels: float
+    dronegs_maximum_scale_growth_factor: float
     dronegs_sh_degree_interval: int
     dronegs_topology_cooldown: int
     dronegs_photometric_finish: int
@@ -546,17 +553,12 @@ def _apply_required_resident_partition(
     if target_cell_count == 1:
         return
     if scene_state.scene is None or scene_state.point_cloud is None:
-        raise ValueError(
-            "Partitioned Gaussian training requires a prepared scene and "
-            "sparse point cloud"
-        )
+        raise ValueError("Partitioned Gaussian training requires a prepared scene and sparse point cloud")
     render_mode = getattr(config, "render_mode", "map")
     frame: PlanarSceneFrame
     if render_mode == "map":
         if scene_state.transform_data is None:
-            raise ValueError(
-                "Resident map training requires a geographic Sim3 transform"
-            )
+            raise ValueError("Resident map training requires a geographic Sim3 transform")
         frame = geographic_scene_frame(
             scene_state.point_cloud.points,
             scene_state.transform_data,
@@ -592,8 +594,7 @@ def _apply_required_resident_partition(
         config.vol_id,
         "GAUSS",
         12,
-        f"Partitioning {plane_label} into {rows}x{columns} "
-        f"core/buffer cells (minimum {required_cell_count})…",
+        f"Partitioning {plane_label} into {rows}x{columns} core/buffer cells (minimum {required_cell_count})…",
         config.report_fn,
     )
     cells = partition_scene(
@@ -683,9 +684,7 @@ def _plan_scene_capacity(
         total_vram_bytes=vram_bytes[1] if vram_bytes else None,
         cell_count=cell_count,
         partition_overlap=overlap,
-        resident_partitioning=bool(
-            getattr(config, "resident_partitioning", False)
-        ),
+        resident_partitioning=bool(getattr(config, "resident_partitioning", False)),
     )
 
 
@@ -744,11 +743,7 @@ def execute_gaussian_training_phase(
         )
     if capacity_plan.mode == "adaptive":
         area = capacity_plan.robust_ground_area_m2 or 0.0
-        vram_cap = (
-            f"{capacity_plan.vram_cap:,}"
-            if capacity_plan.vram_cap is not None
-            else "unavailable"
-        )
+        vram_cap = f"{capacity_plan.vram_cap:,}" if capacity_plan.vram_cap is not None else "unavailable"
         _report(
             config.vol_id,
             "GAUSS",
@@ -854,31 +849,15 @@ def train_and_merge_gaussian_models(
                 camera_names=[camera.image_name for camera in cell_scene.train_cameras],
                 images_dir=images_dir_path,
                 image_crops=cell_scene.image_crops,
-                max_point_error=(
-                    scene_state.seed_max_error
-                    if config.render_mode == "facade"
-                    else 1.0
-                ),
-                min_track_length=(
-                    scene_state.seed_min_track
-                    if config.render_mode == "facade"
-                    else 3
-                ),
-                max_points=(
-                    max(1, int(config.cap_max * 0.85))
-                    if config.render_mode == "facade"
-                    else None
-                ),
+                max_point_error=(scene_state.seed_max_error if config.render_mode == "facade" else 1.0),
+                min_track_length=(scene_state.seed_min_track if config.render_mode == "facade" else 3),
+                max_points=(max(1, int(config.cap_max * 0.85)) if config.render_mode == "facade" else None),
                 return_report=config.render_mode == "facade",
             )
             if config.render_mode == "facade":
                 if isinstance(subset_export, str):
-                    raise RuntimeError(
-                        "Resident facade subset export did not return its report"
-                    )
-                facade_partition_reports.append(
-                    {"cell": cell_label, **subset_export}
-                )
+                    raise RuntimeError("Resident facade subset export did not return its report")
+                facade_partition_reports.append({"cell": cell_label, **subset_export})
             training_data_path = cell_workspace
         elif config.render_mode == "facade":
             texture_workspace = os.path.join(
@@ -951,6 +930,9 @@ def train_and_merge_gaussian_models(
                 optimizer_profile=config.dronegs_optimizer_profile,
                 pruning_policy=config.dronegs_pruning_policy,
                 raster_profile=config.dronegs_raster_profile,
+                initial_scale_policy=config.dronegs_initial_scale_policy,
+                initial_max_projected_sigma_pixels=(config.dronegs_initial_max_projected_sigma_pixels),
+                maximum_scale_growth_factor=(config.dronegs_maximum_scale_growth_factor),
                 sh_degree_interval=config.dronegs_sh_degree_interval,
                 topology_cooldown=min(
                     config.dronegs_topology_cooldown,
@@ -962,6 +944,7 @@ def train_and_merge_gaussian_models(
                 ),
                 photometric_mse_percent=config.dronegs_photometric_mse_percent,
                 adaptive_growth_target=bool(config.resident_partitioning),
+                adaptive_native_crop_tiles=bool(config.resident_partitioning),
                 prefetch_depth=prefetch_depth,
                 decode_workers=decode_workers,
                 checkpoint_every=config.dronegs_checkpoint_every,
@@ -1029,9 +1012,7 @@ def train_and_merge_gaussian_models(
                 model.positions,
                 array_module=cupy_module,
             )
-            core_gaussian_count = int(
-                cupy_module.count_nonzero(core_mask).item()
-            )
+            core_gaussian_count = int(cupy_module.count_nonzero(core_mask).item())
             if core_gaussian_count == 0:
                 raise RuntimeError(f"Gaussian {cell_label} core retained no splats")
             buffer_path = os.path.join(cell_output, "buffer.ply")
@@ -1433,9 +1414,7 @@ def execute_gaussian_filtering_phase(
 
         cupy_module = cp
     if training_phase.training_state.merged_model is None:
-        raise RuntimeError(
-            "Partitioned Gaussian filtering must stream resident core models"
-        )
+        raise RuntimeError("Partitioned Gaussian filtering must stream resident core models")
     input_gaussians = int(training_phase.training_state.merged_model.num_gaussians)
     render_state = prepare_gaussian_render_state(
         config,
@@ -1490,22 +1469,9 @@ def _partition_core_mask_after_alignment(
         geo_origin[:2],
         dtype=model.positions.dtype,
     )
-    x_upper = (
-        ground_xy[:, 0] <= bounds.core_x_max
-        if bounds.include_core_x_max
-        else ground_xy[:, 0] < bounds.core_x_max
-    )
-    y_upper = (
-        ground_xy[:, 1] <= bounds.core_y_max
-        if bounds.include_core_y_max
-        else ground_xy[:, 1] < bounds.core_y_max
-    )
-    return (
-        (ground_xy[:, 0] >= bounds.core_x_min)
-        & x_upper
-        & (ground_xy[:, 1] >= bounds.core_y_min)
-        & y_upper
-    )
+    x_upper = ground_xy[:, 0] <= bounds.core_x_max if bounds.include_core_x_max else ground_xy[:, 0] < bounds.core_x_max
+    y_upper = ground_xy[:, 1] <= bounds.core_y_max if bounds.include_core_y_max else ground_xy[:, 1] < bounds.core_y_max
+    return (ground_xy[:, 0] >= bounds.core_x_min) & x_upper & (ground_xy[:, 1] >= bounds.core_y_min) & y_upper
 
 
 def execute_partitioned_gaussian_filtering_phase(
@@ -1570,8 +1536,7 @@ def execute_partitioned_gaussian_filtering_phase(
         core_count = int(cupy_module.count_nonzero(core_mask).item())
         if core_count == 0:
             raise RuntimeError(
-                f"Filtered resident cell {partition.bounds.row},"
-                f"{partition.bounds.col} retained no core Gaussians"
+                f"Filtered resident cell {partition.bounds.row},{partition.bounds.col} retained no core Gaussians"
             )
         filtered.append(
             GaussianFilteredPartition(
@@ -1580,9 +1545,7 @@ def execute_partitioned_gaussian_filtering_phase(
                 gaussian_count=model.num_gaussians,
                 core_gaussian_count=core_count,
                 render_extent=render.render_extent,
-                facade_depth_bounds_model=(
-                    render.facade_depth_bounds_model
-                ),
+                facade_depth_bounds_model=(render.facade_depth_bounds_model),
             )
         )
         extents.append(render.render_extent)
@@ -1641,14 +1604,10 @@ def execute_partitioned_gaussian_filtering_phase(
     origin_x = float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
     origin_y = float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
     global_extent = (
-        min(part.bounds.core_x_min for part in filtered) * coordinate_scale
-        - origin_x,
-        max(part.bounds.core_x_max for part in filtered) * coordinate_scale
-        - origin_x,
-        min(part.bounds.core_y_min for part in filtered) * coordinate_scale
-        - origin_y,
-        max(part.bounds.core_y_max for part in filtered) * coordinate_scale
-        - origin_y,
+        min(part.bounds.core_x_min for part in filtered) * coordinate_scale - origin_x,
+        max(part.bounds.core_x_max for part in filtered) * coordinate_scale - origin_x,
+        min(part.bounds.core_y_min for part in filtered) * coordinate_scale - origin_y,
+        max(part.bounds.core_y_max for part in filtered) * coordinate_scale - origin_y,
         min(extent[4] for extent in extents),
         max(extent[5] for extent in extents),
     )
@@ -1807,17 +1766,13 @@ def _axis_feather_weights(
     lower = coordinates < core_min
     lower_width = core_min - buffer_min
     if lower_width > 0.0:
-        weights[lower] = (
-            (coordinates[lower] - buffer_min) / lower_width
-        ).astype(np.float32)
+        weights[lower] = ((coordinates[lower] - buffer_min) / lower_width).astype(np.float32)
     else:
         weights[lower] = 0.0
     upper = coordinates > core_max
     upper_width = buffer_max - core_max
     if upper_width > 0.0:
-        weights[upper] = (
-            (buffer_max - coordinates[upper]) / upper_width
-        ).astype(np.float32)
+        weights[upper] = ((buffer_max - coordinates[upper]) / upper_width).astype(np.float32)
     else:
         weights[upper] = 0.0
     clipped: np.ndarray = np.clip(weights, 0.0, 1.0)
@@ -1838,9 +1793,7 @@ def execute_partitioned_gaussian_rasterization_phase(
     if geometry is None or not partitions:
         raise ValueError("Partitioned rasterization requires resident geometry")
     density = filtering_phase.density_assessment
-    if config.capacity_mode == "adaptive" and (
-        density is None or not density.accepted
-    ):
+    if config.capacity_mode == "adaptive" and (density is None or not density.accepted):
         if density is None:
             raise RuntimeError("Resident rasterization has no density assessment")
         raise RuntimeError(
@@ -1865,15 +1818,9 @@ def execute_partitioned_gaussian_rasterization_phase(
     height = int(np.ceil((y_max - y_min) / geometry.local_gsd))
     if width < 1 or height < 1:
         raise RuntimeError("Resident Gaussian raster extent is empty")
-    rgb_accumulator: np.ndarray = np.zeros(
-        (height, width, 3), dtype=np.float32
-    )
-    height_accumulator: np.ndarray = np.zeros(
-        (height, width), dtype=np.float32
-    )
-    weight_accumulator: np.ndarray = np.zeros(
-        (height, width), dtype=np.float32
-    )
+    rgb_accumulator: np.ndarray = np.zeros((height, width, 3), dtype=np.float32)
+    height_accumulator: np.ndarray = np.zeros((height, width), dtype=np.float32)
+    weight_accumulator: np.ndarray = np.zeros((height, width), dtype=np.float32)
     for index, partition in enumerate(partitions):
         px0, px1, py0, py1 = _partition_pixel_window(
             config,
@@ -1919,12 +1866,8 @@ def execute_partitioned_gaussian_rasterization_phase(
         if tile["rgb"].shape[:2] != expected_shape:
             raise RuntimeError("Resident Gaussian buffer raster shape drifted")
         coordinate_scale = _partition_to_render_scale(config, geometry)
-        origin_x = (
-            float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
-        )
-        origin_y = (
-            float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
-        )
+        origin_x = float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
+        origin_y = float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
         bounds = partition.bounds
         x_coordinates = x_min + (np.arange(px0, px1) + 0.5) * geometry.local_gsd
         y_coordinates = y_max - (np.arange(py0, py1) + 0.5) * geometry.local_gsd
@@ -1947,20 +1890,15 @@ def execute_partitioned_gaussian_rasterization_phase(
         row_chunk = 512
         for row_start in range(0, expected_shape[0], row_chunk):
             row_stop = min(expected_shape[0], row_start + row_chunk)
-            weights = (
-                y_weights[row_start:row_stop, None] * x_weights[None, :]
-            )
+            weights = y_weights[row_start:row_stop, None] * x_weights[None, :]
             height_slice = tile_height[row_start:row_stop]
             weights = np.where(np.isfinite(height_slice), weights, 0.0)
             target_rows = slice(py0 + row_start, py0 + row_stop)
             target_columns = slice(px0, px1)
             rgb_accumulator[target_rows, target_columns] += (
-                tile_rgb[row_start:row_stop].astype(np.float32)
-                * weights[:, :, None]
+                tile_rgb[row_start:row_stop].astype(np.float32) * weights[:, :, None]
             )
-            height_accumulator[target_rows, target_columns] += (
-                np.nan_to_num(height_slice, nan=0.0) * weights
-            )
+            height_accumulator[target_rows, target_columns] += np.nan_to_num(height_slice, nan=0.0) * weights
             weight_accumulator[target_rows, target_columns] += weights
         _report(
             config.vol_id,
@@ -2004,8 +1942,12 @@ def execute_partitioned_gaussian_rasterization_phase(
     result: dict[str, Any] = {
         "rgb": rgb,
         "height": height_map,
-        "extent": (x_min, x_min + width * geometry.local_gsd,
-                   y_max - height * geometry.local_gsd, y_max),
+        "extent": (
+            x_min,
+            x_min + width * geometry.local_gsd,
+            y_max - height * geometry.local_gsd,
+            y_max,
+        ),
         "gsd": geometry.local_gsd,
     }
     return GaussianRasterizationPhaseState(
@@ -2066,6 +2008,9 @@ def generate_gaussian_orthophoto(
     dronegs_optimizer_profile: str = (DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile),
     dronegs_pruning_policy: str = (DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy),
     dronegs_raster_profile: str = (DRONEGS_PRODUCTION_PROFILE_V1.raster_profile),
+    dronegs_initial_scale_policy: str = "local-knn",
+    dronegs_initial_max_projected_sigma_pixels: float = 2.0,
+    dronegs_maximum_scale_growth_factor: float = 54.59815,
     dronegs_sh_degree_interval: int = (DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
     dronegs_topology_cooldown: int = (DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
     dronegs_photometric_finish: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
@@ -2216,6 +2161,9 @@ def generate_gaussian_orthophoto(
         dronegs_optimizer_profile=dronegs_optimizer_profile,
         dronegs_pruning_policy=dronegs_pruning_policy,
         dronegs_raster_profile=dronegs_raster_profile,
+        dronegs_initial_scale_policy=dronegs_initial_scale_policy,
+        dronegs_initial_max_projected_sigma_pixels=(dronegs_initial_max_projected_sigma_pixels),
+        dronegs_maximum_scale_growth_factor=(dronegs_maximum_scale_growth_factor),
         dronegs_sh_degree_interval=dronegs_sh_degree_interval,
         dronegs_topology_cooldown=dronegs_topology_cooldown,
         dronegs_photometric_finish=dronegs_photometric_finish,
@@ -2280,11 +2228,7 @@ def generate_gaussian_orthophoto(
         exif_altitude_available=scene_state.mean_exif_alt is not None,
         colmap_to_meters=scene_state.colmap_to_meters,
         scale_source=scene_state.scale_source,
-        facade_frame=(
-            scene_state.facade_frame.as_dict()
-            if scene_state.facade_frame is not None
-            else None
-        ),
+        facade_frame=(scene_state.facade_frame.as_dict() if scene_state.facade_frame is not None else None),
         registered_camera_count=len(scene_state.registered_cameras),
         texture_camera_count=scene_state.texture_camera_count,
         texture_filter_applied=scene_state.texture_filter_applied,
@@ -2303,11 +2247,6 @@ def generate_gaussian_orthophoto(
         final_ply=training_phase.training_state.final_ply,
         cupy_version=cp.__version__,
     )
-    phase_timings["quality_and_geotiff_publication"] = (
-        perf_counter() - phase_started
-    )
-    result["phase_timings_seconds"] = {
-        name: round(seconds, 6)
-        for name, seconds in phase_timings.items()
-    }
+    phase_timings["quality_and_geotiff_publication"] = perf_counter() - phase_started
+    result["phase_timings_seconds"] = {name: round(seconds, 6) for name, seconds in phase_timings.items()}
     return result

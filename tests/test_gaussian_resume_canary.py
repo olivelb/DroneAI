@@ -13,9 +13,7 @@ if str(APP1_ROOT) not in sys.path:
 from gaussian_training import DroneGSTuning, TrainingRequest
 from shared.dronegs_profile import effective_raster_profile
 
-generator = importlib.import_module(
-    "gaussian_ortho.generate_gaussian_orthophoto"
-)
+generator = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 
 
 def _request(output, minimum_ssim):
@@ -80,6 +78,10 @@ def _manifest(request):
             "photometric_finish_iterations": tuning.photometric_finish,
             "photometric_final_mse_percent": tuning.photometric_mse_percent,
             "adaptive_growth_target": tuning.adaptive_growth_target,
+            "adaptive_native_crop_tiles": int(tuning.adaptive_native_crop_tiles),
+            "initial_scale_policy": tuning.initial_scale_policy,
+            "initial_max_projected_sigma_pixels": (tuning.initial_max_projected_sigma_pixels),
+            "maximum_scale_growth_factor": (tuning.maximum_scale_growth_factor),
         },
         "metrics": {"psnr": 19.0, "ssim": 0.30},
     }

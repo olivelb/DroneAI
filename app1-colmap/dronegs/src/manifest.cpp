@@ -2,6 +2,7 @@
 #include "dronegs/manifest.hpp"
 #include "dronegs/training.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -245,6 +246,12 @@ void write_completed_manifest(const Options& options, const Scene& scene,
                    ? "sensor-pixel-budget-up-to-tile-mode-v1"
                    : "fixed-tile-mode-v1")
            << "\",\n"
+           << "    \"initial_scale_policy\": \""
+           << json_escape(options.initial_scale_policy) << "\",\n"
+           << "    \"initial_max_projected_sigma_pixels\": "
+           << options.initial_max_projected_sigma_pixels << ",\n"
+           << "    \"maximum_scale_growth_factor\": "
+           << options.maximum_scale_growth_factor << ",\n"
            << "    \"seed\": " << options.seed << ",\n"
            << "    \"profile_id\": \""
            << json_escape(options.profile_id) << "\",\n"
@@ -313,7 +320,13 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"topology_growth\": "
               "\"deterministic_weighted_gumbel_long_axis_split\",\n"
            << "    \"refine_every\": 200,\n"
-           << "    \"grow_until_iteration\": 15000,\n"
+           << "    \"grow_until_iteration\": "
+           << std::min(
+                  topology_refinement_end_iteration(
+                      options.iterations, options.topology_cooldown,
+                      options.adaptive_growth_target != 0U),
+                  adaptive_growth_last_iteration)
+           << ",\n"
            << "    \"prune_until_iteration\": 28500,\n"
            << "    \"growth_threshold\": 0.003,\n"
            << "    \"growth_fraction\": "

@@ -3,6 +3,7 @@
 #include "dronegs/profile_registry.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -32,6 +33,18 @@ std::uint32_t parse_u32(std::string_view text, std::string_view option) {
     return static_cast<std::uint32_t>(value);
 }
 
+float parse_float(std::string_view text, std::string_view option) {
+    float value = 0.0F;
+    const auto [end, error] =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    if (error != std::errc{} || end != text.data() + text.size() ||
+        !std::isfinite(value)) {
+        throw std::invalid_argument(
+            std::string(option) + " must be a finite number");
+    }
+    return value;
+}
+
 bool is_descendant_or_equal(const std::filesystem::path& path,
                             const std::filesystem::path& parent) {
     auto path_it = path.begin();
@@ -53,6 +66,9 @@ const char* help_text() {
         "--strategy mrnf --sh-degree N --max-cap N --resize-factor N "
         "--max-width N --tile-mode N --seed N --run-manifest PATH "
         "[--adaptive-native-crop-tiles 0|1] "
+        "[--initial-scale-policy local-knn|projected-knn] "
+        "[--initial-max-projected-sigma-pixels N] "
+        "[--maximum-scale-growth-factor N] "
         "[--initial-ply PATH] "
         "[--prefetch-depth N] [--decode-workers N] "
         "[--host-image-cache-mib N] "
@@ -102,6 +118,8 @@ Options parse_options(int argc, char** argv) {
         "--data-path", "--output-path", "--iter", "--strategy", "--sh-degree",
         "--max-cap", "--resize-factor", "--max-width", "--tile-mode", "--seed",
         "--adaptive-native-crop-tiles",
+        "--initial-scale-policy", "--initial-max-projected-sigma-pixels",
+        "--maximum-scale-growth-factor",
         "--run-manifest", "--prefetch-depth", "--decode-workers",
         "--host-image-cache-mib",
         "--jpeg-idct-scale", "--test-every", "--test-split",
@@ -159,6 +177,19 @@ Options parse_options(int argc, char** argv) {
         options.adaptive_native_crop_tiles = parse_u32(
             values.at("--adaptive-native-crop-tiles"),
             "--adaptive-native-crop-tiles");
+    }
+    if (values.contains("--initial-scale-policy")) {
+        options.initial_scale_policy = values.at("--initial-scale-policy");
+    }
+    if (values.contains("--initial-max-projected-sigma-pixels")) {
+        options.initial_max_projected_sigma_pixels = parse_float(
+            values.at("--initial-max-projected-sigma-pixels"),
+            "--initial-max-projected-sigma-pixels");
+    }
+    if (values.contains("--maximum-scale-growth-factor")) {
+        options.maximum_scale_growth_factor = parse_float(
+            values.at("--maximum-scale-growth-factor"),
+            "--maximum-scale-growth-factor");
     }
     options.seed = parse_unsigned(values.at("--seed"), "--seed");
     if (values.contains("--prefetch-depth")) {
@@ -276,6 +307,23 @@ void validate_options(const Options& options) {
     if (options.adaptive_native_crop_tiles > 1U) {
         throw std::invalid_argument(
             "--adaptive-native-crop-tiles must be 0 or 1");
+    }
+    if (options.initial_scale_policy != "local-knn" &&
+        options.initial_scale_policy != "projected-knn") {
+        throw std::invalid_argument(
+            "--initial-scale-policy must be local-knn or projected-knn");
+    }
+    if (!std::isfinite(options.initial_max_projected_sigma_pixels) ||
+        options.initial_max_projected_sigma_pixels <= 0.0F ||
+        options.initial_max_projected_sigma_pixels > 64.0F) {
+        throw std::invalid_argument(
+            "--initial-max-projected-sigma-pixels must be in (0, 64]");
+    }
+    if (!std::isfinite(options.maximum_scale_growth_factor) ||
+        options.maximum_scale_growth_factor < 1.0F ||
+        options.maximum_scale_growth_factor > 1024.0F) {
+        throw std::invalid_argument(
+            "--maximum-scale-growth-factor must be in [1, 1024]");
     }
     if (options.prefetch_depth == 0U || options.prefetch_depth > 64U) {
         throw std::invalid_argument("--prefetch-depth must be between 1 and 64");

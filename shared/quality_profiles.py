@@ -17,9 +17,7 @@ QualityProfileId = Literal[
     "high-quality-v3",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v3"
-QUALITY_PROFILE_CANDIDATES_FLAG = (
-    "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
-)
+QUALITY_PROFILE_CANDIDATES_FLAG = "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
 
 
 @dataclass(frozen=True)
@@ -59,6 +57,9 @@ def _profile(
     capacity_floor: int | None = None,
     target_spacing_pixels: float = 0.0,
     resident_partitioning: bool = False,
+    initial_scale_policy: str = "local-knn",
+    initial_max_projected_sigma_pixels: float = 2.0,
+    maximum_scale_growth_factor: float = 54.59815,
 ) -> QualityProfile:
     return QualityProfile(
         profile_id=profile_id,
@@ -77,6 +78,9 @@ def _profile(
                 "gs_capacity_floor": str(capacity_floor or gaussians),
                 "gs_target_gaussian_spacing_pixels": str(target_spacing_pixels),
                 "gs_resident_partitioning": resident_partitioning,
+                "gs_initial_scale_policy": initial_scale_policy,
+                "gs_initial_max_projected_sigma_pixels": str(initial_max_projected_sigma_pixels),
+                "gs_maximum_scale_growth_factor": str(maximum_scale_growth_factor),
                 "gs_production_profile": profile_id,
             }
         ),
@@ -196,9 +200,7 @@ def quality_profile(profile_id: str) -> QualityProfile:
         raise ValueError(f"unknown quality profile {profile_id!r}; expected one of: {supported}") from error
 
 
-def selectable_quality_profiles(
-    *, include_candidates: bool = False
-) -> tuple[QualityProfile, ...]:
+def selectable_quality_profiles(*, include_candidates: bool = False) -> tuple[QualityProfile, ...]:
     """Return profiles offered for new missions in the operator catalog."""
 
     if include_candidates:
@@ -211,9 +213,7 @@ def quality_profile_candidates_enabled() -> bool:
 
     raw = os.getenv(QUALITY_PROFILE_CANDIDATES_FLAG, "false").strip().lower()
     if raw not in {"true", "false"}:
-        raise RuntimeError(
-            f"{QUALITY_PROFILE_CANDIDATES_FLAG} must be true or false"
-        )
+        raise RuntimeError(f"{QUALITY_PROFILE_CANDIDATES_FLAG} must be true or false")
     return raw == "true"
 
 

@@ -190,6 +190,7 @@ struct TrainingMetrics {
 };
 
 inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;
+inline constexpr std::uint64_t topology_refinement_interval = 200U;
 
 inline std::uint64_t topology_refinement_end_iteration(
     std::uint64_t iterations,
@@ -204,8 +205,8 @@ inline std::uint64_t topology_refinement_end_iteration(
 inline float adaptive_capacity_growth_fraction(
     std::size_t current_gaussians,
     std::size_t target_gaussians,
-    std::uint64_t iteration) {
-    constexpr std::uint64_t refinement_interval = 200U;
+    std::uint64_t iteration,
+    std::uint64_t growth_end_iteration) {
     constexpr double estimated_pruning_fraction = 0.03;
     constexpr double estimated_candidate_fraction = 0.93;
     constexpr float minimum_growth_fraction = 0.07F;
@@ -215,21 +216,21 @@ inline float adaptive_capacity_growth_fraction(
         throw std::invalid_argument(
             "adaptive growth requires a non-empty Gaussian model");
     }
-    if (iteration > adaptive_growth_last_iteration) {
+    if (iteration > growth_end_iteration) {
         return 0.0F;
     }
+    const auto remaining_windows =
+        ((growth_end_iteration - iteration) /
+         topology_refinement_interval) + 1U;
     if (target_gaussians <= current_gaussians) {
         // The final refinement still prunes before it grows. Request the
         // minimum split budget so capacity freed by that pruning is recycled
         // and the frozen topology finishes at the target instead of below it.
-        return iteration == adaptive_growth_last_iteration
+        return remaining_windows == 1U
             ? minimum_growth_fraction
             : 0.0F;
     }
 
-    const auto remaining_windows =
-        ((adaptive_growth_last_iteration - iteration) /
-         refinement_interval) + 1U;
     const double required_net_growth = std::exp(
         std::log(
             static_cast<double>(target_gaussians) /

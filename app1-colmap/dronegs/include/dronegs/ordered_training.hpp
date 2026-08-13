@@ -39,7 +39,8 @@ public:
         std::uint32_t sh_degree_interval = 1000U,
         std::uint64_t noise_seed = 0U,
         std::optional<bool> fastgs_compatibility_override =
-            std::nullopt);
+            std::nullopt,
+        float maximum_scale_growth_factor = 54.59815F);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(

@@ -472,6 +472,74 @@ void test_local_scale_initialization() {
           "duplicate-point scale floor mismatch");
 }
 
+void test_projected_scale_initialization_tracks_training_tiles() {
+    dronegs::Scene scene;
+    scene.cameras.push_back(dronegs::Camera{
+        .id = 1U,
+        .model_id = 1,
+        .width = 4000U,
+        .height = 3000U,
+        .parameters = {1000.0, 1000.0, 2000.0, 1500.0},
+    });
+    scene.images.push_back(dronegs::Image{
+        .id = 1U,
+        .camera_id = 1U,
+        .name = "frame.jpg",
+        .qvec = {1.0, 0.0, 0.0, 0.0},
+        .tvec = {0.0, 0.0, 10.0},
+    });
+    for (std::size_t index = 0U; index < 9U; ++index) {
+        scene.points.push_back(dronegs::SparsePoint{
+            .id = static_cast<std::uint64_t>(index + 1U),
+            .xyz = {
+                static_cast<double>(index % 3U) * 2.0 - 2.0,
+                static_cast<double>(index / 3U) * 2.0 - 2.0,
+                0.0,
+            },
+            .rgb = {64U, 128U, 192U},
+        });
+    }
+
+    const auto one_tile = dronegs::initialize_fixed_topology(
+        scene,
+        {
+            .policy = dronegs::InitialScalePolicy::projected_knn,
+            .maximum_projected_sigma_pixels = 2.0F,
+            .resize_factor = 1U,
+            .maximum_image_width = 1000U,
+            .tile_mode = 1U,
+        });
+    const auto four_tiles = dronegs::initialize_fixed_topology(
+        scene,
+        {
+            .policy = dronegs::InitialScalePolicy::projected_knn,
+            .maximum_projected_sigma_pixels = 2.0F,
+            .resize_factor = 1U,
+            .maximum_image_width = 1000U,
+            .tile_mode = 4U,
+        });
+    check(
+        one_tile.statistics.projection_supported_count == 9U &&
+            four_tiles.statistics.projection_supported_count == 9U,
+        "projected initialization lost crop-visible sparse points");
+    check(
+        one_tile.statistics.projected_scale_clamped_count == 9U &&
+            four_tiles.statistics.projected_scale_clamped_count == 9U,
+        "projected initialization did not clamp oversized sparse seeds");
+    check(
+        one_tile.statistics.projected_sigma_after_maximum <= 2.0001F &&
+            four_tiles.statistics.projected_sigma_after_maximum <= 2.0001F,
+        "projected initialization exceeded its pixel sigma contract");
+    const float one_tile_scale =
+        std::exp(one_tile.gaussians[4].log_scale[0]);
+    const float four_tile_scale =
+        std::exp(four_tiles.gaussians[4].log_scale[0]);
+    check(
+        four_tile_scale < one_tile_scale * 0.51F &&
+            four_tile_scale > one_tile_scale * 0.49F,
+        "projected initialization ignored the effective training crop");
+}
+
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
     std::filesystem::create_directories(output);
     std::vector<std::string> values{
@@ -496,6 +564,11 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(
         parsed.adaptive_native_crop_tiles == 0U,
         "CLI adaptive native crop tile default mismatch");
+    check(
+        parsed.initial_scale_policy == "local-knn" &&
+            parsed.initial_max_projected_sigma_pixels == 2.0F &&
+            parsed.maximum_scale_growth_factor > 54.59F,
+        "CLI initial scale defaults mismatch");
     check(
         parsed.sh_degree_interval == 1000U,
         "CLI SH interval default mismatch");
@@ -547,6 +620,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--photometric-mse-percent", "50",
         "--adaptive-growth-target", "1",
         "--adaptive-native-crop-tiles", "1",
+        "--initial-scale-policy", "projected-knn",
+        "--initial-max-projected-sigma-pixels", "1.25",
+        "--maximum-scale-growth-factor", "8",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -590,6 +666,11 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         tuned.adaptive_native_crop_tiles == 1U,
         "CLI adaptive native crop tiles mismatch");
     check(
+        tuned.initial_scale_policy == "projected-knn" &&
+            tuned.initial_max_projected_sigma_pixels == 1.25F &&
+            tuned.maximum_scale_growth_factor == 8.0F,
+        "CLI projected initial scale mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -609,7 +690,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 38U);
+    values.resize(values.size() - 44U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
@@ -633,26 +714,35 @@ void test_adaptive_capacity_growth() {
             30'000U, 1'000U, true) == 14'800U,
         "adaptive topology was not frozen after growth");
     const auto initial = dronegs::adaptive_capacity_growth_fraction(
-        22'547U, 5'700'000U, 200U);
+        22'547U, 5'700'000U, 200U, 14'800U);
     check(
         initial > 0.10F && initial < 0.13F,
         "adaptive initial growth fraction mismatch");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'600U) == 0.0F,
+            5'700'000U, 5'700'000U, 14'600U, 14'800U) == 0.0F,
         "adaptive growth continued at capacity before the final window");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'800U) == 0.07F,
+            5'700'000U, 5'700'000U, 14'800U, 14'800U) == 0.07F,
         "adaptive final window did not reserve pruning replacement");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            1U, 5'700'000U, 14'800U) == 0.25F,
+            1U, 5'700'000U, 14'800U, 14'800U) == 0.25F,
         "adaptive growth upper bound mismatch");
+    const auto short_initial = dronegs::adaptive_capacity_growth_fraction(
+        22'547U, 1'500'000U, 200U, 6'500U);
+    check(
+        short_initial > initial,
+        "short training budget did not accelerate adaptive growth");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            1'500'000U, 1'500'000U, 6'400U, 6'500U) == 0.07F,
+        "short training budget did not reserve its final growth window");
     bool empty_model_rejected = false;
     try {
         static_cast<void>(dronegs::adaptive_capacity_growth_fraction(
-            0U, 100U, 200U));
+            0U, 100U, 200U, 6'500U));
     } catch (const std::invalid_argument&) {
         empty_model_rejected = true;
     }
@@ -1005,6 +1095,7 @@ int main() {
         test_scene_and_ply(data);
         test_optimizer_profile_registry();
         test_local_scale_initialization();
+        test_projected_scale_initialization_tracks_training_tiles();
         test_cli(data, output);
         test_adaptive_capacity_growth();
         test_exact_floor_percentile();

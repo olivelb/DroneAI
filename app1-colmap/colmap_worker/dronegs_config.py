@@ -34,6 +34,9 @@ class DroneGsRunConfig:
     optimizer_profile: str
     pruning_policy: str
     raster_profile: str
+    initial_scale_policy: str
+    initial_max_projected_sigma_pixels: float
+    maximum_scale_growth_factor: float
     sh_degree_interval: int
     topology_cooldown: int
     photometric_finish: int
@@ -91,6 +94,9 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "optimizer_profile": config.optimizer_profile,
         "pruning_policy": config.pruning_policy,
         "raster_profile": config.raster_profile,
+        "initial_scale_policy": config.initial_scale_policy,
+        "initial_max_projected_sigma_pixels": (config.initial_max_projected_sigma_pixels),
+        "maximum_scale_growth_factor": config.maximum_scale_growth_factor,
         "sh_degree_interval": config.sh_degree_interval,
         "topology_cooldown": config.topology_cooldown,
         "photometric_finish": config.photometric_finish,
@@ -108,15 +114,11 @@ def resolve_dronegs_config(
     facade_mode: bool,
     data_factor: int,
 ) -> tuple[DroneGsRunConfig, tuple[str, ...]]:
-    profile_id = str(
-        params.get("gs_production_profile", DRONEGS_PRODUCTION_PROFILE_V1.profile_id)
-    )
+    profile_id = str(params.get("gs_production_profile", DRONEGS_PRODUCTION_PROFILE_V1.profile_id))
     selected_profile = QUALITY_PROFILE_BY_ID.get(cast(QualityProfileId, profile_id))
     selected_parameters = selected_profile.parameters if selected_profile else {}
     cap_max = int(params.get("gs_cap_max", DRONEGS_PRODUCTION_PROFILE_V1.cap_max))
-    qualification_policy_id = str(
-        params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID)
-    )
+    qualification_policy_id = str(params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID))
     coverage_policy = SpatialCoveragePolicy()
     config = DroneGsRunConfig(
         resolution=float(params.get("ortho_mesh_resolution", 0.02)),
@@ -153,14 +155,26 @@ def resolve_dronegs_config(
         seed=int(params.get("gs_seed", 42)),
         profile_id=profile_id,
         qualification_policy_id=qualification_policy_id,
-        optimizer_profile=str(
-            params.get("gs_optimizer_profile", DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile)
+        optimizer_profile=str(params.get("gs_optimizer_profile", DRONEGS_PRODUCTION_PROFILE_V1.optimizer_profile)),
+        pruning_policy=str(params.get("gs_pruning_policy", DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy)),
+        raster_profile=str(params.get("gs_raster_profile", DRONEGS_PRODUCTION_PROFILE_V1.raster_profile)),
+        initial_scale_policy=str(
+            params.get(
+                "gs_initial_scale_policy",
+                selected_parameters.get("gs_initial_scale_policy", "local-knn"),
+            )
         ),
-        pruning_policy=str(
-            params.get("gs_pruning_policy", DRONEGS_PRODUCTION_PROFILE_V1.pruning_policy)
+        initial_max_projected_sigma_pixels=float(
+            params.get(
+                "gs_initial_max_projected_sigma_pixels",
+                selected_parameters.get("gs_initial_max_projected_sigma_pixels", 2.0),
+            )
         ),
-        raster_profile=str(
-            params.get("gs_raster_profile", DRONEGS_PRODUCTION_PROFILE_V1.raster_profile)
+        maximum_scale_growth_factor=float(
+            params.get(
+                "gs_maximum_scale_growth_factor",
+                selected_parameters.get("gs_maximum_scale_growth_factor", 54.59815),
+            )
         ),
         sh_degree_interval=int(params.get("gs_sh_degree_interval", 1_000)),
         topology_cooldown=int(params.get("gs_topology_cooldown", 1_000)),
@@ -193,11 +207,7 @@ def resolve_dronegs_config(
                 1.0 if facade_mode else 5.0,
             )
         ),
-        filter_min_retained_ratio=(
-            0.0
-            if facade_mode
-            else float(params.get("gs_filter_min_retained_ratio", 0.80))
-        ),
+        filter_min_retained_ratio=(0.0 if facade_mode else float(params.get("gs_filter_min_retained_ratio", 0.80))),
         filter_dist=float(params.get("gs_filter_dist", 1.0)),
         filter_opacity=float(params.get("gs_filter_opacity", 0.005)),
         filter_needle=float(params.get("gs_filter_needle", 0.0)),
@@ -205,14 +215,8 @@ def resolve_dronegs_config(
         filter_sor_sigma=float(params.get("gs_filter_sor_sigma", 4.0)),
         filter_cc=bool(params.get("gs_filter_cc", False)),
         filter_z_floater=bool(params.get("gs_filter_z_floater", False)),
-        coverage_gate_enabled=(
-            False
-            if facade_mode
-            else bool(params.get("gs_coverage_gate_enabled", True))
-        ),
-        coverage_grid_size=int(
-            params.get("gs_coverage_grid_size", coverage_policy.grid_size)
-        ),
+        coverage_gate_enabled=(False if facade_mode else bool(params.get("gs_coverage_gate_enabled", True))),
+        coverage_grid_size=int(params.get("gs_coverage_grid_size", coverage_policy.grid_size)),
         coverage_min_valid_ratio=float(
             params.get(
                 "gs_coverage_min_valid_ratio",
@@ -246,12 +250,16 @@ def resolve_dronegs_config(
     )
     if config.capacity_mode not in {"fixed", "adaptive"}:
         raise ValueError("gs_capacity_mode must be fixed or adaptive")
+    if config.initial_scale_policy not in {"local-knn", "projected-knn"}:
+        raise ValueError("gs_initial_scale_policy must be local-knn or projected-knn")
+    if not 0 < config.initial_max_projected_sigma_pixels <= 64:
+        raise ValueError("gs_initial_max_projected_sigma_pixels must be in (0, 64]")
+    if not 1 <= config.maximum_scale_growth_factor <= 1024:
+        raise ValueError("gs_maximum_scale_growth_factor must be in [1, 1024]")
     if not 1 <= config.capacity_floor <= config.cap_max:
         raise ValueError("gs_capacity_floor must be positive and no greater than gs_cap_max")
     if config.capacity_mode == "adaptive" and config.target_gaussian_spacing_pixels <= 0:
-        raise ValueError(
-            "adaptive Gaussian capacity requires a positive target pixel spacing"
-        )
+        raise ValueError("adaptive Gaussian capacity requires a positive target pixel spacing")
 
     warnings: list[str] = []
     profile_identity = _profile_identity(config)

@@ -33,13 +33,14 @@ def expected_profile_identity(
             {
                 "capacity_mode": str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
                 "capacity_floor": int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
-                "target_gaussian_spacing_pixels": float(
-                    FACADE_PROCESS_OVERRIDES[
-                        "gs_target_gaussian_spacing_pixels"
-                    ]
+                "target_gaussian_spacing_pixels": float(FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]),
+                "resident_partitioning": bool(FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]),
+                "initial_scale_policy": str(FACADE_PROCESS_OVERRIDES.get("gs_initial_scale_policy", "local-knn")),
+                "initial_max_projected_sigma_pixels": float(
+                    FACADE_PROCESS_OVERRIDES.get("gs_initial_max_projected_sigma_pixels", 2.0)
                 ),
-                "resident_partitioning": bool(
-                    FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
+                "maximum_scale_growth_factor": float(
+                    FACADE_PROCESS_OVERRIDES.get("gs_maximum_scale_growth_factor", 54.59815)
                 ),
             }
         )
@@ -52,6 +53,9 @@ def expected_profile_identity(
                 "capacity_floor": int(expected["cap_max"]),
                 "target_gaussian_spacing_pixels": 0.0,
                 "resident_partitioning": False,
+                "initial_scale_policy": "local-knn",
+                "initial_max_projected_sigma_pixels": 2.0,
+                "maximum_scale_growth_factor": 54.59815,
             }
         )
         return expected
@@ -67,6 +71,9 @@ def expected_profile_identity(
                 "capacity_floor": DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
                 "target_gaussian_spacing_pixels": 0.0,
                 "resident_partitioning": False,
+                "initial_scale_policy": "local-knn",
+                "initial_max_projected_sigma_pixels": 2.0,
+                "maximum_scale_growth_factor": 54.59815,
             }
         )
         return expected
@@ -76,9 +83,7 @@ def expected_profile_identity(
             for name in fields
             if hasattr(DRONEGS_PRODUCTION_PROFILE_V1, name)
         }
-        parameters = QUALITY_PROFILE_BY_ID[
-            cast(QualityProfileId, profile_id)
-        ].parameters
+        parameters = QUALITY_PROFILE_BY_ID[cast(QualityProfileId, profile_id)].parameters
         expected.update(
             {
                 "iterations": int(parameters["gs_iterations"]),
@@ -87,12 +92,13 @@ def expected_profile_identity(
                 "cap_max": int(parameters["gs_cap_max"]),
                 "capacity_mode": str(parameters["gs_capacity_mode"]),
                 "capacity_floor": int(parameters["gs_capacity_floor"]),
-                "target_gaussian_spacing_pixels": float(
-                    parameters["gs_target_gaussian_spacing_pixels"]
+                "target_gaussian_spacing_pixels": float(parameters["gs_target_gaussian_spacing_pixels"]),
+                "resident_partitioning": bool(parameters["gs_resident_partitioning"]),
+                "initial_scale_policy": str(parameters.get("gs_initial_scale_policy", "local-knn")),
+                "initial_max_projected_sigma_pixels": float(
+                    parameters.get("gs_initial_max_projected_sigma_pixels", 2.0)
                 ),
-                "resident_partitioning": bool(
-                    parameters["gs_resident_partitioning"]
-                ),
+                "maximum_scale_growth_factor": float(parameters.get("gs_maximum_scale_growth_factor", 54.59815)),
             }
         )
         return expected

@@ -78,7 +78,45 @@ int main(int argc, char** argv) {
         }
         auto gaussians = [&]() {
             if (options.initial_ply.empty()) {
-                return dronegs::initialize_fixed_topology(scene);
+                const auto policy = options.initial_scale_policy ==
+                        "projected-knn"
+                    ? dronegs::InitialScalePolicy::projected_knn
+                    : dronegs::InitialScalePolicy::local_knn;
+                auto initialization = dronegs::initialize_fixed_topology(
+                    scene,
+                    {
+                        .policy = policy,
+                        .maximum_projected_sigma_pixels =
+                            options.initial_max_projected_sigma_pixels,
+                        .resize_factor = options.resize_factor,
+                        .maximum_image_width = options.max_width,
+                        .tile_mode = options.tile_mode,
+                        .adaptive_native_crop_tiles =
+                            options.adaptive_native_crop_tiles != 0U,
+                    });
+                const auto& statistics = initialization.statistics;
+                std::cout
+                    << "{\"event\":\"gaussian_initialization\","
+                    << "\"policy\":\"" << options.initial_scale_policy
+                    << "\",\"gaussians\":" << statistics.gaussian_count
+                    << ",\"projection_supported\":"
+                    << statistics.projection_supported_count
+                    << ",\"projected_scale_clamped\":"
+                    << statistics.projected_scale_clamped_count
+                    << ",\"projected_sigma_before_p50\":"
+                    << statistics.projected_sigma_before_p50
+                    << ",\"projected_sigma_before_p95\":"
+                    << statistics.projected_sigma_before_p95
+                    << ",\"projected_sigma_before_maximum\":"
+                    << statistics.projected_sigma_before_maximum
+                    << ",\"projected_sigma_after_p50\":"
+                    << statistics.projected_sigma_after_p50
+                    << ",\"projected_sigma_after_p95\":"
+                    << statistics.projected_sigma_after_p95
+                    << ",\"projected_sigma_after_maximum\":"
+                    << statistics.projected_sigma_after_maximum
+                    << "}\n" << std::flush;
+                return std::move(initialization.gaussians);
             }
             auto loaded =
                 dronegs::read_gaussian_ply(options.initial_ply);

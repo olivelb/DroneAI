@@ -4357,7 +4357,8 @@ struct OrderedAlphaTrainingContext::Impl {
         std::uint32_t requested_maximum_sh_degree,
         std::uint32_t requested_sh_degree_interval,
         std::uint64_t requested_noise_seed,
-        std::optional<bool> fastgs_compatibility_override)
+        std::optional<bool> fastgs_compatibility_override,
+        float requested_maximum_scale_growth_factor)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -4489,8 +4490,14 @@ struct OrderedAlphaTrainingContext::Impl {
         learning_rates = mrnf_learning_rates(
             1U, maximum_steps, position_learning_rate_scale,
             optimizer_profile);
+        if (!std::isfinite(requested_maximum_scale_growth_factor) ||
+            requested_maximum_scale_growth_factor < 1.0F) {
+            throw std::invalid_argument(
+                "maximum scale growth factor must be finite and at least one");
+        }
         minimum_log_scale = initial_minimum_log_scale - 4.0F;
-        maximum_log_scale = initial_maximum_log_scale + 4.0F;
+        maximum_log_scale = initial_maximum_log_scale +
+            std::log(requested_maximum_scale_growth_factor);
         gaussians.copy_from_host(
             initial_gaussians.data(), gaussian_count);
         first_dc.zero(gaussian_count * 3U);
@@ -5311,18 +5318,22 @@ struct OrderedAlphaTrainingContext::Impl {
                 }
             }
         }
-        const float scale_limit =
-            previous_count < 8U
-                ? std::numeric_limits<float>::infinity()
-                : (spatial_pruning_bounds
-                       ? std::max(
-                             1.0e-10F,
-                             100.0F * percentile_max_extent)
-                       : std::max(
-                             1.0e-10F,
-                             10.0F *
-                                 exact_floor_percentile(
-                                     maximum_scales, 0.8F)));
+        // Spatial bounds constrain centres; they must not disable the robust
+        // scale gate. The former branch replaced the p80-derived limit with a
+        // scene-extent guard that was orders of magnitude looser, so large
+        // finite splats were never pruned in resident runs.
+        const float scale_limit = previous_count < 8U
+            ? std::numeric_limits<float>::infinity()
+            : std::min(
+                  std::max(
+                      1.0e-10F,
+                      10.0F * exact_floor_percentile(
+                          maximum_scales, 0.8F)),
+                  spatial_pruning_bounds
+                      ? std::max(
+                            1.0e-10F,
+                            100.0F * percentile_max_extent)
+                      : std::numeric_limits<float>::infinity());
         constexpr float minimum_opacity_logit = -5.541263545158426F;
         constexpr float minimum_surviving_log_scale =
             -23.025850929940457F;
@@ -5763,12 +5774,14 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     std::uint32_t maximum_sh_degree,
     std::uint32_t sh_degree_interval,
     std::uint64_t noise_seed,
-    std::optional<bool> fastgs_compatibility_override)
+    std::optional<bool> fastgs_compatibility_override,
+    float maximum_scale_growth_factor)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
           maximum_gaussians, optimizer_profile,
           maximum_sh_degree, sh_degree_interval,
-          noise_seed, fastgs_compatibility_override)) {}
+          noise_seed, fastgs_compatibility_override,
+          maximum_scale_growth_factor)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 

@@ -229,6 +229,26 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertEqual(config.qualification_policy_id, "custom")
         self.assertEqual(len(warnings), 1)
 
+    def test_projected_initialization_overrides_apply_to_map_and_facade(self):
+        params = {
+            **quality_profile("normal-v3").parameters,
+            "gs_initial_scale_policy": "projected-knn",
+            "gs_initial_max_projected_sigma_pixels": "1.5",
+            "gs_maximum_scale_growth_factor": "8",
+        }
+
+        for facade_mode in (False, True):
+            config, warnings = dronegs_config.resolve_dronegs_config(
+                params,
+                facade_mode=facade_mode,
+                data_factor=4,
+            )
+            self.assertEqual(config.initial_scale_policy, "projected-knn")
+            self.assertEqual(config.initial_max_projected_sigma_pixels, 1.5)
+            self.assertEqual(config.maximum_scale_growth_factor, 8.0)
+            self.assertEqual(config.profile_id, "custom")
+            self.assertTrue(warnings)
+
     def test_checkpoint_store_reuses_local_state_without_downloading(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             checkpoint_root = os.path.join(tmp_dir, "checkpoints")
@@ -258,7 +278,11 @@ class TestColmapStageHelpers(unittest.TestCase):
                 "vol",
             )
             with (
-                patch.object(gaussian_stage.storage, "upload_file", side_effect=OSError("offline")),
+                patch.object(
+                    gaussian_stage.storage,
+                    "upload_file",
+                    side_effect=OSError("offline"),
+                ),
                 patch.object(worker_runtime, "report_mission_progress") as report,
             ):
                 callback(checkpoint, 10)
@@ -469,11 +493,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                 tmp_dir,
                 config,
             )
-            hydrated_partitions = (
-                phase_artifacts.hydrate_partitioned_filtering_phase(
-                    partition_filter_artifact
-                )
-            )
+            hydrated_partitions = phase_artifacts.hydrate_partitioned_filtering_phase(partition_filter_artifact)
             self.assertIsNone(partition_filter_artifact.model_path)
             self.assertEqual(len(hydrated_partitions.partition_models), 1)
             self.assertEqual(hydrated_partitions.output_gaussians, 1_100_000)
@@ -497,9 +517,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                     render_extent=(-10.0, 10.0, -5.0, 5.0, 0.0, 8.0),
                     local_gsd=0.025,
                     resolution_units="metres",
-                    coverage_camera_positions=np.array(
-                        [[0.0, 0.0, 10.0], [2.0, 1.0, 11.0]]
-                    ),
+                    coverage_camera_positions=np.array([[0.0, 0.0, 10.0], [2.0, 1.0, 11.0]]),
                 ),
                 density_assessment=GaussianDensityAssessment(
                     robust_ground_area_m2=2_500.0,
