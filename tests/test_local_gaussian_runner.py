@@ -26,6 +26,7 @@ def _arguments(**overrides):
         "resolution": None,
         "canary_min_psnr": None,
         "canary_min_ssim": None,
+        "checkpoint_every": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -150,6 +151,18 @@ def test_balanced_training_overrides_become_custom_recipe():
     assert profile.optimizer_profile == "reference-absolute"
     assert profile.canary_min_psnr == PROFILES["balanced"].canary_min_psnr
     assert profile.canary_min_ssim == PROFILES["balanced"].canary_min_ssim
+
+
+def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
+    profile = resolve_profile(
+        _arguments(profile="normal", checkpoint_every=4_000)
+    )
+
+    assert profile.checkpoint_every == 4_000
+    assert profile.profile_id == "custom"
+
+    with pytest.raises(ValueError, match="checkpoint-every must be positive"):
+        resolve_profile(_arguments(checkpoint_every=0))
 
 
 def test_facade_hd_overrides_preserve_separate_recipe_identities():

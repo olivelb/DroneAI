@@ -290,6 +290,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topology-cooldown", type=int)
     parser.add_argument("--photometric-finish", type=int)
     parser.add_argument("--photometric-mse-percent", type=int)
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        help=(
+            "persist a recovery checkpoint every N iterations; this is an "
+            "operational I/O/recovery trade-off and changes the run identity"
+        ),
+    )
     parser.add_argument("--canary-min-psnr", type=float)
     parser.add_argument("--canary-min-ssim", type=float)
     parser.add_argument(
@@ -394,6 +402,8 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
             raise ValueError(f"{field_name.replace('_', '-')} must be non-negative")
     if resolved.sh_degree_interval == 0:
         raise ValueError("sh-degree-interval must be positive")
+    if resolved.checkpoint_every <= 0:
+        raise ValueError("checkpoint-every must be positive")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
     if resolved.canary_min_psnr < 0:
