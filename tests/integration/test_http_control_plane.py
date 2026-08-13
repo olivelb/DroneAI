@@ -49,6 +49,7 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
     upload_session_id = None
     mission_created = False
     dataset_created = False
+    mission_deletion_pending = False
 
     assert requests.get(f"{API_URL}/live", timeout=10).json() == {"status": "ok"}
     assert requests.get(f"{API_URL}/ready", timeout=10).json() == {
@@ -188,8 +189,13 @@ def test_launch_and_cancel_mission_through_real_http_control_plane() -> None:
                 expected=202,
             ).json()
             assert deletion["deletion_pending"] is True
+            mission_deletion_pending = True
         if dataset_created:
-            _api("DELETE", f"/datasets/{dataset_name}")
+            _api(
+                "DELETE",
+                f"/datasets/{dataset_name}",
+                expected=409 if mission_deletion_pending else 200,
+            )
         elif upload_session_id is not None:
             _api(
                 "DELETE",
