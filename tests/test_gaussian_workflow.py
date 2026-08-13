@@ -18,9 +18,19 @@ raster_product = importlib.import_module("gaussian_ortho.raster_product")
 seam_quality = importlib.import_module("gaussian_ortho.seam_quality")
 
 
-def test_resident_training_parallelizes_only_image_cache_io():
-    assert workflow.resident_image_cache_tuning(True) == (4, 4)
-    assert workflow.resident_image_cache_tuning(False) == (1, 1)
+def test_resident_training_parallelizes_image_cache_io_by_resolution():
+    assert workflow.resident_image_cache_tuning(
+        True,
+        max_width=2_400,
+    ) == (4, 4)
+    assert workflow.resident_image_cache_tuning(
+        True,
+        max_width=4_096,
+    ) == (8, 8)
+    assert workflow.resident_image_cache_tuning(
+        False,
+        max_width=4_096,
+    ) == (1, 1)
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):

@@ -108,16 +108,28 @@ type MergeModels = Callable[..., "GaussianModel"]
 
 RESIDENT_PREFETCH_DEPTH = 4
 RESIDENT_DECODE_WORKERS = 4
+HIGH_RESIDENT_PREFETCH_DEPTH = 8
+HIGH_RESIDENT_DECODE_WORKERS = 8
+HIGH_RESIDENT_IMAGE_WIDTH = 4_096
 
 
 def resident_image_cache_tuning(
     resident_partitioning: bool,
+    *,
+    max_width: int,
 ) -> tuple[int, int]:
-    """Hide native-crop decode latency without changing sampled pixels."""
+    """Hide native-crop decode latency without changing sampled pixels.
 
-    if resident_partitioning:
-        return RESIDENT_PREFETCH_DEPTH, RESIDENT_DECODE_WORKERS
-    return 1, 1
+    Resident 4K training has enough independent JPEG work to keep a deeper
+    queue useful. Normal 2400 px training retains the smaller queue so the
+    production profile does not consume extra host CPU without evidence.
+    """
+
+    if not resident_partitioning:
+        return 1, 1
+    if max_width >= HIGH_RESIDENT_IMAGE_WIDTH:
+        return HIGH_RESIDENT_PREFETCH_DEPTH, HIGH_RESIDENT_DECODE_WORKERS
+    return RESIDENT_PREFETCH_DEPTH, RESIDENT_DECODE_WORKERS
 
 
 def _report(
@@ -918,7 +930,8 @@ def train_and_merge_gaussian_models(
 
         dataset_identity = compute_dataset_identity(training_data_path)
         prefetch_depth, decode_workers = resident_image_cache_tuning(
-            config.resident_partitioning
+            config.resident_partitioning,
+            max_width=config.max_width,
         )
         training_request = TrainingRequest(
             data_path=training_data_path,
