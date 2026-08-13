@@ -45,10 +45,11 @@ DroneGS is initialized from a coverage-oriented COLMAP gate: points observed
 in at least two views and with at most 2 px reprojection error. This retains
 thin borders and the foot of the wall that a three-view/1 px gate can remove.
 For resident training, the two-view invariant is evaluated after restricting
-each COLMAP track to the cameras assigned to that cell. The exported subset
-report records the rejected points and the resulting observation-count
-distribution, so a globally multi-view point cannot silently become a
-mono-view seed inside one resident block.
+each COLMAP track to the cameras assigned to that cell and to observations
+that actually fall inside their native training crops. The exported subset
+report records rejected points, crop-excluded observations and the resulting
+observation-count distribution, so a globally multi-view point cannot
+silently become a mono-view seed inside one resident block.
 Native run manifests distinguish source-image split counts from expanded
 frame/tile counts; fixed and adaptive crop policies can therefore be compared
 without treating four tiles as four independent photos.
