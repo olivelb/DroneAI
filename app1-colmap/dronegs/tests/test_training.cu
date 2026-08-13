@@ -451,15 +451,15 @@ int main() {
         auto noise_neighbor = noise_parent;
         noise_neighbor.xyz[0] += 0.1F;
         dronegs::OrderedAlphaTrainingContext noise_first(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_repeat(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_other(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 43U);
         static_cast<void>(noise_first.train_step(

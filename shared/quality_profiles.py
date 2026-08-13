@@ -60,6 +60,7 @@ def _profile(
     initial_scale_policy: str = "local-knn",
     initial_max_projected_sigma_pixels: float = 2.0,
     maximum_scale_growth_factor: float = 54.59815,
+    capacity_targeted_growth: bool = False,
 ) -> QualityProfile:
     return QualityProfile(
         profile_id=profile_id,
@@ -81,6 +82,7 @@ def _profile(
                 "gs_initial_scale_policy": initial_scale_policy,
                 "gs_initial_max_projected_sigma_pixels": str(initial_max_projected_sigma_pixels),
                 "gs_maximum_scale_growth_factor": str(maximum_scale_growth_factor),
+                "gs_capacity_targeted_growth": capacity_targeted_growth,
                 "gs_production_profile": profile_id,
             }
         ),

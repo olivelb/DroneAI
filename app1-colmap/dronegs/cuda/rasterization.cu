@@ -4366,6 +4366,8 @@ struct OrderedAlphaTrainingContext::Impl {
           maximum_pixels(maximum_pixel_count),
           maximum_steps(std::max<std::uint64_t>(
               1U, requested_maximum_steps)),
+          noise_until_iteration(
+              topology_growth_end_iteration(maximum_steps)),
           optimizer_profile(requested_optimizer_profile),
           antialias_filter_variance(
               antialias_filter_variance_for_profile(
@@ -5172,7 +5174,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     active_sh_degree < maximum_active_sh_degree) {
                     ++active_sh_degree;
                 }
-                if (optimizer_steps < 28'500U) {
+                if (optimizer_steps <= noise_until_iteration) {
                     mrnf_inject_means_noise_kernel<<<
                         gaussian_blocks, block_size>>>(
                         gaussians.data(), gaussian_count,
@@ -5676,6 +5678,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::size_t gaussian_capacity = 0U;
     std::size_t maximum_pixels = 0U;
     std::uint64_t maximum_steps = 1U;
+    std::uint64_t noise_until_iteration = 0U;
     std::uint64_t optimizer_steps = 0U;
     std::uint32_t maximum_active_sh_degree = 0U;
     std::uint32_t sh_degree_interval = 1000U;

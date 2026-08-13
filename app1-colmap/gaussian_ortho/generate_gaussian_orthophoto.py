@@ -324,6 +324,7 @@ class GaussianOrthoConfig:
     dronegs_initial_scale_policy: str
     dronegs_initial_max_projected_sigma_pixels: float
     dronegs_maximum_scale_growth_factor: float
+    dronegs_capacity_targeted_growth: bool
     dronegs_sh_degree_interval: int
     dronegs_topology_cooldown: int
     dronegs_photometric_finish: int
@@ -943,7 +944,7 @@ def train_and_merge_gaussian_models(
                     max(1, config.iterations // 5),
                 ),
                 photometric_mse_percent=config.dronegs_photometric_mse_percent,
-                adaptive_growth_target=bool(config.resident_partitioning),
+                adaptive_growth_target=bool(config.resident_partitioning or config.dronegs_capacity_targeted_growth),
                 adaptive_native_crop_tiles=bool(config.resident_partitioning),
                 prefetch_depth=prefetch_depth,
                 decode_workers=decode_workers,
@@ -2011,6 +2012,7 @@ def generate_gaussian_orthophoto(
     dronegs_initial_scale_policy: str = "local-knn",
     dronegs_initial_max_projected_sigma_pixels: float = 2.0,
     dronegs_maximum_scale_growth_factor: float = 54.59815,
+    dronegs_capacity_targeted_growth: bool = False,
     dronegs_sh_degree_interval: int = (DRONEGS_PRODUCTION_PROFILE_V1.sh_degree_interval),
     dronegs_topology_cooldown: int = (DRONEGS_PRODUCTION_PROFILE_V1.topology_cooldown),
     dronegs_photometric_finish: int = (DRONEGS_PRODUCTION_PROFILE_V1.photometric_finish),
@@ -2164,6 +2166,7 @@ def generate_gaussian_orthophoto(
         dronegs_initial_scale_policy=dronegs_initial_scale_policy,
         dronegs_initial_max_projected_sigma_pixels=(dronegs_initial_max_projected_sigma_pixels),
         dronegs_maximum_scale_growth_factor=(dronegs_maximum_scale_growth_factor),
+        dronegs_capacity_targeted_growth=dronegs_capacity_targeted_growth,
         dronegs_sh_degree_interval=dronegs_sh_degree_interval,
         dronegs_topology_cooldown=dronegs_topology_cooldown,
         dronegs_photometric_finish=dronegs_photometric_finish,

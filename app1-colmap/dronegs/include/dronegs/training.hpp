@@ -226,7 +226,12 @@ inline float adaptive_capacity_growth_fraction(
     constexpr double estimated_pruning_fraction = 0.03;
     constexpr double estimated_candidate_fraction = 0.93;
     constexpr float minimum_growth_fraction = 0.07F;
-    constexpr float maximum_growth_fraction = 0.25F;
+    // Short preview budgets can start from sparse blocks with only tens of
+    // thousands of seeds. A 25% ceiling made their requested capacity
+    // mathematically unreachable even though every split remains bounded by
+    // target_gaussians. Keep a safety ceiling, but let the closed-form
+    // schedule request enough candidates to converge within its own windows.
+    constexpr float maximum_growth_fraction = 0.50F;
 
     if (current_gaussians == 0U) {
         throw std::invalid_argument(

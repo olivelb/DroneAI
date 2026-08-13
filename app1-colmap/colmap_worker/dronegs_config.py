@@ -37,6 +37,7 @@ class DroneGsRunConfig:
     initial_scale_policy: str
     initial_max_projected_sigma_pixels: float
     maximum_scale_growth_factor: float
+    capacity_targeted_growth: bool
     sh_degree_interval: int
     topology_cooldown: int
     photometric_finish: int
@@ -97,6 +98,7 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "initial_scale_policy": config.initial_scale_policy,
         "initial_max_projected_sigma_pixels": (config.initial_max_projected_sigma_pixels),
         "maximum_scale_growth_factor": config.maximum_scale_growth_factor,
+        "capacity_targeted_growth": config.capacity_targeted_growth,
         "sh_degree_interval": config.sh_degree_interval,
         "topology_cooldown": config.topology_cooldown,
         "photometric_finish": config.photometric_finish,
@@ -175,6 +177,10 @@ def resolve_dronegs_config(
                 "gs_maximum_scale_growth_factor",
                 selected_parameters.get("gs_maximum_scale_growth_factor", 54.59815),
             )
+        ),
+        capacity_targeted_growth=_boolean_parameter(
+            params.get("gs_capacity_targeted_growth", False),
+            name="gs_capacity_targeted_growth",
         ),
         sh_degree_interval=int(params.get("gs_sh_degree_interval", 1_000)),
         topology_cooldown=int(params.get("gs_topology_cooldown", 1_000)),

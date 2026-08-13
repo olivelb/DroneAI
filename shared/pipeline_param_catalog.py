@@ -91,6 +91,7 @@ _BASE_PIPELINE_DEFAULTS: dict[str, Any] = {
     "gs_initial_scale_policy": "local-knn",
     "gs_initial_max_projected_sigma_pixels": "2.0",
     "gs_maximum_scale_growth_factor": "54.59815",
+    "gs_capacity_targeted_growth": False,
     "gs_ortho_mip_filter_variance": "0.03",
     "gs_ortho_mip_filter_compensation": True,
     "gs_filter_enabled": True,
@@ -831,12 +832,15 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_iterations": {
         "label": "Training Iterations",
-        "description": "Primary training budget; more steps improve convergence and increase runtime.",
+        "description": (
+            "Primary training budget; topology, position noise and final "
+            "convergence schedules scale to the selected duration."
+        ),
         "type": "int",
         "group": "Orthomosaic",
         "min": 5000,
         "max": 100000,
-        "step": 5000,
+        "step": 500,
     },
     "gs_data_factor": {
         "label": "Training Image Downscale",
@@ -959,6 +963,16 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "min": 1.0,
         "max": 128.0,
         "step": 1.0,
+    },
+    "gs_capacity_targeted_growth": {
+        "label": "Reach Gaussian Capacity",
+        "description": (
+            "Derive the split rate from the requested cap and remaining "
+            "topology windows. Resident adaptive profiles enable this "
+            "automatically; it is useful for short custom previews."
+        ),
+        "type": "bool",
+        "group": "Orthomosaic",
     },
     "gs_sh_degree": {
         "label": "Spherical Harmonics Degree",

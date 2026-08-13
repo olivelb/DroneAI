@@ -41,6 +41,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
         assert parameters["gs_initial_scale_policy"] == "local-knn"
         assert parameters["gs_initial_max_projected_sigma_pixels"] == "2.0"
         assert parameters["gs_maximum_scale_growth_factor"] == "54.59815"
+        assert parameters["gs_capacity_targeted_growth"] is False
     assert quality_profile("fast-v1").parameters["gs_capacity_mode"] == "fixed"
     assert quality_profile("normal-v2").parameters["gs_capacity_mode"] == "adaptive"
     assert quality_profile("high-quality-v2").parameters["gs_capacity_floor"] == "5000000"

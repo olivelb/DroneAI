@@ -156,12 +156,14 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   in matching CPU/CUDA order, and optimizes only the currently active band;
 - starts every run at degree 0 and activates one degree every
   `--sh-degree-interval` steps (1,000 by default) up to `--sh-degree`;
-- injects deterministic opacity-weighted means noise during the MRNF window;
+- injects deterministic opacity-weighted means noise only during the
+  run-scaled topology-growth window;
 - prunes transparent, degenerate, non-finite, excessive-scale, and robust
-  spatial-outlier Gaussians every 200 steps through iteration 28,500;
+  spatial-outlier Gaussians every 200 steps through the configured or adaptive
+  refinement window;
 - compacts survivors and every persistent Adam moment into a dense prefix,
   accounts for children that reuse freed slots, and grows only through
-  iteration 15,000;
+  the first half of the operator-selected iteration budget;
 - applies the pinned MRNF opacity and scale decays after each refinement;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
@@ -301,15 +303,20 @@ python tools/compare_gaussian_crop_tiling_runs.py \
   --output crop-tiling-comparison.json
 ```
 
-`--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
-blocks. It recomputes the growth fraction needed to approach `--max-cap` by
-iteration 14,800, clamps each request to 7–25%, and emits the fraction and
-capacity target in every topology-refinement event. It then freezes topology
-for convergence, preventing post-growth pruning from violating the GSD-backed
-density plan. The final adaptive refinement always reserves the minimum split
-budget so Gaussians pruned in that window are replaced before topology freezes.
-Its default is `0`, so existing standalone and production
-recipes keep the fixed 7% schedule and their configured pruning window.
+`--adaptive-growth-target 1` is used by area/GSD-planned resident blocks and
+can also be selected explicitly for short custom runs. It recomputes the
+growth fraction needed to approach `--max-cap` by the last 200-step boundary
+strictly inside the first half of any requested iteration budget (3,600,
+7,400, and 14,800 for 7,500, 15,000, and 30,000 iterations). Each request is
+clamped to 7–50%; the higher ceiling lets sparse preview blocks reach their
+requested capacity while the hard cap remains exact. The trainer emits the
+fraction and capacity target in every topology-refinement event, freezes
+topology afterwards, and stops deterministic position noise at the same
+boundary so the second half is genuine fixed-topology convergence. The final
+adaptive refinement reserves the minimum split budget so Gaussians pruned in
+that window are replaced before topology freezes. Its default is `0`, so
+existing standalone and versioned recipes keep the fixed 7% schedule and
+their configured pruning window.
 The resident HQ wrapper passes a pre-filter cap sized for 98% retention and
 records both that training target and the strict GSD-backed retained target;
 the native trainer still treats `--max-cap` as an exact hard ceiling.

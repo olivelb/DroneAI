@@ -42,6 +42,7 @@ def expected_profile_identity(
                 "maximum_scale_growth_factor": float(
                     FACADE_PROCESS_OVERRIDES.get("gs_maximum_scale_growth_factor", 54.59815)
                 ),
+                "capacity_targeted_growth": bool(FACADE_PROCESS_OVERRIDES.get("gs_capacity_targeted_growth", False)),
             }
         )
         return expected
@@ -56,6 +57,7 @@ def expected_profile_identity(
                 "initial_scale_policy": "local-knn",
                 "initial_max_projected_sigma_pixels": 2.0,
                 "maximum_scale_growth_factor": 54.59815,
+                "capacity_targeted_growth": False,
             }
         )
         return expected
@@ -74,6 +76,7 @@ def expected_profile_identity(
                 "initial_scale_policy": "local-knn",
                 "initial_max_projected_sigma_pixels": 2.0,
                 "maximum_scale_growth_factor": 54.59815,
+                "capacity_targeted_growth": False,
             }
         )
         return expected
@@ -99,6 +102,7 @@ def expected_profile_identity(
                     parameters.get("gs_initial_max_projected_sigma_pixels", 2.0)
                 ),
                 "maximum_scale_growth_factor": float(parameters.get("gs_maximum_scale_growth_factor", 54.59815)),
+                "capacity_targeted_growth": bool(parameters.get("gs_capacity_targeted_growth", False)),
             }
         )
         return expected

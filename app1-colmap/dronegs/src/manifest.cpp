@@ -338,12 +338,14 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << ",\n"
            << "    \"growth_fraction_policy\": \""
            << (options.adaptive_growth_target != 0U
-                   ? "capacity_targeted_0.07_to_0.25"
+                   ? "capacity_targeted_0.07_to_0.50"
                    : "fixed_0.07")
            << "\",\n"
            << "    \"opacity_prune_threshold\": 0.003921568627,\n"
            << "    \"minimum_scale\": 1e-10,\n"
            << "    \"means_noise_weight\": 50.0,\n"
+           << "    \"means_noise_until_iteration\": "
+           << topology_growth_end_iteration(options.iterations) << ",\n"
            << "    \"means_noise_opacity_exponent\": 150.0,\n"
            << "    \"opacity_decay\": 0.004,\n"
            << "    \"scale_decay\": 0.002,\n"

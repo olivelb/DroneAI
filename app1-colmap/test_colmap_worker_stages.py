@@ -235,6 +235,7 @@ class TestColmapStageHelpers(unittest.TestCase):
             "gs_initial_scale_policy": "projected-knn",
             "gs_initial_max_projected_sigma_pixels": "1.5",
             "gs_maximum_scale_growth_factor": "8",
+            "gs_capacity_targeted_growth": "true",
         }
 
         for facade_mode in (False, True):
@@ -246,6 +247,7 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(config.initial_scale_policy, "projected-knn")
             self.assertEqual(config.initial_max_projected_sigma_pixels, 1.5)
             self.assertEqual(config.maximum_scale_growth_factor, 8.0)
+            self.assertTrue(config.capacity_targeted_growth)
             self.assertEqual(config.profile_id, "custom")
             self.assertTrue(warnings)
 

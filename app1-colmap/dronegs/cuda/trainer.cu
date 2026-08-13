@@ -1400,7 +1400,7 @@ TrainingMetrics train_ordered_mrnf(
             : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
-        << "contract=4"
+        << "contract=5"
         << ";iterations=" << options.iterations
         << ";strategy=" << options.strategy
         << ";sh=" << options.sh_degree

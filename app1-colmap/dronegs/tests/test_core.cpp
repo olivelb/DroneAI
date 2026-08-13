@@ -312,9 +312,13 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest adaptive growth policy missing");
     check(manifest_text.find(
               "\"growth_fraction_policy\": "
-              "\"capacity_targeted_0.07_to_0.25\"") !=
+              "\"capacity_targeted_0.07_to_0.50\"") !=
               std::string::npos,
           "manifest adaptive growth schedule missing");
+    check(manifest_text.find(
+              "\"means_noise_until_iteration\": 0") !=
+              std::string::npos,
+          "manifest run-scaled position-noise schedule missing");
     check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
@@ -746,12 +750,13 @@ void test_adaptive_capacity_growth() {
         "adaptive final window did not reserve pruning replacement");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            1U, 5'700'000U, 14'800U, 14'800U) == 0.25F,
+            1U, 5'700'000U, 14'800U, 14'800U) == 0.50F,
         "adaptive growth upper bound mismatch");
     const auto short_initial = dronegs::adaptive_capacity_growth_fraction(
         22'547U, 1'500'000U, 200U, 3'600U);
     check(
-        short_initial > initial,
+        short_initial > 0.25F && short_initial < 0.35F &&
+            short_initial > initial,
         "short training budget did not accelerate adaptive growth");
     check(
         dronegs::adaptive_capacity_growth_fraction(
