@@ -458,7 +458,14 @@ def _start_mission(
     )
     try:
         with get_session() as session:
-            existing = session.query(Mission).filter(Mission.vol_id == params.vol_id).first()
+            existing = (
+                session.query(Mission)
+                .filter(
+                    Mission.vol_id == params.vol_id,
+                    Mission.organization_id == organization_id,
+                )
+                .first()
+            )
             if existing is not None:
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,

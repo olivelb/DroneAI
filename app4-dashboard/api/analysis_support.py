@@ -116,7 +116,7 @@ def get_owned_run(
     action: str,
     lock: bool = False,
 ) -> AnalysisRunRecord:
-    get_mission(
+    mission = get_mission(
         session,
         vol_id,
         principal,
@@ -124,7 +124,7 @@ def get_owned_run(
         action=action,
     )
     query = session.query(AIAnalysisRun).filter(
-        AIAnalysisRun.vol_id == vol_id,
+        AIAnalysisRun.mission_id == mission.id,
         AIAnalysisRun.run_id == run_id,
     )
     if lock:

@@ -178,7 +178,15 @@ class LegacyAggregationWorkflow:
         )
         finalize_mission: MissionDescriptor | None = None
         with get_session() as session:
-            mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
+            mission = (
+                session.query(Mission)
+                .filter(
+                    Mission.vol_id == vol_id,
+                    Mission.organization_id == namespace.organization_id,
+                )
+                .with_for_update()
+                .first()
+            )
             if mission is None:
                 mission = get_or_create_mission(
                     session,
@@ -200,7 +208,7 @@ class LegacyAggregationWorkflow:
             receipt = (
                 session.query(ProcessedTile)
                 .filter(
-                    ProcessedTile.vol_id == vol_id,
+                    ProcessedTile.mission_id == mission.id,
                     ProcessedTile.tile_index == tile_index,
                 )
                 .first()
@@ -222,7 +230,11 @@ class LegacyAggregationWorkflow:
                         tile_index,
                     )
                 session.flush()
-            mission.tiles_received = count_received_tiles(session, vol_id)
+            mission.tiles_received = count_received_tiles(
+                session,
+                vol_id,
+                namespace.organization_id,
+            )
             if (
                 mission.total_tiles is not None
                 and mission.tiles_received >= mission.total_tiles
@@ -307,9 +319,20 @@ class LegacyAggregationWorkflow:
         return cast(list[DetectionRecord], data.get("detections") or [])
 
     @staticmethod
-    def _mark_failed(vol_id: str) -> None:
+    def _mark_failed(
+        vol_id: str,
+        organization_id: str = LEGACY_ORGANIZATION_ID,
+    ) -> None:
         with get_session() as session:
-            mission = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().first()
+            mission = (
+                session.query(Mission)
+                .filter(
+                    Mission.vol_id == vol_id,
+                    Mission.organization_id == organization_id,
+                )
+                .with_for_update()
+                .first()
+            )
             if mission is not None:
                 mission.aggregation_status = "failed"
 
@@ -321,7 +344,15 @@ class LegacyAggregationWorkflow:
         """Publish lightweight AI vectors; never duplicate the full raster."""
 
         with get_session() as session:
-            db_detections = get_mission_detections(session, vol_id)
+            organization_id = mission.get(
+                "organization_id",
+                LEGACY_ORGANIZATION_ID,
+            )
+            db_detections = get_mission_detections(
+                session,
+                vol_id,
+                organization_id,
+            )
             raw_detections: list[DetectionRecord] = [
                 {
                     "id": detection.id,
@@ -368,7 +399,15 @@ class LegacyAggregationWorkflow:
             )
 
             with get_session() as session:
-                mission_object = session.query(Mission).filter(Mission.vol_id == vol_id).with_for_update().one()
+                mission_object = (
+                    session.query(Mission)
+                    .filter(
+                        Mission.vol_id == vol_id,
+                        Mission.organization_id == namespace.organization_id,
+                    )
+                    .with_for_update()
+                    .one()
+                )
                 mission_object.aggregation_status = "completed"
                 mission_object.aggregation_completed_at = datetime.now(UTC)
 
@@ -452,7 +491,7 @@ class LegacyAggregationWorkflow:
         try:
             self.generate_vector_results(vol_id, finalize_mission)
         except Exception as error:
-            self._mark_failed(vol_id)
+            self._mark_failed(vol_id, namespace.organization_id)
             self.report_ia_progress(
                 vol_id,
                 "ERROR",
@@ -517,7 +556,7 @@ class LegacyAggregationWorkflow:
                     "Failed to recover aggregation for %s",
                     vol_id,
                 )
-                self._mark_failed(vol_id)
+                self._mark_failed(vol_id, organization_id)
                 self.report_ia_progress(
                     vol_id,
                     "ERROR",

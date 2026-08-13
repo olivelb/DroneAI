@@ -15,7 +15,7 @@ from shared.event_contracts import (
 )
 from shared.kafka_partitioning import tenant_mission_key
 from shared.kafka_reliability import publish_json, reliable_consumer_config
-from shared.tenancy import mission_event_namespace
+from shared.tenancy import LEGACY_ORGANIZATION_ID, mission_event_namespace
 from shared.worker_messaging import (
     make_progress_publisher,
     run_control_consumer,
@@ -147,14 +147,18 @@ class MissionStateTracker:
     def _now_iso():
         return datetime.now(timezone.utc).isoformat()
 
-    def load_state(self, vol_id, organization_id=None):
+    def load_state(self, vol_id, organization_id=LEGACY_ORGANIZATION_ID):
         """Load mission state from database."""
         try:
             with get_session() as session:
-                query = session.query(Mission).filter(Mission.vol_id == vol_id)
-                if organization_id is not None:
-                    query = query.filter(Mission.organization_id == organization_id)
-                mission = query.first()
+                mission = (
+                    session.query(Mission)
+                    .filter(
+                        Mission.vol_id == vol_id,
+                        Mission.organization_id == organization_id,
+                    )
+                    .first()
+                )
                 if not mission:
                     return None
                 return {

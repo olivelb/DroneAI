@@ -84,6 +84,34 @@ def test_durable_mission_cancellation_propagates_between_replicas(session_scope)
         assert mission.current_step == "CANCELLATION_REQUESTED"
 
 
+def test_durable_mission_cancellation_is_tenant_scoped(session_scope):
+    with session_scope() as session:
+        session.add_all(
+            [
+                Mission(
+                    vol_id="shared-mission",
+                    organization_id="tenant-a",
+                    status="processing",
+                ),
+                Mission(
+                    vol_id="shared-mission",
+                    organization_id="tenant-b",
+                    status="processing",
+                ),
+            ]
+        )
+
+    registry = DurableCancellationRegistry(session_scope)
+    registry.cancel("shared-mission", organization_id="tenant-b")
+
+    with session_scope() as session:
+        missions = {
+            mission.organization_id: mission.status
+            for mission in session.query(Mission).all()
+        }
+    assert missions == {"tenant-a": "processing", "tenant-b": "cancelled"}
+
+
 def test_durable_cancellation_rejects_a_stale_attempt(session_scope):
     with session_scope() as session:
         session.add(Mission(vol_id="mission-1", status="processing", retry_count=2))

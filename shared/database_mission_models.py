@@ -43,6 +43,11 @@ class Mission(Base):
 
     __tablename__ = "missions"
     __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "vol_id",
+            name="uq_missions_organization_vol_id",
+        ),
         CheckConstraint(
             _values_check("status", MISSION_STATUSES),
             name="ck_missions_status",
@@ -54,7 +59,7 @@ class Mission(Base):
     )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    vol_id = Column(String(256), unique=True, nullable=False, index=True)
+    vol_id = Column(String(256), nullable=False, index=True)
     owner_subject = Column(
         String(256),
         nullable=False,
@@ -481,9 +486,9 @@ class ProcessedTile(Base):
     __tablename__ = "processed_tiles"
     __table_args__ = (
         UniqueConstraint(
-            "vol_id",
+            "mission_id",
             "tile_index",
-            name="uq_processed_tile_vol_index",
+            name="uq_processed_tile_mission_index",
         ),
         Index("ix_processed_tiles_mission", "mission_id", "tile_index"),
     )
