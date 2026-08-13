@@ -405,7 +405,14 @@ def rasterize_ortho(
     )
 
     # ---- 7. Sort by (tile_id, depth) ----
-    sort_order = cp.lexsort((out_depths, out_tile_ids))
+    # Visible depths are strictly positive, so their IEEE-754 float32 bit
+    # representation preserves numeric order. Packing both fields in one
+    # uint64 key avoids CuPy's required 2xN lexsort matrix (and its dtype
+    # promotion) while retaining the exact front-to-back ordering.
+    sort_keys = (
+        out_tile_ids.astype(cp.uint64) << cp.uint64(32)
+    ) | out_depths.view(cp.uint32).astype(cp.uint64)
+    sort_order = cp.argsort(sort_keys)
     sorted_gauss_ids = cp.ascontiguousarray(out_gauss_ids[sort_order].astype(cp.int32))
     sorted_tile_ids  = out_tile_ids[sort_order]
 
@@ -416,7 +423,14 @@ def rasterize_ortho(
     tile_offsets = cp.ascontiguousarray(tile_offsets)
 
     # Free intermediate buffers
-    del out_tile_ids, out_gauss_ids, out_depths, sort_order, sorted_tile_ids
+    del (
+        out_tile_ids,
+        out_gauss_ids,
+        out_depths,
+        sort_keys,
+        sort_order,
+        sorted_tile_ids,
+    )
 
     # ---- 8. Render ----
     out_rgb   = cp.zeros(height * width * 3, dtype=cp.float32)
