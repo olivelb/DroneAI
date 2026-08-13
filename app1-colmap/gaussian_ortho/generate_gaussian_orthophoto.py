@@ -1826,6 +1826,7 @@ def execute_partitioned_gaussian_rasterization_phase(
             model,
             gsd=geometry.local_gsd,
             extent=tile_extent,
+            pixel_dimensions=(px1 - px0, py1 - py0),
             R_geo=geometry.rotation_geo,
             frame_origin=geometry.frame_origin,
             sh_direction_rotation=geometry.sh_direction_rotation,

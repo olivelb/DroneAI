@@ -85,6 +85,7 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                       extent: OrthoExtent | None = None, chunk_size: int = 0,
+                      pixel_dimensions: tuple[int, int] | None = None,
                       device: object | None = None,
                       R_geo: np.ndarray | None = None,
                       frame_origin: np.ndarray | None = None,
@@ -103,6 +104,10 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     extent : (x_min, x_max, y_min, y_max, z_min, z_max) or None
     chunk_size : int
         Max tile dimension for chunked rendering.  0 = auto-select.
+    pixel_dimensions : (width, height) or None
+        Exact output dimensions when the caller already owns the global pixel
+        grid.  This avoids a floating-point ``ceil`` adding a phantom border
+        pixel to resident core extents reconstructed from pixel indices.
     device : ignored (kept for API compatibility).
     R_geo : np.ndarray (3, 3) or None
         Rotation COLMAP → geo-aligned (East, North, Up).
@@ -117,8 +122,19 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     else:
         x_min, x_max, y_min, y_max, z_min, z_max = extent
 
-    W = math.ceil((x_max - x_min) / gsd)
-    H = math.ceil((y_max - y_min) / gsd)
+    if pixel_dimensions is None:
+        W = math.ceil((x_max - x_min) / gsd)
+        H = math.ceil((y_max - y_min) / gsd)
+    else:
+        W, H = pixel_dimensions
+        tolerance = max(abs(gsd) * 1.0e-6, 1.0e-12)
+        if (
+            abs((x_max - x_min) - W * gsd) > tolerance
+            or abs((y_max - y_min) - H * gsd) > tolerance
+        ):
+            raise ValueError(
+                "pixel_dimensions are incompatible with extent and GSD"
+            )
 
     if W <= 0 or H <= 0:
         raise ValueError(f"Invalid ortho dimensions: {W}x{H} from extent "

@@ -450,6 +450,19 @@ class TestOrthoRenderer:
         assert "height" in result
         assert result["rgb"].ndim == 3
 
+    def test_exact_dimensions_avoid_floating_point_border_pixel(self):
+        model = _make_gpu_model(1)
+        result = render_orthophoto(
+            model,
+            gsd=0.02,
+            extent=(1000.0, 1010.24, 1000.0, 1000.02, -1.0, 1.0),
+            pixel_dimensions=(512, 1),
+            chunk_size=512,
+        )
+
+        assert result["rgb"].shape == (1, 512, 3)
+        assert result["height"].shape == (1, 512)
+
     def test_translucent_surface_color_is_not_composited_on_white(self):
         """Ortho RGB represents surface colour independently of opacity."""
         model = GaussianModel(sh_degree=0, opacity_sh_enabled=False)

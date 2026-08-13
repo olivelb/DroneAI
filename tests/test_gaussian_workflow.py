@@ -304,10 +304,9 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
         def load_ply(self, path):
             self.path = path
 
-    def render(model, *, extent, gsd, **_kwargs):
+    def render(model, *, extent, gsd, pixel_dimensions, **_kwargs):
         assert model.active_sh_degree == 3
-        width = round((extent[1] - extent[0]) / gsd)
-        height = round((extent[3] - extent[2]) / gsd)
+        width, height = pixel_dimensions
         value = 40 if model.path.endswith("left.ply") else 180
         return {
             "rgb": np.full((height, width, 3), value, dtype=np.uint8),
