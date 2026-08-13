@@ -6,12 +6,13 @@ DroneAI exposes `fast-v1`, the resident `normal-v3` and `high-quality-v2` from
 missions.
 
 `normal-v3` passed its real multi-block BIGZEN gate on 13 August 2026 and is
-the default profile. `high-quality-v3` remains an internal candidate until its
-full target-GPU gates pass.
+the default profile. The projected-initialization recipes `fast-v2`,
+`normal-v4`, and `high-quality-v4`, plus the earlier `high-quality-v3`, remain
+internal candidates until their applicable target-GPU gates pass.
 
 Qualification deployments may set
-`DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED=true` to add `high-quality-v3` to
-the API catalog and therefore to the Dashboard profile selector. The flag is
+`DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED=true` to add all candidate
+profiles to the API catalog and therefore to the Dashboard profile selector. The flag is
 strictly boolean and defaults to `false`; it does not change stored profiles,
 worker recipes or the public default. Direct replay remains able to resolve a
 stored candidate ID even while the catalog hides it. The flag must be removed
@@ -23,6 +24,22 @@ With Helm, the equivalent temporary override is
 |---|---:|---:|---:|---|---:|
 | `normal-v3` (qualified) | 2,400 px | 4,096 | 15,000 | adaptive, 3 M floor, 8 M operator cap; VRAM-bounded per buffer | 8 output pixels per unique core Gaussian |
 | `high-quality-v3` | 4,096 px | 16,384 | 30,000 | adaptive, 5 M floor, 12 M hard cap per buffer | 3.6 output pixels per unique core Gaussian |
+
+The v4 candidate family keeps stored v1-v3 identities immutable and adds the
+crop-aware projected initialization and run-scaled topology/noise schedule:
+
+| Candidate | Iterations | Resident cap | Initial projected sigma | Status |
+|---|---:|---:|---:|---|
+| `fast-v2` | 7,500 | 1.5 M monolithic preview | 8 px | representative cell passed |
+| `normal-v4` | 15,000 | 3 M per buffer | 8 px | representative 8 GiB cell passed; multi-block pending |
+| `high-quality-v4` | 30,000 | 12 M per buffer | 8 px | not yet GPU-qualified |
+
+Capacity-targeted growth is enabled for these candidates. Growth, pruning and
+position noise stop on the final 200-step boundary strictly inside the first
+half of any selected budget: 3,600, 7,400 and 14,800 for the three standard
+durations. The second half is fixed-topology convergence. Manual Dashboard
+parameters use the same formula for arbitrary durations and are accepted by
+both map and facade processes.
 
 The real Normal qualification covered 88,239.71 m² at 2 cm/pixel. The 8 GiB
 planner envelope resolved it to four buffers of at most 1.8 M Gaussians and

@@ -243,13 +243,17 @@ inline float adaptive_capacity_growth_fraction(
     const auto remaining_windows =
         ((growth_end_iteration - iteration) /
          topology_refinement_interval) + 1U;
+    if (remaining_windows == 1U) {
+        // Candidate and pruning ratios vary by scene and become least stable
+        // in the largest final window, including when the model enters that
+        // window at capacity and pruning creates new room. Ask for the
+        // bounded maximum and let the exact hard capacity truncate
+        // deterministic top-ranked splits. This removes estimator drift
+        // without ever exceeding the target.
+        return maximum_growth_fraction;
+    }
     if (target_gaussians <= current_gaussians) {
-        // The final refinement still prunes before it grows. Request the
-        // minimum split budget so capacity freed by that pruning is recycled
-        // and the frozen topology finishes at the target instead of below it.
-        return remaining_windows == 1U
-            ? minimum_growth_fraction
-            : 0.0F;
+        return 0.0F;
     }
 
     const double required_net_growth = std::exp(

@@ -1251,6 +1251,8 @@ int main() {
             .initial_loss = 0.42F,
             .initial_held_out_psnr = 18.25F,
             .initial_held_out_ssim = 0.51F,
+            .initial_pixel_weighted_psnr = 18.75F,
+            .initial_pixel_weighted_ssim = 0.56F,
         };
         interrupted.save_checkpoint(
             checkpoint_path, saved_progress,
@@ -1272,6 +1274,10 @@ int main() {
                 saved_progress.initial_held_out_psnr ||
             loaded_progress.initial_held_out_ssim !=
                 saved_progress.initial_held_out_ssim ||
+            loaded_progress.initial_pixel_weighted_psnr !=
+                saved_progress.initial_pixel_weighted_psnr ||
+            loaded_progress.initial_pixel_weighted_ssim !=
+                saved_progress.initial_pixel_weighted_ssim ||
             resumed.active_sh_degree() !=
                 interrupted.active_sh_degree()) {
             throw std::runtime_error(

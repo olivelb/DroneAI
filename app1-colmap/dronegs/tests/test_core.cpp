@@ -746,8 +746,8 @@ void test_adaptive_capacity_growth() {
         "adaptive growth continued at capacity before the final window");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'800U, 14'800U) == 0.07F,
-        "adaptive final window did not reserve pruning replacement");
+            5'700'000U, 5'700'000U, 14'800U, 14'800U) == 0.50F,
+        "adaptive final window did not protect exact capacity after pruning");
     check(
         dronegs::adaptive_capacity_growth_fraction(
             1U, 5'700'000U, 14'800U, 14'800U) == 0.50F,
@@ -760,8 +760,12 @@ void test_adaptive_capacity_growth() {
         "short training budget did not accelerate adaptive growth");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            1'500'000U, 1'500'000U, 3'600U, 3'600U) == 0.07F,
-        "short training budget did not reserve its final growth window");
+            1'500'000U, 1'500'000U, 3'600U, 3'600U) == 0.50F,
+        "short training budget did not protect its final capacity");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            2'735'088U, 3'000'000U, 7'400U, 7'400U) == 0.50F,
+        "final growth window did not delegate exactness to the hard cap");
     bool empty_model_rejected = false;
     try {
         static_cast<void>(dronegs::adaptive_capacity_growth_fraction(

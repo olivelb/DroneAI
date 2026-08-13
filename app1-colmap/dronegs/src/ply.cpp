@@ -225,7 +225,7 @@ void write_gaussian_ply(const std::filesystem::path& path,
            << "format binary_little_endian 1.0\n"
            << "comment DroneGS anisotropic "
               "geometry-optimized MRNF-growth L1+DSSIM prototype "
-              "0.5.0-dev.48 opacity-SH-v1\n"
+              "0.5.0-dev.49 opacity-SH-v1\n"
            << "element vertex " << gaussians.size() << "\n"
            << "property float x\n"
            << "property float y\n"

@@ -47,8 +47,9 @@ remain downstream of this boundary.
 ## Recovery contract
 
 By default, DroneGS atomically replaces `training.ckpt` every 2,000 steps.
-Checkpoint format V4 retains V3 checksum/fsync/atomic publication and adds
-opacity-SH Adam moments. V1-V3 checkpoints are rejected because their raw
+Checkpoint format V5 retains V4 checksum/fsync/atomic publication and adds
+initial pixel-weighted PSNR/SSIM metadata. V4 remains readable and carries
+the opacity-SH Adam moments. V1-V3 checkpoints are rejected because their raw
 Gaussian layout is not resume-compatible; a retained final PLY can still be
 used as `--initial-ply`.
 The checkpoint contains:

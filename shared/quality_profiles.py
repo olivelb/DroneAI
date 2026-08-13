@@ -9,12 +9,15 @@ from typing import Any, Literal, cast
 
 QualityProfileId = Literal[
     "fast-v1",
+    "fast-v2",
     "normal-v1",
     "high-quality-v1",
     "normal-v2",
     "high-quality-v2",
     "normal-v3",
+    "normal-v4",
     "high-quality-v3",
+    "high-quality-v4",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v3"
 QUALITY_PROFILE_CANDIDATES_FLAG = "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
@@ -168,6 +171,36 @@ QUALITY_PROFILES: tuple[QualityProfile, ...] = (
 
 _CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
     _profile(
+        "fast-v2",
+        "Fast (projected candidate)",
+        "Preview candidate with crop-aware projected initialization and exact capacity growth.",
+        image_size=1_600,
+        features=2_048,
+        iterations=7_500,
+        gaussians=1_500_000,
+        data_factor="8",
+        initial_scale_policy="projected-knn",
+        initial_max_projected_sigma_pixels=8.0,
+        capacity_targeted_growth=True,
+    ),
+    _profile(
+        "normal-v4",
+        "Normal (projected candidate)",
+        "8 GiB candidate with 3 M resident blocks and crop-aware projected initialization.",
+        image_size=2_400,
+        features=4_096,
+        iterations=15_000,
+        gaussians=3_000_000,
+        data_factor="4",
+        capacity_mode="adaptive",
+        capacity_floor=3_000_000,
+        target_spacing_pixels=8.0,
+        resident_partitioning=True,
+        initial_scale_policy="projected-knn",
+        initial_max_projected_sigma_pixels=8.0,
+        capacity_targeted_growth=True,
+    ),
+    _profile(
         "high-quality-v3",
         "High Quality (resident candidate)",
         "Qualification candidate using geographic resident buffers and streamed cores.",
@@ -180,6 +213,23 @@ _CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
         capacity_floor=5_000_000,
         target_spacing_pixels=3.6,
         resident_partitioning=True,
+    ),
+    _profile(
+        "high-quality-v4",
+        "High Quality (projected candidate)",
+        "Unqualified 30k candidate with 12 M resident blocks and projected initialization.",
+        image_size=4_096,
+        features=16_384,
+        iterations=30_000,
+        gaussians=12_000_000,
+        data_factor="1",
+        capacity_mode="adaptive",
+        capacity_floor=5_000_000,
+        target_spacing_pixels=3.6,
+        resident_partitioning=True,
+        initial_scale_policy="projected-knn",
+        initial_max_projected_sigma_pixels=8.0,
+        capacity_targeted_growth=True,
     ),
 )
 QUALITY_PROFILE_BY_ID = MappingProxyType(

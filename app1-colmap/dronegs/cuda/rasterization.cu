@@ -5925,7 +5925,7 @@ void OrderedAlphaTrainingContext::save_checkpoint(
         'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
         '-', 'V', '1', '\0'};
     stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 4U;
+    constexpr std::uint32_t format_version = 5U;
     write_value(format_version);
     write_string(dataset_fingerprint);
     write_string(configuration_fingerprint);
@@ -5947,6 +5947,18 @@ void OrderedAlphaTrainingContext::save_checkpoint(
     write_value(has_initial_held_out_ssim);
     if (has_initial_held_out_ssim) {
         write_value(*progress.initial_held_out_ssim);
+    }
+    const std::uint8_t has_initial_pixel_weighted_psnr =
+        progress.initial_pixel_weighted_psnr.has_value() ? 1U : 0U;
+    const std::uint8_t has_initial_pixel_weighted_ssim =
+        progress.initial_pixel_weighted_ssim.has_value() ? 1U : 0U;
+    write_value(has_initial_pixel_weighted_psnr);
+    if (has_initial_pixel_weighted_psnr) {
+        write_value(*progress.initial_pixel_weighted_psnr);
+    }
+    write_value(has_initial_pixel_weighted_ssim);
+    if (has_initial_pixel_weighted_ssim) {
+        write_value(*progress.initial_pixel_weighted_ssim);
     }
     write_value(impl_->optimizer_steps);
     write_value(impl_->maximum_steps);
@@ -6105,10 +6117,11 @@ OrderedAlphaTrainingContext::load_checkpoint(
     stream.read(magic.data(), magic.size());
     std::uint32_t format_version = 0U;
     read_value(format_version);
-    if (magic != expected_magic || format_version != 4U) {
+    if (magic != expected_magic ||
+        (format_version != 4U && format_version != 5U)) {
         throw std::runtime_error(
             "unsupported DroneGS checkpoint format; opacity-SH training "
-            "requires version 4");
+            "requires version 4 or 5");
     }
     if (format_version >= 3U) {
         if (total_bytes <= sizeof(std::uint64_t)) {
@@ -6171,6 +6184,22 @@ OrderedAlphaTrainingContext::load_checkpoint(
             float value = 0.0F;
             read_value(value);
             progress.initial_held_out_ssim = value;
+        }
+        if (format_version >= 5U) {
+            std::uint8_t has_initial_pixel_weighted_psnr = 0U;
+            read_value(has_initial_pixel_weighted_psnr);
+            if (has_initial_pixel_weighted_psnr != 0U) {
+                float value = 0.0F;
+                read_value(value);
+                progress.initial_pixel_weighted_psnr = value;
+            }
+            std::uint8_t has_initial_pixel_weighted_ssim = 0U;
+            read_value(has_initial_pixel_weighted_ssim);
+            if (has_initial_pixel_weighted_ssim != 0U) {
+                float value = 0.0F;
+                read_value(value);
+                progress.initial_pixel_weighted_ssim = value;
+            }
         }
     }
     std::uint64_t optimizer_steps = 0U;

@@ -1526,6 +1526,10 @@ TrainingMetrics train_ordered_mrnf(
             checkpoint_progress.initial_held_out_psnr;
         metrics.initial_held_out_ssim =
             checkpoint_progress.initial_held_out_ssim;
+        metrics.initial_pixel_weighted_psnr =
+            checkpoint_progress.initial_pixel_weighted_psnr;
+        metrics.initial_pixel_weighted_ssim =
+            checkpoint_progress.initial_pixel_weighted_ssim;
         std::cout
             << "{\"event\":\"checkpoint_resumed\",\"iteration\":"
             << checkpoint_progress.completed_iteration
@@ -1569,6 +1573,10 @@ TrainingMetrics train_ordered_mrnf(
         metrics.initial_held_out_psnr;
     checkpoint_progress.initial_held_out_ssim =
         metrics.initial_held_out_ssim;
+    checkpoint_progress.initial_pixel_weighted_psnr =
+        metrics.initial_pixel_weighted_psnr;
+    checkpoint_progress.initial_pixel_weighted_ssim =
+        metrics.initial_pixel_weighted_ssim;
     prefetch_schedule_window(
         cache, schedule,
         static_cast<std::size_t>(

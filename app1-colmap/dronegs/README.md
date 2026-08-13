@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.48` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.49` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -58,6 +58,11 @@ paths. Scale and rotation remain view-independent and are not claimed as full
 FAGK. This bounded variant follows the opacity-only ablation from
 [TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788); it is kept
 separate from the paper's view-dependent scale and rotation extensions.
+Dev.49 can instead derive each initial scale from the actual crop-relative
+camera projections, with a configurable screen-space ceiling. Its adaptive
+growth and topology/noise boundary are computed from the requested iteration
+budget, reach the hard resident capacity deterministically in the final growth
+window, and preserve the local-KNN path for immutable historical profiles.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -82,7 +87,7 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - keeps SH color and gradients live up to four while display output remains
   bounded independently;
 - learns opacity-SH residuals alongside progressive color SH and preserves
-  them through topology changes and checkpoint V4;
+  them through topology changes and checkpoint V5;
 - decodes JPEG training images and scales pinhole intrinsics;
 - expands tile modes 2 and 4 into crop-relative training views without
   leaking a source photograph across train/test partitions;

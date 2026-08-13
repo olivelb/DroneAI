@@ -342,11 +342,19 @@ def test_parameter_catalog_can_expose_hq_v3_for_controlled_qualification(
         "fast-v1",
         "normal-v3",
         "high-quality-v2",
+        "fast-v2",
+        "normal-v4",
         "high-quality-v3",
+        "high-quality-v4",
     ]
-    candidate = response["quality_profiles"][-1]
+    candidate = next(
+        profile
+        for profile in response["quality_profiles"]
+        if profile["id"] == "high-quality-v4"
+    )
     assert candidate["parameters"]["gs_resident_partitioning"] is True
     assert candidate["parameters"]["gs_target_gaussian_spacing_pixels"] == "3.6"
+    assert candidate["parameters"]["gs_initial_scale_policy"] == "projected-knn"
 
 
 def test_parameter_catalog_rejects_ambiguous_candidate_flag(

@@ -353,10 +353,19 @@ def test_facade_process_preserves_quality_overrides_but_enforces_local_frame():
 
 
 @pytest.mark.parametrize(
-    ("profile_id", "iterations", "capacity_floor", "spacing"),
+    (
+        "profile_id",
+        "iterations",
+        "capacity_floor",
+        "spacing",
+        "initial_scale_policy",
+        "capacity_targeted_growth",
+    ),
     [
-        ("normal-v3", "15000", "3000000", "8.0"),
-        ("high-quality-v3", "30000", "5000000", "3.6"),
+        ("normal-v3", "15000", "3000000", "8.0", "local-knn", False),
+        ("normal-v4", "15000", "3000000", "8.0", "projected-knn", True),
+        ("high-quality-v3", "30000", "5000000", "3.6", "local-knn", False),
+        ("high-quality-v4", "30000", "5000000", "3.6", "projected-knn", True),
     ],
 )
 def test_facade_process_preserves_selected_resident_quality_profile(
@@ -364,6 +373,8 @@ def test_facade_process_preserves_selected_resident_quality_profile(
     iterations,
     capacity_floor,
     spacing,
+    initial_scale_policy,
+    capacity_targeted_growth,
 ):
     profile = quality_profile(profile_id)
     quality_parameters = dict(profile.parameters)
@@ -385,6 +396,8 @@ def test_facade_process_preserves_selected_resident_quality_profile(
     assert params["gs_capacity_floor"] == capacity_floor
     assert params["gs_target_gaussian_spacing_pixels"] == spacing
     assert params["gs_resident_partitioning"] is True
+    assert params["gs_initial_scale_policy"] == initial_scale_policy
+    assert params["gs_capacity_targeted_growth"] is capacity_targeted_growth
     assert params["matching_strategy"] == "spatial"
     assert params["gcp_adjustment_enabled"] is False
 
