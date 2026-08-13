@@ -342,6 +342,12 @@ tuning, but still requires the same trainer binary, scientific parameters and
 exact final PLY SHA-256. A longer interval therefore cannot be promoted from
 wall time alone; its recovery-point trade-off remains an operational decision.
 
+Native-code optimizations are qualified separately with
+`tools/compare_gaussian_binary_regression.py`. It permits different trainer
+binaries and checkpoint locations, but requires the same dataset, every
+scientific parameter, final PLY SHA-256, loss, PSNR and SSIM. This prevents an
+I/O or topology optimization from being accepted on speed alone.
+
 The manifest separates foreground image wait, cumulative parallel decode,
 topology refinement, periodic checkpoint serialization, final PLY export,
 evaluation, training and wall time. This prevents I/O tuning from being
