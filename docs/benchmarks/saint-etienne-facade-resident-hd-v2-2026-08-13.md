@@ -48,16 +48,53 @@ Visual inspection of the lowest-scoring held-out pair showed strongly smoothed
 stone texture and a color shift. The failure is therefore a real local
 generalization/detail defect, not a threshold-only or resource defect.
 
+## Cell 2 fixed/adaptive crop A/B
+
+A controlled replay used the same frozen cell-2 workspace, trainer binary,
+dataset fingerprint, 30,000 iterations, 1.7 million Gaussian cap and all other
+scientific parameters. Only the native crop partition policy changed. The
+machine-readable comparison is retained beside the run artifacts as
+`fixed-vs-adaptive-c0c1c56-1p7m.json`.
+
+| Crop policy | Training descriptors | Held-out descriptors | PSNR | SSIM | Pixel-weighted PSNR | Pixel-weighted SSIM | Wall time |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| fixed 4 x 4 | 485 | 64 | 17.4448 | 0.5028 | 17.2136 | 0.5358 | 45 min 06 s |
+| adaptive, up to 4 x 4 | 343 | 36 | 18.0051 | 0.5271 | 17.3447 | 0.5408 | 48 min 17 s |
+
+The adaptive policy improves equal-view PSNR by 0.5604 dB and just clears the
+18 dB canary, but pixel-weighted PSNR improves by only 0.1311 dB and remains
+below 18 dB. It also increases wall time by 191 seconds in this cache-limited
+run. Adaptive crops are therefore useful but are not, by themselves, a
+sufficient qualification result for the weakest cell.
+
+Both runs used the exact native executable SHA-256
+`3f336ab3ed535e5e40b3b3574e04f7b20ba22a118bb06246a38fb72687e2f031`.
+Their point clouds have different hashes, as expected for different frame
+partitions; neither output is presented as binary-parity evidence.
+
+## Restricted-track invariant found during diagnosis
+
+The retained workspaces exposed a seed-selection defect: track length had been
+validated on the complete COLMAP model before observations were restricted to
+the cameras of a resident cell. This allowed globally multi-view points to
+become mono-view seeds inside a cell. The proportions were 11.5% for cell 0,
+13.2% for cell 1 and 15.6% for cell 2.
+
+The exporter now applies the minimum-track gate after camera restriction and
+records the resulting track distribution. Historical workspaces and their A/B
+outputs remain frozen. A new cell-2 replay must isolate this corrected seed
+contract before increasing Gaussian capacity.
+
 ## Controlled follow-up
 
 The following sequence is required before resuming the full six-cell product:
 
-1. replay cell 2 with the current native binary and the exact 1.7 million
-   baseline recipe;
-2. compare the current binary against the retained dev.48 run, recording PLY,
-   loss, PSNR/SSIM and trajectory differences rather than assuming native
-   refactors are numerically neutral;
-3. run `reference-absolute-absgrad025` at the same capacity;
+1. regenerate cell 2 with the corrected restricted-track invariant and replay
+   the adaptive policy at exactly 1.7 million Gaussians;
+2. compare against the frozen adaptive result, recording seed-track
+   distribution, frame counts, PLY, loss, PSNR/SSIM, VRAM and wall time;
+3. run `reference-absolute-absgrad025` at the same capacity only if the seed
+   correction does not provide a stable quality margin;
 4. if detail remains below the gate, run the same reference recipe at the
    8 GiB resident hard cap (2.3 million for this envelope);
 5. promote a change only if the held-out gate, pixel-weighted metrics, visual
