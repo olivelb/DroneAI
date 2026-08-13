@@ -299,6 +299,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        help=(
+            "optional fast local filesystem for trainer workspaces and PLYs; "
+            "products and the run report remain in the marked workspace"
+        ),
+    )
     parser.add_argument("--render-mode", choices=("map", "facade"), default="map")
     parser.add_argument(
         "--facade-scale-mode",
@@ -450,6 +458,7 @@ def output_paths(
     profile_name: str,
     requested_output: Path | None,
     render_mode: str = "map",
+    checkpoint_root: Path | None = None,
 ) -> tuple[Path, Path, Path]:
     ortho_path = (
         requested_output.resolve()
@@ -465,7 +474,12 @@ def output_paths(
     except ValueError as error:
         raise ValueError("output must stay inside the marked workspace") from error
     height_path = ortho_path.with_suffix(".height.tif")
-    checkpoint_path = workspace / "gaussian_checkpoints" / profile_name
+    checkpoint_parent = (
+        checkpoint_root.resolve()
+        if checkpoint_root is not None
+        else workspace / "gaussian_checkpoints"
+    )
+    checkpoint_path = checkpoint_parent / profile_name
     return ortho_path, height_path, checkpoint_path
 
 
@@ -508,6 +522,7 @@ def main() -> int:
         run_label,
         args.output,
         args.render_mode,
+        args.checkpoint_root,
     )
     if ortho_path.exists() or height_path.exists():
         if not args.force:
@@ -539,6 +554,7 @@ def main() -> int:
         "run_label": run_label,
         "parameters": asdict(profile),
         "workspace": str(workspace),
+        "checkpoint_dir": str(checkpoint_path),
         "trainer_backend": profile.backend,
         "started_at": started_at,
     }

@@ -200,3 +200,21 @@ def test_custom_output_must_stay_inside_workspace(tmp_path):
 
     with pytest.raises(ValueError, match="inside the marked workspace"):
         output_paths(workspace, "smoke", tmp_path / "outside.tif")
+
+
+def test_checkpoint_root_can_use_a_separate_fast_filesystem(tmp_path):
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+
+    ortho, height, checkpoint = output_paths(
+        workspace,
+        "facade-metric",
+        None,
+        render_mode="facade",
+        checkpoint_root=scratch,
+    )
+
+    assert ortho == workspace / "facade_orthophoto.facade-metric.tif"
+    assert height == workspace / "facade_orthophoto.facade-metric.height.tif"
+    assert checkpoint == scratch / "facade-metric"
