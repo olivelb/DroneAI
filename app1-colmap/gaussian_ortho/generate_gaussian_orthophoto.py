@@ -1721,29 +1721,69 @@ def execute_gaussian_rasterization_phase(
     )
 
 
-def _core_pixel_window(
+def _partition_pixel_window(
     config: GaussianOrthoConfig,
     bounds: CellBounds,
     geometry: GaussianRenderGeometry,
     *,
     width: int,
     height: int,
+    buffered: bool,
 ) -> tuple[int, int, int, int]:
-    """Snap one product-plane core to the shared raster grid exactly once."""
+    """Snap one core or buffer to the shared product pixel grid."""
     x_min, _x_max, _y_min, y_max, _z_min, _z_max = geometry.render_extent
     coordinate_scale = _partition_to_render_scale(config, geometry)
     origin_x = float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
     origin_y = float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
     gsd = geometry.local_gsd
-    core_x_min = bounds.core_x_min * coordinate_scale - origin_x
-    core_x_max = bounds.core_x_max * coordinate_scale - origin_x
-    core_y_min = bounds.core_y_min * coordinate_scale - origin_y
-    core_y_max = bounds.core_y_max * coordinate_scale - origin_y
-    px0 = max(0, min(width, round((core_x_min - x_min) / gsd)))
-    px1 = max(0, min(width, round((core_x_max - x_min) / gsd)))
-    py0 = max(0, min(height, round((y_max - core_y_max) / gsd)))
-    py1 = max(0, min(height, round((y_max - core_y_min) / gsd)))
+    if buffered:
+        partition_x_min = bounds.buffer_x_min
+        partition_x_max = bounds.buffer_x_max
+        partition_y_min = bounds.buffer_y_min
+        partition_y_max = bounds.buffer_y_max
+    else:
+        partition_x_min = bounds.core_x_min
+        partition_x_max = bounds.core_x_max
+        partition_y_min = bounds.core_y_min
+        partition_y_max = bounds.core_y_max
+    render_x_min = partition_x_min * coordinate_scale - origin_x
+    render_x_max = partition_x_max * coordinate_scale - origin_x
+    render_y_min = partition_y_min * coordinate_scale - origin_y
+    render_y_max = partition_y_max * coordinate_scale - origin_y
+    px0 = max(0, min(width, round((render_x_min - x_min) / gsd)))
+    px1 = max(0, min(width, round((render_x_max - x_min) / gsd)))
+    py0 = max(0, min(height, round((y_max - render_y_max) / gsd)))
+    py1 = max(0, min(height, round((y_max - render_y_min) / gsd)))
     return px0, px1, py0, py1
+
+
+def _axis_feather_weights(
+    coordinates: np.ndarray,
+    *,
+    core_min: float,
+    core_max: float,
+    buffer_min: float,
+    buffer_max: float,
+) -> np.ndarray:
+    """Return a unit core with linear fades through both buffer margins."""
+    weights = np.ones(coordinates.shape, dtype=np.float32)
+    lower = coordinates < core_min
+    lower_width = core_min - buffer_min
+    if lower_width > 0.0:
+        weights[lower] = (
+            (coordinates[lower] - buffer_min) / lower_width
+        ).astype(np.float32)
+    else:
+        weights[lower] = 0.0
+    upper = coordinates > core_max
+    upper_width = buffer_max - core_max
+    if upper_width > 0.0:
+        weights[upper] = (
+            (buffer_max - coordinates[upper]) / upper_width
+        ).astype(np.float32)
+    else:
+        weights[upper] = 0.0
+    return np.clip(weights, 0.0, 1.0)
 
 
 def execute_partitioned_gaussian_rasterization_phase(
@@ -1754,7 +1794,7 @@ def execute_partitioned_gaussian_rasterization_phase(
     render_fn: Callable[..., dict[str, Any]] | None = None,
     cupy_module: Any | None = None,
 ) -> GaussianRasterizationPhaseState:
-    """Render buffer-supported cores sequentially on one global pixel grid."""
+    """Render resident buffers and feather them on one global pixel grid."""
     geometry = filtering_phase.partition_geometry
     partitions = filtering_phase.partition_models
     if geometry is None or not partitions:
@@ -1787,19 +1827,17 @@ def execute_partitioned_gaussian_rasterization_phase(
     height = int(np.ceil((y_max - y_min) / geometry.local_gsd))
     if width < 1 or height < 1:
         raise RuntimeError("Resident Gaussian raster extent is empty")
-    rgb: np.ndarray = np.full((height, width, 3), 255, dtype=np.uint8)
-    height_map: np.ndarray = np.full(
-        (height, width),
-        np.nan,
-        dtype=np.float32,
-    )
+    rgb_accumulator = np.zeros((height, width, 3), dtype=np.float32)
+    height_accumulator = np.zeros((height, width), dtype=np.float32)
+    weight_accumulator = np.zeros((height, width), dtype=np.float32)
     for index, partition in enumerate(partitions):
-        px0, px1, py0, py1 = _core_pixel_window(
+        px0, px1, py0, py1 = _partition_pixel_window(
             config,
             partition.bounds,
             geometry,
             width=width,
             height=height,
+            buffered=True,
         )
         if px1 <= px0 or py1 <= py0:
             continue
@@ -1835,14 +1873,56 @@ def execute_partitioned_gaussian_rasterization_phase(
         )
         expected_shape = (py1 - py0, px1 - px0)
         if tile["rgb"].shape[:2] != expected_shape:
-            raise RuntimeError("Resident Gaussian core raster shape drifted")
-        rgb[py0:py1, px0:px1] = tile["rgb"]
-        height_map[py0:py1, px0:px1] = tile["height"]
+            raise RuntimeError("Resident Gaussian buffer raster shape drifted")
+        coordinate_scale = _partition_to_render_scale(config, geometry)
+        origin_x = (
+            float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
+        )
+        origin_y = (
+            float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
+        )
+        bounds = partition.bounds
+        x_coordinates = x_min + (np.arange(px0, px1) + 0.5) * geometry.local_gsd
+        y_coordinates = y_max - (np.arange(py0, py1) + 0.5) * geometry.local_gsd
+        x_weights = _axis_feather_weights(
+            x_coordinates,
+            core_min=bounds.core_x_min * coordinate_scale - origin_x,
+            core_max=bounds.core_x_max * coordinate_scale - origin_x,
+            buffer_min=bounds.buffer_x_min * coordinate_scale - origin_x,
+            buffer_max=bounds.buffer_x_max * coordinate_scale - origin_x,
+        )
+        y_weights = _axis_feather_weights(
+            y_coordinates,
+            core_min=bounds.core_y_min * coordinate_scale - origin_y,
+            core_max=bounds.core_y_max * coordinate_scale - origin_y,
+            buffer_min=bounds.buffer_y_min * coordinate_scale - origin_y,
+            buffer_max=bounds.buffer_y_max * coordinate_scale - origin_y,
+        )
+        tile_rgb = tile["rgb"]
+        tile_height = tile["height"]
+        row_chunk = 512
+        for row_start in range(0, expected_shape[0], row_chunk):
+            row_stop = min(expected_shape[0], row_start + row_chunk)
+            weights = (
+                y_weights[row_start:row_stop, None] * x_weights[None, :]
+            )
+            height_slice = tile_height[row_start:row_stop]
+            weights = np.where(np.isfinite(height_slice), weights, 0.0)
+            target_rows = slice(py0 + row_start, py0 + row_stop)
+            target_columns = slice(px0, px1)
+            rgb_accumulator[target_rows, target_columns] += (
+                tile_rgb[row_start:row_stop].astype(np.float32)
+                * weights[:, :, None]
+            )
+            height_accumulator[target_rows, target_columns] += (
+                np.nan_to_num(height_slice, nan=0.0) * weights
+            )
+            weight_accumulator[target_rows, target_columns] += weights
         _report(
             config.vol_id,
             "GAUSS",
             96 + int((index + 1) / len(partitions)),
-            f"Rendered resident core {index + 1}/{len(partitions)}",
+            f"Rendered resident buffer {index + 1}/{len(partitions)}",
             config.report_fn,
         )
         del model, tile
@@ -1850,6 +1930,33 @@ def execute_partitioned_gaussian_rasterization_phase(
 
         gc.collect()
         cupy_module.get_default_memory_pool().free_all_blocks()
+    rgb: np.ndarray = np.full((height, width, 3), 255, dtype=np.uint8)
+    height_map: np.ndarray = np.full((height, width), np.nan, dtype=np.float32)
+    final_row_chunk = 512
+    for row_start in range(0, height, final_row_chunk):
+        row_stop = min(height, row_start + final_row_chunk)
+        weights = weight_accumulator[row_start:row_stop]
+        valid = weights > 0.0
+        rgb_values = rgb_accumulator[row_start:row_stop]
+        np.divide(
+            rgb_values,
+            weights[:, :, None],
+            out=rgb_values,
+            where=valid[:, :, None],
+        )
+        rgb[row_start:row_stop] = np.clip(
+            np.rint(rgb_values),
+            0.0,
+            255.0,
+        ).astype(np.uint8)
+        height_values = height_accumulator[row_start:row_stop]
+        np.divide(
+            height_values,
+            weights,
+            out=height_values,
+            where=valid,
+        )
+        height_map[row_start:row_stop] = np.where(valid, height_values, np.nan)
     result: dict[str, Any] = {
         "rgb": rgb,
         "height": height_map,
