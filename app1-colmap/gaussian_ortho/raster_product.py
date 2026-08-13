@@ -173,6 +173,42 @@ def _write_facade_report(
         raise RuntimeError("Facade frame is unavailable for reporting")
     render = _render_geometry(filtering_phase)
     depth_bounds = render.facade_depth_bounds_model
+    resident_depth_partitions = [
+        partition
+        for partition in filtering_phase.partition_models
+        if partition.facade_depth_bounds_model is not None
+    ]
+    resident_depth_windows = [
+        {
+            "row": partition.bounds.row,
+            "column": partition.bounds.col,
+            "bounds_model_units": list(
+                cast(
+                    tuple[float, float],
+                    partition.facade_depth_bounds_model,
+                )
+            ),
+            "bounds_metres": [
+                value * summary.colmap_to_meters
+                for value in cast(
+                    tuple[float, float],
+                    partition.facade_depth_bounds_model,
+                )
+            ],
+        }
+        for partition in resident_depth_partitions
+    ]
+    if resident_depth_partitions:
+        depth_bounds = (
+            min(
+                cast(tuple[float, float], partition.facade_depth_bounds_model)[0]
+                for partition in resident_depth_partitions
+            ),
+            max(
+                cast(tuple[float, float], partition.facade_depth_bounds_model)[1]
+                for partition in resident_depth_partitions
+            ),
+        )
     subset = summary.facade_subset_result
     if subset is not None and bool(subset.get("partitioned")):
         raw_cells = subset.get("cells", [])
@@ -238,6 +274,11 @@ def _write_facade_report(
         },
         "depth_filter": {
             "iqr_multiplier": config.facade_depth_iqr_multiplier,
+            "scope": (
+                "resident-cells"
+                if filtering_phase.partition_models
+                else "global-model"
+            ),
             "bounds_model_units": list(depth_bounds) if depth_bounds is not None else None,
             "bounds_metres": (
                 [
@@ -247,6 +288,7 @@ def _write_facade_report(
                 if depth_bounds is not None
                 else None
             ),
+            "resident_cells": resident_depth_windows,
         },
         "raster": {
             "width": width,

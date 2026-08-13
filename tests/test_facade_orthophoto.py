@@ -263,6 +263,16 @@ def test_facade_report_supports_resident_partition_geometry(tmp_path):
     filtering = SimpleNamespace(
         render_state=None,
         partition_geometry=geometry,
+        partition_models=(
+            SimpleNamespace(
+                bounds=SimpleNamespace(row=0, col=0),
+                facade_depth_bounds_model=(-0.5, 0.75),
+            ),
+            SimpleNamespace(
+                bounds=SimpleNamespace(row=0, col=1),
+                facade_depth_bounds_model=(-0.25, 1.0),
+            ),
+        ),
     )
 
     _write_facade_report(
@@ -285,7 +295,9 @@ def test_facade_report_supports_resident_partition_geometry(tmp_path):
         "resident_partitioned": True,
         "resident_cell_count": 2,
     }
-    assert report["depth_filter"]["bounds_metres"] == [-1.0, 1.5]
+    assert report["depth_filter"]["scope"] == "resident-cells"
+    assert report["depth_filter"]["bounds_metres"] == [-1.0, 2.0]
+    assert len(report["depth_filter"]["resident_cells"]) == 2
 
 
 def test_facade_override_does_not_require_hidden_custom_crs():

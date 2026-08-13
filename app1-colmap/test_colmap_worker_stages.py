@@ -454,6 +454,7 @@ class TestColmapStageHelpers(unittest.TestCase):
                         gaussian_count=1_150_000,
                         core_gaussian_count=1_100_000,
                         render_extent=partition_geometry.render_extent,
+                        facade_depth_bounds_model=(-0.2, 0.4),
                     ),
                 ),
             )
@@ -476,6 +477,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertIsNone(partition_filter_artifact.model_path)
             self.assertEqual(len(hydrated_partitions.partition_models), 1)
             self.assertEqual(hydrated_partitions.output_gaussians, 1_100_000)
+            self.assertEqual(
+                hydrated_partitions.partition_models[0].facade_depth_bounds_model,
+                (-0.2, 0.4),
+            )
 
             filtered_model_path = Path(tmp_dir, "filtering", "filtered.ply")
             filtered_model_path.parent.mkdir()

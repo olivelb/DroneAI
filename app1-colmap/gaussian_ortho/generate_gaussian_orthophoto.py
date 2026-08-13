@@ -1353,6 +1353,7 @@ class GaussianFilteredPartition:
     gaussian_count: int
     core_gaussian_count: int
     render_extent: tuple[float, float, float, float, float, float]
+    facade_depth_bounds_model: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -1542,6 +1543,9 @@ def execute_partitioned_gaussian_filtering_phase(
                 gaussian_count=model.num_gaussians,
                 core_gaussian_count=core_count,
                 render_extent=render.render_extent,
+                facade_depth_bounds_model=(
+                    render.facade_depth_bounds_model
+                ),
             )
         )
         extents.append(render.render_extent)
