@@ -154,6 +154,7 @@ describe("runtime API response contracts", () => {
       url: "https://objects.example/part",
       expires_in: 900,
       part_number: 1,
+      expected_size: 1024,
     }).part_number).toBe(1);
     expect(parseUploadFileCompletion({
       file_id: "file-1",

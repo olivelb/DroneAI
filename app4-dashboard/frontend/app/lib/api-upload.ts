@@ -32,6 +32,9 @@ const uploadPart = async (
         parseSignedUploadPart,
         jsonRequest(),
       );
+      if (body.size !== signed.expected_size) {
+        throw new Error("Upload part size does not match the signed intent");
+      }
       const response = await fetch(signed.url, {
         method: signed.method,
         body,

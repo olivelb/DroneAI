@@ -24,6 +24,14 @@ tenant. They must be re-ingested. Existing catalogue-backed legacy datasets
 can use the explicit audited workflow in
 [`legacy-adoption-v1.md`](legacy-adoption-v1.md).
 
+Every presigned part binds the exact expected `Content-Length`; the browser
+also checks its Blob slice against the signed size. Before completion, the API
+calls provider `ListParts` and compares every observed part number, size and
+ETag with the durable intent. Any mismatch aborts the whole multipart upload
+and marks it failed, so declared logical reservation cannot hide oversized
+provider-side parts. The bucket lifecycle rule for incomplete multipart
+uploads remains the final recovery boundary for clients that never finalize.
+
 ## Tenant boundary
 
 Organization isolation is defined by the

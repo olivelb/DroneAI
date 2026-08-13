@@ -206,7 +206,9 @@ The browser CORS policy must allow `PUT` from the exact frontend origin and
 expose the `ETag` response header. The API storage principal also needs object
 `PUT`, `GET`, `HEAD` and `DELETE`, plus create/complete/abort and list-multipart
 permissions on the dataset prefix; orphan recovery depends on exact-key
-multipart listing. Local MinIO receives the browser rule automatically. For an
+multipart listing. Part signing binds exact `Content-Length`, and completion
+requires provider-observed `ListParts` sizes/ETags to match the durable upload
+intent. Local MinIO receives the browser rule automatically. For an
 external S3-compatible bucket, apply it with
 `scripts/deploy/configure-s3-upload-cors.sh`; never use `*` as a production
 origin. The previous API-proxied `/datasets/upload` endpoint now returns `404`

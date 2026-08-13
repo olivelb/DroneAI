@@ -64,6 +64,7 @@ def fake_storage(monkeypatch):
             "key": key,
             "metadata": kwargs.get("metadata") or {},
             "content_type": kwargs.get("content_type") or "",
+            "parts": {},
         }
         return upload_id
 
@@ -111,13 +112,29 @@ def fake_storage(monkeypatch):
         "get_object_info",
         lambda key: object_info.get(key),
     )
+    def presign(key, upload_id, part, **kwargs):
+        multipart[upload_id]["parts"][part] = int(kwargs["content_length"])
+        return f"https://objects.example/{key}?uploadId={upload_id}&partNumber={part}"
+
     monkeypatch.setattr(
         uploads.storage,
         "get_presigned_upload_part_url",
-        lambda key, upload_id, part, **_kwargs: (
-            f"https://objects.example/{key}?uploadId={upload_id}&partNumber={part}"
-        ),
+        presign,
     )
+    def list_parts(key, upload_id):
+        total_size = completed[key]
+        part_size = uploads.configured_part_size(total_size)
+        total_parts = (total_size + part_size - 1) // part_size
+        return [
+            {
+                "PartNumber": number,
+                "Size": min(part_size, total_size - ((number - 1) * part_size)),
+                "ETag": f'"part-{number}"',
+            }
+            for number in range(1, total_parts + 1)
+        ]
+
+    monkeypatch.setattr(uploads.storage, "list_multipart_parts", list_parts)
     def put(key, body):
         objects[key] = body
         state["manifest_puts"].append((key, body))
@@ -188,6 +205,10 @@ def test_direct_upload_is_durable_presigned_and_atomically_finalized(
         )
         assert signed["method"] == "PUT"
         assert "partNumber=1" in signed["url"]
+        assert signed["expected_size"] == min(
+            response["part_size"],
+            descriptor["size"],
+        )
         parts = [
             {"part_number": number, "etag": f'"part-{number}"'}
             for number in range(1, descriptor["total_parts"] + 1)
@@ -282,6 +303,53 @@ def test_direct_upload_requires_every_part_once(upload_session, fake_storage, mo
         )
 
     assert error.value.status_code == 400
+
+
+def test_oversized_provider_part_is_aborted_before_completion(
+    upload_session,
+    fake_storage,
+    monkeypatch,
+):
+    principal = security.Principal("operator-1", "operator")
+    response = uploads.create_upload_session(
+        upload_session,
+        uploads.UploadSessionRequest(
+            dataset_name="oversized-part",
+            files=[{"name": "image.jpg", "size": 1024}],
+        ),
+        principal,
+    )
+    descriptor = response["files"][0]
+    uploads.create_part_url(
+        upload_session,
+        response["session_id"],
+        descriptor["file_id"],
+        1,
+        principal,
+    )
+    monkeypatch.setattr(
+        uploads.storage,
+        "list_multipart_parts",
+        lambda _key, _upload_id: [
+            {"PartNumber": 1, "Size": 2048, "ETag": '"part-1"'}
+        ],
+    )
+
+    with pytest.raises(HTTPException) as error:
+        uploads.complete_upload_file(
+            upload_session,
+            response["session_id"],
+            descriptor["file_id"],
+            uploads.CompleteUploadFileRequest(
+                parts=[{"part_number": 1, "etag": '"part-1"'}]
+            ),
+            principal,
+        )
+
+    assert error.value.status_code == 422
+    assert "sizes or ETags" in error.value.detail
+    assert fake_storage["state"]["abort_calls"]
+    assert fake_storage["state"]["complete_calls"] == 0
 
 
 def test_direct_upload_applies_existing_batch_quotas(
