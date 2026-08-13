@@ -10,9 +10,6 @@ from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
 )
-from shared.facade_process import (
-    FACADE_DRONEGS_PROFILE_ID,
-)
 from shared.quality_profiles import QUALITY_PROFILE_BY_ID, QualityProfileId
 from gaussian_ortho.coverage_quality import SpatialCoveragePolicy
 
