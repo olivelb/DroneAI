@@ -297,6 +297,10 @@ def create_part_url(
     total_parts = math.ceil(int(file_record.size_bytes) / int(record.part_size))
     if not 1 <= part_number <= total_parts:
         raise HTTPException(status_code=400, detail="Invalid upload part number")
+    expected_size = min(
+        int(record.part_size),
+        int(file_record.size_bytes) - ((part_number - 1) * int(record.part_size)),
+    )
     expires = _part_url_lifetime()
     return {
         "method": "PUT",
@@ -304,10 +308,12 @@ def create_part_url(
             str(file_record.s3_key),
             str(file_record.multipart_upload_id),
             part_number,
+            content_length=expected_size,
             expires=expires,
         ),
         "expires_in": expires,
         "part_number": part_number,
+        "expected_size": expected_size,
     }
 
 

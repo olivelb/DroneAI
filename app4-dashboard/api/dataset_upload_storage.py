@@ -210,11 +210,47 @@ def complete_file_from_intent(
                 file_record,
                 "Multipart upload ID is missing and no completed object exists",
             )
+        expected_parts = stored_s3_parts(file_record)
+        observed_parts = storage.list_multipart_parts(
+            str(file_record.s3_key),
+            upload_id,
+        )
+        expected_sizes = [
+            min(
+                int(record.part_size),
+                int(file_record.size_bytes) - (index * int(record.part_size)),
+            )
+            for index in range(len(expected_parts))
+        ]
+        observed_identity = [
+            (
+                int(part["PartNumber"]),
+                int(part["Size"]),
+                str(part["ETag"]),
+            )
+            for part in observed_parts
+        ]
+        expected_identity = [
+            (
+                int(part["PartNumber"]),
+                expected_sizes[index],
+                str(part["ETag"]),
+            )
+            for index, part in enumerate(expected_parts)
+        ]
+        if observed_identity != expected_identity:
+            storage.abort_multipart_upload(str(file_record.s3_key), upload_id)
+            _fail_file_completion(
+                session,
+                record,
+                file_record,
+                "Provider multipart sizes or ETags do not match the upload intent",
+            )
         try:
             storage.complete_multipart_upload(
                 str(file_record.s3_key),
                 upload_id,
-                stored_s3_parts(file_record),
+                expected_parts,
             )
         except Exception as error:
             try:
