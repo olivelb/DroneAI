@@ -299,11 +299,13 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
     class FakeModel:
         def __init__(self, **_kwargs):
             self.path = ""
+            self.active_sh_degree = 0
 
         def load_ply(self, path):
             self.path = path
 
     def render(model, *, extent, gsd, **_kwargs):
+        assert model.active_sh_degree == 3
         width = round((extent[1] - extent[0]) / gsd)
         height = round((extent[3] - extent[2]) / gsd)
         value = 40 if model.path.endswith("left.ply") else 180
@@ -445,6 +447,7 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     filtering = SimpleNamespace(
         output_gaussians=1_200_000,
         density_assessment=None,
+        partition_models=(),
         render_state=SimpleNamespace(
             coverage_camera_positions=np.array([[0.0, 0.0, 10.0]]),
             geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),

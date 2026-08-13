@@ -1808,6 +1808,12 @@ def execute_partitioned_gaussian_rasterization_phase(
             opacity_sh_enabled=config.opacity_sh_enabled,
         )
         model.load_ply(partition.model_path)
+        # PLY stores all colour coefficients but has no field for the active
+        # colour degree.  A freshly loaded model therefore defaults to DC
+        # only.  Restore the qualified run configuration before any resident
+        # model is forwarded to the renderer; otherwise degree-3 opacity SH
+        # is incorrectly paired with degree-0 colour SH at raster time.
+        model.active_sh_degree = config.sh_degree
         tile_extent = (
             x_min + px0 * geometry.local_gsd,
             x_min + px1 * geometry.local_gsd,
