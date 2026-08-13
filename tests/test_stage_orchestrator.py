@@ -16,6 +16,7 @@ from shared.database import (
     Mission,
     MissionArtifact,
     MissionStageRun,
+    Organization,
     OrganizationSaasPolicy,
     OrganizationUsageEvent,
 )
@@ -67,6 +68,7 @@ def _settings(**kwargs):
 @pytest.fixture
 def stage_sessions():
     engine = create_engine("sqlite+pysqlite:///:memory:")
+    Organization.__table__.create(engine)
     Mission.__table__.create(engine)
     MissionStageRun.__table__.create(engine)
     DetectionShardReceipt.__table__.create(engine)
@@ -104,6 +106,16 @@ def _add_run(
     organization_id="legacy-unassigned",
 ):
     with scope() as session:
+        if session.get(Organization, organization_id) is None:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    display_name=organization_id,
+                    status="active",
+                    created_by="test",
+                    updated_by="test",
+                )
+            )
         mission = Mission(
             vol_id=vol_id,
             owner_subject=owner,
@@ -140,6 +152,16 @@ def _add_detection_run(
 ):
     artifact_id = f"raster-{run_id}"
     with scope() as session:
+        if session.get(Organization, organization_id) is None:
+            session.add(
+                Organization(
+                    id=organization_id,
+                    display_name=organization_id,
+                    status="active",
+                    created_by="test",
+                    updated_by="test",
+                )
+            )
         mission = Mission(
             vol_id=f"mission-{run_id}",
             owner_subject=owner,
@@ -275,6 +297,36 @@ def test_reservation_enforces_organization_policy_and_audits_usage(stage_session
         assert session.query(OrganizationUsageEvent).filter_by(
             action="stage_scheduled"
         ).count() == 2
+
+
+def test_suspended_organization_runs_are_not_dispatched(stage_sessions):
+    _add_run(
+        stage_sessions,
+        "mission-suspended",
+        "member-a",
+        "6" * 32,
+        organization_id="tenant-suspended",
+    )
+    _add_run(
+        stage_sessions,
+        "mission-active",
+        "member-b",
+        "7" * 32,
+        organization_id="tenant-active",
+    )
+    with stage_sessions() as session:
+        session.get(Organization, "tenant-suspended").status = "suspended"
+
+    with stage_sessions() as session:
+        reserved = orchestrator.reserve_ready_jobs(
+            session,
+            _settings(),
+            datetime.now(UTC),
+        )
+
+    assert [item.request.organization_id for item in reserved] == [
+        "tenant-active"
+    ]
 
 
 def test_reservation_repairs_legacy_cpu_rasterization_before_dispatch(stage_sessions):
