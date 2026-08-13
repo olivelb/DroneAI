@@ -5,7 +5,9 @@ from shared.quality_profiles import (
     QUALITY_PROFILES,
     QUALITY_PROFILE_BY_ID,
     profile_overrides,
+    quality_profile_candidates_enabled,
     quality_profile,
+    selectable_quality_profiles,
 )
 from shared.yolo_capabilities import (
     SUPPORTED_AERIAL_CLASSES,
@@ -19,12 +21,16 @@ from shared.yolo_capabilities import (
 def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     expected = {
         "fast-v1": ("1600", "2048", "7500", "1500000"),
+        "fast-v2": ("1600", "2048", "7500", "1500000"),
         "normal-v2": ("2400", "4096", "15000", "8000000"),
         "high-quality-v2": ("4096", "16384", "30000", "12000000"),
+        "normal-v3": ("2400", "4096", "15000", "8000000"),
+        "normal-v4": ("2400", "4096", "15000", "3000000"),
         "high-quality-v3": ("4096", "16384", "30000", "12000000"),
+        "high-quality-v4": ("4096", "16384", "30000", "12000000"),
     }
 
-    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v2"
+    assert DEFAULT_QUALITY_PROFILE_ID == "normal-v3"
     assert set(expected) < set(QUALITY_PROFILE_BY_ID)
     for profile_id, values in expected.items():
         parameters = quality_profile(profile_id).parameters
@@ -35,24 +41,22 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
             parameters["gs_cap_max"],
         ) == values
         assert parameters["gs_production_profile"] == profile_id
+        candidate = profile_id in {"fast-v2", "normal-v4", "high-quality-v4"}
+        assert parameters["gs_initial_scale_policy"] == ("projected-knn" if candidate else "local-knn")
+        assert parameters["gs_initial_max_projected_sigma_pixels"] == ("8.0" if candidate else "2.0")
+        assert parameters["gs_maximum_scale_growth_factor"] == "54.59815"
+        assert parameters["gs_capacity_targeted_growth"] is candidate
     assert quality_profile("fast-v1").parameters["gs_capacity_mode"] == "fixed"
     assert quality_profile("normal-v2").parameters["gs_capacity_mode"] == "adaptive"
     assert quality_profile("high-quality-v2").parameters["gs_capacity_floor"] == "5000000"
-    assert (
-        quality_profile("high-quality-v3").parameters[
-            "gs_target_gaussian_spacing_pixels"
-        ]
-        == "3.6"
-    )
-    assert quality_profile("high-quality-v3").parameters[
-        "gs_resident_partitioning"
-    ] is True
-    assert quality_profile("high-quality-v2").parameters[
-        "gs_resident_partitioning"
-    ] is False
-    assert "high-quality-v3" not in {
-        profile.profile_id for profile in QUALITY_PROFILES
-    }
+    assert quality_profile("high-quality-v3").parameters["gs_target_gaussian_spacing_pixels"] == "3.6"
+    assert quality_profile("high-quality-v3").parameters["gs_resident_partitioning"] is True
+    assert quality_profile("normal-v3").parameters["gs_target_gaussian_spacing_pixels"] == "8.0"
+    assert quality_profile("normal-v3").parameters["gs_resident_partitioning"] is True
+    assert quality_profile("normal-v4").parameters["gs_resident_partitioning"] is True
+    assert quality_profile("high-quality-v2").parameters["gs_resident_partitioning"] is False
+    assert "high-quality-v3" not in {profile.profile_id for profile in QUALITY_PROFILES}
+    assert "normal-v3" in {profile.profile_id for profile in QUALITY_PROFILES}
     assert quality_profile("normal-v2").version == 2
 
 
@@ -65,6 +69,23 @@ def test_profile_overrides_only_records_changed_envelope_values():
             "projected_crs": "EPSG:2154",
         },
     ) == {"gs_iterations": "20000"}
+
+
+def test_candidate_profiles_require_explicit_catalog_exposure():
+    selectable = {profile.profile_id for profile in selectable_quality_profiles()}
+    assert {"fast-v2", "normal-v4", "high-quality-v3", "high-quality-v4"}.isdisjoint(selectable)
+
+
+def test_candidate_profile_flag_is_strict(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
+    assert quality_profile_candidates_enabled() is False
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "TRUE")
+    assert quality_profile_candidates_enabled() is True
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes")
+    with pytest.raises(RuntimeError, match="must be true or false"):
+        quality_profile_candidates_enabled()
+    candidates = {profile.profile_id for profile in selectable_quality_profiles(include_candidates=True)}
+    assert {"fast-v2", "normal-v4", "high-quality-v3", "high-quality-v4"} <= candidates
 
 
 def test_yolo_catalog_exposes_all_approved_models_and_native_classes():

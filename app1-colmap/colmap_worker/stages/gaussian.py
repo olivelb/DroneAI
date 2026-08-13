@@ -58,9 +58,7 @@ def _resolve_data_factor(params: dict[str, Any], dense_path: str, vol_id: str) -
         except Exception:
             pass
 
-    max_training_width = int(
-        params.get("gs_max_width", DRONEGS_PRODUCTION_PROFILE_V1.max_width)
-    )
+    max_training_width = int(params.get("gs_max_width", DRONEGS_PRODUCTION_PROFILE_V1.max_width))
     data_factor = choose_dronegs_data_factor(max_dimension, max_training_width)
     runtime.report_mission_progress(
         vol_id,
@@ -167,10 +165,7 @@ def prepare_gaussian_product_run(
     if not facade_mode and os.path.exists(workspace_transform):
         align_tf = workspace_transform
     if not dense_sparse_model_ready(dense_path):
-        raise RuntimeError(
-            "Gaussian Splatting requires dense/sparse model "
-            "(cameras.bin, images.bin, points3D.bin)."
-        )
+        raise RuntimeError("Gaussian Splatting requires dense/sparse model (cameras.bin, images.bin, points3D.bin).")
 
     data_factor = _resolve_data_factor(params, dense_path, vol_id)
     resolved, warnings = resolve_dronegs_config(
@@ -179,9 +174,7 @@ def prepare_gaussian_product_run(
         data_factor=data_factor,
     )
     _report_config_warnings(vol_id, warnings)
-    checkpoint_s3_prefix = (
-        f"{preparation.mission_s3_prefix}/gaussian-checkpoints"
-    )
+    checkpoint_s3_prefix = f"{preparation.mission_s3_prefix}/gaussian-checkpoints"
     if prepare_checkpoints:
         checkpoint_dir, checkpoint_s3_prefix = _prepare_checkpoint_store(
             workspace_dir,
@@ -220,9 +213,7 @@ def prepare_gaussian_product_run(
         cap_max=resolved.cap_max,
         capacity_mode=resolved.capacity_mode,
         capacity_floor=resolved.capacity_floor,
-        target_gaussian_spacing_pixels=(
-            resolved.target_gaussian_spacing_pixels
-        ),
+        target_gaussian_spacing_pixels=(resolved.target_gaussian_spacing_pixels),
         filter_enabled=resolved.filter_enabled,
         filter_max_scale=resolved.filter_max_scale,
         filter_min_retained_ratio=resolved.filter_min_retained_ratio,
@@ -237,9 +228,7 @@ def prepare_gaussian_product_run(
         coverage_grid_size=resolved.coverage_grid_size,
         coverage_min_valid_ratio=resolved.coverage_min_valid_ratio,
         coverage_cell_threshold=resolved.coverage_cell_threshold,
-        coverage_min_covered_cells_ratio=(
-            resolved.coverage_min_covered_cells_ratio
-        ),
+        coverage_min_covered_cells_ratio=(resolved.coverage_min_covered_cells_ratio),
         coverage_min_worst_cell_ratio=resolved.coverage_min_worst_cell_ratio,
         coverage_min_camera_cell_ratio=resolved.coverage_min_camera_cell_ratio,
         verbose=False,
@@ -249,6 +238,10 @@ def prepare_gaussian_product_run(
         dronegs_optimizer_profile=resolved.optimizer_profile,
         dronegs_pruning_policy=resolved.pruning_policy,
         dronegs_raster_profile=resolved.raster_profile,
+        dronegs_initial_scale_policy=resolved.initial_scale_policy,
+        dronegs_initial_max_projected_sigma_pixels=(resolved.initial_max_projected_sigma_pixels),
+        dronegs_maximum_scale_growth_factor=(resolved.maximum_scale_growth_factor),
+        dronegs_capacity_targeted_growth=resolved.capacity_targeted_growth,
         dronegs_sh_degree_interval=resolved.sh_degree_interval,
         dronegs_topology_cooldown=resolved.topology_cooldown,
         dronegs_photometric_finish=resolved.photometric_finish,
@@ -265,13 +258,9 @@ def prepare_gaussian_product_run(
         facade_scale_mode=str(params["facade_scale_mode"]),
         facade_meters_per_model_unit=float(params["facade_meters_per_model_unit"]),
         facade_frame_report=os.path.join(workspace_dir, "facade_frame.json"),
-        facade_texture_max_incidence_deg=float(
-            params["facade_texture_max_incidence_deg"]
-        ),
+        facade_texture_max_incidence_deg=float(params["facade_texture_max_incidence_deg"]),
         facade_depth_iqr_multiplier=float(params["facade_depth_iqr_multiplier"]),
-        facade_seed_max_reprojection_error=float(
-            params["facade_seed_max_reprojection_error"]
-        ),
+        facade_seed_max_reprojection_error=float(params["facade_seed_max_reprojection_error"]),
         facade_seed_min_track_length=int(params["facade_seed_min_track_length"]),
     )
     return GaussianProductRun(
@@ -296,7 +285,9 @@ def run_gaussian_product(
         app1_dir = str(APP1_DIR)
         if app1_dir not in sys.path:
             sys.path.insert(0, app1_dir)
-        from gaussian_ortho.generate_gaussian_orthophoto import generate_gaussian_orthophoto
+        from gaussian_ortho.generate_gaussian_orthophoto import (
+            generate_gaussian_orthophoto,
+        )
 
         gc.collect()
         try:
@@ -339,9 +330,7 @@ def run_gaussian_product(
             cap_max=config.cap_max,
             capacity_mode=config.capacity_mode,
             capacity_floor=config.capacity_floor,
-            target_gaussian_spacing_pixels=(
-                config.target_gaussian_spacing_pixels
-            ),
+            target_gaussian_spacing_pixels=(config.target_gaussian_spacing_pixels),
             filter_enabled=config.filter_enabled,
             filter_max_scale=config.filter_max_scale,
             filter_min_retained_ratio=config.filter_min_retained_ratio,
@@ -356,15 +345,9 @@ def run_gaussian_product(
             coverage_grid_size=config.coverage_grid_size,
             coverage_min_valid_ratio=config.coverage_min_valid_ratio,
             coverage_cell_threshold=config.coverage_cell_threshold,
-            coverage_min_covered_cells_ratio=(
-                config.coverage_min_covered_cells_ratio
-            ),
-            coverage_min_worst_cell_ratio=(
-                config.coverage_min_worst_cell_ratio
-            ),
-            coverage_min_camera_cell_ratio=(
-                config.coverage_min_camera_cell_ratio
-            ),
+            coverage_min_covered_cells_ratio=(config.coverage_min_covered_cells_ratio),
+            coverage_min_worst_cell_ratio=(config.coverage_min_worst_cell_ratio),
+            coverage_min_camera_cell_ratio=(config.coverage_min_camera_cell_ratio),
             verbose=config.verbose,
             trainer_backend=product_run.trainer_backend,
             training_seed=config.training_seed,
@@ -373,6 +356,10 @@ def run_gaussian_product(
             dronegs_optimizer_profile=config.dronegs_optimizer_profile,
             dronegs_pruning_policy=config.dronegs_pruning_policy,
             dronegs_raster_profile=config.dronegs_raster_profile,
+            dronegs_initial_scale_policy=config.dronegs_initial_scale_policy,
+            dronegs_initial_max_projected_sigma_pixels=(config.dronegs_initial_max_projected_sigma_pixels),
+            dronegs_maximum_scale_growth_factor=(config.dronegs_maximum_scale_growth_factor),
+            dronegs_capacity_targeted_growth=(config.dronegs_capacity_targeted_growth),
             dronegs_sh_degree_interval=config.dronegs_sh_degree_interval,
             dronegs_topology_cooldown=config.dronegs_topology_cooldown,
             dronegs_photometric_finish=config.dronegs_photometric_finish,
@@ -389,13 +376,9 @@ def run_gaussian_product(
             facade_scale_mode=config.facade_scale_mode,
             facade_meters_per_model_unit=config.facade_meters_per_model_unit,
             facade_frame_report=config.facade_frame_report,
-            facade_texture_max_incidence_deg=(
-                config.facade_texture_max_incidence_deg
-            ),
+            facade_texture_max_incidence_deg=(config.facade_texture_max_incidence_deg),
             facade_depth_iqr_multiplier=config.facade_depth_iqr_multiplier,
-            facade_seed_max_reprojection_error=(
-                config.facade_seed_max_reprojection_error
-            ),
+            facade_seed_max_reprojection_error=(config.facade_seed_max_reprojection_error),
             facade_seed_min_track_length=config.facade_seed_min_track_length,
         )
         runtime.report_mission_progress(

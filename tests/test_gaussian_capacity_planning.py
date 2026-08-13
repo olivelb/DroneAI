@@ -105,6 +105,43 @@ def test_adaptive_plan_adds_cells_for_a_smaller_gpu():
     assert plan.effective_cell_cap <= plan.resident_cap
 
 
+def test_normal_candidate_fits_each_resident_block_in_eight_gigabytes():
+    preliminary = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=8_000_000,
+        capacity_floor=3_000_000,
+        target_spacing_pixels=8.0,
+        points=_surface(500.0, 418.8),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=8 * capacity.GIB,
+        resident_partitioning=True,
+    )
+
+    assert preliminary.surface_target == pytest.approx(8_200_000, rel=0.03)
+    assert preliminary.training_target is not None
+    assert preliminary.resident_cap == 2_300_000
+    assert preliminary.required_cell_count == 8
+    assert preliminary.estimated_capacity_bytes < 3 * capacity.GIB
+
+    plan = capacity.plan_gaussian_capacity(
+        mode="adaptive",
+        requested_cap=8_000_000,
+        capacity_floor=3_000_000,
+        target_spacing_pixels=8.0,
+        points=_surface(500.0, 418.8),
+        meters_per_model_unit=1.0,
+        requested_gsd_m=0.02,
+        total_vram_bytes=8 * capacity.GIB,
+        cell_count=preliminary.required_cell_count,
+        resident_partitioning=True,
+    )
+
+    assert plan.cells_sufficient
+    assert plan.effective_cell_cap == 2_100_000
+    assert plan.effective_cell_cap <= plan.resident_cap
+
+
 def test_two_centimeter_hq_candidate_targets_about_40m_merged_gaussians():
     plan = capacity.plan_gaussian_capacity(
         mode="adaptive",
@@ -201,6 +238,54 @@ def test_legacy_adaptive_profile_keeps_its_monolithic_operator_cap():
 
 def test_detected_vram_is_optional_for_cpu_contract_tests():
     assert capacity.detected_vram_bytes(SimpleNamespace()) is None
+
+
+def test_detected_vram_can_be_lowered_for_reproducible_qualification(
+    monkeypatch,
+):
+    monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "8")
+    cupy = SimpleNamespace(
+        cuda=SimpleNamespace(
+            Device=lambda _index: SimpleNamespace(
+                mem_info=(20 * capacity.GIB, 24 * capacity.GIB)
+            )
+        )
+    )
+
+    assert capacity.detected_vram_bytes(cupy) == (
+        8 * capacity.GIB,
+        8 * capacity.GIB,
+    )
+
+
+def test_detected_vram_budget_never_increases_available_memory(monkeypatch):
+    monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "32")
+    cupy = SimpleNamespace(
+        cuda=SimpleNamespace(
+            Device=lambda _index: SimpleNamespace(
+                mem_info=(6 * capacity.GIB, 24 * capacity.GIB)
+            )
+        )
+    )
+
+    assert capacity.detected_vram_bytes(cupy) == (
+        6 * capacity.GIB,
+        24 * capacity.GIB,
+    )
+
+
+def test_detected_vram_rejects_an_invalid_operator_budget(monkeypatch):
+    monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "not-a-number")
+    cupy = SimpleNamespace(
+        cuda=SimpleNamespace(
+            Device=lambda _index: SimpleNamespace(
+                mem_info=(8 * capacity.GIB, 8 * capacity.GIB)
+            )
+        )
+    )
+
+    with pytest.raises(ValueError, match=capacity.VRAM_BUDGET_ENV):
+        capacity.detected_vram_bytes(cupy)
 
 
 def test_achieved_density_rejects_an_unsupported_requested_gsd():

@@ -13,12 +13,16 @@ extension. Scale and rotation remain view-independent; this is not FAGK.
 """
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import cupy as cp
 import numpy as np
 
 SH_C0 = 0.28209479177387814
+PLY_TRANSFER_ROWS = 250_000
 
 
 def num_sh_coefficients(degree: int) -> int:
@@ -99,39 +103,45 @@ class GaussianModel:
     # ------------------------------------------------------------------
 
     def load_ply(self, path: str) -> None:
-        """Load Gaussian parameters from a PLY file onto GPU."""
+        """Load one resident PLY with bounded host staging memory."""
         from plyfile import PlyData
 
-        plydata = PlyData.read(path)
+        plydata = PlyData.read(path, mmap="r")
         vertex = plydata['vertex']
         n = vertex.count
 
-        xyz = np.stack([vertex['x'], vertex['y'], vertex['z']], axis=1)
-        self._xyz = cp.array(xyz, dtype=cp.float32)
+        def load_properties(names: list[str]) -> cp.ndarray:
+            result = cp.empty((n, len(names)), dtype=cp.float32)
+            for start in range(0, n, PLY_TRANSFER_ROWS):
+                stop = min(n, start + PLY_TRANSFER_ROWS)
+                host = np.empty((stop - start, len(names)), dtype=np.float32)
+                for column, name in enumerate(names):
+                    host[:, column] = vertex[name][start:stop]
+                result[start:stop] = cp.asarray(host)
+            return result
 
-        dc = np.stack([vertex[f'f_dc_{i}'] for i in range(3)], axis=1)
-        self._features_dc = cp.array(dc, dtype=cp.float32)[:, None, :]
+        self._xyz = load_properties(['x', 'y', 'z'])
+
+        self._features_dc = load_properties(
+            [f'f_dc_{i}' for i in range(3)]
+        )[:, None, :]
 
         rest_names = sorted(
             [p.name for p in vertex.properties if p.name.startswith('f_rest_')],
             key=lambda s: int(s.split('_')[-1]),
         )
         if rest_names:
-            rest = np.stack([vertex[rn] for rn in rest_names], axis=1)
-            K = rest.shape[1] // 3
-            rest_tensor = cp.array(rest, dtype=cp.float32)
+            K = len(rest_names) // 3
+            rest_tensor = load_properties(rest_names)
             self._features_rest = rest_tensor.reshape(n, 3, K).transpose(0, 2, 1)
         else:
             self._features_rest = cp.zeros((n, 0, 3), dtype=cp.float32)
 
-        scales = np.stack([vertex[f'scale_{i}'] for i in range(3)], axis=1)
-        self._scaling = cp.array(scales, dtype=cp.float32)
+        self._scaling = load_properties([f'scale_{i}' for i in range(3)])
 
-        rots = np.stack([vertex[f'rot_{i}'] for i in range(4)], axis=1)
-        self._rotation = cp.array(rots, dtype=cp.float32)
+        self._rotation = load_properties([f'rot_{i}' for i in range(4)])
 
-        opas = vertex['opacity'].reshape(-1, 1)
-        self._opacity = cp.array(opas, dtype=cp.float32)
+        self._opacity = load_properties(['opacity'])
 
         # View-dependent opacity-logit SH residuals.
         opa_sh_names = sorted(
@@ -148,57 +158,89 @@ class GaussianModel:
                 raise ValueError(
                     "opacity SH degree must match the color SH degree"
                 )
-            opa_sh = np.stack([vertex[on] for on in opa_sh_names], axis=1)
-            self._opacity_sh = cp.array(opa_sh, dtype=cp.float32)
+            self._opacity_sh = load_properties(opa_sh_names)
             self.active_opacity_sh_degree = int(np.sqrt(len(opa_sh_names) + 1)) - 1
         else:
             self._opacity_sh = cp.empty((n, 0), dtype=cp.float32)
             self.active_opacity_sh_degree = 0
 
     def save_ply(self, path: str) -> None:
-        """Save Gaussian parameters to a PLY file."""
-        from plyfile import PlyData, PlyElement
-
+        """Atomically stream a binary PLY without a full host-side copy."""
         n = self.num_gaussians
-        xyz = cp.asnumpy(self._xyz)
-        dc = cp.asnumpy(self._features_dc).reshape(n, 3)
-        rest_raw = cp.asnumpy(self._features_rest)
-        rest = rest_raw.transpose(0, 2, 1).reshape(n, -1)
-        scales = cp.asnumpy(self._scaling)
-        rots = cp.asnumpy(self._rotation)
-        opas = cp.asnumpy(self._opacity)
+        rest_count = int(self._features_rest.shape[1] * 3)
+        opacity_sh_count = (
+            int(self._opacity_sh.shape[1])
+            if self.opacity_sh_enabled and self._opacity_sh.shape[1] > 0
+            else 0
+        )
 
         attrs = [('x', 'f4'), ('y', 'f4'), ('z', 'f4')]
         attrs += [(f'f_dc_{i}', 'f4') for i in range(3)]
-        attrs += [(f'f_rest_{i}', 'f4') for i in range(rest.shape[1])]
+        attrs += [(f'f_rest_{i}', 'f4') for i in range(rest_count)]
         attrs += [(f'scale_{i}', 'f4') for i in range(3)]
         attrs += [(f'rot_{i}', 'f4') for i in range(4)]
         attrs += [('opacity', 'f4')]
 
-        if self.opacity_sh_enabled and self._opacity_sh.shape[1] > 0:
-            opa_sh = cp.asnumpy(self._opacity_sh)
-            attrs += [(f'opacity_sh_{i}', 'f4') for i in range(opa_sh.shape[1])]
+        attrs += [(f'opacity_sh_{i}', 'f4') for i in range(opacity_sh_count)]
 
-        dtype = np.dtype(attrs)
-        elements: np.ndarray = np.empty(n, dtype=dtype)
-        elements['x'] = xyz[:, 0]
-        elements['y'] = xyz[:, 1]
-        elements['z'] = xyz[:, 2]
-        for i in range(3):
-            elements[f'f_dc_{i}'] = dc[:, i]
-        for i in range(rest.shape[1]):
-            elements[f'f_rest_{i}'] = rest[:, i]
-        for i in range(3):
-            elements[f'scale_{i}'] = scales[:, i]
-        for i in range(4):
-            elements[f'rot_{i}'] = rots[:, i]
-        elements['opacity'] = opas.squeeze()
-        if self.opacity_sh_enabled and self._opacity_sh.shape[1] > 0:
-            for i in range(opa_sh.shape[1]):
-                elements[f'opacity_sh_{i}'] = opa_sh[:, i]
-
-        el = PlyElement.describe(elements, 'vertex')
-        PlyData([el]).write(path)
+        dtype = np.dtype(attrs).newbyteorder("<")
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        properties = "".join(
+            f"property float {name}\n" for name in dtype.names or ()
+        )
+        header = (
+            "ply\n"
+            "format binary_little_endian 1.0\n"
+            f"element vertex {n}\n"
+            f"{properties}"
+            "end_header\n"
+        ).encode("ascii")
+        temporary_path: str | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=target.parent,
+                prefix=f".{target.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = handle.name
+                handle.write(header)
+                for start in range(0, n, PLY_TRANSFER_ROWS):
+                    stop = min(n, start + PLY_TRANSFER_ROWS)
+                    count = stop - start
+                    elements: np.ndarray = np.empty(count, dtype=dtype)
+                    xyz = cp.asnumpy(self._xyz[start:stop])
+                    dc = cp.asnumpy(self._features_dc[start:stop]).reshape(count, 3)
+                    rest = cp.asnumpy(self._features_rest[start:stop])
+                    rest = rest.transpose(0, 2, 1).reshape(count, rest_count)
+                    scales = cp.asnumpy(self._scaling[start:stop])
+                    rotations = cp.asnumpy(self._rotation[start:stop])
+                    opacities = cp.asnumpy(self._opacity[start:stop]).reshape(count)
+                    for index, name in enumerate(('x', 'y', 'z')):
+                        elements[name] = xyz[:, index]
+                    for index in range(3):
+                        elements[f'f_dc_{index}'] = dc[:, index]
+                    for index in range(rest_count):
+                        elements[f'f_rest_{index}'] = rest[:, index]
+                    for index in range(3):
+                        elements[f'scale_{index}'] = scales[:, index]
+                    for index in range(4):
+                        elements[f'rot_{index}'] = rotations[:, index]
+                    elements['opacity'] = opacities
+                    if opacity_sh_count:
+                        opacity_sh = cp.asnumpy(self._opacity_sh[start:stop])
+                        for index in range(opacity_sh_count):
+                            elements[f'opacity_sh_{index}'] = opacity_sh[:, index]
+                    handle.write(elements.tobytes(order="C"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, target)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                Path(temporary_path).unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     #  Quaternion utilities (used by Sim3 geo-alignment)

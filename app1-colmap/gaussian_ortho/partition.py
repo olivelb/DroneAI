@@ -11,7 +11,8 @@ import numpy as np
 from .colmap_loader import PointCloud, Sim3Transform
 from .camera_footprint import (
     GeographicSceneFrame,
-    camera_assignment_for_ground_buffer,
+    PlanarSceneFrame,
+    camera_assignment_for_planar_buffer,
 )
 from .scene_info import SceneInfo, build_scene_info
 
@@ -382,14 +383,18 @@ def partition_scene(
     model_to_ground_linear: GroundLinear = IDENTITY_GROUND_LINEAR,
     model_to_ground_offset: GroundOffset = ZERO_GROUND_OFFSET,
     geographic_frame: GeographicSceneFrame | None = None,
+    planar_frame: PlanarSceneFrame | None = None,
     crop_margin_pixels: int = 128,
+    maximum_view_incidence_degrees: float = 75.0,
+    minimum_plane_overlap_m2: float = 1.0,
 ) -> list[tuple[CellBounds, SceneInfo]]:
     """Build resident scenes from footprint-visible native-image crops."""
     if min_cameras < 1:
         raise ValueError("minimum partition camera count must be positive")
-    if geographic_frame is None:
+    selected_frame = planar_frame or geographic_frame
+    if selected_frame is None:
         raise ValueError(
-            "partition camera selection requires a geographic scene frame"
+            "partition camera selection requires a planar scene frame"
         )
     cells = compute_partition_grid(
         scene,
@@ -405,9 +410,9 @@ def partition_scene(
             (camera, assignment)
             for camera in scene.train_cameras
             if (
-                assignment := camera_assignment_for_ground_buffer(
+                assignment := camera_assignment_for_planar_buffer(
                     camera,
-                    geographic_frame,
+                    selected_frame,
                     (
                         cell.buffer_x_min,
                         cell.buffer_x_max,
@@ -415,6 +420,10 @@ def partition_scene(
                         cell.buffer_y_max,
                     ),
                     crop_margin_pixels=crop_margin_pixels,
+                    maximum_nadir_incidence_degrees=(
+                        maximum_view_incidence_degrees
+                    ),
+                    minimum_ground_overlap_m2=minimum_plane_overlap_m2,
                 )
             )
             is not None

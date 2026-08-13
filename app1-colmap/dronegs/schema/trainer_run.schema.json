@@ -51,6 +51,9 @@
         "pruning_policy",
         "raster_profile",
         "effective_raster_profile",
+        "initial_scale_policy",
+        "initial_max_projected_sigma_pixels",
+        "maximum_scale_growth_factor",
         "test_split",
         "test_guard_percent"
       ],
@@ -60,6 +63,17 @@
         "pruning_policy": {"enum": ["original", "spatial-bounds"]},
         "raster_profile": {"enum": ["auto", "bounded", "fastgs"]},
         "effective_raster_profile": {"enum": ["bounded", "fastgs"]},
+        "initial_scale_policy": {"enum": ["local-knn", "projected-knn"]},
+        "initial_max_projected_sigma_pixels": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 64
+        },
+        "maximum_scale_growth_factor": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1024
+        },
         "test_split": {"enum": ["modulo", "spatial-block"]},
         "test_guard_percent": {
           "type": "integer",

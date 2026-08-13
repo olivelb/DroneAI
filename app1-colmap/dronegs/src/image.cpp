@@ -273,6 +273,50 @@ std::vector<ImageRegion> make_training_tiles(
     return regions;
 }
 
+std::vector<ImageRegion> make_adaptive_training_tiles(
+    const ImageRegion& source_region,
+    std::uint32_t full_width, std::uint32_t full_height,
+    std::uint32_t maximum_tile_mode) {
+    if (maximum_tile_mode != 1U &&
+        maximum_tile_mode != 2U &&
+        maximum_tile_mode != 4U) {
+        throw std::invalid_argument(
+            "maximum adaptive tile mode must be 1, 2, or 4");
+    }
+    if (full_width == 0U || full_height == 0U) {
+        throw std::invalid_argument(
+            "adaptive tile source dimensions must be positive");
+    }
+    if (source_region.width == 0U || source_region.height == 0U) {
+        throw std::invalid_argument(
+            "adaptive tile crop dimensions must be positive");
+    }
+    const auto crop_right =
+        static_cast<std::uint64_t>(source_region.source_x) +
+        source_region.width;
+    const auto crop_bottom =
+        static_cast<std::uint64_t>(source_region.source_y) +
+        source_region.height;
+    if (crop_right > full_width || crop_bottom > full_height) {
+        throw std::invalid_argument(
+            "adaptive tile crop exceeds the source image");
+    }
+    const auto full_pixels =
+        static_cast<std::uint64_t>(full_width) * full_height;
+    const auto tile_budget =
+        (full_pixels + maximum_tile_mode - 1U) / maximum_tile_mode;
+    const auto crop_pixels =
+        static_cast<std::uint64_t>(source_region.width) *
+        source_region.height;
+    const auto required_tiles =
+        (crop_pixels + tile_budget - 1U) / tile_budget;
+    const std::uint32_t effective_mode =
+        required_tiles <= 1U
+            ? 1U
+            : (required_tiles <= 2U ? 2U : maximum_tile_mode);
+    return make_training_tiles(source_region, effective_mode);
+}
+
 std::pair<std::uint32_t, std::uint32_t> training_image_dimensions(
     const ImageRegion& region, std::uint32_t resize_factor,
     std::uint32_t max_width) {

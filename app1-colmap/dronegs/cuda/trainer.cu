@@ -535,9 +535,13 @@ std::vector<FrameDescriptor> make_frame_descriptors(
                   .width = static_cast<std::uint32_t>(camera.width),
                   .height = static_cast<std::uint32_t>(camera.height),
               };
-        const auto regions = make_training_tiles(
-            source_region,
-            options.tile_mode);
+        const auto regions = options.adaptive_native_crop_tiles != 0U
+            ? make_adaptive_training_tiles(
+                  source_region,
+                  static_cast<std::uint32_t>(camera.width),
+                  static_cast<std::uint32_t>(camera.height),
+                  options.tile_mode)
+            : make_training_tiles(source_region, options.tile_mode);
         for (std::size_t tile_index = 0U;
              tile_index < regions.size(); ++tile_index) {
             FrameDescriptor descriptor{
@@ -626,25 +630,40 @@ DatasetSplit expand_frame_split(
     return frame_split;
 }
 
-std::size_t host_image_cache_capacity(
+struct HostImageCachePlan {
+    std::size_t working_set_bytes = 0U;
+    std::size_t capacity_bytes = 0U;
+};
+
+HostImageCachePlan host_image_cache_plan(
     const std::vector<FrameDescriptor>& descriptors,
     const Options& options) {
     constexpr std::size_t minimum_capacity = 256U * 1024U * 1024U;
-    constexpr std::size_t maximum_capacity = 2ULL * 1024U * 1024U * 1024U;
-    std::size_t decoded_bytes = 0U;
+    const std::size_t maximum_capacity =
+        static_cast<std::size_t>(options.host_image_cache_mib) *
+        1024U * 1024U;
+    std::size_t working_set_bytes = 0U;
     for (const auto& descriptor : descriptors) {
         const auto [width, height] =
             training_dimensions(descriptor, options);
         const std::size_t pixels =
             static_cast<std::size_t>(width) * height;
-        if (pixels > maximum_capacity / 3U ||
-            decoded_bytes > maximum_capacity - pixels * 3U) {
-            return maximum_capacity;
+        if (pixels > std::numeric_limits<std::size_t>::max() / 3U ||
+            working_set_bytes >
+                std::numeric_limits<std::size_t>::max() - pixels * 3U) {
+            working_set_bytes =
+                std::numeric_limits<std::size_t>::max();
+            break;
         }
-        decoded_bytes += pixels * 3U;
+        working_set_bytes += pixels * 3U;
     }
-    return std::clamp(
-        decoded_bytes, minimum_capacity, maximum_capacity);
+    return {
+        .working_set_bytes = working_set_bytes,
+        .capacity_bytes = std::clamp(
+            working_set_bytes,
+            minimum_capacity,
+            maximum_capacity),
+    };
 }
 
 std::vector<std::size_t> make_training_schedule(
@@ -774,6 +793,8 @@ void write_target_ppm(
 struct HeldOutAggregate {
     float psnr = 0.0F;
     float ssim = 0.0F;
+    float pixel_weighted_psnr = 0.0F;
+    float pixel_weighted_ssim = 0.0F;
     double seconds = 0.0;
 };
 
@@ -802,7 +823,8 @@ HeldOutAggregate evaluate_held_out(
     }
     if (stage == "initial") {
         csv << "stage,held_out_index,frame_index,scene_index,tile_index,image_name,"
-               "psnr,ssim,active_pixel_fraction\n";
+               "width,height,pixel_count,mse,psnr,ssim,"
+               "active_pixel_fraction\n";
     }
     const auto prediction_directory = evaluation_directory / "predictions";
     const auto target_directory = evaluation_directory / "targets";
@@ -814,6 +836,9 @@ HeldOutAggregate evaluate_held_out(
     const auto start = std::chrono::steady_clock::now();
     double psnr_sum = 0.0;
     double ssim_sum = 0.0;
+    double weighted_mse_sum = 0.0;
+    double weighted_ssim_sum = 0.0;
+    std::uint64_t total_pixel_count = 0U;
     const std::size_t progress_interval =
         std::max<std::size_t>(1U, held_out_indices.size() / 10U);
     for (std::size_t held_out_index = 0U;
@@ -833,13 +858,27 @@ HeldOutAggregate evaluate_held_out(
             save_predictions ? &prediction : nullptr);
         psnr_sum += quality.psnr;
         ssim_sum += quality.ssim;
+        const auto pixel_count =
+            static_cast<std::uint64_t>(raster_camera.width) *
+            static_cast<std::uint64_t>(raster_camera.height);
+        weighted_mse_sum +=
+            static_cast<double>(quality.mse) *
+            static_cast<double>(pixel_count);
+        weighted_ssim_sum +=
+            static_cast<double>(quality.ssim) *
+            static_cast<double>(pixel_count);
+        total_pixel_count += pixel_count;
         csv << stage << ','
             << held_out_index << ','
             << frame_index << ','
             << descriptors[frame_index].scene_index << ','
             << descriptors[frame_index].tile_index << ','
             << csv_escape(descriptors[frame_index].image->name) << ','
-            << std::setprecision(9) << quality.psnr << ','
+            << raster_camera.width << ','
+            << raster_camera.height << ','
+            << pixel_count << ','
+            << std::setprecision(9) << quality.mse << ','
+            << quality.psnr << ','
             << quality.ssim << ','
             << quality.active_pixel_fraction << '\n';
         if (save_predictions) {
@@ -873,9 +912,21 @@ HeldOutAggregate evaluate_held_out(
     }
     const double count =
         static_cast<double>(held_out_indices.size());
+    if (total_pixel_count == 0U) {
+        throw std::runtime_error(
+            "held-out evaluation produced no pixels");
+    }
+    const double pixel_count = static_cast<double>(total_pixel_count);
+    const double pixel_weighted_mse = std::max(
+        weighted_mse_sum / pixel_count,
+        1.0e-10);
     return {
         .psnr = static_cast<float>(psnr_sum / count),
         .ssim = static_cast<float>(ssim_sum / count),
+        .pixel_weighted_psnr = static_cast<float>(
+            10.0 * std::log10(1.0 / pixel_weighted_mse)),
+        .pixel_weighted_ssim = static_cast<float>(
+            weighted_ssim_sum / pixel_count),
         .seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - start).count(),
     };
@@ -1153,14 +1204,14 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     std::size_t maximum_pixels = 0U;
     const auto descriptors = make_frame_descriptors(
         options, scene, gaussians, maximum_pixels);
-    const auto host_cache_capacity =
-        host_image_cache_capacity(descriptors, options);
+    const auto host_cache_plan =
+        host_image_cache_plan(descriptors, options);
     const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
-        descriptors.size(), host_cache_capacity,
+        descriptors.size(), host_cache_plan.capacity_bytes,
         [&descriptors, &options](std::size_t index) {
             const auto* image = descriptors.at(index).image;
             return load_training_image(
@@ -1183,6 +1234,14 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
         static_cast<std::uint64_t>(image_split.held_out.size());
     metrics.ignored_image_count =
         static_cast<std::uint64_t>(image_split.ignored.size());
+    metrics.frame_descriptor_count =
+        static_cast<std::uint64_t>(descriptors.size());
+    metrics.training_frame_count =
+        static_cast<std::uint64_t>(frame_split.training.size());
+    metrics.held_out_frame_count =
+        static_cast<std::uint64_t>(frame_split.held_out.size());
+    metrics.ignored_frame_count =
+        static_cast<std::uint64_t>(frame_split.ignored.size());
     const auto schedule = make_training_schedule(
         frame_split.training, options.iterations, options.seed);
     const auto initial_frame = frame_from_cache(
@@ -1264,6 +1323,8 @@ TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
     metrics.image_cache_evictions = cache.stats().evictions;
     metrics.image_cache_capacity_bytes =
         static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.image_cache_working_set_bytes =
+        static_cast<std::uint64_t>(host_cache_plan.working_set_bytes);
     metrics.peak_image_cache_bytes =
         static_cast<std::uint64_t>(cache.stats().peak_resident_bytes);
     metrics.image_prefetch_started = cache.stats().prefetch_started;
@@ -1293,14 +1354,14 @@ TrainingMetrics train_ordered_mrnf(
         << requested_views - descriptors.size()
         << "}\n"
         << std::flush;
-    const auto host_cache_capacity =
-        host_image_cache_capacity(descriptors, options);
+    const auto host_cache_plan =
+        host_image_cache_plan(descriptors, options);
     const auto image_split = make_dataset_split(
         scene, options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
-        descriptors.size(), host_cache_capacity,
+        descriptors.size(), host_cache_plan.capacity_bytes,
         [&descriptors, &options](std::size_t index) {
             const auto* image = descriptors.at(index).image;
             return load_training_image(
@@ -1332,14 +1393,14 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::size_t>(options.max_cap),
         optimizer_profile, options.sh_degree,
         options.sh_degree_interval, options.seed,
-        raster_override);
+        raster_override, options.maximum_scale_growth_factor);
     const auto checkpoint_dataset_fingerprint =
         options.dataset_fingerprint.empty()
             ? dataset_fingerprint(scene, options.data_path)
             : options.dataset_fingerprint;
     std::ostringstream checkpoint_configuration;
     checkpoint_configuration
-        << "contract=3"
+        << "contract=5"
         << ";iterations=" << options.iterations
         << ";strategy=" << options.strategy
         << ";sh=" << options.sh_degree
@@ -1348,6 +1409,13 @@ TrainingMetrics train_ordered_mrnf(
         << ";resize=" << options.resize_factor
         << ";max_width=" << options.max_width
         << ";tile=" << options.tile_mode
+        << ";adaptive_native_crop_tiles="
+        << options.adaptive_native_crop_tiles
+        << ";initial_scale_policy=" << options.initial_scale_policy
+        << ";initial_max_projected_sigma_pixels="
+        << options.initial_max_projected_sigma_pixels
+        << ";maximum_scale_growth_factor="
+        << options.maximum_scale_growth_factor
         << ";seed=" << options.seed
         << ";test_every=" << options.test_every
         << ";test_split=" << options.test_split
@@ -1421,6 +1489,14 @@ TrainingMetrics train_ordered_mrnf(
         static_cast<std::uint64_t>(image_split.held_out.size());
     metrics.ignored_image_count =
         static_cast<std::uint64_t>(image_split.ignored.size());
+    metrics.frame_descriptor_count =
+        static_cast<std::uint64_t>(descriptors.size());
+    metrics.training_frame_count =
+        static_cast<std::uint64_t>(frame_split.training.size());
+    metrics.held_out_frame_count =
+        static_cast<std::uint64_t>(frame_split.held_out.size());
+    metrics.ignored_frame_count =
+        static_cast<std::uint64_t>(frame_split.ignored.size());
     TrainingCheckpointProgress checkpoint_progress;
     if (!options.resume_from.empty()) {
         checkpoint_progress = workspace.load_checkpoint(
@@ -1450,6 +1526,10 @@ TrainingMetrics train_ordered_mrnf(
             checkpoint_progress.initial_held_out_psnr;
         metrics.initial_held_out_ssim =
             checkpoint_progress.initial_held_out_ssim;
+        metrics.initial_pixel_weighted_psnr =
+            checkpoint_progress.initial_pixel_weighted_psnr;
+        metrics.initial_pixel_weighted_ssim =
+            checkpoint_progress.initial_pixel_weighted_ssim;
         std::cout
             << "{\"event\":\"checkpoint_resumed\",\"iteration\":"
             << checkpoint_progress.completed_iteration
@@ -1482,6 +1562,10 @@ TrainingMetrics train_ordered_mrnf(
             imported_model && options.save_eval_images != 0U);
         metrics.initial_held_out_psnr = held_out.psnr;
         metrics.initial_held_out_ssim = held_out.ssim;
+        metrics.initial_pixel_weighted_psnr =
+            held_out.pixel_weighted_psnr;
+        metrics.initial_pixel_weighted_ssim =
+            held_out.pixel_weighted_ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
     checkpoint_progress.initial_loss = metrics.initial_loss;
@@ -1489,6 +1573,10 @@ TrainingMetrics train_ordered_mrnf(
         metrics.initial_held_out_psnr;
     checkpoint_progress.initial_held_out_ssim =
         metrics.initial_held_out_ssim;
+    checkpoint_progress.initial_pixel_weighted_psnr =
+        metrics.initial_pixel_weighted_psnr;
+    checkpoint_progress.initial_pixel_weighted_ssim =
+        metrics.initial_pixel_weighted_ssim;
     prefetch_schedule_window(
         cache, schedule,
         static_cast<std::size_t>(
@@ -1505,6 +1593,8 @@ TrainingMetrics train_ordered_mrnf(
         topology_refinement_end_iteration(
             options.iterations, options.topology_cooldown,
             options.adaptive_growth_target != 0U);
+    const std::uint64_t topology_growth_end =
+        topology_growth_end_iteration(options.iterations);
     if (topology_refine_end < options.iterations) {
         std::cout
             << "{\"event\":\"topology_cooldown\",\"refine_through_iteration\":"
@@ -1563,29 +1653,38 @@ TrainingMetrics train_ordered_mrnf(
         }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
-        if (iteration % 200U == 0U && iteration < 28'500U &&
+        if (iteration % topology_refinement_interval == 0U &&
             iteration <= topology_refine_end) {
-            float growth_fraction = iteration < 15'000U ? 0.07F : 0.0F;
+            float growth_fraction =
+                iteration <= topology_growth_end ? 0.07F : 0.0F;
             if (growth_fraction > 0.0F &&
                 options.adaptive_growth_target != 0U) {
                 growth_fraction = adaptive_capacity_growth_fraction(
                     workspace.size(),
-                    static_cast<std::size_t>(options.max_cap), iteration);
+                    static_cast<std::size_t>(options.max_cap), iteration,
+                    topology_refine_end);
             }
             const auto refinement_seed =
                 static_cast<std::uint64_t>(options.seed) ^
                 (iteration * 0x9E3779B97F4A7C15ULL);
+            const auto topology_start =
+                std::chrono::steady_clock::now();
             const auto refinement =
                 workspace.refine_topology(
                     0.003F,
                     growth_fraction,
                     refinement_seed,
                     options.pruning_policy == "spatial-bounds");
+            const double topology_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - topology_start)
+                    .count();
+            metrics.topology_refinement_seconds += topology_seconds;
             ++metrics.topology_refinements;
             metrics.gaussians_added += refinement.added;
             metrics.gaussians_pruned += refinement.pruned;
             metrics.gaussian_slots_reused += refinement.reused;
-            ++metrics.topology_compactions;
+            metrics.topology_compactions += refinement.compacted ? 1U : 0U;
             std::cout
                 << "{\"event\":\"topology_refinement\",\"iteration\":"
                 << iteration
@@ -1609,12 +1708,15 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"added\":" << refinement.added
                 << ",\"reused\":" << refinement.reused
                 << ",\"appended\":" << refinement.appended
+                << ",\"compacted\":"
+                << (refinement.compacted ? "true" : "false")
                 << ",\"in_place_recycled\":"
                 << (refinement.in_place_recycled
                         ? "true"
                         : "false")
                 << ",\"gaussians\":" << refinement.gaussian_count
                 << ",\"selection_seed\":" << refinement_seed
+                << ",\"seconds\":" << topology_seconds
                 << "}\n"
                 << std::flush;
         }
@@ -1637,15 +1739,23 @@ TrainingMetrics train_ordered_mrnf(
             options.stop_after != 0U &&
             iteration == options.stop_after;
         if (periodic_checkpoint || requested_stop) {
+            const auto checkpoint_start =
+                std::chrono::steady_clock::now();
             workspace.save_checkpoint(
                 options.checkpoint_path, checkpoint_progress,
                 checkpoint_dataset_fingerprint,
                 checkpoint_configuration_fingerprint);
+            const double checkpoint_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - checkpoint_start)
+                    .count();
+            metrics.periodic_checkpoint_seconds += checkpoint_seconds;
             std::cout
                 << "{\"event\":\"checkpoint_saved\",\"iteration\":"
                 << iteration << ",\"path\":\""
                 << options.checkpoint_path.string()
-                << "\",\"gaussians\":" << workspace.size() << "}\n"
+                << "\",\"gaussians\":" << workspace.size()
+                << ",\"seconds\":" << checkpoint_seconds << "}\n"
                 << std::flush;
         }
         if (iteration == 1U ||
@@ -1712,6 +1822,9 @@ TrainingMetrics train_ordered_mrnf(
         metrics.image_cache_evictions = cache.stats().evictions;
         metrics.image_cache_capacity_bytes =
             static_cast<std::uint64_t>(cache.capacity_bytes());
+        metrics.image_cache_working_set_bytes =
+            static_cast<std::uint64_t>(
+                host_cache_plan.working_set_bytes);
         metrics.peak_image_cache_bytes =
             static_cast<std::uint64_t>(
                 cache.stats().peak_resident_bytes);
@@ -1754,6 +1867,8 @@ TrainingMetrics train_ordered_mrnf(
             !imported_model && options.save_eval_images != 0U);
         metrics.final_held_out_psnr = held_out.psnr;
         metrics.final_held_out_ssim = held_out.ssim;
+        metrics.final_pixel_weighted_psnr = held_out.pixel_weighted_psnr;
+        metrics.final_pixel_weighted_ssim = held_out.pixel_weighted_ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
 
@@ -1764,6 +1879,8 @@ TrainingMetrics train_ordered_mrnf(
     metrics.image_cache_evictions = cache.stats().evictions;
     metrics.image_cache_capacity_bytes =
         static_cast<std::uint64_t>(cache.capacity_bytes());
+    metrics.image_cache_working_set_bytes =
+        static_cast<std::uint64_t>(host_cache_plan.working_set_bytes);
     metrics.peak_image_cache_bytes =
         static_cast<std::uint64_t>(
             cache.stats().peak_resident_bytes);

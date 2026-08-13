@@ -84,6 +84,14 @@ _BASE_PIPELINE_DEFAULTS: dict[str, Any] = {
     "mvs_num_threads": "12",
     "ortho_mesh_resolution": "0.02",
     **DRONEGS_PRODUCTION_DEFAULTS,
+    "gs_capacity_mode": "fixed",
+    "gs_capacity_floor": str(DRONEGS_PRODUCTION_DEFAULTS["gs_cap_max"]),
+    "gs_target_gaussian_spacing_pixels": "0.0",
+    "gs_resident_partitioning": False,
+    "gs_initial_scale_policy": "local-knn",
+    "gs_initial_max_projected_sigma_pixels": "2.0",
+    "gs_maximum_scale_growth_factor": "54.59815",
+    "gs_capacity_targeted_growth": False,
     "gs_ortho_mip_filter_variance": "0.03",
     "gs_ortho_mip_filter_compensation": True,
     "gs_filter_enabled": True,
@@ -824,12 +832,15 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_iterations": {
         "label": "Training Iterations",
-        "description": "Primary training budget; more steps improve convergence and increase runtime.",
+        "description": (
+            "Primary training budget; topology, position noise and final "
+            "convergence schedules scale to the selected duration."
+        ),
         "type": "int",
         "group": "Orthomosaic",
         "min": 5000,
         "max": 100000,
-        "step": 5000,
+        "step": 500,
     },
     "gs_data_factor": {
         "label": "Training Image Downscale",
@@ -911,8 +922,55 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
         "step": 1.0,
     },
     "gs_resident_partitioning": {
-        "label": "Geographic Resident Blocks",
-        "description": "Train, filter and raster geographic core/buffer blocks one at a time instead of merging the full scene on one GPU.",
+        "label": "Planar Resident Blocks",
+        "description": "Train, filter and raster map or facade core/buffer blocks one at a time instead of merging the full product on one GPU.",
+        "type": "bool",
+        "group": "Orthomosaic",
+    },
+    "gs_initial_scale_policy": {
+        "label": "Initial Gaussian Scale",
+        "description": (
+            "projected-knn limits each sparse seed using its actual native "
+            "crop, training tile and image scale; local-knn preserves the "
+            "legacy 3D-only initialization."
+        ),
+        "type": "select",
+        "group": "Orthomosaic",
+        "options": ["projected-knn", "local-knn"],
+    },
+    "gs_initial_max_projected_sigma_pixels": {
+        "label": "Initial Maximum Splat Sigma (px)",
+        "description": (
+            "Maximum initial one-sigma footprint in the most detailed "
+            "training crop; lower values favour detail and require more "
+            "Gaussians."
+        ),
+        "type": "float",
+        "group": "Orthomosaic",
+        "min": 0.25,
+        "max": 16.0,
+        "step": 0.25,
+    },
+    "gs_maximum_scale_growth_factor": {
+        "label": "Maximum Scale Growth",
+        "description": (
+            "Maximum multiplicative growth of a Gaussian axis above the "
+            "largest initialized sparse scale. Lower values prevent broad "
+            "blur splats; raise only when sparse coverage is genuinely poor."
+        ),
+        "type": "float",
+        "group": "Orthomosaic",
+        "min": 1.0,
+        "max": 128.0,
+        "step": 1.0,
+    },
+    "gs_capacity_targeted_growth": {
+        "label": "Reach Gaussian Capacity",
+        "description": (
+            "Derive the split rate from the requested cap and remaining "
+            "topology windows. Resident adaptive profiles enable this "
+            "automatically; it is useful for short custom previews."
+        ),
         "type": "bool",
         "group": "Orthomosaic",
     },

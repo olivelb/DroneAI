@@ -38,6 +38,8 @@ if cp is not None:
     from gaussian_ortho.cuda_rasterizer import (
         eval_sh_basis,
         eval_sh,
+        project_covariance_2d,
+        quat_to_rotmat,
         rasterize_ortho,
     )
     from gaussian_ortho.rasterizer import make_view_matrix, make_ortho_proj
@@ -216,6 +218,34 @@ class TestSim3:
 @pytest.mark.gpu
 @requires_gpu
 class TestMatrices:
+    def test_direct_covariance_projection_matches_full_matrix_path(self):
+        rng = np.random.default_rng(31)
+        quaternions = rng.normal(size=(128, 4)).astype(np.float32)
+        quaternions /= np.linalg.norm(quaternions, axis=1, keepdims=True)
+        rotations = quat_to_rotmat(cp.asarray(quaternions))
+        scales = cp.asarray(
+            np.exp(rng.normal(-2.0, 0.4, size=(128, 3))).astype(np.float32)
+        )
+        projection = cp.asarray(
+            [[120.0, 3.0, -1.0], [2.0, 95.0, 4.0]],
+            dtype=cp.float32,
+        )
+
+        diagonal = cp.zeros((128, 3, 3), dtype=cp.float32)
+        diagonal[:, 0, 0] = scales[:, 0]
+        diagonal[:, 1, 1] = scales[:, 1]
+        diagonal[:, 2, 2] = scales[:, 2]
+        factors = cp.matmul(rotations, diagonal)
+        covariance = cp.matmul(factors, factors.transpose(0, 2, 1))
+        expected = cp.matmul(
+            cp.matmul(projection[None, :, :], covariance),
+            projection.T[None, :, :],
+        )
+
+        actual = project_covariance_2d(rotations, scales, projection)
+
+        assert cp.allclose(actual, expected, rtol=2e-5, atol=2e-5)
+
     def test_view_matrix_identity(self):
         R = np.eye(3, dtype=np.float32)
         T = np.zeros(3, dtype=np.float32)
@@ -419,6 +449,19 @@ class TestOrthoRenderer:
         assert "rgb" in result
         assert "height" in result
         assert result["rgb"].ndim == 3
+
+    def test_exact_dimensions_avoid_floating_point_border_pixel(self):
+        model = _make_gpu_model(1)
+        result = render_orthophoto(
+            model,
+            gsd=0.02,
+            extent=(1000.0, 1010.24, 1000.0, 1000.02, -1.0, 1.0),
+            pixel_dimensions=(512, 1),
+            chunk_size=512,
+        )
+
+        assert result["rgb"].shape == (1, 512, 3)
+        assert result["height"].shape == (1, 512)
 
     def test_translucent_surface_color_is_not_composited_on_white(self):
         """Ortho RGB represents surface colour independently of opacity."""

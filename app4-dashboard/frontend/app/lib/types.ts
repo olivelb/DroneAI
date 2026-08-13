@@ -7,11 +7,15 @@ export type YOLOModelVariant =
   | "yolo11l" | "yolo11m" | "yolo11s" | "yolo11n";
 export type QualityProfileId =
   | "fast-v1"
+  | "fast-v2"
   | "normal-v1"
   | "high-quality-v1"
   | "normal-v2"
   | "high-quality-v2"
-  | "high-quality-v3";
+  | "normal-v3"
+  | "normal-v4"
+  | "high-quality-v3"
+  | "high-quality-v4";
 export type ParamValue = string | boolean;
 export type ParameterOption = string | {
   value: string;

@@ -16,6 +16,7 @@ Pipeline:
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import cupy as cp
 import numpy as np
@@ -68,6 +69,26 @@ def quat_to_rotmat(quats: cp.ndarray) -> cp.ndarray:
     R[:, 2, 1] = 2 * (yz + wx)
     R[:, 2, 2] = 1 - 2 * (xx + yy)
     return R
+
+
+def project_covariance_2d(
+    rotmats: cp.ndarray,
+    scales: cp.ndarray,
+    projection: cp.ndarray,
+    *,
+    array_module: Any = cp,
+) -> cp.ndarray:
+    """Project ``R diag(scale²) Rᵀ`` without materializing 3D covariance."""
+
+    scaled_rotation = rotmats * scales[:, None, :]
+    projected_axes = array_module.matmul(
+        projection[None, :, :],
+        scaled_rotation,
+    )
+    return array_module.matmul(
+        projected_axes,
+        projected_axes.transpose(0, 2, 1),
+    )
 
 
 # =====================================================================
@@ -286,17 +307,9 @@ def rasterize_ortho(
 
     # ---- 3. 3D covariance → 2D covariance ----
     rotmats = quat_to_rotmat(quats)                   # (N, 3, 3)
-    S = cp.zeros((N, 3, 3), dtype=cp.float32)
-    S[:, 0, 0] = scales[:, 0]
-    S[:, 1, 1] = scales[:, 1]
-    S[:, 2, 2] = scales[:, 2]
-    M = cp.matmul(rotmats, S)                          # (N, 3, 3)
-    cov3d = cp.matmul(M, M.transpose(0, 2, 1))        # (N, 3, 3)
-
     J = cp.array([[fx, 0, 0], [0, fy, 0]], dtype=cp.float32)     # (2, 3)
     T_mat = J @ R_view                                             # (2, 3)
-    temp = cp.matmul(T_mat[None, :, :], cov3d)                    # (N, 2, 3)
-    cov2d = cp.matmul(temp, T_mat[None, :, :].swapaxes(-1, -2))  # (N, 2, 2)
+    cov2d = project_covariance_2d(rotmats, scales, T_mat)
 
     # Mip-Splatting 2D Mip filter.  The determinant ratio preserves the
     # integrated opacity after widening the covariance by the pixel-space
@@ -392,8 +405,17 @@ def rasterize_ortho(
     )
 
     # ---- 7. Sort by (tile_id, depth) ----
-    sort_keys = cp.stack((out_depths, out_tile_ids))
-    sort_order = cp.lexsort(sort_keys)
+    # Visible depths are strictly positive, so their IEEE-754 float32 bit
+    # representation preserves numeric order. Packing both fields in one
+    # uint64 key avoids CuPy's required 2xN lexsort matrix (and its dtype
+    # promotion) while retaining the exact front-to-back ordering.
+    sort_keys = (
+        out_tile_ids.astype(cp.uint64) << cp.uint64(32)
+    ) | out_depths.view(cp.uint32).astype(cp.uint64)
+    # Stable ordering keeps the source Gaussian order for bit-identical keys,
+    # matching the previous lexicographic contract and avoiding nondeterminism
+    # when co-planar splats have the same float32 depth.
+    sort_order = cp.argsort(sort_keys, kind="stable")
     sorted_gauss_ids = cp.ascontiguousarray(out_gauss_ids[sort_order].astype(cp.int32))
     sorted_tile_ids  = out_tile_ids[sort_order]
 
@@ -404,7 +426,14 @@ def rasterize_ortho(
     tile_offsets = cp.ascontiguousarray(tile_offsets)
 
     # Free intermediate buffers
-    del out_tile_ids, out_gauss_ids, out_depths, sort_order, sorted_tile_ids
+    del (
+        out_tile_ids,
+        out_gauss_ids,
+        out_depths,
+        sort_keys,
+        sort_order,
+        sorted_tile_ids,
+    )
 
     # ---- 8. Render ----
     out_rgb   = cp.zeros(height * width * 3, dtype=cp.float32)

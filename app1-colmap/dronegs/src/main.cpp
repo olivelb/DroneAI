@@ -20,8 +20,8 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.48 tiled-opacity-sh "
-               "local-KNN portable-CUDA "
+            << "DroneGS 0.5.0-dev.49 tiled-opacity-sh "
+               "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
     }
@@ -33,10 +33,10 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.48 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.49 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
-                     "extended-color local-KNN "
+                     "extended-color crop-aware local/projected-KNN "
                      "initialized "
                      "experimental anisotropic "
                      "ordered-alpha training with reproducible weighted-"
@@ -52,14 +52,18 @@ int main(int argc, char** argv) {
                      "during backward; dev42 ports scanned buckets, packed "
                      "checkpoints, warp-cooperative backward, and fused "
                      "L1/SSIM while retaining DroneGS orchestration; dev43 "
-                     "auto-sizes the decoded RGB8 cache up to a strict 2 GiB "
-                     "ceiling so thousand-view scenes become resident "
-                     "without unbounded host RAM growth; dev44 can reserve "
+                     "auto-sizes the decoded RGB8 cache under a configurable "
+                     "ceiling with a 2 GiB default, so thousand-view scenes "
+                     "can become resident without unbounded host RAM growth; "
+                     "dev44 can reserve "
                      "an explicit fixed-topology cooldown at the end of the "
                      "same iteration budget for convergence ablations; dev45 "
                      "can linearly blend the final objective toward active-"
                      "pixel MSE to trade excess perceptual margin for PSNR "
-                     "without adding iterations.\n";
+                     "without adding iterations; dev49 derives projected "
+                     "initial scales from the actual crop cameras and "
+                     "scales exact capacity growth to every operator-"
+                     "selected iteration budget.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
@@ -77,7 +81,45 @@ int main(int argc, char** argv) {
         }
         auto gaussians = [&]() {
             if (options.initial_ply.empty()) {
-                return dronegs::initialize_fixed_topology(scene);
+                const auto policy = options.initial_scale_policy ==
+                        "projected-knn"
+                    ? dronegs::InitialScalePolicy::projected_knn
+                    : dronegs::InitialScalePolicy::local_knn;
+                auto initialization = dronegs::initialize_fixed_topology(
+                    scene,
+                    {
+                        .policy = policy,
+                        .maximum_projected_sigma_pixels =
+                            options.initial_max_projected_sigma_pixels,
+                        .resize_factor = options.resize_factor,
+                        .maximum_image_width = options.max_width,
+                        .tile_mode = options.tile_mode,
+                        .adaptive_native_crop_tiles =
+                            options.adaptive_native_crop_tiles != 0U,
+                    });
+                const auto& statistics = initialization.statistics;
+                std::cout
+                    << "{\"event\":\"gaussian_initialization\","
+                    << "\"policy\":\"" << options.initial_scale_policy
+                    << "\",\"gaussians\":" << statistics.gaussian_count
+                    << ",\"projection_supported\":"
+                    << statistics.projection_supported_count
+                    << ",\"projected_scale_clamped\":"
+                    << statistics.projected_scale_clamped_count
+                    << ",\"projected_sigma_before_p50\":"
+                    << statistics.projected_sigma_before_p50
+                    << ",\"projected_sigma_before_p95\":"
+                    << statistics.projected_sigma_before_p95
+                    << ",\"projected_sigma_before_maximum\":"
+                    << statistics.projected_sigma_before_maximum
+                    << ",\"projected_sigma_after_p50\":"
+                    << statistics.projected_sigma_after_p50
+                    << ",\"projected_sigma_after_p95\":"
+                    << statistics.projected_sigma_after_p95
+                    << ",\"projected_sigma_after_maximum\":"
+                    << statistics.projected_sigma_after_maximum
+                    << "}\n" << std::flush;
+                return std::move(initialization.gaussians);
             }
             auto loaded =
                 dronegs::read_gaussian_ply(options.initial_ply);
@@ -117,6 +159,10 @@ int main(int argc, char** argv) {
         measurements.image_decode_seconds = training.image_decode_seconds;
         measurements.image_wait_seconds = training.image_loading_seconds;
         measurements.training_seconds = training.training_seconds;
+        measurements.topology_refinement_seconds =
+            training.topology_refinement_seconds;
+        measurements.periodic_checkpoint_seconds =
+            training.periodic_checkpoint_seconds;
         measurements.evaluation_seconds = training.evaluation_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;
@@ -125,6 +171,8 @@ int main(int argc, char** argv) {
         measurements.image_cache_misses = training.image_cache_misses;
         measurements.image_cache_evictions = training.image_cache_evictions;
         measurements.image_cache_capacity_bytes = training.image_cache_capacity_bytes;
+        measurements.image_cache_working_set_bytes =
+            training.image_cache_working_set_bytes;
         measurements.peak_image_cache_bytes = training.peak_image_cache_bytes;
         measurements.image_prefetch_started = training.image_prefetch_started;
         measurements.image_prefetch_consumed = training.image_prefetch_consumed;
@@ -135,6 +183,14 @@ int main(int argc, char** argv) {
             training.held_out_image_count;
         measurements.ignored_image_count =
             training.ignored_image_count;
+        measurements.frame_descriptor_count =
+            training.frame_descriptor_count;
+        measurements.training_frame_count =
+            training.training_frame_count;
+        measurements.held_out_frame_count =
+            training.held_out_frame_count;
+        measurements.ignored_frame_count =
+            training.ignored_frame_count;
         measurements.topology_refinements =
             training.topology_refinements;
         measurements.gaussians_added =
@@ -151,10 +207,18 @@ int main(int argc, char** argv) {
             training.initial_held_out_psnr;
         measurements.initial_held_out_ssim =
             training.initial_held_out_ssim;
+        measurements.initial_pixel_weighted_psnr =
+            training.initial_pixel_weighted_psnr;
+        measurements.initial_pixel_weighted_ssim =
+            training.initial_pixel_weighted_ssim;
         measurements.final_held_out_psnr =
             training.final_held_out_psnr;
         measurements.final_held_out_ssim =
             training.final_held_out_ssim;
+        measurements.final_pixel_weighted_psnr =
+            training.final_pixel_weighted_psnr;
+        measurements.final_pixel_weighted_ssim =
+            training.final_pixel_weighted_ssim;
         measurements.export_seconds =
             std::chrono::duration<double>(export_end - export_start).count();
         measurements.wall_seconds =

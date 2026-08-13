@@ -2,6 +2,29 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.49 - Projected initialization and run-scaled capacity
+
+- Add crop-camera projected KNN initialization with a configurable maximum
+  screen-space sigma while preserving local KNN for immutable profiles.
+- Bind initialization policy, projected ceiling and maximum scale growth to
+  CLI, checkpoint identity, manifests, workers, API and Dashboard controls.
+- Extend checkpoint V5 metadata to preserve initial pixel-weighted PSNR/SSIM
+  across resume while retaining V4 read compatibility.
+- Derive topology growth, pruning and position-noise boundaries from every
+  operator-selected iteration budget: 3,600 for Fast 7,500, 7,400 for Normal
+  15,000 and 14,800 for HQ 30,000, with the same formula for manual budgets.
+- Let capacity-targeted profiles request a bounded 7–50% split population and
+  delegate the last growth window to the deterministic hard cap, eliminating
+  final estimator drift without exceeding the operator ceiling.
+- Add opt-in Fast-v2, Normal-v4 and High-Quality-v4 profiles without changing
+  the qualified Normal-v3 default or historical stored profile identities.
+- Verify projected parameters through map and facade process contracts and
+  expose the candidates in the Dashboard only under the existing strict
+  qualification flag.
+- Qualify Fast-v2 on a track-authoritative Silo cell at 1.5 M Gaussians and
+  exercise Normal-v4 checkpoint/resume at exactly 3 M within the 8 GiB VRAM
+  envelope. Full HQ, multi-block products and facade remain separate gates.
+
 ## 0.5.0-dev.48 - Native image tiles and opacity-SH v1
 
 - Make tile modes operational: mode 2 splits the longest image axis and mode

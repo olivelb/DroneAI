@@ -8,11 +8,28 @@ import type { QualityProfileId } from "../lib/types";
 
 const DESCRIPTION_KEYS: Record<QualityProfileId, MessageKey> = {
   "fast-v1": "profile.fast.description",
+  "fast-v2": "profile.fast.description",
   "normal-v1": "profile.normal.description",
   "high-quality-v1": "profile.highQuality.description",
   "normal-v2": "profile.normal.description",
   "high-quality-v2": "profile.highQuality.description",
-  "high-quality-v3": "profile.highQuality.description",
+  "normal-v3": "profile.normal.description",
+  "normal-v4": "profile.normal.description",
+  "high-quality-v3": "profile.highQualityResident.description",
+  "high-quality-v4": "profile.highQualityResident.description",
+};
+
+const NAME_KEYS: Record<QualityProfileId, MessageKey> = {
+  "fast-v1": "profile.fast.name",
+  "fast-v2": "profile.fast.name",
+  "normal-v1": "profile.normalLegacy.name",
+  "high-quality-v1": "profile.highQualityLegacy.name",
+  "normal-v2": "profile.normalLegacy.name",
+  "high-quality-v2": "profile.highQuality.name",
+  "normal-v3": "profile.normal.name",
+  "normal-v4": "profile.normal.name",
+  "high-quality-v3": "profile.highQualityResident.name",
+  "high-quality-v4": "profile.highQualityResident.name",
 };
 
 const formatInteger = (value: unknown) =>
@@ -41,6 +58,11 @@ export default function QualityProfileSelector() {
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         {profiles.map((profile) => {
           const selected = profile.id === qualityProfileId;
+          const resident =
+            profile.parameters.gs_resident_partitioning === true ||
+            String(profile.parameters.gs_resident_partitioning)
+              .trim()
+              .toLowerCase() === "true";
           return (
             <button
               key={profile.id}
@@ -54,7 +76,7 @@ export default function QualityProfileSelector() {
               }`}
             >
               <span className="text-sm font-bold text-[#26332f]">
-                {profile.name}
+                {t(NAME_KEYS[profile.id])}
               </span>
               <span className="mt-1 block text-[10px] font-semibold uppercase tracking-wide text-[#82908b]">
                 {profile.id}
@@ -68,12 +90,23 @@ export default function QualityProfileSelector() {
                 <span>{t("profile.iterations", { value: formatInteger(profile.parameters.gs_iterations) })}</span>
                 <span>
                   {t(
-                    profile.parameters.gs_capacity_mode === "adaptive"
+                    resident
+                      ? "profile.gaussiansResident"
+                      : profile.parameters.gs_capacity_mode === "adaptive"
                       ? "profile.gaussiansAdaptive"
                       : "profile.gaussians",
                     { value: formatInteger(profile.parameters.gs_cap_max) },
                   )}
                 </span>
+                {resident && (
+                  <span>
+                    {t("profile.gaussianSpacing", {
+                      value: String(
+                        profile.parameters.gs_target_gaussian_spacing_pixels,
+                      ),
+                    })}
+                  </span>
+                )}
               </span>
             </button>
           );

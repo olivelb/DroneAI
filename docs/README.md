@@ -19,7 +19,9 @@ implemented system as it exists now.
 | Fast aerial alignment and RTK/GCP behavior | [`FAST_ALIGNMENT.md`](FAST_ALIGNMENT.md) |
 | Geospatial workspace and AI results | [`GEOSPATIAL_WORKSPACE.md`](GEOSPATIAL_WORKSPACE.md) |
 | GCP workspace implementation qualification | [`benchmarks/gcp-workspace-2026-08-10.md`](benchmarks/gcp-workspace-2026-08-10.md) |
-| Resident-block HQ candidate and adaptive quality profiles | [`contracts/quality-profiles-v3.md`](contracts/quality-profiles-v3.md) |
+| Projected and resident quality-profile contract | [`contracts/quality-profiles-v3.md`](contracts/quality-profiles-v3.md) |
+| Fast-v2 projected-initialization evidence | [`benchmarks/silo-projected-initialization-fast-2026-08-13.md`](benchmarks/silo-projected-initialization-fast-2026-08-13.md) |
+| Normal-v4 8 GiB evidence | [`benchmarks/silo-normal-v4-8g-2026-08-14.md`](benchmarks/silo-normal-v4-8g-2026-08-14.md) |
 | Mission ownership, catalogue and support scope | [`contracts/mission-ownership-v1.md`](contracts/mission-ownership-v1.md) |
 | Organization isolation and versioned storage | [`contracts/organization-boundary-v1.md`](contracts/organization-boundary-v1.md) |
 | Durable members, credentials and identity audit | [`contracts/identity-control-plane-v1.md`](contracts/identity-control-plane-v1.md) |

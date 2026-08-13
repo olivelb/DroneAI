@@ -116,6 +116,38 @@ def _coverage_balanced_point_ids(
     return set(point_ids[coverage_indices].tolist())
 
 
+def _restrict_track_to_training_regions(
+    track: list[tuple[int, int]],
+    images: Mapping[int, ColmapImageRecord],
+    crops: Mapping[str, NativeImageCrop],
+) -> tuple[list[tuple[int, int]], int]:
+    """Keep observations available to this resident cell's actual frames."""
+
+    retained: list[tuple[int, int]] = []
+    crop_rejections = 0
+    for observation in track:
+        image = images.get(observation[0])
+        if image is None:
+            continue
+        crop = crops.get(image["name"])
+        if crop is None:
+            retained.append(observation)
+            continue
+        point2d_index = observation[1]
+        if not 0 <= point2d_index < len(image["xys"]):
+            crop_rejections += 1
+            continue
+        x, y = image["xys"][point2d_index]
+        if (
+            crop.source_x <= x < crop.source_x + crop.width
+            and crop.source_y <= y < crop.source_y + crop.height
+        ):
+            retained.append(observation)
+        else:
+            crop_rejections += 1
+    return retained, crop_rejections
+
+
 def export_colmap_subset(
     source_sparse_dir: str,
     target_dir: str,
@@ -161,23 +193,35 @@ def export_colmap_subset(
         }
     else:
         visible_point_ids = point_ids
+    crops = image_crops or {}
     filtered_points: dict[int, ColmapPointRecord] = {}
+    rejected_for_restricted_track = 0
+    observations_rejected_outside_native_crops = 0
     for point_id, point in points.items():
         if point_id not in visible_point_ids:
             continue
         if max_point_error is not None and point["error"] > float(max_point_error):
             continue
-        if len(point["track"]) < int(min_track_length):
+        restricted_track, crop_rejections = (
+            _restrict_track_to_training_regions(
+                point["track"],
+                filtered_images,
+                crops,
+            )
+        )
+        observations_rejected_outside_native_crops += crop_rejections
+        # A source point can satisfy the global COLMAP track gate while only
+        # one of its observations belongs to this resident cell or falls in
+        # its native image crops. Apply the invariant after both restrictions
+        # so the exported training seed never claims unavailable evidence.
+        if len(restricted_track) < int(min_track_length):
+            rejected_for_restricted_track += 1
             continue
         filtered_points[point_id] = {
             "xyz": point["xyz"],
             "rgb": point["rgb"],
             "error": point["error"],
-            "track": [
-                observation
-                for observation in point["track"]
-                if observation[0] in filtered_images
-            ],
+            "track": restricted_track,
         }
     points_before_cap = len(filtered_points)
     if max_points is not None and points_before_cap > int(max_points):
@@ -211,18 +255,50 @@ def export_colmap_subset(
         Path(target_dir) / "image_regions.tsv",
         filtered_images,
         filtered_cameras,
-        image_crops or {},
+        crops,
     )
 
     target_images = Path(target_dir) / "images"
     if images_dir and not target_images.exists():
         os.symlink(os.path.abspath(images_dir), target_images)
+    exported_track_lengths = [
+        len(point["track"])
+        for point in filtered_points.values()
+    ]
     report: dict[str, object] = {
         "sparse_path": str(target_sparse),
+        "selected_images": len(filtered_images),
         "points_before_cap": points_before_cap,
         "exported_points": len(filtered_points),
         "max_points": max_points,
         "coverage_balanced": len(filtered_points) < points_before_cap,
+        "points_rejected_for_restricted_track": (
+            rejected_for_restricted_track
+        ),
+        "observations_rejected_outside_native_crops": (
+            observations_rejected_outside_native_crops
+        ),
+        "track_scope": "selected-cameras-and-native-crops-v1",
+        "exported_observations": sum(exported_track_lengths),
+        "minimum_exported_track_length": (
+            min(exported_track_lengths) if exported_track_lengths else None
+        ),
+        "median_exported_track_length": (
+            float(np.median(exported_track_lengths))
+            if exported_track_lengths
+            else None
+        ),
+        "mean_exported_track_length": (
+            float(np.mean(exported_track_lengths))
+            if exported_track_lengths
+            else None
+        ),
+        "points_with_at_least_three_observations": sum(
+            length >= 3 for length in exported_track_lengths
+        ),
+        "points_with_at_least_five_observations": sum(
+            length >= 5 for length in exported_track_lengths
+        ),
     }
     return report if return_report else str(target_sparse)
 

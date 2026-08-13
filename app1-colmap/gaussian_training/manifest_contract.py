@@ -17,9 +17,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise DuplicateManifestKeyError(
-                f"duplicate run-manifest key: {key}"
-            )
+            raise DuplicateManifestKeyError(f"duplicate run-manifest key: {key}")
         result[key] = value
     return result
 
@@ -47,9 +45,7 @@ def validate_run_manifest(manifest: dict[str, Any]) -> None:
     }
     missing = sorted(required_top_level - manifest.keys())
     if missing:
-        raise ValueError(
-            "run manifest is missing required keys: " + ", ".join(missing)
-        )
+        raise ValueError("run manifest is missing required keys: " + ", ".join(missing))
     if manifest["contract_version"] != 1:
         raise ValueError("unsupported DroneGS run-manifest contract")
     if manifest["status"] != "completed":
@@ -58,9 +54,7 @@ def validate_run_manifest(manifest: dict[str, Any]) -> None:
     if not isinstance(binary_hash, str) or len(binary_hash) != 64:
         raise ValueError("run manifest has no trainer binary SHA-256")
     dataset = manifest["dataset"]
-    if not isinstance(dataset, dict) or not isinstance(
-        dataset.get("fingerprint"), str
-    ):
+    if not isinstance(dataset, dict) or not isinstance(dataset.get("fingerprint"), str):
         raise ValueError("run manifest has no dataset fingerprint")
     parameters = manifest["parameters"]
     for key in (
@@ -75,15 +69,35 @@ def validate_run_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"run manifest has no valid parameters.{key}")
     if parameters["test_split"] not in {"modulo", "spatial-block"}:
         raise ValueError("run manifest has invalid parameters.test_split")
-    guard = parameters.get("test_guard_percent")
+    if parameters.get("initial_scale_policy") not in {
+        "local-knn",
+        "projected-knn",
+    }:
+        raise ValueError("run manifest has invalid parameters.initial_scale_policy")
+    initial_sigma = parameters.get("initial_max_projected_sigma_pixels")
     if (
-        not isinstance(guard, int)
-        or isinstance(guard, bool)
-        or not 0 <= guard <= 100
+        isinstance(initial_sigma, bool)
+        or not isinstance(initial_sigma, (float, int))
+        or not 0.0 < float(initial_sigma) <= 64.0
     ):
-        raise ValueError(
-            "run manifest has invalid parameters.test_guard_percent"
-        )
+        raise ValueError("run manifest has invalid parameters.initial_max_projected_sigma_pixels")
+    scale_growth = parameters.get("maximum_scale_growth_factor")
+    if (
+        isinstance(scale_growth, bool)
+        or not isinstance(scale_growth, (float, int))
+        or not 1.0 <= float(scale_growth) <= 1024.0
+    ):
+        raise ValueError("run manifest has invalid parameters.maximum_scale_growth_factor")
+    adaptive_crop_tiles = parameters.get("adaptive_native_crop_tiles")
+    if (
+        isinstance(adaptive_crop_tiles, bool)
+        or not isinstance(adaptive_crop_tiles, int)
+        or adaptive_crop_tiles not in {0, 1}
+    ):
+        raise ValueError("run manifest has invalid parameters.adaptive_native_crop_tiles")
+    guard = parameters.get("test_guard_percent")
+    if not isinstance(guard, int) or isinstance(guard, bool) or not 0 <= guard <= 100:
+        raise ValueError("run manifest has invalid parameters.test_guard_percent")
     artifacts = manifest["artifacts"]
     ply = artifacts.get("point_cloud.ply") if isinstance(artifacts, dict) else None
     if not isinstance(ply, dict) or not isinstance(ply.get("path"), str):

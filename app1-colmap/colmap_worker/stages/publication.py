@@ -7,7 +7,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from shared import storage
 from shared.camera_projection import write_camera_projection_index
@@ -27,20 +27,106 @@ from ..contracts import (
     PipelineReconstruction,
     PipelineRtkState,
 )
+from ..recovery_publication import upload_optional_recovery_artifacts
 
 ROOT_DIR = Path(__file__).resolve().parents[3]
 logger = logging.getLogger("app1-colmap")
 
 
 @dataclass(frozen=True)
+class VerifiedGaussianPartition:
+    path: str
+    row: int
+    column: int
+    gaussian_count: int
+    core_gaussian_count: int
+
+
+@dataclass(frozen=True)
 class VerifiedProductAssets:
     height_tif: str
-    final_ply: str
+    final_ply: str | None
+    gaussian_partitions: tuple[VerifiedGaussianPartition, ...]
     trainer_manifests: tuple[Path, ...]
     qualification_manifests: tuple[Path, ...]
     required_reports: dict[str, str | None]
     gcp_enabled: bool
     gcp_sparse_files: tuple[str, ...]
+
+
+def _verify_gaussian_models(
+    result: dict[str, Any],
+) -> tuple[str | None, tuple[VerifiedGaussianPartition, ...]]:
+    """Accept exactly one portable Gaussian model layout."""
+
+    raw_final = result.get("final_ply")
+    raw_partitions = result.get("gaussian_partition_models", [])
+    if raw_partitions is None:
+        raw_partitions = []
+    if not isinstance(raw_partitions, list):
+        raise ValueError("Gaussian partition model inventory is invalid")
+    if raw_final and raw_partitions:
+        raise ValueError("Gaussian product cannot mix global and resident models")
+    if raw_final:
+        final_ply = str(raw_final)
+        if not os.path.isfile(final_ply):
+            raise FileNotFoundError(
+                f"Required reusable Gaussian artifact is missing: {final_ply}"
+            )
+        return final_ply, ()
+    if not raw_partitions:
+        raise FileNotFoundError("Gaussian product has no reusable model artifact")
+
+    partitions: list[VerifiedGaussianPartition] = []
+    coordinates: set[tuple[int, int]] = set()
+    for raw_partition in raw_partitions:
+        if not isinstance(raw_partition, dict):
+            raise ValueError("Gaussian partition model entry is invalid")
+        path = raw_partition.get("path")
+        values = {
+            name: raw_partition.get(name)
+            for name in (
+                "row",
+                "column",
+                "gaussian_count",
+                "core_gaussian_count",
+            )
+        }
+        if not isinstance(path, str) or not path or any(
+            isinstance(value, bool) or not isinstance(value, int)
+            for value in values.values()
+        ):
+            raise ValueError("Gaussian partition model metadata is invalid")
+        row = cast(int, values["row"])
+        column = cast(int, values["column"])
+        gaussian_count = cast(int, values["gaussian_count"])
+        core_gaussian_count = cast(int, values["core_gaussian_count"])
+        if (
+            row < 0
+            or column < 0
+            or gaussian_count < 1
+            or not 1 <= core_gaussian_count <= gaussian_count
+        ):
+            raise ValueError("Gaussian partition model counts are invalid")
+        coordinate = (row, column)
+        if coordinate in coordinates:
+            raise ValueError("Gaussian partition model coordinates are duplicated")
+        coordinates.add(coordinate)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"Required resident Gaussian artifact is missing: {path}"
+            )
+        partitions.append(
+            VerifiedGaussianPartition(
+                path=path,
+                row=row,
+                column=column,
+                gaussian_count=gaussian_count,
+                core_gaussian_count=core_gaussian_count,
+            )
+        )
+    partitions.sort(key=lambda partition: (partition.row, partition.column))
+    return None, tuple(partitions)
 
 
 def _publish_camera_projection_index(
@@ -92,15 +178,18 @@ def _verify_product_assets(
         raise FileNotFoundError(f"Required DSM artifact is missing: {height_tif}")
     convert_to_cog(height_tif)
 
-    final_ply = str(result["final_ply"])
-    if not os.path.isfile(final_ply):
-        raise FileNotFoundError(f"Required reusable Gaussian artifact is missing: {final_ply}")
+    final_ply, gaussian_partitions = _verify_gaussian_models(result)
     trainer_manifests = tuple(sorted(Path(result["checkpoint_dir"]).rglob("trainer_run.json")))
     if not trainer_manifests:
         raise FileNotFoundError("Required DroneGS training manifest is missing")
     qualification_manifests = tuple(sorted(Path(result["checkpoint_dir"]).rglob("canary_result.json")))
     if len(qualification_manifests) != len(trainer_manifests):
         raise FileNotFoundError("Every reusable DroneGS model requires a canary qualification manifest")
+    reusable_model_count = 1 if final_ply is not None else len(gaussian_partitions)
+    if len(trainer_manifests) < reusable_model_count:
+        raise FileNotFoundError(
+            "Every reusable Gaussian model requires a trainer and canary manifest"
+        )
 
     gcp_enabled = bool(params.get("gcp_adjustment_enabled", False))
     gcp_report_file = os.path.join(workspace_dir, "gcp_alignment_report.json")
@@ -136,6 +225,7 @@ def _verify_product_assets(
     return VerifiedProductAssets(
         height_tif=height_tif,
         final_ply=final_ply,
+        gaussian_partitions=gaussian_partitions,
         trainer_manifests=trainer_manifests,
         qualification_manifests=qualification_manifests,
         required_reports=required_reports,
@@ -156,6 +246,17 @@ def _write_verified_product_manifest(
     facade_mode = preparation.facade_mode
     result = gaussian_state.result
     product_manifest_path = os.path.join(workspace_dir, "product_manifest.json")
+    gaussian_products = (
+        {"gaussian_model": assets.final_ply}
+        if assets.final_ply is not None
+        else {
+            (
+                f"gaussian_partition_r{partition.row:03d}_"
+                f"c{partition.column:03d}"
+            ): partition.path
+            for partition in assets.gaussian_partitions
+        }
+    )
     product_manifest = build_product_manifest(
         mission_id=vol_id,
         projected_crs=("LOCAL_FACADE" if facade_mode else reconstruction.utm_crs),
@@ -179,6 +280,16 @@ def _write_verified_product_manifest(
                 "vertical_reference": result["vertical_reference"],
                 "vertical_offset_m": result["vertical_offset_m"],
                 "gaussians": result["n_gaussians"],
+                "gaussian_model_layout": (
+                    "global"
+                    if assets.final_ply is not None
+                    else "resident-partitions"
+                ),
+                "gaussian_model_count": (
+                    1
+                    if assets.final_ply is not None
+                    else len(assets.gaussian_partitions)
+                ),
                 "gaussian_density": result.get("gaussian_density"),
                 "renderer_contract": result["renderer_contract"],
                 "cupy_version": result["cupy_version"],
@@ -201,7 +312,7 @@ def _write_verified_product_manifest(
             ("facade_depth_cog" if facade_mode else "dsm_cog"): assets.height_tif,
             ("facade_depth_metadata" if facade_mode else "dsm_metadata"): metadata_path(assets.height_tif),
             ("facade_depth_preview" if facade_mode else "dsm_preview"): preview_path(assets.height_tif),
-            "gaussian_model": assets.final_ply,
+            **gaussian_products,
         },
         sparse_model_path=rtk_state.active_sparse_model_path,
         reports=assets.required_reports,
@@ -223,102 +334,6 @@ def _write_verified_product_manifest(
     )
     write_product_manifest(product_manifest_path, product_manifest)
     return product_manifest_path
-
-
-def _upload_optional_recovery_artifacts(
-    *,
-    geo_data_file: str,
-    mission_s3_prefix: str,
-    vol_id: str,
-    db_path: str,
-    sparse_path: str,
-    workspace_dir: str,
-    gcp_enabled: bool,
-    dense_path: str,
-    durable_checkpoint_dir: str,
-    upload_count: int,
-) -> tuple[int, bool]:
-    """Best-effort publication of recovery/debug assets after required products."""
-    gaussian_upload_complete = False
-    try:
-        if os.path.exists(geo_data_file):
-            storage.upload_file(geo_data_file, f"{mission_s3_prefix}/geo_data.txt")
-            upload_count += 1
-            crs_file = f"{geo_data_file}.crs"
-            if os.path.exists(crs_file):
-                storage.upload_file(crs_file, f"{mission_s3_prefix}/geo_data.txt.crs")
-                upload_count += 1
-            crs_metadata_file = f"{geo_data_file}.crs.json"
-            if os.path.exists(crs_metadata_file):
-                storage.upload_file(
-                    crs_metadata_file,
-                    f"{mission_s3_prefix}/geo_data.txt.crs.json",
-                )
-                upload_count += 1
-
-        runtime.report_mission_progress(vol_id, "UPLOADING", 92, log="Geo data uploaded")
-
-        if os.path.exists(db_path):
-            storage.upload_file(db_path, f"{mission_s3_prefix}/colmap/database.db")
-            upload_count += 1
-
-        sparse_0_path = os.path.join(sparse_path, "0")
-        if os.path.isdir(sparse_0_path):
-            upload_count += storage.upload_directory(
-                sparse_0_path,
-                f"{mission_s3_prefix}/colmap/sparse/0/",
-            )
-
-        sparse_geo_path = os.path.join(workspace_dir, "sparse_geo")
-        if not gcp_enabled and os.path.isdir(sparse_geo_path):
-            upload_count += storage.upload_directory(
-                sparse_geo_path,
-                f"{mission_s3_prefix}/colmap/sparse_geo/",
-            )
-
-        runtime.report_mission_progress(vol_id, "UPLOADING", 94, log="COLMAP sparse models uploaded")
-
-        if os.path.isdir(dense_path):
-            dense_upload_count = storage.upload_directory(
-                dense_path,
-                f"{mission_s3_prefix}/dense/",
-            )
-            upload_count += dense_upload_count
-            runtime.report_mission_progress(
-                vol_id,
-                "UPLOADING",
-                96,
-                log=f"Dense reconstruction uploaded ({dense_upload_count} files)",
-            )
-
-        if durable_checkpoint_dir and os.path.isdir(durable_checkpoint_dir):
-            gaussian_upload_count = storage.upload_directory(
-                durable_checkpoint_dir,
-                f"{mission_s3_prefix}/gaussian/",
-            )
-            upload_count += gaussian_upload_count
-            gaussian_upload_complete = True
-            runtime.report_mission_progress(
-                vol_id,
-                "UPLOADING",
-                98,
-                log=f"Gaussian models & checkpoints uploaded ({gaussian_upload_count} files)",
-            )
-
-        runtime.report_mission_progress(
-            vol_id,
-            "UPLOADING",
-            99,
-            log=f"All artifacts uploaded to S3 ({upload_count} files total)",
-        )
-    except Exception as upload_error:
-        runtime.report_mission_progress(
-            vol_id,
-            "UPLOADING",
-            98,
-            log=f"Warning: an optional recovery/debug artifact could not be uploaded: {upload_error}",
-        )
-    return upload_count, gaussian_upload_complete
 
 
 def publish_colmap_products(
@@ -360,7 +375,8 @@ def publish_colmap_products(
     #       sparse/0/              — Undistorted model
     #       images/                — Undistorted images
     #     gaussian/
-    #       final.ply              — Merged Gaussian splat model
+    #       final.ply              — Monolithic Gaussian model, or
+    #       partitions/            — Resident core/buffer models
     #       full/splat_*.ply       — Training output PLY
     #       full/checkpoints/      — Resume checkpoint
 
@@ -408,10 +424,25 @@ def publish_colmap_products(
             preview_path(assets.height_tif),
             f"{mission_s3_prefix}/{product_stem}.height.preview.webp",
         ),
-        (assets.final_ply, f"{mission_s3_prefix}/gaussian/final.ply"),
     ):
         storage.upload_verified_file(local_path, remote_key)
         upload_count += 1
+    if assets.final_ply is not None:
+        storage.upload_verified_file(
+            assets.final_ply,
+            f"{mission_s3_prefix}/gaussian/final.ply",
+        )
+        upload_count += 1
+    else:
+        for partition in assets.gaussian_partitions:
+            storage.upload_verified_file(
+                partition.path,
+                (
+                    f"{mission_s3_prefix}/gaussian/partitions/"
+                    f"cell-{partition.row}-{partition.column}.ply"
+                ),
+            )
+            upload_count += 1
     checkpoint_root_path = Path(result["checkpoint_dir"]).resolve()
     for required_manifest in [
         *assets.trainer_manifests,
@@ -473,7 +504,7 @@ def publish_colmap_products(
 
     # Remaining recovery/debug products are best-effort. They cannot invalidate
     # a successfully published and independently verified orthomosaic.
-    upload_count, gaussian_upload_complete = _upload_optional_recovery_artifacts(
+    upload_count, gaussian_upload_complete = upload_optional_recovery_artifacts(
         geo_data_file=geo_data_file,
         mission_s3_prefix=mission_s3_prefix,
         vol_id=vol_id,

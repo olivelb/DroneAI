@@ -13,6 +13,7 @@ for module_path in (APP_DIR, ROOT_DIR):
         sys.path.append(str(module_path))
 
 from colmap_worker import runtime as worker_runtime
+from colmap_worker import recovery_publication as recovery_stage
 from colmap_worker.stages import publication as publication_stage
 
 
@@ -58,6 +59,66 @@ def test_product_verification_accepts_complete_non_gcp_assets(tmp_path):
     assert len(assets.trainer_manifests) == 1
     assert len(assets.qualification_manifests) == 1
     assert convert.call_count == 2
+
+
+def test_product_verification_accepts_resident_gaussian_models(tmp_path):
+    preparation, rtk_state, alignment_state, gaussian_state = _verified_context(
+        tmp_path
+    )
+    Path(gaussian_state.result["final_ply"]).unlink()
+    partition_root = tmp_path / "checkpoints"
+    partitions = []
+    for row, column in ((0, 0), (0, 1)):
+        path = partition_root / f"cell_{column}" / "buffer.ply"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"partition")
+        (path.parent / "trainer_run.json").write_text("{}", encoding="utf-8")
+        (path.parent / "canary_result.json").write_text("{}", encoding="utf-8")
+        partitions.append(
+            {
+                "path": str(path),
+                "row": row,
+                "column": column,
+                "gaussian_count": 1_500_000,
+                "core_gaussian_count": 1_200_000,
+            }
+        )
+    gaussian_state.result["final_ply"] = None
+    gaussian_state.result["gaussian_partition_models"] = partitions
+
+    with patch.object(publication_stage, "convert_to_cog"):
+        assets = publication_stage._verify_product_assets(
+            preparation,
+            rtk_state,
+            alignment_state,
+            gaussian_state,
+            str(tmp_path),
+        )
+
+    assert assets.final_ply is None
+    assert [
+        (partition.row, partition.column)
+        for partition in assets.gaussian_partitions
+    ] == [(0, 0), (0, 1)]
+    assert len(assets.trainer_manifests) == 3
+    assert len(assets.qualification_manifests) == 3
+
+
+def test_product_verification_rejects_mixed_gaussian_model_layout(tmp_path):
+    context = _verified_context(tmp_path)
+    context[3].result["gaussian_partition_models"] = [
+        {
+            "path": context[3].result["final_ply"],
+            "row": 0,
+            "column": 0,
+            "gaussian_count": 10,
+            "core_gaussian_count": 8,
+        }
+    ]
+
+    with patch.object(publication_stage, "convert_to_cog"):
+        with pytest.raises(ValueError, match="cannot mix"):
+            publication_stage._verify_product_assets(*context, str(tmp_path))
 
 
 def test_aerial_product_requires_spatial_coverage_report(tmp_path):
@@ -124,15 +185,15 @@ def test_optional_recovery_uploads_are_counted_but_remain_best_effort(tmp_path):
         path.write_bytes(b"asset")
 
     with (
-        patch.object(publication_stage.storage, "upload_file"),
+        patch.object(recovery_stage.storage, "upload_file"),
         patch.object(
-            publication_stage.storage,
+            recovery_stage.storage,
             "upload_directory",
             side_effect=[2, 3, 4, 5],
         ) as upload_directory,
         patch.object(worker_runtime, "report_mission_progress"),
     ):
-        count, complete = publication_stage._upload_optional_recovery_artifacts(
+        count, complete = recovery_stage.upload_optional_recovery_artifacts(
             geo_data_file=str(geo_data),
             mission_s3_prefix="missions/vol",
             vol_id="vol",
@@ -150,10 +211,14 @@ def test_optional_recovery_uploads_are_counted_but_remain_best_effort(tmp_path):
     assert upload_directory.call_count == 4
 
     with (
-        patch.object(publication_stage.storage, "upload_file", side_effect=OSError("offline")),
+        patch.object(
+            recovery_stage.storage,
+            "upload_file",
+            side_effect=OSError("offline"),
+        ),
         patch.object(worker_runtime, "report_mission_progress") as progress,
     ):
-        count, complete = publication_stage._upload_optional_recovery_artifacts(
+        count, complete = recovery_stage.upload_optional_recovery_artifacts(
             geo_data_file=str(geo_data),
             mission_s3_prefix="missions/vol",
             vol_id="vol",
@@ -230,6 +295,7 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
     assets = publication_stage.VerifiedProductAssets(
         height_tif=str(tmp_path / "height.tif"),
         final_ply=str(tmp_path / "final.ply"),
+        gaussian_partitions=(),
         trainer_manifests=(trainer,),
         qualification_manifests=(qualification,),
         required_reports={"rtk_prior_report": None},
@@ -265,7 +331,7 @@ def test_publish_products_uploads_required_assets_before_optional_recovery(tmp_p
         patch.object(publication_stage.storage, "upload_verified_file") as verified_upload,
         patch.object(
             publication_stage,
-            "_upload_optional_recovery_artifacts",
+            "upload_optional_recovery_artifacts",
             return_value=(10, True),
         ) as optional_upload,
         patch.object(

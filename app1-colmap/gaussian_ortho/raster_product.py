@@ -6,7 +6,9 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
+
+import numpy as np
 
 from .coverage_quality import (
     SpatialCoveragePolicy,
@@ -131,8 +133,17 @@ def _write_seam_report(
         height,
         extent=extent,
         gsd=render.local_gsd,
-        geo_origin=render.geo_origin,
+        geo_origin=(
+            render.geo_origin
+            if config.render_mode == "map"
+            else np.zeros(3, dtype=np.float64)
+        ),
         partitions=filtering_phase.partition_models,
+        coordinate_scale=(
+            1.0
+            if config.render_mode == "map"
+            else render.local_gsd / config.resolution
+        ),
     )
     report_path = str(
         Path(config.ortho_file).with_name("gaussian_seam_report.json")
@@ -160,11 +171,71 @@ def _write_facade_report(
 ) -> Path:
     if summary.facade_frame is None:
         raise RuntimeError("Facade frame is unavailable for reporting")
-    render = filtering_phase.render_state
-    if render is None:
-        raise RuntimeError("Facade raster product has no global render state")
+    render = _render_geometry(filtering_phase)
     depth_bounds = render.facade_depth_bounds_model
+    resident_depth_partitions = [
+        partition
+        for partition in filtering_phase.partition_models
+        if partition.facade_depth_bounds_model is not None
+    ]
+    resident_depth_windows = [
+        {
+            "row": partition.bounds.row,
+            "column": partition.bounds.col,
+            "bounds_model_units": list(
+                cast(
+                    tuple[float, float],
+                    partition.facade_depth_bounds_model,
+                )
+            ),
+            "bounds_metres": [
+                value * summary.colmap_to_meters
+                for value in cast(
+                    tuple[float, float],
+                    partition.facade_depth_bounds_model,
+                )
+            ],
+        }
+        for partition in resident_depth_partitions
+    ]
+    if resident_depth_partitions:
+        depth_bounds = (
+            min(
+                cast(tuple[float, float], partition.facade_depth_bounds_model)[0]
+                for partition in resident_depth_partitions
+            ),
+            max(
+                cast(tuple[float, float], partition.facade_depth_bounds_model)[1]
+                for partition in resident_depth_partitions
+            ),
+        )
     subset = summary.facade_subset_result
+    if subset is not None and bool(subset.get("partitioned")):
+        raw_cells = subset.get("cells", [])
+        cells = [
+            cast(dict[str, Any], cell)
+            for cell in (raw_cells if isinstance(raw_cells, list) else [])
+            if isinstance(cell, dict)
+        ]
+        training_workspace_points = sum(
+            int(cell.get("exported_points", 0))
+            for cell in cells
+        )
+        coverage_balanced = any(
+            bool(cell.get("coverage_balanced"))
+            for cell in cells
+        )
+        resident_cell_count = len(cells)
+    else:
+        training_workspace_points = (
+            int(cast(Any, subset["exported_points"]))
+            if subset is not None
+            else summary.gaussian_seed_point_count
+        )
+        coverage_balanced = bool(
+            subset and subset.get("coverage_balanced")
+        )
+        resident_cell_count = 1
     report_path = Path(
         config.facade_frame_report
         or str(Path(config.ortho_file).with_name("facade_frame.json"))
@@ -196,17 +267,18 @@ def _write_facade_report(
             "maximum_reprojection_error_px": summary.seed_max_error,
             "minimum_track_length": summary.seed_min_track,
             "points_after_loader_filter": summary.gaussian_seed_point_count,
-            "training_workspace_points": (
-                subset["exported_points"]
-                if subset is not None
-                else summary.gaussian_seed_point_count
-            ),
-            "coverage_balanced_cap_applied": bool(
-                subset and subset["coverage_balanced"]
-            ),
+            "training_workspace_points": training_workspace_points,
+            "coverage_balanced_cap_applied": coverage_balanced,
+            "resident_partitioned": resident_cell_count > 1,
+            "resident_cell_count": resident_cell_count,
         },
         "depth_filter": {
             "iqr_multiplier": config.facade_depth_iqr_multiplier,
+            "scope": (
+                "resident-cells"
+                if filtering_phase.partition_models
+                else "global-model"
+            ),
             "bounds_model_units": list(depth_bounds) if depth_bounds is not None else None,
             "bounds_metres": (
                 [
@@ -216,6 +288,7 @@ def _write_facade_report(
                 if depth_bounds is not None
                 else None
             ),
+            "resident_cells": resident_depth_windows,
         },
         "raster": {
             "width": width,
@@ -341,6 +414,16 @@ def finalize_gaussian_raster_product(
         "height_file": height_file,
         "checkpoint_dir": config.checkpoint_dir,
         "final_ply": final_ply,
+        "gaussian_partition_models": [
+            {
+                "path": partition.model_path,
+                "row": partition.bounds.row,
+                "column": partition.bounds.col,
+                "gaussian_count": partition.gaussian_count,
+                "core_gaussian_count": partition.core_gaussian_count,
+            }
+            for partition in filtering_phase.partition_models
+        ],
         "width": width,
         "height": height,
         "gsd": config.resolution,
@@ -362,7 +445,16 @@ def finalize_gaussian_raster_product(
         "meters_per_model_unit": summary.colmap_to_meters,
         "registered_cameras": summary.registered_camera_count,
         "texture_cameras": summary.texture_camera_count,
-        "renderer_contract": "cupy-ortho-v3-surface-color",
+        "renderer_contract": (
+            "cupy-ortho-v4-resident-feather"
+            if filtering_phase.partition_models
+            else "cupy-ortho-v3-surface-color"
+        ),
+        "resident_compositing": (
+            "linear-core-buffer-v1"
+            if filtering_phase.partition_models
+            else None
+        ),
         "cupy_version": cupy_version,
         "n_gaussians": filtering_phase.output_gaussians,
         "gaussian_density": (

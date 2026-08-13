@@ -275,8 +275,8 @@ The facade process is a different product contract. It writes
 with no CRS. It never publishes `images-ortho`, so TILER and IA are not
 required for terminal success. Releases must verify that the RGB/depth COG
 metadata remains `coordinate_space=local`, that the manifest records
-`FACADE_HD_V1`, and that no absolute RTK, GCP or gravity option
-can leak into the facade frame.
+`FACADE_HD_V2` (with `FACADE_HD_V1` retained for historical replay), and that
+no absolute RTK, GCP or gravity option can leak into the facade frame.
 
 Every aerial Gaussian render must also publish
 `gaussian_coverage_report.json` under the versioned

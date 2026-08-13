@@ -87,6 +87,7 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--test-split") + 1] == "modulo"
     assert command[command.index("--test-guard-percent") + 1] == "0"
     assert command[command.index("--adaptive-growth-target") + 1] == "0"
+    assert command[command.index("--host-image-cache-mib") + 1] == "2048"
     assert "--resize_factor" not in command
 
 
@@ -123,6 +124,12 @@ def test_dronegs_tuning_rejects_non_boolean_adaptive_growth():
         DroneGSTuning(adaptive_growth_target=1)
 
 
+@pytest.mark.parametrize("value", [255, 65_537, True])
+def test_dronegs_tuning_rejects_invalid_host_image_cache(value):
+    with pytest.raises(ValueError, match="host_image_cache_mib"):
+        DroneGSTuning(host_image_cache_mib=value)
+
+
 def test_dronegs_adapter_runs_contract_executable(tmp_path):
     dataset = tmp_path / "dataset"
     dataset.mkdir()
@@ -156,6 +163,16 @@ manifest.write_text(
             "pruning_policy": arguments["--pruning-policy"],
             "raster_profile": arguments["--raster-profile"],
             "effective_raster_profile": arguments["--raster-profile"],
+            "initial_scale_policy": arguments["--initial-scale-policy"],
+            "initial_max_projected_sigma_pixels": float(
+                arguments["--initial-max-projected-sigma-pixels"]
+            ),
+            "maximum_scale_growth_factor": float(
+                arguments["--maximum-scale-growth-factor"]
+            ),
+            "adaptive_native_crop_tiles": int(
+                arguments["--adaptive-native-crop-tiles"]
+            ),
             "test_split": arguments["--test-split"],
             "test_guard_percent": int(arguments["--test-guard-percent"]),
         },
@@ -193,9 +210,7 @@ print(json.dumps({
     assert result.manifest_path.is_file()
     assert result.effective_seed == 42
     assert progress == [(5, 0.25, 2)]
-    canary = json.loads(
-        (tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8")
-    )
+    canary = json.loads((tmp_path / "output" / "canary_result.json").read_text(encoding="utf-8"))
     assert canary["status"] == "passed"
     assert canary["qualification_policy_id"] == "DRONEGS_QUALIFICATION_POLICY_V1"
     assert not (tmp_path / "output" / "training.ckpt").exists()
@@ -260,6 +275,16 @@ Path(arguments["--run-manifest"]).write_text(
             "pruning_policy": arguments["--pruning-policy"],
             "raster_profile": arguments["--raster-profile"],
             "effective_raster_profile": arguments["--raster-profile"],
+            "initial_scale_policy": arguments["--initial-scale-policy"],
+            "initial_max_projected_sigma_pixels": float(
+                arguments["--initial-max-projected-sigma-pixels"]
+            ),
+            "maximum_scale_growth_factor": float(
+                arguments["--maximum-scale-growth-factor"]
+            ),
+            "adaptive_native_crop_tiles": int(
+                arguments["--adaptive-native-crop-tiles"]
+            ),
             "test_split": arguments["--test-split"],
             "test_guard_percent": int(arguments["--test-guard-percent"]),
         },
@@ -348,7 +373,10 @@ def test_resolver_defaults_to_dronegs():
 
 def test_resolver_supports_environment_selection():
     backend = resolve_training_backend(
-        environment={"DRONEAI_GAUSSIAN_BACKEND": "dronegs", "DRONEGS_BIN": "/bin/dronegs"}
+        environment={
+            "DRONEAI_GAUSSIAN_BACKEND": "dronegs",
+            "DRONEGS_BIN": "/bin/dronegs",
+        }
     )
 
     assert isinstance(backend, DroneGSBackend)

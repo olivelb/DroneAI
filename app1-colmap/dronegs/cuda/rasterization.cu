@@ -4357,7 +4357,8 @@ struct OrderedAlphaTrainingContext::Impl {
         std::uint32_t requested_maximum_sh_degree,
         std::uint32_t requested_sh_degree_interval,
         std::uint64_t requested_noise_seed,
-        std::optional<bool> fastgs_compatibility_override)
+        std::optional<bool> fastgs_compatibility_override,
+        float requested_maximum_scale_growth_factor)
         : gaussian_count(initial_gaussians.size()),
           gaussian_capacity(std::max(
               initial_gaussians.size(),
@@ -4365,6 +4366,8 @@ struct OrderedAlphaTrainingContext::Impl {
           maximum_pixels(maximum_pixel_count),
           maximum_steps(std::max<std::uint64_t>(
               1U, requested_maximum_steps)),
+          noise_until_iteration(
+              topology_growth_end_iteration(maximum_steps)),
           optimizer_profile(requested_optimizer_profile),
           antialias_filter_variance(
               antialias_filter_variance_for_profile(
@@ -4489,8 +4492,14 @@ struct OrderedAlphaTrainingContext::Impl {
         learning_rates = mrnf_learning_rates(
             1U, maximum_steps, position_learning_rate_scale,
             optimizer_profile);
+        if (!std::isfinite(requested_maximum_scale_growth_factor) ||
+            requested_maximum_scale_growth_factor < 1.0F) {
+            throw std::invalid_argument(
+                "maximum scale growth factor must be finite and at least one");
+        }
         minimum_log_scale = initial_minimum_log_scale - 4.0F;
-        maximum_log_scale = initial_maximum_log_scale + 4.0F;
+        maximum_log_scale = initial_maximum_log_scale +
+            std::log(requested_maximum_scale_growth_factor);
         gaussians.copy_from_host(
             initial_gaussians.data(), gaussian_count);
         first_dc.zero(gaussian_count * 3U);
@@ -4937,13 +4946,15 @@ struct OrderedAlphaTrainingContext::Impl {
                     static_cast<float>(sample_count),
                 1.0e-10F);
 
+            quality->mse = mean_squared_error;
             quality->psnr =
                 10.0F * std::log10(1.0F / mean_squared_error);
             quality->ssim = mean_ssim;
             quality->active_pixel_fraction =
                 static_cast<float>(host_active_pixels) /
                 static_cast<float>(pixel_count);
-            if (!std::isfinite(quality->psnr) ||
+            if (!std::isfinite(quality->mse) ||
+                !std::isfinite(quality->psnr) ||
                 !std::isfinite(quality->ssim) ||
                 !std::isfinite(quality->active_pixel_fraction)) {
                 throw std::runtime_error(
@@ -5163,7 +5174,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     active_sh_degree < maximum_active_sh_degree) {
                     ++active_sh_degree;
                 }
-                if (optimizer_steps < 28'500U) {
+                if (optimizer_steps <= noise_until_iteration) {
                     mrnf_inject_means_noise_kernel<<<
                         gaussian_blocks, block_size>>>(
                         gaussians.data(), gaussian_count,
@@ -5258,18 +5269,6 @@ struct OrderedAlphaTrainingContext::Impl {
         absgrad_observation_count.copy_to_host(
             host_absgrad_count.data(), previous_count);
 
-        const auto percentile = [](
-            std::vector<float> values, float fraction) {
-            if (values.empty()) {
-                return 0.0F;
-            }
-            std::sort(values.begin(), values.end());
-            const auto index = static_cast<std::size_t>(
-                std::floor(
-                    static_cast<float>(values.size() - 1U) *
-                    fraction));
-            return values[index];
-        };
         std::array<float, 3> lower_bound{
             -std::numeric_limits<float>::infinity(),
             -std::numeric_limits<float>::infinity(),
@@ -5280,19 +5279,28 @@ struct OrderedAlphaTrainingContext::Impl {
             std::numeric_limits<float>::infinity()};
         std::array<float, 3> percentile_center{};
         float percentile_max_extent = 0.0F;
+        std::array<std::vector<float>, 3> coordinates_by_axis;
+        for (auto& coordinates : coordinates_by_axis) {
+            coordinates.reserve(previous_count);
+        }
         std::vector<float> maximum_scales;
         maximum_scales.reserve(previous_count);
+        for (const auto& gaussian : host_gaussians) {
+            for (std::size_t axis = 0U; axis < 3U; ++axis) {
+                if (std::isfinite(gaussian.xyz[axis])) {
+                    coordinates_by_axis[axis].push_back(
+                        gaussian.xyz[axis]);
+                }
+            }
+            maximum_scales.push_back(std::exp(std::max({
+                gaussian.log_scale[0],
+                gaussian.log_scale[1],
+                gaussian.log_scale[2]})));
+        }
         if (previous_count >= 8U) {
             for (std::size_t axis = 0U; axis < 3U; ++axis) {
-                std::vector<float> coordinates;
-                coordinates.reserve(previous_count);
-                for (const auto& gaussian : host_gaussians) {
-                    if (std::isfinite(gaussian.xyz[axis])) {
-                        coordinates.push_back(gaussian.xyz[axis]);
-                    }
-                }
-                const float q10 = percentile(coordinates, 0.1F);
-                const float q90 = percentile(coordinates, 0.9F);
+                const auto [q10, q90] = exact_floor_percentile_pair(
+                    std::move(coordinates_by_axis[axis]), 0.1F, 0.9F);
                 percentile_center[axis] = 0.5F * (q10 + q90);
                 percentile_max_extent = std::max(
                     percentile_max_extent, 0.5F * (q90 - q10));
@@ -5312,23 +5320,22 @@ struct OrderedAlphaTrainingContext::Impl {
                 }
             }
         }
-        for (const auto& gaussian : host_gaussians) {
-            maximum_scales.push_back(std::exp(std::max({
-                gaussian.log_scale[0],
-                gaussian.log_scale[1],
-                gaussian.log_scale[2]})));
-        }
-        const float scale_limit =
-            previous_count < 8U
-                ? std::numeric_limits<float>::infinity()
-                : (spatial_pruning_bounds
-                       ? std::max(
-                             1.0e-10F,
-                             100.0F * percentile_max_extent)
-                       : std::max(
-                             1.0e-10F,
-                             10.0F *
-                                 percentile(maximum_scales, 0.8F)));
+        // Spatial bounds constrain centres; they must not disable the robust
+        // scale gate. The former branch replaced the p80-derived limit with a
+        // scene-extent guard that was orders of magnitude looser, so large
+        // finite splats were never pruned in resident runs.
+        const float scale_limit = previous_count < 8U
+            ? std::numeric_limits<float>::infinity()
+            : std::min(
+                  std::max(
+                      1.0e-10F,
+                      10.0F * exact_floor_percentile(
+                          maximum_scales, 0.8F)),
+                  spatial_pruning_bounds
+                      ? std::max(
+                            1.0e-10F,
+                            100.0F * percentile_max_extent)
+                      : std::numeric_limits<float>::infinity());
         constexpr float minimum_opacity_logit = -5.541263545158426F;
         constexpr float minimum_surviving_log_scale =
             -23.025850929940457F;
@@ -5410,7 +5417,8 @@ struct OrderedAlphaTrainingContext::Impl {
             previous_count == gaussian_capacity &&
             pruned != 0U &&
             requested_recycle >= pruned;
-        if (pruned != 0U && !in_place_recycle) {
+        const bool compacted = pruned != 0U && !in_place_recycle;
+        if (compacted) {
             std::vector<Gaussian> compact_gaussians;
             compact_gaussians.reserve(survivors.size());
             std::vector<float> compact_weights;
@@ -5661,6 +5669,7 @@ struct OrderedAlphaTrainingContext::Impl {
             .reused = reported_reused,
             .appended = reported_appended,
             .gaussian_count = gaussian_count,
+            .compacted = compacted,
             .in_place_recycled = in_place_recycle,
         };
     }
@@ -5669,6 +5678,7 @@ struct OrderedAlphaTrainingContext::Impl {
     std::size_t gaussian_capacity = 0U;
     std::size_t maximum_pixels = 0U;
     std::uint64_t maximum_steps = 1U;
+    std::uint64_t noise_until_iteration = 0U;
     std::uint64_t optimizer_steps = 0U;
     std::uint32_t maximum_active_sh_degree = 0U;
     std::uint32_t sh_degree_interval = 1000U;
@@ -5767,12 +5777,14 @@ OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     std::uint32_t maximum_sh_degree,
     std::uint32_t sh_degree_interval,
     std::uint64_t noise_seed,
-    std::optional<bool> fastgs_compatibility_override)
+    std::optional<bool> fastgs_compatibility_override,
+    float maximum_scale_growth_factor)
     : impl_(std::make_unique<Impl>(
           gaussians, maximum_pixels, maximum_steps,
           maximum_gaussians, optimizer_profile,
           maximum_sh_degree, sh_degree_interval,
-          noise_seed, fastgs_compatibility_override)) {}
+          noise_seed, fastgs_compatibility_override,
+          maximum_scale_growth_factor)) {}
 
 OrderedAlphaTrainingContext::~OrderedAlphaTrainingContext() = default;
 
@@ -5913,7 +5925,7 @@ void OrderedAlphaTrainingContext::save_checkpoint(
         'D', 'R', 'O', 'N', 'E', 'G', 'S', '-', 'C', 'K', 'P', 'T',
         '-', 'V', '1', '\0'};
     stream.write(magic.data(), magic.size());
-    constexpr std::uint32_t format_version = 4U;
+    constexpr std::uint32_t format_version = 5U;
     write_value(format_version);
     write_string(dataset_fingerprint);
     write_string(configuration_fingerprint);
@@ -5935,6 +5947,18 @@ void OrderedAlphaTrainingContext::save_checkpoint(
     write_value(has_initial_held_out_ssim);
     if (has_initial_held_out_ssim) {
         write_value(*progress.initial_held_out_ssim);
+    }
+    const std::uint8_t has_initial_pixel_weighted_psnr =
+        progress.initial_pixel_weighted_psnr.has_value() ? 1U : 0U;
+    const std::uint8_t has_initial_pixel_weighted_ssim =
+        progress.initial_pixel_weighted_ssim.has_value() ? 1U : 0U;
+    write_value(has_initial_pixel_weighted_psnr);
+    if (has_initial_pixel_weighted_psnr) {
+        write_value(*progress.initial_pixel_weighted_psnr);
+    }
+    write_value(has_initial_pixel_weighted_ssim);
+    if (has_initial_pixel_weighted_ssim) {
+        write_value(*progress.initial_pixel_weighted_ssim);
     }
     write_value(impl_->optimizer_steps);
     write_value(impl_->maximum_steps);
@@ -6093,10 +6117,11 @@ OrderedAlphaTrainingContext::load_checkpoint(
     stream.read(magic.data(), magic.size());
     std::uint32_t format_version = 0U;
     read_value(format_version);
-    if (magic != expected_magic || format_version != 4U) {
+    if (magic != expected_magic ||
+        (format_version != 4U && format_version != 5U)) {
         throw std::runtime_error(
             "unsupported DroneGS checkpoint format; opacity-SH training "
-            "requires version 4");
+            "requires version 4 or 5");
     }
     if (format_version >= 3U) {
         if (total_bytes <= sizeof(std::uint64_t)) {
@@ -6159,6 +6184,22 @@ OrderedAlphaTrainingContext::load_checkpoint(
             float value = 0.0F;
             read_value(value);
             progress.initial_held_out_ssim = value;
+        }
+        if (format_version >= 5U) {
+            std::uint8_t has_initial_pixel_weighted_psnr = 0U;
+            read_value(has_initial_pixel_weighted_psnr);
+            if (has_initial_pixel_weighted_psnr != 0U) {
+                float value = 0.0F;
+                read_value(value);
+                progress.initial_pixel_weighted_psnr = value;
+            }
+            std::uint8_t has_initial_pixel_weighted_ssim = 0U;
+            read_value(has_initial_pixel_weighted_ssim);
+            if (has_initial_pixel_weighted_ssim != 0U) {
+                float value = 0.0F;
+                read_value(value);
+                progress.initial_pixel_weighted_ssim = value;
+            }
         }
     }
     std::uint64_t optimizer_steps = 0U;

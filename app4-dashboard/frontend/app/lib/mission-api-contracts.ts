@@ -27,10 +27,15 @@ import {
 const stringOrBoolean = anyOf(stringValue, booleanValue);
 const qualityProfile = oneOf(
   "fast-v1",
+  "fast-v2",
   "normal-v1",
   "high-quality-v1",
   "normal-v2",
   "high-quality-v2",
+  "normal-v3",
+  "normal-v4",
+  "high-quality-v3",
+  "high-quality-v4",
 );
 const stageId = oneOf(
   "reconstruction",

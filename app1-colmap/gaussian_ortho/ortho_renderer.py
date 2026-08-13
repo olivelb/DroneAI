@@ -31,6 +31,26 @@ class OrthophotoResult(TypedDict):
     gsd: float
 
 
+def _prepare_culling_geometry(
+    model: GaussianModel,
+    *,
+    R_geo: np.ndarray | None,
+    frame_origin: np.ndarray | None,
+) -> tuple[cp.ndarray, cp.ndarray]:
+    """Transform invariant culling inputs once for every output tile."""
+
+    positions = model.positions
+    if frame_origin is not None:
+        positions = positions - cp.asarray(
+            frame_origin,
+            dtype=cp.float32,
+        )[None, :]
+    if R_geo is not None:
+        rotation = cp.asarray(R_geo, dtype=cp.float32)
+        positions = (rotation @ positions.T).T
+    return positions, model.scales.max(axis=-1) * 3.0
+
+
 def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
                          R_geo: np.ndarray | None = None,
                          frame_origin: np.ndarray | None = None,
@@ -65,6 +85,7 @@ def compute_ortho_extent(model: GaussianModel, pad: float = 1.0,
 
 def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                       extent: OrthoExtent | None = None, chunk_size: int = 0,
+                      pixel_dimensions: tuple[int, int] | None = None,
                       device: object | None = None,
                       R_geo: np.ndarray | None = None,
                       frame_origin: np.ndarray | None = None,
@@ -83,6 +104,10 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     extent : (x_min, x_max, y_min, y_max, z_min, z_max) or None
     chunk_size : int
         Max tile dimension for chunked rendering.  0 = auto-select.
+    pixel_dimensions : (width, height) or None
+        Exact output dimensions when the caller already owns the global pixel
+        grid.  This avoids a floating-point ``ceil`` adding a phantom border
+        pixel to resident core extents reconstructed from pixel indices.
     device : ignored (kept for API compatibility).
     R_geo : np.ndarray (3, 3) or None
         Rotation COLMAP → geo-aligned (East, North, Up).
@@ -97,12 +122,32 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
     else:
         x_min, x_max, y_min, y_max, z_min, z_max = extent
 
-    W = math.ceil((x_max - x_min) / gsd)
-    H = math.ceil((y_max - y_min) / gsd)
+    if pixel_dimensions is None:
+        W = math.ceil((x_max - x_min) / gsd)
+        H = math.ceil((y_max - y_min) / gsd)
+    else:
+        W, H = pixel_dimensions
+        tolerance = max(abs(gsd) * 1.0e-6, 1.0e-12)
+        if (
+            abs((x_max - x_min) - W * gsd) > tolerance
+            or abs((y_max - y_min) - H * gsd) > tolerance
+        ):
+            raise ValueError(
+                "pixel_dimensions are incompatible with extent and GSD"
+            )
 
     if W <= 0 or H <= 0:
         raise ValueError(f"Invalid ortho dimensions: {W}x{H} from extent "
                          f"({x_min:.2f},{x_max:.2f}), ({y_min:.2f},{y_max:.2f}), gsd={gsd}")
+
+    # The culling geometry is invariant across output tiles.  Computing the
+    # frame transform and activated maximum scale once avoids repeatedly
+    # exponentiating and rotating every resident Gaussian.
+    culling_positions, culling_margin = _prepare_culling_geometry(
+        model,
+        R_geo=R_geo,
+        frame_origin=frame_origin,
+    )
 
     # Auto-select chunk_size based on available GPU VRAM.
     if chunk_size <= 0:
@@ -126,6 +171,8 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
             sh_direction_rotation=sh_direction_rotation,
             mip_filter_variance=mip_filter_variance,
             mip_filter_compensation=mip_filter_compensation,
+            culling_positions=culling_positions,
+            culling_margin=culling_margin,
         )
     else:
         rgb = np.zeros((H, W, 3), dtype=np.uint8)
@@ -154,13 +201,14 @@ def render_orthophoto(model: GaussianModel, gsd: float = 0.02,
                     sh_direction_rotation=sh_direction_rotation,
                     mip_filter_variance=mip_filter_variance,
                     mip_filter_compensation=mip_filter_compensation,
+                    culling_positions=culling_positions,
+                    culling_margin=culling_margin,
                 )
 
                 rgb[py0:py1, px0:px1] = tile_rgb
                 height[py0:py1, px0:px1] = tile_h
 
                 del tile_rgb, tile_h
-                cp.get_default_memory_pool().free_all_blocks()
 
     return {
         "rgb": rgb,
@@ -185,25 +233,24 @@ def _render_single_tile(
     sh_direction_rotation: np.ndarray | None = None,
     mip_filter_variance: float = 0.03,
     mip_filter_compensation: bool = True,
+    culling_positions: cp.ndarray | None = None,
+    culling_margin: cp.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Render one tile via the custom CUDA ortho rasteriser."""
     from .height_reference import depth_buffer_to_height, empty_height_map
 
     # --- Per-tile frustum culling (in geo frame) ---
-    xyz = model.positions      # (N, 3) COLMAP coords
-    if frame_origin is not None:
-        xyz = xyz - cp.array(frame_origin, dtype=cp.float32)[None, :]
-    if R_geo is not None:
-        R_t = cp.array(R_geo, dtype=cp.float32)
-        xyz_geo = (R_t @ xyz.T).T
-    else:
-        xyz_geo = xyz
-
-    max_scale = model.scales.max(axis=-1)
-    margin = max_scale * 3.0
+    if culling_positions is None or culling_margin is None:
+        culling_positions, culling_margin = _prepare_culling_geometry(
+            model,
+            R_geo=R_geo,
+            frame_origin=frame_origin,
+        )
     mask = (
-        (xyz_geo[:, 0] + margin >= x_min) & (xyz_geo[:, 0] - margin <= x_max) &
-        (xyz_geo[:, 1] + margin >= y_min) & (xyz_geo[:, 1] - margin <= y_max)
+        (culling_positions[:, 0] + culling_margin >= x_min)
+        & (culling_positions[:, 0] - culling_margin <= x_max)
+        & (culling_positions[:, 1] + culling_margin >= y_min)
+        & (culling_positions[:, 1] - culling_margin <= y_max)
     )
     indices = cp.nonzero(mask)[0]
 

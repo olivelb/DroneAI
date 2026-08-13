@@ -210,6 +210,14 @@ PROFILES: dict[str, GaussianProfile] = {
         canary_min_ssim=float(
             FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]
         ),
+        capacity_mode=str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
+        capacity_floor=int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
+        target_gaussian_spacing_pixels=float(
+            FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]
+        ),
+        resident_partitioning=bool(
+            FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
+        ),
         qualification_policy_id=FACADE_QUALIFICATION_POLICY_ID,
     ),
 }
@@ -235,7 +243,10 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
-PROFILES["normal"] = versioned_quality_profile("normal-v2")
+PROFILES["normal"] = replace(
+    versioned_quality_profile("normal-v3"),
+    resolution=0.02,
+)
 PROFILES["high-quality"] = replace(
     versioned_quality_profile("high-quality-v3"),
     # Production missions inherit the 2 cm default from pipeline_params.
@@ -279,6 +290,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topology-cooldown", type=int)
     parser.add_argument("--photometric-finish", type=int)
     parser.add_argument("--photometric-mse-percent", type=int)
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        help=(
+            "persist a recovery checkpoint every N iterations; this is an "
+            "operational I/O/recovery trade-off and changes the run identity"
+        ),
+    )
     parser.add_argument("--canary-min-psnr", type=float)
     parser.add_argument("--canary-min-ssim", type=float)
     parser.add_argument(
@@ -288,6 +307,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--checkpoint-root",
+        type=Path,
+        help=(
+            "optional fast local filesystem for trainer workspaces and PLYs; "
+            "products and the run report remain in the marked workspace"
+        ),
+    )
     parser.add_argument("--render-mode", choices=("map", "facade"), default="map")
     parser.add_argument(
         "--facade-scale-mode",
@@ -375,6 +402,8 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
             raise ValueError(f"{field_name.replace('_', '-')} must be non-negative")
     if resolved.sh_degree_interval == 0:
         raise ValueError("sh-degree-interval must be positive")
+    if resolved.checkpoint_every <= 0:
+        raise ValueError("checkpoint-every must be positive")
     if not 0 <= resolved.photometric_mse_percent <= 100:
         raise ValueError("photometric-mse-percent must be between 0 and 100")
     if resolved.canary_min_psnr < 0:
@@ -439,6 +468,7 @@ def output_paths(
     profile_name: str,
     requested_output: Path | None,
     render_mode: str = "map",
+    checkpoint_root: Path | None = None,
 ) -> tuple[Path, Path, Path]:
     ortho_path = (
         requested_output.resolve()
@@ -454,7 +484,12 @@ def output_paths(
     except ValueError as error:
         raise ValueError("output must stay inside the marked workspace") from error
     height_path = ortho_path.with_suffix(".height.tif")
-    checkpoint_path = workspace / "gaussian_checkpoints" / profile_name
+    checkpoint_parent = (
+        checkpoint_root.resolve()
+        if checkpoint_root is not None
+        else workspace / "gaussian_checkpoints"
+    )
+    checkpoint_path = checkpoint_parent / profile_name
     return ortho_path, height_path, checkpoint_path
 
 
@@ -497,6 +532,7 @@ def main() -> int:
         run_label,
         args.output,
         args.render_mode,
+        args.checkpoint_root,
     )
     if ortho_path.exists() or height_path.exists():
         if not args.force:
@@ -528,6 +564,7 @@ def main() -> int:
         "run_label": run_label,
         "parameters": asdict(profile),
         "workspace": str(workspace),
+        "checkpoint_dir": str(checkpoint_path),
         "trainer_backend": profile.backend,
         "started_at": started_at,
     }

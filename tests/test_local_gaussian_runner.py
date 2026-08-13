@@ -26,6 +26,7 @@ def _arguments(**overrides):
         "resolution": None,
         "canary_min_psnr": None,
         "canary_min_ssim": None,
+        "checkpoint_every": None,
         "filter_enabled": None,
     }
     values.update(overrides)
@@ -76,9 +77,12 @@ def test_normal_profile_matches_versioned_quality_envelope():
     assert profile.cap_max == 8_000_000
     assert profile.data_factor == 4
     assert profile.max_width == 2400
-    assert profile.profile_id == "normal-v2"
+    assert profile.profile_id == "normal-v3"
     assert profile.capacity_mode == "adaptive"
     assert profile.capacity_floor == 3_000_000
+    assert profile.target_gaussian_spacing_pixels == 8.0
+    assert profile.resident_partitioning is True
+    assert profile.resolution == 0.02
 
 
 def test_high_quality_profile_matches_versioned_quality_envelope():
@@ -109,12 +113,16 @@ def test_facade_hd_profile_keeps_4k_detail_with_bounded_capacity():
     assert profile.resolution == 0.01
     assert profile.data_factor == 1
     assert profile.max_width == 4096
-    assert profile.cap_max == 2_000_000
+    assert profile.cap_max == 12_000_000
     assert profile.sh_degree == 3
     assert profile.iterations == 30_000
     assert profile.test_split == "modulo"
     assert profile.profile_id == FACADE_DRONEGS_PROFILE_ID
     assert profile.qualification_policy_id == FACADE_QUALIFICATION_POLICY_ID
+    assert profile.capacity_mode == "adaptive"
+    assert profile.capacity_floor == 5_000_000
+    assert profile.target_gaussian_spacing_pixels == 3.6
+    assert profile.resident_partitioning is True
 
 
 def test_profile_overrides_are_explicit_and_validated():
@@ -143,6 +151,18 @@ def test_balanced_training_overrides_become_custom_recipe():
     assert profile.optimizer_profile == "reference-absolute"
     assert profile.canary_min_psnr == PROFILES["balanced"].canary_min_psnr
     assert profile.canary_min_ssim == PROFILES["balanced"].canary_min_ssim
+
+
+def test_checkpoint_cadence_override_is_an_explicit_training_recipe():
+    profile = resolve_profile(
+        _arguments(profile="normal", checkpoint_every=4_000)
+    )
+
+    assert profile.checkpoint_every == 4_000
+    assert profile.profile_id == "custom"
+
+    with pytest.raises(ValueError, match="checkpoint-every must be positive"):
+        resolve_profile(_arguments(checkpoint_every=0))
 
 
 def test_facade_hd_overrides_preserve_separate_recipe_identities():
@@ -193,3 +213,21 @@ def test_custom_output_must_stay_inside_workspace(tmp_path):
 
     with pytest.raises(ValueError, match="inside the marked workspace"):
         output_paths(workspace, "smoke", tmp_path / "outside.tif")
+
+
+def test_checkpoint_root_can_use_a_separate_fast_filesystem(tmp_path):
+    workspace = tmp_path / "workspace"
+    scratch = tmp_path / "scratch"
+    workspace.mkdir()
+
+    ortho, height, checkpoint = output_paths(
+        workspace,
+        "facade-metric",
+        None,
+        render_mode="facade",
+        checkpoint_root=scratch,
+    )
+
+    assert ortho == workspace / "facade_orthophoto.facade-metric.tif"
+    assert height == workspace / "facade_orthophoto.facade-metric.height.tif"
+    assert checkpoint == scratch / "facade-metric"

@@ -2,6 +2,7 @@
 #include "dronegs/manifest.hpp"
 #include "dronegs/training.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <filesystem>
@@ -203,7 +204,7 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "{\n"
            << "  \"contract_version\": 1,\n"
            << "  \"backend\": \"dronegs-native-mrnf-fastgs\",\n"
-           << "  \"trainer_version\": \"0.5.0-dev.48\",\n"
+           << "  \"trainer_version\": \"0.5.0-dev.49\",\n"
            << "  \"git_revision\": \"" << json_escape(DRONEGS_GIT_REVISION) << "\",\n"
            << "  \"status\": \"completed\",\n"
            << "  \"started_at\": \"" << json_escape(measurements.started_at) << "\",\n"
@@ -238,6 +239,19 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"resize_factor\": " << options.resize_factor << ",\n"
            << "    \"max_width\": " << options.max_width << ",\n"
            << "    \"tile_mode\": " << options.tile_mode << ",\n"
+           << "    \"adaptive_native_crop_tiles\": "
+           << options.adaptive_native_crop_tiles << ",\n"
+           << "    \"native_crop_tile_policy\": \""
+           << (options.adaptive_native_crop_tiles != 0U
+                   ? "sensor-pixel-budget-up-to-tile-mode-v1"
+                   : "fixed-tile-mode-v1")
+           << "\",\n"
+           << "    \"initial_scale_policy\": \""
+           << json_escape(options.initial_scale_policy) << "\",\n"
+           << "    \"initial_max_projected_sigma_pixels\": "
+           << options.initial_max_projected_sigma_pixels << ",\n"
+           << "    \"maximum_scale_growth_factor\": "
+           << options.maximum_scale_growth_factor << ",\n"
            << "    \"seed\": " << options.seed << ",\n"
            << "    \"profile_id\": \""
            << json_escape(options.profile_id) << "\",\n"
@@ -306,20 +320,32 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"topology_growth\": "
               "\"deterministic_weighted_gumbel_long_axis_split\",\n"
            << "    \"refine_every\": 200,\n"
-           << "    \"grow_until_iteration\": 15000,\n"
-           << "    \"prune_until_iteration\": 28500,\n"
+           << "    \"grow_until_iteration\": "
+           << std::min(
+                  topology_refinement_end_iteration(
+                      options.iterations, options.topology_cooldown,
+                      options.adaptive_growth_target != 0U),
+                  topology_growth_end_iteration(options.iterations))
+           << ",\n"
+           << "    \"prune_until_iteration\": "
+           << topology_refinement_end_iteration(
+                  options.iterations, options.topology_cooldown,
+                  options.adaptive_growth_target != 0U)
+           << ",\n"
            << "    \"growth_threshold\": 0.003,\n"
            << "    \"growth_fraction\": "
            << (options.adaptive_growth_target != 0U ? "null" : "0.07")
            << ",\n"
            << "    \"growth_fraction_policy\": \""
            << (options.adaptive_growth_target != 0U
-                   ? "capacity_targeted_0.07_to_0.25"
+                   ? "capacity_targeted_0.07_to_0.50"
                    : "fixed_0.07")
            << "\",\n"
            << "    \"opacity_prune_threshold\": 0.003921568627,\n"
            << "    \"minimum_scale\": 1e-10,\n"
            << "    \"means_noise_weight\": 50.0,\n"
+           << "    \"means_noise_until_iteration\": "
+           << topology_growth_end_iteration(options.iterations) << ",\n"
            << "    \"means_noise_opacity_exponent\": 150.0,\n"
            << "    \"opacity_decay\": 0.004,\n"
            << "    \"scale_decay\": 0.002,\n"
@@ -457,6 +483,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
               "\"deterministic_approximately_4096_gaussians_steps_1_and_fifths\",\n"
            << "    \"log_scale_limit_delta\": 4.0,\n"
            << "    \"host_image_storage\": \"rgb8\",\n"
+           << "    \"host_image_cache_limit_mib\": "
+           << options.host_image_cache_mib << ",\n"
            << "    \"host_image_cache_bytes\": " << measurements.image_cache_capacity_bytes << ",\n"
            << "    \"mode\": "
               "\"mrnf-intermediate-dc-calibration-anisotropic-dssim-held-out-prototype\"\n"
@@ -467,9 +495,16 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"image_decode_seconds\": " << measurements.image_decode_seconds << ",\n"
            << "    \"image_wait_seconds\": " << measurements.image_wait_seconds << ",\n"
            << "    \"training_seconds\": " << measurements.training_seconds << ",\n"
+           << "    \"topology_refinement_seconds\": "
+           << measurements.topology_refinement_seconds << ",\n"
+           << "    \"periodic_checkpoint_seconds\": "
+           << measurements.periodic_checkpoint_seconds << ",\n"
            << "    \"evaluation_seconds\": "
            << measurements.evaluation_seconds << ",\n"
-           << "    \"checkpoint_seconds\": " << measurements.export_seconds << ",\n"
+           << "    \"final_ply_export_seconds\": "
+           << measurements.export_seconds << ",\n"
+           << "    \"checkpoint_seconds\": "
+           << measurements.export_seconds << ",\n"
            << "    \"wall_seconds\": " << measurements.wall_seconds << "\n"
            << "  },\n"
            << "  \"metrics\": {\n"
@@ -481,6 +516,8 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << "    \"image_cache_hits\": " << measurements.image_cache_hits << ",\n"
            << "    \"image_cache_misses\": " << measurements.image_cache_misses << ",\n"
            << "    \"image_cache_evictions\": " << measurements.image_cache_evictions << ",\n"
+           << "    \"image_cache_working_set_bytes\": "
+           << measurements.image_cache_working_set_bytes << ",\n"
            << "    \"peak_image_cache_bytes\": "
            << measurements.peak_image_cache_bytes << ",\n"
            << "    \"image_prefetch_started\": "
@@ -489,6 +526,14 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << measurements.image_prefetch_consumed << ",\n"
            << "    \"image_prefetch_ready\": "
            << measurements.image_prefetch_ready << ",\n"
+           << "    \"frame_descriptor_count\": "
+           << measurements.frame_descriptor_count << ",\n"
+           << "    \"training_frame_count\": "
+           << measurements.training_frame_count << ",\n"
+           << "    \"held_out_frame_count\": "
+           << measurements.held_out_frame_count << ",\n"
+           << "    \"ignored_frame_count\": "
+           << measurements.ignored_frame_count << ",\n"
            << "    \"topology_refinements\": "
            << measurements.topology_refinements << ",\n"
            << "    \"gaussians_added\": "
@@ -503,10 +548,19 @@ void write_completed_manifest(const Options& options, const Scene& scene,
            << json_number(measurements.initial_held_out_psnr) << ",\n"
            << "    \"initial_held_out_ssim\": "
            << json_number(measurements.initial_held_out_ssim) << ",\n"
+           << "    \"initial_pixel_weighted_psnr\": "
+           << json_number(measurements.initial_pixel_weighted_psnr) << ",\n"
+           << "    \"initial_pixel_weighted_ssim\": "
+           << json_number(measurements.initial_pixel_weighted_ssim) << ",\n"
            << "    \"psnr\": "
            << json_number(measurements.final_held_out_psnr) << ",\n"
            << "    \"ssim\": "
            << json_number(measurements.final_held_out_ssim)
+           << ",\n"
+           << "    \"pixel_weighted_psnr\": "
+           << json_number(measurements.final_pixel_weighted_psnr) << ",\n"
+           << "    \"pixel_weighted_ssim\": "
+           << json_number(measurements.final_pixel_weighted_ssim)
            << ", \"lpips\": null\n"
            << "  },\n"
            << "  \"artifacts\": {\n"

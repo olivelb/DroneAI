@@ -18,6 +18,21 @@ raster_product = importlib.import_module("gaussian_ortho.raster_product")
 seam_quality = importlib.import_module("gaussian_ortho.seam_quality")
 
 
+def test_resident_training_parallelizes_image_cache_io_by_resolution():
+    assert workflow.resident_image_cache_tuning(
+        True,
+        max_width=2_400,
+    ) == (4, 4)
+    assert workflow.resident_image_cache_tuning(
+        True,
+        max_width=4_096,
+    ) == (8, 8)
+    assert workflow.resident_image_cache_tuning(
+        False,
+        max_width=4_096,
+    ) == (1, 1)
+
+
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
     scene_state = SimpleNamespace(
         name="scene",
@@ -105,7 +120,7 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
 
     monkeypatch.setattr(
         workflow,
-        "_apply_required_geographic_partition",
+        "_apply_required_resident_partition",
         apply_partition,
     )
     monkeypatch.setattr(
@@ -248,7 +263,7 @@ def test_rasterization_phase_consumes_only_filtered_render_state():
     assert result.height == 12
 
 
-def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
+def test_partitioned_rasterization_feathers_overlapping_buffer_models(
     tmp_path,
 ):
     left_path = tmp_path / "left.ply"
@@ -299,13 +314,14 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
     class FakeModel:
         def __init__(self, **_kwargs):
             self.path = ""
+            self.active_sh_degree = 0
 
         def load_ply(self, path):
             self.path = path
 
-    def render(model, *, extent, gsd, **_kwargs):
-        width = round((extent[1] - extent[0]) / gsd)
-        height = round((extent[3] - extent[2]) / gsd)
+    def render(model, *, extent, gsd, pixel_dimensions, **_kwargs):
+        assert model.active_sh_degree == 3
+        width, height = pixel_dimensions
         value = 40 if model.path.endswith("left.ply") else 180
         return {
             "rgb": np.full((height, width, 3), value, dtype=np.uint8),
@@ -316,6 +332,8 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
 
     pool = SimpleNamespace(free_all_blocks=lambda: None)
     config = SimpleNamespace(
+        render_mode="map",
+        resolution=1.0,
         capacity_mode="fixed",
         sh_degree=3,
         opacity_sh_enabled=True,
@@ -335,8 +353,9 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
     )
 
     assert result.result["rgb"].shape == (10, 20, 3)
-    assert np.all(result.result["rgb"][:, :10] == 40)
-    assert np.all(result.result["rgb"][:, 10:] == 180)
+    assert result.result["rgb"][0, :, 0].tolist() == (
+        [40] * 8 + [68, 100, 120, 152] + [180] * 8
+    )
     assert np.isfinite(result.result["height"]).all()
 
     seam_report = seam_quality.evaluate_core_seams(
@@ -350,8 +369,8 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
     assert seam_report["seam_count"] == 1
     seam = seam_report["seams"][0]
     assert seam["orientation"] == "vertical"
-    assert seam["rgb_absolute_8bit"]["mean"] == pytest.approx(140.0)
-    assert seam["height_absolute"]["p95"] == pytest.approx(140.0)
+    assert seam["rgb_absolute_8bit"]["mean"] == pytest.approx(20.0)
+    assert seam["height_absolute"]["p95"] == pytest.approx(20.0)
 
 
 def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
@@ -443,6 +462,7 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     filtering = SimpleNamespace(
         output_gaussians=1_200_000,
         density_assessment=None,
+        partition_models=(),
         render_state=SimpleNamespace(
             coverage_camera_positions=np.array([[0.0, 0.0, 10.0]]),
             geo_origin=np.array([600_000.0, 4_900_000.0, 120.0]),
@@ -492,6 +512,8 @@ def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     assert result["vertical_reference"] == "sim3"
     assert result["n_gaussians"] == 1_200_000
     assert result["gaussian_coverage"] is coverage
+    assert result["renderer_contract"] == "cupy-ortho-v3-surface-color"
+    assert result["resident_compositing"] is None
     assert Path(result["gaussian_coverage_report"]).is_file()
 
 
@@ -554,6 +576,47 @@ def test_prepare_gaussian_scene_keeps_loading_and_scale_contracts(
     assert state.mean_exif_alt == 100.0
     assert state.cells == [(None, scene)]
     assert any("Loaded 3 cameras" in report for report in reports)
+
+
+def test_prepare_facade_scene_rejects_implicit_model_unit_scale(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    cameras = [
+        SimpleNamespace(
+            image_name=f"flight/DJI_{index:04d}.JPG",
+            T=np.array([float(index), 0.0, 10.0]),
+            R=np.eye(3),
+        )
+        for index in range(12)
+    ]
+    point_cloud = SimpleNamespace(points=np.ones((12, 3), dtype=np.float32))
+    monkeypatch.setattr(
+        workflow,
+        "load_colmap_reconstruction",
+        lambda *_args, **_kwargs: (cameras, [], point_cloud, None),
+    )
+    monkeypatch.setattr(workflow, "extract_exif_altitudes", lambda _path: {})
+    monkeypatch.setattr(
+        workflow,
+        "_compute_facade_gps_scale",
+        lambda *_args: (1.0, "model-units", str(tmp_path / "images")),
+    )
+    config = SimpleNamespace(
+        facade_seed_max_reprojection_error=2.0,
+        facade_seed_min_track_length=2,
+        render_mode="facade",
+        vol_id="mission",
+        report_fn=None,
+        dense_path=str(tmp_path / "dense"),
+        transform_file=None,
+        utm_crs=None,
+        facade_scale_mode="gps-baseline",
+        facade_meters_per_model_unit=1.0,
+    )
+
+    with pytest.raises(RuntimeError, match="requires metadata"):
+        workflow.prepare_gaussian_scene(config)
 
 
 def test_prepare_gaussian_render_state_preserves_facade_frame_and_extent(

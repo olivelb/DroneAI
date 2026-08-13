@@ -243,12 +243,19 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .image_prefetch_ready = 2U,
         .training_image_count = 7U,
         .held_out_image_count = 1U,
+        .frame_descriptor_count = 25U,
+        .training_frame_count = 21U,
+        .held_out_frame_count = 4U,
         .topology_refinements = 2U,
         .gaussians_added = 15U,
         .initial_held_out_psnr = 10.0F,
         .initial_held_out_ssim = 0.2F,
+        .initial_pixel_weighted_psnr = 10.5F,
+        .initial_pixel_weighted_ssim = 0.25F,
         .final_held_out_psnr = 12.0F,
         .final_held_out_ssim = 0.3F,
+        .final_pixel_weighted_psnr = 12.5F,
+        .final_pixel_weighted_ssim = 0.35F,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,
@@ -264,6 +271,10 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest Git revision missing");
     check(manifest_text.find("\"image_cache_hits\": 3") != std::string::npos,
           "manifest image cache metrics missing");
+    check(
+        manifest_text.find("\"pixel_weighted_psnr\": 12.5") !=
+            std::string::npos,
+        "manifest pixel-weighted quality metrics missing");
     check(manifest_text.find("\"image_decode_seconds\": 0.08") != std::string::npos,
           "manifest image decode timing missing");
     check(manifest_text.find("\"image_prefetch_consumed\": 3") != std::string::npos,
@@ -272,6 +283,22 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest prefetch depth missing");
     check(manifest_text.find("\"decode_workers\": 1") != std::string::npos,
           "manifest decode worker count missing");
+    check(
+        manifest_text.find("\"topology_refinement_seconds\": 0") !=
+            std::string::npos,
+        "manifest topology timing missing");
+    check(
+        manifest_text.find("\"periodic_checkpoint_seconds\": 0") !=
+            std::string::npos,
+        "manifest checkpoint timing missing");
+    check(
+        manifest_text.find("\"final_ply_export_seconds\": 0") !=
+            std::string::npos,
+        "manifest final PLY export timing missing");
+    check(
+        manifest_text.find("\"image_cache_working_set_bytes\": 0") !=
+            std::string::npos,
+        "manifest image-cache working set missing");
     check(manifest_text.find("\"jpeg_idct_scale\": 0") != std::string::npos,
           "manifest JPEG IDCT mode missing");
     check(manifest_text.find("\"checkpoint_every\": 0") !=
@@ -285,13 +312,26 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest adaptive growth policy missing");
     check(manifest_text.find(
               "\"growth_fraction_policy\": "
-              "\"capacity_targeted_0.07_to_0.25\"") !=
+              "\"capacity_targeted_0.07_to_0.50\"") !=
               std::string::npos,
           "manifest adaptive growth schedule missing");
+    check(manifest_text.find(
+              "\"means_noise_until_iteration\": 0") !=
+              std::string::npos,
+          "manifest run-scaled position-noise schedule missing");
     check(manifest_text.find("\"training_image_count\": 7") != std::string::npos,
           "manifest training split count missing");
     check(manifest_text.find("\"held_out_image_count\": 1") != std::string::npos,
           "manifest held-out split count missing");
+    check(manifest_text.find("\"frame_descriptor_count\": 25") !=
+              std::string::npos,
+          "manifest frame descriptor count missing");
+    check(manifest_text.find("\"training_frame_count\": 21") !=
+              std::string::npos,
+          "manifest training frame count missing");
+    check(manifest_text.find("\"held_out_frame_count\": 4") !=
+              std::string::npos,
+          "manifest held-out frame count missing");
     check(manifest_text.find("\"topology_refinements\": 2") !=
               std::string::npos,
           "manifest topology refinement count missing");
@@ -436,6 +476,74 @@ void test_local_scale_initialization() {
           "duplicate-point scale floor mismatch");
 }
 
+void test_projected_scale_initialization_tracks_training_tiles() {
+    dronegs::Scene scene;
+    scene.cameras.push_back(dronegs::Camera{
+        .id = 1U,
+        .model_id = 1,
+        .width = 4000U,
+        .height = 3000U,
+        .parameters = {1000.0, 1000.0, 2000.0, 1500.0},
+    });
+    scene.images.push_back(dronegs::Image{
+        .id = 1U,
+        .camera_id = 1U,
+        .name = "frame.jpg",
+        .qvec = {1.0, 0.0, 0.0, 0.0},
+        .tvec = {0.0, 0.0, 10.0},
+    });
+    for (std::size_t index = 0U; index < 9U; ++index) {
+        scene.points.push_back(dronegs::SparsePoint{
+            .id = static_cast<std::uint64_t>(index + 1U),
+            .xyz = {
+                static_cast<double>(index % 3U) * 2.0 - 2.0,
+                static_cast<double>(index / 3U) * 2.0 - 2.0,
+                0.0,
+            },
+            .rgb = {64U, 128U, 192U},
+        });
+    }
+
+    const auto one_tile = dronegs::initialize_fixed_topology(
+        scene,
+        {
+            .policy = dronegs::InitialScalePolicy::projected_knn,
+            .maximum_projected_sigma_pixels = 2.0F,
+            .resize_factor = 1U,
+            .maximum_image_width = 1000U,
+            .tile_mode = 1U,
+        });
+    const auto four_tiles = dronegs::initialize_fixed_topology(
+        scene,
+        {
+            .policy = dronegs::InitialScalePolicy::projected_knn,
+            .maximum_projected_sigma_pixels = 2.0F,
+            .resize_factor = 1U,
+            .maximum_image_width = 1000U,
+            .tile_mode = 4U,
+        });
+    check(
+        one_tile.statistics.projection_supported_count == 9U &&
+            four_tiles.statistics.projection_supported_count == 9U,
+        "projected initialization lost crop-visible sparse points");
+    check(
+        one_tile.statistics.projected_scale_clamped_count == 9U &&
+            four_tiles.statistics.projected_scale_clamped_count == 9U,
+        "projected initialization did not clamp oversized sparse seeds");
+    check(
+        one_tile.statistics.projected_sigma_after_maximum <= 2.0001F &&
+            four_tiles.statistics.projected_sigma_after_maximum <= 2.0001F,
+        "projected initialization exceeded its pixel sigma contract");
+    const float one_tile_scale =
+        std::exp(one_tile.gaussians[4].log_scale[0]);
+    const float four_tile_scale =
+        std::exp(four_tiles.gaussians[4].log_scale[0]);
+    check(
+        four_tile_scale < one_tile_scale * 0.51F &&
+            four_tile_scale > one_tile_scale * 0.49F,
+        "projected initialization ignored the effective training crop");
+}
+
 void test_cli(const std::filesystem::path& data, const std::filesystem::path& output) {
     std::filesystem::create_directories(output);
     std::vector<std::string> values{
@@ -458,10 +566,21 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(parsed.seed == 42, "CLI seed mismatch");
     check(parsed.sh_degree == 1, "CLI SH degree mismatch");
     check(
+        parsed.adaptive_native_crop_tiles == 0U,
+        "CLI adaptive native crop tile default mismatch");
+    check(
+        parsed.initial_scale_policy == "local-knn" &&
+            parsed.initial_max_projected_sigma_pixels == 2.0F &&
+            parsed.maximum_scale_growth_factor > 54.59F,
+        "CLI initial scale defaults mismatch");
+    check(
         parsed.sh_degree_interval == 1000U,
         "CLI SH interval default mismatch");
     check(parsed.prefetch_depth == 1U, "CLI prefetch default mismatch");
     check(parsed.decode_workers == 1U, "CLI decode worker default mismatch");
+    check(
+        parsed.host_image_cache_mib == 2048U,
+        "CLI host image cache default mismatch");
     check(parsed.jpeg_idct_scale == 0U, "CLI JPEG IDCT default mismatch");
     check(parsed.test_every == 0U, "CLI held-out split default mismatch");
     check(parsed.test_split == "modulo", "CLI split policy default mismatch");
@@ -494,6 +613,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     values.insert(values.end(), {
         "--prefetch-depth", "12",
         "--decode-workers", "3",
+        "--host-image-cache-mib", "4096",
         "--jpeg-idct-scale", "0",
         "--test-every", "8",
         "--test-split", "spatial-block",
@@ -503,6 +623,10 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         "--photometric-finish", "1",
         "--photometric-mse-percent", "50",
         "--adaptive-growth-target", "1",
+        "--adaptive-native-crop-tiles", "1",
+        "--initial-scale-policy", "projected-knn",
+        "--initial-max-projected-sigma-pixels", "1.25",
+        "--maximum-scale-growth-factor", "8",
         "--sh-degree-interval", "250",
         "--initial-ply",
         (data.parent_path() / "native-output" / "point_cloud.ply").string(),
@@ -520,6 +644,9 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         static_cast<int>(arguments.size()), arguments.data());
     check(tuned.prefetch_depth == 12U, "CLI prefetch depth mismatch");
     check(tuned.decode_workers == 3U, "CLI decode worker count mismatch");
+    check(
+        tuned.host_image_cache_mib == 4096U,
+        "CLI host image cache limit mismatch");
     check(tuned.jpeg_idct_scale == 0U, "CLI JPEG IDCT mode mismatch");
     check(tuned.test_every == 8U, "CLI held-out stride mismatch");
     check(
@@ -540,6 +667,14 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
         tuned.adaptive_growth_target == 1U,
         "CLI adaptive growth mismatch");
     check(
+        tuned.adaptive_native_crop_tiles == 1U,
+        "CLI adaptive native crop tiles mismatch");
+    check(
+        tuned.initial_scale_policy == "projected-knn" &&
+            tuned.initial_max_projected_sigma_pixels == 1.25F &&
+            tuned.maximum_scale_growth_factor == 8.0F,
+        "CLI projected initial scale mismatch");
+    check(
         tuned.sh_degree_interval == 250U,
         "CLI SH interval mismatch");
     check(
@@ -559,7 +694,7 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
     check(tuned.initial_ply ==
               data.parent_path() / "native-output" / "point_cloud.ply",
           "CLI initial PLY mismatch");
-    values.resize(values.size() - 36U);
+    values.resize(values.size() - 44U);
 
     values[values.size() - 7] = "4097";  // --max-width value
     arguments = mutable_arguments(values);
@@ -574,39 +709,106 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
 }
 
 void test_adaptive_capacity_growth() {
+    const std::array<std::array<std::uint64_t, 2>, 4> schedule_cases{{
+        {7'500U, 3'600U},
+        {15'000U, 7'400U},
+        {30'000U, 14'800U},
+        {9'100U, 4'400U},
+    }};
+    for (const auto& schedule_case : schedule_cases) {
+        check(
+            dronegs::topology_refinement_end_iteration(
+                schedule_case[0], 1'000U, true) == schedule_case[1],
+            "adaptive topology schedule ignored the requested iteration budget");
+    }
     check(
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, false) == 29'000U,
         "legacy topology cooldown changed");
     check(
+        dronegs::topology_growth_end_iteration(7'500U) == 3'600U &&
+            dronegs::topology_growth_end_iteration(15'000U) == 7'400U &&
+            dronegs::topology_growth_end_iteration(30'000U) == 14'800U &&
+            dronegs::topology_growth_end_iteration(9'100U) == 4'400U,
+        "growth schedule is not derived from the operator iteration budget");
+    check(
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, true) == 14'800U,
         "adaptive topology was not frozen after growth");
     const auto initial = dronegs::adaptive_capacity_growth_fraction(
-        22'547U, 5'700'000U, 200U);
+        22'547U, 5'700'000U, 200U, 14'800U);
     check(
         initial > 0.10F && initial < 0.13F,
         "adaptive initial growth fraction mismatch");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'600U) == 0.0F,
+            5'700'000U, 5'700'000U, 14'600U, 14'800U) == 0.0F,
         "adaptive growth continued at capacity before the final window");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            5'700'000U, 5'700'000U, 14'800U) == 0.07F,
-        "adaptive final window did not reserve pruning replacement");
+            5'700'000U, 5'700'000U, 14'800U, 14'800U) == 0.50F,
+        "adaptive final window did not protect exact capacity after pruning");
     check(
         dronegs::adaptive_capacity_growth_fraction(
-            1U, 5'700'000U, 14'800U) == 0.25F,
+            1U, 5'700'000U, 14'800U, 14'800U) == 0.50F,
         "adaptive growth upper bound mismatch");
+    const auto short_initial = dronegs::adaptive_capacity_growth_fraction(
+        22'547U, 1'500'000U, 200U, 3'600U);
+    check(
+        short_initial > 0.25F && short_initial < 0.35F &&
+            short_initial > initial,
+        "short training budget did not accelerate adaptive growth");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            1'500'000U, 1'500'000U, 3'600U, 3'600U) == 0.50F,
+        "short training budget did not protect its final capacity");
+    check(
+        dronegs::adaptive_capacity_growth_fraction(
+            2'735'088U, 3'000'000U, 7'400U, 7'400U) == 0.50F,
+        "final growth window did not delegate exactness to the hard cap");
     bool empty_model_rejected = false;
     try {
         static_cast<void>(dronegs::adaptive_capacity_growth_fraction(
-            0U, 100U, 200U));
+            0U, 100U, 200U, 3'600U));
     } catch (const std::invalid_argument&) {
         empty_model_rejected = true;
     }
     check(empty_model_rejected, "adaptive growth accepted an empty model");
+}
+
+void test_exact_floor_percentile() {
+    const std::vector<float> unsorted{
+        8.0F, 1.0F, 5.0F, 3.0F, 9.0F, 2.0F,
+        7.0F, 4.0F, 6.0F, 0.0F, 5.0F};
+    check(
+        dronegs::exact_floor_percentile({}, 0.5F) == 0.0F,
+        "empty percentile fallback mismatch");
+    check(
+        dronegs::exact_floor_percentile(unsorted, 0.0F) == 0.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.1F) == 1.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.5F) == 5.0F &&
+            dronegs::exact_floor_percentile(unsorted, 0.9F) == 8.0F &&
+            dronegs::exact_floor_percentile(unsorted, 1.0F) == 9.0F,
+        "exact floor percentile differs from sorted order statistics");
+    const auto [q10, q90] = dronegs::exact_floor_percentile_pair(
+        unsorted, 0.1F, 0.9F);
+    check(
+        q10 == 1.0F && q90 == 8.0F,
+        "paired percentile differs from sorted order statistics");
+    const auto [same_lower, same_upper] =
+        dronegs::exact_floor_percentile_pair(unsorted, 0.5F, 0.5F);
+    check(
+        same_lower == 5.0F && same_upper == 5.0F,
+        "paired percentile equal-index result mismatch");
+    bool invalid_fraction_rejected = false;
+    try {
+        static_cast<void>(
+            dronegs::exact_floor_percentile(unsorted, 1.01F));
+    } catch (const std::invalid_argument&) {
+        invalid_fraction_rejected = true;
+    }
+    check(invalid_fraction_rejected,
+          "invalid percentile fraction was accepted");
 }
 
 void test_image_cache() {
@@ -808,6 +1010,57 @@ void test_training_tiles() {
             portrait[1].source_y == 3000U && portrait[1].width == 4000U,
         "two-tile portrait split mismatch");
 
+    const dronegs::ImageRegion small_crop{
+        .source_x = 1986U,
+        .source_y = 2211U,
+        .width = 2210U,
+        .height = 832U,
+    };
+    const auto adaptive_small = dronegs::make_adaptive_training_tiles(
+        small_crop, 4200U, 3043U, 4U);
+    check(
+        adaptive_small.size() == 1U &&
+            adaptive_small.front().source_x == small_crop.source_x &&
+            adaptive_small.front().source_y == small_crop.source_y,
+        "small native crop should retain one contextual tile");
+    const dronegs::ImageRegion half_crop{
+        .source_x = 0U,
+        .source_y = 0U,
+        .width = 4200U,
+        .height = 1603U,
+    };
+    check(
+        dronegs::make_adaptive_training_tiles(
+            half_crop, 4200U, 3043U, 4U).size() == 4U,
+        "crop above half-sensor budget should retain four tiles");
+    const dronegs::ImageRegion narrow_half_crop{
+        .source_x = 0U,
+        .source_y = 0U,
+        .width = 4200U,
+        .height = 1400U,
+    };
+    check(
+        dronegs::make_adaptive_training_tiles(
+            narrow_half_crop, 4200U, 3043U, 4U).size() == 2U,
+        "crop within half-sensor budget should use two tiles");
+
+    bool out_of_bounds_crop_rejected = false;
+    try {
+        static_cast<void>(dronegs::make_adaptive_training_tiles(
+            dronegs::ImageRegion{
+                .source_x = 4190U,
+                .source_y = 0U,
+                .width = 20U,
+                .height = 100U,
+            },
+            4200U, 3043U, 4U));
+    } catch (const std::invalid_argument&) {
+        out_of_bounds_crop_rejected = true;
+    }
+    check(
+        out_of_bounds_crop_rejected,
+        "adaptive crop outside the source image was accepted");
+
     const auto [native_width, native_height] =
         dronegs::training_image_dimensions(landscape[0], 1U, 4096U);
     check(
@@ -869,8 +1122,10 @@ int main() {
         test_scene_and_ply(data);
         test_optimizer_profile_registry();
         test_local_scale_initialization();
+        test_projected_scale_initialization_tracks_training_tiles();
         test_cli(data, output);
         test_adaptive_capacity_growth();
+        test_exact_floor_percentile();
         test_image_cache();
         test_training_tiles();
         test_area_image_resampling();

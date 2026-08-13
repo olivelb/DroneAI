@@ -31,9 +31,14 @@ struct Options {
     std::uint32_t resize_factor = 0;
     std::uint32_t max_width = 0;
     std::uint32_t tile_mode = 0;
+    std::uint32_t adaptive_native_crop_tiles = 0;
+    std::string initial_scale_policy = "local-knn";
+    float initial_max_projected_sigma_pixels = 2.0F;
+    float maximum_scale_growth_factor = 54.59815F;
     std::uint64_t seed = 0;
     std::uint32_t prefetch_depth = 1;
     std::uint32_t decode_workers = 1;
+    std::uint32_t host_image_cache_mib = 2048;
     std::uint32_t jpeg_idct_scale = 0;
     std::uint32_t test_every = 0;
     std::string test_split = "modulo";

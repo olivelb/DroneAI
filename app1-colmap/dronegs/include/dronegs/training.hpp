@@ -8,6 +8,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "dronegs/types.hpp"
@@ -21,6 +22,7 @@ struct DatasetSplit {
 };
 
 struct ImageQualityMetrics {
+    float mse = 0.0F;
     float psnr = 0.0F;
     float ssim = 0.0F;
     float active_pixel_fraction = 0.0F;
@@ -138,6 +140,7 @@ struct TopologyRefinementResult {
     std::size_t reused = 0U;
     std::size_t appended = 0U;
     std::size_t gaussian_count = 0U;
+    bool compacted = false;
     bool in_place_recycled = false;
 };
 
@@ -151,10 +154,13 @@ struct TrainingMetrics {
     double image_decode_seconds = 0.0;
     double setup_seconds = 0.0;
     double training_seconds = 0.0;
+    double topology_refinement_seconds = 0.0;
+    double periodic_checkpoint_seconds = 0.0;
     std::uint64_t image_cache_hits = 0;
     std::uint64_t image_cache_misses = 0;
     std::uint64_t image_cache_evictions = 0;
     std::uint64_t image_cache_capacity_bytes = 0;
+    std::uint64_t image_cache_working_set_bytes = 0;
     std::uint64_t peak_image_cache_bytes = 0;
     std::uint64_t image_prefetch_started = 0;
     std::uint64_t image_prefetch_consumed = 0;
@@ -162,6 +168,10 @@ struct TrainingMetrics {
     std::uint64_t training_image_count = 0;
     std::uint64_t held_out_image_count = 0;
     std::uint64_t ignored_image_count = 0;
+    std::uint64_t frame_descriptor_count = 0;
+    std::uint64_t training_frame_count = 0;
+    std::uint64_t held_out_frame_count = 0;
+    std::uint64_t ignored_frame_count = 0;
     std::uint64_t topology_refinements = 0;
     std::uint64_t gaussians_added = 0;
     std::uint64_t gaussians_pruned = 0;
@@ -171,51 +181,81 @@ struct TrainingMetrics {
     double evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
+    std::optional<float> initial_pixel_weighted_psnr;
+    std::optional<float> initial_pixel_weighted_ssim;
     std::optional<float> final_held_out_psnr;
     std::optional<float> final_held_out_ssim;
+    std::optional<float> final_pixel_weighted_psnr;
+    std::optional<float> final_pixel_weighted_ssim;
 };
 
-inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;
+inline constexpr std::uint64_t topology_refinement_interval = 200U;
+
+inline std::uint64_t topology_growth_end_iteration(
+    std::uint64_t iterations) {
+    const auto half_budget = iterations / 2U;
+    if (half_budget == 0U) {
+        return 0U;
+    }
+    // Refinement runs on multiples of 200 and must remain strictly inside
+    // the first half of the requested budget. This reproduces iteration
+    // 14,800 for 30k while scaling to every operator-selected duration.
+    return ((half_budget - 1U) / topology_refinement_interval) *
+        topology_refinement_interval;
+}
 
 inline std::uint64_t topology_refinement_end_iteration(
     std::uint64_t iterations,
     std::uint64_t topology_cooldown,
     bool adaptive_growth_target) {
     const auto configured_end = iterations - topology_cooldown;
-    return adaptive_growth_target
-        ? std::min(configured_end, adaptive_growth_last_iteration)
-        : configured_end;
+    if (!adaptive_growth_target) {
+        return configured_end;
+    }
+    const auto target_end = std::min(
+        configured_end, topology_growth_end_iteration(iterations));
+    return (target_end / topology_refinement_interval) *
+        topology_refinement_interval;
 }
 
 inline float adaptive_capacity_growth_fraction(
     std::size_t current_gaussians,
     std::size_t target_gaussians,
-    std::uint64_t iteration) {
-    constexpr std::uint64_t refinement_interval = 200U;
+    std::uint64_t iteration,
+    std::uint64_t growth_end_iteration) {
     constexpr double estimated_pruning_fraction = 0.03;
     constexpr double estimated_candidate_fraction = 0.93;
     constexpr float minimum_growth_fraction = 0.07F;
-    constexpr float maximum_growth_fraction = 0.25F;
+    // Short preview budgets can start from sparse blocks with only tens of
+    // thousands of seeds. A 25% ceiling made their requested capacity
+    // mathematically unreachable even though every split remains bounded by
+    // target_gaussians. Keep a safety ceiling, but let the closed-form
+    // schedule request enough candidates to converge within its own windows.
+    constexpr float maximum_growth_fraction = 0.50F;
 
     if (current_gaussians == 0U) {
         throw std::invalid_argument(
             "adaptive growth requires a non-empty Gaussian model");
     }
-    if (iteration > adaptive_growth_last_iteration) {
+    if (iteration > growth_end_iteration) {
         return 0.0F;
     }
+    const auto remaining_windows =
+        ((growth_end_iteration - iteration) /
+         topology_refinement_interval) + 1U;
+    if (remaining_windows == 1U) {
+        // Candidate and pruning ratios vary by scene and become least stable
+        // in the largest final window, including when the model enters that
+        // window at capacity and pruning creates new room. Ask for the
+        // bounded maximum and let the exact hard capacity truncate
+        // deterministic top-ranked splits. This removes estimator drift
+        // without ever exceeding the target.
+        return maximum_growth_fraction;
+    }
     if (target_gaussians <= current_gaussians) {
-        // The final refinement still prunes before it grows. Request the
-        // minimum split budget so capacity freed by that pruning is recycled
-        // and the frozen topology finishes at the target instead of below it.
-        return iteration == adaptive_growth_last_iteration
-            ? minimum_growth_fraction
-            : 0.0F;
+        return 0.0F;
     }
 
-    const auto remaining_windows =
-        ((adaptive_growth_last_iteration - iteration) /
-         refinement_interval) + 1U;
     const double required_net_growth = std::exp(
         std::log(
             static_cast<double>(target_gaussians) /
@@ -227,6 +267,57 @@ inline float adaptive_capacity_growth_fraction(
     return std::clamp(
         static_cast<float>(requested_fraction),
         minimum_growth_fraction, maximum_growth_fraction);
+}
+
+// Return the same floor-index percentile as sorting the complete input, while
+// avoiding an O(N log N) sort during every topology refinement. Callers pass
+// finite values; keeping this helper exact is important because the result is
+// used by scientific pruning gates.
+inline float exact_floor_percentile(
+    std::vector<float> values, float fraction) {
+    if (values.empty()) {
+        return 0.0F;
+    }
+    if (!std::isfinite(fraction) || fraction < 0.0F || fraction > 1.0F) {
+        throw std::invalid_argument(
+            "percentile fraction must be finite and between zero and one");
+    }
+    const auto index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * fraction));
+    std::nth_element(
+        values.begin(), values.begin() + index, values.end());
+    return values[index];
+}
+
+inline std::pair<float, float> exact_floor_percentile_pair(
+    std::vector<float> values,
+    float lower_fraction,
+    float upper_fraction) {
+    if (values.empty()) {
+        return {0.0F, 0.0F};
+    }
+    if (!std::isfinite(lower_fraction) ||
+        !std::isfinite(upper_fraction) ||
+        lower_fraction < 0.0F || upper_fraction > 1.0F ||
+        lower_fraction > upper_fraction) {
+        throw std::invalid_argument(
+            "percentile fractions must be finite, ordered and between zero and one");
+    }
+    const auto lower_index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * lower_fraction));
+    const auto upper_index = static_cast<std::size_t>(std::floor(
+        static_cast<float>(values.size() - 1U) * upper_fraction));
+    std::nth_element(
+        values.begin(), values.begin() + lower_index, values.end());
+    const float lower = values[lower_index];
+    if (upper_index == lower_index) {
+        return {lower, lower};
+    }
+    std::nth_element(
+        values.begin() + lower_index + 1U,
+        values.begin() + upper_index,
+        values.end());
+    return {lower, values[upper_index]};
 }
 
 DatasetSplit make_dataset_split(

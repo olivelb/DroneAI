@@ -12,6 +12,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+DISTANCE_QUERY_ROWS = 250_000
+
+
 class GaussianFilterModel(Protocol):
     """Minimal model contract; CUDA array dynamism is isolated at this edge."""
 
@@ -70,6 +73,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         max_per_gauss = activated_scales.max(axis=-1)
         not_huge = max_per_gauss <= max_scale
         model.filter_by_mask(not_huge)
+        del activated_scales, max_per_gauss, not_huge
         if model.num_gaussians < n_before:
             _log(f"Max-scale filter (>{max_scale:.3f}): {n_before} → {model.num_gaussians}")
 
@@ -78,11 +82,15 @@ def filter_gaussians[ModelT: GaussianFilterModel](
     if dist_multiplier > 0:
         max_cam_dist = float(np.max(pdist(cam_positions)))
         boundary = dist_multiplier * max_cam_dist
-        xyz_np = cp.asnumpy(model.positions)
         cam_tree = cKDTree(cam_positions)
-        gauss_dists, _ = cam_tree.query(xyz_np, k=1)
-        in_bounds = cp.array(gauss_dists <= boundary)
+        in_bounds = cp.empty(model.num_gaussians, dtype=cp.bool_)
+        for start in range(0, model.num_gaussians, DISTANCE_QUERY_ROWS):
+            stop = min(model.num_gaussians, start + DISTANCE_QUERY_ROWS)
+            xyz_chunk = cp.asnumpy(model.positions[start:stop])
+            gauss_dists, _ = cam_tree.query(xyz_chunk, k=1)
+            in_bounds[start:stop] = cp.asarray(gauss_dists <= boundary)
         model.filter_by_mask(in_bounds)
+        del in_bounds
         if model.num_gaussians < n_before:
             _log(f"Distance filter (>{boundary:.2f}): {n_before} → {model.num_gaussians}")
 
@@ -91,6 +99,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
     if opacity_threshold > 0:
         visible = model.opacity.squeeze(-1) > opacity_threshold
         model.filter_by_mask(visible)
+        del visible
         if model.num_gaussians < n_before:
             _log(f"Opacity filter (<{opacity_threshold}): {n_before} → {model.num_gaussians}")
 
@@ -102,6 +111,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         aniso_ratio = cp.exp(sorted_log[:, 2] - sorted_log[:, 0])
         not_needle = aniso_ratio <= needle_ratio
         model.filter_by_mask(not_needle)
+        del log_scales, sorted_log, aniso_ratio, not_needle
         if model.num_gaussians < n_before:
             _log(f"Needle filter (>{needle_ratio:.0f}): {n_before} → {model.num_gaussians}")
 
@@ -160,6 +170,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         z_keep = (z_vals >= z_lo) & (z_vals <= z_hi)
         n_b = model.num_gaussians
         model.filter_by_mask(z_keep)
+        del z_vals, z_keep
         if model.num_gaussians < n_b:
             _log(f"Z-floater filter: {n_b} → {model.num_gaussians} "
                  f"(Z outside [{z_lo:.2f}, {z_hi:.2f}])")

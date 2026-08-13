@@ -7,7 +7,7 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.48` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.49` keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional
@@ -23,8 +23,9 @@ selection, MRNF lifecycle, optimizer, CLI, manifests, and process
 orchestration remain native DroneGS code and do not invoke LichtFeld.
 Dev.43 replaces the fixed 256 MiB decoded-image LRU budget with an
 auto-sized RGB8 budget: enough for the complete resized scene when it fits,
-bounded between 256 MiB and 2 GiB. This removes repeated JPEG decoding on
-thousand-view datasets while keeping host memory use explicit and bounded.
+bounded between 256 MiB and a configurable ceiling whose default is 2 GiB.
+This removes repeated JPEG decoding on thousand-view datasets while keeping
+host memory use explicit and bounded.
 Dev.44 adds an opt-in `--topology-cooldown N`: topology refinement stops
 after `iterations - N`, leaving the final `N` steps for fixed-topology
 optimizer convergence without increasing the training budget. Its default is
@@ -57,6 +58,11 @@ paths. Scale and rotation remain view-independent and are not claimed as full
 FAGK. This bounded variant follows the opacity-only ablation from
 [TOrtho-Gaussian](https://doi.org/10.1080/10095020.2026.2622788); it is kept
 separate from the paper's view-dependent scale and rotation extensions.
+Dev.49 can instead derive each initial scale from the actual crop-relative
+camera projections, with a configurable screen-space ceiling. Its adaptive
+growth and topology/noise boundary are computed from the requested iteration
+budget, reach the hard resident capacity deterministically in the final growth
+window, and preserve the local-KNN path for immutable historical profiles.
 The optimizer uses the mixed analytical gradient, while per-step loss
 telemetry intentionally remains the baseline L1+DSSIM value for direct
 cross-run comparison. Exact mixed objective values remain available through
@@ -81,13 +87,14 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - keeps SH color and gradients live up to four while display output remains
   bounded independently;
 - learns opacity-SH residuals alongside progressive color SH and preserves
-  them through topology changes and checkpoint V4;
+  them through topology changes and checkpoint V5;
 - decodes JPEG training images and scales pinhole intrinsics;
 - expands tile modes 2 and 4 into crop-relative training views without
   leaking a source photograph across train/test partitions;
 - reduces oversized crop targets with an area filter that integrates
   fractional source-pixel coverage instead of point-sampling them;
-- stores decoded RGB as bytes in an auto-sized 256 MiB-to-2 GiB scene cache;
+- stores decoded RGB as bytes in an auto-sized scene cache with a 256 MiB
+  floor and a configurable 2 GiB default ceiling;
 - provides a bounded ordered JPEG prefetch queue with a configurable worker
   pool while retaining the measured one-slot/one-worker default;
 - exposes an opt-in libjpeg reduced-IDCT path for reproducible decode A/B tests;
@@ -142,7 +149,10 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - removes native-image subtiles with no projected sparse-Gaussian support
   before scheduling, while rejecting an entirely unsupported dataset;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
-  and after training, with a tested CPU oracle;
+  and after training, with a tested CPU oracle. It preserves the historical
+  equal-view canary and also records globally pixel-weighted PSNR/SSIM plus
+  per-tile dimensions and MSE, so small resident edge crops cannot silently
+  dominate product-level quality analysis;
 - writes per-view quality CSV data and can export exactly paired final
   lossless PPM predictions and RGB8 targets for an external LPIPS pass;
 - provides a pinned, isolated LPIPS v0.1/AlexNet evaluator that writes
@@ -151,12 +161,14 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
   in matching CPU/CUDA order, and optimizes only the currently active band;
 - starts every run at degree 0 and activates one degree every
   `--sh-degree-interval` steps (1,000 by default) up to `--sh-degree`;
-- injects deterministic opacity-weighted means noise during the MRNF window;
+- injects deterministic opacity-weighted means noise only during the
+  run-scaled topology-growth window;
 - prunes transparent, degenerate, non-finite, excessive-scale, and robust
-  spatial-outlier Gaussians every 200 steps through iteration 28,500;
+  spatial-outlier Gaussians every 200 steps through the configured or adaptive
+  refinement window;
 - compacts survivors and every persistent Adam moment into a dense prefix,
   accounts for children that reuse freed slots, and grows only through
-  iteration 15,000;
+  the first half of the operator-selected iteration budget;
 - applies the pinned MRNF opacity and scale decays after each refinement;
 - initializes one Gaussian per sparse point;
 - projects fixed Gaussians and rasterizes additive screen-space kernels on CUDA;
@@ -279,15 +291,37 @@ therefore applies per crop: a 6000x4000 source can train on four native
 mode `1` keeps the full-frame behavior. Train/test assignment remains grouped
 by source photograph.
 
-`--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
-blocks. It recomputes the growth fraction needed to approach `--max-cap` by
-iteration 14,800, clamps each request to 7–25%, and emits the fraction and
-capacity target in every topology-refinement event. It then freezes topology
-for convergence, preventing post-growth pruning from violating the GSD-backed
-density plan. The final adaptive refinement always reserves the minimum split
-budget so Gaussians pruned in that window are replaced before topology freezes.
-Its default is `0`, so existing standalone and production
-recipes keep the fixed 7% schedule and their configured pruning window.
+`--adaptive-native-crop-tiles 1` is an experimental resident-facade policy.
+The configured tile mode becomes a maximum: a native crop uses 1, 2, or 4
+tiles so that each tile stays within the full-sensor pixel budget implied by
+that maximum. Full images therefore preserve the existing memory envelope,
+while small boundary crops retain useful spatial context instead of being
+split into four tiny views. The default remains `0` until controlled facade
+canary and VRAM evidence support promotion.
+
+Compare the fixed and adaptive modes only with two completed manifests from
+the same native binary and otherwise identical scientific parameters:
+
+```bash
+python tools/compare_gaussian_crop_tiling_runs.py \
+  fixed/trainer_run.json adaptive/trainer_run.json \
+  --output crop-tiling-comparison.json
+```
+
+`--adaptive-growth-target 1` is used by area/GSD-planned resident blocks and
+can also be selected explicitly for short custom runs. It recomputes the
+growth fraction needed to approach `--max-cap` by the last 200-step boundary
+strictly inside the first half of any requested iteration budget (3,600,
+7,400, and 14,800 for 7,500, 15,000, and 30,000 iterations). Each request is
+clamped to 7–50%; the higher ceiling lets sparse preview blocks reach their
+requested capacity while the hard cap remains exact. The trainer emits the
+fraction and capacity target in every topology-refinement event, freezes
+topology afterwards, and stops deterministic position noise at the same
+boundary so the second half is genuine fixed-topology convergence. The final
+adaptive refinement reserves the minimum split budget so Gaussians pruned in
+that window are replaced before topology freezes. Its default is `0`, so
+existing standalone and versioned recipes keep the fixed 7% schedule and
+their configured pruning window.
 The resident HQ wrapper passes a pre-filter cap sized for 98% retention and
 records both that training target and the strict GSD-backed retained target;
 the native trainer still treats `--max-cap` as an exact hard ceiling.
@@ -330,8 +364,35 @@ inherit the evaluation directory owner with mode `0644`, including when the
 container runs as root.
 
 Optional native tuning arguments are `--prefetch-depth`, `--decode-workers`,
-and `--jpeg-idct-scale 0|1`. Their defaults are `1`, `1`, and `0`, preserving
-the dev.8 decode behavior.
+`--host-image-cache-mib`, and `--jpeg-idct-scale 0|1`. Their defaults are
+`1`, `1`, `2048`, and `0`, preserving the dev.8 decode behavior. The requested
+host-cache bound and its effective byte capacity are recorded in the run
+manifest. Changing the bound is an operational performance experiment and
+requires exact final-PLY parity before promotion.
+
+Checkpoint cadence is governed by the existing `--checkpoint-every` option.
+The performance comparator may vary it together with cache and prefetch
+tuning, but still requires the same trainer binary, scientific parameters and
+exact final PLY SHA-256. A longer interval therefore cannot be promoted from
+wall time alone; its recovery-point trade-off remains an operational decision.
+
+Native-code optimizations are qualified separately with
+`tools/compare_gaussian_binary_regression.py`. It permits different trainer
+binaries and checkpoint locations, but requires the same dataset, every
+scientific parameter, final PLY SHA-256, loss, PSNR and SSIM. This prevents an
+I/O or topology optimization from being accepted on speed alone.
+
+The manifest separates foreground image wait, cumulative parallel decode,
+topology refinement, periodic checkpoint serialization, final PLY export,
+evaluation, training and wall time. This prevents I/O tuning from being
+credited with compute improvements and keeps performance A/B runs auditable.
+It also records the decoded-image working-set size independently of the cache
+limit, so a deployment can choose a host-RAM envelope from evidence rather
+than from image count alone. When the working set exceeds the configured
+ceiling and host-memory headroom is available, a cache ceiling rounded above
+that working set is the first lossless performance candidate. Promotion still
+requires an exact same-binary final-PLY comparison; container memory limits
+must include the larger cache plus decoder and orchestration overhead.
 
 `--optimizer-profile dronegs-dev16` is the deprecated compatibility default of
 the standalone CLI. `--optimizer-profile reference-absolute` is the validated

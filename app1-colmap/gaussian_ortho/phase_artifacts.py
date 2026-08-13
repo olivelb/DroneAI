@@ -82,6 +82,7 @@ class GaussianFilteredPartitionArtifact:
     gaussian_count: int
     core_gaussian_count: int
     render_extent: tuple[float, float, float, float, float, float]
+    facade_depth_bounds_model: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -395,6 +396,11 @@ def write_filtering_artifact(
             "gaussian_count": partition.gaussian_count,
             "core_gaussian_count": partition.core_gaussian_count,
             "render_extent": list(partition.render_extent),
+            "facade_depth_bounds_model": (
+                list(partition.facade_depth_bounds_model)
+                if partition.facade_depth_bounds_model is not None
+                else None
+            ),
         }
         for partition in getattr(filtering_phase, "partition_models", ())
     ]
@@ -516,6 +522,12 @@ def read_filtering_artifact(
             raise ValueError("Gaussian filtering partition entry is invalid")
         entry = cast(dict[str, Any], raw)
         extent = _array(entry, "render_extent", (6,))
+        partition_depth_bounds = _array(
+            entry,
+            "facade_depth_bounds_model",
+            (2,),
+            optional=True,
+        )
         if extent is None:
             raise ValueError("Gaussian partition render extent is missing")
         partitions.append(
@@ -527,6 +539,14 @@ def read_filtering_artifact(
                 render_extent=cast(
                     tuple[float, float, float, float, float, float],
                     tuple(float(value) for value in extent),
+                ),
+                facade_depth_bounds_model=(
+                    (
+                        float(partition_depth_bounds[0]),
+                        float(partition_depth_bounds[1]),
+                    )
+                    if partition_depth_bounds is not None
+                    else None
                 ),
             )
         )
@@ -632,6 +652,9 @@ def hydrate_partitioned_filtering_phase(
                 gaussian_count=partition.gaussian_count,
                 core_gaussian_count=partition.core_gaussian_count,
                 render_extent=partition.render_extent,
+                facade_depth_bounds_model=(
+                    partition.facade_depth_bounds_model
+                ),
             )
             for partition in artifact.partition_models
         ),

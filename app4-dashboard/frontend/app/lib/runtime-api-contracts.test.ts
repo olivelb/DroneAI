@@ -78,13 +78,22 @@ describe("runtime API response contracts", () => {
       pipelines: { modern: {}, legacy: {} },
       processes: [],
       metadata: {},
-      quality_profiles: [{
-        id: "normal-v1",
-        version: 1,
-        name: "Normal",
-        description: "Balanced",
-        parameters: {},
-      }],
+      quality_profiles: [
+        {
+          id: "normal-v1",
+          version: 1,
+          name: "Normal",
+          description: "Balanced",
+          parameters: {},
+        },
+        {
+          id: "high-quality-v3",
+          version: 3,
+          name: "High Quality (resident candidate)",
+          description: "Controlled qualification candidate",
+          parameters: { gs_resident_partitioning: true },
+        },
+      ],
       quality_profile_default: "normal-v1",
       yolo_models: [],
       sam3: {

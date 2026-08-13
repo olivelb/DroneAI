@@ -115,3 +115,131 @@ def test_export_colmap_subset_filters_images_cameras_and_points(
     assert (tmp_path / "cell" / "image_regions.tsv").read_text(
         encoding="utf-8"
     ) == "# dronegs-image-regions-v1\nkeep.jpg\t2\t3\t10\t8\n"
+
+
+def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_colmap_cameras_bin(
+        {
+            1: {
+                "model_id": 1,
+                "width": 16,
+                "height": 12,
+                "params": [10.0, 10.0, 8.0, 6.0],
+            }
+        },
+        source / "cameras.bin",
+    )
+    image_template = {
+        "qw": 1.0,
+        "qx": 0.0,
+        "qy": 0.0,
+        "qz": 0.0,
+        "tx": 0.0,
+        "ty": 0.0,
+        "tz": 0.0,
+        "camera_id": 1,
+        "xys": [(2.0, 3.0), (4.0, 5.0)],
+    }
+    _write_colmap_images_bin(
+        {
+            10: {
+                **image_template,
+                "name": "keep-a.jpg",
+                "point3D_ids": [100, 101],
+            },
+            20: {
+                **image_template,
+                "name": "keep-b.jpg",
+                "point3D_ids": [-1, 101],
+            },
+            30: {
+                **image_template,
+                "name": "outside.jpg",
+                "point3D_ids": [100, -1],
+            },
+        },
+        source / "images.bin",
+    )
+    _write_colmap_points3d_bin(
+        {
+            100: {
+                "xyz": (1.0, 2.0, 3.0),
+                "rgb": (4, 5, 6),
+                "error": 0.1,
+                "track": [(10, 0), (30, 0)],
+            },
+            101: {
+                "xyz": (7.0, 8.0, 9.0),
+                "rgb": (10, 11, 12),
+                "error": 0.2,
+                "track": [(10, 1), (20, 1)],
+            },
+        },
+        source / "points3D.bin",
+    )
+
+    report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cell"),
+        ["keep-a.jpg", "keep-b.jpg"],
+        min_track_length=2,
+        return_report=True,
+    )
+
+    assert isinstance(report, dict)
+    exported = _read_colmap_points3d_bin(
+        tmp_path / "cell" / "sparse" / "0" / "points3D.bin"
+    )
+    images = _read_colmap_images_bin(
+        tmp_path / "cell" / "sparse" / "0" / "images.bin"
+    )
+    assert set(exported) == {101}
+    assert exported[101]["track"] == [(10, 1), (20, 1)]
+    assert images[10]["point3D_ids"] == [-1, 101]
+    assert report == {
+        "sparse_path": str(tmp_path / "cell" / "sparse" / "0"),
+        "selected_images": 2,
+        "points_before_cap": 1,
+        "exported_points": 1,
+        "max_points": None,
+        "coverage_balanced": False,
+        "points_rejected_for_restricted_track": 1,
+        "observations_rejected_outside_native_crops": 0,
+        "track_scope": "selected-cameras-and-native-crops-v1",
+        "exported_observations": 2,
+        "minimum_exported_track_length": 2,
+        "median_exported_track_length": 2.0,
+        "mean_exported_track_length": 2.0,
+        "points_with_at_least_three_observations": 0,
+        "points_with_at_least_five_observations": 0,
+    }
+
+    cropped_report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cropped-cell"),
+        ["keep-a.jpg", "keep-b.jpg"],
+        image_crops={
+            "keep-b.jpg": NativeImageCrop(
+                source_x=0,
+                source_y=0,
+                width=3,
+                height=12,
+                source_width=16,
+                source_height=12,
+            )
+        },
+        min_track_length=2,
+        return_report=True,
+    )
+
+    assert isinstance(cropped_report, dict)
+    cropped_points = _read_colmap_points3d_bin(
+        tmp_path / "cropped-cell" / "sparse" / "0" / "points3D.bin"
+    )
+    assert cropped_points == {}
+    assert cropped_report["points_rejected_for_restricted_track"] == 2
+    assert cropped_report["observations_rejected_outside_native_crops"] == 1

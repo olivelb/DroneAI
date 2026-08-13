@@ -12,11 +12,21 @@ if str(APP1_ROOT) not in sys.path:
     sys.path.insert(0, str(APP1_ROOT))
 
 from gaussian_training.qualification import (  # noqa: E402
+    compare_native_crop_tiling_manifests,
+    compare_performance_manifests,
     compare_qualification_manifests,
+    compare_resident_seed_contract_manifests,
 )
 
 
-def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Path:
+def _manifest(
+    path: Path,
+    profile: str,
+    weight: float,
+    *,
+    seed: int = 42,
+    adaptive_native_crop_tiles: int = 0,
+) -> Path:
     payload = {
         "contract_version": 1,
         "backend": "dronegs-native-mrnf-fastgs",
@@ -24,13 +34,20 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
         "trainer_binary_sha256": "a" * 64,
         "git_revision": "test",
         "status": "completed",
-        "dataset": {"fingerprint": "dataset"},
+        "dataset": {
+            "fingerprint": "dataset",
+            "training_image_count": 107,
+            "held_out_image_count": 16,
+        },
         "parameters": {
             "profile_id": "high-quality-v3",
             "optimizer_profile": profile,
             "pruning_policy": "spatial-bounds",
             "raster_profile": "fastgs",
             "effective_raster_profile": "fastgs",
+            "initial_scale_policy": "local-knn",
+            "initial_max_projected_sigma_pixels": 2.0,
+            "maximum_scale_growth_factor": 54.59815,
             "test_split": "modulo",
             "test_guard_percent": 0,
             "seed": seed,
@@ -39,6 +56,10 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "growth_score": "variant",
             "absgrad_guidance": None if weight == 0 else "enabled",
             "absgrad_normalization": None if weight == 0 else "median",
+            "adaptive_native_crop_tiles": adaptive_native_crop_tiles,
+            "native_crop_tile_policy": (
+                "sensor-pixel-budget-up-to-tile-mode-v1" if adaptive_native_crop_tiles else "fixed-tile-mode-v1"
+            ),
         },
         "timings": {"training_seconds": 12.0, "wall_seconds": 14.0},
         "metrics": {
@@ -46,7 +67,13 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "final_loss": 0.1 - weight / 100,
             "psnr": 20.0 + weight,
             "ssim": 0.5 + weight / 10,
+            "pixel_weighted_psnr": 20.5 + weight,
+            "pixel_weighted_ssim": 0.55 + weight / 10,
             "lpips": None,
+            "image_cache_working_set_bytes": 8_000_000_000,
+            "frame_descriptor_count": (241 if adaptive_native_crop_tiles else 485),
+            "training_frame_count": (205 if adaptive_native_crop_tiles else 421),
+            "held_out_frame_count": (36 if adaptive_native_crop_tiles else 64),
         },
         "artifacts": {"point_cloud.ply": {"path": "point_cloud.ply"}},
     }
@@ -71,10 +98,9 @@ def test_compare_controlled_qualification_runs(tmp_path):
     )
 
     assert report["baseline_optimizer_profile"] == "reference-absolute"
-    assert report["runs"][1]["delta_from_baseline"]["psnr"] == pytest.approx(
-        0.25
-    )
+    assert report["runs"][1]["delta_from_baseline"]["psnr"] == pytest.approx(0.25)
     assert report["runs"][1]["lpips"] is None
+    assert report["runs"][1]["delta_from_baseline"]["pixel_weighted_psnr"] == pytest.approx(0.25)
 
 
 def test_compare_rejects_uncontrolled_parameter_drift(tmp_path):
@@ -96,3 +122,257 @@ def test_compare_requires_unique_profiles(tmp_path):
 
     with pytest.raises(ValueError, match="must be unique"):
         compare_qualification_manifests([first, second])
+
+
+def test_compare_native_crop_tiling_runs(tmp_path):
+    report = compare_native_crop_tiling_manifests(
+        [
+            _manifest(
+                tmp_path / "fixed.json",
+                "reference-absolute",
+                0.0,
+            ),
+            _manifest(
+                tmp_path / "adaptive.json",
+                "reference-absolute",
+                0.0,
+                adaptive_native_crop_tiles=1,
+            ),
+        ]
+    )
+
+    assert report["baseline_policy"] == "fixed-tile-mode-v1"
+    assert report["runs"][1]["native_crop_tile_policy"] == ("sensor-pixel-budget-up-to-tile-mode-v1")
+    assert report["runs"][1]["training_image_count"] == 107
+    assert report["runs"][1]["held_out_image_count"] == 16
+    assert report["runs"][1]["delta_from_fixed"]["frame_descriptor_count"] == -244
+    assert report["runs"][1]["delta_from_fixed"]["training_frame_count"] == -216
+
+
+def test_compare_native_crop_tiling_rejects_parameter_drift(tmp_path):
+    fixed = _manifest(
+        tmp_path / "fixed.json",
+        "reference-absolute",
+        0.0,
+    )
+    adaptive = _manifest(
+        tmp_path / "adaptive.json",
+        "reference-absolute",
+        0.0,
+        seed=43,
+        adaptive_native_crop_tiles=1,
+    )
+
+    with pytest.raises(ValueError, match="outside the allowed policy"):
+        compare_native_crop_tiling_manifests([fixed, adaptive])
+
+
+def test_compare_native_crop_tiling_rejects_invalid_policy(tmp_path):
+    fixed = _manifest(
+        tmp_path / "fixed.json",
+        "reference-absolute",
+        0.0,
+    )
+    adaptive = _manifest(
+        tmp_path / "adaptive.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    payload = json.loads(adaptive.read_text(encoding="utf-8"))
+    payload["parameters"]["native_crop_tile_policy"] = "untracked-policy"
+    adaptive.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy provenance"):
+        compare_native_crop_tiling_manifests([fixed, adaptive])
+
+
+def _performance_manifest(
+    path: Path,
+    *,
+    prefetch_depth: int,
+    decode_workers: int,
+    wall_seconds: float,
+    host_image_cache_mib: int = 2_048,
+    checkpoint_every: int = 2_000,
+    digest: str = "b" * 64,
+    seed: int = 42,
+) -> Path:
+    payload = json.loads(_manifest(path, "reference-absolute", 0.0, seed=seed).read_text())
+    payload["parameters"].update(
+        prefetch_depth=prefetch_depth,
+        decode_workers=decode_workers,
+        host_image_cache_limit_mib=host_image_cache_mib,
+        host_image_cache_bytes=host_image_cache_mib * 1024 * 1024,
+        checkpoint_every=checkpoint_every,
+        checkpoint_path=f"/run-{prefetch_depth}/training.ckpt",
+        resumed_from_checkpoint=False,
+    )
+    payload["timings"].update(
+        wall_seconds=wall_seconds,
+        data_loading_seconds=2.5 / prefetch_depth,
+        image_wait_seconds=2.0 / prefetch_depth,
+        image_decode_seconds=4.0,
+        topology_refinement_seconds=1.5,
+        periodic_checkpoint_seconds=0.5,
+    )
+    payload["artifacts"]["point_cloud.ply"]["sha256"] = digest
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_compare_performance_requires_exact_scientific_output(tmp_path):
+    report = compare_performance_manifests(
+        [
+            _performance_manifest(
+                tmp_path / "four.json",
+                prefetch_depth=4,
+                decode_workers=4,
+                wall_seconds=20.0,
+            ),
+            _performance_manifest(
+                tmp_path / "eight.json",
+                prefetch_depth=8,
+                decode_workers=8,
+                wall_seconds=16.0,
+                host_image_cache_mib=4_096,
+                checkpoint_every=4_000,
+            ),
+        ]
+    )
+
+    assert report["scientific_output_parity"] is True
+    assert report["runs"][1]["speedup_from_baseline"] == pytest.approx(1.25)
+    assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
+    assert report["runs"][1]["host_image_cache_limit_mib"] == 4_096
+    assert report["runs"][1]["checkpoint_every"] == 4_000
+    assert report["runs"][1]["topology_refinement_seconds"] == 1.5
+    assert report["runs"][1]["image_cache_working_set_bytes"] == 8_000_000_000
+    assert report["runs"][0]["data_loading_seconds"] == pytest.approx(0.625)
+    assert report["runs"][0]["foreground_image_wait_seconds"] == pytest.approx(0.5)
+
+
+def test_compare_performance_rejects_changed_ply(tmp_path):
+    first = _performance_manifest(
+        tmp_path / "four.json",
+        prefetch_depth=4,
+        decode_workers=4,
+        wall_seconds=20.0,
+    )
+    second = _performance_manifest(
+        tmp_path / "eight.json",
+        prefetch_depth=8,
+        decode_workers=8,
+        wall_seconds=16.0,
+        digest="c" * 64,
+    )
+
+    with pytest.raises(ValueError, match="changed the final point cloud"):
+        compare_performance_manifests([first, second])
+
+
+def test_compare_performance_rejects_scientific_drift(tmp_path):
+    first = _performance_manifest(
+        tmp_path / "four.json",
+        prefetch_depth=4,
+        decode_workers=4,
+        wall_seconds=20.0,
+    )
+    second = _performance_manifest(
+        tmp_path / "eight.json",
+        prefetch_depth=8,
+        decode_workers=8,
+        wall_seconds=16.0,
+        seed=43,
+    )
+
+    with pytest.raises(ValueError, match="outside the allowed"):
+        compare_performance_manifests([first, second])
+
+
+def test_compare_resident_seed_contract_runs(tmp_path):
+    baseline = _manifest(
+        tmp_path / "camera-only.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    candidate = _manifest(
+        tmp_path / "crop-aware.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["dataset"]["fingerprint"] = "crop-aware-dataset"
+    payload["metrics"]["psnr"] = 20.4
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+    baseline_report = tmp_path / "camera-only-subset.json"
+    baseline_report.write_text(
+        json.dumps(
+            {
+                "selected_images": 123,
+                "exported_points": 64_996,
+                "exported_observations": 189_148,
+                "mean_exported_track_length": 2.91,
+            }
+        ),
+        encoding="utf-8",
+    )
+    candidate_report = tmp_path / "crop-aware-subset.json"
+    candidate_report.write_text(
+        json.dumps(
+            {
+                "track_scope": "selected-cameras-and-native-crops-v1",
+                "selected_images": 123,
+                "exported_points": 60_000,
+                "exported_observations": 170_000,
+                "observations_rejected_outside_native_crops": 20_000,
+                "mean_exported_track_length": 2.83,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = compare_resident_seed_contract_manifests(
+        [baseline, candidate],
+        [baseline_report, candidate_report],
+    )
+
+    assert report["runs"][1]["track_scope"] == ("selected-cameras-and-native-crops-v1")
+    assert report["runs"][1]["crop_rejected_observations"] == 20_000
+    assert report["runs"][1]["delta_from_camera_only"]["psnr"] == (pytest.approx(0.4))
+
+
+def test_compare_resident_seed_rejects_frame_drift(tmp_path):
+    baseline = _manifest(
+        tmp_path / "camera-only.json",
+        "reference-absolute",
+        0.0,
+    )
+    candidate = _manifest(
+        tmp_path / "crop-aware.json",
+        "reference-absolute",
+        0.0,
+    )
+    payload = json.loads(candidate.read_text(encoding="utf-8"))
+    payload["dataset"]["fingerprint"] = "crop-aware-dataset"
+    payload["metrics"]["frame_descriptor_count"] += 1
+    candidate.write_text(json.dumps(payload), encoding="utf-8")
+    reports = []
+    for name, scope in (
+        ("camera-only-subset.json", "selected-cameras-v1"),
+        (
+            "crop-aware-subset.json",
+            "selected-cameras-and-native-crops-v1",
+        ),
+    ):
+        path = tmp_path / name
+        path.write_text(
+            json.dumps({"track_scope": scope, "selected_images": 123}),
+            encoding="utf-8",
+        )
+        reports.append(path)
+
+    with pytest.raises(ValueError, match="expanded frames"):
+        compare_resident_seed_contract_manifests([baseline, candidate], reports)

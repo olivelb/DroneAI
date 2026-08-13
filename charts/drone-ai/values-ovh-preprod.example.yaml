@@ -98,6 +98,9 @@ dashboardApi:
   replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: staging
+  # Set true only for a controlled Dashboard qualification before a candidate
+  # quality profile is promoted to the public catalog.
+  qualityProfileCandidatesEnabled: false
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
   observability:

@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from shared.facade_selection import exclude_basename_ranges, select_facade_images
+from shared.quality_profiles import quality_profile
 from shared.facade_process import (
     FACADE_PROCESS_OVERRIDES,
     FACADE_PROCESS_PROFILE_ID,
@@ -216,6 +217,90 @@ def test_local_raster_metadata_does_not_invent_a_crs(tmp_path):
     assert metadata["bounds"]["wgs84"] is None
 
 
+def test_facade_report_supports_resident_partition_geometry(tmp_path):
+    import json
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parents[1] / "app1-colmap"))
+    from gaussian_ortho.raster_product import (
+        GaussianSceneSummary,
+        _write_facade_report,
+    )
+
+    report_path = tmp_path / "facade_frame.json"
+    config = SimpleNamespace(
+        facade_frame_report=str(report_path),
+        ortho_file=str(tmp_path / "facade.tif"),
+        facade_texture_max_incidence_deg=45.0,
+        facade_depth_iqr_multiplier=1.0,
+        resolution=0.01,
+    )
+    summary = GaussianSceneSummary(
+        sim3_aligned=False,
+        exif_altitude_available=True,
+        colmap_to_meters=2.0,
+        scale_source="relative-gps-baselines",
+        facade_frame={"origin": [0.0, 0.0, 0.0]},
+        registered_camera_count=20,
+        texture_camera_count=18,
+        texture_filter_applied=True,
+        minimum_sparse_observations=3,
+        seed_max_error=2.0,
+        seed_min_track=2,
+        gaussian_seed_point_count=1_000,
+        facade_subset_result={
+            "partitioned": True,
+            "cell_count": 2,
+            "cells": [
+                {"exported_points": 600, "coverage_balanced": True},
+                {"exported_points": 700, "coverage_balanced": False},
+            ],
+        },
+    )
+    geometry = SimpleNamespace(
+        facade_depth_bounds_model=(-0.5, 0.75),
+        resolution_units="metres",
+    )
+    filtering = SimpleNamespace(
+        render_state=None,
+        partition_geometry=geometry,
+        partition_models=(
+            SimpleNamespace(
+                bounds=SimpleNamespace(row=0, col=0),
+                facade_depth_bounds_model=(-0.5, 0.75),
+            ),
+            SimpleNamespace(
+                bounds=SimpleNamespace(row=0, col=1),
+                facade_depth_bounds_model=(-0.25, 1.0),
+            ),
+        ),
+    )
+
+    _write_facade_report(
+        config,
+        summary,
+        filtering,
+        width=200,
+        height=100,
+        geo_x_min=0.0,
+        geo_y_max=1.0,
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["gaussian_seed"] == {
+        "maximum_reprojection_error_px": 2.0,
+        "minimum_track_length": 2,
+        "points_after_loader_filter": 1_000,
+        "training_workspace_points": 1_300,
+        "coverage_balanced_cap_applied": True,
+        "resident_partitioned": True,
+        "resident_cell_count": 2,
+    }
+    assert report["depth_filter"]["scope"] == "resident-cells"
+    assert report["depth_filter"]["bounds_metres"] == [-1.0, 2.0]
+    assert len(report["depth_filter"]["resident_cells"]) == 2
+
+
 def test_facade_override_does_not_require_hidden_custom_crs():
     validated = validate_pipeline_overrides(
         {"orthophoto_mode": "facade", "projected_crs_mode": "custom"}
@@ -242,6 +327,11 @@ def test_facade_process_uses_the_qualified_coverage_profile():
     assert params["facade_canary_min_ssim"] == "0.25"
     assert params["gs_iterations"] == "30000"
     assert params["gs_max_width"] == "4096"
+    assert params["gs_cap_max"] == "12000000"
+    assert params["gs_capacity_mode"] == "adaptive"
+    assert params["gs_capacity_floor"] == "5000000"
+    assert params["gs_target_gaussian_spacing_pixels"] == "3.6"
+    assert params["gs_resident_partitioning"] is True
     assert params["minimum_registration_ratio"] == "0.9"
 
 
@@ -262,6 +352,56 @@ def test_facade_process_preserves_quality_overrides_but_enforces_local_frame():
     assert params["minimum_registration_ratio"] == "0.8"
 
 
+@pytest.mark.parametrize(
+    (
+        "profile_id",
+        "iterations",
+        "capacity_floor",
+        "spacing",
+        "initial_scale_policy",
+        "capacity_targeted_growth",
+    ),
+    [
+        ("normal-v3", "15000", "3000000", "8.0", "local-knn", False),
+        ("normal-v4", "15000", "3000000", "8.0", "projected-knn", True),
+        ("high-quality-v3", "30000", "5000000", "3.6", "local-knn", False),
+        ("high-quality-v4", "30000", "5000000", "3.6", "projected-knn", True),
+    ],
+)
+def test_facade_process_preserves_selected_resident_quality_profile(
+    profile_id,
+    iterations,
+    capacity_floor,
+    spacing,
+    initial_scale_policy,
+    capacity_targeted_growth,
+):
+    profile = quality_profile(profile_id)
+    quality_parameters = dict(profile.parameters)
+    params = {
+        "orthophoto_mode": "facade",
+        **quality_parameters,
+    }
+
+    apply_facade_process_profile(
+        params,
+        {
+            "orthophoto_mode": "facade",
+            "colmap_params": quality_parameters,
+        },
+    )
+
+    assert params["gs_production_profile"] == profile_id
+    assert params["gs_iterations"] == iterations
+    assert params["gs_capacity_floor"] == capacity_floor
+    assert params["gs_target_gaussian_spacing_pixels"] == spacing
+    assert params["gs_resident_partitioning"] is True
+    assert params["gs_initial_scale_policy"] == initial_scale_policy
+    assert params["gs_capacity_targeted_growth"] is capacity_targeted_growth
+    assert params["matching_strategy"] == "spatial"
+    assert params["gcp_adjustment_enabled"] is False
+
+
 def test_dashboard_facade_process_reuses_the_backend_profile():
     processes = {process["id"]: process for process in product_process_catalog()}
     validated = validate_pipeline_overrides(
@@ -270,9 +410,9 @@ def test_dashboard_facade_process_reuses_the_backend_profile():
 
     assert processes["map"]["stages"] == ["COLMAP", "TILER", "IA"]
     assert processes["facade"]["stages"] == ["COLMAP"]
-    assert processes["facade"]["label"] == "Façade HD"
+    assert processes["facade"]["label"] == "Façade"
     assert processes["facade"]["profile_id"] == FACADE_PROCESS_PROFILE_ID
-    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V1"
+    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V2"
     assert validated == dict(FACADE_PROCESS_OVERRIDES)
 
 
@@ -398,11 +538,44 @@ def test_colmap_subset_can_apply_trainer_point_quality_gate(tmp_path):
     _write_colmap_images_bin(
         {
             1: {
-                "qw": 1, "qx": 0, "qy": 0, "qz": 0,
-                "tx": 0, "ty": 0, "tz": 0, "camera_id": 1,
-                "name": "image.jpg", "xys": [(1, 1), (2, 2)],
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 0,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-1.jpg",
+                "xys": [(1, 1), (2, 2)],
                 "point3D_ids": [7, 8],
-            }
+            },
+            2: {
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 1,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-2.jpg",
+                "xys": [(1, 1), (2, 2)],
+                "point3D_ids": [7, 8],
+            },
+            3: {
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 2,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-3.jpg",
+                "xys": [(1, 1), (2, 2)],
+                "point3D_ids": [7, 8],
+            },
         },
         source / "images.bin",
     )
@@ -419,7 +592,7 @@ def test_colmap_subset_can_apply_trainer_point_quality_gate(tmp_path):
     export_colmap_subset(
         str(source),
         str(target),
-        ["image.jpg"],
+        ["image-1.jpg", "image-2.jpg", "image-3.jpg"],
         max_point_error=1.0,
         min_track_length=3,
     )

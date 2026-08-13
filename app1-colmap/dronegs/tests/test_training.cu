@@ -323,7 +323,8 @@ int main() {
             static_cast<float>(10.0 * std::log10(1.0 / mse));
         const float expected_ssim = static_cast<float>(reference_ssim(
             quality_prediction, quality_target.rgb, 32U, 32U));
-        if (std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
+        if (std::abs(quality.mse - static_cast<float>(mse)) > 2.0e-6F ||
+            std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
             std::abs(quality.ssim - expected_ssim) > 2.0e-4F ||
             quality.active_pixel_fraction <= 0.0F ||
             quality.active_pixel_fraction > 1.0F) {
@@ -450,15 +451,15 @@ int main() {
         auto noise_neighbor = noise_parent;
         noise_neighbor.xyz[0] += 0.1F;
         dronegs::OrderedAlphaTrainingContext noise_first(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_repeat(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 42U);
         dronegs::OrderedAlphaTrainingContext noise_other(
-            {noise_parent, noise_neighbor}, 32U * 32U, 2U, 2U,
+            {noise_parent, noise_neighbor}, 32U * 32U, 1'000U, 2U,
             dronegs::MrnfOptimizerProfile::dronegs_dev16,
             0U, 1000U, 43U);
         static_cast<void>(noise_first.train_step(
@@ -1127,9 +1128,24 @@ int main() {
             reuse_refinement.reused != 1U ||
             reuse_refinement.appended != 0U ||
             reuse_refinement.gaussian_count != 2U ||
+            reuse_refinement.compacted ||
             !reuse_refinement.in_place_recycled) {
             throw std::runtime_error(
                 "MRNF prune/compact/reuse count mismatch");
+        }
+        dronegs::OrderedAlphaTrainingContext compact_context(
+            {split_parent, pruned_parent},
+            32U * 32U, 2U, 3U);
+        static_cast<void>(compact_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        const auto compact_refinement =
+            compact_context.refine_topology(
+                0.0F, 1.0F, 7U, true);
+        if (!compact_refinement.compacted ||
+            compact_refinement.in_place_recycled ||
+            compact_refinement.pruned != 1U) {
+            throw std::runtime_error(
+                "MRNF hard compaction telemetry mismatch");
         }
         std::vector<dronegs::Gaussian> gumbel_parents(8U, split_parent);
         for (std::size_t index = 0U;
@@ -1235,6 +1251,8 @@ int main() {
             .initial_loss = 0.42F,
             .initial_held_out_psnr = 18.25F,
             .initial_held_out_ssim = 0.51F,
+            .initial_pixel_weighted_psnr = 18.75F,
+            .initial_pixel_weighted_ssim = 0.56F,
         };
         interrupted.save_checkpoint(
             checkpoint_path, saved_progress,
@@ -1256,6 +1274,10 @@ int main() {
                 saved_progress.initial_held_out_psnr ||
             loaded_progress.initial_held_out_ssim !=
                 saved_progress.initial_held_out_ssim ||
+            loaded_progress.initial_pixel_weighted_psnr !=
+                saved_progress.initial_pixel_weighted_psnr ||
+            loaded_progress.initial_pixel_weighted_ssim !=
+                saved_progress.initial_pixel_weighted_ssim ||
             resumed.active_sh_degree() !=
                 interrupted.active_sh_degree()) {
             throw std::runtime_error(

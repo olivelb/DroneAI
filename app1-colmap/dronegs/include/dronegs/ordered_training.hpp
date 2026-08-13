@@ -24,6 +24,8 @@ struct TrainingCheckpointProgress {
     float initial_loss = 0.0F;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
+    std::optional<float> initial_pixel_weighted_psnr;
+    std::optional<float> initial_pixel_weighted_ssim;
 };
 
 class OrderedAlphaTrainingContext {
@@ -39,7 +41,8 @@ public:
         std::uint32_t sh_degree_interval = 1000U,
         std::uint64_t noise_seed = 0U,
         std::optional<bool> fastgs_compatibility_override =
-            std::nullopt);
+            std::nullopt,
+        float maximum_scale_growth_factor = 54.59815F);
     ~OrderedAlphaTrainingContext();
 
     OrderedAlphaTrainingContext(
