@@ -164,14 +164,17 @@ def evaluate_core_seams(
     gsd: float,
     geo_origin: np.ndarray,
     partitions: Sequence[CorePartition],
+    coordinate_scale: float = 1.0,
 ) -> dict[str, Any]:
     """Measure stitched boundary jumps relative to nearby interior gradients."""
     if rgb.ndim != 3 or rgb.shape[2] != 3 or height.shape != rgb.shape[:2]:
         raise ValueError("seam evidence requires matching RGB and height rasters")
     if gsd <= 0 or not np.isfinite(gsd):
         raise ValueError("seam evidence requires a positive finite GSD")
+    if coordinate_scale <= 0 or not np.isfinite(coordinate_scale):
+        raise ValueError("seam evidence requires a positive coordinate scale")
     x_min, _x_max, _y_min, y_max = extent
-    tolerance = max(1.0e-8, gsd * 1.0e-4)
+    tolerance = max(1.0e-8, gsd / coordinate_scale * 1.0e-4)
     seams: list[dict[str, object]] = []
     for first_index, first in enumerate(partitions):
         for second_index in range(first_index + 1, len(partitions)):
@@ -188,13 +191,32 @@ def evaluate_core_seams(
                 overlap_min = max(first_bounds.core_y_min, second_bounds.core_y_min)
                 overlap_max = min(first_bounds.core_y_max, second_bounds.core_y_max)
                 column = round(
-                    (boundary_x - float(geo_origin[0]) - x_min) / gsd
+                    (
+                        boundary_x * coordinate_scale
+                        - float(geo_origin[0])
+                        - x_min
+                    )
+                    / gsd
                 )
                 row_start = round(
-                    (y_max - (overlap_max - float(geo_origin[1]))) / gsd
+                    (
+                        y_max
+                        - (
+                            overlap_max * coordinate_scale
+                            - float(geo_origin[1])
+                        )
+                    )
+                    / gsd
                 )
                 row_end = round(
-                    (y_max - (overlap_min - float(geo_origin[1]))) / gsd
+                    (
+                        y_max
+                        - (
+                            overlap_min * coordinate_scale
+                            - float(geo_origin[1])
+                        )
+                    )
+                    / gsd
                 )
                 evidence = _vertical_seam(
                     rgb,
@@ -213,13 +235,30 @@ def evaluate_core_seams(
                 overlap_min = max(first_bounds.core_x_min, second_bounds.core_x_min)
                 overlap_max = min(first_bounds.core_x_max, second_bounds.core_x_max)
                 row = round(
-                    (y_max - (boundary_y - float(geo_origin[1]))) / gsd
+                    (
+                        y_max
+                        - (
+                            boundary_y * coordinate_scale
+                            - float(geo_origin[1])
+                        )
+                    )
+                    / gsd
                 )
                 column_start = round(
-                    (overlap_min - float(geo_origin[0]) - x_min) / gsd
+                    (
+                        overlap_min * coordinate_scale
+                        - float(geo_origin[0])
+                        - x_min
+                    )
+                    / gsd
                 )
                 column_end = round(
-                    (overlap_max - float(geo_origin[0]) - x_min) / gsd
+                    (
+                        overlap_max * coordinate_scale
+                        - float(geo_origin[0])
+                        - x_min
+                    )
+                    / gsd
                 )
                 evidence = _horizontal_seam(
                     rgb,

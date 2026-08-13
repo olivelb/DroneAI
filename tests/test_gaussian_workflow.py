@@ -105,7 +105,7 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
 
     monkeypatch.setattr(
         workflow,
-        "_apply_required_geographic_partition",
+        "_apply_required_resident_partition",
         apply_partition,
     )
     monkeypatch.setattr(
@@ -316,6 +316,8 @@ def test_partitioned_rasterization_stitches_buffer_models_by_unique_cores(
 
     pool = SimpleNamespace(free_all_blocks=lambda: None)
     config = SimpleNamespace(
+        render_mode="map",
+        resolution=1.0,
         capacity_mode="fixed",
         sh_degree=3,
         opacity_sh_enabled=True,

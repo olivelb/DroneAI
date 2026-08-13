@@ -41,8 +41,8 @@ class NativeImageCrop:
 
 
 @dataclass(frozen=True)
-class GeographicSceneFrame:
-    """Validated Sim3 plus a robust terrain-height envelope."""
+class PlanarSceneFrame:
+    """Metric product-plane transform plus a robust depth envelope."""
 
     rotation: np.ndarray
     scale: float
@@ -64,6 +64,16 @@ class GeographicSceneFrame:
     @property
     def ground_offset(self) -> tuple[float, float]:
         return float(self.translation[0]), float(self.translation[1])
+
+
+@dataclass(frozen=True)
+class GeographicSceneFrame(PlanarSceneFrame):
+    """Projected-ground Sim3 frame."""
+
+
+@dataclass(frozen=True)
+class FacadeSceneFrame(PlanarSceneFrame):
+    """Local metric wall frame."""
 
 
 @dataclass(frozen=True)
@@ -118,9 +128,54 @@ def geographic_scene_frame(
     )
 
 
+def facade_scene_frame(
+    model_points: np.ndarray,
+    *,
+    origin: np.ndarray,
+    world_to_facade: np.ndarray,
+    meters_per_model_unit: float,
+    depth_quantile: float = 0.005,
+    depth_margin_m: float = 0.25,
+) -> FacadeSceneFrame:
+    """Build a metric planar frame used for facade visibility and crops."""
+
+    points = np.asarray(model_points, dtype=np.float64)
+    frame_origin = np.asarray(origin, dtype=np.float64)
+    rotation = np.asarray(world_to_facade, dtype=np.float64)
+    scale = float(meters_per_model_unit)
+    if points.ndim != 2 or points.shape[1] != 3 or points.shape[0] < 3:
+        raise ValueError("facade footprint selection requires 3D model points")
+    if frame_origin.shape != (3,) or rotation.shape != (3, 3):
+        raise ValueError("facade footprint selection requires a 3D frame")
+    if (
+        not np.isfinite(points).all()
+        or not np.isfinite(frame_origin).all()
+        or not np.isfinite(rotation).all()
+        or not math.isfinite(scale)
+        or scale <= 0.0
+    ):
+        raise ValueError("facade footprint frame and points must be finite")
+    if not 0.0 <= depth_quantile < 0.5:
+        raise ValueError("facade depth quantile must be in [0, 0.5)")
+    if depth_margin_m < 0.0 or not math.isfinite(depth_margin_m):
+        raise ValueError("facade depth margin must be finite and non-negative")
+    translation = -scale * (rotation @ frame_origin)
+    facade = (scale * (rotation @ points.T)).T + translation
+    effective_quantile = depth_quantile if len(facade) >= 200 else 0.0
+    depth_min = float(np.quantile(facade[:, 2], effective_quantile))
+    depth_max = float(np.quantile(facade[:, 2], 1.0 - effective_quantile))
+    return FacadeSceneFrame(
+        rotation=rotation,
+        scale=scale,
+        translation=translation,
+        terrain_z_min=depth_min - depth_margin_m,
+        terrain_z_max=depth_max + depth_margin_m,
+    )
+
+
 def _camera_pose(
     camera: CameraInfo,
-    frame: GeographicSceneFrame,
+    frame: PlanarSceneFrame,
 ) -> tuple[np.ndarray, np.ndarray]:
     center = (
         frame.scale * frame.rotation @ np.asarray(camera.T, dtype=np.float64)
@@ -261,9 +316,9 @@ def _project_ground_polygon(
     return result
 
 
-def camera_assignment_for_ground_buffer(
+def camera_assignment_for_planar_buffer(
     camera: CameraInfo,
-    frame: GeographicSceneFrame,
+    frame: PlanarSceneFrame,
     bounds: tuple[float, float, float, float],
     *,
     crop_margin_pixels: int = 128,
@@ -271,7 +326,7 @@ def camera_assignment_for_ground_buffer(
     minimum_ground_overlap_m2: float = 1.0,
     minimum_crop_size_pixels: int = 32,
 ) -> CameraBlockAssignment | None:
-    """Return a native crop when a usable calibrated view sees the buffer."""
+    """Return a native crop when a calibrated view sees a planar buffer."""
     if camera.width < 1 or camera.height < 1 or camera.fx <= 0 or camera.fy <= 0:
         raise ValueError("camera footprint selection requires valid pinhole intrinsics")
     if crop_margin_pixels < 0:
@@ -342,4 +397,27 @@ def camera_assignment_for_ground_buffer(
         ),
         maximum_ground_overlap_m2=maximum_overlap,
         nadir_incidence_degrees=incidence,
+    )
+
+
+def camera_assignment_for_ground_buffer(
+    camera: CameraInfo,
+    frame: GeographicSceneFrame,
+    bounds: tuple[float, float, float, float],
+    *,
+    crop_margin_pixels: int = 128,
+    maximum_nadir_incidence_degrees: float = 75.0,
+    minimum_ground_overlap_m2: float = 1.0,
+    minimum_crop_size_pixels: int = 32,
+) -> CameraBlockAssignment | None:
+    """Return a native crop when a usable calibrated view sees the ground."""
+
+    return camera_assignment_for_planar_buffer(
+        camera,
+        frame,
+        bounds,
+        crop_margin_pixels=crop_margin_pixels,
+        maximum_nadir_incidence_degrees=maximum_nadir_incidence_degrees,
+        minimum_ground_overlap_m2=minimum_ground_overlap_m2,
+        minimum_crop_size_pixels=minimum_crop_size_pixels,
     )

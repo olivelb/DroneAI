@@ -16,8 +16,9 @@ from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 MAP_PROCESS_ID = "map"
 FACADE_PROCESS_ID = "facade"
 ORTHOPHOTO_MODES = frozenset({MAP_PROCESS_ID, FACADE_PROCESS_ID})
-FACADE_PROCESS_PROFILE_ID = "FACADE_HD_V1"
-FACADE_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V1"
+FACADE_PROCESS_PROFILE_ID = "FACADE_HD_V2"
+FACADE_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V2"
+FACADE_LEGACY_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V1"
 FACADE_QUALIFICATION_POLICY_ID = "FACADE_HD_QUALIFICATION_POLICY_V1"
 
 FACADE_PARAMETER_DEFAULTS = MappingProxyType(
@@ -82,7 +83,11 @@ FACADE_PROCESS_OVERRIDES: Mapping[str, Any] = MappingProxyType(
         "gs_data_factor": "1",
         "gs_max_width": "4096",
         "gs_tile_mode": "4",
-        "gs_cap_max": "2000000",
+        "gs_cap_max": "12000000",
+        "gs_capacity_mode": "adaptive",
+        "gs_capacity_floor": "5000000",
+        "gs_target_gaussian_spacing_pixels": "3.6",
+        "gs_resident_partitioning": True,
         "gs_sh_degree": "3",
         "gs_production_profile": FACADE_DRONEGS_PROFILE_ID,
         "gs_qualification_policy": FACADE_QUALIFICATION_POLICY_ID,
@@ -110,6 +115,13 @@ FACADE_DRONEGS_IDENTITY_PARAMETERS = MappingProxyType(
         "test_every": DRONEGS_PRODUCTION_PROFILE_V1.test_every,
         "test_split": DRONEGS_PRODUCTION_PROFILE_V1.test_split,
         "test_guard_percent": DRONEGS_PRODUCTION_PROFILE_V1.test_guard_percent,
+    }
+)
+
+FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS = MappingProxyType(
+    {
+        **FACADE_DRONEGS_IDENTITY_PARAMETERS,
+        "cap_max": 2_000_000,
     }
 )
 

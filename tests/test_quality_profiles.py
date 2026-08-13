@@ -21,6 +21,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
         "fast-v1": ("1600", "2048", "7500", "1500000"),
         "normal-v2": ("2400", "4096", "15000", "8000000"),
         "high-quality-v2": ("4096", "16384", "30000", "12000000"),
+        "normal-v3": ("2400", "4096", "15000", "8000000"),
         "high-quality-v3": ("4096", "16384", "30000", "12000000"),
     }
 
@@ -47,10 +48,19 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     assert quality_profile("high-quality-v3").parameters[
         "gs_resident_partitioning"
     ] is True
+    assert quality_profile("normal-v3").parameters[
+        "gs_target_gaussian_spacing_pixels"
+    ] == "8.0"
+    assert quality_profile("normal-v3").parameters[
+        "gs_resident_partitioning"
+    ] is True
     assert quality_profile("high-quality-v2").parameters[
         "gs_resident_partitioning"
     ] is False
     assert "high-quality-v3" not in {
+        profile.profile_id for profile in QUALITY_PROFILES
+    }
+    assert "normal-v3" not in {
         profile.profile_id for profile in QUALITY_PROFILES
     }
     assert quality_profile("normal-v2").version == 2

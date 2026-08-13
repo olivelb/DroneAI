@@ -7,7 +7,7 @@ to swap in from the existing pipeline.
 
 Pipeline:
   1. Load COLMAP reconstruction + alignment transform
-  2. Plan projected-ground resident core/buffer partitions when required
+  2. Plan metric map/facade resident core/buffer partitions when required
   3. Train Gaussian model per cell via the selected headless backend
   4. Persist core-owned cell models without a global GPU merge
   5. Render orthographic TDOM (custom CUDA rasterisation via CuPy)
@@ -61,7 +61,11 @@ from gaussian_training.manifest_contract import (
     validate_run_manifest,
 )
 from .partition import partition_scene, plan_partition_grid
-from .camera_footprint import geographic_scene_frame
+from .camera_footprint import (
+    PlanarSceneFrame,
+    facade_scene_frame,
+    geographic_scene_frame,
+)
 from .exif_altitude import (
     extract_exif_altitudes,
     compute_colmap_scale,
@@ -495,13 +499,13 @@ def prepare_gaussian_scene(config: GaussianOrthoConfig) -> GaussianSceneState:
     )
 
 
-def _apply_required_geographic_partition(
+def _apply_required_resident_partition(
     scene_state: GaussianSceneState,
     config: GaussianOrthoConfig,
     *,
     required_cell_count: int,
 ) -> None:
-    """Materialize the requested or density-required geographic grid."""
+    """Materialize a density-required grid in the product's metric plane."""
     requested_rows = max(1, int(getattr(config, "partition_m", 1)))
     requested_columns = max(1, int(getattr(config, "partition_n", 1)))
     target_cell_count = max(
@@ -510,20 +514,39 @@ def _apply_required_geographic_partition(
     )
     if target_cell_count == 1:
         return
-    if (
-        getattr(config, "render_mode", "map") != "map"
-        or scene_state.transform_data is None
-        or scene_state.scene is None
-        or scene_state.point_cloud is None
-    ):
+    if scene_state.scene is None or scene_state.point_cloud is None:
         raise ValueError(
-            "Partitioned Gaussian training requires a geographic Sim3 "
-            "transform so blocks are defined in projected ground coordinates"
+            "Partitioned Gaussian training requires a prepared scene and "
+            "sparse point cloud"
         )
-    frame = geographic_scene_frame(
-        scene_state.point_cloud.points,
-        scene_state.transform_data,
-    )
+    render_mode = getattr(config, "render_mode", "map")
+    frame: PlanarSceneFrame
+    if render_mode == "map":
+        if scene_state.transform_data is None:
+            raise ValueError(
+                "Resident map training requires a geographic Sim3 transform"
+            )
+        frame = geographic_scene_frame(
+            scene_state.point_cloud.points,
+            scene_state.transform_data,
+        )
+        maximum_view_incidence = 75.0
+        minimum_plane_overlap_m2 = 1.0
+        plane_label = "projected ground"
+    elif render_mode == "facade":
+        if scene_state.facade_frame is None:
+            raise ValueError("Resident facade training requires a fitted wall frame")
+        frame = facade_scene_frame(
+            scene_state.point_cloud.points,
+            origin=scene_state.facade_frame.origin,
+            world_to_facade=scene_state.facade_frame.world_to_facade,
+            meters_per_model_unit=scene_state.colmap_to_meters,
+        )
+        maximum_view_incidence = float(config.facade_texture_max_incidence_deg)
+        minimum_plane_overlap_m2 = 0.01
+        plane_label = "metric facade plane"
+    else:
+        raise ValueError(f"Unsupported resident partition render mode: {render_mode}")
     if requested_rows * requested_columns >= target_cell_count:
         rows, columns = requested_rows, requested_columns
     else:
@@ -538,7 +561,7 @@ def _apply_required_geographic_partition(
         config.vol_id,
         "GAUSS",
         12,
-        f"Partitioning projected ground into {rows}x{columns} "
+        f"Partitioning {plane_label} into {rows}x{columns} "
         f"core/buffer cells (minimum {required_cell_count})…",
         config.report_fn,
     )
@@ -549,11 +572,13 @@ def _apply_required_geographic_partition(
         overlap,
         model_to_ground_linear=frame.ground_linear,
         model_to_ground_offset=frame.ground_offset,
-        geographic_frame=frame,
+        planar_frame=frame,
+        maximum_view_incidence_degrees=maximum_view_incidence,
+        minimum_plane_overlap_m2=minimum_plane_overlap_m2,
     )
     if len(cells) < required_cell_count:
         raise RuntimeError(
-            "Geographic camera visibility produced only "
+            "Planar camera visibility produced only "
             f"{len(cells)} active cells but Gaussian density requires "
             f"{required_cell_count}; inspect coverage or use a coarser GSD."
         )
@@ -668,7 +693,7 @@ def execute_gaussian_training_phase(
         overlap=overlap,
         cell_count=1,
     )
-    _apply_required_geographic_partition(
+    _apply_required_resident_partition(
         scene_state,
         config,
         required_cell_count=preliminary_plan.required_cell_count,
@@ -766,6 +791,7 @@ def train_and_merge_gaussian_models(
     partition_models: list[GaussianPartitionModel] = []
     n_cells = len(scene_state.cells)
     facade_subset_result: dict[str, object] | None = None
+    facade_partition_reports: list[dict[str, object]] = []
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
     if not os.path.isdir(sparse_dir):
         sparse_dir = os.path.join(config.dense_path, "sparse")
@@ -791,15 +817,37 @@ def train_and_merge_gaussian_models(
                 config.checkpoint_dir,
                 f"{cell_label}_workspace",
             )
-            export_colmap_subset(
+            subset_export = export_colmap_subset(
                 source_sparse_dir=sparse_dir,
                 target_dir=cell_workspace,
                 camera_names=[camera.image_name for camera in cell_scene.train_cameras],
                 images_dir=images_dir_path,
                 image_crops=cell_scene.image_crops,
-                max_point_error=1.0,
-                min_track_length=3,
+                max_point_error=(
+                    scene_state.seed_max_error
+                    if config.render_mode == "facade"
+                    else 1.0
+                ),
+                min_track_length=(
+                    scene_state.seed_min_track
+                    if config.render_mode == "facade"
+                    else 3
+                ),
+                max_points=(
+                    max(1, int(config.cap_max * 0.85))
+                    if config.render_mode == "facade"
+                    else None
+                ),
+                return_report=config.render_mode == "facade",
             )
+            if config.render_mode == "facade":
+                if isinstance(subset_export, str):
+                    raise RuntimeError(
+                        "Resident facade subset export did not return its report"
+                    )
+                facade_partition_reports.append(
+                    {"cell": cell_label, **subset_export}
+                )
             training_data_path = cell_workspace
         elif config.render_mode == "facade":
             texture_workspace = os.path.join(
@@ -991,6 +1039,12 @@ def train_and_merge_gaussian_models(
             "uniquely owned core Gaussians without a global GPU merge",
             config.report_fn,
         )
+        if facade_partition_reports:
+            facade_subset_result = {
+                "partitioned": True,
+                "cell_count": len(facade_partition_reports),
+                "cells": facade_partition_reports,
+            }
     else:
         if not cell_models:
             raise RuntimeError("Gaussian training produced no model")
@@ -1313,6 +1367,22 @@ class GaussianFilteringPhaseState:
     partition_models: tuple[GaussianFilteredPartition, ...] = ()
 
 
+def _partition_to_render_scale(
+    config: GaussianOrthoConfig,
+    geometry: GaussianRenderGeometry,
+) -> float:
+    """Convert metric partition coordinates to the renderer's XY units."""
+
+    render_mode = getattr(config, "render_mode", "map")
+    if render_mode == "map":
+        return 1.0
+    if render_mode == "facade":
+        if config.resolution <= 0 or geometry.local_gsd <= 0:
+            raise ValueError("Facade resident geometry has an invalid resolution")
+        return geometry.local_gsd / config.resolution
+    raise ValueError(f"Unsupported resident render mode: {render_mode}")
+
+
 def execute_gaussian_filtering_phase(
     config: GaussianOrthoConfig,
     training_phase: GaussianTrainingPhaseState,
@@ -1337,7 +1407,7 @@ def execute_gaussian_filtering_phase(
     )
     output_gaussians = int(render_state.merged_model.num_gaussians)
     density_assessment = None
-    if config.render_mode == "map" and config.capacity_mode == "adaptive":
+    if config.capacity_mode == "adaptive":
         if training_phase.capacity_plan is None:
             raise RuntimeError(
                 "Adaptive Gaussian density cannot be verified because the "
@@ -1368,13 +1438,16 @@ def execute_gaussian_filtering_phase(
 
 
 def _partition_core_mask_after_alignment(
+    config: GaussianOrthoConfig,
     model: GaussianModel,
     bounds: CellBounds,
     geo_origin: np.ndarray,
     *,
     cupy_module: Any,
 ) -> Any:
-    """Select unique core centres from an already Sim3-aligned map model."""
+    """Select unique core centres in the map or facade product plane."""
+    if config.render_mode == "facade":
+        return bounds.core_mask(model.positions, array_module=cupy_module)
     ground_xy = model.positions[:, :2] + cupy_module.asarray(
         geo_origin[:2],
         dtype=model.positions.dtype,
@@ -1407,8 +1480,12 @@ def execute_partitioned_gaussian_filtering_phase(
     cupy_module: Any | None = None,
 ) -> GaussianFilteringPhaseState:
     """Filter resident buffers sequentially and retain portable core evidence."""
-    if config.render_mode != "map" or scene_state.transform_data is None:
-        raise ValueError("Resident partition filtering requires a geographic map")
+    if config.render_mode == "map" and scene_state.transform_data is None:
+        raise ValueError("Resident map filtering requires a geographic Sim3")
+    if config.render_mode == "facade" and scene_state.facade_frame is None:
+        raise ValueError("Resident facade filtering requires a fitted wall frame")
+    if config.render_mode not in {"map", "facade"}:
+        raise ValueError("Resident filtering requires a map or facade product")
     if not partitions:
         raise ValueError("Resident partition filtering requires buffer models")
     if model_class is None:
@@ -1446,6 +1523,7 @@ def execute_partitioned_gaussian_filtering_phase(
             release_scene=index == len(partitions) - 1,
         )
         core_mask = _partition_core_mask_after_alignment(
+            config,
             model,
             partition.bounds,
             render.geo_origin,
@@ -1482,10 +1560,28 @@ def execute_partitioned_gaussian_filtering_phase(
             geometry = candidate_geometry
         elif not (
             np.allclose(geometry.geo_origin, candidate_geometry.geo_origin)
-            and geometry.frame_origin is None
-            and candidate_geometry.frame_origin is None
-            and geometry.rotation_geo is None
-            and candidate_geometry.rotation_geo is None
+            and (
+                (geometry.frame_origin is None and candidate_geometry.frame_origin is None)
+                or (
+                    geometry.frame_origin is not None
+                    and candidate_geometry.frame_origin is not None
+                    and np.allclose(
+                        geometry.frame_origin,
+                        candidate_geometry.frame_origin,
+                    )
+                )
+            )
+            and (
+                (geometry.rotation_geo is None and candidate_geometry.rotation_geo is None)
+                or (
+                    geometry.rotation_geo is not None
+                    and candidate_geometry.rotation_geo is not None
+                    and np.allclose(
+                        geometry.rotation_geo,
+                        candidate_geometry.rotation_geo,
+                    )
+                )
+            )
             and np.allclose(
                 geometry.coverage_camera_positions,
                 candidate_geometry.coverage_camera_positions,
@@ -1500,15 +1596,18 @@ def execute_partitioned_gaussian_filtering_phase(
         cupy_module.get_default_memory_pool().free_all_blocks()
     if geometry is None:
         raise RuntimeError("Resident Gaussian filtering produced no geometry")
+    coordinate_scale = _partition_to_render_scale(config, geometry)
+    origin_x = float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
+    origin_y = float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
     global_extent = (
-        min(part.bounds.core_x_min for part in filtered)
-        - float(geometry.geo_origin[0]),
-        max(part.bounds.core_x_max for part in filtered)
-        - float(geometry.geo_origin[0]),
-        min(part.bounds.core_y_min for part in filtered)
-        - float(geometry.geo_origin[1]),
-        max(part.bounds.core_y_max for part in filtered)
-        - float(geometry.geo_origin[1]),
+        min(part.bounds.core_x_min for part in filtered) * coordinate_scale
+        - origin_x,
+        max(part.bounds.core_x_max for part in filtered) * coordinate_scale
+        - origin_x,
+        min(part.bounds.core_y_min for part in filtered) * coordinate_scale
+        - origin_y,
+        max(part.bounds.core_y_max for part in filtered) * coordinate_scale
+        - origin_y,
         min(extent[4] for extent in extents),
         max(extent[5] for extent in extents),
     )
@@ -1561,7 +1660,7 @@ def execute_gaussian_rasterization_phase(
             render_fn=render_fn,
         )
     density = filtering_phase.density_assessment
-    if config.render_mode == "map" and config.capacity_mode == "adaptive":
+    if config.capacity_mode == "adaptive":
         if density is None:
             raise RuntimeError(
                 "Adaptive Gaussian rasterization requires a post-filter "
@@ -1619,21 +1718,27 @@ def execute_gaussian_rasterization_phase(
 
 
 def _core_pixel_window(
+    config: GaussianOrthoConfig,
     bounds: CellBounds,
     geometry: GaussianRenderGeometry,
     *,
     width: int,
     height: int,
 ) -> tuple[int, int, int, int]:
-    """Snap one geographic core to the shared raster grid exactly once."""
+    """Snap one product-plane core to the shared raster grid exactly once."""
     x_min, _x_max, _y_min, y_max, _z_min, _z_max = geometry.render_extent
-    origin_x = float(geometry.geo_origin[0])
-    origin_y = float(geometry.geo_origin[1])
+    coordinate_scale = _partition_to_render_scale(config, geometry)
+    origin_x = float(geometry.geo_origin[0]) if config.render_mode == "map" else 0.0
+    origin_y = float(geometry.geo_origin[1]) if config.render_mode == "map" else 0.0
     gsd = geometry.local_gsd
-    px0 = max(0, min(width, round((bounds.core_x_min - origin_x - x_min) / gsd)))
-    px1 = max(0, min(width, round((bounds.core_x_max - origin_x - x_min) / gsd)))
-    py0 = max(0, min(height, round((y_max - (bounds.core_y_max - origin_y)) / gsd)))
-    py1 = max(0, min(height, round((y_max - (bounds.core_y_min - origin_y)) / gsd)))
+    core_x_min = bounds.core_x_min * coordinate_scale - origin_x
+    core_x_max = bounds.core_x_max * coordinate_scale - origin_x
+    core_y_min = bounds.core_y_min * coordinate_scale - origin_y
+    core_y_max = bounds.core_y_max * coordinate_scale - origin_y
+    px0 = max(0, min(width, round((core_x_min - x_min) / gsd)))
+    px1 = max(0, min(width, round((core_x_max - x_min) / gsd)))
+    py0 = max(0, min(height, round((y_max - core_y_max) / gsd)))
+    py1 = max(0, min(height, round((y_max - core_y_min) / gsd)))
     return px0, px1, py0, py1
 
 
@@ -1686,6 +1791,7 @@ def execute_partitioned_gaussian_rasterization_phase(
     )
     for index, partition in enumerate(partitions):
         px0, px1, py0, py1 = _core_pixel_window(
+            config,
             partition.bounds,
             geometry,
             width=width,
@@ -1975,11 +2081,22 @@ def generate_gaussian_orthophoto(
         cupy_module=cp,
     )
     scene_state = training_phase.scene_state
-    filtering_phase = execute_gaussian_filtering_phase(
-        config,
-        training_phase,
-        cupy_module=cp,
-    )
+    if training_phase.training_state.partition_models:
+        if training_phase.capacity_plan is None:
+            raise RuntimeError("Resident Gaussian training produced no capacity plan")
+        filtering_phase = execute_partitioned_gaussian_filtering_phase(
+            config,
+            scene_state,
+            training_phase.training_state.partition_models,
+            training_phase.capacity_plan,
+            cupy_module=cp,
+        )
+    else:
+        filtering_phase = execute_gaussian_filtering_phase(
+            config,
+            training_phase,
+            cupy_module=cp,
+        )
     rasterization_phase = execute_gaussian_rasterization_phase(
         config,
         filtering_phase,

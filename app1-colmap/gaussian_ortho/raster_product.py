@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from .coverage_quality import (
     SpatialCoveragePolicy,
     SpatialCoverageReport,
@@ -131,8 +133,17 @@ def _write_seam_report(
         height,
         extent=extent,
         gsd=render.local_gsd,
-        geo_origin=render.geo_origin,
+        geo_origin=(
+            render.geo_origin
+            if config.render_mode == "map"
+            else np.zeros(3, dtype=np.float64)
+        ),
         partitions=filtering_phase.partition_models,
+        coordinate_scale=(
+            1.0
+            if config.render_mode == "map"
+            else render.local_gsd / config.resolution
+        ),
     )
     report_path = str(
         Path(config.ortho_file).with_name("gaussian_seam_report.json")

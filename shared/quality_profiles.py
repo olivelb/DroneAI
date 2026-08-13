@@ -12,6 +12,7 @@ QualityProfileId = Literal[
     "high-quality-v1",
     "normal-v2",
     "high-quality-v2",
+    "normal-v3",
     "high-quality-v3",
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v2"
@@ -142,6 +143,20 @@ QUALITY_PROFILES: tuple[QualityProfile, ...] = (
 )
 
 _CANDIDATE_QUALITY_PROFILES: tuple[QualityProfile, ...] = (
+    _profile(
+        "normal-v3",
+        "Normal (resident candidate)",
+        "Eight-gigabyte qualification candidate using resident core/buffer blocks.",
+        image_size=2_400,
+        features=4_096,
+        iterations=15_000,
+        gaussians=8_000_000,
+        data_factor="4",
+        capacity_mode="adaptive",
+        capacity_floor=3_000_000,
+        target_spacing_pixels=8.0,
+        resident_partitioning=True,
+    ),
     _profile(
         "high-quality-v3",
         "High Quality (resident candidate)",

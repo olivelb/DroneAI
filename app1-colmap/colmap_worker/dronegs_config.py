@@ -13,6 +13,9 @@ from shared.dronegs_profile import (
 from shared.facade_process import (
     FACADE_DRONEGS_IDENTITY_PARAMETERS,
     FACADE_DRONEGS_PROFILE_ID,
+    FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS,
+    FACADE_LEGACY_DRONEGS_PROFILE_ID,
+    FACADE_PROCESS_OVERRIDES,
     FACADE_QUALIFICATION_POLICY_ID,
     FACADE_QUALIFICATION_THRESHOLDS,
 )
@@ -109,6 +112,21 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
 def _expected_profile_identity(profile_id: str, fields: Mapping[str, Any]) -> dict[str, Any] | None:
     if profile_id == FACADE_DRONEGS_PROFILE_ID:
         expected = dict(FACADE_DRONEGS_IDENTITY_PARAMETERS)
+        expected.update(
+            {
+                "capacity_mode": str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
+                "capacity_floor": int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
+                "target_gaussian_spacing_pixels": float(
+                    FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]
+                ),
+                "resident_partitioning": bool(
+                    FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
+                ),
+            }
+        )
+        return expected
+    if profile_id == FACADE_LEGACY_DRONEGS_PROFILE_ID:
+        expected = dict(FACADE_LEGACY_DRONEGS_IDENTITY_PARAMETERS)
         expected.update(
             {
                 "capacity_mode": "fixed",

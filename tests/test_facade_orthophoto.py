@@ -242,6 +242,11 @@ def test_facade_process_uses_the_qualified_coverage_profile():
     assert params["facade_canary_min_ssim"] == "0.25"
     assert params["gs_iterations"] == "30000"
     assert params["gs_max_width"] == "4096"
+    assert params["gs_cap_max"] == "12000000"
+    assert params["gs_capacity_mode"] == "adaptive"
+    assert params["gs_capacity_floor"] == "5000000"
+    assert params["gs_target_gaussian_spacing_pixels"] == "3.6"
+    assert params["gs_resident_partitioning"] is True
     assert params["minimum_registration_ratio"] == "0.9"
 
 
@@ -272,7 +277,7 @@ def test_dashboard_facade_process_reuses_the_backend_profile():
     assert processes["facade"]["stages"] == ["COLMAP"]
     assert processes["facade"]["label"] == "Façade HD"
     assert processes["facade"]["profile_id"] == FACADE_PROCESS_PROFILE_ID
-    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V1"
+    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V2"
     assert validated == dict(FACADE_PROCESS_OVERRIDES)
 
 

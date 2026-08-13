@@ -162,9 +162,14 @@ as a fallback.
 - use 45° as a robust first texture threshold; 30° gives a cleaner frontal
   texture when enough well-observed views remain. Selecting only the nominal
   0° passes for the entire solve is not recommended because it weakens depth;
-- the quality preset permits up to 2,000,000 Gaussians; verify peak VRAM and
-  cooling on the first run. Its 30,000-iteration budget prevents a 2,000+
-  camera solve from sampling each training view only a handful of times;
+- `FACADE_HD_V2` uses the same adaptive resident core/buffer process as map
+  HQ: a 5 M scene floor, 3.6-pixel density target and at most 12 M Gaussians
+  per buffer on a sufficiently large GPU. The detected VRAM ceiling can reduce
+  each resident PLY and increase the number of wall-plane blocks without
+  reducing the requested total surface density;
+- its 30,000-iteration budget prevents a 2,000+ camera solve from sampling each
+  training view only a handful of times. Every buffer is trained from native
+  calibrated crops selected by visibility in the metric facade plane;
 - DroneAI inserts no software sleep between Gaussian iterations; NVIDIA's
   firmware/driver thermal and power protections remain authoritative;
 - request 0.01 m/pixel only after confirming that source GSD, focus and pose
@@ -176,7 +181,8 @@ Facade held-out views are evaluated with the generic HD gates qualified on the
 final Cahors reference run (`facade_canary_min_psnr=18`,
 `facade_canary_min_ssim=0.25`). The product manifest records the effective
 thresholds and the qualified facade profile
-`FACADE_HD_V1`; changing a quality value remains possible but
+`FACADE_HD_V2`; historical `FACADE_HD_V1` jobs remain replayable with their
+fixed 2 M monolithic recipe. Changing a quality value remains possible but
 produces an explicitly customized recipe.
 
 Before rendering, `facade_depth_iqr_multiplier` (default `1.0`) keeps the

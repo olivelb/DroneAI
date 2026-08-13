@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from gaussian_ortho.camera_footprint import (
+    camera_assignment_for_planar_buffer,
     camera_assignment_for_ground_buffer,
+    facade_scene_frame,
     geographic_scene_frame,
 )
 from gaussian_ortho.colmap_loader import CameraInfo, PointCloud
@@ -178,3 +180,50 @@ def test_partition_grid_planner_follows_projected_scene_aspect() -> None:
     )
     wide_scene = build_scene_info([_camera()], [], wide_cloud)
     assert plan_partition_grid(wide_scene, 4) == (1, 4)
+
+
+def test_facade_plane_uses_metric_visibility_and_native_crops() -> None:
+    points = _flat_points()
+    point_cloud = PointCloud(
+        points=points,
+        colors=np.ones_like(points),
+        normals=np.zeros_like(points),
+    )
+    cameras = [
+        _camera(uid=index, center=(50.0, 50.0, 100.0))
+        for index in range(1, 7)
+    ]
+    scene = build_scene_info(cameras, [], point_cloud)
+    frame = facade_scene_frame(
+        points,
+        origin=np.zeros(3),
+        world_to_facade=np.eye(3),
+        meters_per_model_unit=1.0,
+        depth_margin_m=0.0,
+    )
+
+    assignment = camera_assignment_for_planar_buffer(
+        cameras[0],
+        frame,
+        (0.0, 50.0, 0.0, 100.0),
+        minimum_ground_overlap_m2=0.01,
+    )
+    assert assignment is not None
+    assert assignment.nadir_incidence_degrees == pytest.approx(0.0)
+
+    cells = partition_scene(
+        scene,
+        m=1,
+        n=2,
+        overlap=0.2,
+        min_cameras=5,
+        model_to_ground_linear=frame.ground_linear,
+        model_to_ground_offset=frame.ground_offset,
+        planar_frame=frame,
+        maximum_view_incidence_degrees=45.0,
+        minimum_plane_overlap_m2=0.01,
+    )
+
+    assert len(cells) == 2
+    assert all(len(cell_scene.train_cameras) == 6 for _, cell_scene in cells)
+    assert all(cell_scene.image_crops for _, cell_scene in cells)

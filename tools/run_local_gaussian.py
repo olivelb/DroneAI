@@ -210,6 +210,14 @@ PROFILES: dict[str, GaussianProfile] = {
         canary_min_ssim=float(
             FACADE_PROCESS_OVERRIDES["facade_canary_min_ssim"]
         ),
+        capacity_mode=str(FACADE_PROCESS_OVERRIDES["gs_capacity_mode"]),
+        capacity_floor=int(FACADE_PROCESS_OVERRIDES["gs_capacity_floor"]),
+        target_gaussian_spacing_pixels=float(
+            FACADE_PROCESS_OVERRIDES["gs_target_gaussian_spacing_pixels"]
+        ),
+        resident_partitioning=bool(
+            FACADE_PROCESS_OVERRIDES["gs_resident_partitioning"]
+        ),
         qualification_policy_id=FACADE_QUALIFICATION_POLICY_ID,
     ),
 }
@@ -235,7 +243,10 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
-PROFILES["normal"] = versioned_quality_profile("normal-v2")
+PROFILES["normal"] = replace(
+    versioned_quality_profile("normal-v3"),
+    resolution=0.02,
+)
 PROFILES["high-quality"] = replace(
     versioned_quality_profile("high-quality-v3"),
     # Production missions inherit the 2 cm default from pipeline_params.
