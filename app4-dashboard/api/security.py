@@ -267,6 +267,17 @@ def validate_production_configuration() -> None:
     if not is_production():
         return
     bounded_stage_jobs_enabled()
+    candidate_profiles = os.getenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "false"
+    ).strip().lower()
+    if candidate_profiles not in {"true", "false"}:
+        raise RuntimeError(
+            "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED must be true or false"
+        )
+    if candidate_profiles == "true":
+        raise RuntimeError(
+            "Candidate quality profiles cannot be exposed in production"
+        )
     if "*" in configured_cors_origins():
         raise RuntimeError("CORS_ORIGINS must list trusted origins in production")
     if not database_authentication_enabled(production=True):

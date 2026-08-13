@@ -218,6 +218,19 @@ def test_production_configuration_rejects_fused_compute(monkeypatch):
         security.validate_production_configuration()
 
 
+def test_production_configuration_rejects_candidate_quality_profiles(
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_ENV", "production")
+    monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
+    monkeypatch.setenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true"
+    )
+
+    with pytest.raises(RuntimeError, match="cannot be exposed in production"):
+        security.validate_production_configuration()
+
+
 def test_production_configuration_requires_a_credential_pepper(monkeypatch):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     _enable_production_rls(monkeypatch)
