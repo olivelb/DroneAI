@@ -107,6 +107,7 @@ def _performance_manifest(
     decode_workers: int,
     wall_seconds: float,
     host_image_cache_mib: int = 2_048,
+    checkpoint_every: int = 2_000,
     digest: str = "b" * 64,
     seed: int = 42,
 ) -> Path:
@@ -118,6 +119,7 @@ def _performance_manifest(
         decode_workers=decode_workers,
         host_image_cache_limit_mib=host_image_cache_mib,
         host_image_cache_bytes=host_image_cache_mib * 1024 * 1024,
+        checkpoint_every=checkpoint_every,
         checkpoint_path=f"/run-{prefetch_depth}/training.ckpt",
         resumed_from_checkpoint=False,
     )
@@ -148,6 +150,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
                 decode_workers=8,
                 wall_seconds=16.0,
                 host_image_cache_mib=4_096,
+                checkpoint_every=4_000,
             ),
         ]
     )
@@ -156,6 +159,7 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
     assert report["runs"][1]["speedup_from_baseline"] == pytest.approx(1.25)
     assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
     assert report["runs"][1]["host_image_cache_limit_mib"] == 4_096
+    assert report["runs"][1]["checkpoint_every"] == 4_000
     assert report["runs"][1]["topology_refinement_seconds"] == 1.5
     assert report["runs"][1]["image_cache_working_set_bytes"] == 8_000_000_000
 

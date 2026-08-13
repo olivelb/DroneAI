@@ -26,6 +26,7 @@ PERFORMANCE_VARIANT_PARAMETERS = frozenset(
         "decode_workers",
         "host_image_cache_limit_mib",
         "host_image_cache_bytes",
+        "checkpoint_every",
         "checkpoint_path",
         "resumed_from_checkpoint",
     }
@@ -219,6 +220,10 @@ def compare_performance_manifests(
                 "host_image_cache_bytes": _number(
                     parameters,
                     "host_image_cache_bytes",
+                ),
+                "checkpoint_every": _number(
+                    parameters,
+                    "checkpoint_every",
                 ),
                 "image_cache_working_set_bytes": _number(
                     metrics,

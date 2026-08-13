@@ -336,6 +336,12 @@ host-cache bound and its effective byte capacity are recorded in the run
 manifest. Changing the bound is an operational performance experiment and
 requires exact final-PLY parity before promotion.
 
+Checkpoint cadence is governed by the existing `--checkpoint-every` option.
+The performance comparator may vary it together with cache and prefetch
+tuning, but still requires the same trainer binary, scientific parameters and
+exact final PLY SHA-256. A longer interval therefore cannot be promoted from
+wall time alone; its recovery-point trade-off remains an operational decision.
+
 The manifest separates foreground image wait, cumulative parallel decode,
 topology refinement, periodic checkpoint serialization, final PLY export,
 evaluation, training and wall time. This prevents I/O tuning from being
