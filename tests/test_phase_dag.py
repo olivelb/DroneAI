@@ -32,7 +32,11 @@ from shared.stage_contracts import (
 
 stage_routes = importlib.import_module("app4-dashboard.api.routers.mission_stages")
 stage_schemas = importlib.import_module("app4-dashboard.api.stage_schemas")
-PRINCIPAL = SimpleNamespace(subject="dag-operator", role="operator")
+PRINCIPAL = SimpleNamespace(
+    subject="dag-operator",
+    role="operator",
+    organization_id="legacy-unassigned",
+)
 
 
 def _gcp_bundle():

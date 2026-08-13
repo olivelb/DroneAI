@@ -12,6 +12,8 @@ creates the catalogue row only after every file is completed and the verified
 `dataset-manifest.json` has been published. Only a `ready` dataset may be
 listed, browsed or attached to a new mission. New missions store both the
 compatibility `input_dataset` prefix and a foreign key to the catalogue row.
+`GET /datasets` is bounded to 100 rows by default and accepts `limit` (1–200)
+plus `offset`; clients must page rather than assuming an unbounded catalogue.
 The legacy API-proxied `/datasets/upload` path returns `404` in every
 environment so local development follows the same catalogue-producing flow.
 
