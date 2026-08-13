@@ -412,7 +412,10 @@ def rasterize_ortho(
     sort_keys = (
         out_tile_ids.astype(cp.uint64) << cp.uint64(32)
     ) | out_depths.view(cp.uint32).astype(cp.uint64)
-    sort_order = cp.argsort(sort_keys)
+    # Stable ordering keeps the source Gaussian order for bit-identical keys,
+    # matching the previous lexicographic contract and avoiding nondeterminism
+    # when co-planar splats have the same float32 depth.
+    sort_order = cp.argsort(sort_keys, kind="stable")
     sorted_gauss_ids = cp.ascontiguousarray(out_gauss_ids[sort_order].astype(cp.int32))
     sorted_tile_ids  = out_tile_ids[sort_order]
 
