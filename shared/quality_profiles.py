@@ -192,6 +192,16 @@ def quality_profile(profile_id: str) -> QualityProfile:
         raise ValueError(f"unknown quality profile {profile_id!r}; expected one of: {supported}") from error
 
 
+def selectable_quality_profiles(
+    *, include_candidates: bool = False
+) -> tuple[QualityProfile, ...]:
+    """Return profiles offered for new missions in the operator catalog."""
+
+    if include_candidates:
+        return (*QUALITY_PROFILES, *_CANDIDATE_QUALITY_PROFILES)
+    return QUALITY_PROFILES
+
+
 def profile_overrides(
     profile_id: str,
     effective_parameters: dict[str, Any],

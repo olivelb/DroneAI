@@ -231,6 +231,9 @@ dashboardApi:
   replicaCount: 1
   image: drone-dashboard-api
   tag: latest
+  # Expose internal quality-profile candidates in the operator catalog only
+  # during a controlled qualification. Public profiles do not need this flag.
+  qualityProfileCandidatesEnabled: false
   # Local development may reuse database-url. Protected environments must use
   # a separate Secret key whose URL authenticates as a non-owner, NOBYPASSRLS
   # PostgreSQL role.

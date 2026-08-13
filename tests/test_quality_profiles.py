@@ -6,6 +6,7 @@ from shared.quality_profiles import (
     QUALITY_PROFILE_BY_ID,
     profile_overrides,
     quality_profile,
+    selectable_quality_profiles,
 )
 from shared.yolo_capabilities import (
     SUPPORTED_AERIAL_CLASSES,
@@ -75,6 +76,16 @@ def test_profile_overrides_only_records_changed_envelope_values():
             "projected_crs": "EPSG:2154",
         },
     ) == {"gs_iterations": "20000"}
+
+
+def test_candidate_profiles_require_explicit_catalog_exposure():
+    assert "high-quality-v3" not in {
+        profile.profile_id for profile in selectable_quality_profiles()
+    }
+    assert "high-quality-v3" in {
+        profile.profile_id
+        for profile in selectable_quality_profiles(include_candidates=True)
+    }
 
 
 def test_yolo_catalog_exposes_all_approved_models_and_native_classes():

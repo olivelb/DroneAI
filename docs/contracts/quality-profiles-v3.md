@@ -9,6 +9,16 @@ missions.
 the default profile. `high-quality-v3` remains an internal candidate until its
 full target-GPU gates pass.
 
+Qualification deployments may set
+`DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED=true` to add `high-quality-v3` to
+the API catalog and therefore to the Dashboard profile selector. The flag is
+strictly boolean and defaults to `false`; it does not change stored profiles,
+worker recipes or the public default. Direct replay remains able to resolve a
+stored candidate ID even while the catalog hides it. The flag must be removed
+after promotion rather than becoming a permanent production dependency.
+With Helm, the equivalent temporary override is
+`--set dashboardApi.qualityProfileCandidatesEnabled=true`.
+
 | Profile | Native image width | SIFT features | Iterations | Resident policy | Density target |
 |---|---:|---:|---:|---|---:|
 | `normal-v3` (qualified) | 2,400 px | 4,096 | 15,000 | adaptive, 3 M floor, 8 M operator cap; VRAM-bounded per buffer | 8 output pixels per unique core Gaussian |

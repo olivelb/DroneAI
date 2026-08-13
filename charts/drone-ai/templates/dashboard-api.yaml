@@ -206,6 +206,8 @@ spec:
           value: {{ .Values.dashboardApi.cors.origins | quote }}
         - name: DRONEAI_EMBED_CONTROL_LOOPS
           value: {{ (not .Values.dashboardApi.controlWorker.enabled) | quote }}
+        - name: DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED
+          value: {{ .Values.dashboardApi.qualityProfileCandidatesEnabled | quote }}
         - name: DRONEAI_AUTH_DISABLED
           value: {{ .Values.dashboardApi.auth.disabled | quote }}
         - name: DRONEAI_DATABASE_AUTH_ENABLED

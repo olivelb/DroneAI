@@ -40,6 +40,7 @@ dashboardApi:
   replicaCount: 2
   tag: "REPLACE_GIT_SHA"
   environment: production
+  qualityProfileCandidatesEnabled: false
   databaseUrlSecretKey: api-database-url
   rowLevelSecurityRequired: true
   observability:

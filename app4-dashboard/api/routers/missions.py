@@ -25,9 +25,9 @@ from shared.tenancy import (
 )
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
-    QUALITY_PROFILES,
     profile_overrides,
     quality_profile,
+    selectable_quality_profiles,
 )
 from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
@@ -429,13 +429,23 @@ def mission_parameters() -> MissionParametersResponse:
     work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
     if work_drive_default not in configured_names:
         work_drive_default = work_drives[0]["name"] if work_drives else ""
+    raw_candidate_flag = os.getenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "false"
+    ).strip().lower()
+    if raw_candidate_flag not in {"true", "false"}:
+        raise RuntimeError(
+            "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED must be true or false"
+        )
+    profiles = selectable_quality_profiles(
+        include_candidates=raw_candidate_flag == "true"
+    )
     return {
         "pipelines": PIPELINE_DEFAULTS,
         "processes": product_process_catalog(),
         "metadata": PARAMETER_METADATA,
         "work_drives": work_drives,
         "work_drive_default": work_drive_default,
-        "quality_profiles": [profile.as_api_dict() for profile in QUALITY_PROFILES],
+        "quality_profiles": [profile.as_api_dict() for profile in profiles],
         "quality_profile_default": DEFAULT_QUALITY_PROFILE_ID,
         "yolo_models": yolo_model_catalog(),
         "sam3": sam3_capability(),

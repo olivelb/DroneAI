@@ -303,7 +303,12 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
         assert outbox.payload["ai_model_manifest"]["artifact_sha256"]
 
 
-def test_parameter_catalog_exposes_profiles_and_model_capabilities():
+def test_parameter_catalog_exposes_profiles_and_model_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False
+    )
     response = mission_routes.mission_parameters()
 
     assert response["quality_profile_default"] == "normal-v3"
@@ -322,6 +327,40 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities():
         "inference_batch_size": 1,
         "minimum_vram_gib": 12,
     }
+
+
+def test_parameter_catalog_can_expose_hq_v3_for_controlled_qualification(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true"
+    )
+
+    response = mission_routes.mission_parameters()
+
+    assert [profile["id"] for profile in response["quality_profiles"]] == [
+        "fast-v1",
+        "normal-v3",
+        "high-quality-v2",
+        "high-quality-v3",
+    ]
+    candidate = response["quality_profiles"][-1]
+    assert candidate["parameters"]["gs_resident_partitioning"] is True
+    assert candidate["parameters"]["gs_target_gaussian_spacing_pixels"] == "3.6"
+
+
+def test_parameter_catalog_rejects_ambiguous_candidate_flag(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(
+        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes"
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED",
+    ):
+        mission_routes.mission_parameters()
 
 
 def test_sam3_mission_payload_does_not_persist_an_irrelevant_yolo_model():
