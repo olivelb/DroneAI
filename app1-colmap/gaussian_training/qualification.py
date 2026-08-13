@@ -41,31 +41,19 @@ NATIVE_CROP_TILING_VARIANT_PARAMETERS = frozenset(
 
 
 def _controlled_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in parameters.items()
-        if key not in QUALIFICATION_VARIANT_PARAMETERS
-    }
+    return {key: value for key, value in parameters.items() if key not in QUALIFICATION_VARIANT_PARAMETERS}
 
 
 def _performance_controlled_parameters(
     parameters: Mapping[str, Any],
 ) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in parameters.items()
-        if key not in PERFORMANCE_VARIANT_PARAMETERS
-    }
+    return {key: value for key, value in parameters.items() if key not in PERFORMANCE_VARIANT_PARAMETERS}
 
 
 def _native_crop_tiling_controlled_parameters(
     parameters: Mapping[str, Any],
 ) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in parameters.items()
-        if key not in NATIVE_CROP_TILING_VARIANT_PARAMETERS
-    }
+    return {key: value for key, value in parameters.items() if key not in NATIVE_CROP_TILING_VARIANT_PARAMETERS}
 
 
 def _canonical_digest(value: Mapping[str, Any]) -> str:
@@ -85,6 +73,24 @@ def _number(mapping: Mapping[str, Any], key: str) -> int | float | None:
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         raise ValueError(f"run manifest has invalid numeric field {key}")
     return value
+
+
+def _quality_timing_summary(
+    metrics: Mapping[str, Any],
+    timings: Mapping[str, Any],
+) -> dict[str, int | float | None]:
+    """Return the common scientific result fields for one trainer run."""
+
+    return {
+        "final_gaussians": _number(metrics, "final_gaussians"),
+        "final_loss": _number(metrics, "final_loss"),
+        "psnr": _number(metrics, "psnr"),
+        "ssim": _number(metrics, "ssim"),
+        "pixel_weighted_psnr": _number(metrics, "pixel_weighted_psnr"),
+        "pixel_weighted_ssim": _number(metrics, "pixel_weighted_ssim"),
+        "training_seconds": _number(timings, "training_seconds"),
+        "wall_seconds": _number(timings, "wall_seconds"),
+    }
 
 
 def compare_qualification_manifests(
@@ -113,14 +119,9 @@ def compare_qualification_manifests(
         if manifest["trainer_binary_sha256"] != binary_digest:
             raise ValueError("qualification runs use different trainer binaries")
         if _controlled_parameters(manifest["parameters"]) != controlled:
-            raise ValueError(
-                "qualification runs differ outside the allowed AbsGrad variant"
-            )
+            raise ValueError("qualification runs differ outside the allowed AbsGrad variant")
 
-    profiles = [
-        str(manifest["parameters"]["optimizer_profile"])
-        for manifest in manifests
-    ]
+    profiles = [str(manifest["parameters"]["optimizer_profile"]) for manifest in manifests]
     if len(set(profiles)) != len(profiles):
         raise ValueError("qualification optimizer profiles must be unique")
     if expected_profiles is not None and set(profiles) != set(expected_profiles):
@@ -135,23 +136,9 @@ def compare_qualification_manifests(
             {
                 "manifest": str(path),
                 "optimizer_profile": profile,
-                "absgrad_score_weight": _number(
-                    parameters, "absgrad_score_weight"
-                ),
-                "final_gaussians": _number(metrics, "final_gaussians"),
-                "final_loss": _number(metrics, "final_loss"),
-                "psnr": _number(metrics, "psnr"),
-                "ssim": _number(metrics, "ssim"),
-                "pixel_weighted_psnr": _number(
-                    metrics,
-                    "pixel_weighted_psnr",
-                ),
-                "pixel_weighted_ssim": _number(
-                    metrics,
-                    "pixel_weighted_ssim",
-                ),
+                "absgrad_score_weight": _number(parameters, "absgrad_score_weight"),
+                **_quality_timing_summary(metrics, timings),
                 "lpips": _number(metrics, "lpips"),
-                "training_seconds": _number(timings, "training_seconds"),
                 "topology_refinement_seconds": _number(
                     timings,
                     "topology_refinement_seconds",
@@ -160,7 +147,6 @@ def compare_qualification_manifests(
                     timings,
                     "periodic_checkpoint_seconds",
                 ),
-                "wall_seconds": _number(timings, "wall_seconds"),
             }
         )
 
@@ -168,9 +154,7 @@ def compare_qualification_manifests(
     for run in runs:
         run["delta_from_baseline"] = {
             metric: (
-                None
-                if run[metric] is None or baseline_run[metric] is None
-                else run[metric] - baseline_run[metric]
+                None if run[metric] is None or baseline_run[metric] is None else run[metric] - baseline_run[metric]
             )
             for metric in (
                 "final_gaussians",
@@ -220,9 +204,7 @@ def compare_performance_manifests(
         if manifest["trainer_binary_sha256"] != binary_digest:
             raise ValueError("performance runs use different trainer binaries")
         if _performance_controlled_parameters(manifest["parameters"]) != controlled:
-            raise ValueError(
-                "performance runs differ outside the allowed I/O tuning"
-            )
+            raise ValueError("performance runs differ outside the allowed I/O tuning")
 
     ply_digests: list[str] = []
     runs: list[dict[str, Any]] = []
@@ -257,19 +239,7 @@ def compare_performance_manifests(
                     "image_cache_working_set_bytes",
                 ),
                 "point_cloud_sha256": digest,
-                "final_gaussians": _number(metrics, "final_gaussians"),
-                "final_loss": _number(metrics, "final_loss"),
-                "psnr": _number(metrics, "psnr"),
-                "ssim": _number(metrics, "ssim"),
-                "pixel_weighted_psnr": _number(
-                    metrics,
-                    "pixel_weighted_psnr",
-                ),
-                "pixel_weighted_ssim": _number(
-                    metrics,
-                    "pixel_weighted_ssim",
-                ),
-                "training_seconds": _number(timings, "training_seconds"),
+                **_quality_timing_summary(metrics, timings),
                 "topology_refinement_seconds": _number(
                     timings,
                     "topology_refinement_seconds",
@@ -278,7 +248,6 @@ def compare_performance_manifests(
                     timings,
                     "periodic_checkpoint_seconds",
                 ),
-                "wall_seconds": _number(timings, "wall_seconds"),
                 "data_loading_seconds": _number(
                     timings,
                     "data_loading_seconds",
@@ -300,16 +269,12 @@ def compare_performance_manifests(
         wall = run["wall_seconds"]
         run["speedup_from_baseline"] = (
             None
-            if not isinstance(baseline_wall, (int, float))
-            or not isinstance(wall, (int, float))
-            or wall <= 0
+            if not isinstance(baseline_wall, (int, float)) or not isinstance(wall, (int, float)) or wall <= 0
             else baseline_wall / wall
         )
         run["delta_from_baseline"] = {
             metric: (
-                None
-                if run[metric] is None or baseline_run[metric] is None
-                else run[metric] - baseline_run[metric]
+                None if run[metric] is None or baseline_run[metric] is None else run[metric] - baseline_run[metric]
             )
             for metric in (
                 "final_gaussians",
@@ -346,9 +311,7 @@ def compare_native_crop_tiling_manifests(
 
     paths = [Path(path).resolve() for path in manifest_paths]
     if len(paths) != 2:
-        raise ValueError(
-            "native-crop tiling comparison requires exactly two runs"
-        )
+        raise ValueError("native-crop tiling comparison requires exactly two runs")
     manifests: list[dict[str, Any]] = []
     for path in paths:
         manifest = load_run_manifest(path)
@@ -358,38 +321,19 @@ def compare_native_crop_tiling_manifests(
     baseline = manifests[0]
     dataset_fingerprint = baseline["dataset"]["fingerprint"]
     binary_digest = baseline["trainer_binary_sha256"]
-    controlled = _native_crop_tiling_controlled_parameters(
-        baseline["parameters"]
-    )
+    controlled = _native_crop_tiling_controlled_parameters(baseline["parameters"])
     for manifest in manifests[1:]:
         if manifest["dataset"]["fingerprint"] != dataset_fingerprint:
             raise ValueError("native-crop tiling runs use different datasets")
         if manifest["trainer_binary_sha256"] != binary_digest:
-            raise ValueError(
-                "native-crop tiling runs use different trainer binaries"
-            )
-        if (
-            _native_crop_tiling_controlled_parameters(
-                manifest["parameters"]
-            )
-            != controlled
-        ):
-            raise ValueError(
-                "native-crop tiling runs differ outside the allowed policy"
-            )
+            raise ValueError("native-crop tiling runs use different trainer binaries")
+        if _native_crop_tiling_controlled_parameters(manifest["parameters"]) != controlled:
+            raise ValueError("native-crop tiling runs differ outside the allowed policy")
 
-    modes = [
-        _number(manifest["parameters"], "adaptive_native_crop_tiles")
-        for manifest in manifests
-    ]
+    modes = [_number(manifest["parameters"], "adaptive_native_crop_tiles") for manifest in manifests]
     if modes != [0, 1]:
-        raise ValueError(
-            "native-crop tiling runs must order fixed mode before adaptive mode"
-        )
-    policies = [
-        manifest["parameters"].get("native_crop_tile_policy")
-        for manifest in manifests
-    ]
+        raise ValueError("native-crop tiling runs must order fixed mode before adaptive mode")
+    policies = [manifest["parameters"].get("native_crop_tile_policy") for manifest in manifests]
     if policies != [
         "fixed-tile-mode-v1",
         "sensor-pixel-budget-up-to-tile-mode-v1",
@@ -409,9 +353,7 @@ def compare_native_crop_tiling_manifests(
                     parameters,
                     "adaptive_native_crop_tiles",
                 ),
-                "native_crop_tile_policy": parameters.get(
-                    "native_crop_tile_policy"
-                ),
+                "native_crop_tile_policy": parameters.get("native_crop_tile_policy"),
                 "training_image_count": _number(
                     dataset,
                     "training_image_count",
@@ -432,23 +374,7 @@ def compare_native_crop_tiling_manifests(
                     metrics,
                     "held_out_frame_count",
                 ),
-                "final_gaussians": _number(metrics, "final_gaussians"),
-                "final_loss": _number(metrics, "final_loss"),
-                "psnr": _number(metrics, "psnr"),
-                "ssim": _number(metrics, "ssim"),
-                "pixel_weighted_psnr": _number(
-                    metrics,
-                    "pixel_weighted_psnr",
-                ),
-                "pixel_weighted_ssim": _number(
-                    metrics,
-                    "pixel_weighted_ssim",
-                ),
-                "training_seconds": _number(
-                    timings,
-                    "training_seconds",
-                ),
-                "wall_seconds": _number(timings, "wall_seconds"),
+                **_quality_timing_summary(metrics, timings),
             }
         )
 
@@ -456,9 +382,7 @@ def compare_native_crop_tiling_manifests(
     for run in runs:
         run["delta_from_fixed"] = {
             metric: (
-                None
-                if run[metric] is None or baseline_run[metric] is None
-                else run[metric] - baseline_run[metric]
+                None if run[metric] is None or baseline_run[metric] is None else run[metric] - baseline_run[metric]
             )
             for metric in (
                 "training_image_count",
@@ -495,24 +419,16 @@ def compare_resident_seed_contract_manifests(
     paths = [Path(path).resolve() for path in manifest_paths]
     report_paths = [Path(path).resolve() for path in subset_report_paths]
     if len(paths) != 2 or len(report_paths) != 2:
-        raise ValueError(
-            "resident seed comparison requires exactly two runs and reports"
-        )
+        raise ValueError("resident seed comparison requires exactly two runs and reports")
     manifests = [load_run_manifest(path) for path in paths]
     for manifest in manifests:
         validate_run_manifest(manifest)
-    reports = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in report_paths
-    ]
+    reports = [json.loads(path.read_text(encoding="utf-8")) for path in report_paths]
     if not all(isinstance(report, dict) for report in reports):
         raise ValueError("resident seed subset report is invalid")
 
     baseline, candidate = manifests
-    if (
-        baseline["trainer_binary_sha256"]
-        != candidate["trainer_binary_sha256"]
-    ):
+    if baseline["trainer_binary_sha256"] != candidate["trainer_binary_sha256"]:
         raise ValueError("resident seed runs use different trainer binaries")
     if baseline["parameters"] != candidate["parameters"]:
         raise ValueError("resident seed runs changed scientific parameters")
@@ -533,30 +449,18 @@ def compare_resident_seed_contract_manifests(
     for field in frame_count_fields:
         baseline_count = baseline["metrics"].get(field)
         candidate_count = candidate["metrics"].get(field)
-        if (
-            baseline_count is None
-            or candidate_count is None
-            or baseline_count != candidate_count
-        ):
+        if baseline_count is None or candidate_count is None or baseline_count != candidate_count:
             raise ValueError("resident seed runs changed expanded frames")
-    if (
-        baseline["dataset"]["fingerprint"]
-        == candidate["dataset"]["fingerprint"]
-    ):
+    if baseline["dataset"]["fingerprint"] == candidate["dataset"]["fingerprint"]:
         raise ValueError("resident seed contract did not change the dataset")
 
-    scopes = [
-        report.get("track_scope", "selected-cameras-v1")
-        for report in reports
-    ]
+    scopes = [report.get("track_scope", "selected-cameras-v1") for report in reports]
     if scopes != [
         "selected-cameras-v1",
         "selected-cameras-and-native-crops-v1",
     ]:
         raise ValueError("resident seed reports use invalid track scopes")
-    if reports[0].get("selected_images") != reports[1].get(
-        "selected_images"
-    ):
+    if reports[0].get("selected_images") != reports[1].get("selected_images"):
         raise ValueError("resident seed reports changed selected images")
 
     runs: list[dict[str, Any]] = []
@@ -612,9 +516,7 @@ def compare_resident_seed_contract_manifests(
     for run in runs:
         run["delta_from_camera_only"] = {
             metric: (
-                None
-                if run[metric] is None or baseline_run[metric] is None
-                else run[metric] - baseline_run[metric]
+                None if run[metric] is None or baseline_run[metric] is None else run[metric] - baseline_run[metric]
             )
             for metric in (
                 "exported_points",
@@ -633,8 +535,6 @@ def compare_resident_seed_contract_manifests(
     return {
         "schema_version": 1,
         "trainer_binary_sha256": baseline["trainer_binary_sha256"],
-        "controlled_parameters_sha256": _canonical_digest(
-            baseline["parameters"]
-        ),
+        "controlled_parameters_sha256": _canonical_digest(baseline["parameters"]),
         "runs": runs,
     }

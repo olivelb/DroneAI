@@ -4,14 +4,11 @@
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-APP1_ROOT = REPO_ROOT / "app1-colmap"
-if str(APP1_ROOT) not in sys.path:
-    sys.path.insert(0, str(APP1_ROOT))
+from gaussian_comparison_cli import expose_gaussian_training, publish_report
+
+expose_gaussian_training(__file__)
 
 from gaussian_training.qualification import (  # noqa: E402
     compare_resident_seed_contract_manifests,
@@ -28,12 +25,7 @@ def main() -> int:
         args.manifest,
         args.subset_report,
     )
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(report, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps(report, indent=2, sort_keys=True))
+    publish_report(report, args.output)
     return 0
 
 
