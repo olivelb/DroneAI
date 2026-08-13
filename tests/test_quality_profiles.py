@@ -27,7 +27,7 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
         "normal-v3": ("2400", "4096", "15000", "8000000"),
         "normal-v4": ("2400", "4096", "15000", "3000000"),
         "high-quality-v3": ("4096", "16384", "30000", "12000000"),
-        "high-quality-v4": ("4096", "16384", "30000", "12000000"),
+        "high-quality-v4": ("4096", "16384", "30000", "6000000"),
     }
 
     assert DEFAULT_QUALITY_PROFILE_ID == "normal-v3"
@@ -51,11 +51,13 @@ def test_versioned_quality_profiles_preserve_confirmed_resource_envelopes():
     assert quality_profile("high-quality-v2").parameters["gs_capacity_floor"] == "5000000"
     assert quality_profile("high-quality-v3").parameters["gs_target_gaussian_spacing_pixels"] == "3.6"
     assert quality_profile("high-quality-v3").parameters["gs_resident_partitioning"] is True
+    assert quality_profile("high-quality-v4").parameters["gs_capacity_floor"] == "5000000"
     assert quality_profile("normal-v3").parameters["gs_target_gaussian_spacing_pixels"] == "8.0"
     assert quality_profile("normal-v3").parameters["gs_resident_partitioning"] is True
     assert quality_profile("normal-v4").parameters["gs_resident_partitioning"] is True
     assert quality_profile("high-quality-v2").parameters["gs_resident_partitioning"] is False
     assert "high-quality-v3" not in {profile.profile_id for profile in QUALITY_PROFILES}
+    assert "high-quality-v2" not in {profile.profile_id for profile in QUALITY_PROFILES}
     assert "normal-v3" in {profile.profile_id for profile in QUALITY_PROFILES}
     assert quality_profile("normal-v2").version == 2
 
@@ -74,6 +76,7 @@ def test_profile_overrides_only_records_changed_envelope_values():
 def test_candidate_profiles_require_explicit_catalog_exposure():
     selectable = {profile.profile_id for profile in selectable_quality_profiles()}
     assert {"fast-v2", "normal-v4", "high-quality-v3", "high-quality-v4"}.isdisjoint(selectable)
+    assert "high-quality-v2" not in selectable
 
 
 def test_candidate_profile_flag_is_strict(monkeypatch: pytest.MonkeyPatch):
@@ -85,7 +88,8 @@ def test_candidate_profile_flag_is_strict(monkeypatch: pytest.MonkeyPatch):
     with pytest.raises(RuntimeError, match="must be true or false"):
         quality_profile_candidates_enabled()
     candidates = {profile.profile_id for profile in selectable_quality_profiles(include_candidates=True)}
-    assert {"fast-v2", "normal-v4", "high-quality-v3", "high-quality-v4"} <= candidates
+    assert {"fast-v2", "normal-v4", "high-quality-v4"} <= candidates
+    assert "high-quality-v3" not in candidates
 
 
 def test_yolo_catalog_exposes_all_approved_models_and_native_classes():

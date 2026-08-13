@@ -1,5 +1,10 @@
 # Gaussian render-quality implementation plan — 2026-08-12
 
+> Superseding decision (14 August 2026): the historical 12 M HQ-v2/v3
+> envelopes below remain reproducible evidence, but new HQ-v4 and facade-v3
+> runs use a 6 M hard resident cap. Qualification must size more resident
+> cells instead of loading a 12 M buffer.
+
 This ledger turns the August render-quality audit into short, independently
 verifiable delivery phases. Quality claims remain unchanged until the listed
 qualification gates pass.

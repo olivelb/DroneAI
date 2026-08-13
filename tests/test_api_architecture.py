@@ -314,7 +314,6 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities(
     assert [profile["id"] for profile in response["quality_profiles"]] == [
         "fast-v1",
         "normal-v3",
-        "high-quality-v2",
     ]
     assert len(response["yolo_models"]) == 8
     assert all(model["selectable_classes"] for model in response["yolo_models"])
@@ -328,7 +327,7 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities(
     }
 
 
-def test_parameter_catalog_can_expose_hq_v3_for_controlled_qualification(
+def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
     monkeypatch: pytest.MonkeyPatch,
 ):
     monkeypatch.setenv(
@@ -340,10 +339,8 @@ def test_parameter_catalog_can_expose_hq_v3_for_controlled_qualification(
     assert [profile["id"] for profile in response["quality_profiles"]] == [
         "fast-v1",
         "normal-v3",
-        "high-quality-v2",
         "fast-v2",
         "normal-v4",
-        "high-quality-v3",
         "high-quality-v4",
     ]
     candidate = next(
@@ -352,6 +349,7 @@ def test_parameter_catalog_can_expose_hq_v3_for_controlled_qualification(
         if profile["id"] == "high-quality-v4"
     )
     assert candidate["parameters"]["gs_resident_partitioning"] is True
+    assert candidate["parameters"]["gs_cap_max"] == "6000000"
     assert candidate["parameters"]["gs_target_gaussian_spacing_pixels"] == "3.6"
     assert candidate["parameters"]["gs_initial_scale_policy"] == "projected-knn"
 

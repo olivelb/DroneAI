@@ -26,7 +26,7 @@ STAGE_ORDER = ("colmap", "gaussian", "detection")
 MODERN_DEFAULTS = PIPELINE_DEFAULTS["modern"]
 FAST_DEFAULTS = quality_profile("fast-v1").parameters
 NORMAL_DEFAULTS = quality_profile("normal-v3").parameters
-HIGH_QUALITY_DEFAULTS = quality_profile("high-quality-v2").parameters
+HIGH_QUALITY_DEFAULTS = quality_profile("high-quality-v4").parameters
 
 
 @dataclass(frozen=True)
@@ -107,9 +107,7 @@ PROFILES = {
     "normal": PipelineProfile(
         colmap_args=production_colmap_args(
             image_size=str(NORMAL_DEFAULTS["feature_max_image_size"]),
-            maximum_features=str(
-                NORMAL_DEFAULTS["feature_max_num_features"]
-            ),
+            maximum_features=str(NORMAL_DEFAULTS["feature_max_num_features"]),
         ),
         gaussian_profile="normal",
         gaussian_backend="dronegs",
@@ -118,9 +116,7 @@ PROFILES = {
     "high-quality": PipelineProfile(
         colmap_args=production_colmap_args(
             image_size=str(HIGH_QUALITY_DEFAULTS["feature_max_image_size"]),
-            maximum_features=str(
-                HIGH_QUALITY_DEFAULTS["feature_max_num_features"]
-            ),
+            maximum_features=str(HIGH_QUALITY_DEFAULTS["feature_max_num_features"]),
         ),
         gaussian_profile="high-quality",
         gaussian_backend="dronegs",
@@ -226,18 +222,11 @@ def stage_command(
 
 
 def colmap_complete(workspace: Path) -> tuple[bool, str]:
-    required = [
-        workspace / "dense" / "sparse" / name
-        for name in ("cameras.bin", "images.bin", "points3D.bin")
-    ]
+    required = [workspace / "dense" / "sparse" / name for name in ("cameras.bin", "images.bin", "points3D.bin")]
     required.append(workspace / "alignment_transform.json")
     missing = [path.name for path in required if not path.is_file()]
     image_root = workspace / "dense" / "images"
-    image_count = (
-        sum(1 for path in image_root.rglob("*") if path.is_file())
-        if image_root.is_dir()
-        else 0
-    )
+    image_count = sum(1 for path in image_root.rglob("*") if path.is_file()) if image_root.is_dir() else 0
     if missing or image_count < 3:
         return False, f"missing={missing}, undistorted_images={image_count}"
     return True, f"{image_count} undistorted images and aligned sparse model"

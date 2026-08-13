@@ -174,12 +174,12 @@ as a fallback.
 - facade missions use the same adaptive resident core/buffer process as maps.
   The selected production profile controls the scientific envelope: qualified
   `normal-v3` uses 15,000 iterations, a 3 M scene floor and an 8-pixel density
-  target, while candidate `high-quality-v3` uses 30,000 iterations, a 5 M
-  floor and a 3.6-pixel target. The detected VRAM ceiling can reduce each
+  target, while candidate `high-quality-v4` uses 30,000 iterations, a 5 M
+  floor, a 6 M hard resident cap and a 3.6-pixel target. The detected VRAM ceiling can reduce each
   resident PLY and increase the number of wall-plane blocks without reducing
   the requested total surface density;
 - every buffer is trained from native calibrated crops selected by visibility
-  in the metric facade plane. `FACADE_HD_V2` remains the versioned fallback
+  in the metric facade plane. `FACADE_HD_V3` is the versioned fallback
   recipe for direct clients that do not submit a production quality profile;
 - DroneAI inserts no software sleep between Gaussian iterations; NVIDIA's
   firmware/driver thermal and power protections remain authoritative;
@@ -191,9 +191,10 @@ as a fallback.
 Facade held-out views are evaluated with the facade gates established on the
 final Cahors reference run (`facade_canary_min_psnr=18`,
 `facade_canary_min_ssim=0.25`). The product manifest records the effective
-thresholds and the selected production profile. `FACADE_HD_V2` remains the
+thresholds and the selected production profile. `FACADE_HD_V3` remains the
 fallback for direct clients without a selected profile; historical
-`FACADE_HD_V1` jobs remain replayable with their fixed 2 M monolithic recipe.
+`FACADE_HD_V2` and `FACADE_HD_V1` jobs remain replayable with their original
+12 M resident and fixed 2 M monolithic recipes respectively.
 Changing a quality value remains possible but produces an explicitly
 customized recipe.
 

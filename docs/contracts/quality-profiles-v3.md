@@ -1,14 +1,17 @@
 # Quality profiles v3
 
-DroneAI exposes `fast-v1`, the resident `normal-v3` and `high-quality-v2` from
-`GET /mission/parameters`. Stored v1/v2 missions keep their exact recipes;
-`normal-v2` remains available for replay but is no longer offered for new
-missions.
+DroneAI exposes `fast-v1` and the resident `normal-v3` from
+`GET /mission/parameters`. The former 12 M `high-quality-v2` profile remains
+resolvable for exact replay but is no longer offered for new missions. A new
+HQ mission must use the 6 M `high-quality-v4` candidate during qualification.
+Stored v1/v2 missions keep their exact recipes; `normal-v2` also remains
+available for replay but is no longer offered for new missions.
 
 `normal-v3` passed its real multi-block BIGZEN gate on 13 August 2026 and is
 the default profile. The projected-initialization recipes `fast-v2`,
-`normal-v4`, and `high-quality-v4`, plus the earlier `high-quality-v3`, remain
-internal candidates until their applicable target-GPU gates pass.
+`normal-v4`, and `high-quality-v4` remain internal candidates until their
+applicable target-GPU gates pass. The earlier 12 M `high-quality-v3` candidate
+is replay-only.
 
 Qualification deployments may set
 `DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED=true` to add all candidate
@@ -32,7 +35,7 @@ crop-aware projected initialization and run-scaled topology/noise schedule:
 |---|---:|---:|---:|---|
 | `fast-v2` | 7,500 | 1.5 M monolithic preview | 8 px | representative cell passed |
 | `normal-v4` | 15,000 | 3 M per buffer | 8 px | representative 8 GiB cell passed; multi-block pending |
-| `high-quality-v4` | 30,000 | 12 M per buffer | 8 px | not yet GPU-qualified |
+| `high-quality-v4` | 30,000 | 6 M per buffer | 8 px | not yet GPU-qualified |
 
 Capacity-targeted growth is enabled for these candidates. Growth, pruning and
 position noise stop on the final 200-step boundary strictly inside the first
@@ -73,9 +76,10 @@ does not relax the requested GSD.
 It then accounts conservatively for core/buffer overlap and chooses a compact
 metric product-plane grid whose resident cells stay at or below the operator
 and VRAM caps. At approximately 209,400 m², 2 cm GSD, 3.6 px spacing and 20%
-overlap, this resolves to about 40.4 M unique retained Gaussians, about 41.3 M
-Gaussians before filtering, at least seven resident cells, and no more than
-12 M Gaussians loaded for one buffer.
+overlap, this resolves to about 40.4 M unique retained Gaussians and about
+41.3 M Gaussians before filtering. The planner increases the number of
+resident cells as needed and never loads more than the selected profile cap
+for one buffer. For `high-quality-v4`, that hard cap is 6 M Gaussians.
 
 For maps, that plane is projected ground from the geographic Sim3. For facades,
 it is the fitted horizontal/vertical wall frame converted to metres. Each cell

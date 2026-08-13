@@ -117,10 +117,7 @@ def test_facade_selection_can_isolate_one_wall_by_circular_yaw(tmp_path, monkeyp
 
 
 def test_facade_detail_range_exclusion_is_inclusive_and_audited():
-    paths = [
-        Path(f"DJI_2025032416{sequence:04d}_{sequence:04d}_V.JPG")
-        for sequence in range(300, 661)
-    ]
+    paths = [Path(f"DJI_2025032416{sequence:04d}_{sequence:04d}_V.JPG") for sequence in range(300, 661)]
     start = paths[7].name
     end = paths[358].name
 
@@ -302,9 +299,7 @@ def test_facade_report_supports_resident_partition_geometry(tmp_path):
 
 
 def test_facade_override_does_not_require_hidden_custom_crs():
-    validated = validate_pipeline_overrides(
-        {"orthophoto_mode": "facade", "projected_crs_mode": "custom"}
-    )
+    validated = validate_pipeline_overrides({"orthophoto_mode": "facade", "projected_crs_mode": "custom"})
 
     assert validated["orthophoto_mode"] == "facade"
 
@@ -327,7 +322,7 @@ def test_facade_process_uses_the_qualified_coverage_profile():
     assert params["facade_canary_min_ssim"] == "0.25"
     assert params["gs_iterations"] == "30000"
     assert params["gs_max_width"] == "4096"
-    assert params["gs_cap_max"] == "12000000"
+    assert params["gs_cap_max"] == "6000000"
     assert params["gs_capacity_mode"] == "adaptive"
     assert params["gs_capacity_floor"] == "5000000"
     assert params["gs_target_gaussian_spacing_pixels"] == "3.6"
@@ -404,15 +399,13 @@ def test_facade_process_preserves_selected_resident_quality_profile(
 
 def test_dashboard_facade_process_reuses_the_backend_profile():
     processes = {process["id"]: process for process in product_process_catalog()}
-    validated = validate_pipeline_overrides(
-        dict(processes["facade"]["parameters"])
-    )
+    validated = validate_pipeline_overrides(dict(processes["facade"]["parameters"]))
 
     assert processes["map"]["stages"] == ["COLMAP", "TILER", "IA"]
     assert processes["facade"]["stages"] == ["COLMAP"]
     assert processes["facade"]["label"] == "Façade"
     assert processes["facade"]["profile_id"] == FACADE_PROCESS_PROFILE_ID
-    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V2"
+    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V3"
     assert validated == dict(FACADE_PROCESS_OVERRIDES)
 
 
@@ -421,9 +414,7 @@ def test_facade_scale_prefers_original_workspace_images(tmp_path, monkeypatch):
     import sys
 
     sys.path.insert(0, str(Path(__file__).parents[1] / "app1-colmap"))
-    module = importlib.import_module(
-        "gaussian_ortho.generate_gaussian_orthophoto"
-    )
+    module = importlib.import_module("gaussian_ortho.generate_gaussian_orthophoto")
 
     workspace = tmp_path / "workspace"
     source_images = workspace / "images"
@@ -439,9 +430,7 @@ def test_facade_scale_prefers_original_workspace_images(tmp_path, monkeypatch):
         return 1.0, "model-units"
 
     monkeypatch.setattr(module, "compute_colmap_scale_geodesic", fake_scale)
-    scale, source, images_dir = module._compute_facade_gps_scale(
-        [], str(workspace / "dense")
-    )
+    scale, source, images_dir = module._compute_facade_gps_scale([], str(workspace / "dense"))
 
     assert scale == 2.5
     assert source == "relative-gps-baselines"
@@ -510,9 +499,7 @@ def test_colmap_subset_removes_tracks_to_omitted_images(tmp_path):
         ["keep.jpg"],
         point_ids=set(),
     )
-    images = _read_colmap_images_bin(
-        empty_target / "sparse" / "0" / "images.bin"
-    )
+    images = _read_colmap_images_bin(empty_target / "sparse" / "0" / "images.bin")
     assert images[1]["point3D_ids"] == [-1]
 
 

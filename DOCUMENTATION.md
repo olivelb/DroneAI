@@ -1674,9 +1674,11 @@ All GS parameters are exposed in the **Orthomosaic** parameter group in the dash
 
 The table's `Default` column is the low-level validated DroneGS recipe used
 before an end-to-end quality envelope is applied. New Mission Studio missions
-default to `normal-v2`. Fast remains a fixed 1.5 M preview; Normal and High
-Quality derive their effective capacity from robust scene area, requested GSD
-and detected VRAM, with respective operator ceilings of 8 M and 12 M. The
+default to `normal-v3`. Fast remains a fixed 1.5 M preview; Normal derives its
+effective capacity from robust scene area, requested GSD and detected VRAM up
+to its 8 M legacy operator ceiling. The projected HQ-v4 candidate uses a 5 M
+floor and a 6 M hard resident ceiling. The former 12 M HQ-v2 identity remains
+available only for exact mission replay. The
 complete immutable envelopes and the memory formula are in
 [`docs/contracts/quality-profiles-v3.md`](docs/contracts/quality-profiles-v3.md).
 
