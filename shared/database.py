@@ -379,10 +379,17 @@ def get_or_create_mission(
     vol_id: str,
     **kwargs: Any,
 ) -> Mission:
-    """Get an existing mission by vol_id or create a new one."""
+    """Get or create a mission inside one explicit organization."""
+    organization_id = str(kwargs.get("organization_id") or LEGACY_ORGANIZATION_ID)
+    kwargs["organization_id"] = organization_id
     mission = cast(
         Mission | None,
-        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+        session.query(Mission)
+        .filter(
+            Mission.organization_id == organization_id,
+            Mission.vol_id == vol_id,
+        )
+        .first(),
     )
     if mission is None:
         mission = Mission(vol_id=vol_id, **kwargs)
@@ -400,11 +407,17 @@ def update_mission_progress(
     status: str = "processing",
     service: str | None = None,
     error_message: str | None = None,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
 ) -> Mission | None:
     """Update mission progress and optionally its status."""
     mission = cast(
         Mission | None,
-        session.query(Mission).filter(Mission.vol_id == vol_id).first(),
+        session.query(Mission)
+        .filter(
+            Mission.organization_id == organization_id,
+            Mission.vol_id == vol_id,
+        )
+        .first(),
     )
     if mission is None:
         logger.warning("Mission not found for progress update: %s", vol_id)
@@ -422,16 +435,39 @@ def update_mission_progress(
     return mission
 
 
-def count_received_tiles(session: Session, vol_id: str) -> int:
+def count_received_tiles(
+    session: Session,
+    vol_id: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+) -> int:
     """Count durable AI responses, including tiles with no detections."""
-    return int(session.query(ProcessedTile).filter(ProcessedTile.vol_id == vol_id).count())
+    return int(
+        session.query(ProcessedTile)
+        .join(Mission, Mission.id == ProcessedTile.mission_id)
+        .filter(
+            Mission.organization_id == organization_id,
+            ProcessedTile.vol_id == vol_id,
+        )
+        .count()
+    )
 
 
-def get_mission_detections(session: Session, vol_id: str) -> list[Detection]:
+def get_mission_detections(
+    session: Session,
+    vol_id: str,
+    organization_id: str = LEGACY_ORGANIZATION_ID,
+) -> list[Detection]:
     """Get all detections for a mission, ordered by tile index."""
     return cast(
         list[Detection],
-        session.query(Detection).filter(Detection.vol_id == vol_id).order_by(Detection.tile_index, Detection.id).all(),
+        session.query(Detection)
+        .join(Mission, Mission.id == Detection.mission_id)
+        .filter(
+            Mission.organization_id == organization_id,
+            Detection.vol_id == vol_id,
+        )
+        .order_by(Detection.tile_index, Detection.id)
+        .all(),
     )
 
 

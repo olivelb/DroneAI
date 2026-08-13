@@ -54,13 +54,13 @@ def _mutation_context(
 
 def _locked_editable_feature(
     session: RouteSession,
-    vol_id: str,
+    mission_id: int,
     feature_id: str,
     *,
     include_deleted: bool = False,
 ) -> MapFeature | None:
     query = session.query(MapFeature).filter(
-        MapFeature.vol_id == vol_id,
+        MapFeature.mission_id == mission_id,
         MapFeature.feature_id == feature_id,
         MapFeature.source.in_(("manual", "ai")),
     )
@@ -114,10 +114,10 @@ def update_map_feature(
 ) -> JsonObject:
     with _mutation_context(
         vol_id, principal, owner_subject, "feature_update"
-    ) as (typed_session, _mission):
+    ) as (typed_session, mission):
         feature = cast(
             MapFeatureMutationRecord | None,
-            _locked_editable_feature(typed_session, vol_id, feature_id),
+            _locked_editable_feature(typed_session, mission.id, feature_id),
         )
         if feature is None:
             raise HTTPException(status_code=404, detail="Feature not found")
@@ -161,9 +161,9 @@ def delete_map_feature(
 ) -> Response:
     with _mutation_context(
         vol_id, principal, owner_subject, "feature_delete"
-    ) as (typed_session, _mission):
+    ) as (typed_session, mission):
         feature = _locked_editable_feature(
-            typed_session, vol_id, feature_id,
+            typed_session, mission.id, feature_id,
         )
         if feature is None:
             raise HTTPException(status_code=404, detail="Feature not found")
@@ -191,11 +191,11 @@ def mutate_map_features_bulk(
 ) -> JsonObject:
     with _mutation_context(
         vol_id, principal, owner_subject, f"feature_bulk_{request.action}"
-    ) as (typed_session, _mission):
+    ) as (typed_session, mission):
         features = cast(
             list[MapFeature],
             typed_session.query(MapFeature).filter(
-                MapFeature.vol_id == vol_id,
+                MapFeature.mission_id == mission.id,
                 MapFeature.feature_id.in_(request.feature_ids),
                 MapFeature.source.in_(("manual", "ai")),
             ).with_for_update().all(),

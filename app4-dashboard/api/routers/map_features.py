@@ -32,7 +32,7 @@ router = APIRouter()
 def _search_map_records(
     session: RouteSession,
     *,
-    vol_id: str,
+    mission_id: int,
     text: str,
     source: str | None,
     run_id: str | None,
@@ -45,7 +45,7 @@ def _search_map_records(
 ) -> tuple[list[MapFeature], bool]:
     if source == "legacy":
         return [], False
-    query = session.query(MapFeature).filter(MapFeature.vol_id == vol_id)
+    query = session.query(MapFeature).filter(MapFeature.mission_id == mission_id)
     query = query.filter(
         MapFeature.deleted_at.is_not(None)
         if deleted
@@ -86,14 +86,14 @@ def _search_map_records(
 def _search_legacy_records(
     session: RouteSession,
     *,
-    vol_id: str,
+    mission_id: int,
     text: str,
     class_name: str | None,
     min_confidence: float | None,
     bounds: Bounds | None,
     limit: int,
 ) -> tuple[list[Detection], bool]:
-    query = session.query(Detection).filter(Detection.vol_id == vol_id)
+    query = session.query(Detection).filter(Detection.mission_id == mission_id)
     if text:
         query = query.filter(Detection.class_name.ilike(f"%{text}%"))
     if class_name:
@@ -232,7 +232,7 @@ def search_map_features(
         )
         records, truncated = _search_map_records(
             typed_session,
-            vol_id=vol_id,
+            mission_id=mission.id,
             text=text,
             source=source,
             run_id=run_id,
@@ -264,7 +264,7 @@ def search_map_features(
             else:
                 legacy, legacy_truncated = _search_legacy_records(
                     typed_session,
-                    vol_id=vol_id,
+                    mission_id=mission.id,
                     text=text,
                     class_name=class_name,
                     min_confidence=min_confidence,
