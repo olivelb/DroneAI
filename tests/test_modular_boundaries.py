@@ -423,7 +423,6 @@ def test_frontend_workspace_cache_is_separate_from_local_editing_state():
 
     assert _line_count(workspace) < 110
     assert "fetchBrowse" in workspace_source
-    assert "fetchPods" in workspace_source
     assert "fetchBrowse" not in store_source
     assert "fetchPods" not in store_source
     assert "DatasetItem" not in store_source

@@ -597,7 +597,6 @@ helm get hooks drone-ai -n drone-ai
 
 # API
 curl https://api.droneai.example.fr/
-curl https://api.droneai.example.fr/pods
 
 # Frontend
 open https://droneai.example.fr

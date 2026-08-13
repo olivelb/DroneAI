@@ -149,7 +149,11 @@ def _bounded_positive_int(name: str, default: int, maximum: int) -> int:
     return value
 
 
-def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
+def _executor_catalog(
+    raw: str,
+    *,
+    require_digest: bool = False,
+) -> dict[StageId, StageExecutorConfig]:
     payload = json.loads(raw or "{}")
     if not isinstance(payload, dict):
         raise ValueError("DRONEAI_STAGE_EXECUTORS_JSON must be an object")
@@ -163,11 +167,17 @@ def _executor_catalog(raw: str) -> dict[StageId, StageExecutorConfig]:
         architecture = item.get("gpu_architecture")
         selector = item.get("node_selector") or {}
         tolerations = item.get("tolerations") or []
-        if not isinstance(image, str) or not (
-            re.search(r"@sha256:[0-9a-f]{64}$", image)
-            or re.search(r":[0-9a-f]{7,40}$", image)
-        ):
-            raise ValueError(f"Executor image for {stage} must be immutable")
+        if not isinstance(image, str):
+            raise ValueError(f"Executor image for {stage} must be a string")
+        digest_image = re.search(r"@sha256:[0-9a-f]{64}$", image)
+        development_image = re.search(r":[0-9a-f]{7,40}$", image)
+        if not digest_image and (require_digest or not development_image):
+            requirement = (
+                "use an OCI digest"
+                if require_digest
+                else "use an OCI digest or development Git-SHA tag"
+            )
+            raise ValueError(f"Executor image for {stage} must {requirement}")
         if (
             not isinstance(command, list)
             or not command
@@ -411,7 +421,10 @@ def settings_from_environment() -> StageOrchestratorSettings:
             resource_active=resource_limits,
         ),
         executors=(
-            _executor_catalog(os.getenv("DRONEAI_STAGE_EXECUTORS_JSON", "{}"))
+            _executor_catalog(
+                os.getenv("DRONEAI_STAGE_EXECUTORS_JSON", "{}"),
+                require_digest=protected_environment,
+            )
             if enabled
             else {}
         ),

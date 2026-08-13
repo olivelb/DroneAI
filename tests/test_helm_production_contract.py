@@ -218,6 +218,7 @@ def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
         ):
             assert f"    {stage}:\n" in stage_values
         assert stage_values.count("gpu_architecture: REPLACE_GPU_ARCHITECTURE") == 5
+        assert stage_values.count("@sha256:REPLACE_OCI_DIGEST") == 5
         assert "colmapWorker:\n  enabled: false" in values
         assert "iaWorker:\n  enabled: false" in values
         assert "processingWorker:\n  replicaCount: 0" in values
@@ -227,6 +228,8 @@ def test_protected_overlays_exclusively_use_complete_bounded_compute() -> None:
     assert "iaWorker.enabled must be false" in deployment
     assert "processingWorker.replicaCount must be 0" in deployment
     assert "stageJobs.executors.%s.image is required" in deployment
+    assert "stageJobs.executors.%s.image must use an OCI digest" in deployment
+    assert "Git-SHA tag" not in deployment
     assert "stageJobs.executors.%s.command is required" in deployment
     assert "name: DRONEAI_ENV" in helpers
     assert ".Values.dashboardApi.environment" in helpers

@@ -764,6 +764,24 @@ def test_executor_catalog_parses_stage_tolerations():
     )
 
 
+def test_protected_executor_catalog_rejects_mutable_git_sha_tags():
+    payload = {
+        stage: {
+            "image": "registry.example/worker:0123456789abcdef",
+            "command": ["python", "-m", f"{stage}_executor"],
+            "gpu_architecture": "ampere",
+        }
+        for stage in _executors()
+    }
+
+    with pytest.raises(ValueError, match="must use an OCI digest"):
+        orchestrator._executor_catalog(json.dumps(payload), require_digest=True)
+
+    assert orchestrator._executor_catalog(json.dumps(payload))["detection"].image == (
+        "registry.example/worker:0123456789abcdef"
+    )
+
+
 def test_work_drive_catalog_supports_local_pvc_and_bounded_empty_dir():
     catalog = orchestrator._work_drive_catalog(
         json.dumps(

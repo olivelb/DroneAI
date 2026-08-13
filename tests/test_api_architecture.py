@@ -81,7 +81,6 @@ def test_main_is_a_small_composition_root_with_all_public_routes():
         "/missions/{vol_id}",
         "/missions/{vol_id}/stages/{stage}/runs",
         "/missions/{vol_id}/stages/runs/{run_id}/artifacts",
-        "/pods",
         "/datasets",
         "/datasets/upload",
         "/datasets/upload-sessions",
