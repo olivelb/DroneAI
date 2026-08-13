@@ -63,6 +63,27 @@ def _read_rgb(path: Path) -> np.ndarray:
     return image
 
 
+def _target_path(evaluation_dir: Path, view: HeldOutView) -> Path:
+    return evaluation_dir / "targets" / f"{view.held_out_index:06d}.ppm"
+
+
+def _validate_common_targets(
+    evaluation_dirs: dict[str, Path],
+    all_views: dict[str, dict[tuple[str, int], HeldOutView]],
+    common_keys: set[tuple[str, int]],
+) -> dict[tuple[str, int], str]:
+    first_label = next(iter(evaluation_dirs))
+    digests: dict[tuple[str, int], str] = {}
+    for key in common_keys:
+        expected = _sha256(_target_path(evaluation_dirs[first_label], all_views[first_label][key]))
+        for label, evaluation_dir in evaluation_dirs.items():
+            actual = _sha256(_target_path(evaluation_dir, all_views[label][key]))
+            if actual != expected:
+                raise ValueError(f"held-out target drift for {key!r} in {label}")
+        digests[key] = expected
+    return digests
+
+
 def _fit_panel(image: np.ndarray, width: int) -> np.ndarray:
     scale = min(1.0, width / image.shape[1])
     resized = cv2.resize(
@@ -97,11 +118,11 @@ def _comparison_panel(
     views: dict[str, HeldOutView],
     *,
     panel_width: int,
+    target_digest: str,
 ) -> tuple[np.ndarray, str]:
     first_label = next(iter(evaluation_dirs))
     first_view = views[first_label]
-    first_target = evaluation_dirs[first_label] / "targets" / (f"{first_view.held_out_index:06d}.ppm")
-    target_digest = _sha256(first_target)
+    first_target = _target_path(evaluation_dirs[first_label], first_view)
     target = _read_rgb(first_target)
     images: list[np.ndarray] = [target]
     labels = ["Real target"]
@@ -109,9 +130,6 @@ def _comparison_panel(
     error_labels: list[str] = []
     for label, evaluation_dir in evaluation_dirs.items():
         view = views[label]
-        target_path = evaluation_dir / "targets" / f"{view.held_out_index:06d}.ppm"
-        if _sha256(target_path) != target_digest:
-            raise ValueError(f"held-out target drift for {view.key!r} in {label}")
         prediction = _read_rgb(evaluation_dir / "predictions" / f"{view.held_out_index:06d}.ppm")
         if prediction.shape != target.shape:
             raise ValueError(f"held-out prediction dimensions changed in {label}")
@@ -161,6 +179,11 @@ def render_comparisons(
     common_keys = set.intersection(*(set(views) for views in all_views.values()))
     if not common_keys:
         raise ValueError("Gaussian runs have no common held-out views")
+    target_digests = _validate_common_targets(
+        evaluation_dirs,
+        all_views,
+        common_keys,
+    )
     selector_label = next(reversed(evaluation_dirs))
     selector = all_views[selector_label]
     ordered = sorted(common_keys, key=lambda key: selector[key].psnr)
@@ -176,6 +199,7 @@ def render_comparisons(
             evaluation_dirs,
             selected_views,
             panel_width=panel_width,
+            target_digest=target_digests[key],
         )
         output_path = output_dir / f"{selection}.png"
         if not cv2.imwrite(str(output_path), montage):
