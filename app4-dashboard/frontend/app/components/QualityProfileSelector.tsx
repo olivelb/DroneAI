@@ -42,6 +42,11 @@ export default function QualityProfileSelector() {
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         {profiles.map((profile) => {
           const selected = profile.id === qualityProfileId;
+          const resident =
+            profile.parameters.gs_resident_partitioning === true ||
+            String(profile.parameters.gs_resident_partitioning)
+              .trim()
+              .toLowerCase() === "true";
           return (
             <button
               key={profile.id}
@@ -69,12 +74,23 @@ export default function QualityProfileSelector() {
                 <span>{t("profile.iterations", { value: formatInteger(profile.parameters.gs_iterations) })}</span>
                 <span>
                   {t(
-                    profile.parameters.gs_capacity_mode === "adaptive"
+                    resident
+                      ? "profile.gaussiansResident"
+                      : profile.parameters.gs_capacity_mode === "adaptive"
                       ? "profile.gaussiansAdaptive"
                       : "profile.gaussians",
                     { value: formatInteger(profile.parameters.gs_cap_max) },
                   )}
                 </span>
+                {resident && (
+                  <span>
+                    {t("profile.gaussianSpacing", {
+                      value: String(
+                        profile.parameters.gs_target_gaussian_spacing_pixels,
+                      ),
+                    })}
+                  </span>
+                )}
               </span>
             </button>
           );
