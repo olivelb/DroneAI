@@ -101,8 +101,8 @@ an old orthomosaic or detection output cannot be silently reused.
 
 These `latest` names are deliberate workstation-only aliases used by the local
 diagnostic scripts. They are not deployment identities and must never be
-copied into a preproduction/production Helm executor map; Kubernetes uses a
-Git-SHA tag or OCI digest.
+copied into a preproduction/production Helm executor map. Local K3s may use a
+Git-SHA tag; staging and production require a promoted OCI digest.
 
 Build the lightweight image from the repository root:
 

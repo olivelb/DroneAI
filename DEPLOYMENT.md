@@ -24,8 +24,10 @@ five one-shot executors completed the BIGZEN K3s/RTX 3090 Q3 mission documented
 in the [Chapelle qualification report](docs/benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md).
 The generic chart default stays `false` to prevent accidental Job dispatch with
 mutable or incomplete image settings; `deploy.sh distributed` activates it
-only when `STAGE_JOBS_IMAGE_TAG` supplies an immutable Git-SHA tag. The fused
-Kafka workers remain available as an explicit compatibility path.
+only when `STAGE_JOBS_IMAGE_TAG` supplies a traceable Git-SHA tag for the local
+K3s workflow. Protected Helm environments reject tags and require promoted OCI
+digests. The fused Kafka workers remain available as an explicit compatibility
+path.
 
 The infrastructure-free Python runner in `tools/run_local_pipeline.sh` remains
 available for scientific diagnostics, but it is not the dashboard deployment.

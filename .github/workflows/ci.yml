@@ -469,6 +469,8 @@ jobs:
     if: needs.changes.outputs.helm == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CI_OCI_DIGEST: sha256:0000000000000000000000000000000000000000000000000000000000000000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
@@ -483,11 +485,11 @@ jobs:
           --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
-          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia:${GITHUB_SHA}"
+          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia@${CI_OCI_DIGEST}"
           > /tmp/drone-ai-production.yaml
       - name: Render OVHcloud preproduction values
         run: >-
@@ -496,11 +498,11 @@ jobs:
           --set-string processingWorker.tag="${GITHUB_SHA}"
           --set-string dashboardApi.tag="${GITHUB_SHA}"
           --set-string dashboardFrontend.tag="${GITHUB_SHA}"
-          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap:${GITHUB_SHA}"
-          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia:${GITHUB_SHA}"
+          --set-string stageJobs.executors.reconstruction.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_training.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia@${CI_OCI_DIGEST}"
           > /tmp/drone-ai-ovh-preprod.yaml
       - name: Verify production storage Secret references
         run: |

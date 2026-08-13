@@ -17,7 +17,6 @@ import {
   parseMissionCatalog,
   parseMissionDetail,
   parseParameterConfig,
-  parsePods,
   parseStatusPayload,
 } from "./mission-api-contracts";
 import {
@@ -75,7 +74,6 @@ describe("runtime API response contracts", () => {
       logs: [{ message: null, details: {} }],
       products: [],
     }).vol_id).toBe("mission-1");
-    expect(parsePods({ pods: [], error: null }).pods).toEqual([]);
     expect(parseParameterConfig({
       pipelines: { modern: {}, legacy: {} },
       processes: [],

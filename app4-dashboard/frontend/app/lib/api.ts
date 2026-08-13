@@ -38,7 +38,6 @@ import {
   parseMissionDetail,
   parseMissionSummaryResponse,
   parseParameterConfig,
-  parsePods,
 } from "./mission-api-contracts";
 
 export {
@@ -82,7 +81,6 @@ export const fetchMissionCatalog = (limit = 25, offset = 0) =>
   }).toString()}`, parseMissionCatalog);
 export const fetchMissionDetail = (volId: string) =>
   api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail);
-export const fetchPods = () => api("/pods", parsePods);
 export const fetchParameters = () =>
   api("/mission/parameters", parseParameterConfig);
 export const fetchBrowse = (prefix: string) =>

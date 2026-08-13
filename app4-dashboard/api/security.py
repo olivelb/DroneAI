@@ -13,7 +13,7 @@ from hashlib import sha256
 from hmac import new as hmac_new
 from typing import Annotated
 
-from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
+from fastapi import Depends, HTTPException, Request, WebSocket, status
 from starlette.concurrency import run_in_threadpool
 
 from shared.database import get_session
@@ -550,27 +550,29 @@ def authenticate_token(token: str | None) -> Principal | None:
 
 
 def authenticate_request(request: Request) -> Principal | None:
-    """Resolve the authenticated rate-limit identity without trusting proxy headers."""
-    return authenticate_token(
+    """Authenticate once per request without trusting proxy headers."""
+
+    cached = getattr(request.state, "droneai_principal", None)
+    if isinstance(cached, Principal):
+        return cached
+    if getattr(request.state, "droneai_authentication_attempted", False):
+        return None
+    principal = authenticate_token(
         _extract_token(
             request.headers.get("authorization"),
             request.headers.get("x-api-key"),
             request.cookies.get(SESSION_COOKIE_NAME),
         )
     )
+    request.state.droneai_authentication_attempted = True
+    request.state.droneai_principal = principal
+    return principal
 
 
 def _require_request_principal(
-    authorization: str | None = Header(default=None),
-    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
-    droneai_api_key: str | None = Cookie(
-        default=None,
-        alias=SESSION_COOKIE_NAME,
-    ),
+    request: Request,
 ) -> Principal:
-    principal = authenticate_token(
-        _extract_token(authorization, x_api_key, droneai_api_key)
-    )
+    principal = authenticate_request(request)
     if principal is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

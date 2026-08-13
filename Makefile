@@ -64,7 +64,6 @@ API_TYPED_PATHS := \
 	app4-dashboard/api/messaging.py \
 	app4-dashboard/api/realtime.py \
 	app4-dashboard/api/kubernetes_jobs.py \
-	app4-dashboard/api/kubernetes_status.py \
 	app4-dashboard/api/stage_orchestrator.py \
 	app4-dashboard/api/image_preview.py
 API_FRAMEWORK_TYPED_PATHS := \

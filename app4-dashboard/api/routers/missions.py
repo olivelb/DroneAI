@@ -33,7 +33,6 @@ from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 from shared.sam3_capabilities import Sam3Capability, sam3_capability
 
-from ..kubernetes_status import KubernetesStatus, get_pod_states
 from ..dataset_access import get_owned_dataset
 from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
@@ -414,11 +413,6 @@ def _resume_mission(
             detail=response.get("message", "Mission cannot be resumed"),
         )
     return response
-
-
-@router.get("/pods")
-def pod_statuses() -> KubernetesStatus:
-    return get_pod_states()
 
 
 @router.get("/mission/parameters")

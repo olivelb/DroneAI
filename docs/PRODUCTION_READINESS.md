@@ -40,6 +40,14 @@ Bounded Jobs receive only their stage Secret and verify RLS at startup.
 Protected Helm overlays require this split and readiness
 fails when PostgreSQL reports that RLS is inactive for the API role.
 
+The tenant API does not expose Kubernetes Pod inventory. The former `/pods`
+route and frontend polling were removed because cluster names, placement and
+failure reasons are an operator boundary, not tenant data. With the standalone
+control worker enabled, the request-serving Pod also receives no Kubernetes
+service-account token or Pod RBAC. Tenant progress remains available through
+mission and stage-run status; operators use Kubernetes and metrics tooling
+outside the tenant API.
+
 Protected environments run two control-worker replicas with a rolling update
 and a one-pod disruption budget. A dedicated PostgreSQL connection owns one
 session-level advisory leadership lock; only that replica starts outbox,
@@ -64,7 +72,9 @@ an operational E2E; it does not replace dataset-backed scientific validation.
 The production example activates bounded stage Jobs and disables every fused
 Kafka compute worker. Staging and production now fail at application startup
 and Helm render if that invariant is weakened. Replace every executor image
-placeholder with the promoted immutable Git SHA or digest before install.
+placeholder with the promoted OCI digest before install. A Git-SHA tag is
+useful provenance but remains mutable in a registry and is therefore rejected
+at Helm render and scheduler startup.
 
 Replace `REPLACE_GPU_ARCHITECTURE` with the reviewed target architecture; CUDA
 12.9 runtime qualification does not by itself identify the OVH GPU SKU.

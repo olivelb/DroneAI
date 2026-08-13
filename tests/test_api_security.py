@@ -663,6 +663,46 @@ def test_organization_request_quota_middleware_is_tenant_wide(monkeypatch):
     assert observed == [("tenant-a", "operator-1")]
 
 
+def test_request_authentication_is_reused_by_middleware_and_dependency(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+        "true",
+    )
+    authentication_calls = []
+
+    def authenticate(token):
+        authentication_calls.append(token)
+        return security.Principal("operator-1", "operator", "tenant-a")
+
+    monkeypatch.setattr(security, "authenticate_token", authenticate)
+    monkeypatch.setattr(
+        rate_limit,
+        "_consume_organization_request",
+        lambda _organization_id, _actor_subject: rate_limit.RequestQuotaDecision(
+            60,
+            None,
+        ),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.OrganizationRequestQuotaMiddleware)
+
+    @application.get("/missions")
+    def missions(
+        _principal=Depends(security.require_authenticated),
+    ):
+        return []
+
+    response = TestClient(application).get(
+        "/missions",
+        headers={"X-API-Key": "public-request-token"},
+    )
+
+    assert response.status_code == 200
+    assert authentication_calls == ["public-request-token"]
+
+
 def test_organization_request_quota_does_not_treat_platform_as_tenant(
     monkeypatch,
 ):

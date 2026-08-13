@@ -218,19 +218,6 @@ export type DatasetItem = {
   image_count: number;
 };
 
-export type PodState = {
-  name: string;
-  phase: string;
-  ready: string | null;
-  restarts: number | null;
-  reason?: string | null;
-  last_terminated_reason?: string | null;
-  last_terminated_exit_code?: number | null;
-  oom_killed?: boolean;
-  memory_limit?: string | null;
-  memory_request?: string | null;
-};
-
 export type AnalysisRun = {
   run_id: string;
   vol_id: string;

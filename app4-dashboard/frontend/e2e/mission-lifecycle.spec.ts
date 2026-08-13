@@ -224,10 +224,6 @@ async function mockApi(page: Page, options: ApiOptions = {}) {
       }));
       return;
     }
-    if (url.pathname === "/pods") {
-      await route.fulfill(json({ pods: [], error: null }));
-      return;
-    }
     if (url.pathname === "/status/summary") {
       const status = options.missionStatus;
       const terminalSuccess = status === "success";

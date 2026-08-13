@@ -336,7 +336,10 @@ stageJobs:
     maximumTiles: 100000
   # All five one-shot commands are implemented and Q3-qualified. Enabling still
   # requires every entry so a generic Helm install cannot dispatch mutable or
-  # partially configured workloads. Images use an OCI digest or Git-SHA tag.
+  # partially configured workloads. Protected environments require an OCI
+  # digest; development may use a Git-SHA tag for local scientific workflows.
+  # A tag remains mutable at the registry boundary and is never a production
+  # promotion identity.
   # Entries may add node_selector pairs and narrowly scoped tolerations. GPU
   # presence and minimum-VRAM selectors are derived from the resource class and
   # cannot be weakened by an executor override.
