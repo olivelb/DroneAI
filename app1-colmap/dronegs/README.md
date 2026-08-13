@@ -290,6 +290,15 @@ while small boundary crops retain useful spatial context instead of being
 split into four tiny views. The default remains `0` until controlled facade
 canary and VRAM evidence support promotion.
 
+Compare the fixed and adaptive modes only with two completed manifests from
+the same native binary and otherwise identical scientific parameters:
+
+```bash
+python tools/compare_gaussian_crop_tiling_runs.py \
+  fixed/trainer_run.json adaptive/trainer_run.json \
+  --output crop-tiling-comparison.json
+```
+
 `--adaptive-growth-target 1` is reserved for area/GSD-planned resident HQ
 blocks. It recomputes the growth fraction needed to approach `--max-cap` by
 iteration 14,800, clamps each request to 7–25%, and emits the fraction and

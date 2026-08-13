@@ -32,6 +32,13 @@ PERFORMANCE_VARIANT_PARAMETERS = frozenset(
     }
 )
 
+NATIVE_CROP_TILING_VARIANT_PARAMETERS = frozenset(
+    {
+        "adaptive_native_crop_tiles",
+        "native_crop_tile_policy",
+    }
+)
+
 
 def _controlled_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
     return {
@@ -48,6 +55,16 @@ def _performance_controlled_parameters(
         key: value
         for key, value in parameters.items()
         if key not in PERFORMANCE_VARIANT_PARAMETERS
+    }
+
+
+def _native_crop_tiling_controlled_parameters(
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in parameters.items()
+        if key not in NATIVE_CROP_TILING_VARIANT_PARAMETERS
     }
 
 
@@ -313,5 +330,131 @@ def compare_performance_manifests(
         "controlled_parameters_sha256": _canonical_digest(controlled),
         "scientific_output_parity": True,
         "point_cloud_sha256": ply_digests[0],
+        "runs": runs,
+    }
+
+
+def compare_native_crop_tiling_manifests(
+    manifest_paths: Iterable[str | Path],
+) -> dict[str, Any]:
+    """Compare fixed and adaptive native-crop tiling on one exact binary."""
+
+    paths = [Path(path).resolve() for path in manifest_paths]
+    if len(paths) != 2:
+        raise ValueError(
+            "native-crop tiling comparison requires exactly two runs"
+        )
+    manifests: list[dict[str, Any]] = []
+    for path in paths:
+        manifest = load_run_manifest(path)
+        validate_run_manifest(manifest)
+        manifests.append(manifest)
+
+    baseline = manifests[0]
+    dataset_fingerprint = baseline["dataset"]["fingerprint"]
+    binary_digest = baseline["trainer_binary_sha256"]
+    controlled = _native_crop_tiling_controlled_parameters(
+        baseline["parameters"]
+    )
+    for manifest in manifests[1:]:
+        if manifest["dataset"]["fingerprint"] != dataset_fingerprint:
+            raise ValueError("native-crop tiling runs use different datasets")
+        if manifest["trainer_binary_sha256"] != binary_digest:
+            raise ValueError(
+                "native-crop tiling runs use different trainer binaries"
+            )
+        if (
+            _native_crop_tiling_controlled_parameters(
+                manifest["parameters"]
+            )
+            != controlled
+        ):
+            raise ValueError(
+                "native-crop tiling runs differ outside the allowed policy"
+            )
+
+    modes = [
+        _number(manifest["parameters"], "adaptive_native_crop_tiles")
+        for manifest in manifests
+    ]
+    if modes != [0, 1]:
+        raise ValueError(
+            "native-crop tiling runs must order fixed mode before adaptive mode"
+        )
+    policies = [
+        manifest["parameters"].get("native_crop_tile_policy")
+        for manifest in manifests
+    ]
+    if policies != [
+        "fixed-tile-mode-v1",
+        "sensor-pixel-budget-up-to-tile-mode-v1",
+    ]:
+        raise ValueError("native-crop tiling policy provenance is invalid")
+
+    runs: list[dict[str, Any]] = []
+    for path, manifest in zip(paths, manifests, strict=True):
+        parameters = manifest["parameters"]
+        metrics = manifest["metrics"]
+        timings = manifest["timings"]
+        runs.append(
+            {
+                "manifest": str(path),
+                "adaptive_native_crop_tiles": _number(
+                    parameters,
+                    "adaptive_native_crop_tiles",
+                ),
+                "native_crop_tile_policy": parameters.get(
+                    "native_crop_tile_policy"
+                ),
+                "training_image_count": _number(
+                    metrics,
+                    "training_image_count",
+                ),
+                "final_gaussians": _number(metrics, "final_gaussians"),
+                "final_loss": _number(metrics, "final_loss"),
+                "psnr": _number(metrics, "psnr"),
+                "ssim": _number(metrics, "ssim"),
+                "pixel_weighted_psnr": _number(
+                    metrics,
+                    "pixel_weighted_psnr",
+                ),
+                "pixel_weighted_ssim": _number(
+                    metrics,
+                    "pixel_weighted_ssim",
+                ),
+                "training_seconds": _number(
+                    timings,
+                    "training_seconds",
+                ),
+                "wall_seconds": _number(timings, "wall_seconds"),
+            }
+        )
+
+    baseline_run = runs[0]
+    for run in runs:
+        run["delta_from_fixed"] = {
+            metric: (
+                None
+                if run[metric] is None or baseline_run[metric] is None
+                else run[metric] - baseline_run[metric]
+            )
+            for metric in (
+                "training_image_count",
+                "final_gaussians",
+                "final_loss",
+                "psnr",
+                "ssim",
+                "pixel_weighted_psnr",
+                "pixel_weighted_ssim",
+                "training_seconds",
+                "wall_seconds",
+            )
+        }
+    return {
+        "schema_version": 1,
+        "dataset_fingerprint": dataset_fingerprint,
+        "trainer_binary_sha256": binary_digest,
+        "controlled_parameters_sha256": _canonical_digest(controlled),
+        "baseline_policy": "fixed-tile-mode-v1",
         "runs": runs,
     }

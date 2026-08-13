@@ -12,12 +12,20 @@ if str(APP1_ROOT) not in sys.path:
     sys.path.insert(0, str(APP1_ROOT))
 
 from gaussian_training.qualification import (  # noqa: E402
+    compare_native_crop_tiling_manifests,
     compare_performance_manifests,
     compare_qualification_manifests,
 )
 
 
-def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Path:
+def _manifest(
+    path: Path,
+    profile: str,
+    weight: float,
+    *,
+    seed: int = 42,
+    adaptive_native_crop_tiles: int = 0,
+) -> Path:
     payload = {
         "contract_version": 1,
         "backend": "dronegs-native-mrnf-fastgs",
@@ -40,6 +48,12 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "growth_score": "variant",
             "absgrad_guidance": None if weight == 0 else "enabled",
             "absgrad_normalization": None if weight == 0 else "median",
+            "adaptive_native_crop_tiles": adaptive_native_crop_tiles,
+            "native_crop_tile_policy": (
+                "sensor-pixel-budget-up-to-tile-mode-v1"
+                if adaptive_native_crop_tiles
+                else "fixed-tile-mode-v1"
+            ),
         },
         "timings": {"training_seconds": 12.0, "wall_seconds": 14.0},
         "metrics": {
@@ -51,6 +65,9 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "pixel_weighted_ssim": 0.55 + weight / 10,
             "lpips": None,
             "image_cache_working_set_bytes": 8_000_000_000,
+            "training_image_count": (
+                241 if adaptive_native_crop_tiles else 485
+            ),
         },
         "artifacts": {"point_cloud.ply": {"path": "point_cloud.ply"}},
     }
@@ -103,6 +120,70 @@ def test_compare_requires_unique_profiles(tmp_path):
 
     with pytest.raises(ValueError, match="must be unique"):
         compare_qualification_manifests([first, second])
+
+
+def test_compare_native_crop_tiling_runs(tmp_path):
+    report = compare_native_crop_tiling_manifests(
+        [
+            _manifest(
+                tmp_path / "fixed.json",
+                "reference-absolute",
+                0.0,
+            ),
+            _manifest(
+                tmp_path / "adaptive.json",
+                "reference-absolute",
+                0.0,
+                adaptive_native_crop_tiles=1,
+            ),
+        ]
+    )
+
+    assert report["baseline_policy"] == "fixed-tile-mode-v1"
+    assert report["runs"][1]["native_crop_tile_policy"] == (
+        "sensor-pixel-budget-up-to-tile-mode-v1"
+    )
+    assert report["runs"][1]["delta_from_fixed"][
+        "training_image_count"
+    ] == -244
+
+
+def test_compare_native_crop_tiling_rejects_parameter_drift(tmp_path):
+    fixed = _manifest(
+        tmp_path / "fixed.json",
+        "reference-absolute",
+        0.0,
+    )
+    adaptive = _manifest(
+        tmp_path / "adaptive.json",
+        "reference-absolute",
+        0.0,
+        seed=43,
+        adaptive_native_crop_tiles=1,
+    )
+
+    with pytest.raises(ValueError, match="outside the allowed policy"):
+        compare_native_crop_tiling_manifests([fixed, adaptive])
+
+
+def test_compare_native_crop_tiling_rejects_invalid_policy(tmp_path):
+    fixed = _manifest(
+        tmp_path / "fixed.json",
+        "reference-absolute",
+        0.0,
+    )
+    adaptive = _manifest(
+        tmp_path / "adaptive.json",
+        "reference-absolute",
+        0.0,
+        adaptive_native_crop_tiles=1,
+    )
+    payload = json.loads(adaptive.read_text(encoding="utf-8"))
+    payload["parameters"]["native_crop_tile_policy"] = "untracked-policy"
+    adaptive.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="policy provenance"):
+        compare_native_crop_tiling_manifests([fixed, adaptive])
 
 
 def _performance_manifest(
