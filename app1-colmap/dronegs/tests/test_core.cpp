@@ -705,6 +705,18 @@ void test_cli(const std::filesystem::path& data, const std::filesystem::path& ou
 }
 
 void test_adaptive_capacity_growth() {
+    const std::array<std::array<std::uint64_t, 2>, 4> schedule_cases{{
+        {7'500U, 6'500U},
+        {15'000U, 14'000U},
+        {30'000U, 14'800U},
+        {9'100U, 8'100U},
+    }};
+    for (const auto& schedule_case : schedule_cases) {
+        check(
+            dronegs::topology_refinement_end_iteration(
+                schedule_case[0], 1'000U, true) == schedule_case[1],
+            "adaptive topology schedule ignored the requested iteration budget");
+    }
     check(
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, false) == 29'000U,
