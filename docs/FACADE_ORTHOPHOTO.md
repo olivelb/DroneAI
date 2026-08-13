@@ -1,7 +1,7 @@
-# HD facade orthophotos
+# Facade orthophotos
 
 DroneAI can produce an orthorectified elevation of a building facade without
-assigning a map CRS. Select **Façade HD** under **Processus de
+assigning a map CRS. Select **Façade** under **Processus de
 production** in the reconstruction phase, or set `orthophoto_mode=facade`
 through the API. The dashboard obtains the qualified values from the backend;
 `shared/facade_process.py` is their single source of truth.
@@ -162,14 +162,16 @@ as a fallback.
 - use 45° as a robust first texture threshold; 30° gives a cleaner frontal
   texture when enough well-observed views remain. Selecting only the nominal
   0° passes for the entire solve is not recommended because it weakens depth;
-- `FACADE_HD_V2` uses the same adaptive resident core/buffer process as map
-  HQ: a 5 M scene floor, 3.6-pixel density target and at most 12 M Gaussians
-  per buffer on a sufficiently large GPU. The detected VRAM ceiling can reduce
-  each resident PLY and increase the number of wall-plane blocks without
-  reducing the requested total surface density;
-- its 30,000-iteration budget prevents a 2,000+ camera solve from sampling each
-  training view only a handful of times. Every buffer is trained from native
-  calibrated crops selected by visibility in the metric facade plane;
+- facade missions use the same adaptive resident core/buffer process as maps.
+  The selected production profile controls the scientific envelope: qualified
+  `normal-v3` uses 15,000 iterations, a 3 M scene floor and an 8-pixel density
+  target, while candidate `high-quality-v3` uses 30,000 iterations, a 5 M
+  floor and a 3.6-pixel target. The detected VRAM ceiling can reduce each
+  resident PLY and increase the number of wall-plane blocks without reducing
+  the requested total surface density;
+- every buffer is trained from native calibrated crops selected by visibility
+  in the metric facade plane. `FACADE_HD_V2` remains the versioned fallback
+  recipe for direct clients that do not submit a production quality profile;
 - DroneAI inserts no software sleep between Gaussian iterations; NVIDIA's
   firmware/driver thermal and power protections remain authoritative;
 - request 0.01 m/pixel only after confirming that source GSD, focus and pose
@@ -177,13 +179,14 @@ as a fallback.
   Gaussian detail on a close-range mission, but cannot restore information
   absent from the source photographs.
 
-Facade held-out views are evaluated with the generic HD gates qualified on the
+Facade held-out views are evaluated with the facade gates established on the
 final Cahors reference run (`facade_canary_min_psnr=18`,
 `facade_canary_min_ssim=0.25`). The product manifest records the effective
-thresholds and the qualified facade profile
-`FACADE_HD_V2`; historical `FACADE_HD_V1` jobs remain replayable with their
-fixed 2 M monolithic recipe. Changing a quality value remains possible but
-produces an explicitly customized recipe.
+thresholds and the selected production profile. `FACADE_HD_V2` remains the
+fallback for direct clients without a selected profile; historical
+`FACADE_HD_V1` jobs remain replayable with their fixed 2 M monolithic recipe.
+Changing a quality value remains possible but produces an explicitly
+customized recipe.
 
 Before rendering, `facade_depth_iqr_multiplier` (default `1.0`) keeps the
 robust depth band around the elevation. This removes isolated street,

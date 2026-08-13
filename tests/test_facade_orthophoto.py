@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from shared.facade_selection import exclude_basename_ranges, select_facade_images
+from shared.quality_profiles import quality_profile
 from shared.facade_process import (
     FACADE_PROCESS_OVERRIDES,
     FACADE_PROCESS_PROFILE_ID,
@@ -351,6 +352,43 @@ def test_facade_process_preserves_quality_overrides_but_enforces_local_frame():
     assert params["minimum_registration_ratio"] == "0.8"
 
 
+@pytest.mark.parametrize(
+    ("profile_id", "iterations", "capacity_floor", "spacing"),
+    [
+        ("normal-v3", "15000", "3000000", "8.0"),
+        ("high-quality-v3", "30000", "5000000", "3.6"),
+    ],
+)
+def test_facade_process_preserves_selected_resident_quality_profile(
+    profile_id,
+    iterations,
+    capacity_floor,
+    spacing,
+):
+    profile = quality_profile(profile_id)
+    quality_parameters = dict(profile.parameters)
+    params = {
+        "orthophoto_mode": "facade",
+        **quality_parameters,
+    }
+
+    apply_facade_process_profile(
+        params,
+        {
+            "orthophoto_mode": "facade",
+            "colmap_params": quality_parameters,
+        },
+    )
+
+    assert params["gs_production_profile"] == profile_id
+    assert params["gs_iterations"] == iterations
+    assert params["gs_capacity_floor"] == capacity_floor
+    assert params["gs_target_gaussian_spacing_pixels"] == spacing
+    assert params["gs_resident_partitioning"] is True
+    assert params["matching_strategy"] == "spatial"
+    assert params["gcp_adjustment_enabled"] is False
+
+
 def test_dashboard_facade_process_reuses_the_backend_profile():
     processes = {process["id"]: process for process in product_process_catalog()}
     validated = validate_pipeline_overrides(
@@ -359,7 +397,7 @@ def test_dashboard_facade_process_reuses_the_backend_profile():
 
     assert processes["map"]["stages"] == ["COLMAP", "TILER", "IA"]
     assert processes["facade"]["stages"] == ["COLMAP"]
-    assert processes["facade"]["label"] == "Façade HD"
+    assert processes["facade"]["label"] == "Façade"
     assert processes["facade"]["profile_id"] == FACADE_PROCESS_PROFILE_ID
     assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V2"
     assert validated == dict(FACADE_PROCESS_OVERRIDES)

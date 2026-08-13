@@ -187,10 +187,10 @@ def product_process_catalog() -> list[dict[str, Any]]:
         },
         {
             "id": FACADE_PROCESS_ID,
-            "label": "Façade HD",
+            "label": "Façade",
             "description": (
-                "Orthophoto HD et profondeur en repère local, avec couverture "
-                "prioritaire et sans chaîne de détection aérienne."
+                "Orthophoto et profondeur en repère local, avec une qualité "
+                "pilotée par le profil de production sélectionné."
             ),
             "profile_id": FACADE_PROCESS_PROFILE_ID,
             "stages": ["COLMAP"],
