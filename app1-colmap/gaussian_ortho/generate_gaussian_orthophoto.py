@@ -106,6 +106,19 @@ class ProgressReport(Protocol):
 type ModelFactory = Callable[..., "GaussianModel"]
 type MergeModels = Callable[..., "GaussianModel"]
 
+RESIDENT_PREFETCH_DEPTH = 4
+RESIDENT_DECODE_WORKERS = 4
+
+
+def resident_image_cache_tuning(
+    resident_partitioning: bool,
+) -> tuple[int, int]:
+    """Hide native-crop decode latency without changing sampled pixels."""
+
+    if resident_partitioning:
+        return RESIDENT_PREFETCH_DEPTH, RESIDENT_DECODE_WORKERS
+    return 1, 1
+
 
 def _report(
     vol_id: str,
@@ -904,6 +917,9 @@ def train_and_merge_gaussian_models(
             )
 
         dataset_identity = compute_dataset_identity(training_data_path)
+        prefetch_depth, decode_workers = resident_image_cache_tuning(
+            config.resident_partitioning
+        )
         training_request = TrainingRequest(
             data_path=training_data_path,
             output_path=cell_output,
@@ -933,6 +949,8 @@ def train_and_merge_gaussian_models(
                 ),
                 photometric_mse_percent=config.dronegs_photometric_mse_percent,
                 adaptive_growth_target=bool(config.resident_partitioning),
+                prefetch_depth=prefetch_depth,
+                decode_workers=decode_workers,
                 checkpoint_every=config.dronegs_checkpoint_every,
                 resume_from=resume_from,
                 test_every=config.dronegs_test_every,
