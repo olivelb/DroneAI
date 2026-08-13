@@ -13,7 +13,17 @@ const DESCRIPTION_KEYS: Record<QualityProfileId, MessageKey> = {
   "normal-v2": "profile.normal.description",
   "high-quality-v2": "profile.highQuality.description",
   "normal-v3": "profile.normal.description",
-  "high-quality-v3": "profile.highQuality.description",
+  "high-quality-v3": "profile.highQualityResident.description",
+};
+
+const NAME_KEYS: Record<QualityProfileId, MessageKey> = {
+  "fast-v1": "profile.fast.name",
+  "normal-v1": "profile.normalLegacy.name",
+  "high-quality-v1": "profile.highQualityLegacy.name",
+  "normal-v2": "profile.normalLegacy.name",
+  "high-quality-v2": "profile.highQuality.name",
+  "normal-v3": "profile.normal.name",
+  "high-quality-v3": "profile.highQualityResident.name",
 };
 
 const formatInteger = (value: unknown) =>
@@ -60,7 +70,7 @@ export default function QualityProfileSelector() {
               }`}
             >
               <span className="text-sm font-bold text-[#26332f]">
-                {profile.name}
+                {t(NAME_KEYS[profile.id])}
               </span>
               <span className="mt-1 block text-[10px] font-semibold uppercase tracking-wide text-[#82908b]">
                 {profile.id}
