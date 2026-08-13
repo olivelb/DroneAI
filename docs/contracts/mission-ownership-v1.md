@@ -23,9 +23,12 @@ vectors, features or AI analyses belonging to another subject.
 - `GET /missions/{vol_id}` returns one owner-scoped detail document.
 
 The compatibility summary and state endpoints are owner-scoped as well. Live
-WebSocket history and broadcasts are partitioned by owner on the server; the
-browser never receives another tenant's event and does not filter secrets
-client-side.
+WebSocket history and broadcasts are partitioned into bounded per-owner rings
+on the server; one noisy tenant cannot evict another tenant's replay history.
+The browser never receives another tenant's event and does not filter secrets
+client-side. The server periodically revalidates the durable member,
+credential, organization and `auth_version`, then closes stale authorization
+with `4401` or `4403`.
 
 ## Administrative support access
 

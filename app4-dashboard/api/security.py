@@ -14,6 +14,7 @@ from hmac import new as hmac_new
 from typing import Annotated
 
 from fastapi import Cookie, Depends, Header, HTTPException, Request, WebSocket, status
+from starlette.concurrency import run_in_threadpool
 
 from shared.database import get_session
 from shared.deployment_mode import (
@@ -67,6 +68,13 @@ class Principal:
     auth_version: int | None = None
     authentication_method: str = "static"
     realm: str = "tenant"
+
+
+@dataclass(frozen=True)
+class WebSocketAuthorization:
+    principal: Principal
+    token: str
+    peer: str
 
 
 def _principal_from_identity(identity: AuthenticatedIdentity) -> Principal:
@@ -470,6 +478,35 @@ def _authenticate_session_token(token: str) -> Principal | None:
     return None
 
 
+def _session_public_credential_identity(token: str) -> str | None:
+    """Read a signed session's public credential ID without database work."""
+
+    secret = os.getenv("DRONEAI_SESSION_SECRET", "")
+    if len(secret) < 32:
+        return None
+    encoded, separator, signature = token.partition(".")
+    if not separator or not encoded or not signature:
+        return None
+    expected = _encode_base64(
+        hmac_new(
+            secret.encode("utf-8"),
+            encoded.encode("ascii"),
+            sha256,
+        ).digest()
+    )
+    if not secrets.compare_digest(signature, expected):
+        return None
+    try:
+        payload = json.loads(_decode_base64(encoded))
+        credential_id = str(payload["credential_id"])
+        realm = str(payload.get("realm", "tenant"))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if realm != "tenant" or not credential_id:
+        return None
+    return f"tenant:{credential_id}"
+
+
 def authenticate_api_key(token: str | None) -> Principal | None:
     if not authentication_enabled():
         return Principal(
@@ -620,15 +657,84 @@ def enforce_cookie_csrf(request: Request) -> None:
         )
 
 
-async def authorize_websocket(websocket: WebSocket) -> Principal | None:
+async def authorize_websocket(
+    websocket: WebSocket,
+) -> WebSocketAuthorization | None:
+    origin = websocket.headers.get("origin", "").rstrip("/")
+    trusted = {
+        configured.rstrip("/")
+        for configured in configured_cors_origins()
+        if configured != "*"
+    }
+    if (is_production() and (not origin or origin not in trusted)) or (
+        origin and trusted and origin not in trusted
+    ):
+        await websocket.close(code=4403, reason="Untrusted request origin")
+        return None
+
     token = websocket.cookies.get(SESSION_COOKIE_NAME)
     if token is None and not is_production():
         token = websocket.query_params.get("access_token")
-    principal = authenticate_token(token)
-    if principal is not None and principal.realm == "tenant":
-        return principal
+    peer = websocket.client.host if websocket.client else "unknown"
+    try:
+        retry_after = await run_in_threadpool(
+            identity_peer_rate_limiter.consume,
+            f"identity:peer:{peer}",
+        )
+        if retry_after is None and token:
+            credential_id = credential_id_from_token(token)
+            public_identity = (
+                f"tenant:{credential_id}"
+                if credential_id is not None
+                else _session_public_credential_identity(token)
+            )
+            if public_identity is not None:
+                retry_after = await run_in_threadpool(
+                    identity_credential_rate_limiter.consume,
+                    f"identity:credential:{public_identity}",
+                )
+    except Exception:
+        await websocket.close(code=1013, reason="Identity rate limiter unavailable")
+        return None
+    if retry_after is not None:
+        await websocket.close(code=4429, reason="Identity rate limit exceeded")
+        return None
+
+    principal = await run_in_threadpool(authenticate_token, token)
+    if principal is not None and principal.realm == "tenant" and token:
+        return WebSocketAuthorization(principal=principal, token=token, peer=peer)
     await websocket.close(code=4401, reason="Authentication required")
     return None
+
+
+def websocket_authorization_status(
+    authorization: WebSocketAuthorization,
+) -> str:
+    """Revalidate durable identity state for a long-lived connection."""
+
+    principal = authenticate_token(authorization.token)
+    if principal is None:
+        return "unauthenticated"
+    expected = authorization.principal
+    if (
+        principal.realm,
+        principal.organization_id,
+        principal.subject,
+        principal.role,
+        principal.member_id,
+        principal.credential_id,
+        principal.auth_version,
+    ) != (
+        expected.realm,
+        expected.organization_id,
+        expected.subject,
+        expected.role,
+        expected.member_id,
+        expected.credential_id,
+        expected.auth_version,
+    ):
+        return "forbidden"
+    return "valid"
 
 
 def upload_limits() -> dict[str, int]:

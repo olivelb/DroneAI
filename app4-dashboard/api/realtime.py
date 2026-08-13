@@ -8,12 +8,15 @@ import logging
 import os
 import socket
 import threading
-from collections import deque
+from collections import OrderedDict, deque
+from dataclasses import dataclass
 from functools import partial
+from time import monotonic
 from typing import Any
 
 from confluent_kafka import Consumer, TopicPartition
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
+from starlette.concurrency import run_in_threadpool
 
 from shared.config import (
     KAFKA_BROKER,
@@ -31,11 +34,30 @@ from shared.observability import observe_kafka_error, observe_kafka_lag
 
 from .messaging import get_producer
 from .mission_state import apply_mission_state
+from .security import WebSocketAuthorization, websocket_authorization_status
 
 
 JsonObject = dict[str, Any]
 STATUS_STATE_INBOX_GROUP = "dashboard-api-status-state"
 logger = logging.getLogger("droneai.realtime")
+
+
+def _positive_setting(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be an integer") from error
+    if value < 1:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+@dataclass(frozen=True)
+class ConnectionIdentity:
+    audience: str
+    organization_id: str
+    credential_id: str
+    peer: str
 
 
 def status_consumer_group(instance_id: str | None = None) -> str:
@@ -48,27 +70,88 @@ def status_consumer_group(instance_id: str | None = None) -> str:
 
 
 class StatusHub:
-    def __init__(self, history_size: int = 300):
-        self.history: deque[tuple[str, str]] = deque(maxlen=history_size)
-        self.connections: dict[WebSocket, str] = {}
+    def __init__(
+        self,
+        history_size: int = 300,
+        *,
+        max_history_audiences: int | None = None,
+        max_history_messages: int | None = None,
+        max_connections: int | None = None,
+        max_connections_per_organization: int | None = None,
+        max_connections_per_credential: int | None = None,
+        max_connections_per_peer: int | None = None,
+    ):
+        self.history_size = history_size
+        self.max_history_audiences = max_history_audiences or _positive_setting(
+            "DRONEAI_WS_MAX_HISTORY_AUDIENCES", 10_000
+        )
+        self.max_history_messages = max_history_messages or _positive_setting(
+            "DRONEAI_WS_MAX_HISTORY_MESSAGES", 10_000
+        )
+        self.max_connections = max_connections or _positive_setting(
+            "DRONEAI_WS_MAX_CONNECTIONS", 10_000
+        )
+        self.max_connections_per_organization = (
+            max_connections_per_organization
+            or _positive_setting("DRONEAI_WS_MAX_CONNECTIONS_PER_ORGANIZATION", 500)
+        )
+        self.max_connections_per_credential = (
+            max_connections_per_credential
+            or _positive_setting("DRONEAI_WS_MAX_CONNECTIONS_PER_CREDENTIAL", 20)
+        )
+        self.max_connections_per_peer = max_connections_per_peer or _positive_setting(
+            "DRONEAI_WS_MAX_CONNECTIONS_PER_PEER", 100
+        )
+        self.history: OrderedDict[str, deque[str]] = OrderedDict()
+        self._history_messages = 0
+        self.connections: dict[WebSocket, ConnectionIdentity] = {}
         self._history_lock = threading.Lock()
 
-    async def connect(self, websocket: WebSocket, owner_subject: str) -> None:
+    def _at_connection_limit(self, identity: ConnectionIdentity) -> bool:
+        values = list(self.connections.values())
+        return (
+            len(values) >= self.max_connections
+            or sum(item.organization_id == identity.organization_id for item in values)
+            >= self.max_connections_per_organization
+            or sum(item.credential_id == identity.credential_id for item in values)
+            >= self.max_connections_per_credential
+            or sum(item.peer == identity.peer for item in values)
+            >= self.max_connections_per_peer
+        )
+
+    async def connect(
+        self,
+        websocket: WebSocket,
+        owner_subject: str,
+        *,
+        organization_id: str = "legacy-unassigned",
+        credential_id: str | None = None,
+        peer: str = "unknown",
+    ) -> bool:
+        identity = ConnectionIdentity(
+            audience=owner_subject,
+            organization_id=organization_id,
+            credential_id=credential_id or owner_subject,
+            peer=peer,
+        )
+        if self._at_connection_limit(identity):
+            await websocket.close(code=4429, reason="WebSocket connection quota exceeded")
+            return False
         await websocket.accept()
-        self.connections[websocket] = owner_subject
+        self.connections[websocket] = identity
         with self._history_lock:
-            history = list(self.history)
-        for owner, message in history:
-            if owner == owner_subject:
-                await websocket.send_text(message)
+            history = list(self.history.get(owner_subject, ()))
+        for message in history:
+            await websocket.send_text(message)
+        return True
 
     def disconnect(self, websocket: WebSocket) -> None:
         self.connections.pop(websocket, None)
 
     async def broadcast(self, message: str, owner_subject: str) -> None:
         failed: list[WebSocket] = []
-        for connection, connection_owner in list(self.connections.items()):
-            if connection_owner != owner_subject:
+        for connection, identity in list(self.connections.items()):
+            if identity.audience != owner_subject:
                 continue
             try:
                 await connection.send_text(message)
@@ -80,11 +163,97 @@ class StatusHub:
     def remember(self, event: JsonObject, owner_subject: str) -> str:
         payload = json.dumps(event)
         with self._history_lock:
-            self.history.append((owner_subject, payload))
+            history = self.history.setdefault(
+                owner_subject,
+                deque(maxlen=self.history_size),
+            )
+            previous_size = len(history)
+            history.append(payload)
+            self._history_messages += len(history) - previous_size
+            self.history.move_to_end(owner_subject)
+            while (
+                len(self.history) > self.max_history_audiences
+                or self._history_messages > self.max_history_messages
+            ):
+                _audience, evicted = self.history.popitem(last=False)
+                self._history_messages -= len(evicted)
         return payload
 
 
 status_hub = StatusHub()
+
+
+async def serve_status_connection(
+    websocket: WebSocket,
+    authorization: WebSocketAuthorization,
+    *,
+    hub: StatusHub = status_hub,
+) -> None:
+    principal = authorization.principal
+    audience = f"{principal.organization_id}:{principal.subject}"
+    connected = await hub.connect(
+        websocket,
+        audience,
+        organization_id=principal.organization_id,
+        credential_id=principal.credential_id or principal.member_id,
+        peer=authorization.peer,
+    )
+    if not connected:
+        return
+
+    revalidate_seconds = _positive_setting("DRONEAI_WS_REVALIDATE_SECONDS", 45)
+    idle_seconds = _positive_setting("DRONEAI_WS_IDLE_TIMEOUT_SECONDS", 300)
+    max_message_bytes = _positive_setting("DRONEAI_WS_MAX_MESSAGE_BYTES", 4096)
+    last_activity = monotonic()
+    last_validation = last_activity
+    try:
+        while True:
+            now = monotonic()
+            wait_seconds = max(
+                0.1,
+                min(
+                    revalidate_seconds - (now - last_validation),
+                    idle_seconds - (now - last_activity),
+                ),
+            )
+            try:
+                message = await asyncio.wait_for(
+                    websocket.receive_text(),
+                    timeout=wait_seconds,
+                )
+                if len(message.encode("utf-8")) > max_message_bytes:
+                    await websocket.close(code=1009, reason="WebSocket message too large")
+                    return
+                last_activity = monotonic()
+            except TimeoutError:
+                pass
+            except WebSocketDisconnect:
+                return
+
+            now = monotonic()
+            if now - last_activity >= idle_seconds:
+                await websocket.close(code=4408, reason="WebSocket idle timeout")
+                return
+            if now - last_validation < revalidate_seconds:
+                continue
+            validation = await run_in_threadpool(
+                websocket_authorization_status,
+                authorization,
+            )
+            if validation != "valid":
+                await websocket.close(
+                    code=4401 if validation == "unauthenticated" else 4403,
+                    reason=(
+                        "Authentication expired"
+                        if validation == "unauthenticated"
+                        else "Authorization changed"
+                    ),
+                )
+                return
+            last_validation = now
+            await websocket.send_text('{"type":"ping"}')
+    finally:
+        hub.disconnect(websocket)
 
 
 def mission_owner_subject(

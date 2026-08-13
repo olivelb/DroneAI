@@ -6,14 +6,14 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse
 
 from . import security
 from .control_runtime import embedded_control_loops_enabled, start_control_loops
 from .health import database_is_ready, readiness_payload
 from .http_middleware import configure_http_middleware
-from .realtime import consume_status_events, status_hub
+from .realtime import consume_status_events, serve_status_connection, status_hub
 from .routers.datasets import router as datasets_router
 from .routers.identity import router as identity_router
 from .routers.maps import router as maps_router
@@ -83,18 +83,10 @@ def create_app() -> FastAPI:
 
     @application.websocket("/ws/status")
     async def websocket_endpoint(websocket: WebSocket):
-        principal = await security.authorize_websocket(websocket)
-        if principal is None:
+        authorization = await security.authorize_websocket(websocket)
+        if authorization is None:
             return
-        await status_hub.connect(
-            websocket,
-            f"{principal.organization_id}:{principal.subject}",
-        )
-        try:
-            while True:
-                await websocket.receive_text()
-        except WebSocketDisconnect:
-            status_hub.disconnect(websocket)
+        await serve_status_connection(websocket, authorization)
 
     return application
 
