@@ -525,11 +525,44 @@ def test_colmap_subset_can_apply_trainer_point_quality_gate(tmp_path):
     _write_colmap_images_bin(
         {
             1: {
-                "qw": 1, "qx": 0, "qy": 0, "qz": 0,
-                "tx": 0, "ty": 0, "tz": 0, "camera_id": 1,
-                "name": "image.jpg", "xys": [(1, 1), (2, 2)],
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 0,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-1.jpg",
+                "xys": [(1, 1), (2, 2)],
                 "point3D_ids": [7, 8],
-            }
+            },
+            2: {
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 1,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-2.jpg",
+                "xys": [(1, 1), (2, 2)],
+                "point3D_ids": [7, 8],
+            },
+            3: {
+                "qw": 1,
+                "qx": 0,
+                "qy": 0,
+                "qz": 0,
+                "tx": 2,
+                "ty": 0,
+                "tz": 0,
+                "camera_id": 1,
+                "name": "image-3.jpg",
+                "xys": [(1, 1), (2, 2)],
+                "point3D_ids": [7, 8],
+            },
         },
         source / "images.bin",
     )
@@ -546,7 +579,7 @@ def test_colmap_subset_can_apply_trainer_point_quality_gate(tmp_path):
     export_colmap_subset(
         str(source),
         str(target),
-        ["image.jpg"],
+        ["image-1.jpg", "image-2.jpg", "image-3.jpg"],
         max_point_error=1.0,
         min_track_length=3,
     )

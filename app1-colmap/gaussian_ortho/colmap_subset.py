@@ -162,22 +162,29 @@ def export_colmap_subset(
     else:
         visible_point_ids = point_ids
     filtered_points: dict[int, ColmapPointRecord] = {}
+    rejected_for_restricted_track = 0
     for point_id, point in points.items():
         if point_id not in visible_point_ids:
             continue
         if max_point_error is not None and point["error"] > float(max_point_error):
             continue
-        if len(point["track"]) < int(min_track_length):
+        restricted_track = [
+            observation
+            for observation in point["track"]
+            if observation[0] in filtered_images
+        ]
+        # A source point can satisfy the global COLMAP track gate while only
+        # one of its observations belongs to this resident cell. Apply the
+        # invariant after camera restriction so the exported training seed
+        # never claims a multi-view point that is mono-view in its own model.
+        if len(restricted_track) < int(min_track_length):
+            rejected_for_restricted_track += 1
             continue
         filtered_points[point_id] = {
             "xyz": point["xyz"],
             "rgb": point["rgb"],
             "error": point["error"],
-            "track": [
-                observation
-                for observation in point["track"]
-                if observation[0] in filtered_images
-            ],
+            "track": restricted_track,
         }
     points_before_cap = len(filtered_points)
     if max_points is not None and points_before_cap > int(max_points):
@@ -217,12 +224,40 @@ def export_colmap_subset(
     target_images = Path(target_dir) / "images"
     if images_dir and not target_images.exists():
         os.symlink(os.path.abspath(images_dir), target_images)
+    exported_track_lengths = [
+        len(point["track"])
+        for point in filtered_points.values()
+    ]
     report: dict[str, object] = {
         "sparse_path": str(target_sparse),
+        "selected_images": len(filtered_images),
         "points_before_cap": points_before_cap,
         "exported_points": len(filtered_points),
         "max_points": max_points,
         "coverage_balanced": len(filtered_points) < points_before_cap,
+        "points_rejected_for_restricted_track": (
+            rejected_for_restricted_track
+        ),
+        "exported_observations": sum(exported_track_lengths),
+        "minimum_exported_track_length": (
+            min(exported_track_lengths) if exported_track_lengths else None
+        ),
+        "median_exported_track_length": (
+            float(np.median(exported_track_lengths))
+            if exported_track_lengths
+            else None
+        ),
+        "mean_exported_track_length": (
+            float(np.mean(exported_track_lengths))
+            if exported_track_lengths
+            else None
+        ),
+        "points_with_at_least_three_observations": sum(
+            length >= 3 for length in exported_track_lengths
+        ),
+        "points_with_at_least_five_observations": sum(
+            length >= 5 for length in exported_track_lengths
+        ),
     }
     return report if return_report else str(target_sparse)
 

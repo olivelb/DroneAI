@@ -44,6 +44,11 @@ textures but weak depth triangulation. DroneAI therefore separates two needs:
 DroneGS is initialized from a coverage-oriented COLMAP gate: points observed
 in at least two views and with at most 2 px reprojection error. This retains
 thin borders and the foot of the wall that a three-view/1 px gate can remove.
+For resident training, the two-view invariant is evaluated after restricting
+each COLMAP track to the cameras assigned to that cell. The exported subset
+report records the rejected points and the resulting observation-count
+distribution, so a globally multi-view point cannot silently become a
+mono-view seed inside one resident block.
 The thresholds are recorded in `facade_frame.json` and can be tightened with
 `facade_seed_max_reprojection_error` and `facade_seed_min_track_length` when a
 mission has noisier poses. The facade training workspace is always exported
