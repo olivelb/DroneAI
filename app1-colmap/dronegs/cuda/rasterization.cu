@@ -4937,13 +4937,15 @@ struct OrderedAlphaTrainingContext::Impl {
                     static_cast<float>(sample_count),
                 1.0e-10F);
 
+            quality->mse = mean_squared_error;
             quality->psnr =
                 10.0F * std::log10(1.0F / mean_squared_error);
             quality->ssim = mean_ssim;
             quality->active_pixel_fraction =
                 static_cast<float>(host_active_pixels) /
                 static_cast<float>(pixel_count);
-            if (!std::isfinite(quality->psnr) ||
+            if (!std::isfinite(quality->mse) ||
+                !std::isfinite(quality->psnr) ||
                 !std::isfinite(quality->ssim) ||
                 !std::isfinite(quality->active_pixel_fraction)) {
                 throw std::runtime_error(

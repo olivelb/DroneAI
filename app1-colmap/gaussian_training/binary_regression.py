@@ -17,6 +17,8 @@ SCIENTIFIC_METRICS = (
     "final_loss",
     "psnr",
     "ssim",
+    "pixel_weighted_psnr",
+    "pixel_weighted_ssim",
 )
 
 

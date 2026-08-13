@@ -22,6 +22,7 @@ struct DatasetSplit {
 };
 
 struct ImageQualityMetrics {
+    float mse = 0.0F;
     float psnr = 0.0F;
     float ssim = 0.0F;
     float active_pixel_fraction = 0.0F;
@@ -176,8 +177,12 @@ struct TrainingMetrics {
     double evaluation_seconds = 0.0;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
+    std::optional<float> initial_pixel_weighted_psnr;
+    std::optional<float> initial_pixel_weighted_ssim;
     std::optional<float> final_held_out_psnr;
     std::optional<float> final_held_out_ssim;
+    std::optional<float> final_pixel_weighted_psnr;
+    std::optional<float> final_pixel_weighted_ssim;
 };
 
 inline constexpr std::uint64_t adaptive_growth_last_iteration = 14'800U;

@@ -789,6 +789,8 @@ void write_target_ppm(
 struct HeldOutAggregate {
     float psnr = 0.0F;
     float ssim = 0.0F;
+    float pixel_weighted_psnr = 0.0F;
+    float pixel_weighted_ssim = 0.0F;
     double seconds = 0.0;
 };
 
@@ -817,7 +819,8 @@ HeldOutAggregate evaluate_held_out(
     }
     if (stage == "initial") {
         csv << "stage,held_out_index,frame_index,scene_index,tile_index,image_name,"
-               "psnr,ssim,active_pixel_fraction\n";
+               "width,height,pixel_count,mse,psnr,ssim,"
+               "active_pixel_fraction\n";
     }
     const auto prediction_directory = evaluation_directory / "predictions";
     const auto target_directory = evaluation_directory / "targets";
@@ -829,6 +832,9 @@ HeldOutAggregate evaluate_held_out(
     const auto start = std::chrono::steady_clock::now();
     double psnr_sum = 0.0;
     double ssim_sum = 0.0;
+    double weighted_mse_sum = 0.0;
+    double weighted_ssim_sum = 0.0;
+    std::uint64_t total_pixel_count = 0U;
     const std::size_t progress_interval =
         std::max<std::size_t>(1U, held_out_indices.size() / 10U);
     for (std::size_t held_out_index = 0U;
@@ -848,13 +854,27 @@ HeldOutAggregate evaluate_held_out(
             save_predictions ? &prediction : nullptr);
         psnr_sum += quality.psnr;
         ssim_sum += quality.ssim;
+        const auto pixel_count =
+            static_cast<std::uint64_t>(raster_camera.width) *
+            static_cast<std::uint64_t>(raster_camera.height);
+        weighted_mse_sum +=
+            static_cast<double>(quality.mse) *
+            static_cast<double>(pixel_count);
+        weighted_ssim_sum +=
+            static_cast<double>(quality.ssim) *
+            static_cast<double>(pixel_count);
+        total_pixel_count += pixel_count;
         csv << stage << ','
             << held_out_index << ','
             << frame_index << ','
             << descriptors[frame_index].scene_index << ','
             << descriptors[frame_index].tile_index << ','
             << csv_escape(descriptors[frame_index].image->name) << ','
-            << std::setprecision(9) << quality.psnr << ','
+            << raster_camera.width << ','
+            << raster_camera.height << ','
+            << pixel_count << ','
+            << std::setprecision(9) << quality.mse << ','
+            << quality.psnr << ','
             << quality.ssim << ','
             << quality.active_pixel_fraction << '\n';
         if (save_predictions) {
@@ -888,9 +908,21 @@ HeldOutAggregate evaluate_held_out(
     }
     const double count =
         static_cast<double>(held_out_indices.size());
+    if (total_pixel_count == 0U) {
+        throw std::runtime_error(
+            "held-out evaluation produced no pixels");
+    }
+    const double pixel_count = static_cast<double>(total_pixel_count);
+    const double pixel_weighted_mse = std::max(
+        weighted_mse_sum / pixel_count,
+        1.0e-10);
     return {
         .psnr = static_cast<float>(psnr_sum / count),
         .ssim = static_cast<float>(ssim_sum / count),
+        .pixel_weighted_psnr = static_cast<float>(
+            10.0 * std::log10(1.0 / pixel_weighted_mse)),
+        .pixel_weighted_ssim = static_cast<float>(
+            weighted_ssim_sum / pixel_count),
         .seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - start).count(),
     };
@@ -1499,6 +1531,10 @@ TrainingMetrics train_ordered_mrnf(
             imported_model && options.save_eval_images != 0U);
         metrics.initial_held_out_psnr = held_out.psnr;
         metrics.initial_held_out_ssim = held_out.ssim;
+        metrics.initial_pixel_weighted_psnr =
+            held_out.pixel_weighted_psnr;
+        metrics.initial_pixel_weighted_ssim =
+            held_out.pixel_weighted_ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
     checkpoint_progress.initial_loss = metrics.initial_loss;
@@ -1792,6 +1828,8 @@ TrainingMetrics train_ordered_mrnf(
             !imported_model && options.save_eval_images != 0U);
         metrics.final_held_out_psnr = held_out.psnr;
         metrics.final_held_out_ssim = held_out.ssim;
+        metrics.final_pixel_weighted_psnr = held_out.pixel_weighted_psnr;
+        metrics.final_pixel_weighted_ssim = held_out.pixel_weighted_ssim;
         metrics.evaluation_seconds += held_out.seconds;
     }
 

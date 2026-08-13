@@ -142,7 +142,10 @@ emits a CUDA 12.9 runtime-selected fat binary for Turing through Blackwell. It:
 - removes native-image subtiles with no projected sparse-Gaussian support
   before scheduling, while rejecting an entirely unsupported dataset;
 - computes full-frame PSNR and Gaussian 11x11 valid-padding SSIM on CUDA before
-  and after training, with a tested CPU oracle;
+  and after training, with a tested CPU oracle. It preserves the historical
+  equal-view canary and also records globally pixel-weighted PSNR/SSIM plus
+  per-tile dimensions and MSE, so small resident edge crops cannot silently
+  dominate product-level quality analysis;
 - writes per-view quality CSV data and can export exactly paired final
   lossless PPM predictions and RGB8 targets for an external LPIPS pass;
 - provides a pinned, isolated LPIPS v0.1/AlexNet evaluator that writes

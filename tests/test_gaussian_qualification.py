@@ -47,6 +47,8 @@ def _manifest(path: Path, profile: str, weight: float, *, seed: int = 42) -> Pat
             "final_loss": 0.1 - weight / 100,
             "psnr": 20.0 + weight,
             "ssim": 0.5 + weight / 10,
+            "pixel_weighted_psnr": 20.5 + weight,
+            "pixel_weighted_ssim": 0.55 + weight / 10,
             "lpips": None,
             "image_cache_working_set_bytes": 8_000_000_000,
         },
@@ -77,6 +79,9 @@ def test_compare_controlled_qualification_runs(tmp_path):
         0.25
     )
     assert report["runs"][1]["lpips"] is None
+    assert report["runs"][1]["delta_from_baseline"][
+        "pixel_weighted_psnr"
+    ] == pytest.approx(0.25)
 
 
 def test_compare_rejects_uncontrolled_parameter_drift(tmp_path):

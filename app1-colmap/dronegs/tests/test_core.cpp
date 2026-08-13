@@ -247,8 +247,12 @@ void test_scene_and_ply(const std::filesystem::path& root) {
         .gaussians_added = 15U,
         .initial_held_out_psnr = 10.0F,
         .initial_held_out_ssim = 0.2F,
+        .initial_pixel_weighted_psnr = 10.5F,
+        .initial_pixel_weighted_ssim = 0.25F,
         .final_held_out_psnr = 12.0F,
         .final_held_out_ssim = 0.3F,
+        .final_pixel_weighted_psnr = 12.5F,
+        .final_pixel_weighted_ssim = 0.35F,
     };
     dronegs::write_completed_manifest(
         options, scene, dronegs::dataset_fingerprint(scene), measurements,
@@ -264,6 +268,10 @@ void test_scene_and_ply(const std::filesystem::path& root) {
           "manifest Git revision missing");
     check(manifest_text.find("\"image_cache_hits\": 3") != std::string::npos,
           "manifest image cache metrics missing");
+    check(
+        manifest_text.find("\"pixel_weighted_psnr\": 12.5") !=
+            std::string::npos,
+        "manifest pixel-weighted quality metrics missing");
     check(manifest_text.find("\"image_decode_seconds\": 0.08") != std::string::npos,
           "manifest image decode timing missing");
     check(manifest_text.find("\"image_prefetch_consumed\": 3") != std::string::npos,

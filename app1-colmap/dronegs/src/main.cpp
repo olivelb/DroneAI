@@ -157,10 +157,18 @@ int main(int argc, char** argv) {
             training.initial_held_out_psnr;
         measurements.initial_held_out_ssim =
             training.initial_held_out_ssim;
+        measurements.initial_pixel_weighted_psnr =
+            training.initial_pixel_weighted_psnr;
+        measurements.initial_pixel_weighted_ssim =
+            training.initial_pixel_weighted_ssim;
         measurements.final_held_out_psnr =
             training.final_held_out_psnr;
         measurements.final_held_out_ssim =
             training.final_held_out_ssim;
+        measurements.final_pixel_weighted_psnr =
+            training.final_pixel_weighted_psnr;
+        measurements.final_pixel_weighted_ssim =
+            training.final_pixel_weighted_ssim;
         measurements.export_seconds =
             std::chrono::duration<double>(export_end - export_start).count();
         measurements.wall_seconds =

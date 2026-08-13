@@ -125,6 +125,14 @@ def compare_qualification_manifests(
                 "final_loss": _number(metrics, "final_loss"),
                 "psnr": _number(metrics, "psnr"),
                 "ssim": _number(metrics, "ssim"),
+                "pixel_weighted_psnr": _number(
+                    metrics,
+                    "pixel_weighted_psnr",
+                ),
+                "pixel_weighted_ssim": _number(
+                    metrics,
+                    "pixel_weighted_ssim",
+                ),
                 "lpips": _number(metrics, "lpips"),
                 "training_seconds": _number(timings, "training_seconds"),
                 "topology_refinement_seconds": _number(
@@ -152,6 +160,8 @@ def compare_qualification_manifests(
                 "final_loss",
                 "psnr",
                 "ssim",
+                "pixel_weighted_psnr",
+                "pixel_weighted_ssim",
                 "lpips",
                 "training_seconds",
                 "topology_refinement_seconds",
@@ -234,6 +244,14 @@ def compare_performance_manifests(
                 "final_loss": _number(metrics, "final_loss"),
                 "psnr": _number(metrics, "psnr"),
                 "ssim": _number(metrics, "ssim"),
+                "pixel_weighted_psnr": _number(
+                    metrics,
+                    "pixel_weighted_psnr",
+                ),
+                "pixel_weighted_ssim": _number(
+                    metrics,
+                    "pixel_weighted_ssim",
+                ),
                 "training_seconds": _number(timings, "training_seconds"),
                 "topology_refinement_seconds": _number(
                     timings,
@@ -277,6 +295,8 @@ def compare_performance_manifests(
                 "final_loss",
                 "psnr",
                 "ssim",
+                "pixel_weighted_psnr",
+                "pixel_weighted_ssim",
                 "training_seconds",
                 "topology_refinement_seconds",
                 "periodic_checkpoint_seconds",

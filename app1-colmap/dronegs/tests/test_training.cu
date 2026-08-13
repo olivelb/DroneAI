@@ -323,7 +323,8 @@ int main() {
             static_cast<float>(10.0 * std::log10(1.0 / mse));
         const float expected_ssim = static_cast<float>(reference_ssim(
             quality_prediction, quality_target.rgb, 32U, 32U));
-        if (std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
+        if (std::abs(quality.mse - static_cast<float>(mse)) > 2.0e-6F ||
+            std::abs(quality.psnr - expected_psnr) > 2.0e-4F ||
             std::abs(quality.ssim - expected_ssim) > 2.0e-4F ||
             quality.active_pixel_fraction <= 0.0F ||
             quality.active_pixel_fraction > 1.0F) {

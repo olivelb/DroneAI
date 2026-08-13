@@ -50,6 +50,8 @@ def _manifest(
             "final_loss": 0.1,
             "psnr": psnr,
             "ssim": 0.5,
+            "pixel_weighted_psnr": 20.5,
+            "pixel_weighted_ssim": 0.55,
         },
         "artifacts": {
             "point_cloud.ply": {

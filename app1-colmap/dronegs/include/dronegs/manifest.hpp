@@ -46,8 +46,12 @@ struct RunMeasurements {
     std::uint32_t final_active_sh_degree = 0U;
     std::optional<float> initial_held_out_psnr;
     std::optional<float> initial_held_out_ssim;
+    std::optional<float> initial_pixel_weighted_psnr;
+    std::optional<float> initial_pixel_weighted_ssim;
     std::optional<float> final_held_out_psnr;
     std::optional<float> final_held_out_ssim;
+    std::optional<float> final_pixel_weighted_psnr;
+    std::optional<float> final_pixel_weighted_ssim;
 };
 
 std::string utc_timestamp();
