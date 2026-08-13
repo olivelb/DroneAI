@@ -279,9 +279,13 @@ def compare_performance_manifests(
                     "periodic_checkpoint_seconds",
                 ),
                 "wall_seconds": _number(timings, "wall_seconds"),
-                "foreground_image_wait_seconds": _number(
+                "data_loading_seconds": _number(
                     timings,
                     "data_loading_seconds",
+                ),
+                "foreground_image_wait_seconds": _number(
+                    timings,
+                    "image_wait_seconds",
                 ),
                 "cumulative_decode_seconds": _number(
                     timings,
@@ -318,6 +322,7 @@ def compare_performance_manifests(
                 "topology_refinement_seconds",
                 "periodic_checkpoint_seconds",
                 "wall_seconds",
+                "data_loading_seconds",
                 "foreground_image_wait_seconds",
             )
         }

@@ -227,6 +227,7 @@ def _performance_manifest(
     payload["timings"].update(
         wall_seconds=wall_seconds,
         data_loading_seconds=2.5 / prefetch_depth,
+        image_wait_seconds=2.0 / prefetch_depth,
         image_decode_seconds=4.0,
         topology_refinement_seconds=1.5,
         periodic_checkpoint_seconds=0.5,
@@ -263,6 +264,8 @@ def test_compare_performance_requires_exact_scientific_output(tmp_path):
     assert report["runs"][1]["checkpoint_every"] == 4_000
     assert report["runs"][1]["topology_refinement_seconds"] == 1.5
     assert report["runs"][1]["image_cache_working_set_bytes"] == 8_000_000_000
+    assert report["runs"][0]["data_loading_seconds"] == pytest.approx(0.625)
+    assert report["runs"][0]["foreground_image_wait_seconds"] == pytest.approx(0.5)
 
 
 def test_compare_performance_rejects_changed_ply(tmp_path):
