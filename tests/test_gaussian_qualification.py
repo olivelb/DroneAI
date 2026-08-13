@@ -12,6 +12,7 @@ if str(APP1_ROOT) not in sys.path:
     sys.path.insert(0, str(APP1_ROOT))
 
 from gaussian_training.qualification import (  # noqa: E402
+    compare_performance_manifests,
     compare_qualification_manifests,
 )
 
@@ -96,3 +97,92 @@ def test_compare_requires_unique_profiles(tmp_path):
 
     with pytest.raises(ValueError, match="must be unique"):
         compare_qualification_manifests([first, second])
+
+
+def _performance_manifest(
+    path: Path,
+    *,
+    prefetch_depth: int,
+    decode_workers: int,
+    wall_seconds: float,
+    digest: str = "b" * 64,
+    seed: int = 42,
+) -> Path:
+    payload = json.loads(
+        _manifest(path, "reference-absolute", 0.0, seed=seed).read_text()
+    )
+    payload["parameters"].update(
+        prefetch_depth=prefetch_depth,
+        decode_workers=decode_workers,
+        checkpoint_path=f"/run-{prefetch_depth}/training.ckpt",
+        resumed_from_checkpoint=False,
+    )
+    payload["timings"].update(
+        wall_seconds=wall_seconds,
+        data_loading_seconds=2.5 / prefetch_depth,
+        image_decode_seconds=4.0,
+    )
+    payload["artifacts"]["point_cloud.ply"]["sha256"] = digest
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_compare_performance_requires_exact_scientific_output(tmp_path):
+    report = compare_performance_manifests(
+        [
+            _performance_manifest(
+                tmp_path / "four.json",
+                prefetch_depth=4,
+                decode_workers=4,
+                wall_seconds=20.0,
+            ),
+            _performance_manifest(
+                tmp_path / "eight.json",
+                prefetch_depth=8,
+                decode_workers=8,
+                wall_seconds=16.0,
+            ),
+        ]
+    )
+
+    assert report["scientific_output_parity"] is True
+    assert report["runs"][1]["speedup_from_baseline"] == pytest.approx(1.25)
+    assert report["runs"][1]["delta_from_baseline"]["psnr"] == 0.0
+
+
+def test_compare_performance_rejects_changed_ply(tmp_path):
+    first = _performance_manifest(
+        tmp_path / "four.json",
+        prefetch_depth=4,
+        decode_workers=4,
+        wall_seconds=20.0,
+    )
+    second = _performance_manifest(
+        tmp_path / "eight.json",
+        prefetch_depth=8,
+        decode_workers=8,
+        wall_seconds=16.0,
+        digest="c" * 64,
+    )
+
+    with pytest.raises(ValueError, match="changed the final point cloud"):
+        compare_performance_manifests([first, second])
+
+
+def test_compare_performance_rejects_scientific_drift(tmp_path):
+    first = _performance_manifest(
+        tmp_path / "four.json",
+        prefetch_depth=4,
+        decode_workers=4,
+        wall_seconds=20.0,
+    )
+    second = _performance_manifest(
+        tmp_path / "eight.json",
+        prefetch_depth=8,
+        decode_workers=8,
+        wall_seconds=16.0,
+        seed=43,
+    )
+
+    with pytest.raises(ValueError, match="outside the allowed"):
+        compare_performance_manifests([first, second])

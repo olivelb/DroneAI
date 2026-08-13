@@ -20,12 +20,31 @@ QUALIFICATION_VARIANT_PARAMETERS = frozenset(
     }
 )
 
+PERFORMANCE_VARIANT_PARAMETERS = frozenset(
+    {
+        "prefetch_depth",
+        "decode_workers",
+        "checkpoint_path",
+        "resumed_from_checkpoint",
+    }
+)
+
 
 def _controlled_parameters(parameters: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in parameters.items()
         if key not in QUALIFICATION_VARIANT_PARAMETERS
+    }
+
+
+def _performance_controlled_parameters(
+    parameters: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in parameters.items()
+        if key not in PERFORMANCE_VARIANT_PARAMETERS
     }
 
 
@@ -133,5 +152,107 @@ def compare_qualification_manifests(
         "trainer_binary_sha256": binary_digest,
         "controlled_parameters_sha256": _canonical_digest(controlled),
         "baseline_optimizer_profile": profiles[0],
+        "runs": runs,
+    }
+
+
+def compare_performance_manifests(
+    manifest_paths: Iterable[str | Path],
+) -> dict[str, Any]:
+    """Compare operational tuning with strict trainer-output parity."""
+
+    paths = [Path(path).resolve() for path in manifest_paths]
+    if len(paths) < 2:
+        raise ValueError("performance comparison requires at least two runs")
+    manifests: list[dict[str, Any]] = []
+    for path in paths:
+        manifest = load_run_manifest(path)
+        validate_run_manifest(manifest)
+        manifests.append(manifest)
+
+    baseline = manifests[0]
+    dataset_fingerprint = baseline["dataset"]["fingerprint"]
+    binary_digest = baseline["trainer_binary_sha256"]
+    controlled = _performance_controlled_parameters(baseline["parameters"])
+    for manifest in manifests[1:]:
+        if manifest["dataset"]["fingerprint"] != dataset_fingerprint:
+            raise ValueError("performance runs use different datasets")
+        if manifest["trainer_binary_sha256"] != binary_digest:
+            raise ValueError("performance runs use different trainer binaries")
+        if _performance_controlled_parameters(manifest["parameters"]) != controlled:
+            raise ValueError(
+                "performance runs differ outside the allowed I/O tuning"
+            )
+
+    ply_digests: list[str] = []
+    runs: list[dict[str, Any]] = []
+    for path, manifest in zip(paths, manifests, strict=True):
+        point_cloud = manifest["artifacts"].get("point_cloud.ply")
+        digest = point_cloud.get("sha256") if isinstance(point_cloud, Mapping) else None
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ValueError("performance run has no point-cloud SHA-256")
+        ply_digests.append(digest)
+        parameters = manifest["parameters"]
+        metrics = manifest["metrics"]
+        timings = manifest["timings"]
+        runs.append(
+            {
+                "manifest": str(path),
+                "prefetch_depth": _number(parameters, "prefetch_depth"),
+                "decode_workers": _number(parameters, "decode_workers"),
+                "point_cloud_sha256": digest,
+                "final_gaussians": _number(metrics, "final_gaussians"),
+                "final_loss": _number(metrics, "final_loss"),
+                "psnr": _number(metrics, "psnr"),
+                "ssim": _number(metrics, "ssim"),
+                "training_seconds": _number(timings, "training_seconds"),
+                "wall_seconds": _number(timings, "wall_seconds"),
+                "foreground_image_wait_seconds": _number(
+                    timings,
+                    "data_loading_seconds",
+                ),
+                "cumulative_decode_seconds": _number(
+                    timings,
+                    "image_decode_seconds",
+                ),
+            }
+        )
+
+    baseline_run = runs[0]
+    for run in runs:
+        baseline_wall = baseline_run["wall_seconds"]
+        wall = run["wall_seconds"]
+        run["speedup_from_baseline"] = (
+            None
+            if not isinstance(baseline_wall, (int, float))
+            or not isinstance(wall, (int, float))
+            or wall <= 0
+            else baseline_wall / wall
+        )
+        run["delta_from_baseline"] = {
+            metric: (
+                None
+                if run[metric] is None or baseline_run[metric] is None
+                else run[metric] - baseline_run[metric]
+            )
+            for metric in (
+                "final_gaussians",
+                "final_loss",
+                "psnr",
+                "ssim",
+                "training_seconds",
+                "wall_seconds",
+                "foreground_image_wait_seconds",
+            )
+        }
+    if len(set(ply_digests)) != 1:
+        raise ValueError("performance tuning changed the final point cloud")
+    return {
+        "schema_version": 1,
+        "dataset_fingerprint": dataset_fingerprint,
+        "trainer_binary_sha256": binary_digest,
+        "controlled_parameters_sha256": _canonical_digest(controlled),
+        "scientific_output_parity": True,
+        "point_cloud_sha256": ply_digests[0],
         "runs": runs,
     }
