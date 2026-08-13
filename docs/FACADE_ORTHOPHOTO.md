@@ -219,7 +219,7 @@ alignment transform for this mode.
 
 ## Qualification utilities
 
-Two maintained comparison tools make facade changes reproducible. Compare the
+Three maintained comparison tools make facade changes reproducible. Compare the
 sparse coverage of a candidate reconstruction with a reference model using:
 
 ```bash
@@ -241,6 +241,27 @@ python3 tools/compare_facade_rasters.py \
 The second report records robust SIFT/homography residuals, global and gridded
 coverage, and sharpness on the common valid mask. These measurements qualify a
 specific dataset and do not replace an independent surveyed scale check.
+
+When the independent reference is a coloured dense PLY, compare both final
+products in one bounded, streamed pass:
+
+```bash
+python3 tools/compare_facade_products.py \
+  facade_orthophoto.tif facade_orthophoto.height.tif REFERENCE.ply \
+  --json facade-product-comparison.json \
+  --preview facade-product-comparison.png \
+  --reference-preview facade-reference-raster.png
+```
+
+The dense reference is memory-mapped and rasterized in chunks in its robust
+world-vertical facade frame. Colour alignment uses the same SIFT/homography
+gate as the raster-only tool. The candidate depth is then compared in metres
+on the common mask after fitting only its unavoidable facade-plane offset and
+orientation sign; scale is never fitted. The report includes median, P90/P95
+and RMSE depth residuals, correlation and overlap, so a visually sharp but
+geometrically deformed elevation cannot pass unnoticed. A PLY reference must
+contain scalar `x/y/z` and `red/green/blue` vertex properties in binary
+little-endian form.
 
 ## Acceptance checks
 
