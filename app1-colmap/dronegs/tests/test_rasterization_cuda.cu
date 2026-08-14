@@ -89,7 +89,7 @@ void compare(
         }
     }
     if (actual.stats.visible_splats != expected.stats.visible_splats ||
-        actual.stats.evaluated_pairs != expected.stats.evaluated_pairs ||
+        actual.stats.evaluated_pairs > expected.stats.evaluated_pairs ||
         actual.stats.contributing_pairs != expected.stats.contributing_pairs) {
         throw std::runtime_error(
             "tiled alpha contribution statistics differ from CPU reference");
@@ -378,6 +378,10 @@ void test_anisotropic_reference_parity() {
     const auto actual = dronegs::render_alpha_tiled_cuda(
         gaussians, raster_camera, background);
     compare(actual, expected, 5.0e-5F);
+    if (actual.stats.evaluated_pairs >= expected.stats.evaluated_pairs) {
+        throw std::runtime_error(
+            "anisotropic tile culling did not reduce evaluated pairs");
+    }
 
     const auto value_count =
         static_cast<std::size_t>(raster_camera.width) *

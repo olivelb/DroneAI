@@ -1641,9 +1641,20 @@ TrainingMetrics train_ordered_mrnf(
                      options.photometric_mse_percent) /
                  100.0F);
         }
-        const float loss = workspace.train_step(
-            raster_camera, frame.image->rgb.data(),
-            frame.image->rgb.size(), mse_blend);
+        const bool report_progress =
+            iteration == 1U ||
+            iteration == options.iterations ||
+            iteration % progress_interval == 0U;
+        float loss = 0.0F;
+        if (report_progress) {
+            loss = workspace.train_step(
+                raster_camera, frame.image->rgb.data(),
+                frame.image->rgb.size(), mse_blend);
+        } else {
+            workspace.train_step_deferred(
+                raster_camera, frame.image->rgb.data(),
+                frame.image->rgb.size(), mse_blend);
+        }
         if (workspace.active_sh_degree() != degree_before) {
             std::cout
                 << "{\"event\":\"sh_degree_activation\",\"iteration\":"
@@ -1758,9 +1769,7 @@ TrainingMetrics train_ordered_mrnf(
                 << ",\"seconds\":" << checkpoint_seconds << "}\n"
                 << std::flush;
         }
-        if (iteration == 1U ||
-            iteration == options.iterations ||
-            iteration % progress_interval == 0U) {
+        if (report_progress) {
             std::cout
                 << "{\"event\":\"progress\",\"iteration\":"
                 << iteration

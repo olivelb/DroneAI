@@ -1353,6 +1353,31 @@ int main() {
             throw std::runtime_error(
                 "checkpoint snapshot changed the restored model");
         }
+        dronegs::OrderedAlphaTrainingContext synchronous_steps(
+            rate_fixture, 32U * 32U, 10U, 8U,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
+            2U, 2U, 321U, false);
+        dronegs::OrderedAlphaTrainingContext deferred_steps(
+            rate_fixture, 32U * 32U, 10U, 8U,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
+            2U, 2U, 321U, false);
+        for (std::uint64_t step = 0U; step < 10U; ++step) {
+            static_cast<void>(synchronous_steps.train_step(
+                quality_camera, split_target.data(),
+                split_target.size()));
+            deferred_steps.train_step_deferred(
+                quality_camera, split_target.data(),
+                split_target.size());
+        }
+        const float synchronous_loss = synchronous_steps.evaluate(
+            quality_camera, split_target.data(), split_target.size());
+        const float deferred_loss = deferred_steps.evaluate(
+            quality_camera, split_target.data(), split_target.size());
+        if (!models_match(synchronous_steps, deferred_steps) ||
+            std::abs(synchronous_loss - deferred_loss) > 1.0e-6F) {
+            throw std::runtime_error(
+                "deferred metric readback changed ordered training");
+        }
         for (std::uint64_t step = 5U; step < 10U; ++step) {
             static_cast<void>(uninterrupted.train_step(
                 quality_camera, split_target.data(),

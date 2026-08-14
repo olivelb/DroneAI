@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.49.
+- Current development version: 0.5.0-dev.50.
 - Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
   image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
@@ -49,6 +49,11 @@ Each completed phase has one focused commit and an annotated
   growth and topology/noise schedules derived from every operator-selected
   iteration budget. Fast-v2 passes its representative cell gate; Normal-v4,
   HQ-v4 and facade promotion retain their separate target-GPU gates.
+- Dev.50 keeps loss and validation scalars on the GPU between the 20 progress
+  reports of a run, while a device-side sticky validator preserves fail-closed
+  handling of empty or non-finite training frames. The bounded raster path
+  also rejects tile bounding boxes that cannot contain a contributing ellipse;
+  structural FastGS deliberately retains its packed checkpoint layout.
 - The independent Savères 15,000-step qualification passed on 1,065 images:
   19.163038 dB PSNR, 0.456047 SSIM, 0.551232 LPIPS, 1.5 million splats and
   40.93 minutes of training. Its PSNR/SSIM production canary passed.

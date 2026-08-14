@@ -2,6 +2,26 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.50 - Deferred metrics and exact bounded tile culling
+
+- Keep L1, active-pixel and SSIM scalars on the GPU for non-reporting training
+  iterations, removing three synchronous device-to-host copies from the hot
+  path while retaining 20 evenly spaced progress samples plus first/final.
+- Validate empty frames and non-finite loss/SSIM values on device through a
+  sticky error flag, then fail closed at the next progress readback or final
+  iteration.
+- Add conservative projected-ellipse/tile intersection to the bounded CUDA
+  renderer. Tests require identical visible/contributing pairs and no increase
+  in evaluated candidates against the CPU oracle.
+- Preserve the structural FastGS candidate stream because precise culling
+  changes packed checkpoint groups; its separate compatibility tests and
+  checkpoint semantics remain unchanged.
+- Pass all eight native CUDA/CPU CTests on the RTX 3090 target. A fixed-topology
+  real-cell pilot measured 1.011 seconds versus 1.060 seconds of training
+  (`-4.7%`), while the roughly 183-second pilot wall time remained dominated
+  by one-time projected initialization and image loading. Treat that short
+  measurement as directional pending the longer GAJAN qualification.
+
 ## 0.5.0-dev.49 - Projected initialization and run-scaled capacity
 
 - Add crop-camera projected KNN initialization with a configurable maximum
