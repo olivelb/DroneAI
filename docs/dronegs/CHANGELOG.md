@@ -2,6 +2,22 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.53 - Direct tile/depth ordering
+
+- Decompose sampled preprocessing telemetry into projection, projected-record
+  sort, binning/duplication, tile/depth pair sort and FastGS bucket timings,
+  while preserving the aggregate `preprocess_ms` field.
+- Remove the redundant global projected-record radix sort from persistent
+  training. The required `(tile, depth)` radix sort and original Gaussian
+  source indices remain unchanged.
+- Remove the two persistent output buffers formerly required by that sort,
+  saving 60 bytes of capacity per Gaussian without changing the public
+  checkpoint or PLY formats.
+- Pass all eight native CPU/CUDA CTests on RTX 3090. Two GAJAN Fast runs
+  improve mean wall time from 29.334 to 27.080 seconds (`-7.7%`) and training
+  from 26.077 to 23.814 seconds (`-8.7%`), with PSNR/SSIM and final population
+  inside retained dev.52 variation.
+
 ## 0.5.0-dev.52 - Coefficient-parallel SH Adam
 
 - Move active color-SH and opacity-SH Adam updates from serial per-Gaussian

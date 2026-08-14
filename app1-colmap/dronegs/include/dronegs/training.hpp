@@ -130,6 +130,11 @@ struct MrnfOptimizerTelemetry {
 
 struct MrnfGpuStageTelemetry {
     std::uint64_t step = 0U;
+    float projection_ms = 0.0F;
+    float record_sort_ms = 0.0F;
+    float binning_ms = 0.0F;
+    float pair_sort_ms = 0.0F;
+    float bucket_ms = 0.0F;
     float preprocess_ms = 0.0F;
     float raster_ms = 0.0F;
     float objective_ms = 0.0F;

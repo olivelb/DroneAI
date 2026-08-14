@@ -1044,6 +1044,11 @@ int main() {
             rate_context.latest_gpu_stage_telemetry();
         if (!second_gpu_stage_telemetry.has_value() ||
             second_gpu_stage_telemetry->step != 2U ||
+            second_gpu_stage_telemetry->projection_ms < 0.0F ||
+            second_gpu_stage_telemetry->record_sort_ms < 0.0F ||
+            second_gpu_stage_telemetry->binning_ms < 0.0F ||
+            second_gpu_stage_telemetry->pair_sort_ms < 0.0F ||
+            second_gpu_stage_telemetry->bucket_ms < 0.0F ||
             second_gpu_stage_telemetry->preprocess_ms < 0.0F ||
             second_gpu_stage_telemetry->raster_ms < 0.0F ||
             second_gpu_stage_telemetry->objective_ms < 0.0F ||
