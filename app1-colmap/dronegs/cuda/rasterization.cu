@@ -31,6 +31,8 @@
  * fused L1/SSIM CUDA structure to DroneGS's interleaved renderer and valid
  * padding objective; modified 2026-07-26. DroneGS orchestration remains
  * independent and does not link to or launch LichtFeld at runtime.
+ * Dev.52 parallelizes DroneGS's original color/opacity SH Adam coefficient
+ * updates without changing the adapted MRNF or FastGS algorithms.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -3481,28 +3483,88 @@ struct DeviceOptimizerTelemetry {
     unsigned int samples[5];
 };
 
+__global__ void ordered_sh_adam_update_kernel(
+    Gaussian* gaussians, std::size_t gaussian_count,
+    const float* sh_rest_gradient,
+    const float* opacity_sh_gradient,
+    float* first_sh_rest, float* second_sh_rest,
+    float* first_opacity_sh, float* second_opacity_sh,
+    float inverse_bias_first, float inverse_bias_second,
+    float sh_rest_learning_rate, float opacity_sh_learning_rate,
+    float dc_epsilon, float opacity_epsilon,
+    std::uint32_t active_coefficients) {
+    if (active_coefficients == 0U) {
+        return;
+    }
+    const std::size_t item_index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const std::size_t items_per_gaussian =
+        static_cast<std::size_t>(active_coefficients) * 4U;
+    const std::size_t item_count = gaussian_count * items_per_gaussian;
+    if (item_index >= item_count) {
+        return;
+    }
+    constexpr float beta_first = 0.9F;
+    constexpr float beta_second = 0.999F;
+    const std::size_t gaussian_index = item_index / items_per_gaussian;
+    const std::size_t local_index = item_index % items_per_gaussian;
+    const std::size_t color_item_count =
+        static_cast<std::size_t>(active_coefficients) * 3U;
+    if (local_index < color_item_count) {
+        const std::size_t channel = local_index / active_coefficients;
+        const std::size_t coefficient = local_index % active_coefficients;
+        const auto offset =
+            gaussian_index * maximum_sh_rest_values +
+            channel * maximum_sh_rest_coefficients + coefficient;
+        const float gradient = sh_rest_gradient[offset];
+        first_sh_rest[offset] =
+            beta_first * first_sh_rest[offset] +
+            (1.0F - beta_first) * gradient;
+        second_sh_rest[offset] =
+            beta_second * second_sh_rest[offset] +
+            (1.0F - beta_second) * gradient * gradient;
+        gaussians[gaussian_index].sh_rest[
+            channel * maximum_sh_rest_coefficients + coefficient] -=
+            sh_rest_learning_rate *
+            first_sh_rest[offset] * inverse_bias_first /
+            (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
+             dc_epsilon);
+        return;
+    }
+    const std::size_t coefficient = local_index - color_item_count;
+    const auto offset =
+        gaussian_index * maximum_opacity_sh_coefficients + coefficient;
+    const float gradient = opacity_sh_gradient[offset];
+    first_opacity_sh[offset] =
+        beta_first * first_opacity_sh[offset] +
+        (1.0F - beta_first) * gradient;
+    second_opacity_sh[offset] =
+        beta_second * second_opacity_sh[offset] +
+        (1.0F - beta_second) * gradient * gradient;
+    gaussians[gaussian_index].opacity_sh[coefficient] -=
+        opacity_sh_learning_rate *
+        first_opacity_sh[offset] * inverse_bias_first /
+        (sqrtf(second_opacity_sh[offset] * inverse_bias_second) +
+         opacity_epsilon);
+}
+
 __global__ void ordered_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
-    const float* dc_gradient, const float* sh_rest_gradient,
-    const float* opacity_gradient, const float* opacity_sh_gradient,
+    const float* dc_gradient, const float* opacity_gradient,
     const float* xyz_gradient, const float* log_scale_gradient,
     const float* rotation_gradient,
     float* first_dc, float* second_dc,
-    float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
-    float* first_opacity_sh, float* second_opacity_sh,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
     float inverse_bias_first, float inverse_bias_second,
     float position_learning_rate, float color_learning_rate,
-    float sh_rest_learning_rate,
     float opacity_learning_rate, float scale_learning_rate,
     float rotation_learning_rate,
     float position_epsilon, float dc_epsilon,
     float opacity_epsilon, float scale_epsilon,
     float rotation_epsilon,
-    std::uint32_t active_sh_degree,
     float minimum_log_scale, float maximum_log_scale,
     DeviceOptimizerTelemetry* telemetry,
     std::size_t telemetry_stride) {
@@ -3554,29 +3616,6 @@ __global__ void ordered_adam_update_kernel(
                 gaussians[gaussian_index].dc[channel];
         }
     }
-    const std::uint32_t active_coefficients =
-        (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
-    for (std::size_t channel = 0U; channel < 3U; ++channel) {
-        for (std::uint32_t coefficient = 0U;
-             coefficient < active_coefficients; ++coefficient) {
-            const auto offset =
-                gaussian_index * maximum_sh_rest_values +
-                channel * maximum_sh_rest_coefficients + coefficient;
-            const float gradient = sh_rest_gradient[offset];
-            first_sh_rest[offset] =
-                beta_first * first_sh_rest[offset] +
-                (1.0F - beta_first) * gradient;
-            second_sh_rest[offset] =
-                beta_second * second_sh_rest[offset] +
-                (1.0F - beta_second) * gradient * gradient;
-            gaussians[gaussian_index].sh_rest[
-                channel * maximum_sh_rest_coefficients + coefficient] -=
-                sh_rest_learning_rate *
-                first_sh_rest[offset] * inverse_bias_first /
-                (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
-                 dc_epsilon);
-        }
-    }
     const float opacity = opacity_gradient[gaussian_index];
     const float original_opacity =
         gaussians[gaussian_index].opacity_logit;
@@ -3604,26 +3643,6 @@ __global__ void ordered_adam_update_kernel(
             gaussians[gaussian_index].opacity_logit *
             gaussians[gaussian_index].opacity_logit;
     }
-    for (std::uint32_t coefficient = 0U;
-         coefficient < active_coefficients; ++coefficient) {
-        const auto offset =
-            gaussian_index * maximum_opacity_sh_coefficients +
-            coefficient;
-        const float gradient = opacity_sh_gradient[offset];
-        first_opacity_sh[offset] =
-            beta_first * first_opacity_sh[offset] +
-            (1.0F - beta_first) * gradient;
-        second_opacity_sh[offset] =
-            beta_second * second_opacity_sh[offset] +
-            (1.0F - beta_second) * gradient * gradient;
-        gaussians[gaussian_index].opacity_sh[coefficient] -=
-            (opacity_learning_rate / 20.0F) *
-            first_opacity_sh[offset] * inverse_bias_first /
-            (sqrtf(
-                 second_opacity_sh[offset] * inverse_bias_second) +
-             opacity_epsilon);
-    }
-
     for (std::size_t axis = 0U; axis < 3U; ++axis) {
         const auto offset = gaussian_index * 3U + axis;
         const float position_gradient =
@@ -5401,21 +5420,17 @@ struct OrderedAlphaTrainingContext::Impl {
                 ordered_adam_update_kernel<<<
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
-                    dc_gradient.data(), sh_rest_gradient.data(),
-                    opacity_gradient.data(), opacity_sh_gradient.data(),
+                    dc_gradient.data(), opacity_gradient.data(),
                     xyz_gradient.data(), log_scale_gradient.data(),
                     rotation_gradient.data(),
                     first_dc.data(), second_dc.data(),
-                    first_sh_rest.data(), second_sh_rest.data(),
                     first_opacity.data(), second_opacity.data(),
-                    first_opacity_sh.data(), second_opacity_sh.data(),
                     first_xyz.data(), second_xyz.data(),
                     first_log_scale.data(), second_log_scale.data(),
                     first_rotation.data(), second_rotation.data(),
                     inverse_bias_first, inverse_bias_second,
                     learning_rates.position,
                     learning_rates.dc,
-                    learning_rates.dc / 20.0F,
                     learning_rates.opacity,
                     learning_rates.scale,
                     learning_rates.rotation,
@@ -5424,7 +5439,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     learning_rates.opacity_epsilon,
                     learning_rates.scale_epsilon,
                     learning_rates.rotation_epsilon,
-                    active_sh_degree,
                     minimum_log_scale, maximum_log_scale,
                     collect_telemetry
                         ? optimizer_telemetry.data()
@@ -5433,6 +5447,33 @@ struct OrderedAlphaTrainingContext::Impl {
                 require_cuda(
                     cudaGetLastError(),
                     "launch persistent ordered Adam");
+                const std::uint32_t active_coefficients =
+                    (active_sh_degree + 1U) *
+                        (active_sh_degree + 1U) -
+                    1U;
+                if (active_coefficients > 0U) {
+                    const std::size_t sh_item_count =
+                        gaussian_count * active_coefficients * 4U;
+                    const auto sh_blocks = static_cast<std::uint32_t>(
+                        (sh_item_count + block_size - 1U) / block_size);
+                    ordered_sh_adam_update_kernel<<<
+                        sh_blocks, block_size>>>(
+                        gaussians.data(), gaussian_count,
+                        sh_rest_gradient.data(),
+                        opacity_sh_gradient.data(),
+                        first_sh_rest.data(), second_sh_rest.data(),
+                        first_opacity_sh.data(),
+                        second_opacity_sh.data(),
+                        inverse_bias_first, inverse_bias_second,
+                        learning_rates.dc / 20.0F,
+                        learning_rates.opacity / 20.0F,
+                        learning_rates.dc_epsilon,
+                        learning_rates.opacity_epsilon,
+                        active_coefficients);
+                    require_cuda(
+                        cudaGetLastError(),
+                        "launch coefficient-parallel ordered SH Adam");
+                }
                 if (optimizer_steps % sh_degree_interval == 0U &&
                     active_sh_degree < maximum_active_sh_degree) {
                     ++active_sh_degree;

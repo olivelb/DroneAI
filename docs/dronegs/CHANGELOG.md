@@ -2,6 +2,24 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.52 - Coefficient-parallel SH Adam
+
+- Move active color-SH and opacity-SH Adam updates from serial per-Gaussian
+  loops to a coefficient-parallel CUDA kernel. DC, scalar opacity, position,
+  scale, rotation and sampled optimizer telemetry remain unchanged.
+- Preserve the exact moment equations, bias correction, learning rates,
+  epsilon values and progressive-SH activation boundary without adding a
+  persistent device allocation.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including checkpoint,
+  deferred/synchronous, SH, opacity-SH and Python/native parity canaries.
+- Repeat GAJAN Fast twice at 29.333 seconds median versus 38.985 seconds for
+  dev.51 (`-24.8%` wall; `-26.9%` training). Mean PSNR, pixel-weighted PSNR
+  and SSIM remain inside reference run variation.
+- Complete GAJAN Normal 15k in 84.472 seconds versus 162.594 seconds in the
+  retained reference manifest (`-48.0%` wall; `-49.0%` training), while mean
+  PSNR improves 18.9780 → 18.9865 dB, pixel-weighted PSNR 16.4689 → 16.4947
+  dB and SSIM 0.373993 → 0.374458. Observed VRAM remains below 5.2 GiB.
+
 ## 0.5.0-dev.51 - Sampled GPU stage telemetry
 
 - Time preprocessing, rasterization, L1/DSSIM objective, backward and Adam

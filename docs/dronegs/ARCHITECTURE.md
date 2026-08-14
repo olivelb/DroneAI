@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.51
+Project version: 0.5.0-dev.52
 
 ## Decision
 
@@ -30,6 +30,13 @@ Dev.32 permits SH-derived splat color in `[0,4]` during rendering and keeps
 its gradient live over that interval. This matches the pinned FastGS color
 contract and prevents coefficients just above display white from being frozen;
 final RGB image serialization remains clamped to the display range.
+
+Dev.52 retains the exact Adam equations and progressive-SH schedule but moves
+the active color-SH and opacity-SH coefficient updates out of the per-Gaussian
+serial loop. One CUDA thread owns one coefficient, while DC, opacity, geometry
+and optimizer telemetry stay in the original per-Gaussian kernel. The two
+kernels share the same stream and bias-correction values; no parameter family
+is reordered internally and no persistent device allocation is added.
 
 Dev.33 recalibrates only opacity Adam after the much smaller local-KNN
 footprints. The selected `0.096` quality profile retains DC `0.010`, opacity
