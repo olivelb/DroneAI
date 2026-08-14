@@ -15,7 +15,9 @@ This changelog covers the standalone Gaussian trainer project.
 - Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean training falls
   from 37.561 to 35.769 seconds (`-4.77%`) and wall time from 58.526 to
   55.888 seconds (`-4.51%`), with equivalent loss, PSNR, SSIM and population.
-- Require an exact-commit 30,000-step HQ gate before promotion.
+- Complete the exact-commit 30,000-step HQ gate at 5.1 M Gaussians with three
+  checkpoints: native training improves `3.71%`, wall time `3.66%`, and held-
+  out PSNR/SSIM remain inside the established non-regression envelope.
 
 ## 0.5.0-dev.61 - Conservative projection culling
 
