@@ -70,6 +70,23 @@ def test_fast_profile_matches_versioned_minimum_quality_envelope():
     assert profile.profile_id == "fast-v1"
 
 
+def test_fast_resident_profile_exercises_preview_seams_without_changing_fast():
+    profile = PROFILES["fast-resident"]
+
+    assert profile.iterations == 7_500
+    assert profile.cap_max == 1_500_000
+    assert profile.data_factor == 8
+    assert profile.max_width == 1600
+    assert profile.profile_id == "fast-v2"
+    assert profile.capacity_mode == "adaptive"
+    assert profile.capacity_floor == 1_500_000
+    assert profile.target_gaussian_spacing_pixels == 8.0
+    assert profile.resident_partitioning is True
+    assert profile.initial_scale_policy == "projected-knn"
+    assert profile.capacity_targeted_growth is True
+    assert profile.resolution == 0.05
+
+
 def test_normal_profile_matches_versioned_quality_envelope():
     profile = PROFILES["normal"]
 

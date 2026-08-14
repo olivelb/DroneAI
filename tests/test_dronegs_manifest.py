@@ -18,6 +18,7 @@ from gaussian_training.manifest_contract import (  # noqa: E402
     DuplicateManifestKeyError,
     load_run_manifest,
     manifest_matches_ply,
+    manifest_parameter_matches,
     promote_run_manifest,
 )
 
@@ -85,6 +86,13 @@ def test_manifest_promotion_hashes_ply_and_detects_tampering(tmp_path):
     assert promoted["artifacts"]["point_cloud.ply"]["bytes"] == len(b"ply\nfixture")
     ply.write_bytes(b"ply\ntampered")
     assert not manifest_matches_ply(promoted, ply)
+
+
+def test_manifest_parameter_comparison_accepts_float32_round_trip_only():
+    assert manifest_parameter_matches(54.59814835, 54.59815)
+    assert manifest_parameter_matches(8, 8.0)
+    assert not manifest_parameter_matches(54.59, 54.59815)
+    assert not manifest_parameter_matches(True, 1.0)
 
 
 def test_incompatible_completed_output_is_preserved_before_retraining(

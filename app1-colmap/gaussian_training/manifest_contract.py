@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,22 @@ from shared.checksums import sha256_file
 
 class DuplicateManifestKeyError(ValueError):
     pass
+
+
+def manifest_parameter_matches(actual: Any, expected: Any) -> bool:
+    """Compare persisted trainer parameters without float32 false negatives."""
+
+    if isinstance(expected, float) and not isinstance(expected, bool):
+        if isinstance(actual, bool) or not isinstance(actual, (int, float)):
+            return False
+        actual_float = float(actual)
+        return math.isfinite(actual_float) and math.isclose(
+            actual_float,
+            expected,
+            rel_tol=1e-7,
+            abs_tol=1e-9,
+        )
+    return bool(actual == expected)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
