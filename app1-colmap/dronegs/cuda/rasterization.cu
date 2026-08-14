@@ -37,6 +37,8 @@
  * Dev.55 parallelizes DroneGS's scalar Adam parameters by component.
  * Dev.56 reduces fused L1/SSIM loss and active-pixel counts per CUDA tile
  * before the global accumulators, without changing objective equations.
+ * Dev.61 rejects only splats whose conservative maximum screen-space support
+ * lies outside the image before evaluating SH and exact covariance.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -82,6 +84,9 @@ constexpr float gaussian_support = 2.5F;
 constexpr float maximum_splat_color = 4.0F;
 constexpr float fastgs_dilation = 0.3F;
 constexpr float fastgs_maximum_fragment_alpha = 0.999F;
+// sqrt(2 * log(1 / alpha_minimum_contribution)), rounded upward.
+constexpr float fastgs_maximum_support = 3.33F;
+constexpr float conservative_radius_margin = 1.0F;
 constexpr std::uint32_t fastgs_checkpoint_interval = 32U;
 constexpr float fastgs_checkpoint_color_scale = 255.0F / 4.0F;
 constexpr float fastgs_checkpoint_color_inverse_scale = 4.0F / 255.0F;
@@ -597,9 +602,100 @@ void validate_inputs(
     }
 }
 
+__device__ bool load_gaussian_scale_device(
+    const Gaussian& gaussian, float scale[3]) {
+    for (std::uint32_t axis = 0U; axis < 3U; ++axis) {
+        scale[axis] = expf(gaussian.log_scale[axis]);
+        if (!isfinite(scale[axis]) || scale[axis] <= 0.0F) {
+            return false;
+        }
+    }
+    return true;
+}
+
+__device__ bool may_overlap_image_device(
+    DeviceRasterCamera camera, float camera_x, float camera_y,
+    float camera_z, float image_x, float image_y,
+    const float scale[3], float antialias_filter_variance,
+    bool fastgs_compatibility) {
+    float radius_x = gaussian_support * sqrtf(
+        maximum_projected_variance +
+        fmaxf(0.0F, antialias_filter_variance));
+    float radius_y = radius_x;
+    if (fastgs_compatibility) {
+        const float inverse_depth = 1.0F / camera_z;
+        const float normalized_x = camera_x * inverse_depth;
+        const float normalized_y = camera_y * inverse_depth;
+        const float projected_x = fminf(
+            (1.15F * static_cast<float>(camera.width) - camera.cx) /
+                camera.fx,
+            fmaxf(
+                (-0.15F * static_cast<float>(camera.width) - camera.cx) /
+                    camera.fx,
+                normalized_x));
+        const float projected_y = fminf(
+            (1.15F * static_cast<float>(camera.height) - camera.cy) /
+                camera.fy,
+            fmaxf(
+                (-0.15F * static_cast<float>(camera.height) - camera.cy) /
+                    camera.fy,
+                normalized_y));
+        const float jacobian_xx = camera.fx * inverse_depth;
+        const float jacobian_xz =
+            -camera.fx * projected_x * inverse_depth;
+        const float jacobian_yy = camera.fy * inverse_depth;
+        const float jacobian_yz =
+            -camera.fy * projected_y * inverse_depth;
+        float row_x_l1 = 0.0F;
+        float row_y_l1 = 0.0F;
+        for (std::uint32_t column = 0U; column < 3U; ++column) {
+            row_x_l1 += fabsf(
+                jacobian_xx * camera.rotation[column] +
+                jacobian_xz * camera.rotation[2U * 3U + column]);
+            row_y_l1 += fabsf(
+                jacobian_yy * camera.rotation[1U * 3U + column] +
+                jacobian_yz * camera.rotation[2U * 3U + column]);
+        }
+        const float maximum_scale =
+            fmaxf(scale[0], fmaxf(scale[1], scale[2]));
+        // Each normalized quaternion rotation coefficient is at most one in
+        // magnitude.  sqrt(3), rounded upward, therefore turns the L1 camera
+        // row bound into an upper bound for every projected covariance row.
+        const float row_bound_factor =
+            1.733F * maximum_scale;
+        radius_x = fmaxf(
+            fastgs_maximum_support * sqrtf(
+                row_bound_factor * row_bound_factor *
+                    row_x_l1 * row_x_l1 +
+                fastgs_dilation) -
+                0.5F,
+            0.0F);
+        radius_y = fmaxf(
+            fastgs_maximum_support * sqrtf(
+                row_bound_factor * row_bound_factor *
+                    row_y_l1 * row_y_l1 +
+                fastgs_dilation) -
+                0.5F,
+            0.0F);
+    }
+    radius_x += conservative_radius_margin;
+    radius_y += conservative_radius_margin;
+    // An unbounded estimate is not grounds for culling: the exact projection
+    // below remains the authority.  The extra pixel absorbs float roundoff at
+    // the image boundary, so this prefilter cannot remove a visible splat.
+    if (!isfinite(radius_x) || !isfinite(radius_y)) {
+        return true;
+    }
+    return image_x + radius_x >= 0.0F &&
+           image_y + radius_y >= 0.0F &&
+           image_x - radius_x < static_cast<float>(camera.width) &&
+           image_y - radius_y < static_cast<float>(camera.height);
+}
+
 __device__ bool project_covariance_device(
     const Gaussian& gaussian, DeviceRasterCamera camera,
     float camera_x, float camera_y, float camera_z,
+    const float scale[3],
     float opacity, float antialias_filter_variance,
     bool fastgs_compatibility,
     float& radius_x, float& radius_y,
@@ -637,13 +733,6 @@ __device__ bool project_covariance_device(
                     camera.rotation[row * 3U + inner] *
                     gaussian_rotation[inner * 3U + column];
             }
-        }
-    }
-    float scale[3]{};
-    for (std::uint32_t axis = 0U; axis < 3U; ++axis) {
-        scale[axis] = expf(gaussian.log_scale[axis]);
-        if (!isfinite(scale[axis]) || scale[axis] <= 0.0F) {
-            return false;
         }
     }
     const float inverse_depth = 1.0F / camera_z;
@@ -894,6 +983,16 @@ __global__ void project_alpha_splats_kernel(
     if (camera_z > minimum_depth && isfinite(camera_z)) {
         const float x = camera.fx * camera_x / camera_z + camera.cx;
         const float y = camera.fy * camera_y / camera_z + camera.cy;
+        float scale[3]{};
+        if (!isfinite(x) || !isfinite(y) ||
+            !load_gaussian_scale_device(gaussian, scale) ||
+            !may_overlap_image_device(
+                camera, camera_x, camera_y, camera_z, x, y, scale,
+                antialias_filter_variance, fastgs_compatibility)) {
+            records[index] = record;
+            depth_keys[index] = depth_key;
+            return;
+        }
         float sh_basis[16]{};
         evaluate_sh_basis_device(
             gaussian, camera, active_sh_degree, sh_basis);
@@ -916,6 +1015,7 @@ __global__ void project_alpha_splats_kernel(
         const bool valid_covariance =
             project_covariance_device(
                 gaussian, camera, camera_x, camera_y, camera_z,
+                scale,
                 opacity, antialias_filter_variance,
                 fastgs_compatibility,
                 radius_x, radius_y, conic_xx, conic_xy, conic_yy,
