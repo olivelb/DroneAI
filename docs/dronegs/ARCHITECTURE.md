@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.49
+Project version: 0.5.0-dev.50
 
 ## Decision
 

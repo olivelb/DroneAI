@@ -7,7 +7,18 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.49` keeps dev.31's deterministic exact two-neighbour KNN
+Version `0.5.0-dev.50` removes three per-step device-to-host metric readbacks
+between the 20 progress reports emitted by a run. Loss, active-pixel and SSIM
+validation remains fail-closed through a sticky device error flag that is
+read at the next report and at the final iteration. The bounded ordered-alpha
+rasterizer also minimizes each projected conic over candidate tile rectangles
+and rejects only tiles that provably cannot contain a contributing pixel. This
+exact culling stays disabled in the structural FastGS path because changing
+its candidate stream would change packed checkpoint segmentation. Same-process
+CUDA tests require deferred/synchronous training parity and exact contributing
+pair parity.
+
+Dev.49 keeps dev.31's deterministic exact two-neighbour KNN
 scale initialization and dev.32's live SH-derived `[0,4]` render color, then
 adds dev.35 profiles that retain the dev.34 scale schedule while delaying
 stronger rotation updates until 40% of training. Dev.36 adds homodirectional

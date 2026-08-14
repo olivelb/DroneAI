@@ -340,6 +340,86 @@ __device__ bool projected_tile_bounds(
     return true;
 }
 
+__device__ float projected_conic_value(
+    const DeviceProjectedSplat& splat, float delta_x,
+    float delta_y) {
+    return fmaxf(
+        0.0F,
+        splat.conic_xx * delta_x * delta_x +
+            2.0F * splat.conic_xy * delta_x * delta_y +
+            splat.conic_yy * delta_y * delta_y);
+}
+
+__device__ bool projected_splat_intersects_tile(
+    const DeviceProjectedSplat& splat, std::uint32_t tile_x,
+    std::uint32_t tile_y, std::uint32_t width,
+    std::uint32_t height) {
+    const std::uint32_t pixel_minimum_x =
+        tile_x * alpha_tile_width;
+    const std::uint32_t pixel_minimum_y =
+        tile_y * alpha_tile_height;
+    if (pixel_minimum_x >= width || pixel_minimum_y >= height) {
+        return false;
+    }
+    const std::uint32_t pixel_maximum_x = min(
+        width - 1U,
+        pixel_minimum_x + alpha_tile_width - 1U);
+    const std::uint32_t pixel_maximum_y = min(
+        height - 1U,
+        pixel_minimum_y + alpha_tile_height - 1U);
+
+    // Pixel samples are evaluated at their centres. Minimise the positive
+    // definite conic over the continuous rectangle enclosing those centres.
+    // The continuous minimum is a conservative lower bound for the discrete
+    // samples, so rejecting a tile cannot discard a contributing pixel.
+    const float minimum_x =
+        static_cast<float>(pixel_minimum_x) + 0.5F - splat.x;
+    const float maximum_x =
+        static_cast<float>(pixel_maximum_x) + 0.5F - splat.x;
+    const float minimum_y =
+        static_cast<float>(pixel_minimum_y) + 0.5F - splat.y;
+    const float maximum_y =
+        static_cast<float>(pixel_maximum_y) + 0.5F - splat.y;
+    const float clamped_x = fminf(maximum_x, fmaxf(minimum_x, 0.0F));
+    const float clamped_y = fminf(maximum_y, fmaxf(minimum_y, 0.0F));
+    float minimum_conic =
+        projected_conic_value(splat, clamped_x, clamped_y);
+
+    const float edge_x[2]{minimum_x, maximum_x};
+    const float edge_y[2]{minimum_y, maximum_y};
+    for (std::uint32_t edge = 0U; edge < 2U; ++edge) {
+        const float x = edge_x[edge];
+        const float optimal_y = fminf(
+            maximum_y,
+            fmaxf(
+                minimum_y,
+                -splat.conic_xy * x / splat.conic_yy));
+        minimum_conic = fminf(
+            minimum_conic,
+            projected_conic_value(splat, x, optimal_y));
+
+        const float y = edge_y[edge];
+        const float optimal_x = fminf(
+            maximum_x,
+            fmaxf(
+                minimum_x,
+                -splat.conic_xy * y / splat.conic_xx));
+        minimum_conic = fminf(
+            minimum_conic,
+            projected_conic_value(splat, optimal_x, y));
+    }
+
+    const float peak_alpha = splat.opacity * splat.compensation;
+    if (!(peak_alpha >= alpha_minimum_contribution) ||
+        !isfinite(peak_alpha)) {
+        return false;
+    }
+    const float maximum_conic =
+        2.0F * logf(peak_alpha / alpha_minimum_contribution);
+    return isfinite(minimum_conic) &&
+           minimum_conic <= maximum_conic;
+}
+
 struct DeviceRenderStats {
     unsigned long long evaluated_pairs = 0U;
     unsigned long long contributing_pairs = 0U;
@@ -781,17 +861,34 @@ __global__ void project_alpha_splats_kernel(
 
 __global__ void extract_pair_counts_kernel(
     const DeviceProjectedRecord* records, std::uint32_t record_count,
-    std::uint32_t width, std::uint32_t height, std::uint64_t* counts) {
+    std::uint32_t width, std::uint32_t height, std::uint64_t* counts,
+    bool precise_tile_culling) {
     const std::uint32_t index =
         blockIdx.x * blockDim.x + threadIdx.x;
     if (index < record_count) {
         DeviceTileBounds bounds{};
-        counts[index] = projected_tile_bounds(
-                            records[index].splat, width, height, bounds)
-            ? static_cast<std::uint64_t>(
-                  bounds.maximum_x - bounds.minimum_x + 1U) *
-                  (bounds.maximum_y - bounds.minimum_y + 1U)
-            : 0U;
+        const auto& splat = records[index].splat;
+        std::uint64_t count = 0U;
+        const bool has_bounds =
+            projected_tile_bounds(splat, width, height, bounds);
+        if (has_bounds && !precise_tile_culling) {
+            count = static_cast<std::uint64_t>(
+                        bounds.maximum_x - bounds.minimum_x + 1U) *
+                (bounds.maximum_y - bounds.minimum_y + 1U);
+        } else if (has_bounds) {
+            for (std::uint32_t tile_y = bounds.minimum_y;
+                 tile_y <= bounds.maximum_y; ++tile_y) {
+                for (std::uint32_t tile_x = bounds.minimum_x;
+                     tile_x <= bounds.maximum_x; ++tile_x) {
+                    count += projected_splat_intersects_tile(
+                                 splat, tile_x, tile_y,
+                                 width, height)
+                        ? 1U
+                        : 0U;
+                }
+            }
+        }
+        counts[index] = count;
     } else if (index == record_count) {
         counts[index] = 0U;
     }
@@ -801,7 +898,8 @@ __global__ void duplicate_tile_pairs_kernel(
     const DeviceProjectedRecord* records, std::uint32_t record_count,
     const std::uint64_t* pair_offsets, std::uint32_t width,
     std::uint32_t height, std::uint32_t tiles_x,
-    std::uint64_t* tile_depth_keys, std::uint32_t* record_indices) {
+    std::uint64_t* tile_depth_keys, std::uint32_t* record_indices,
+    bool precise_tile_culling) {
     const std::uint32_t record_index =
         blockIdx.x * blockDim.x + threadIdx.x;
     if (record_index >= record_count) {
@@ -820,6 +918,12 @@ __global__ void duplicate_tile_pairs_kernel(
          tile_y <= bounds.maximum_y; ++tile_y) {
         for (std::uint32_t tile_x = bounds.minimum_x;
              tile_x <= bounds.maximum_x; ++tile_x) {
+            if (precise_tile_culling &&
+                !projected_splat_intersects_tile(
+                    record.splat, tile_x, tile_y,
+                    width, height)) {
+                continue;
+            }
             const std::uint32_t tile = tile_y * tiles_x + tile_x;
             tile_depth_keys[pair_index] =
                 (static_cast<std::uint64_t>(tile) << 32U) | depth_bits;
@@ -2899,7 +3003,7 @@ __global__ void fused_ordered_l1_ssim_backward_kernel(
 __global__ void ssim_error_map_kernel(
     const float* ssim_values, float* error_map,
     std::uint32_t width, std::uint32_t height,
-    float mean_error) {
+    const float* ssim_sum) {
     const std::size_t pixel =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t pixel_count =
@@ -2918,6 +3022,8 @@ __global__ void ssim_error_map_kernel(
     }
     const auto valid_width =
         width - 2U * ssim_window_radius;
+    const auto valid_height =
+        height - 2U * ssim_window_radius;
     const auto valid_pixel =
         static_cast<std::size_t>(y - ssim_window_radius) *
             valid_width +
@@ -2927,9 +3033,33 @@ __global__ void ssim_error_map_kernel(
          ssim_values[valid_pixel * 3U + 1U] +
          ssim_values[valid_pixel * 3U + 2U]) /
         3.0F;
+    const float global_mean_ssim =
+        *ssim_sum /
+        static_cast<float>(
+            static_cast<std::size_t>(valid_width) *
+            valid_height * 3U);
+    const float mean_error = 1.0F - global_mean_ssim;
     error_map[pixel] =
         fmaxf(0.0F, 1.0F - mean_ssim) /
         fmaxf(mean_error, 1.0e-6F);
+}
+
+__global__ void validate_training_scalars_kernel(
+    const float* loss_sum, const unsigned int* active_pixels,
+    const float* ssim_sum, unsigned int* error_flags) {
+    if (blockIdx.x != 0U || threadIdx.x != 0U) {
+        return;
+    }
+    unsigned int flags = 0U;
+    if (*active_pixels == 0U) {
+        flags |= 1U;
+    }
+    if (!isfinite(*loss_sum) || !isfinite(*ssim_sum)) {
+        flags |= 2U;
+    }
+    if (flags != 0U) {
+        atomicOr(error_flags, flags);
+    }
 }
 
 __device__ float target_luminance(
@@ -3783,7 +3913,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
     extract_pair_counts_kernel<<<count_blocks, threads_per_block>>>(
         device_sorted_records.data(), gaussian_count,
         camera.width, camera.height,
-        device_pair_counts.data());
+        device_pair_counts.data(), true);
     require_cuda(cudaGetLastError(), "launch tile pair count extraction");
     scan_pair_counts(
         device_pair_counts.data(), device_pair_offsets.data(),
@@ -3812,7 +3942,7 @@ static AlphaRenderBackwardOutput render_alpha_cuda_impl(
         device_sorted_records.data(), gaussian_count,
         device_pair_offsets.data(), camera.width, camera.height,
         device_camera.tiles_x,
-        device_tile_depth_keys.data(), device_record_indices.data());
+        device_tile_depth_keys.data(), device_record_indices.data(), true);
     require_cuda(cudaGetLastError(), "launch tile pair duplication");
     sort_tile_pairs(
         device_tile_depth_keys.data(),
@@ -4424,6 +4554,7 @@ struct OrderedAlphaTrainingContext::Impl {
         densification_error_map.ensure(maximum_pixels);
         densification_edge_map.ensure(maximum_pixels);
         metric_sum.ensure(1U);
+        deferred_error_flags.ensure(1U);
         dc_gradient.ensure(gaussian_capacity * 3U);
         sh_rest_gradient.ensure(
             gaussian_capacity * maximum_sh_rest_values);
@@ -4530,6 +4661,7 @@ struct OrderedAlphaTrainingContext::Impl {
         frame_edge_weight.zero(gaussian_capacity);
         frame_abs_projected_gradient.zero(gaussian_capacity * 2U);
         optimizer_telemetry.zero(1U);
+        deferred_error_flags.zero(1U);
     }
 
     void sort_records() {
@@ -4654,7 +4786,7 @@ struct OrderedAlphaTrainingContext::Impl {
         return bucket_count;
     }
 
-    float reduce_values(
+    void reduce_values_to_device(
         const float* values, std::size_t value_count) {
         if (value_count == 0U ||
             value_count >
@@ -4678,6 +4810,11 @@ struct OrderedAlphaTrainingContext::Impl {
                 values, metric_sum.data(),
                 static_cast<int>(value_count)),
             "reduce ordered quality values");
+    }
+
+    float reduce_values(
+        const float* values, std::size_t value_count) {
+        reduce_values_to_device(values, value_count);
         float result = 0.0F;
         metric_sum.copy_to_host(&result, 1U);
         return result;
@@ -4690,7 +4827,8 @@ struct OrderedAlphaTrainingContext::Impl {
         ImageQualityMetrics* quality,
         std::vector<float>* prediction,
         ImageObjectiveOutput* objective,
-        float mse_blend) {
+        float mse_blend,
+        bool readback_metrics = true) {
         if (target_rgb == nullptr) {
             throw std::invalid_argument(
                 "ordered training target is null");
@@ -4710,6 +4848,12 @@ struct OrderedAlphaTrainingContext::Impl {
         if (apply_update && !compute_gradient) {
             throw std::logic_error(
                 "ordered training update requires an image gradient");
+        }
+        if (!readback_metrics &&
+            (quality != nullptr || prediction != nullptr ||
+             objective != nullptr || !apply_update)) {
+            throw std::logic_error(
+                "deferred metric readback is valid only for training updates");
         }
         if (!std::isfinite(mse_blend) ||
             mse_blend < 0.0F || mse_blend > 1.0F) {
@@ -4738,7 +4882,8 @@ struct OrderedAlphaTrainingContext::Impl {
             (gaussian_items + 1U + block_size - 1U) / block_size;
         extract_pair_counts_kernel<<<count_blocks, block_size>>>(
             sorted_records.data(), gaussian_items,
-            camera.width, camera.height, pair_counts.data());
+            camera.width, camera.height, pair_counts.data(),
+            !fastgs_compatibility);
         require_cuda(
             cudaGetLastError(),
             "launch persistent pair count extraction");
@@ -4768,7 +4913,8 @@ struct OrderedAlphaTrainingContext::Impl {
             sorted_records.data(), gaussian_items,
             pair_offsets.data(), camera.width, camera.height,
             device_camera.tiles_x,
-            tile_depth_keys.data(), record_indices.data());
+            tile_depth_keys.data(), record_indices.data(),
+            !fastgs_compatibility);
         require_cuda(
             cudaGetLastError(),
             "launch persistent tile pair duplication");
@@ -4848,15 +4994,18 @@ struct OrderedAlphaTrainingContext::Impl {
 
         float host_loss_sum = 0.0F;
         unsigned int host_active_pixels = 0U;
-        loss_sum.copy_to_host(&host_loss_sum, 1U);
-        active_pixels.copy_to_host(&host_active_pixels, 1U);
-        if (host_active_pixels == 0U) {
-            throw std::runtime_error(
-                "ordered training render has no active pixels");
+        if (readback_metrics) {
+            loss_sum.copy_to_host(&host_loss_sum, 1U);
+            active_pixels.copy_to_host(&host_active_pixels, 1U);
+            if (host_active_pixels == 0U) {
+                throw std::runtime_error(
+                    "ordered training render has no active pixels");
+            }
         }
-        const float normalizer =
-            1.0F /
-            (3.0F * static_cast<float>(host_active_pixels));
+        const float normalizer = readback_metrics
+            ? 1.0F /
+                  (3.0F * static_cast<float>(host_active_pixels))
+            : 0.0F;
         const std::size_t sample_count = pixel_count * 3U;
         const auto sample_blocks = static_cast<std::uint32_t>(
             (sample_count + block_size - 1U) / block_size);
@@ -4886,15 +5035,53 @@ struct OrderedAlphaTrainingContext::Impl {
                 cudaGetLastError(),
                 "launch ordered SSIM objective");
         }
-        const float ssim_sum =
-            reduce_values(metric_values.data(), valid_sample_count);
-        const float mean_ssim =
-            ssim_sum / static_cast<float>(valid_sample_count);
+        reduce_values_to_device(
+            metric_values.data(), valid_sample_count);
+        validate_training_scalars_kernel<<<1U, 1U>>>(
+            loss_sum.data(), active_pixels.data(), metric_sum.data(),
+            deferred_error_flags.data());
+        require_cuda(
+            cudaGetLastError(),
+            "launch ordered training scalar validation");
+        float ssim_sum = 0.0F;
+        if (readback_metrics) {
+            unsigned int error_flags = 0U;
+            deferred_error_flags.copy_to_host(&error_flags, 1U);
+            if ((error_flags & 1U) != 0U) {
+                throw std::runtime_error(
+                    "ordered training render has no active pixels");
+            }
+            if ((error_flags & 2U) != 0U) {
+                throw std::runtime_error(
+                    "ordered training produced non-finite device metrics");
+            }
+            metric_sum.copy_to_host(&ssim_sum, 1U);
+        }
+        const float mean_ssim = readback_metrics
+            ? ssim_sum / static_cast<float>(valid_sample_count)
+            : 0.0F;
         const float l1_loss = host_loss_sum * normalizer;
-        const float baseline_objective_loss =
-            l1_objective_weight * l1_loss +
-            dssim_objective_weight * (1.0F - mean_ssim);
+        const float baseline_objective_loss = readback_metrics
+            ? l1_objective_weight * l1_loss +
+                  dssim_objective_weight * (1.0F - mean_ssim)
+            : 0.0F;
         float objective_loss = baseline_objective_loss;
+        if (compute_gradient) {
+            ssim_error_map_kernel<<<pixel_blocks, block_size>>>(
+                metric_values.data(),
+                densification_error_map.data(),
+                camera.width, camera.height,
+                metric_sum.data());
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered normalized SSIM error map");
+            target_sobel_edge_map_kernel<<<pixel_blocks, block_size>>>(
+                target.data(), densification_edge_map.data(),
+                camera.width, camera.height);
+            require_cuda(
+                cudaGetLastError(),
+                "launch ordered target Sobel edge map");
+        }
         if (mse_blend > 0.0F && !apply_update) {
             active_squared_error_values_kernel<<<
                 sample_blocks, block_size>>>(
@@ -4912,25 +5099,9 @@ struct OrderedAlphaTrainingContext::Impl {
                 mse_blend * mse_loss;
         }
         const float base_objective_weight = 1.0F - mse_blend;
-        if (!std::isfinite(objective_loss)) {
+        if (readback_metrics && !std::isfinite(objective_loss)) {
             throw std::runtime_error(
                 "ordered objective produced a non-finite loss");
-        }
-        if (compute_gradient) {
-            ssim_error_map_kernel<<<pixel_blocks, block_size>>>(
-                metric_values.data(),
-                densification_error_map.data(),
-                camera.width, camera.height,
-                1.0F - mean_ssim);
-            require_cuda(
-                cudaGetLastError(),
-                "launch ordered normalized SSIM error map");
-            target_sobel_edge_map_kernel<<<pixel_blocks, block_size>>>(
-                target.data(), densification_edge_map.data(),
-                camera.width, camera.height);
-            require_cuda(
-                cudaGetLastError(),
-                "launch ordered target Sobel edge map");
         }
         if (quality != nullptr) {
             squared_error_values_kernel<<<sample_blocks, block_size>>>(
@@ -5730,6 +5901,7 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> densification_error_map;
     ReusableDeviceAllocation<float> densification_edge_map;
     ReusableDeviceAllocation<float> metric_sum;
+    ReusableDeviceAllocation<unsigned int> deferred_error_flags;
     ReusableDeviceAllocation<float> dc_gradient;
     ReusableDeviceAllocation<float> sh_rest_gradient;
     ReusableDeviceAllocation<float> opacity_gradient;
@@ -5830,6 +6002,14 @@ float OrderedAlphaTrainingContext::train_step(
     return impl_->render_loss(
         camera, target_rgb, target_bytes, true, true,
         nullptr, nullptr, nullptr, mse_blend);
+}
+
+void OrderedAlphaTrainingContext::train_step_deferred(
+    const RasterCamera& camera, const std::uint8_t* target_rgb,
+    std::size_t target_bytes, float mse_blend) {
+    static_cast<void>(impl_->render_loss(
+        camera, target_rgb, target_bytes, true, true,
+        nullptr, nullptr, nullptr, mse_blend, false));
 }
 
 TopologyRefinementResult
