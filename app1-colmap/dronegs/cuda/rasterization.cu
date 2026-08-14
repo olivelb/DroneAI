@@ -5099,7 +5099,9 @@ struct OrderedAlphaTrainingContext::Impl {
         std::vector<float>* prediction,
         ImageObjectiveOutput* objective,
         float mse_blend,
-        bool readback_metrics = true) {
+        bool readback_metrics = true,
+        RefinementStatisticsMode refinement_statistics =
+            RefinementStatisticsMode::collect) {
         if (target_rgb == nullptr) {
             throw std::invalid_argument(
                 "ordered training target is null");
@@ -5120,6 +5122,9 @@ struct OrderedAlphaTrainingContext::Impl {
             throw std::logic_error(
                 "ordered training update requires an image gradient");
         }
+        const bool collect_refinement_statistics =
+            compute_gradient && apply_update &&
+            refinement_statistics == RefinementStatisticsMode::collect;
         if (!readback_metrics &&
             (quality != nullptr || prediction != nullptr ||
              objective != nullptr || !apply_update)) {
@@ -5355,7 +5360,7 @@ struct OrderedAlphaTrainingContext::Impl {
                   dssim_objective_weight * (1.0F - mean_ssim)
             : 0.0F;
         float objective_loss = baseline_objective_loss;
-        if (compute_gradient) {
+        if (collect_refinement_statistics) {
             ssim_error_map_kernel<<<pixel_blocks, block_size>>>(
                 metric_values.data(),
                 densification_error_map.data(),
@@ -5481,10 +5486,12 @@ struct OrderedAlphaTrainingContext::Impl {
             opacity_sh_gradient.zero(
                 gaussian_count * maximum_opacity_sh_coefficients);
             projected_geometry_gradient.zero(gaussian_count * 6U);
-            frame_refinement_weight.zero(gaussian_count);
-            frame_visibility_weight.zero(gaussian_count);
-            frame_edge_weight.zero(gaussian_count);
-            frame_abs_projected_gradient.zero(gaussian_count * 2U);
+            if (collect_refinement_statistics) {
+                frame_refinement_weight.zero(gaussian_count);
+                frame_visibility_weight.zero(gaussian_count);
+                frame_edge_weight.zero(gaussian_count);
+                frame_abs_projected_gradient.zero(gaussian_count * 2U);
+            }
             xyz_gradient.zero(gaussian_count * 3U);
             log_scale_gradient.zero(gaussian_count * 3U);
             rotation_gradient.zero(gaussian_count * 4U);
@@ -5513,12 +5520,24 @@ struct OrderedAlphaTrainingContext::Impl {
                     opacity_gradient.data(),
                     opacity_sh_gradient.data(),
                     projected_geometry_gradient.data(),
-                    densification_error_map.data(),
-                    densification_edge_map.data(),
-                    frame_refinement_weight.data(),
-                    frame_visibility_weight.data(),
-                    frame_edge_weight.data(),
-                    frame_abs_projected_gradient.data());
+                    collect_refinement_statistics
+                        ? densification_error_map.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? densification_edge_map.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_refinement_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_visibility_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_edge_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_abs_projected_gradient.data()
+                        : nullptr);
             } else {
                 backward_alpha_tiles_kernel<<<
                     render_blocks, render_threads>>>(
@@ -5535,32 +5554,46 @@ struct OrderedAlphaTrainingContext::Impl {
                     opacity_gradient.data(),
                     opacity_sh_gradient.data(),
                     projected_geometry_gradient.data(),
-                    densification_error_map.data(),
-                    densification_edge_map.data(),
-                    frame_refinement_weight.data(),
-                    frame_visibility_weight.data(),
-                    frame_edge_weight.data(),
-                    frame_abs_projected_gradient.data());
+                    collect_refinement_statistics
+                        ? densification_error_map.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? densification_edge_map.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_refinement_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_visibility_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_edge_weight.data()
+                        : nullptr,
+                    collect_refinement_statistics
+                        ? frame_abs_projected_gradient.data()
+                        : nullptr);
             }
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent ordered backward");
             stage_timer.mark(10U);
-            collect_refinement_statistics_kernel<<<
-                gaussian_blocks, block_size>>>(
-                frame_refinement_weight.data(),
-                frame_visibility_weight.data(),
-                frame_edge_weight.data(),
-                frame_abs_projected_gradient.data(),
-                refine_weight_max.data(),
-                visibility_count.data(),
-                edge_weight_sum.data(),
-                absgrad_sum.data(),
-                absgrad_observation_count.data(),
-                gaussian_count);
-            require_cuda(
-                cudaGetLastError(),
-                "launch persistent refinement statistics");
+            if (collect_refinement_statistics) {
+                collect_refinement_statistics_kernel<<<
+                    gaussian_blocks, block_size>>>(
+                    frame_refinement_weight.data(),
+                    frame_visibility_weight.data(),
+                    frame_edge_weight.data(),
+                    frame_abs_projected_gradient.data(),
+                    refine_weight_max.data(),
+                    visibility_count.data(),
+                    edge_weight_sum.data(),
+                    absgrad_sum.data(),
+                    absgrad_observation_count.data(),
+                    gaussian_count);
+                require_cuda(
+                    cudaGetLastError(),
+                    "launch persistent refinement statistics");
+            }
             backward_projected_geometry_kernel<<<
                 gaussian_blocks, block_size>>>(
                 gaussians.data(), gaussian_items, device_camera,
@@ -6355,18 +6388,22 @@ OrderedAlphaTrainingContext::evaluate_objective_gradient(
 
 float OrderedAlphaTrainingContext::train_step(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
-    std::size_t target_bytes, float mse_blend) {
+    std::size_t target_bytes, float mse_blend,
+    RefinementStatisticsMode refinement_statistics) {
     return impl_->render_loss(
         camera, target_rgb, target_bytes, true, true,
-        nullptr, nullptr, nullptr, mse_blend);
+        nullptr, nullptr, nullptr, mse_blend, true,
+        refinement_statistics);
 }
 
 void OrderedAlphaTrainingContext::train_step_deferred(
     const RasterCamera& camera, const std::uint8_t* target_rgb,
-    std::size_t target_bytes, float mse_blend) {
+    std::size_t target_bytes, float mse_blend,
+    RefinementStatisticsMode refinement_statistics) {
     static_cast<void>(impl_->render_loss(
         camera, target_rgb, target_bytes, true, true,
-        nullptr, nullptr, nullptr, mse_blend, false));
+        nullptr, nullptr, nullptr, mse_blend, false,
+        refinement_statistics));
 }
 
 TopologyRefinementResult

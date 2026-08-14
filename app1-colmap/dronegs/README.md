@@ -7,7 +7,13 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.56` reduces each fused L1/SSIM tile locally before updating
+Version `0.5.0-dev.57` stops producing Sobel/error maps, per-frame refinement
+weights and persistent refinement statistics as soon as no later topology
+refinement can consume them. Geometry gradients and every optimizer update
+remain active through the final iteration. On GAJAN, a fixed-topology
+micro-benchmark reduces mean training time by 14.4%; complete Fast and Normal
+runs improve by 0.6% and 0.2% respectively with held-out quality inside
+retained run variation. Dev.56 reduces each fused L1/SSIM tile locally before updating
 the global loss and active-pixel counters. On GAJAN, two Fast runs reduce mean
 training time from 22.966 to 17.337 seconds and two Normal runs reduce it from
 68.203 to 55.307 seconds, without a held-out quality regression or a larger

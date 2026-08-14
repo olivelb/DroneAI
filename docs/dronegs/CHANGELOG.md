@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.57 - Refinement-statistics cooldown
+
+- Stop generating refinement-only SSIM error/Sobel maps, frame weights,
+  visibility/edge/AbsGrad accumulators and their persistent reduction once no
+  later scheduled topology refinement can consume them. Image gradients,
+  geometry gradients and all optimizer updates remain unchanged.
+- Keep objective-only evaluation free of persistent refinement-statistic side
+  effects and expose an explicit collect/skip contract at the ordered trainer
+  boundary.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including schedule and
+  one-step collect/skip model-parity regressions.
+- Repeat a 100-step fixed-topology micro-benchmark twice: mean training time
+  falls from 0.3990 to 0.3417 seconds (`-14.4%`) with equivalent model and
+  held-out metrics. Two complete GAJAN runs per profile improve Fast training
+  by `0.6%` and Normal training by `0.2%`; held-out PSNR/SSIM and Gaussian
+  population remain inside retained run variation.
+
 ## 0.5.0-dev.56 - Tile-local objective reduction
 
 - Replace per-active-pixel global L1-loss and active-count atomics in the

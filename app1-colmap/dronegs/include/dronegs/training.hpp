@@ -239,6 +239,21 @@ inline std::uint64_t topology_refinement_end_iteration(
         topology_refinement_interval;
 }
 
+inline bool topology_refinement_statistics_required(
+    std::uint64_t iteration,
+    std::uint64_t refinement_end_iteration) {
+    if (iteration == 0U || iteration > refinement_end_iteration) {
+        return false;
+    }
+    const auto remainder =
+        iteration % topology_refinement_interval;
+    const auto until_next_refinement = remainder == 0U
+        ? 0U
+        : topology_refinement_interval - remainder;
+    return until_next_refinement <=
+        refinement_end_iteration - iteration;
+}
+
 inline float adaptive_capacity_growth_fraction(
     std::size_t current_gaussians,
     std::size_t target_gaussians,
