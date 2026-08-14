@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.55 component-parallel-scalar-Adam "
+            << "DroneGS 0.5.0-dev.56 tile-reduced-L1-SSIM "
                "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.55 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.56 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color crop-aware local/projected-KNN "
@@ -63,7 +63,9 @@ int main(int argc, char** argv) {
                      "without adding iterations; dev49 derives projected "
                      "initial scales from the actual crop cameras and "
                      "scales exact capacity growth to every operator-"
-                     "selected iteration budget.\n";
+                     "selected iteration budget; dev56 reduces fused "
+                     "L1/SSIM accumulators once per CUDA tile instead of "
+                     "once per active pixel.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;

@@ -987,6 +987,35 @@ int main() {
                 "structural FastGS fused objective diverged from the "
                 "reference loss");
         }
+        auto partial_tile_camera = quality_camera;
+        partial_tile_camera.width = 29U;
+        partial_tile_camera.height = 27U;
+        partial_tile_camera.cx = 14.5F;
+        partial_tile_camera.cy = 13.5F;
+        std::vector<std::uint8_t> partial_tile_target(
+            static_cast<std::size_t>(partial_tile_camera.width) *
+                partial_tile_camera.height * 3U,
+            0U);
+        const auto partial_tile_objective =
+            fastgs_context.evaluate_objective_gradient(
+                partial_tile_camera, partial_tile_target.data(),
+                partial_tile_target.size());
+        const double expected_partial_tile_objective =
+            reference_objective(
+                partial_tile_objective.prediction,
+                partial_tile_objective.transmittance,
+                partial_tile_target,
+                partial_tile_camera.width,
+                partial_tile_camera.height);
+        if (!std::isfinite(partial_tile_objective.loss) ||
+            std::abs(
+                partial_tile_objective.loss -
+                expected_partial_tile_objective) > 2.0e-4 ||
+            partial_tile_objective.gradient.size() !=
+                partial_tile_target.size()) {
+            throw std::runtime_error(
+                "structural FastGS partial-tile objective mismatch");
+        }
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::reference_scale_only);

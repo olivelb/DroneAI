@@ -44,6 +44,10 @@ optimizer-statistics cadence so the Adam measurement excludes diagnostic
 atomics; they are profiling evidence, not an additional quality metric or a
 production gate.
 
+Dev.56 keeps those telemetry fields unchanged. Its fused L1/SSIM forward
+kernel performs deterministic block-local reductions and issues one global
+loss/count update per 16x16 tile instead of one update per active pixel.
+
 ## Safety and identity
 
 - Source and output directory trees are separate.

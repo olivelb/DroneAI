@@ -35,6 +35,8 @@
  * updates without changing the adapted MRNF or FastGS algorithms.
  * Dev.54 excludes constant high tile bits from DroneGS's CUB pair sort.
  * Dev.55 parallelizes DroneGS's scalar Adam parameters by component.
+ * Dev.56 reduces fused L1/SSIM loss and active-pixel counts per CUDA tile
+ * before the global accumulators, without changing objective equations.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -2731,8 +2733,11 @@ __global__ void fused_ordered_l1_ssim_forward_kernel(
     constexpr int halo = static_cast<int>(ssim_window_radius);
     constexpr int shared_width = block_width + 2 * halo;
     constexpr int shared_height = block_height + 2 * halo;
+    constexpr int block_threads = block_width * block_height;
     __shared__ float image_tile[shared_height][shared_width][2];
     __shared__ float horizontal[shared_height][block_width][5];
+    __shared__ float block_loss[block_threads];
+    __shared__ unsigned int block_active[block_threads];
 
     const int x =
         static_cast<int>(blockIdx.x) * block_width + threadIdx.x;
@@ -2745,14 +2750,13 @@ __global__ void fused_ordered_l1_ssim_forward_kernel(
         ? static_cast<std::size_t>(y) * width +
               static_cast<std::size_t>(x)
         : 0U;
+    const int flat_thread =
+        threadIdx.y * block_width + threadIdx.x;
     float pixel_l1 = 0.0F;
 
     for (std::uint32_t channel = 0U;
          channel < 3U; ++channel) {
         constexpr int tile_items = shared_width * shared_height;
-        constexpr int block_threads = block_width * block_height;
-        const int flat_thread =
-            threadIdx.y * block_width + threadIdx.x;
         for (int item = flat_thread;
              item < tile_items; item += block_threads) {
             const int local_y = item / shared_width;
@@ -2919,9 +2923,26 @@ __global__ void fused_ordered_l1_ssim_forward_kernel(
         __syncthreads();
     }
 
-    if (in_bounds && transmittance[pixel] < 1.0F) {
-        atomicAdd(loss_sum, pixel_l1);
-        atomicAdd(active_pixels, 1U);
+    const bool active =
+        in_bounds && transmittance[pixel] < 1.0F;
+    block_loss[flat_thread] = active ? pixel_l1 : 0.0F;
+    block_active[flat_thread] = active ? 1U : 0U;
+    __syncthreads();
+
+#pragma unroll
+    for (int stride = block_threads / 2;
+         stride > 0; stride /= 2) {
+        if (flat_thread < stride) {
+            block_loss[flat_thread] +=
+                block_loss[flat_thread + stride];
+            block_active[flat_thread] +=
+                block_active[flat_thread + stride];
+        }
+        __syncthreads();
+    }
+    if (flat_thread == 0 && block_active[0] != 0U) {
+        atomicAdd(loss_sum, block_loss[0]);
+        atomicAdd(active_pixels, block_active[0]);
     }
 }
 
