@@ -22,6 +22,7 @@ from shared.dronegs_profile import (
 
 from .dataset_identity import compute_dataset_identity
 from .manifest_contract import (
+    manifest_parameter_matches,
     promote_run_manifest,
     sha256_file,
     validate_run_manifest,
@@ -591,9 +592,14 @@ class DroneGSBackend:
             or parameters["pruning_policy"] != request.dronegs.pruning_policy
             or parameters["raster_profile"] != request.dronegs.raster_profile
             or parameters.get("initial_scale_policy") != request.dronegs.initial_scale_policy
-            or parameters.get("initial_max_projected_sigma_pixels")
-            != request.dronegs.initial_max_projected_sigma_pixels
-            or parameters.get("maximum_scale_growth_factor") != request.dronegs.maximum_scale_growth_factor
+            or not manifest_parameter_matches(
+                parameters.get("initial_max_projected_sigma_pixels"),
+                request.dronegs.initial_max_projected_sigma_pixels,
+            )
+            or not manifest_parameter_matches(
+                parameters.get("maximum_scale_growth_factor"),
+                request.dronegs.maximum_scale_growth_factor,
+            )
             or parameters.get("adaptive_native_crop_tiles") != int(request.dronegs.adaptive_native_crop_tiles)
             or parameters.get("test_split") != request.dronegs.test_split
             or parameters.get("test_guard_percent") != request.dronegs.test_guard_percent

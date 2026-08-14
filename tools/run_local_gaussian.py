@@ -226,6 +226,17 @@ def versioned_quality_profile(profile_id: str) -> GaussianProfile:
 
 
 PROFILES["fast"] = versioned_quality_profile("fast-v1")
+PROFILES["fast-resident"] = replace(
+    versioned_quality_profile("fast-v2"),
+    # Qualification-only preview of the production core/buffer path. The
+    # public Fast profile remains monolithic; this local recipe deliberately
+    # trades density for enough resident cells to expose crop and seam defects.
+    capacity_mode="adaptive",
+    capacity_floor=1_500_000,
+    target_gaussian_spacing_pixels=8.0,
+    resident_partitioning=True,
+    resolution=0.05,
+)
 PROFILES["normal"] = replace(
     versioned_quality_profile("normal-v3"),
     resolution=0.02,

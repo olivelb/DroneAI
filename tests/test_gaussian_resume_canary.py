@@ -95,6 +95,7 @@ def test_completed_training_is_rechecked_without_retraining(monkeypatch, tmp_pat
     (output / "training.ckpt").write_text("checkpoint", encoding="utf-8")
     relaxed = _request(output, minimum_ssim=0.25)
     manifest = _manifest(relaxed)
+    manifest["parameters"]["maximum_scale_growth_factor"] = 54.59814835
     monkeypatch.setattr(generator, "load_run_manifest", lambda _path: manifest)
     monkeypatch.setattr(generator, "validate_run_manifest", lambda _manifest: None)
     monkeypatch.setattr(

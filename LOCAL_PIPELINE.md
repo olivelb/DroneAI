@@ -350,6 +350,7 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 |---|---:|---:|---:|---:|---:|---:|---:|
 | `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | 4 | 0.25 m |
 | `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | 4 | 0.05 m |
+| `fast-resident` (qualification locale) | 7,500 | adaptive, floor 1.5 M | 3 | 8 | 1,600 px | 4 | 0.05 m |
 | `normal` (`normal-v3`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | 4 | 0.05 m |
 | `high-quality` (`high-quality-v4`) | 30,000 | adaptive 5–6 M | 3 | 1 | 4,096 px | 4 | 0.015 m |
 | `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
@@ -359,6 +360,13 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 zero-threshold operational canary. `low-memory` uses the spatial-block canary
 with a 25% guard ring and gates at 15 dB / 0.10 SSIM; `balanced` preserves the
 immutable modulo production baseline at 18 dB / 0.25 SSIM.
+
+`fast-resident` is intentionally exposed only by the local runner. It keeps
+the Fast 7,500-step, factor-8 and 1.5 M-per-cell budget, but enables adaptive
+resident partitions with an 8 px target spacing and core/buffer aggregation.
+Use it to qualify full-dataset cell coverage, crop selection and mosaic seams;
+it does not replace the public `fast-v1` preview profile or constitute an
+image-quality release gate.
 
 The `balanced` preset applies immutable `DRONEGS_PRODUCTION_PROFILE_V1` with
 the dev.47 trainer:

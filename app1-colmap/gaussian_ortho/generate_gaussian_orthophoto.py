@@ -59,6 +59,7 @@ from gaussian_training.dataset_identity import compute_dataset_identity
 from gaussian_training.manifest_contract import (
     load_run_manifest,
     manifest_matches_ply,
+    manifest_parameter_matches,
     validate_run_manifest,
 )
 from .partition import partition_scene, plan_partition_grid
@@ -230,7 +231,10 @@ def _reusable_dronegs_result(
         or manifest.get("status") != "completed"
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
         or manifest.get("dataset", {}).get("fingerprint") != request.dataset_fingerprint
-        or any(parameters.get(key) != value for key, value in expected.items())
+        or any(
+            not manifest_parameter_matches(parameters.get(key), value)
+            for key, value in expected.items()
+        )
         or not manifest_matches_ply(manifest, ply_path)
     ):
         return None
