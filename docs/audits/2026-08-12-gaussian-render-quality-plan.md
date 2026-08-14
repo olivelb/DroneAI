@@ -154,8 +154,10 @@ nor the single-block result qualifies multi-block seams or a full mission.
 
 ## Phase 3 — Densification A/B
 
-Status: neutral native candidates implemented; A/B execution remains pending
-the Phase 2 reference result.
+Status: the neutral reference and AbsGrad candidates are implemented. A
+two-run GAJAN Fast/Normal screen selects AbsGrad 0.50 for the longer
+representative-block product gate. A visibility-normalized multi-view contour
+spike was implemented and rejected on the shorter GAJAN gate.
 
 Run identical seeded block experiments for:
 
@@ -173,10 +175,25 @@ used because they also change rotation and optimizer calibration. The local
 runner accepts a bounded `--run-label`, isolating orthomosaics, checkpoints and
 reports for seeded candidates that share the same immutable input block.
 
+The rejected contour spike kept the validated rates, objective and 0.25 edge
+weight but divided accumulated Sobel/alpha support by accumulated visibility.
+Two seeded Fast pairs regressed mean held-out PSNR by 0.198 dB and SSIM by
+0.00147, so the profile was removed rather than added as another operator
+choice. See the
+[negative qualification](../dronegs/benchmarks/gajan-multiview-contour-negative-2026-08-14.md).
+
 Compare retained population, PSNR/SSIM/LPIPS, edge MTF, floaters, DEM residuals,
 peak VRAM and wall time. No default changes without a recorded win. This phase
 is motivated by [AbsGS](https://arxiv.org/abs/2404.10484), which targets
 gradient cancellation that can prevent large Gaussians from splitting.
+
+On the preliminary GAJAN screen, AbsGrad 0.50 improves two-run mean held-out
+PSNR by 0.125 dB / SSIM by 0.00223 in Fast and PSNR by 0.118 dB / SSIM by
+0.00317 in Normal. Normal training time falls by 0.4% and population by 0.08%,
+so the quality gain is not purchased with more splats or compute. This selects
+0.50 over 0.25 for the representative native block; it does not promote the
+profile. See the
+[GAJAN qualification](../dronegs/benchmarks/gajan-absgrad-dev57-2026-08-14.md).
 
 The completed native manifests are compared with
 `tools/compare_gaussian_qualification_runs.py`. It fails closed if the
