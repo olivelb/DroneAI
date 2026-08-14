@@ -78,6 +78,8 @@ public:
     MrnfLearningRates current_learning_rates() const noexcept;
     std::optional<MrnfOptimizerTelemetry>
     latest_optimizer_telemetry() const noexcept;
+    std::optional<MrnfGpuStageTelemetry>
+    latest_gpu_stage_telemetry() const noexcept;
     std::size_t size() const noexcept;
     std::uint32_t active_sh_degree() const noexcept;
     void set_active_sh_degree(std::uint32_t degree);

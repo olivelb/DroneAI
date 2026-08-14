@@ -2,6 +2,27 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.51 - Sampled GPU stage telemetry
+
+- Time preprocessing, rasterization, L1/DSSIM objective, backward and Adam
+  with CUDA events at six staggered training steps. The stagger avoids the
+  existing optimizer-statistics samples and adds no per-iteration readback.
+- Emit one machine-readable `gpu_stage_telemetry` JSON event per sample with
+  all five stage durations and their total.
+- Qualify the instrumentation on GAJAN Fast, RTX 3090: 38.985 seconds wall,
+  16.8101 dB mean PSNR, 14.4438 dB pixel-weighted PSNR, 0.311236 SSIM and
+  54,881 final Gaussians. These match the retained Fast reference within run
+  noise.
+- Identify late SH3 Adam (34–46%) and projection/sort/binning (22–30%) as the
+  dominant sampled GPU costs. Rasterization is only 1–4%, so further speed
+  work must target optimizer parallelism and preprocessing rather than loosen
+  rendering quality.
+- Fix benchmark output ownership by creating bind-mount sources before Docker
+  starts, and accept nested native PLY output paths.
+- Reject and remove the FastGS-style view-consistent density prototype after
+  controlled Fast and Normal regressions; retain its negative qualification
+  report without exposing a dead production option.
+
 ## 0.5.0-dev.50 - Deferred metrics and exact bounded tile culling
 
 - Keep L1, active-pixel and SSIM scalars on the GPU for non-reporting training

@@ -128,6 +128,15 @@ struct MrnfOptimizerTelemetry {
     MrnfParameterTelemetry rotation;
 };
 
+struct MrnfGpuStageTelemetry {
+    std::uint64_t step = 0U;
+    float preprocess_ms = 0.0F;
+    float raster_ms = 0.0F;
+    float objective_ms = 0.0F;
+    float backward_ms = 0.0F;
+    float optimizer_ms = 0.0F;
+};
+
 struct TopologyRefinementResult {
     std::size_t candidates = 0U;
     std::size_t pruned = 0U;

@@ -1480,6 +1480,27 @@ TrainingMetrics train_ordered_mrnf(
         emit_family("rotation", telemetry->rotation);
         std::cout << std::flush;
     };
+    const auto emit_gpu_stage_telemetry =
+        [](const std::optional<MrnfGpuStageTelemetry>& telemetry) {
+        if (!telemetry.has_value()) {
+            return;
+        }
+        const float total_ms =
+            telemetry->preprocess_ms + telemetry->raster_ms +
+            telemetry->objective_ms + telemetry->backward_ms +
+            telemetry->optimizer_ms;
+        std::cout
+            << "{\"event\":\"gpu_stage_telemetry\",\"step\":"
+            << telemetry->step
+            << ",\"preprocess_ms\":" << telemetry->preprocess_ms
+            << ",\"raster_ms\":" << telemetry->raster_ms
+            << ",\"objective_ms\":" << telemetry->objective_ms
+            << ",\"backward_ms\":" << telemetry->backward_ms
+            << ",\"optimizer_ms\":" << telemetry->optimizer_ms
+            << ",\"total_ms\":" << total_ms
+            << "}\n"
+            << std::flush;
+    };
     TrainingMetrics metrics;
     metrics.iterations = options.iterations;
     metrics.completed_iterations = 0U;
@@ -1664,6 +1685,8 @@ TrainingMetrics train_ordered_mrnf(
         }
         emit_optimizer_telemetry(
             workspace.latest_optimizer_telemetry());
+        emit_gpu_stage_telemetry(
+            workspace.latest_gpu_stage_telemetry());
         if (iteration % topology_refinement_interval == 0U &&
             iteration <= topology_refine_end) {
             float growth_fraction =

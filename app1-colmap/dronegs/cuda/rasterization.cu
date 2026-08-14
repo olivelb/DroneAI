@@ -138,6 +138,83 @@ void require_cuda(cudaError_t status, const char* operation) {
     }
 }
 
+class GpuStageTimer {
+public:
+    explicit GpuStageTimer(bool enabled) : enabled_(enabled) {
+        if (!enabled_) {
+            return;
+        }
+        std::size_t created = 0U;
+        for (; created < events_.size(); ++created) {
+            const auto status = cudaEventCreate(&events_[created]);
+            if (status != cudaSuccess) {
+                for (std::size_t index = 0U; index < created; ++index) {
+                    static_cast<void>(cudaEventDestroy(events_[index]));
+                    events_[index] = nullptr;
+                }
+                require_cuda(status, "create GPU stage telemetry event");
+            }
+        }
+        require_cuda(
+            cudaEventRecord(events_[0]),
+            "record GPU stage telemetry start");
+    }
+
+    ~GpuStageTimer() {
+        for (auto& event : events_) {
+            if (event != nullptr) {
+                static_cast<void>(cudaEventDestroy(event));
+                event = nullptr;
+            }
+        }
+    }
+
+    GpuStageTimer(const GpuStageTimer&) = delete;
+    GpuStageTimer& operator=(const GpuStageTimer&) = delete;
+
+    void mark(std::size_t boundary) {
+        if (!enabled_) {
+            return;
+        }
+        if (boundary == 0U || boundary >= events_.size()) {
+            throw std::logic_error("GPU stage telemetry boundary is invalid");
+        }
+        require_cuda(
+            cudaEventRecord(events_[boundary]),
+            "record GPU stage telemetry boundary");
+    }
+
+    MrnfGpuStageTelemetry finish(std::uint64_t step) {
+        if (!enabled_) {
+            throw std::logic_error("GPU stage telemetry is disabled");
+        }
+        mark(events_.size() - 1U);
+        require_cuda(
+            cudaEventSynchronize(events_.back()),
+            "synchronize GPU stage telemetry");
+        const auto elapsed = [this](std::size_t begin, std::size_t end) {
+            float milliseconds = 0.0F;
+            require_cuda(
+                cudaEventElapsedTime(
+                    &milliseconds, events_[begin], events_[end]),
+                "read GPU stage telemetry");
+            return milliseconds;
+        };
+        return MrnfGpuStageTelemetry{
+            .step = step,
+            .preprocess_ms = elapsed(0U, 1U),
+            .raster_ms = elapsed(1U, 2U),
+            .objective_ms = elapsed(2U, 3U),
+            .backward_ms = elapsed(3U, 4U),
+            .optimizer_ms = elapsed(4U, 5U),
+        };
+    }
+
+private:
+    bool enabled_ = false;
+    std::array<cudaEvent_t, 6U> events_{};
+};
+
 template <typename T>
 class DeviceAllocation {
 public:
@@ -4860,6 +4937,20 @@ struct OrderedAlphaTrainingContext::Impl {
             throw std::invalid_argument(
                 "ordered training MSE blend must be between 0 and 1");
         }
+        const auto telemetry_step = optimizer_steps + 1U;
+        const auto telemetry_interval =
+            std::max<std::uint64_t>(1U, maximum_steps / 5U);
+        const bool collect_stage_telemetry =
+            apply_update &&
+            (telemetry_step == 2U ||
+             (maximum_steps > 1U &&
+              telemetry_step == maximum_steps - 1U) ||
+             (telemetry_step > 1U &&
+              (telemetry_step - 1U) % telemetry_interval == 0U));
+        if (apply_update && !collect_stage_telemetry) {
+            latest_gpu_stage_telemetry.reset();
+        }
+        GpuStageTimer stage_timer(collect_stage_telemetry);
         target.copy_from_host(target_rgb, target_bytes);
         const auto device_camera = make_device_camera(camera);
         const auto gaussian_items =
@@ -4942,6 +5033,7 @@ struct OrderedAlphaTrainingContext::Impl {
             use_structural_fastgs
             ? build_fastgs_buckets(tile_count)
             : 0U;
+        stage_timer.mark(1U);
         loss_sum.zero(1U);
         active_pixels.zero(1U);
         const dim3 render_threads(
@@ -4968,6 +5060,7 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent ordered renderer");
+        stage_timer.mark(2U);
         const auto pixel_blocks = static_cast<std::uint32_t>(
             (pixel_count + block_size - 1U) / block_size);
         if (use_structural_fastgs) {
@@ -5136,6 +5229,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 rgb.copy_to_host(prediction->data(), sample_count);
             }
         }
+        stage_timer.mark(3U);
         if (compute_gradient) {
             if (use_structural_fastgs) {
                 if (mse_blend > 0.0F) {
@@ -5279,6 +5373,7 @@ struct OrderedAlphaTrainingContext::Impl {
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent geometry backward");
+            stage_timer.mark(4U);
             if (apply_update) {
                 beta_first_power *= 0.9F;
                 beta_second_power *= 0.999F;
@@ -5291,9 +5386,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     optimizer_steps, maximum_steps,
                     position_learning_rate_scale,
                     optimizer_profile);
-                const auto telemetry_interval =
-                    std::max<std::uint64_t>(
-                        1U, maximum_steps / 5U);
                 const bool collect_telemetry =
                     optimizer_steps == 1U ||
                     optimizer_steps == maximum_steps ||
@@ -5389,6 +5481,10 @@ struct OrderedAlphaTrainingContext::Impl {
                         .scale = parameter(3U),
                         .rotation = parameter(4U),
                     };
+                }
+                if (collect_stage_telemetry) {
+                    latest_gpu_stage_telemetry =
+                        stage_timer.finish(optimizer_steps);
                 }
             }
         }
@@ -5862,6 +5958,7 @@ struct OrderedAlphaTrainingContext::Impl {
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
     std::optional<MrnfOptimizerTelemetry> latest_telemetry;
+    std::optional<MrnfGpuStageTelemetry> latest_gpu_stage_telemetry;
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
     float beta_first_power = 1.0F;
@@ -6031,6 +6128,12 @@ std::optional<MrnfOptimizerTelemetry>
 OrderedAlphaTrainingContext::latest_optimizer_telemetry()
     const noexcept {
     return impl_->latest_telemetry;
+}
+
+std::optional<MrnfGpuStageTelemetry>
+OrderedAlphaTrainingContext::latest_gpu_stage_telemetry()
+    const noexcept {
+    return impl_->latest_gpu_stage_telemetry;
 }
 
 std::size_t OrderedAlphaTrainingContext::size() const noexcept {
