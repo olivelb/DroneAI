@@ -68,6 +68,9 @@ the current release status:
 - BIGZEN aerial GCP high-quality K3s run, storage-failure recovery, final DEM
   checkpoints and Metashape raster comparison:
   [`benchmarks/aerial-gcp-hq-e2e-2026-08-12.md`](benchmarks/aerial-gcp-hq-e2e-2026-08-12.md)
+- BIGZEN complete 444-camera Fast resident 3 x 3 aggregation, seam, density and
+  coverage qualification:
+  [`benchmarks/aerial-gcp-fast-resident-full-scene-2026-08-14.md`](benchmarks/aerial-gcp-fast-resident-full-scene-2026-08-14.md)
 - BIGZEN Chapelle Banyuls P4 Fast local baseline plus the successful K3s
   five-Job/RTX 3090/SAM3 qualification addendum:
   [`benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md`](benchmarks/chapelle-banyuls-p4-fast-e2e-2026-08-09.md)
