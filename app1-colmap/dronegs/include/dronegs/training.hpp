@@ -138,7 +138,14 @@ struct MrnfGpuStageTelemetry {
     float preprocess_ms = 0.0F;
     float raster_ms = 0.0F;
     float objective_ms = 0.0F;
+    float objective_gradient_ms = 0.0F;
+    float gradient_reset_ms = 0.0F;
+    float raster_backward_ms = 0.0F;
+    float geometry_backward_ms = 0.0F;
     float backward_ms = 0.0F;
+    float scalar_optimizer_ms = 0.0F;
+    float sh_optimizer_ms = 0.0F;
+    float optimizer_post_ms = 0.0F;
     float optimizer_ms = 0.0F;
 };
 

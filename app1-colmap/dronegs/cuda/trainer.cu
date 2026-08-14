@@ -1500,7 +1500,19 @@ TrainingMetrics train_ordered_mrnf(
             << ",\"preprocess_ms\":" << telemetry->preprocess_ms
             << ",\"raster_ms\":" << telemetry->raster_ms
             << ",\"objective_ms\":" << telemetry->objective_ms
+            << ",\"objective_gradient_ms\":"
+            << telemetry->objective_gradient_ms
+            << ",\"gradient_reset_ms\":" << telemetry->gradient_reset_ms
+            << ",\"raster_backward_ms\":"
+            << telemetry->raster_backward_ms
+            << ",\"geometry_backward_ms\":"
+            << telemetry->geometry_backward_ms
             << ",\"backward_ms\":" << telemetry->backward_ms
+            << ",\"scalar_optimizer_ms\":"
+            << telemetry->scalar_optimizer_ms
+            << ",\"sh_optimizer_ms\":" << telemetry->sh_optimizer_ms
+            << ",\"optimizer_post_ms\":"
+            << telemetry->optimizer_post_ms
             << ",\"optimizer_ms\":" << telemetry->optimizer_ms
             << ",\"total_ms\":" << total_ms
             << "}\n"

@@ -2,6 +2,22 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.55 - Component-parallel scalar Adam
+
+- Extend sampled GPU telemetry with objective-gradient, gradient-reset,
+  raster-backward, geometry-backward, scalar-Adam, SH-Adam and optimizer-post
+  timings while preserving existing aggregate fields.
+- Update the 14 scalar parameters of each Gaussian with independent CUDA work
+  items and normalize quaternions in a following ordered kernel. Preserve the
+  original equations, moments, schedules, epsilon values, clamps and sampled
+  optimizer-telemetry path.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including a forced-path
+  finite-parameter and unit-quaternion invariant test.
+- Repeat GAJAN Fast and Normal twice. Normal mean wall improves from 76.834 to
+  71.779 seconds (`-6.6%`) and training from 73.306 to 68.203 seconds
+  (`-7.0%`), with quality and topology inside retained variation and VRAM near
+  5.0 GiB.
+
 ## 0.5.0-dev.54 - Bounded tile/depth radix range
 
 - Limit the persistent tile/depth radix sort to all 32 depth bits plus the
