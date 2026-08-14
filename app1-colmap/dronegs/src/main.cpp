@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.57 refinement-statistics-cooldown "
+            << "DroneGS 0.5.0-dev.58 async-checkpoint-writer "
                "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.57 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.58 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color crop-aware local/projected-KNN "
@@ -165,6 +165,14 @@ int main(int argc, char** argv) {
             training.topology_refinement_seconds;
         measurements.periodic_checkpoint_seconds =
             training.periodic_checkpoint_seconds;
+        measurements.checkpoint_snapshot_seconds =
+            training.checkpoint_snapshot_seconds;
+        measurements.checkpoint_wait_seconds =
+            training.checkpoint_wait_seconds;
+        measurements.checkpoint_write_seconds =
+            training.checkpoint_write_seconds;
+        measurements.periodic_checkpoints =
+            training.periodic_checkpoints;
         measurements.evaluation_seconds = training.evaluation_seconds;
         measurements.initial_loss = training.initial_loss;
         measurements.startup_seconds = training.setup_seconds;

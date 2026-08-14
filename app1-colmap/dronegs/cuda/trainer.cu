@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -1654,6 +1655,53 @@ TrainingMetrics train_ordered_mrnf(
             << options.photometric_mse_percent << "}\n"
             << std::flush;
     }
+    struct PendingCheckpointWrite {
+        std::future<double> write_seconds;
+        std::filesystem::path path;
+        std::uint64_t iteration = 0U;
+        std::size_t gaussians = 0U;
+        double snapshot_seconds = 0.0;
+    };
+    std::optional<PendingCheckpointWrite> pending_checkpoint;
+    const auto complete_pending_checkpoint =
+        [&pending_checkpoint, &metrics](bool wait) {
+            if (!pending_checkpoint.has_value()) {
+                return;
+            }
+            if (!wait &&
+                pending_checkpoint->write_seconds.wait_for(
+                    std::chrono::seconds(0)) !=
+                    std::future_status::ready) {
+                return;
+            }
+            const auto wait_start = std::chrono::steady_clock::now();
+            const double write_seconds =
+                pending_checkpoint->write_seconds.get();
+            const double wait_seconds =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - wait_start)
+                    .count();
+            metrics.checkpoint_wait_seconds += wait_seconds;
+            metrics.periodic_checkpoint_seconds += wait_seconds;
+            metrics.checkpoint_write_seconds += write_seconds;
+            ++metrics.periodic_checkpoints;
+            std::cout
+                << "{\"event\":\"checkpoint_saved\",\"iteration\":"
+                << pending_checkpoint->iteration << ",\"path\":\""
+                << pending_checkpoint->path.string()
+                << "\",\"gaussians\":"
+                << pending_checkpoint->gaussians
+                << ",\"seconds\":"
+                << (pending_checkpoint->snapshot_seconds +
+                    write_seconds)
+                << ",\"snapshot_seconds\":"
+                << pending_checkpoint->snapshot_seconds
+                << ",\"write_seconds\":" << write_seconds
+                << ",\"wait_seconds\":" << wait_seconds
+                << "}\n"
+                << std::flush;
+            pending_checkpoint.reset();
+        };
     for (std::uint64_t iteration =
              checkpoint_progress.completed_iteration + 1U;
          iteration <= options.iterations; ++iteration) {
@@ -1796,25 +1844,44 @@ TrainingMetrics train_ordered_mrnf(
         const bool requested_stop =
             options.stop_after != 0U &&
             iteration == options.stop_after;
+        if (report_progress) {
+            complete_pending_checkpoint(false);
+        }
         if (periodic_checkpoint || requested_stop) {
+            complete_pending_checkpoint(true);
             const auto checkpoint_start =
                 std::chrono::steady_clock::now();
-            workspace.save_checkpoint(
-                options.checkpoint_path, checkpoint_progress,
+            auto checkpoint_snapshot = workspace.capture_checkpoint(
+                checkpoint_progress,
                 checkpoint_dataset_fingerprint,
                 checkpoint_configuration_fingerprint);
-            const double checkpoint_seconds =
+            const double snapshot_seconds =
                 std::chrono::duration<double>(
                     std::chrono::steady_clock::now() - checkpoint_start)
                     .count();
-            metrics.periodic_checkpoint_seconds += checkpoint_seconds;
-            std::cout
-                << "{\"event\":\"checkpoint_saved\",\"iteration\":"
-                << iteration << ",\"path\":\""
-                << options.checkpoint_path.string()
-                << "\",\"gaussians\":" << workspace.size()
-                << ",\"seconds\":" << checkpoint_seconds << "}\n"
-                << std::flush;
+            metrics.checkpoint_snapshot_seconds += snapshot_seconds;
+            metrics.periodic_checkpoint_seconds += snapshot_seconds;
+            const auto checkpoint_path = options.checkpoint_path;
+            const auto checkpoint_gaussians =
+                checkpoint_snapshot.gaussian_count();
+            pending_checkpoint.emplace(PendingCheckpointWrite{
+                .write_seconds = std::async(
+                    std::launch::async,
+                    [snapshot = std::move(checkpoint_snapshot),
+                     checkpoint_path]() mutable {
+                        const auto write_start =
+                            std::chrono::steady_clock::now();
+                        snapshot.write_to(checkpoint_path);
+                        return std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() -
+                            write_start)
+                            .count();
+                    }),
+                .path = checkpoint_path,
+                .iteration = iteration,
+                .gaussians = checkpoint_gaussians,
+                .snapshot_seconds = snapshot_seconds,
+            });
         }
         if (report_progress) {
             std::cout
@@ -1831,6 +1898,7 @@ TrainingMetrics train_ordered_mrnf(
             break;
         }
     }
+    complete_pending_checkpoint(true);
     const auto final_learning_rates =
         workspace.current_learning_rates();
     metrics.final_active_sh_degree = workspace.active_sh_degree();

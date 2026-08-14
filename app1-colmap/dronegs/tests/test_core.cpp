@@ -292,6 +292,18 @@ void test_scene_and_ply(const std::filesystem::path& root) {
             std::string::npos,
         "manifest checkpoint timing missing");
     check(
+        manifest_text.find("\"checkpoint_snapshot_seconds\": 0") !=
+            std::string::npos,
+        "manifest checkpoint snapshot timing missing");
+    check(
+        manifest_text.find("\"checkpoint_write_seconds\": 0") !=
+            std::string::npos,
+        "manifest checkpoint write timing missing");
+    check(
+        manifest_text.find("\"periodic_checkpoints\": 0") !=
+            std::string::npos,
+        "manifest checkpoint count missing");
+    check(
         manifest_text.find("\"final_ply_export_seconds\": 0") !=
             std::string::npos,
         "manifest final PLY export timing missing");

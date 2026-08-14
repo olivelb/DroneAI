@@ -33,6 +33,31 @@ struct TrainingCheckpointProgress {
     std::optional<float> initial_pixel_weighted_ssim;
 };
 
+class TrainingCheckpointSnapshot {
+public:
+    ~TrainingCheckpointSnapshot();
+
+    TrainingCheckpointSnapshot(
+        TrainingCheckpointSnapshot&&) noexcept;
+    TrainingCheckpointSnapshot& operator=(
+        TrainingCheckpointSnapshot&&) noexcept;
+
+    TrainingCheckpointSnapshot(
+        const TrainingCheckpointSnapshot&) = delete;
+    TrainingCheckpointSnapshot& operator=(
+        const TrainingCheckpointSnapshot&) = delete;
+
+    std::size_t gaussian_count() const noexcept;
+    void write_to(const std::filesystem::path& path) const;
+
+private:
+    friend class OrderedAlphaTrainingContext;
+    struct Impl;
+    explicit TrainingCheckpointSnapshot(
+        std::unique_ptr<Impl> impl);
+    std::unique_ptr<Impl> impl_;
+};
+
 class OrderedAlphaTrainingContext {
 public:
     OrderedAlphaTrainingContext(
@@ -93,6 +118,10 @@ public:
     std::uint32_t active_sh_degree() const noexcept;
     void set_active_sh_degree(std::uint32_t degree);
     void download(std::vector<Gaussian>& gaussians) const;
+    TrainingCheckpointSnapshot capture_checkpoint(
+        const TrainingCheckpointProgress& progress,
+        const std::string& dataset_fingerprint,
+        const std::string& configuration_fingerprint) const;
     void save_checkpoint(
         const std::filesystem::path& path,
         const TrainingCheckpointProgress& progress,

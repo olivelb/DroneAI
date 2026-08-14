@@ -147,6 +147,22 @@ def compare_qualification_manifests(
                     timings,
                     "periodic_checkpoint_seconds",
                 ),
+                "checkpoint_snapshot_seconds": _number(
+                    timings,
+                    "checkpoint_snapshot_seconds",
+                ),
+                "checkpoint_wait_seconds": _number(
+                    timings,
+                    "checkpoint_wait_seconds",
+                ),
+                "checkpoint_write_seconds": _number(
+                    timings,
+                    "checkpoint_write_seconds",
+                ),
+                "periodic_checkpoints": _number(
+                    metrics,
+                    "periodic_checkpoints",
+                ),
             }
         )
 
@@ -167,6 +183,10 @@ def compare_qualification_manifests(
                 "training_seconds",
                 "topology_refinement_seconds",
                 "periodic_checkpoint_seconds",
+                "checkpoint_snapshot_seconds",
+                "checkpoint_wait_seconds",
+                "checkpoint_write_seconds",
+                "periodic_checkpoints",
                 "wall_seconds",
             )
         }
@@ -248,6 +268,22 @@ def compare_performance_manifests(
                     timings,
                     "periodic_checkpoint_seconds",
                 ),
+                "checkpoint_snapshot_seconds": _number(
+                    timings,
+                    "checkpoint_snapshot_seconds",
+                ),
+                "checkpoint_wait_seconds": _number(
+                    timings,
+                    "checkpoint_wait_seconds",
+                ),
+                "checkpoint_write_seconds": _number(
+                    timings,
+                    "checkpoint_write_seconds",
+                ),
+                "periodic_checkpoints": _number(
+                    metrics,
+                    "periodic_checkpoints",
+                ),
                 "data_loading_seconds": _number(
                     timings,
                     "data_loading_seconds",
@@ -286,6 +322,10 @@ def compare_performance_manifests(
                 "training_seconds",
                 "topology_refinement_seconds",
                 "periodic_checkpoint_seconds",
+                "checkpoint_snapshot_seconds",
+                "checkpoint_wait_seconds",
+                "checkpoint_write_seconds",
+                "periodic_checkpoints",
                 "wall_seconds",
                 "data_loading_seconds",
                 "foreground_image_wait_seconds",
