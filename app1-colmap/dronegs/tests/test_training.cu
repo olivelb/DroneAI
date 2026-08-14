@@ -1052,7 +1052,14 @@ int main() {
             second_gpu_stage_telemetry->preprocess_ms < 0.0F ||
             second_gpu_stage_telemetry->raster_ms < 0.0F ||
             second_gpu_stage_telemetry->objective_ms < 0.0F ||
+            second_gpu_stage_telemetry->objective_gradient_ms < 0.0F ||
+            second_gpu_stage_telemetry->gradient_reset_ms < 0.0F ||
+            second_gpu_stage_telemetry->raster_backward_ms < 0.0F ||
+            second_gpu_stage_telemetry->geometry_backward_ms < 0.0F ||
             second_gpu_stage_telemetry->backward_ms < 0.0F ||
+            second_gpu_stage_telemetry->scalar_optimizer_ms < 0.0F ||
+            second_gpu_stage_telemetry->sh_optimizer_ms < 0.0F ||
+            second_gpu_stage_telemetry->optimizer_post_ms < 0.0F ||
             second_gpu_stage_telemetry->optimizer_ms < 0.0F) {
             throw std::runtime_error(
                 "MRNF GPU stage telemetry mismatch");
@@ -1066,6 +1073,48 @@ int main() {
             second_step_rates.scale,
             std::sqrt(7.0e-3F * 5.0e-3F),
             1.0e-8F, "decayed scale");
+        dronegs::OrderedAlphaTrainingContext parallel_scalar_context(
+            rate_fixture, 32U * 32U, 100U, 8U,
+            dronegs::MrnfOptimizerProfile::reference_absolute);
+        static_cast<void>(parallel_scalar_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        static_cast<void>(parallel_scalar_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        std::vector<dronegs::Gaussian> parallel_scalar_gaussians;
+        parallel_scalar_context.download(parallel_scalar_gaussians);
+        for (const auto& gaussian : parallel_scalar_gaussians) {
+            float rotation_norm_squared = 0.0F;
+            for (const float value : gaussian.xyz) {
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        "component-parallel Adam position is non-finite");
+                }
+            }
+            for (const float value : gaussian.dc) {
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        "component-parallel Adam DC is non-finite");
+                }
+            }
+            for (const float value : gaussian.log_scale) {
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        "component-parallel Adam scale is non-finite");
+                }
+            }
+            for (const float value : gaussian.rotation) {
+                if (!std::isfinite(value)) {
+                    throw std::runtime_error(
+                        "component-parallel Adam rotation is non-finite");
+                }
+                rotation_norm_squared += value * value;
+            }
+            if (!std::isfinite(gaussian.opacity_logit) ||
+                std::abs(rotation_norm_squared - 1.0F) > 1.0e-4F) {
+                throw std::runtime_error(
+                    "component-parallel Adam parameter invariant mismatch");
+            }
+        }
         dronegs::OrderedAlphaTrainingContext split_context(
             {split_parent}, 32U * 32U, 2U, 2U);
         static_cast<void>(split_context.train_step(

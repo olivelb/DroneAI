@@ -7,7 +7,11 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.54` limits the required tile/depth radix sort to all depth
+Version `0.5.0-dev.55` updates each Gaussian's 14 scalar Adam parameters with
+independent CUDA work items and normalizes rotations in a following kernel.
+Two GAJAN Normal runs reduce mean training time from 73.306 to 68.203 seconds
+while preserving held-out quality and the approximately 5.0 GiB VRAM envelope.
+Dev.54 limits the required tile/depth radix sort to all depth
 bits plus the tile-identifier bits actually used by the current image. Two
 GAJAN Fast runs reduce mean training time by another 2.8% without a held-out
 quality regression. Two Normal runs complete in 73.306 seconds mean training,

@@ -35,8 +35,11 @@ containing reports, logs and artifacts.
 Native dev.53 logs also contain six `gpu_stage_telemetry` JSON events. They
 separate projection, projected-record sort, binning/duplication, tile/depth
 pair sort, FastGS bucket construction, rasterization, objective, backward and
-optimizer GPU time. `preprocess_ms` remains the sum of the first five fields
-for report compatibility. Samples are staggered one step after the
+optimizer GPU time. Dev.55 additionally separates objective-gradient,
+gradient-reset, raster-backward, geometry-backward, scalar-Adam, SH-Adam and
+optimizer-post time. `preprocess_ms`, `backward_ms` and `optimizer_ms` remain
+the sums of their respective detailed fields for report compatibility.
+Samples are staggered one step after the
 optimizer-statistics cadence so the Adam measurement excludes diagnostic
 atomics; they are profiling evidence, not an additional quality metric or a
 production gate.
