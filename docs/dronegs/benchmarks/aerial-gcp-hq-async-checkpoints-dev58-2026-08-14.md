@@ -79,12 +79,32 @@ time is 6.51 s, aggregate background-write time is 47.65 s, and aggregate
 completion wait is 21.74 s. Only one final `training.ckpt` is retained because
 publication atomically replaces the previous recovery point.
 
+## Single-GPU cell-concurrency gate
+
+The RTX 3090 was also tested with two identical 1,000-step, fixed-topology
+5.1 M-Gaussian cells. Checkpoints and topology refinement were disabled so the
+measurement isolates cell scheduling. Two sequential processes completed in
+134.31 s; two concurrent processes completed in 160.72 s, **19.66% slower**.
+
+| Schedule | Process A wall / training | Process B wall / training | Aggregate elapsed | Peak observed VRAM |
+| --- | ---: | ---: | ---: | ---: |
+| Sequential | 66.88 / 46.81 s | 67.12 / 46.89 s | 134.31 s | about 8.3 GiB |
+| Concurrent | 159.82 / 137.05 s | 160.57 / 137.09 s | 160.72 s | about 16.1 GiB |
+
+Both concurrent runs completed with unchanged 5.1 M populations and equivalent
+held-out metrics, but the single GPU was already at 98-100% utilization. Cell
+concurrency is therefore rejected for the one-RTX-3090 deployment. The
+orchestrator must keep one active DroneGS cell per GPU; no multi-GPU path was
+implemented or assumed.
+
 ## Retained evidence
 
 The authoritative candidate remains on BIGZEN under
 `/home/olivier/benchmarks/aerial-gcp-hq-async-checkpoint-dev58-release-r5-20260814/cell0`.
 The reference remains under
 `/home/olivier/benchmarks/aerial-gcp-hq-absgrad050-main6c18c9e-20260814/cell0`.
+The single-GPU scheduling A/B remains under
+`/home/olivier/benchmarks/dronegs-single-gpu-cell-concurrency-dev58-20260814`.
 
 | Candidate artifact | Size | SHA-256 |
 | --- | ---: | --- |
