@@ -93,6 +93,33 @@ def _quality_timing_summary(
     }
 
 
+def _checkpoint_timing_summary(
+    metrics: Mapping[str, Any],
+    timings: Mapping[str, Any],
+) -> dict[str, int | float | None]:
+    """Return operational checkpoint fields shared by qualification reports."""
+
+    return {
+        "periodic_checkpoint_seconds": _number(
+            timings,
+            "periodic_checkpoint_seconds",
+        ),
+        "checkpoint_snapshot_seconds": _number(
+            timings,
+            "checkpoint_snapshot_seconds",
+        ),
+        "checkpoint_wait_seconds": _number(
+            timings,
+            "checkpoint_wait_seconds",
+        ),
+        "checkpoint_write_seconds": _number(
+            timings,
+            "checkpoint_write_seconds",
+        ),
+        "periodic_checkpoints": _number(metrics, "periodic_checkpoints"),
+    }
+
+
 def compare_qualification_manifests(
     manifest_paths: Iterable[str | Path],
     *,
@@ -139,29 +166,10 @@ def compare_qualification_manifests(
                 "absgrad_score_weight": _number(parameters, "absgrad_score_weight"),
                 **_quality_timing_summary(metrics, timings),
                 "lpips": _number(metrics, "lpips"),
+                **_checkpoint_timing_summary(metrics, timings),
                 "topology_refinement_seconds": _number(
                     timings,
                     "topology_refinement_seconds",
-                ),
-                "periodic_checkpoint_seconds": _number(
-                    timings,
-                    "periodic_checkpoint_seconds",
-                ),
-                "checkpoint_snapshot_seconds": _number(
-                    timings,
-                    "checkpoint_snapshot_seconds",
-                ),
-                "checkpoint_wait_seconds": _number(
-                    timings,
-                    "checkpoint_wait_seconds",
-                ),
-                "checkpoint_write_seconds": _number(
-                    timings,
-                    "checkpoint_write_seconds",
-                ),
-                "periodic_checkpoints": _number(
-                    metrics,
-                    "periodic_checkpoints",
                 ),
             }
         )
@@ -260,29 +268,10 @@ def compare_performance_manifests(
                 ),
                 "point_cloud_sha256": digest,
                 **_quality_timing_summary(metrics, timings),
+                **_checkpoint_timing_summary(metrics, timings),
                 "topology_refinement_seconds": _number(
                     timings,
                     "topology_refinement_seconds",
-                ),
-                "periodic_checkpoint_seconds": _number(
-                    timings,
-                    "periodic_checkpoint_seconds",
-                ),
-                "checkpoint_snapshot_seconds": _number(
-                    timings,
-                    "checkpoint_snapshot_seconds",
-                ),
-                "checkpoint_wait_seconds": _number(
-                    timings,
-                    "checkpoint_wait_seconds",
-                ),
-                "checkpoint_write_seconds": _number(
-                    timings,
-                    "checkpoint_write_seconds",
-                ),
-                "periodic_checkpoints": _number(
-                    metrics,
-                    "periodic_checkpoints",
                 ),
                 "data_loading_seconds": _number(
                     timings,
