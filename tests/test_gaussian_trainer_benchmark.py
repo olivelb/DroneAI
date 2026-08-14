@@ -183,7 +183,7 @@ def test_end_to_end_fake_trainer(tmp_path, monkeypatch):
     monkeypatch.setenv("DATASET", str(dataset))
     code = (
         "from pathlib import Path; "
-        "p=Path(r'{output_path}'); p.mkdir(parents=True, exist_ok=True); "
+        "p=Path(r'{output_path}'); assert p.is_dir(); "
         "(p/'point_cloud.ply').write_bytes("
         "b'ply\\nformat ascii 1.0\\nelement vertex 3\\nend_header\\n')"
     )

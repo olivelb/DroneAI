@@ -7,7 +7,21 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.50` removes three per-step device-to-host metric readbacks
+Version `0.5.0-dev.52` distributes every active color-SH and opacity-SH Adam
+coefficient over independent CUDA threads instead of updating as many as 60
+coefficients serially in one thread per Gaussian. It preserves the same
+equations, moments, progressive-SH boundary and default-stream ordering, and
+adds no persistent VRAM allocation. GAJAN Fast improves from 38.985 to a
+29.334-second two-run median; Normal improves from 162.594 to 84.472 seconds
+while its PSNR and SSIM increase slightly. Version dev.51 adds staggered
+CUDA-event telemetry for preprocessing,
+rasterization, objective, backward and optimizer work at six sampled steps.
+Sampling is deliberately offset from the existing optimizer-statistics
+readback, so observed Adam cost is not inflated by diagnostic atomics. The
+GAJAN Fast qualification identifies SH3 Adam and projection/sort/binning as
+the dominant late-run GPU costs; the raster kernel itself is no longer the
+primary optimization target. The preceding dev.50 removes three per-step
+device-to-host metric readbacks
 between the 20 progress reports emitted by a run. Loss, active-pixel and SSIM
 validation remains fail-closed through a sticky device error flag that is
 read at the next report and at the final iteration. The bounded ordered-alpha

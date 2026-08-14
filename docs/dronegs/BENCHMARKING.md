@@ -32,6 +32,12 @@ available power-limit fields independently; unsupported `[N/A]` values do not
 discard the remaining inventory. `--bundle` writes a portable `.tar.gz`
 containing reports, logs and artifacts.
 
+Native dev.51 logs also contain six `gpu_stage_telemetry` JSON events. They
+separate preprocessing, rasterization, objective, backward and optimizer GPU
+time. Samples are staggered one step after the optimizer-statistics cadence so
+the Adam measurement excludes diagnostic atomics; they are profiling evidence,
+not an additional quality metric or a production gate.
+
 ## Safety and identity
 
 - Source and output directory trees are separate.

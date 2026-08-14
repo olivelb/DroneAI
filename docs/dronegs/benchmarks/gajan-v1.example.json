@@ -30,7 +30,7 @@
         "--test-every", "8",
         "--save-eval-images", "1"
       ],
-      "required_artifact_glob": "point_cloud.ply"
+      "required_artifact_glob": "**/point_cloud.ply"
     }
   ],
   "cases": [

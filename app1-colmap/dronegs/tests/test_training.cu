@@ -1040,6 +1040,18 @@ int main() {
             initial_rates.scale, 1.0e-12F, "first scale");
         static_cast<void>(rate_context.train_step(
             quality_camera, split_target.data(), split_target.size()));
+        const auto second_gpu_stage_telemetry =
+            rate_context.latest_gpu_stage_telemetry();
+        if (!second_gpu_stage_telemetry.has_value() ||
+            second_gpu_stage_telemetry->step != 2U ||
+            second_gpu_stage_telemetry->preprocess_ms < 0.0F ||
+            second_gpu_stage_telemetry->raster_ms < 0.0F ||
+            second_gpu_stage_telemetry->objective_ms < 0.0F ||
+            second_gpu_stage_telemetry->backward_ms < 0.0F ||
+            second_gpu_stage_telemetry->optimizer_ms < 0.0F) {
+            throw std::runtime_error(
+                "MRNF GPU stage telemetry mismatch");
+        }
         const auto second_step_rates =
             rate_context.current_learning_rates();
         require_rate(

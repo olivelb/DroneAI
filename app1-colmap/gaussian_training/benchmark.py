@@ -417,6 +417,10 @@ def run_one(
     trainer_output_dir = run_dir / "artifacts"
     inventory_payload = dict(inventory) if inventory is not None else dataset_inventory(data_path)
     run_dir.mkdir(parents=True)
+    # Create bind-mount sources as the invoking operator. Otherwise Docker
+    # creates a missing host directory as root before starting a non-root
+    # trainer, which makes the mounted output path unwritable.
+    trainer_output_dir.mkdir()
     command = expand_command(
         backend, case, trainer_output_dir, repetition, environment
     )

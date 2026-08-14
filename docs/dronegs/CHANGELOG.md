@@ -2,6 +2,45 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.52 - Coefficient-parallel SH Adam
+
+- Move active color-SH and opacity-SH Adam updates from serial per-Gaussian
+  loops to a coefficient-parallel CUDA kernel. DC, scalar opacity, position,
+  scale, rotation and sampled optimizer telemetry remain unchanged.
+- Preserve the exact moment equations, bias correction, learning rates,
+  epsilon values and progressive-SH activation boundary without adding a
+  persistent device allocation.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including checkpoint,
+  deferred/synchronous, SH, opacity-SH and Python/native parity canaries.
+- Repeat GAJAN Fast twice at 29.333 seconds median versus 38.985 seconds for
+  dev.51 (`-24.8%` wall; `-26.9%` training). Mean PSNR, pixel-weighted PSNR
+  and SSIM remain inside reference run variation.
+- Complete GAJAN Normal 15k in 84.472 seconds versus 162.594 seconds in the
+  retained reference manifest (`-48.0%` wall; `-49.0%` training), while mean
+  PSNR improves 18.9780 → 18.9865 dB, pixel-weighted PSNR 16.4689 → 16.4947
+  dB and SSIM 0.373993 → 0.374458. Observed VRAM remains below 5.2 GiB.
+
+## 0.5.0-dev.51 - Sampled GPU stage telemetry
+
+- Time preprocessing, rasterization, L1/DSSIM objective, backward and Adam
+  with CUDA events at six staggered training steps. The stagger avoids the
+  existing optimizer-statistics samples and adds no per-iteration readback.
+- Emit one machine-readable `gpu_stage_telemetry` JSON event per sample with
+  all five stage durations and their total.
+- Qualify the instrumentation on GAJAN Fast, RTX 3090: 38.985 seconds wall,
+  16.8101 dB mean PSNR, 14.4438 dB pixel-weighted PSNR, 0.311236 SSIM and
+  54,881 final Gaussians. These match the retained Fast reference within run
+  noise.
+- Identify late SH3 Adam (34–46%) and projection/sort/binning (22–30%) as the
+  dominant sampled GPU costs. Rasterization is only 1–4%, so further speed
+  work must target optimizer parallelism and preprocessing rather than loosen
+  rendering quality.
+- Fix benchmark output ownership by creating bind-mount sources before Docker
+  starts, and accept nested native PLY output paths.
+- Reject and remove the FastGS-style view-consistent density prototype after
+  controlled Fast and Normal regressions; retain its negative qualification
+  report without exposing a dead production option.
+
 ## 0.5.0-dev.50 - Deferred metrics and exact bounded tile culling
 
 - Keep L1, active-pixel and SSIM scalars on the GPU for non-reporting training

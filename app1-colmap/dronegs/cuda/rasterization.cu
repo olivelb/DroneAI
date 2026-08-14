@@ -31,6 +31,8 @@
  * fused L1/SSIM CUDA structure to DroneGS's interleaved renderer and valid
  * padding objective; modified 2026-07-26. DroneGS orchestration remains
  * independent and does not link to or launch LichtFeld at runtime.
+ * Dev.52 parallelizes DroneGS's original color/opacity SH Adam coefficient
+ * updates without changing the adapted MRNF or FastGS algorithms.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -137,6 +139,83 @@ void require_cuda(cudaError_t status, const char* operation) {
             std::string(operation) + ": " + cudaGetErrorString(status));
     }
 }
+
+class GpuStageTimer {
+public:
+    explicit GpuStageTimer(bool enabled) : enabled_(enabled) {
+        if (!enabled_) {
+            return;
+        }
+        std::size_t created = 0U;
+        for (; created < events_.size(); ++created) {
+            const auto status = cudaEventCreate(&events_[created]);
+            if (status != cudaSuccess) {
+                for (std::size_t index = 0U; index < created; ++index) {
+                    static_cast<void>(cudaEventDestroy(events_[index]));
+                    events_[index] = nullptr;
+                }
+                require_cuda(status, "create GPU stage telemetry event");
+            }
+        }
+        require_cuda(
+            cudaEventRecord(events_[0]),
+            "record GPU stage telemetry start");
+    }
+
+    ~GpuStageTimer() {
+        for (auto& event : events_) {
+            if (event != nullptr) {
+                static_cast<void>(cudaEventDestroy(event));
+                event = nullptr;
+            }
+        }
+    }
+
+    GpuStageTimer(const GpuStageTimer&) = delete;
+    GpuStageTimer& operator=(const GpuStageTimer&) = delete;
+
+    void mark(std::size_t boundary) {
+        if (!enabled_) {
+            return;
+        }
+        if (boundary == 0U || boundary >= events_.size()) {
+            throw std::logic_error("GPU stage telemetry boundary is invalid");
+        }
+        require_cuda(
+            cudaEventRecord(events_[boundary]),
+            "record GPU stage telemetry boundary");
+    }
+
+    MrnfGpuStageTelemetry finish(std::uint64_t step) {
+        if (!enabled_) {
+            throw std::logic_error("GPU stage telemetry is disabled");
+        }
+        mark(events_.size() - 1U);
+        require_cuda(
+            cudaEventSynchronize(events_.back()),
+            "synchronize GPU stage telemetry");
+        const auto elapsed = [this](std::size_t begin, std::size_t end) {
+            float milliseconds = 0.0F;
+            require_cuda(
+                cudaEventElapsedTime(
+                    &milliseconds, events_[begin], events_[end]),
+                "read GPU stage telemetry");
+            return milliseconds;
+        };
+        return MrnfGpuStageTelemetry{
+            .step = step,
+            .preprocess_ms = elapsed(0U, 1U),
+            .raster_ms = elapsed(1U, 2U),
+            .objective_ms = elapsed(2U, 3U),
+            .backward_ms = elapsed(3U, 4U),
+            .optimizer_ms = elapsed(4U, 5U),
+        };
+    }
+
+private:
+    bool enabled_ = false;
+    std::array<cudaEvent_t, 6U> events_{};
+};
 
 template <typename T>
 class DeviceAllocation {
@@ -3404,28 +3483,88 @@ struct DeviceOptimizerTelemetry {
     unsigned int samples[5];
 };
 
+__global__ void ordered_sh_adam_update_kernel(
+    Gaussian* gaussians, std::size_t gaussian_count,
+    const float* sh_rest_gradient,
+    const float* opacity_sh_gradient,
+    float* first_sh_rest, float* second_sh_rest,
+    float* first_opacity_sh, float* second_opacity_sh,
+    float inverse_bias_first, float inverse_bias_second,
+    float sh_rest_learning_rate, float opacity_sh_learning_rate,
+    float dc_epsilon, float opacity_epsilon,
+    std::uint32_t active_coefficients) {
+    if (active_coefficients == 0U) {
+        return;
+    }
+    const std::size_t item_index =
+        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const std::size_t items_per_gaussian =
+        static_cast<std::size_t>(active_coefficients) * 4U;
+    const std::size_t item_count = gaussian_count * items_per_gaussian;
+    if (item_index >= item_count) {
+        return;
+    }
+    constexpr float beta_first = 0.9F;
+    constexpr float beta_second = 0.999F;
+    const std::size_t gaussian_index = item_index / items_per_gaussian;
+    const std::size_t local_index = item_index % items_per_gaussian;
+    const std::size_t color_item_count =
+        static_cast<std::size_t>(active_coefficients) * 3U;
+    if (local_index < color_item_count) {
+        const std::size_t channel = local_index / active_coefficients;
+        const std::size_t coefficient = local_index % active_coefficients;
+        const auto offset =
+            gaussian_index * maximum_sh_rest_values +
+            channel * maximum_sh_rest_coefficients + coefficient;
+        const float gradient = sh_rest_gradient[offset];
+        first_sh_rest[offset] =
+            beta_first * first_sh_rest[offset] +
+            (1.0F - beta_first) * gradient;
+        second_sh_rest[offset] =
+            beta_second * second_sh_rest[offset] +
+            (1.0F - beta_second) * gradient * gradient;
+        gaussians[gaussian_index].sh_rest[
+            channel * maximum_sh_rest_coefficients + coefficient] -=
+            sh_rest_learning_rate *
+            first_sh_rest[offset] * inverse_bias_first /
+            (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
+             dc_epsilon);
+        return;
+    }
+    const std::size_t coefficient = local_index - color_item_count;
+    const auto offset =
+        gaussian_index * maximum_opacity_sh_coefficients + coefficient;
+    const float gradient = opacity_sh_gradient[offset];
+    first_opacity_sh[offset] =
+        beta_first * first_opacity_sh[offset] +
+        (1.0F - beta_first) * gradient;
+    second_opacity_sh[offset] =
+        beta_second * second_opacity_sh[offset] +
+        (1.0F - beta_second) * gradient * gradient;
+    gaussians[gaussian_index].opacity_sh[coefficient] -=
+        opacity_sh_learning_rate *
+        first_opacity_sh[offset] * inverse_bias_first /
+        (sqrtf(second_opacity_sh[offset] * inverse_bias_second) +
+         opacity_epsilon);
+}
+
 __global__ void ordered_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
-    const float* dc_gradient, const float* sh_rest_gradient,
-    const float* opacity_gradient, const float* opacity_sh_gradient,
+    const float* dc_gradient, const float* opacity_gradient,
     const float* xyz_gradient, const float* log_scale_gradient,
     const float* rotation_gradient,
     float* first_dc, float* second_dc,
-    float* first_sh_rest, float* second_sh_rest,
     float* first_opacity, float* second_opacity,
-    float* first_opacity_sh, float* second_opacity_sh,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
     float inverse_bias_first, float inverse_bias_second,
     float position_learning_rate, float color_learning_rate,
-    float sh_rest_learning_rate,
     float opacity_learning_rate, float scale_learning_rate,
     float rotation_learning_rate,
     float position_epsilon, float dc_epsilon,
     float opacity_epsilon, float scale_epsilon,
     float rotation_epsilon,
-    std::uint32_t active_sh_degree,
     float minimum_log_scale, float maximum_log_scale,
     DeviceOptimizerTelemetry* telemetry,
     std::size_t telemetry_stride) {
@@ -3477,29 +3616,6 @@ __global__ void ordered_adam_update_kernel(
                 gaussians[gaussian_index].dc[channel];
         }
     }
-    const std::uint32_t active_coefficients =
-        (active_sh_degree + 1U) * (active_sh_degree + 1U) - 1U;
-    for (std::size_t channel = 0U; channel < 3U; ++channel) {
-        for (std::uint32_t coefficient = 0U;
-             coefficient < active_coefficients; ++coefficient) {
-            const auto offset =
-                gaussian_index * maximum_sh_rest_values +
-                channel * maximum_sh_rest_coefficients + coefficient;
-            const float gradient = sh_rest_gradient[offset];
-            first_sh_rest[offset] =
-                beta_first * first_sh_rest[offset] +
-                (1.0F - beta_first) * gradient;
-            second_sh_rest[offset] =
-                beta_second * second_sh_rest[offset] +
-                (1.0F - beta_second) * gradient * gradient;
-            gaussians[gaussian_index].sh_rest[
-                channel * maximum_sh_rest_coefficients + coefficient] -=
-                sh_rest_learning_rate *
-                first_sh_rest[offset] * inverse_bias_first /
-                (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
-                 dc_epsilon);
-        }
-    }
     const float opacity = opacity_gradient[gaussian_index];
     const float original_opacity =
         gaussians[gaussian_index].opacity_logit;
@@ -3527,26 +3643,6 @@ __global__ void ordered_adam_update_kernel(
             gaussians[gaussian_index].opacity_logit *
             gaussians[gaussian_index].opacity_logit;
     }
-    for (std::uint32_t coefficient = 0U;
-         coefficient < active_coefficients; ++coefficient) {
-        const auto offset =
-            gaussian_index * maximum_opacity_sh_coefficients +
-            coefficient;
-        const float gradient = opacity_sh_gradient[offset];
-        first_opacity_sh[offset] =
-            beta_first * first_opacity_sh[offset] +
-            (1.0F - beta_first) * gradient;
-        second_opacity_sh[offset] =
-            beta_second * second_opacity_sh[offset] +
-            (1.0F - beta_second) * gradient * gradient;
-        gaussians[gaussian_index].opacity_sh[coefficient] -=
-            (opacity_learning_rate / 20.0F) *
-            first_opacity_sh[offset] * inverse_bias_first /
-            (sqrtf(
-                 second_opacity_sh[offset] * inverse_bias_second) +
-             opacity_epsilon);
-    }
-
     for (std::size_t axis = 0U; axis < 3U; ++axis) {
         const auto offset = gaussian_index * 3U + axis;
         const float position_gradient =
@@ -4860,6 +4956,20 @@ struct OrderedAlphaTrainingContext::Impl {
             throw std::invalid_argument(
                 "ordered training MSE blend must be between 0 and 1");
         }
+        const auto telemetry_step = optimizer_steps + 1U;
+        const auto telemetry_interval =
+            std::max<std::uint64_t>(1U, maximum_steps / 5U);
+        const bool collect_stage_telemetry =
+            apply_update &&
+            (telemetry_step == 2U ||
+             (maximum_steps > 1U &&
+              telemetry_step == maximum_steps - 1U) ||
+             (telemetry_step > 1U &&
+              (telemetry_step - 1U) % telemetry_interval == 0U));
+        if (apply_update && !collect_stage_telemetry) {
+            latest_gpu_stage_telemetry.reset();
+        }
+        GpuStageTimer stage_timer(collect_stage_telemetry);
         target.copy_from_host(target_rgb, target_bytes);
         const auto device_camera = make_device_camera(camera);
         const auto gaussian_items =
@@ -4942,6 +5052,7 @@ struct OrderedAlphaTrainingContext::Impl {
             use_structural_fastgs
             ? build_fastgs_buckets(tile_count)
             : 0U;
+        stage_timer.mark(1U);
         loss_sum.zero(1U);
         active_pixels.zero(1U);
         const dim3 render_threads(
@@ -4968,6 +5079,7 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent ordered renderer");
+        stage_timer.mark(2U);
         const auto pixel_blocks = static_cast<std::uint32_t>(
             (pixel_count + block_size - 1U) / block_size);
         if (use_structural_fastgs) {
@@ -5136,6 +5248,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 rgb.copy_to_host(prediction->data(), sample_count);
             }
         }
+        stage_timer.mark(3U);
         if (compute_gradient) {
             if (use_structural_fastgs) {
                 if (mse_blend > 0.0F) {
@@ -5279,6 +5392,7 @@ struct OrderedAlphaTrainingContext::Impl {
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent geometry backward");
+            stage_timer.mark(4U);
             if (apply_update) {
                 beta_first_power *= 0.9F;
                 beta_second_power *= 0.999F;
@@ -5291,9 +5405,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     optimizer_steps, maximum_steps,
                     position_learning_rate_scale,
                     optimizer_profile);
-                const auto telemetry_interval =
-                    std::max<std::uint64_t>(
-                        1U, maximum_steps / 5U);
                 const bool collect_telemetry =
                     optimizer_steps == 1U ||
                     optimizer_steps == maximum_steps ||
@@ -5309,21 +5420,17 @@ struct OrderedAlphaTrainingContext::Impl {
                 ordered_adam_update_kernel<<<
                     gaussian_blocks, block_size>>>(
                     gaussians.data(), gaussian_count,
-                    dc_gradient.data(), sh_rest_gradient.data(),
-                    opacity_gradient.data(), opacity_sh_gradient.data(),
+                    dc_gradient.data(), opacity_gradient.data(),
                     xyz_gradient.data(), log_scale_gradient.data(),
                     rotation_gradient.data(),
                     first_dc.data(), second_dc.data(),
-                    first_sh_rest.data(), second_sh_rest.data(),
                     first_opacity.data(), second_opacity.data(),
-                    first_opacity_sh.data(), second_opacity_sh.data(),
                     first_xyz.data(), second_xyz.data(),
                     first_log_scale.data(), second_log_scale.data(),
                     first_rotation.data(), second_rotation.data(),
                     inverse_bias_first, inverse_bias_second,
                     learning_rates.position,
                     learning_rates.dc,
-                    learning_rates.dc / 20.0F,
                     learning_rates.opacity,
                     learning_rates.scale,
                     learning_rates.rotation,
@@ -5332,7 +5439,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     learning_rates.opacity_epsilon,
                     learning_rates.scale_epsilon,
                     learning_rates.rotation_epsilon,
-                    active_sh_degree,
                     minimum_log_scale, maximum_log_scale,
                     collect_telemetry
                         ? optimizer_telemetry.data()
@@ -5341,6 +5447,33 @@ struct OrderedAlphaTrainingContext::Impl {
                 require_cuda(
                     cudaGetLastError(),
                     "launch persistent ordered Adam");
+                const std::uint32_t active_coefficients =
+                    (active_sh_degree + 1U) *
+                        (active_sh_degree + 1U) -
+                    1U;
+                if (active_coefficients > 0U) {
+                    const std::size_t sh_item_count =
+                        gaussian_count * active_coefficients * 4U;
+                    const auto sh_blocks = static_cast<std::uint32_t>(
+                        (sh_item_count + block_size - 1U) / block_size);
+                    ordered_sh_adam_update_kernel<<<
+                        sh_blocks, block_size>>>(
+                        gaussians.data(), gaussian_count,
+                        sh_rest_gradient.data(),
+                        opacity_sh_gradient.data(),
+                        first_sh_rest.data(), second_sh_rest.data(),
+                        first_opacity_sh.data(),
+                        second_opacity_sh.data(),
+                        inverse_bias_first, inverse_bias_second,
+                        learning_rates.dc / 20.0F,
+                        learning_rates.opacity / 20.0F,
+                        learning_rates.dc_epsilon,
+                        learning_rates.opacity_epsilon,
+                        active_coefficients);
+                    require_cuda(
+                        cudaGetLastError(),
+                        "launch coefficient-parallel ordered SH Adam");
+                }
                 if (optimizer_steps % sh_degree_interval == 0U &&
                     active_sh_degree < maximum_active_sh_degree) {
                     ++active_sh_degree;
@@ -5389,6 +5522,10 @@ struct OrderedAlphaTrainingContext::Impl {
                         .scale = parameter(3U),
                         .rotation = parameter(4U),
                     };
+                }
+                if (collect_stage_telemetry) {
+                    latest_gpu_stage_telemetry =
+                        stage_timer.finish(optimizer_steps);
                 }
             }
         }
@@ -5862,6 +5999,7 @@ struct OrderedAlphaTrainingContext::Impl {
     float position_learning_rate_scale = 1.0F;
     MrnfLearningRates learning_rates{};
     std::optional<MrnfOptimizerTelemetry> latest_telemetry;
+    std::optional<MrnfGpuStageTelemetry> latest_gpu_stage_telemetry;
     float minimum_log_scale = -16.0F;
     float maximum_log_scale = 16.0F;
     float beta_first_power = 1.0F;
@@ -6031,6 +6169,12 @@ std::optional<MrnfOptimizerTelemetry>
 OrderedAlphaTrainingContext::latest_optimizer_telemetry()
     const noexcept {
     return impl_->latest_telemetry;
+}
+
+std::optional<MrnfGpuStageTelemetry>
+OrderedAlphaTrainingContext::latest_gpu_stage_telemetry()
+    const noexcept {
+    return impl_->latest_gpu_stage_telemetry;
 }
 
 std::size_t OrderedAlphaTrainingContext::size() const noexcept {
