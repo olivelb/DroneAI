@@ -21,6 +21,10 @@ struct RunMeasurements {
     double training_seconds = 0.0;
     double topology_refinement_seconds = 0.0;
     double periodic_checkpoint_seconds = 0.0;
+    double checkpoint_snapshot_seconds = 0.0;
+    double checkpoint_wait_seconds = 0.0;
+    double checkpoint_write_seconds = 0.0;
+    std::uint64_t periodic_checkpoints = 0;
     double evaluation_seconds = 0.0;
     double export_seconds = 0.0;
     double wall_seconds = 0.0;

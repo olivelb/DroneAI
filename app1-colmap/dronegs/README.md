@@ -7,7 +7,13 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.57` stops producing Sobel/error maps, per-frame refinement
+Version `0.5.0-dev.58` captures immutable full-state checkpoint snapshots on
+the training thread, then performs checksum, durable write and atomic publish
+on one bounded background writer. Training never has more than one snapshot
+in flight, write failures remain fatal, and the manifest separates snapshot,
+wait and background-write timings. DroneAI caps standard Fast/Normal/HQ runs
+at respectively one, two and three checkpoints. Version `0.5.0-dev.57` stops
+producing Sobel/error maps, per-frame refinement
 weights and persistent refinement statistics as soon as no later topology
 refinement can consume them. Geometry gradients and every optimizer update
 remain active through the final iteration. On GAJAN, a fixed-topology

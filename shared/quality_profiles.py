@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Literal, cast
 
+from shared.dronegs_profile import checkpoint_interval_for_iterations
+
 QualityProfileId = Literal[
     "fast-v1",
     "fast-v2",
@@ -75,6 +77,9 @@ def _profile(
                 "feature_max_num_features": str(features),
                 "mvs_max_image_size": str(image_size),
                 "gs_iterations": str(iterations),
+                "gs_checkpoint_every": str(
+                    checkpoint_interval_for_iterations(iterations)
+                ),
                 "gs_data_factor": data_factor,
                 "gs_max_width": str(image_size),
                 "gs_cap_max": str(gaussians),

@@ -2,6 +2,17 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.58 - Bounded asynchronous checkpoints
+
+- Capture a complete immutable GPU training snapshot before resuming updates,
+  then checksum, sync and atomically publish it on one background writer.
+- Keep at most one checkpoint in flight and propagate delayed write failures
+  before the next snapshot or trainer completion.
+- Report snapshot stall, completion wait, background write time and checkpoint
+  count separately in the run manifest.
+- Bound standard 7,500/15,000/30,000 iteration runs to one/two/three recovery
+  checkpoints while retaining zero as the explicit disable value.
+
 ## 0.5.0-dev.57 - Refinement-statistics cooldown
 
 - Stop generating refinement-only SSIM error/Sobel maps, frame weights,

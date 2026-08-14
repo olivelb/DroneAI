@@ -6330,6 +6330,47 @@ struct OrderedAlphaTrainingContext::Impl {
         optimizer_telemetry;
 };
 
+struct TrainingCheckpointSnapshot::Impl {
+    TrainingCheckpointProgress progress;
+    std::string dataset_fingerprint;
+    std::string configuration_fingerprint;
+    std::uint64_t optimizer_steps = 0U;
+    std::uint64_t maximum_steps = 0U;
+    std::uint64_t noise_seed = 0U;
+    std::size_t gaussian_count = 0U;
+    std::uint32_t maximum_active_sh_degree = 0U;
+    std::uint32_t sh_degree_interval = 0U;
+    std::uint32_t active_sh_degree = 0U;
+    MrnfOptimizerProfile optimizer_profile =
+        MrnfOptimizerProfile::dronegs_dev16;
+    bool fastgs_compatibility = false;
+    float position_learning_rate_scale = 1.0F;
+    float minimum_log_scale = -16.0F;
+    float maximum_log_scale = 16.0F;
+    float beta_first_power = 1.0F;
+    float beta_second_power = 1.0F;
+    std::vector<Gaussian> gaussians;
+    std::vector<float> first_dc;
+    std::vector<float> second_dc;
+    std::vector<float> first_sh_rest;
+    std::vector<float> second_sh_rest;
+    std::vector<float> first_opacity;
+    std::vector<float> second_opacity;
+    std::vector<float> first_opacity_sh;
+    std::vector<float> second_opacity_sh;
+    std::vector<float> first_xyz;
+    std::vector<float> second_xyz;
+    std::vector<float> first_log_scale;
+    std::vector<float> second_log_scale;
+    std::vector<float> first_rotation;
+    std::vector<float> second_rotation;
+    std::vector<float> refine_weight_max;
+    std::vector<float> visibility_count;
+    std::vector<float> edge_weight_sum;
+    std::vector<float> absgrad_sum;
+    std::vector<float> absgrad_observation_count;
+};
+
 OrderedAlphaTrainingContext::OrderedAlphaTrainingContext(
     const std::vector<Gaussian>& gaussians,
     std::size_t maximum_pixels,
@@ -6458,14 +6499,109 @@ void OrderedAlphaTrainingContext::download(
         output.data(), impl_->gaussian_count);
 }
 
-void OrderedAlphaTrainingContext::save_checkpoint(
-    const std::filesystem::path& path,
+TrainingCheckpointSnapshot::TrainingCheckpointSnapshot(
+    std::unique_ptr<Impl> impl)
+    : impl_(std::move(impl)) {}
+
+TrainingCheckpointSnapshot::~TrainingCheckpointSnapshot() = default;
+
+TrainingCheckpointSnapshot::TrainingCheckpointSnapshot(
+    TrainingCheckpointSnapshot&&) noexcept = default;
+
+TrainingCheckpointSnapshot& TrainingCheckpointSnapshot::operator=(
+    TrainingCheckpointSnapshot&&) noexcept = default;
+
+std::size_t TrainingCheckpointSnapshot::gaussian_count() const noexcept {
+    return impl_->gaussian_count;
+}
+
+TrainingCheckpointSnapshot
+OrderedAlphaTrainingContext::capture_checkpoint(
     const TrainingCheckpointProgress& progress,
     const std::string& dataset_fingerprint,
     const std::string& configuration_fingerprint) const {
     require_cuda(
         cudaDeviceSynchronize(),
         "synchronize checkpoint snapshot");
+    auto snapshot = std::make_unique<TrainingCheckpointSnapshot::Impl>();
+    snapshot->progress = progress;
+    snapshot->dataset_fingerprint = dataset_fingerprint;
+    snapshot->configuration_fingerprint =
+        configuration_fingerprint;
+    snapshot->optimizer_steps = impl_->optimizer_steps;
+    snapshot->maximum_steps = impl_->maximum_steps;
+    snapshot->noise_seed = impl_->noise_seed;
+    snapshot->gaussian_count = impl_->gaussian_count;
+    snapshot->maximum_active_sh_degree =
+        impl_->maximum_active_sh_degree;
+    snapshot->sh_degree_interval = impl_->sh_degree_interval;
+    snapshot->active_sh_degree = impl_->active_sh_degree;
+    snapshot->optimizer_profile = impl_->optimizer_profile;
+    snapshot->fastgs_compatibility = impl_->fastgs_compatibility;
+    snapshot->position_learning_rate_scale =
+        impl_->position_learning_rate_scale;
+    snapshot->minimum_log_scale = impl_->minimum_log_scale;
+    snapshot->maximum_log_scale = impl_->maximum_log_scale;
+    snapshot->beta_first_power = impl_->beta_first_power;
+    snapshot->beta_second_power = impl_->beta_second_power;
+    const auto capture_device = [](
+        const auto& allocation, auto& destination,
+        std::size_t count) {
+        destination.resize(count);
+        if (count != 0U) {
+            allocation.copy_to_host(destination.data(), count);
+        }
+    };
+    const auto count = snapshot->gaussian_count;
+    capture_device(impl_->gaussians, snapshot->gaussians, count);
+    capture_device(impl_->first_dc, snapshot->first_dc, count * 3U);
+    capture_device(impl_->second_dc, snapshot->second_dc, count * 3U);
+    capture_device(
+        impl_->first_sh_rest, snapshot->first_sh_rest,
+        count * maximum_sh_rest_values);
+    capture_device(
+        impl_->second_sh_rest, snapshot->second_sh_rest,
+        count * maximum_sh_rest_values);
+    capture_device(
+        impl_->first_opacity, snapshot->first_opacity, count);
+    capture_device(
+        impl_->second_opacity, snapshot->second_opacity, count);
+    capture_device(
+        impl_->first_opacity_sh, snapshot->first_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
+    capture_device(
+        impl_->second_opacity_sh, snapshot->second_opacity_sh,
+        count * maximum_opacity_sh_coefficients);
+    capture_device(impl_->first_xyz, snapshot->first_xyz, count * 3U);
+    capture_device(impl_->second_xyz, snapshot->second_xyz, count * 3U);
+    capture_device(
+        impl_->first_log_scale, snapshot->first_log_scale,
+        count * 3U);
+    capture_device(
+        impl_->second_log_scale, snapshot->second_log_scale,
+        count * 3U);
+    capture_device(
+        impl_->first_rotation, snapshot->first_rotation,
+        count * 4U);
+    capture_device(
+        impl_->second_rotation, snapshot->second_rotation,
+        count * 4U);
+    capture_device(
+        impl_->refine_weight_max, snapshot->refine_weight_max, count);
+    capture_device(
+        impl_->visibility_count, snapshot->visibility_count, count);
+    capture_device(
+        impl_->edge_weight_sum, snapshot->edge_weight_sum, count);
+    capture_device(impl_->absgrad_sum, snapshot->absgrad_sum, count);
+    capture_device(
+        impl_->absgrad_observation_count,
+        snapshot->absgrad_observation_count, count);
+    return TrainingCheckpointSnapshot(std::move(snapshot));
+}
+
+void TrainingCheckpointSnapshot::write_to(
+    const std::filesystem::path& path) const {
+    const auto& snapshot = *impl_;
     const auto temporary = path.string() + ".tmp";
     std::ofstream stream(
         temporary, std::ios::binary | std::ios::trunc);
@@ -6492,11 +6628,9 @@ void OrderedAlphaTrainingContext::save_checkpoint(
             using value_type = std::remove_cv_t<
                 std::remove_pointer_t<
                     decltype(allocation.data())>>;
-            std::vector<value_type> host(count);
             if (count != 0U) {
-                allocation.copy_to_host(host.data(), count);
                 stream.write(
-                    reinterpret_cast<const char*>(host.data()),
+                    reinterpret_cast<const char*>(allocation.data()),
                     static_cast<std::streamsize>(
                         count * sizeof(value_type)));
             }
@@ -6507,87 +6641,91 @@ void OrderedAlphaTrainingContext::save_checkpoint(
     stream.write(magic.data(), magic.size());
     constexpr std::uint32_t format_version = 5U;
     write_value(format_version);
-    write_string(dataset_fingerprint);
-    write_string(configuration_fingerprint);
-    write_value(progress.completed_iteration);
-    write_value(progress.topology_refinements);
-    write_value(progress.gaussians_added);
-    write_value(progress.gaussians_pruned);
-    write_value(progress.gaussian_slots_reused);
-    write_value(progress.topology_compactions);
-    write_value(progress.initial_loss);
+    write_string(snapshot.dataset_fingerprint);
+    write_string(snapshot.configuration_fingerprint);
+    write_value(snapshot.progress.completed_iteration);
+    write_value(snapshot.progress.topology_refinements);
+    write_value(snapshot.progress.gaussians_added);
+    write_value(snapshot.progress.gaussians_pruned);
+    write_value(snapshot.progress.gaussian_slots_reused);
+    write_value(snapshot.progress.topology_compactions);
+    write_value(snapshot.progress.initial_loss);
     const std::uint8_t has_initial_held_out_psnr =
-        progress.initial_held_out_psnr.has_value() ? 1U : 0U;
+        snapshot.progress.initial_held_out_psnr.has_value() ? 1U : 0U;
     const std::uint8_t has_initial_held_out_ssim =
-        progress.initial_held_out_ssim.has_value() ? 1U : 0U;
+        snapshot.progress.initial_held_out_ssim.has_value() ? 1U : 0U;
     write_value(has_initial_held_out_psnr);
     if (has_initial_held_out_psnr) {
-        write_value(*progress.initial_held_out_psnr);
+        write_value(*snapshot.progress.initial_held_out_psnr);
     }
     write_value(has_initial_held_out_ssim);
     if (has_initial_held_out_ssim) {
-        write_value(*progress.initial_held_out_ssim);
+        write_value(*snapshot.progress.initial_held_out_ssim);
     }
     const std::uint8_t has_initial_pixel_weighted_psnr =
-        progress.initial_pixel_weighted_psnr.has_value() ? 1U : 0U;
+        snapshot.progress.initial_pixel_weighted_psnr.has_value()
+            ? 1U
+            : 0U;
     const std::uint8_t has_initial_pixel_weighted_ssim =
-        progress.initial_pixel_weighted_ssim.has_value() ? 1U : 0U;
+        snapshot.progress.initial_pixel_weighted_ssim.has_value()
+            ? 1U
+            : 0U;
     write_value(has_initial_pixel_weighted_psnr);
     if (has_initial_pixel_weighted_psnr) {
-        write_value(*progress.initial_pixel_weighted_psnr);
+        write_value(*snapshot.progress.initial_pixel_weighted_psnr);
     }
     write_value(has_initial_pixel_weighted_ssim);
     if (has_initial_pixel_weighted_ssim) {
-        write_value(*progress.initial_pixel_weighted_ssim);
+        write_value(*snapshot.progress.initial_pixel_weighted_ssim);
     }
-    write_value(impl_->optimizer_steps);
-    write_value(impl_->maximum_steps);
-    write_value(impl_->noise_seed);
-    const auto count = impl_->gaussian_count;
+    write_value(snapshot.optimizer_steps);
+    write_value(snapshot.maximum_steps);
+    write_value(snapshot.noise_seed);
+    const auto count = snapshot.gaussian_count;
     const auto portable_count = static_cast<std::uint64_t>(count);
     write_value(portable_count);
-    write_value(impl_->maximum_active_sh_degree);
-    write_value(impl_->sh_degree_interval);
-    write_value(impl_->active_sh_degree);
+    write_value(snapshot.maximum_active_sh_degree);
+    write_value(snapshot.sh_degree_interval);
+    write_value(snapshot.active_sh_degree);
     const auto profile =
-        static_cast<std::uint32_t>(impl_->optimizer_profile);
+        static_cast<std::uint32_t>(snapshot.optimizer_profile);
     write_value(profile);
     const std::uint8_t portable_fastgs =
-        impl_->fastgs_compatibility ? 1U : 0U;
+        snapshot.fastgs_compatibility ? 1U : 0U;
     write_value(portable_fastgs);
-    write_value(impl_->position_learning_rate_scale);
-    write_value(impl_->minimum_log_scale);
-    write_value(impl_->maximum_log_scale);
-    write_value(impl_->beta_first_power);
-    write_value(impl_->beta_second_power);
-    write_device(impl_->gaussians, count);
-    write_device(impl_->first_dc, count * 3U);
-    write_device(impl_->second_dc, count * 3U);
+    write_value(snapshot.position_learning_rate_scale);
+    write_value(snapshot.minimum_log_scale);
+    write_value(snapshot.maximum_log_scale);
+    write_value(snapshot.beta_first_power);
+    write_value(snapshot.beta_second_power);
+    write_device(snapshot.gaussians, count);
+    write_device(snapshot.first_dc, count * 3U);
+    write_device(snapshot.second_dc, count * 3U);
     write_device(
-        impl_->first_sh_rest,
+        snapshot.first_sh_rest,
         count * maximum_sh_rest_values);
     write_device(
-        impl_->second_sh_rest,
+        snapshot.second_sh_rest,
         count * maximum_sh_rest_values);
-    write_device(impl_->first_opacity, count);
-    write_device(impl_->second_opacity, count);
+    write_device(snapshot.first_opacity, count);
+    write_device(snapshot.second_opacity, count);
     write_device(
-        impl_->first_opacity_sh,
+        snapshot.first_opacity_sh,
         count * maximum_opacity_sh_coefficients);
     write_device(
-        impl_->second_opacity_sh,
+        snapshot.second_opacity_sh,
         count * maximum_opacity_sh_coefficients);
-    write_device(impl_->first_xyz, count * 3U);
-    write_device(impl_->second_xyz, count * 3U);
-    write_device(impl_->first_log_scale, count * 3U);
-    write_device(impl_->second_log_scale, count * 3U);
-    write_device(impl_->first_rotation, count * 4U);
-    write_device(impl_->second_rotation, count * 4U);
-    write_device(impl_->refine_weight_max, count);
-    write_device(impl_->visibility_count, count);
-    write_device(impl_->edge_weight_sum, count);
-    write_device(impl_->absgrad_sum, count);
-    write_device(impl_->absgrad_observation_count, count);
+    write_device(snapshot.first_xyz, count * 3U);
+    write_device(snapshot.second_xyz, count * 3U);
+    write_device(snapshot.first_log_scale, count * 3U);
+    write_device(snapshot.second_log_scale, count * 3U);
+    write_device(snapshot.first_rotation, count * 4U);
+    write_device(snapshot.second_rotation, count * 4U);
+    write_device(snapshot.refine_weight_max, count);
+    write_device(snapshot.visibility_count, count);
+    write_device(snapshot.edge_weight_sum, count);
+    write_device(snapshot.absgrad_sum, count);
+    write_device(snapshot.absgrad_observation_count, count);
     stream.flush();
     if (!stream) {
         throw std::runtime_error(
@@ -6640,6 +6778,17 @@ void OrderedAlphaTrainingContext::save_checkpoint(
             "cannot publish checkpoint: " + error.message());
     }
     sync_checkpoint_directory(path);
+}
+
+void OrderedAlphaTrainingContext::save_checkpoint(
+    const std::filesystem::path& path,
+    const TrainingCheckpointProgress& progress,
+    const std::string& dataset_fingerprint,
+    const std::string& configuration_fingerprint) const {
+    capture_checkpoint(
+        progress, dataset_fingerprint,
+        configuration_fingerprint)
+        .write_to(path);
 }
 
 TrainingCheckpointProgress

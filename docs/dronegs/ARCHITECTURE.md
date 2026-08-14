@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.57
+Project version: 0.5.0-dev.58
 
 ## Decision
 
@@ -30,6 +30,15 @@ Dev.32 permits SH-derived splat color in `[0,4]` during rendering and keeps
 its gradient live over that interval. This matches the pinned FastGS color
 contract and prevents coefficients just above display white from being frozen;
 final RGB image serialization remains clamped to the display range.
+
+Dev.58 bounds the standard Fast/Normal/HQ recovery cadence to one, two and
+three snapshots for 7,500, 15,000 and 30,000 iterations. The training thread
+synchronizes once to capture a complete immutable host snapshot; one bounded
+background writer then computes the checksum, fsyncs and atomically publishes
+the file. A later snapshot and trainer completion always join the preceding
+writer, so failures remain fatal and no more than one snapshot is resident.
+Manifest timings distinguish capture stall, completion wait and overlapped
+write time.
 
 Dev.57 treats refinement statistics as topology-lifecycle state rather than
 an unconditional by-product of every optimizer step. The trainer derives the

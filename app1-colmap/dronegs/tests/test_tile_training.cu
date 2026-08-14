@@ -130,6 +130,8 @@ int main() {
         options.max_width = 32U;
         options.tile_mode = 4U;
         options.seed = 17U;
+        options.checkpoint_every = 1U;
+        options.checkpoint_path = root / "training.ckpt";
         if (options.tile_mode != 4U) {
             throw std::runtime_error(
                 "tile training fixture options were not initialized");
@@ -142,7 +144,12 @@ int main() {
             metrics.frame_descriptor_count != 4U ||
             metrics.training_frame_count != 4U ||
             metrics.held_out_frame_count != 0U ||
-            metrics.image_cache_misses < 2U) {
+            metrics.image_cache_misses < 2U ||
+            metrics.periodic_checkpoints != 2U ||
+            !std::filesystem::is_regular_file(
+                options.checkpoint_path) ||
+            std::filesystem::exists(
+                options.checkpoint_path.string() + ".tmp")) {
             throw std::runtime_error(
                 "four-tile MRNF training metrics mismatch: completed=" +
                 std::to_string(metrics.completed_iterations) +

@@ -9,6 +9,8 @@ from typing import Any, cast
 from shared.dronegs_profile import (
     DRONEGS_PRODUCTION_PROFILE_V1,
     DRONEGS_QUALIFICATION_POLICY_ID,
+    bounded_checkpoint_interval,
+    checkpoint_interval_for_iterations,
 )
 from shared.quality_profiles import QUALITY_PROFILE_BY_ID, QualityProfileId
 from gaussian_ortho.coverage_quality import SpatialCoveragePolicy
@@ -103,7 +105,6 @@ def _profile_identity(config: DroneGsRunConfig) -> dict[str, Any]:
         "topology_cooldown": config.topology_cooldown,
         "photometric_finish": config.photometric_finish,
         "photometric_mse_percent": config.photometric_mse_percent,
-        "checkpoint_every": config.checkpoint_every,
         "test_every": config.test_every,
         "test_split": config.test_split,
         "test_guard_percent": config.test_guard_percent,
@@ -119,13 +120,24 @@ def resolve_dronegs_config(
     profile_id = str(params.get("gs_production_profile", DRONEGS_PRODUCTION_PROFILE_V1.profile_id))
     selected_profile = QUALITY_PROFILE_BY_ID.get(cast(QualityProfileId, profile_id))
     selected_parameters = selected_profile.parameters if selected_profile else {}
+    iterations = int(params.get("gs_iterations", DRONEGS_PRODUCTION_PROFILE_V1.iterations))
     cap_max = int(params.get("gs_cap_max", DRONEGS_PRODUCTION_PROFILE_V1.cap_max))
+    requested_checkpoint_every = int(
+        params.get(
+            "gs_checkpoint_every",
+            checkpoint_interval_for_iterations(iterations),
+        )
+    )
+    checkpoint_every = bounded_checkpoint_interval(
+        iterations,
+        requested_checkpoint_every,
+    )
     qualification_policy_id = str(params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID))
     coverage_policy = SpatialCoveragePolicy()
     config = DroneGsRunConfig(
         resolution=float(params.get("ortho_mesh_resolution", 0.02)),
         data_factor=data_factor,
-        iterations=int(params.get("gs_iterations", DRONEGS_PRODUCTION_PROFILE_V1.iterations)),
+        iterations=iterations,
         cap_max=cap_max,
         capacity_mode=str(
             params.get(
@@ -186,7 +198,7 @@ def resolve_dronegs_config(
         topology_cooldown=int(params.get("gs_topology_cooldown", 1_000)),
         photometric_finish=int(params.get("gs_photometric_finish", 1_000)),
         photometric_mse_percent=int(params.get("gs_photometric_mse_percent", 100)),
-        checkpoint_every=int(params.get("gs_checkpoint_every", 2_000)),
+        checkpoint_every=checkpoint_every,
         test_every=int(params.get("gs_test_every", 8)),
         test_split=str(params.get("gs_test_split", "modulo")),
         test_guard_percent=int(params.get("gs_test_guard_percent", 0)),
@@ -268,6 +280,11 @@ def resolve_dronegs_config(
         raise ValueError("adaptive Gaussian capacity requires a positive target pixel spacing")
 
     warnings: list[str] = []
+    if checkpoint_every != requested_checkpoint_every:
+        warnings.append(
+            "DroneGS checkpoint interval was raised to "
+            f"{checkpoint_every} iterations to respect the recovery budget."
+        )
     profile_identity = _profile_identity(config)
     expected_profile = expected_profile_identity(config.profile_id, profile_identity)
     if expected_profile is not None and profile_identity != expected_profile:

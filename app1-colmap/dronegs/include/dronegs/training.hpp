@@ -177,6 +177,10 @@ struct TrainingMetrics {
     double training_seconds = 0.0;
     double topology_refinement_seconds = 0.0;
     double periodic_checkpoint_seconds = 0.0;
+    double checkpoint_snapshot_seconds = 0.0;
+    double checkpoint_wait_seconds = 0.0;
+    double checkpoint_write_seconds = 0.0;
+    std::uint64_t periodic_checkpoints = 0;
     std::uint64_t image_cache_hits = 0;
     std::uint64_t image_cache_misses = 0;
     std::uint64_t image_cache_evictions = 0;
