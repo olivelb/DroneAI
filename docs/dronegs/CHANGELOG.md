@@ -2,6 +2,21 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.61 - Conservative projection culling
+
+- Compute Gaussian scales before SH evaluation and reuse them in the exact
+  covariance projection.
+- Reject only splats whose opacity-one, maximum-axis support bound is entirely
+  outside the image, with an outward rounding margin; keep exact projection as
+  the authority for every uncertain case.
+- Keep the prefilter stateless so geometry, rotation and scale updates require
+  no visibility-cache invalidation protocol.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including an explicit
+  off-image-center/overlapping-support parity regression.
+- Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean training falls
+  from 39.034 to 37.561 seconds (`-3.77%`) with equivalent loss, PSNR, SSIM
+  and Gaussian population.
+
 ## 0.5.0-dev.60 - Fused FastGS SH Adam
 
 - Consume raw FastGS RGB/opacity derivatives directly in scalar and SH Adam,

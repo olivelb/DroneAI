@@ -249,6 +249,29 @@ void test_reference_parity() {
         4.0e-5F, 5.0e-5F, false);
 }
 
+void test_conservative_projection_boundary_parity() {
+    const std::vector<dronegs::Gaussian> gaussians{
+        // The centers are outside the image, but the clamped projected
+        // covariance still overlaps it.  A conservative prefilter must keep
+        // both splats for the exact projection.
+        splat({1.18F, 0.0F, 1.0F}, {0.9F, 0.2F, 0.1F}, 0.8F, 2.0F),
+        splat({-1.18F, 0.0F, 1.0F}, {0.1F, 0.8F, 0.2F}, 0.8F, 2.0F),
+        // These small, remote splats are certainly outside the image.
+        splat({6.0F, 0.0F, 1.0F}, {0.2F, 0.1F, 0.9F}, 0.02F, 2.0F),
+        splat({-6.0F, 0.0F, 1.0F}, {0.8F, 0.8F, 0.1F}, 0.02F, 2.0F),
+    };
+    constexpr std::array<float, 3> background{0.02F, 0.03F, 0.04F};
+    const auto expected =
+        dronegs::render_alpha_reference(gaussians, camera(), background);
+    const auto actual =
+        dronegs::render_alpha_tiled_cuda(gaussians, camera(), background);
+    compare(actual, expected, 3.0e-5F);
+    if (actual.stats.visible_splats != 2U) {
+        throw std::runtime_error(
+            "conservative projection boundary fixture is invalid");
+    }
+}
+
 void test_empty_scene() {
     constexpr std::array<float, 3> background{0.2F, 0.3F, 0.4F};
     const auto expected =
@@ -601,6 +624,7 @@ void test_backward_cuda_finite_difference() {
 int main() {
     try {
         test_reference_parity();
+        test_conservative_projection_boundary_parity();
         test_empty_scene();
         test_early_transmittance_exit();
         test_equal_depth_stability();
