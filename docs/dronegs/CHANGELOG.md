@@ -2,6 +2,20 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.59 - Active-only FastGS SH expansion
+
+- Accumulate raw RGB and opacity derivatives once per source/tile in the
+  structural FastGS backward pass, then expand DC, color-SH and opacity-SH
+  gradients once per active Gaussian.
+- Skip the expansion for exact-zero appearance gradients, avoiding writes for
+  invisible Gaussians while preserving all geometry/refinement derivatives.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including an active-SH
+  update and invisible-appearance regression.
+- Repeat the fixed-topology 5.1 M-Gaussian cell twice: mean training falls
+  from 46.848 to 42.311 seconds (`-9.69%`), aggregate wall from 134.308 to
+  124.701 seconds (`-7.15%`) and sampled late raster backward from 14.664 to
+  9.485 ms (`-35.3%`) with equivalent loss, PSNR and SSIM.
+
 ## 0.5.0-dev.58 - Bounded asynchronous checkpoints
 
 - Capture a complete immutable GPU training snapshot before resuming updates,

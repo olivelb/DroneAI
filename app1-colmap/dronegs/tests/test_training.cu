@@ -1016,6 +1016,58 @@ int main() {
             throw std::runtime_error(
                 "structural FastGS partial-tile objective mismatch");
         }
+        auto fastgs_sh_fixture = rate_fixture;
+        auto hidden_gaussian = split_parent;
+        hidden_gaussian.xyz = {0.0F, 0.0F, -1.0F};
+        fastgs_sh_fixture.push_back(hidden_gaussian);
+        dronegs::OrderedAlphaTrainingContext fastgs_sh_context(
+            fastgs_sh_fixture, 32U * 32U, 2U,
+            fastgs_sh_fixture.size(),
+            dronegs::MrnfOptimizerProfile::
+                dev38_staged_rotation008_absgrad050_fastgs,
+            3U, 1000U, 123U, true);
+        fastgs_sh_context.set_active_sh_degree(3U);
+        static_cast<void>(fastgs_sh_context.train_step(
+            quality_camera, split_target.data(), split_target.size()));
+        std::vector<dronegs::Gaussian> fastgs_sh_result;
+        fastgs_sh_context.download(fastgs_sh_result);
+        bool active_sh_updated = false;
+        bool active_opacity_sh_updated = false;
+        for (std::size_t gaussian = 0U;
+             gaussian + 1U < fastgs_sh_result.size(); ++gaussian) {
+            for (std::size_t coefficient = 0U;
+                 coefficient < dronegs::maximum_sh_rest_values;
+                 ++coefficient) {
+                active_sh_updated = active_sh_updated ||
+                    std::abs(
+                        fastgs_sh_result[gaussian].sh_rest[coefficient] -
+                        fastgs_sh_fixture[gaussian].sh_rest[coefficient]) >
+                        1.0e-9F;
+            }
+            for (std::size_t coefficient = 0U;
+                 coefficient <
+                    dronegs::maximum_opacity_sh_coefficients;
+                 ++coefficient) {
+                active_opacity_sh_updated =
+                    active_opacity_sh_updated ||
+                    std::abs(
+                        fastgs_sh_result[gaussian].
+                            opacity_sh[coefficient] -
+                        fastgs_sh_fixture[gaussian].
+                            opacity_sh[coefficient]) > 1.0e-9F;
+            }
+        }
+        const auto& hidden_result = fastgs_sh_result.back();
+        const auto& hidden_reference = fastgs_sh_fixture.back();
+        if (!active_sh_updated || !active_opacity_sh_updated ||
+            hidden_result.dc != hidden_reference.dc ||
+            hidden_result.sh_rest != hidden_reference.sh_rest ||
+            hidden_result.opacity_logit !=
+                hidden_reference.opacity_logit ||
+            hidden_result.opacity_sh != hidden_reference.opacity_sh) {
+            throw std::runtime_error(
+                "structural FastGS active-only SH expansion mismatch");
+        }
         dronegs::OrderedAlphaTrainingContext scale_only_context(
             rate_fixture, 32U * 32U, 2U, 8U,
             dronegs::MrnfOptimizerProfile::reference_scale_only);
