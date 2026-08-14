@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.59
+Project version: 0.5.0-dev.60
 
 ## Decision
 
@@ -19,6 +19,12 @@ full-state checkpoint/resume plus held-out deployment canaries. Dev.47 adds
 strict production-profile/dataset/artifact identity, checkpoint V3 integrity
 and spatial-block evaluation. LichtFeld is retained only in historical
 comparisons and the GPL provenance record.
+
+Dev.60 consumes the raw FastGS appearance derivatives directly in the scalar
+and coefficient-parallel Adam kernels. DC scaling and SH basis expansion are
+performed at their point of use, eliminating the expanded color/opacity-SH
+gradient writes, reads and buffer clears while retaining moment updates for
+temporarily invisible Gaussians.
 
 Dev.59 accumulates the FastGS DC and opacity derivatives once per
 source/tile, then expands the color-SH and opacity-SH basis products once per
