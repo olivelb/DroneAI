@@ -735,6 +735,20 @@ void test_adaptive_capacity_growth() {
         dronegs::topology_refinement_end_iteration(
             30'000U, 1'000U, true) == 14'800U,
         "adaptive topology was not frozen after growth");
+    check(
+        dronegs::topology_refinement_statistics_required(1U, 6'500U) &&
+            dronegs::topology_refinement_statistics_required(
+                6'400U, 6'500U) &&
+            !dronegs::topology_refinement_statistics_required(
+                6'401U, 6'500U) &&
+            !dronegs::topology_refinement_statistics_required(
+                6'500U, 6'500U) &&
+            dronegs::topology_refinement_statistics_required(
+                14'000U, 14'000U) &&
+            !dronegs::topology_refinement_statistics_required(
+                14'001U, 14'000U) &&
+            !dronegs::topology_refinement_statistics_required(0U, 0U),
+        "refinement statistics do not stop after their final consumer");
     const auto initial = dronegs::adaptive_capacity_growth_fraction(
         22'547U, 5'700'000U, 200U, 14'800U);
     check(

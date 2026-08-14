@@ -1683,15 +1683,22 @@ TrainingMetrics train_ordered_mrnf(
             iteration == 1U ||
             iteration == options.iterations ||
             iteration % progress_interval == 0U;
+        const auto refinement_statistics =
+            topology_refinement_statistics_required(
+                iteration, topology_refine_end)
+            ? RefinementStatisticsMode::collect
+            : RefinementStatisticsMode::skip;
         float loss = 0.0F;
         if (report_progress) {
             loss = workspace.train_step(
                 raster_camera, frame.image->rgb.data(),
-                frame.image->rgb.size(), mse_blend);
+                frame.image->rgb.size(), mse_blend,
+                refinement_statistics);
         } else {
             workspace.train_step_deferred(
                 raster_camera, frame.image->rgb.data(),
-                frame.image->rgb.size(), mse_blend);
+                frame.image->rgb.size(), mse_blend,
+                refinement_statistics);
         }
         if (workspace.active_sh_degree() != degree_before) {
             std::cout

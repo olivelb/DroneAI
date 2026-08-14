@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.56
+Project version: 0.5.0-dev.57
 
 ## Decision
 
@@ -30,6 +30,15 @@ Dev.32 permits SH-derived splat color in `[0,4]` during rendering and keeps
 its gradient live over that interval. This matches the pinned FastGS color
 contract and prevents coefficients just above display white from being frozen;
 final RGB image serialization remains clamped to the display range.
+
+Dev.57 treats refinement statistics as topology-lifecycle state rather than
+an unconditional by-product of every optimizer step. The trainer derives the
+last iteration whose statistics can reach a scheduled 200-step refinement and
+then disables only the refinement error/edge maps and per-Gaussian statistic
+accumulation. The differentiable render, geometry backward pass and Adam
+updates continue unchanged, so cooldown remains fixed-topology convergence
+rather than an abbreviated training phase. Objective-only evaluation never
+mutates refinement state.
 
 Dev.52 retains the exact Adam equations and progressive-SH schedule but moves
 the active color-SH and opacity-SH coefficient updates out of the per-Gaussian

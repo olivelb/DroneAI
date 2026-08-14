@@ -14,6 +14,11 @@
 
 namespace dronegs {
 
+enum class RefinementStatisticsMode {
+    collect,
+    skip,
+};
+
 struct TrainingCheckpointProgress {
     std::uint64_t completed_iteration = 0U;
     std::uint64_t topology_refinements = 0U;
@@ -66,10 +71,14 @@ public:
         std::size_t target_bytes, float mse_blend = 0.0F);
     float train_step(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes, float mse_blend = 0.0F);
+        std::size_t target_bytes, float mse_blend = 0.0F,
+        RefinementStatisticsMode refinement_statistics =
+            RefinementStatisticsMode::collect);
     void train_step_deferred(
         const RasterCamera& camera, const std::uint8_t* target_rgb,
-        std::size_t target_bytes, float mse_blend = 0.0F);
+        std::size_t target_bytes, float mse_blend = 0.0F,
+        RefinementStatisticsMode refinement_statistics =
+            RefinementStatisticsMode::collect);
     TopologyRefinementResult refine_topology(
         float gradient_threshold = 0.003F,
         float grow_fraction = 0.07F,

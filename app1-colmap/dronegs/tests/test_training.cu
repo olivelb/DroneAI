@@ -1473,6 +1473,32 @@ int main() {
             throw std::runtime_error(
                 "deferred metric readback changed ordered training");
         }
+        dronegs::OrderedAlphaTrainingContext refinement_collect_step(
+            rate_fixture, 32U * 32U, 1U, 8U,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
+            2U, 2U, 654U, true);
+        dronegs::OrderedAlphaTrainingContext refinement_skip_step(
+            rate_fixture, 32U * 32U, 1U, 8U,
+            dronegs::MrnfOptimizerProfile::reference_absolute,
+            2U, 2U, 654U, true);
+        const float refinement_collect_loss =
+            refinement_collect_step.train_step(
+                quality_camera, split_target.data(),
+                split_target.size(), 0.0F,
+                dronegs::RefinementStatisticsMode::collect);
+        const float refinement_skip_loss =
+            refinement_skip_step.train_step(
+                quality_camera, split_target.data(),
+                split_target.size(), 0.0F,
+                dronegs::RefinementStatisticsMode::skip);
+        if (!models_match(
+                refinement_collect_step, refinement_skip_step) ||
+            std::abs(
+                refinement_collect_loss - refinement_skip_loss) >
+                1.0e-6F) {
+            throw std::runtime_error(
+                "skipping unused refinement statistics changed training");
+        }
         for (std::uint64_t step = 5U; step < 10U; ++step) {
             static_cast<void>(uninterrupted.train_step(
                 quality_camera, split_target.data(),

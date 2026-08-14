@@ -48,6 +48,12 @@ Dev.56 keeps those telemetry fields unchanged. Its fused L1/SSIM forward
 kernel performs deterministic block-local reductions and issues one global
 loss/count update per 16x16 tile instead of one update per active pixel.
 
+Dev.57 also keeps the telemetry schema unchanged. After the final scheduled
+topology refinement it omits refinement-only Sobel/error maps and Gaussian
+statistics while retaining the complete geometry backward and optimizer
+path. The retained GAJAN micro and full-profile evidence is documented in
+[the dev.57 qualification](benchmarks/gajan-refinement-cooldown-dev57-2026-08-14.md).
+
 ## Safety and identity
 
 - Source and output directory trees are separate.
