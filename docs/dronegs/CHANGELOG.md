@@ -2,6 +2,17 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.54 - Bounded tile/depth radix range
+
+- Limit the persistent tile/depth radix sort to all 32 depth bits plus the
+  active tile-identifier bits, excluding only constant zero high bits.
+- Validate the tile count before deriving the CUB radix range; key layout,
+  stable pair ordering and renderer inputs remain unchanged.
+- Pass all eight native CPU/CUDA CTests on RTX 3090. Two GAJAN Fast runs
+  improve mean wall time from 27.080 to 26.554 seconds (`-1.9%`) and training
+  from 23.814 to 23.140 seconds (`-2.8%`). The pair-sort stage improves by
+  `21.5%`; held-out quality and topology remain inside run variation.
+
 ## 0.5.0-dev.53 - Direct tile/depth ordering
 
 - Decompose sampled preprocessing telemetry into projection, projected-record

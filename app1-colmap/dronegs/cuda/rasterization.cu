@@ -33,6 +33,7 @@
  * independent and does not link to or launch LichtFeld at runtime.
  * Dev.52 parallelizes DroneGS's original color/opacity SH Adam coefficient
  * updates without changing the adapted MRNF or FastGS algorithms.
+ * Dev.54 excludes constant high tile bits from DroneGS's CUB pair sort.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -47,6 +48,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -4787,7 +4789,18 @@ struct OrderedAlphaTrainingContext::Impl {
             "scan persistent tile pair counts");
     }
 
-    void sort_pairs(std::uint32_t pair_items) {
+    void sort_pairs(
+        std::uint32_t pair_items, std::size_t tile_count) {
+        if (tile_count == 0U ||
+            tile_count >
+                static_cast<std::size_t>(
+                    std::numeric_limits<std::uint32_t>::max())) {
+            throw std::invalid_argument(
+                "tile/depth sort requires a supported tile count");
+        }
+        const auto tile_bits = std::bit_width(
+            static_cast<std::uint32_t>(tile_count - 1U));
+        const int end_bit = 32 + static_cast<int>(tile_bits);
         std::size_t temporary_bytes = 0U;
         require_cuda(
             sort_pairs_portable(
@@ -4796,7 +4809,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 sorted_tile_depth_keys.data(),
                 record_indices.data(),
                 sorted_record_indices.data(),
-                static_cast<int>(pair_items)),
+                static_cast<int>(pair_items), 0, end_bit),
             "query persistent pair sort storage");
         temporary_storage.ensure(std::max<std::size_t>(
             1U, temporary_bytes));
@@ -4807,7 +4820,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 sorted_tile_depth_keys.data(),
                 record_indices.data(),
                 sorted_record_indices.data(),
-                static_cast<int>(pair_items)),
+                static_cast<int>(pair_items), 0, end_bit),
             "sort persistent tile pairs");
     }
 
@@ -5019,11 +5032,10 @@ struct OrderedAlphaTrainingContext::Impl {
             cudaGetLastError(),
             "launch persistent tile pair duplication");
         stage_timer.mark(3U);
-        sort_pairs(pair_items);
-
         const auto tile_count =
             static_cast<std::size_t>(device_camera.tiles_x) *
             device_camera.tiles_y;
+        sort_pairs(pair_items, tile_count);
         tile_starts.ensure(tile_count);
         tile_ends.ensure(tile_count);
         tile_starts.zero(tile_count);
