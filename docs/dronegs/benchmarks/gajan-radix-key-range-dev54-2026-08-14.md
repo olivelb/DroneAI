@@ -43,3 +43,21 @@ backward, decoding, evaluation and export are unaffected.
 All eight native CPU/CUDA CTests pass on the RTX 3090. Logs and artifacts are
 retained on BIGZEN under
 `/home/olivier/benchmarks/gajan-preprocess-20260814`.
+
+## Normal 15,000-step qualification
+
+The cumulative dev.52–dev.54 optimization was also repeated twice with the
+Normal budget, 3 million requested capacity and otherwise identical inputs.
+
+| Run | Wall (s) | Train (s) | Final G | Mean PSNR | Pixel PSNR | SSIM |
+|---|---:|---:|---:|---:|---:|---:|
+| dev.52 reference | 84.472 | 80.983 | 191,283 | 18.9865 | 16.4947 | 0.374458 |
+| dev.54 run 1 | 77.066 | 73.554 | 191,454 | 18.9587 | 16.4419 | 0.373886 |
+| dev.54 run 2 | 76.602 | 73.059 | 191,280 | 18.9778 | 16.4827 | 0.374190 |
+
+The dev.54 mean is 76.834 seconds wall (`-9.0%`) and 73.306 seconds training
+(`-9.5%`) versus dev.52. Mean PSNR is 18.9683 dB, pixel-weighted PSNR is
+16.4623 dB and SSIM is 0.374038. These values remain within the retained
+dev.50–dev.52 run envelope; the second dev.54 repetition nearly reproduces
+the former quality reference. Observed VRAM was approximately 5.0 GiB, well
+inside the 8 GiB Normal deployment envelope.
