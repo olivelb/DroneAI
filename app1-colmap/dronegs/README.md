@@ -7,7 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.52` distributes every active color-SH and opacity-SH Adam
+Version `0.5.0-dev.53` removes a redundant global depth sort before the
+required tile/depth radix sort in persistent training, removes its two output
+buffers and decomposes preprocessing telemetry into five measurable substages.
+Two GAJAN Fast runs reduce mean wall time from 29.334 to 27.080 seconds while
+preserving PSNR/SSIM and topology within retained run variation. Dev.52
+distributes every active color-SH and opacity-SH Adam
 coefficient over independent CUDA threads instead of updating as many as 60
 coefficients serially in one thread per Gaussian. It preserves the same
 equations, moments, progressive-SH boundary and default-stream ordering, and

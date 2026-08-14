@@ -202,19 +202,30 @@ public:
                 "read GPU stage telemetry");
             return milliseconds;
         };
+        const float projection_ms = elapsed(0U, 1U);
+        const float record_sort_ms = elapsed(1U, 2U);
+        const float binning_ms = elapsed(2U, 3U);
+        const float pair_sort_ms = elapsed(3U, 4U);
+        const float bucket_ms = elapsed(4U, 5U);
         return MrnfGpuStageTelemetry{
             .step = step,
-            .preprocess_ms = elapsed(0U, 1U),
-            .raster_ms = elapsed(1U, 2U),
-            .objective_ms = elapsed(2U, 3U),
-            .backward_ms = elapsed(3U, 4U),
-            .optimizer_ms = elapsed(4U, 5U),
+            .projection_ms = projection_ms,
+            .record_sort_ms = record_sort_ms,
+            .binning_ms = binning_ms,
+            .pair_sort_ms = pair_sort_ms,
+            .bucket_ms = bucket_ms,
+            .preprocess_ms = projection_ms + record_sort_ms +
+                binning_ms + pair_sort_ms + bucket_ms,
+            .raster_ms = elapsed(5U, 6U),
+            .objective_ms = elapsed(6U, 7U),
+            .backward_ms = elapsed(7U, 8U),
+            .optimizer_ms = elapsed(8U, 9U),
         };
     }
 
 private:
     bool enabled_ = false;
-    std::array<cudaEvent_t, 6U> events_{};
+    std::array<cudaEvent_t, 10U> events_{};
 };
 
 template <typename T>
@@ -4629,10 +4640,8 @@ struct OrderedAlphaTrainingContext::Impl {
         }
         gaussians.ensure(gaussian_capacity);
         records.ensure(gaussian_capacity);
-        sorted_records.ensure(gaussian_capacity);
         projected_sh_basis.ensure(gaussian_capacity * 16U);
         depth_keys.ensure(gaussian_capacity);
-        sorted_depth_keys.ensure(gaussian_capacity);
         pair_counts.ensure(gaussian_capacity + 1U);
         pair_offsets.ensure(gaussian_capacity + 1U);
         visible_splats.ensure(1U);
@@ -4758,26 +4767,6 @@ struct OrderedAlphaTrainingContext::Impl {
         frame_abs_projected_gradient.zero(gaussian_capacity * 2U);
         optimizer_telemetry.zero(1U);
         deferred_error_flags.zero(1U);
-    }
-
-    void sort_records() {
-        std::size_t temporary_bytes = 0U;
-        require_cuda(
-            sort_pairs_portable(
-                nullptr, temporary_bytes,
-                depth_keys.data(), sorted_depth_keys.data(),
-                records.data(), sorted_records.data(),
-                static_cast<int>(gaussian_count)),
-            "query persistent compact projected sort storage");
-        temporary_storage.ensure(std::max<std::size_t>(
-            1U, temporary_bytes));
-        require_cuda(
-            sort_pairs_portable(
-                temporary_storage.data(), temporary_bytes,
-                depth_keys.data(), sorted_depth_keys.data(),
-                records.data(), sorted_records.data(),
-                static_cast<int>(gaussian_count)),
-            "sort persistent compact projected splats");
     }
 
     void scan_counts() {
@@ -4987,11 +4976,12 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent alpha projection");
-        sort_records();
+        stage_timer.mark(1U);
+        stage_timer.mark(2U);
         const auto count_blocks =
             (gaussian_items + 1U + block_size - 1U) / block_size;
         extract_pair_counts_kernel<<<count_blocks, block_size>>>(
-            sorted_records.data(), gaussian_items,
+            records.data(), gaussian_items,
             camera.width, camera.height, pair_counts.data(),
             !fastgs_compatibility);
         require_cuda(
@@ -5020,7 +5010,7 @@ struct OrderedAlphaTrainingContext::Impl {
         record_indices.ensure(pair_items);
         sorted_record_indices.ensure(pair_items);
         duplicate_tile_pairs_kernel<<<gaussian_blocks, block_size>>>(
-            sorted_records.data(), gaussian_items,
+            records.data(), gaussian_items,
             pair_offsets.data(), camera.width, camera.height,
             device_camera.tiles_x,
             tile_depth_keys.data(), record_indices.data(),
@@ -5028,6 +5018,7 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent tile pair duplication");
+        stage_timer.mark(3U);
         sort_pairs(pair_items);
 
         const auto tile_count =
@@ -5045,6 +5036,7 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent tile range construction");
+        stage_timer.mark(4U);
 
         const bool use_structural_fastgs =
             fastgs_compatibility && compute_gradient;
@@ -5052,7 +5044,7 @@ struct OrderedAlphaTrainingContext::Impl {
             use_structural_fastgs
             ? build_fastgs_buckets(tile_count)
             : 0U;
-        stage_timer.mark(1U);
+        stage_timer.mark(5U);
         loss_sum.zero(1U);
         active_pixels.zero(1U);
         const dim3 render_threads(
@@ -5060,7 +5052,7 @@ struct OrderedAlphaTrainingContext::Impl {
         const dim3 render_blocks(
             device_camera.tiles_x, device_camera.tiles_y);
         render_alpha_tiles_kernel<<<render_blocks, render_threads>>>(
-            sorted_records.data(), sorted_record_indices.data(),
+            records.data(), sorted_record_indices.data(),
             tile_starts.data(), tile_ends.data(),
             camera.width, camera.height,
             fastgs_compatibility
@@ -5079,7 +5071,7 @@ struct OrderedAlphaTrainingContext::Impl {
         require_cuda(
             cudaGetLastError(),
             "launch persistent ordered renderer");
-        stage_timer.mark(2U);
+        stage_timer.mark(6U);
         const auto pixel_blocks = static_cast<std::uint32_t>(
             (pixel_count + block_size - 1U) / block_size);
         if (use_structural_fastgs) {
@@ -5248,7 +5240,7 @@ struct OrderedAlphaTrainingContext::Impl {
                 rgb.copy_to_host(prediction->data(), sample_count);
             }
         }
-        stage_timer.mark(3U);
+        stage_timer.mark(7U);
         if (compute_gradient) {
             if (use_structural_fastgs) {
                 if (mse_blend > 0.0F) {
@@ -5314,8 +5306,8 @@ struct OrderedAlphaTrainingContext::Impl {
                 backward_alpha_buckets_kernel<<<
                     fastgs_bucket_count,
                     fastgs_checkpoint_interval>>>(
-                    sorted_records.data(),
-                    sorted_depth_keys.data(),
+                    records.data(),
+                    depth_keys.data(),
                     projected_sh_basis.data(),
                     sorted_record_indices.data(),
                     tile_starts.data(), tile_ends.data(),
@@ -5343,7 +5335,7 @@ struct OrderedAlphaTrainingContext::Impl {
             } else {
                 backward_alpha_tiles_kernel<<<
                     render_blocks, render_threads>>>(
-                    sorted_records.data(), sorted_depth_keys.data(),
+                    records.data(), depth_keys.data(),
                     projected_sh_basis.data(),
                     sorted_record_indices.data(),
                     tile_starts.data(), tile_ends.data(),
@@ -5392,7 +5384,7 @@ struct OrderedAlphaTrainingContext::Impl {
             require_cuda(
                 cudaGetLastError(),
                 "launch persistent geometry backward");
-            stage_timer.mark(4U);
+            stage_timer.mark(8U);
             if (apply_update) {
                 beta_first_power *= 0.9F;
                 beta_second_power *= 0.999F;
@@ -6006,10 +5998,8 @@ struct OrderedAlphaTrainingContext::Impl {
     float beta_second_power = 1.0F;
     ReusableDeviceAllocation<Gaussian> gaussians;
     ReusableDeviceAllocation<DeviceProjectedRecord> records;
-    ReusableDeviceAllocation<DeviceProjectedRecord> sorted_records;
     ReusableDeviceAllocation<float> projected_sh_basis;
     ReusableDeviceAllocation<std::uint64_t> depth_keys;
-    ReusableDeviceAllocation<std::uint64_t> sorted_depth_keys;
     ReusableDeviceAllocation<std::uint64_t> pair_counts;
     ReusableDeviceAllocation<std::uint64_t> pair_offsets;
     ReusableDeviceAllocation<unsigned long long> visible_splats;

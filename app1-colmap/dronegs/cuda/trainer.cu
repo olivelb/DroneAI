@@ -1492,6 +1492,11 @@ TrainingMetrics train_ordered_mrnf(
         std::cout
             << "{\"event\":\"gpu_stage_telemetry\",\"step\":"
             << telemetry->step
+            << ",\"projection_ms\":" << telemetry->projection_ms
+            << ",\"record_sort_ms\":" << telemetry->record_sort_ms
+            << ",\"binning_ms\":" << telemetry->binning_ms
+            << ",\"pair_sort_ms\":" << telemetry->pair_sort_ms
+            << ",\"bucket_ms\":" << telemetry->bucket_ms
             << ",\"preprocess_ms\":" << telemetry->preprocess_ms
             << ",\"raster_ms\":" << telemetry->raster_ms
             << ",\"objective_ms\":" << telemetry->objective_ms
