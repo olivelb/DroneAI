@@ -52,6 +52,36 @@ At sampled iteration 999, dev.61 projection is about 4.05–4.11 ms and the
 complete GPU step about 38.32–38.50 ms. The remaining dominant fixed-topology
 cost is the optimizer, not projection.
 
+## Exact-commit 30,000-step HQ gate
+
+The exact commit `42ff1a58f9ccd0ac153f42ed97398045b98b8723` was cloned
+into a clean BIGZEN checkout, built in Release mode and passed all eight
+native CPU/CUDA CTests. Binary SHA-256 is
+`43b9765214a4b4b7ad4e28746e7c8cfe78646b7f24a626332195caed3a2b68de`.
+
+The full representative HQ schedule completed with projected-KNN
+initialization, capacity-targeted refinement through iteration 14,800, SH3,
+1,000 fixed-topology cooldown iterations, a 1,000-step MSE finish and exactly
+three checkpoints. It reached 5.1 M Gaussians and exited with code zero,
+without OOM, non-finite error or temporary checkpoint file.
+
+| Metric | dev.60 HQ | dev.61 HQ | Delta |
+| --- | ---: | ---: | ---: |
+| Native training | 941.939 s | 918.516 s | **-2.49%** |
+| Wall time | 953.345 s | 930.127 s | **-2.44%** |
+| Final loss | 0.0227742 | 0.0229636 | +0.0001894 |
+| Mean PSNR | 21.8675 dB | 21.8484 dB | -0.0191 dB |
+| Pixel-weighted PSNR | 21.1768 dB | 21.1649 dB | -0.0119 dB |
+| Mean SSIM | 0.479513 | 0.479068 | -0.000445 |
+| Pixel-weighted SSIM | 0.497511 | 0.497613 | +0.000102 |
+| Final Gaussians | 5,100,000 | 5,100,000 | 0 |
+| Checkpoints | 3 | 3 | 0 |
+
+The PSNR delta is small and the SSIM delta remains comfortably inside the
+established 0.002 long-run non-regression envelope. Visual inspection of a
+representative held-out prediction found no missing support, clipping or new
+boundary artifact; the dev.60 and dev.61 views are visually equivalent.
+
 ## Safety argument
 
 For the bounded raster profile, projected covariance eigenvalues are already
@@ -71,6 +101,8 @@ identical.
 
 The candidate remains on BIGZEN under
 `/home/olivier/benchmarks/dronegs-conservative-projection-culling-dev61-20260815`.
+The exact-commit HQ evidence remains under
+`/home/olivier/benchmarks/aerial-gcp-hq-conservative-projection-culling-dev61-42ff1a5-20260815/cell0-r2`.
 The dev.60 reference remains under
 `/home/olivier/benchmarks/dronegs-fused-fastgs-sh-adam-dev60-20260814`.
 No evidence was deleted.
@@ -80,5 +112,12 @@ No evidence was deleted.
 | A | `22c7f1f359aacfaaf0984d7fae20830e58f265af3af3e879019ef6f4d29da669` | `1674765fe23ed4134737327db085e3385f9174db64a4c426b811eaa02f0b7513` |
 | B | `6a492842ca1f3a7db9d74763d7848a89ae1f58139735271c51557e02db29f7b5` | `471c5dcfb3847b2ea581c3545cfdbec43fa1d1c3261631b99157c31af2a49835` |
 
-An exact-commit 30,000-step HQ gate is required before promotion because this
-change modifies the CUDA projection path.
+| Exact-commit HQ artifact | Size | SHA-256 |
+| --- | ---: | --- |
+| `point_cloud.ply` | 1,509,602,008 B | `43feae4adfa91daaa3dc5b9a81584673ee1f86c382d10f53bb4bac5b2547682d` |
+| `training.ckpt` | 4,630,800,710 B | `333928ffe3e7ea2a7f9ef93a77273a130c0e02226b253358e375a785a67e56f9` |
+| `trainer_run.json` | 7,285 B | `72c239b9699bb239dfdb83a05feb59bccd73c73381496db87d5335403b858c9a` |
+| `evaluation/metrics.csv` | 1,384 B | `e778176b8ed19a01b50338e7ec2a614b50d9f93e5cea60355f8260bf7fbee182` |
+
+Dev.61 passes its trainer promotion gate. Full-scene multi-cell aggregation,
+raster seams, density, CRS and GSD remain independent product gates.

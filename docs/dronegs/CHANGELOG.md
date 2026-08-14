@@ -16,6 +16,9 @@ This changelog covers the standalone Gaussian trainer project.
 - Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean training falls
   from 39.034 to 37.561 seconds (`-3.77%`) with equivalent loss, PSNR, SSIM
   and Gaussian population.
+- Complete the exact-commit 30,000-step HQ gate at 5.1 M Gaussians with three
+  checkpoints: native training improves `2.49%`, wall time `2.44%`, and held-
+  out PSNR/SSIM remain inside the established non-regression envelope.
 
 ## 0.5.0-dev.60 - Fused FastGS SH Adam
 

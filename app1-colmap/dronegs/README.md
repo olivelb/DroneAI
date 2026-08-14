@@ -12,7 +12,9 @@ when an opacity-one, maximum-axis conservative screen-space bound cannot
 overlap the image. The prefilter has no cross-iteration cache and therefore
 remains valid while position, rotation and scale keep changing. Two
 fixed-topology 5.1 M-Gaussian runs reduce mean training by 3.77% from dev.60
-with equivalent held-out quality. Version `0.5.0-dev.60` consumes raw FastGS appearance derivatives directly in
+with equivalent held-out quality. The exact-commit 30,000-step HQ gate reduces
+native training by 2.49% and wall time by 2.44%, with PSNR/SSIM inside the
+established non-regression envelope. Version `0.5.0-dev.60` consumes raw FastGS appearance derivatives directly in
 scalar and SH Adam, avoiding expanded gradient buffers and their per-frame
 clear. Two fixed-topology 5.1 M-Gaussian runs reduce mean training another
 7.74% from dev.59 with equivalent held-out quality. Version `0.5.0-dev.59`
