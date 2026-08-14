@@ -10,7 +10,9 @@ explicitly GPL-3.0-or-later CUDA translation units; see
 Version `0.5.0-dev.54` limits the required tile/depth radix sort to all depth
 bits plus the tile-identifier bits actually used by the current image. Two
 GAJAN Fast runs reduce mean training time by another 2.8% without a held-out
-quality regression. Dev.53 removes a redundant global depth sort before the
+quality regression. Two Normal runs complete in 73.306 seconds mean training,
+9.5% faster than dev.52, at approximately 5.0 GiB VRAM. Dev.53 removes a
+redundant global depth sort before the
 required tile/depth radix sort in persistent training, removes its two output
 buffers and decomposes preprocessing telemetry into five measurable substages.
 Two GAJAN Fast runs reduce mean wall time from 29.334 to 27.080 seconds while

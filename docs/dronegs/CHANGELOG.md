@@ -12,6 +12,10 @@ This changelog covers the standalone Gaussian trainer project.
   improve mean wall time from 27.080 to 26.554 seconds (`-1.9%`) and training
   from 23.814 to 23.140 seconds (`-2.8%`). The pair-sort stage improves by
   `21.5%`; held-out quality and topology remain inside run variation.
+- Repeat GAJAN Normal twice at 76.834 seconds mean wall and 73.306 seconds
+  mean training, `9.0%` and `9.5%` faster than dev.52. Mean held-out quality
+  remains inside the dev.50–dev.52 envelope and observed VRAM stays near
+  5.0 GiB.
 
 ## 0.5.0-dev.53 - Direct tile/depth ordering
 
