@@ -7,7 +7,11 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.55` updates each Gaussian's 14 scalar Adam parameters with
+Version `0.5.0-dev.56` reduces each fused L1/SSIM tile locally before updating
+the global loss and active-pixel counters. On GAJAN, two Fast runs reduce mean
+training time from 22.966 to 17.337 seconds and two Normal runs reduce it from
+68.203 to 55.307 seconds, without a held-out quality regression or a larger
+Gaussian population. Dev.55 updates each Gaussian's 14 scalar Adam parameters with
 independent CUDA work items and normalizes rotations in a following kernel.
 Two GAJAN Normal runs reduce mean training time from 73.306 to 68.203 seconds
 while preserving held-out quality and the approximately 5.0 GiB VRAM envelope.

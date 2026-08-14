@@ -2,6 +2,22 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.56 - Tile-local objective reduction
+
+- Replace per-active-pixel global L1-loss and active-count atomics in the
+  fused L1/SSIM forward pass with a shared-memory 16x16 tile reduction and one
+  pair of global atomics per non-empty tile. Objective equations, SSIM terms,
+  image gradients and optimizer behavior are unchanged.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including the existing
+  fused-objective reference and finite-difference gradient checks plus a new
+  non-multiple-of-16 partial-tile objective regression.
+- Repeat GAJAN Fast and Normal twice. Fast mean wall improves from 26.337 to
+  20.896 seconds (`-20.7%`) and training from 22.966 to 17.337 seconds
+  (`-24.5%`). Normal mean wall improves from 71.779 to 58.948 seconds
+  (`-17.9%`) and training from 68.203 to 55.307 seconds (`-18.9%`). Held-out
+  PSNR/SSIM remain inside retained variation and the Normal Gaussian population
+  is unchanged at 191,547 mean.
+
 ## 0.5.0-dev.55 - Component-parallel scalar Adam
 
 - Extend sampled GPU telemetry with objective-gradient, gradient-reset,
