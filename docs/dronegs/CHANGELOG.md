@@ -2,6 +2,23 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.62 - Subwarp scalar Adam
+
+- Lay out each Gaussian's 14 scalar Adam parameters in a padded 16-lane
+  subgroup, with two independent Gaussian groups per 32-lane warp.
+- Normalize the four updated quaternion components through subgroup shuffles
+  before the scalar optimizer kernel returns, removing the following
+  full-model normalization kernel and memory pass.
+- Preserve component-parallel update ordering, finite-value guards, identity
+  fallback and the existing telemetry implementation.
+- Pass all eight native CPU/CUDA CTests on RTX 3090.
+- Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean training falls
+  from 37.561 to 35.769 seconds (`-4.77%`) and wall time from 58.526 to
+  55.888 seconds (`-4.51%`), with equivalent loss, PSNR, SSIM and population.
+- Complete the exact-commit 30,000-step HQ gate at 5.1 M Gaussians with three
+  checkpoints: native training improves `3.71%`, wall time `3.66%`, and held-
+  out PSNR/SSIM remain inside the established non-regression envelope.
+
 ## 0.5.0-dev.61 - Conservative projection culling
 
 - Compute Gaussian scales before SH evaluation and reuse them in the exact

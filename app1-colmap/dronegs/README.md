@@ -7,6 +7,14 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.62` lays out scalar Adam as one 16-lane subgroup per
+Gaussian. The four quaternion lanes normalize their updated rotation through
+warp shuffles before the kernel returns, eliminating the following full-model
+normalization pass. Two fixed-topology 5.1 M-Gaussian runs reduce mean training
+by 4.77% and wall time by 4.51% from dev.61, with equivalent held-out quality.
+The exact-commit 30,000-step HQ gate reduces native training by another 3.71%
+and wall time by 3.66%; PSNR/SSIM remain inside the long-run non-regression
+envelope.
 Version `0.5.0-dev.61` rejects a Gaussian before SH and exact covariance only
 when an opacity-one, maximum-axis conservative screen-space bound cannot
 overlap the image. The prefilter has no cross-iteration cache and therefore

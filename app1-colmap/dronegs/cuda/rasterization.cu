@@ -39,6 +39,8 @@
  * before the global accumulators, without changing objective equations.
  * Dev.61 rejects only splats whose conservative maximum screen-space support
  * lies outside the image before evaluating SH and exact covariance.
+ * Dev.62 aligns scalar Adam on 16-lane Gaussian groups and normalizes each
+ * quaternion inside the same kernel, removing a full model-memory pass.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -94,6 +96,7 @@ constexpr float dev37_antialias_filter_variance_005 = 0.05F;
 constexpr float dev37_antialias_filter_variance_015 = 0.15F;
 constexpr float dev37_antialias_filter_variance_030 = 0.30F;
 constexpr std::uint32_t threads_per_block = 256U;
+constexpr std::size_t scalar_adam_lanes_per_gaussian = 16U;
 constexpr std::uint32_t ssim_window_radius = 5U;
 constexpr float l1_objective_weight = 0.8F;
 constexpr float dssim_objective_weight = 0.2F;
@@ -3963,18 +3966,18 @@ __global__ void ordered_scalar_adam_update_kernel(
     float rotation_epsilon,
     float minimum_log_scale, float maximum_log_scale,
     bool expand_fastgs_gradients) {
-    constexpr std::size_t parameters_per_gaussian = 14U;
+    constexpr std::size_t scalar_parameters = 14U;
     const std::size_t item_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t item_count =
-        gaussian_count * parameters_per_gaussian;
+        gaussian_count * scalar_adam_lanes_per_gaussian;
     if (item_index >= item_count) {
         return;
     }
     const std::size_t gaussian_index =
-        item_index / parameters_per_gaussian;
+        item_index / scalar_adam_lanes_per_gaussian;
     const std::size_t parameter =
-        item_index % parameters_per_gaussian;
+        item_index % scalar_adam_lanes_per_gaussian;
     auto& gaussian = gaussians[gaussian_index];
     if (parameter < 3U) {
         const auto offset = gaussian_index * 3U + parameter;
@@ -3984,18 +3987,14 @@ __global__ void ordered_scalar_adam_update_kernel(
             gradient, first_dc[offset], second_dc[offset],
             inverse_bias_first, inverse_bias_second,
             color_learning_rate, dc_epsilon);
-        return;
-    }
-    if (parameter == 3U) {
+    } else if (parameter == 3U) {
         gaussian.opacity_logit -= ordered_adam_delta(
             opacity_gradient[gaussian_index],
             first_opacity[gaussian_index],
             second_opacity[gaussian_index],
             inverse_bias_first, inverse_bias_second,
             opacity_learning_rate, opacity_epsilon);
-        return;
-    }
-    if (parameter < 7U) {
+    } else if (parameter < 7U) {
         const std::size_t axis = parameter - 4U;
         const auto offset = gaussian_index * 3U + axis;
         const float gradient = isfinite(xyz_gradient[offset])
@@ -4008,9 +4007,7 @@ __global__ void ordered_scalar_adam_update_kernel(
         if (isfinite(candidate)) {
             gaussian.xyz[axis] = candidate;
         }
-        return;
-    }
-    if (parameter < 10U) {
+    } else if (parameter < 10U) {
         const std::size_t axis = parameter - 7U;
         const auto offset = gaussian_index * 3U + axis;
         const float gradient = isfinite(log_scale_gradient[offset])
@@ -4027,46 +4024,51 @@ __global__ void ordered_scalar_adam_update_kernel(
                 maximum_log_scale,
                 fmaxf(minimum_log_scale, candidate));
         }
-        return;
+    } else if (parameter < scalar_parameters) {
+        const std::size_t component = parameter - 10U;
+        const auto offset = gaussian_index * 4U + component;
+        const float gradient = isfinite(rotation_gradient[offset])
+            ? rotation_gradient[offset]
+            : 0.0F;
+        const float candidate =
+            gaussian.rotation[component] - ordered_adam_delta(
+                gradient, first_rotation[offset], second_rotation[offset],
+                inverse_bias_first, inverse_bias_second,
+                rotation_learning_rate, rotation_epsilon);
+        if (isfinite(candidate)) {
+            gaussian.rotation[component] = candidate;
+        }
     }
-    const std::size_t component = parameter - 10U;
-    const auto offset = gaussian_index * 4U + component;
-    const float gradient = isfinite(rotation_gradient[offset])
-        ? rotation_gradient[offset]
-        : 0.0F;
-    const float candidate =
-        gaussian.rotation[component] - ordered_adam_delta(
-            gradient, first_rotation[offset], second_rotation[offset],
-            inverse_bias_first, inverse_bias_second,
-            rotation_learning_rate, rotation_epsilon);
-    if (isfinite(candidate)) {
-        gaussian.rotation[component] = candidate;
-    }
-}
 
-__global__ void normalize_ordered_rotations_kernel(
-    Gaussian* gaussians, std::size_t gaussian_count) {
-    const std::size_t gaussian_index =
-        static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (gaussian_index >= gaussian_count) {
-        return;
+    // Two padded Gaussian groups fit exactly in a warp.  Lanes 14 and 15 do
+    // no Adam update but participate in the barrier and quaternion reduction,
+    // allowing rotation normalization without a second model-memory pass.
+    const unsigned int subgroup_mask =
+        0xFFFFU << (threadIdx.x & 16U);
+    __syncwarp(subgroup_mask);
+    float rotation_value = 0.0F;
+    if (parameter >= 10U && parameter < scalar_parameters) {
+        rotation_value = gaussian.rotation[parameter - 10U];
     }
-    auto& rotation = gaussians[gaussian_index].rotation;
-    float norm_squared = 0.0F;
-    for (std::size_t component = 0U; component < 4U; ++component) {
-        norm_squared += rotation[component] * rotation[component];
+    const float local_squared = rotation_value * rotation_value;
+    float norm_squared = __shfl_sync(
+        subgroup_mask, local_squared, 10, 16);
+    norm_squared += __shfl_sync(
+        subgroup_mask, local_squared, 11, 16);
+    norm_squared += __shfl_sync(
+        subgroup_mask, local_squared, 12, 16);
+    norm_squared += __shfl_sync(
+        subgroup_mask, local_squared, 13, 16);
+    if (parameter < 10U || parameter >= scalar_parameters) {
+        return;
     }
     if (isfinite(norm_squared) && norm_squared > 1.0e-12F) {
-        const float inverse_norm = rsqrtf(norm_squared);
-        for (std::size_t component = 0U; component < 4U; ++component) {
-            rotation[component] *= inverse_norm;
-        }
+        gaussian.rotation[parameter - 10U] =
+            rotation_value * rsqrtf(norm_squared);
         return;
     }
-    rotation[0] = 1.0F;
-    rotation[1] = 0.0F;
-    rotation[2] = 0.0F;
-    rotation[3] = 0.0F;
+    gaussian.rotation[parameter - 10U] =
+        parameter == 10U ? 1.0F : 0.0F;
 }
 
 template <typename Key, typename Value>
@@ -5749,9 +5751,10 @@ struct OrderedAlphaTrainingContext::Impl {
                         cudaGetLastError(),
                         "launch telemetry ordered Adam");
                 } else {
-                    constexpr std::size_t scalar_parameters = 14U;
+                    static_assert(
+                        block_size % scalar_adam_lanes_per_gaussian == 0U);
                     const std::size_t scalar_item_count =
-                        gaussian_count * scalar_parameters;
+                        gaussian_count * scalar_adam_lanes_per_gaussian;
                     const auto scalar_blocks =
                         static_cast<std::uint32_t>(
                             (scalar_item_count + block_size - 1U) /
@@ -5783,12 +5786,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     require_cuda(
                         cudaGetLastError(),
                         "launch component-parallel ordered Adam");
-                    normalize_ordered_rotations_kernel<<<
-                        gaussian_blocks, block_size>>>(
-                        gaussians.data(), gaussian_count);
-                    require_cuda(
-                        cudaGetLastError(),
-                        "launch ordered rotation normalization");
                 }
                 stage_timer.mark(12U);
                 const std::uint32_t active_coefficients =

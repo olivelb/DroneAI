@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.61 conservative-projection-culling "
+            << "DroneGS 0.5.0-dev.62 subwarp-scalar-Adam "
                "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.61 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.62 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color crop-aware local/projected-KNN "
@@ -67,7 +67,9 @@ int main(int argc, char** argv) {
                      "L1/SSIM accumulators once per CUDA tile instead of "
                      "once per active pixel; dev61 rejects only splats whose "
                      "conservative screen-space support is entirely outside "
-                     "the image before evaluating SH and exact covariance.\n";
+                     "the image before evaluating SH and exact covariance; "
+                     "dev62 aligns scalar Adam on 16-lane groups and "
+                     "normalizes rotations in the same kernel.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;
