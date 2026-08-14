@@ -2,6 +2,33 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.60 - Fused FastGS SH Adam
+
+- Consume raw FastGS RGB/opacity derivatives directly in scalar and SH Adam,
+  applying DC scaling and SH basis products at the final point of use.
+- Avoid materializing and clearing expanded color-SH and opacity-SH gradient
+  buffers in structural FastGS training while preserving zero-gradient Adam
+  moment decay for invisible Gaussians.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including active SH3 and
+  invisible-appearance regression coverage.
+- Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean training improves
+  another `7.74%` from dev.59 and `16.68%` from dev.58. Aggregate wall improves
+  `4.07%` from dev.59 and `10.93%` from dev.58 with equivalent quality.
+
+## 0.5.0-dev.59 - Active-only FastGS SH expansion
+
+- Accumulate raw RGB and opacity derivatives once per source/tile in the
+  structural FastGS backward pass, then expand DC, color-SH and opacity-SH
+  gradients once per active Gaussian.
+- Skip the expansion for exact-zero appearance gradients, avoiding writes for
+  invisible Gaussians while preserving all geometry/refinement derivatives.
+- Pass all eight native CPU/CUDA CTests on RTX 3090, including an active-SH
+  update and invisible-appearance regression.
+- Repeat the fixed-topology 5.1 M-Gaussian cell twice: mean training falls
+  from 46.848 to 42.311 seconds (`-9.69%`), aggregate wall from 134.308 to
+  124.701 seconds (`-7.15%`) and sampled late raster backward from 14.664 to
+  9.485 ms (`-35.3%`) with equivalent loss, PSNR and SSIM.
+
 ## 0.5.0-dev.58 - Bounded asynchronous checkpoints
 
 - Capture a complete immutable GPU training snapshot before resuming updates,

@@ -1505,7 +1505,6 @@ __global__ void backward_alpha_tiles_kernel(
 __global__ void backward_alpha_buckets_kernel(
     const DeviceProjectedRecord* records,
     const std::uint64_t* sorted_depth_keys,
-    const float* projected_sh_basis,
     const std::uint32_t* record_indices,
     const std::uint64_t* tile_starts,
     const std::uint64_t* tile_ends,
@@ -1520,9 +1519,7 @@ __global__ void backward_alpha_buckets_kernel(
     const float* final_rgb,
     const float* image_gradient,
     float* dc_gradient,
-    float* sh_rest_gradient, std::uint32_t active_sh_degree,
     float* opacity_logit_gradient,
-    float* opacity_sh_gradient,
     float* projected_geometry_gradient,
     const float* densification_error_map,
     const float* densification_edge_map,
@@ -1812,41 +1809,15 @@ __global__ void backward_alpha_buckets_kernel(
     if (!valid_primitive) {
         return;
     }
-    const std::uint32_t active_coefficients =
-        (active_sh_degree + 1U) *
-            (active_sh_degree + 1U) -
-        1U;
     for (std::uint32_t channel = 0U;
          channel < 3U; ++channel) {
         atomicAdd(
             &dc_gradient[source * 3U + channel],
-            sh_c0 * dc_accum[channel]);
-        for (std::uint32_t coefficient = 0U;
-             coefficient < active_coefficients;
-             ++coefficient) {
-            atomicAdd(
-                &sh_rest_gradient[
-                    source * maximum_sh_rest_values +
-                    channel *
-                        maximum_sh_rest_coefficients +
-                    coefficient],
-                projected_sh_basis[
-                    source * 16U + coefficient + 1U] *
-                    dc_accum[channel]);
-        }
+            dc_accum[channel]);
     }
     atomicAdd(
         &opacity_logit_gradient[source],
         opacity_accum);
-    for (std::uint32_t coefficient = 0U;
-         coefficient < active_coefficients; ++coefficient) {
-        atomicAdd(
-            &opacity_sh_gradient[
-                source * maximum_opacity_sh_coefficients + coefficient],
-            projected_sh_basis[
-                source * 16U + coefficient + 1U] *
-                opacity_accum);
-    }
     for (std::uint32_t component = 0U;
          component < 6U; ++component) {
         atomicAdd(
@@ -3538,12 +3509,16 @@ __global__ void ordered_sh_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
     const float* sh_rest_gradient,
     const float* opacity_sh_gradient,
+    const float* dc_gradient,
+    const float* opacity_gradient,
+    const float* projected_sh_basis,
     float* first_sh_rest, float* second_sh_rest,
     float* first_opacity_sh, float* second_opacity_sh,
     float inverse_bias_first, float inverse_bias_second,
     float sh_rest_learning_rate, float opacity_sh_learning_rate,
     float dc_epsilon, float opacity_epsilon,
-    std::uint32_t active_coefficients) {
+    std::uint32_t active_coefficients,
+    bool expand_fastgs_gradients) {
     if (active_coefficients == 0U) {
         return;
     }
@@ -3567,7 +3542,11 @@ __global__ void ordered_sh_adam_update_kernel(
         const auto offset =
             gaussian_index * maximum_sh_rest_values +
             channel * maximum_sh_rest_coefficients + coefficient;
-        const float gradient = sh_rest_gradient[offset];
+        const float gradient = expand_fastgs_gradients
+            ? projected_sh_basis[
+                  gaussian_index * 16U + coefficient + 1U] *
+                dc_gradient[gaussian_index * 3U + channel]
+            : sh_rest_gradient[offset];
         first_sh_rest[offset] =
             beta_first * first_sh_rest[offset] +
             (1.0F - beta_first) * gradient;
@@ -3585,7 +3564,11 @@ __global__ void ordered_sh_adam_update_kernel(
     const std::size_t coefficient = local_index - color_item_count;
     const auto offset =
         gaussian_index * maximum_opacity_sh_coefficients + coefficient;
-    const float gradient = opacity_sh_gradient[offset];
+    const float gradient = expand_fastgs_gradients
+        ? projected_sh_basis[
+              gaussian_index * 16U + coefficient + 1U] *
+            opacity_gradient[gaussian_index]
+        : opacity_sh_gradient[offset];
     first_opacity_sh[offset] =
         beta_first * first_opacity_sh[offset] +
         (1.0F - beta_first) * gradient;
@@ -3618,7 +3601,8 @@ __global__ void ordered_adam_update_kernel(
     float rotation_epsilon,
     float minimum_log_scale, float maximum_log_scale,
     DeviceOptimizerTelemetry* telemetry,
-    std::size_t telemetry_stride) {
+    std::size_t telemetry_stride,
+    bool expand_fastgs_gradients) {
     const std::size_t gaussian_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     if (gaussian_index >= gaussian_count) {
@@ -3641,7 +3625,8 @@ __global__ void ordered_adam_update_kernel(
     }
     for (std::size_t channel = 0U; channel < 3U; ++channel) {
         const auto offset = gaussian_index * 3U + channel;
-        const float gradient = dc_gradient[offset];
+        const float gradient = dc_gradient[offset] *
+            (expand_fastgs_gradients ? sh_c0 : 1.0F);
         const float original = gaussians[gaussian_index].dc[channel];
         first_dc[offset] =
             beta_first * first_dc[offset] +
@@ -3876,7 +3861,8 @@ __global__ void ordered_scalar_adam_update_kernel(
     float position_epsilon, float dc_epsilon,
     float opacity_epsilon, float scale_epsilon,
     float rotation_epsilon,
-    float minimum_log_scale, float maximum_log_scale) {
+    float minimum_log_scale, float maximum_log_scale,
+    bool expand_fastgs_gradients) {
     constexpr std::size_t parameters_per_gaussian = 14U;
     const std::size_t item_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -3892,8 +3878,10 @@ __global__ void ordered_scalar_adam_update_kernel(
     auto& gaussian = gaussians[gaussian_index];
     if (parameter < 3U) {
         const auto offset = gaussian_index * 3U + parameter;
+        const float gradient = dc_gradient[offset] *
+            (expand_fastgs_gradients ? sh_c0 : 1.0F);
         gaussian.dc[parameter] -= ordered_adam_delta(
-            dc_gradient[offset], first_dc[offset], second_dc[offset],
+            gradient, first_dc[offset], second_dc[offset],
             inverse_bias_first, inverse_bias_second,
             color_learning_rate, dc_epsilon);
         return;
@@ -5480,11 +5468,13 @@ struct OrderedAlphaTrainingContext::Impl {
                     : "launch persistent ordered objective gradient");
             stage_timer.mark(8U);
             dc_gradient.zero(gaussian_count * 3U);
-            sh_rest_gradient.zero(
-                gaussian_count * maximum_sh_rest_values);
             opacity_gradient.zero(gaussian_count);
-            opacity_sh_gradient.zero(
-                gaussian_count * maximum_opacity_sh_coefficients);
+            if (!use_structural_fastgs) {
+                sh_rest_gradient.zero(
+                    gaussian_count * maximum_sh_rest_values);
+                opacity_sh_gradient.zero(
+                    gaussian_count * maximum_opacity_sh_coefficients);
+            }
             projected_geometry_gradient.zero(gaussian_count * 6U);
             if (collect_refinement_statistics) {
                 frame_refinement_weight.zero(gaussian_count);
@@ -5502,7 +5492,6 @@ struct OrderedAlphaTrainingContext::Impl {
                     fastgs_checkpoint_interval>>>(
                     records.data(),
                     depth_keys.data(),
-                    projected_sh_basis.data(),
                     sorted_record_indices.data(),
                     tile_starts.data(), tile_ends.data(),
                     bucket_offsets.data(),
@@ -5515,10 +5504,7 @@ struct OrderedAlphaTrainingContext::Impl {
                     fastgs_maximum_fragment_alpha,
                     rgb.data(), image_gradient.data(),
                     dc_gradient.data(),
-                    sh_rest_gradient.data(),
-                    active_sh_degree,
                     opacity_gradient.data(),
-                    opacity_sh_gradient.data(),
                     projected_geometry_gradient.data(),
                     collect_refinement_statistics
                         ? densification_error_map.data()
@@ -5538,6 +5524,9 @@ struct OrderedAlphaTrainingContext::Impl {
                     collect_refinement_statistics
                         ? frame_abs_projected_gradient.data()
                         : nullptr);
+                require_cuda(
+                    cudaGetLastError(),
+                    "launch FastGS bucket backward");
             } else {
                 backward_alpha_tiles_kernel<<<
                     render_blocks, render_threads>>>(
@@ -5572,10 +5561,10 @@ struct OrderedAlphaTrainingContext::Impl {
                     collect_refinement_statistics
                         ? frame_abs_projected_gradient.data()
                         : nullptr);
+                require_cuda(
+                    cudaGetLastError(),
+                    "launch bounded ordered backward");
             }
-            require_cuda(
-                cudaGetLastError(),
-                "launch persistent ordered backward");
             stage_timer.mark(10U);
             if (collect_refinement_statistics) {
                 collect_refinement_statistics_kernel<<<
@@ -5654,7 +5643,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         learning_rates.scale_epsilon,
                         learning_rates.rotation_epsilon,
                         minimum_log_scale, maximum_log_scale,
-                        optimizer_telemetry.data(), telemetry_stride);
+                        optimizer_telemetry.data(), telemetry_stride,
+                        use_structural_fastgs);
                     require_cuda(
                         cudaGetLastError(),
                         "launch telemetry ordered Adam");
@@ -5688,7 +5678,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         learning_rates.opacity_epsilon,
                         learning_rates.scale_epsilon,
                         learning_rates.rotation_epsilon,
-                        minimum_log_scale, maximum_log_scale);
+                        minimum_log_scale, maximum_log_scale,
+                        use_structural_fastgs);
                     require_cuda(
                         cudaGetLastError(),
                         "launch component-parallel ordered Adam");
@@ -5714,6 +5705,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         gaussians.data(), gaussian_count,
                         sh_rest_gradient.data(),
                         opacity_sh_gradient.data(),
+                        dc_gradient.data(), opacity_gradient.data(),
+                        projected_sh_basis.data(),
                         first_sh_rest.data(), second_sh_rest.data(),
                         first_opacity_sh.data(),
                         second_opacity_sh.data(),
@@ -5722,7 +5715,8 @@ struct OrderedAlphaTrainingContext::Impl {
                         learning_rates.opacity / 20.0F,
                         learning_rates.dc_epsilon,
                         learning_rates.opacity_epsilon,
-                        active_coefficients);
+                        active_coefficients,
+                        use_structural_fastgs);
                     require_cuda(
                         cudaGetLastError(),
                         "launch coefficient-parallel ordered SH Adam");
