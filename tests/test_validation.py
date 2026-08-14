@@ -3,6 +3,11 @@ import json
 
 import pytest
 
+from shared.dronegs_profile import (
+    bounded_checkpoint_interval,
+    checkpoint_count_limit,
+    checkpoint_interval_for_iterations,
+)
 from shared.pipeline_params import (
     PARAMETER_METADATA,
     PIPELINE_DEFAULTS,
@@ -20,6 +25,30 @@ from shared.validation import (
 
 MissionParams = importlib.import_module("app4-dashboard.api.schemas").MissionParams
 AnalysisCreate = importlib.import_module("app4-dashboard.api.map_schemas").AnalysisCreate
+
+
+@pytest.mark.parametrize(
+    ("iterations", "expected_count", "expected_interval"),
+    [
+        (7_500, 1, 7_500),
+        (15_000, 2, 7_500),
+        (30_000, 3, 10_000),
+    ],
+)
+def test_checkpoint_budget_matches_standard_training_profiles(
+    iterations,
+    expected_count,
+    expected_interval,
+):
+    assert checkpoint_count_limit(iterations) == expected_count
+    assert checkpoint_interval_for_iterations(iterations) == expected_interval
+    assert iterations // expected_interval == expected_count
+
+
+def test_checkpoint_budget_bounds_operator_interval_but_allows_disable():
+    assert bounded_checkpoint_interval(30_000, 2_000) == 10_000
+    assert bounded_checkpoint_interval(30_000, 15_000) == 15_000
+    assert bounded_checkpoint_interval(30_000, 0) == 0
 
 
 @pytest.mark.parametrize("value", ["../tmp", "/tmp/foo", "foo/bar", "foo\\bar", ".", "", "ab"])
@@ -239,7 +268,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["gs_topology_cooldown"] == "1000"
     assert params["gs_photometric_finish"] == "1000"
     assert params["gs_photometric_mse_percent"] == "100"
-    assert params["gs_checkpoint_every"] == "2000"
+    assert params["gs_checkpoint_every"] == "7500"
     assert params["gs_test_every"] == "8"
     assert params["gs_canary_min_psnr"] == "18.0"
     assert params["gs_canary_min_ssim"] == "0.25"

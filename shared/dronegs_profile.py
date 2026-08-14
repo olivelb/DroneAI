@@ -10,6 +10,34 @@ DRONEGS_PRODUCTION_PROFILE_ID = "DRONEGS_PRODUCTION_PROFILE_V1"
 DRONEGS_QUALIFICATION_POLICY_ID = "DRONEGS_QUALIFICATION_POLICY_V1"
 
 
+def checkpoint_count_limit(iterations: int) -> int:
+    """Return the operational checkpoint budget for a training run."""
+
+    if iterations <= 0:
+        raise ValueError("iterations must be positive")
+    if iterations <= 7_500:
+        return 1
+    if iterations <= 15_000:
+        return 2
+    return 3
+
+
+def checkpoint_interval_for_iterations(iterations: int) -> int:
+    """Return an interval that never exceeds the checkpoint budget."""
+
+    return max(1, iterations // checkpoint_count_limit(iterations))
+
+
+def bounded_checkpoint_interval(iterations: int, requested: int) -> int:
+    """Keep an explicit non-zero cadence inside the operational budget."""
+
+    if requested < 0:
+        raise ValueError("checkpoint interval must not be negative")
+    if requested == 0:
+        return 0
+    return max(requested, checkpoint_interval_for_iterations(iterations))
+
+
 @dataclass(frozen=True)
 class DroneGSProductionProfile:
     """Immutable parameters accepted by the Albagnac dev.45 benchmark."""
@@ -30,7 +58,7 @@ class DroneGSProductionProfile:
     topology_cooldown: int = 1_000
     photometric_finish: int = 1_000
     photometric_mse_percent: int = 100
-    checkpoint_every: int = 2_000
+    checkpoint_every: int = 7_500
     test_every: int = 8
     test_split: str = "modulo"
     test_guard_percent: int = 0

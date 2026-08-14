@@ -82,7 +82,7 @@ def test_dronegs_adapter_uses_canonical_contract():
     assert command[command.index("--profile-id") + 1] == "test-profile"
     assert command[command.index("--dataset-fingerprint") + 1] == ("test-dataset:sha256:fixture")
     assert command[command.index("--run-manifest") + 1] == "/output/trainer_run.json"
-    assert command[command.index("--checkpoint-every") + 1] == "2000"
+    assert command[command.index("--checkpoint-every") + 1] == "7500"
     assert command[command.index("--checkpoint-path") + 1] == ("/output/training.ckpt")
     assert command[command.index("--test-split") + 1] == "modulo"
     assert command[command.index("--test-guard-percent") + 1] == "0"

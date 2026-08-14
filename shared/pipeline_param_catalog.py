@@ -1056,7 +1056,7 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_checkpoint_every": {
         "label": "Checkpoint Interval",
-        "description": "Save a resumable training checkpoint every N iterations; 0 disables it.",
+        "description": "Save a resumable checkpoint every N iterations; DroneAI raises smaller values to cap standard runs at 1/2/3 saves (7.5k/15k/30k). Zero disables it.",
         "type": "int",
         "group": "Orthomosaic",
         "min": 0,

@@ -229,6 +229,22 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertEqual(config.qualification_policy_id, "custom")
         self.assertEqual(len(warnings), 1)
 
+    def test_checkpoint_interval_is_bounded_without_changing_training_identity(self):
+        profile = quality_profile("high-quality-v4")
+        config, warnings = dronegs_config.resolve_dronegs_config(
+            {
+                **profile.parameters,
+                "gs_checkpoint_every": "2000",
+            },
+            facade_mode=False,
+            data_factor=int(profile.parameters["gs_data_factor"]),
+        )
+
+        self.assertEqual(config.checkpoint_every, 10_000)
+        self.assertEqual(config.profile_id, "high-quality-v4")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("recovery budget", warnings[0])
+
     def test_projected_initialization_overrides_apply_to_map_and_facade(self):
         params = {
             **quality_profile("normal-v3").parameters,
