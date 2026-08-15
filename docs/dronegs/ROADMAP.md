@@ -283,6 +283,13 @@ but not yet a held-out image-quality baseline. Full details are in
 | Orthomosaic useful coverage | no regression |
 | Labelled downstream metric | no regression |
 
+An isolated performance optimization is promoted only when repeated
+end-to-end measurements improve the relevant workload by at least `2%`.
+A smaller gain may be accepted only when the change also delivers a material,
+documented architectural simplification or removes a correctness/maintenance
+risk. A faster substage alone is insufficient when full-run time does not meet
+this threshold.
+
 Large-scene targets are added after selecting at least one representative
 dataset with 1,000 or more images. Reports normalize throughput by image count,
 source pixels, iterations, and Gaussian count.
