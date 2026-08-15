@@ -2,6 +2,15 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.65 - Coefficient-centric SH Adam
+
+- Assign one active SH coefficient to each CUDA lane and update the matching
+  RGB and opacity-SH parameters together.
+- Reuse the projected SH basis value and power-of-two Gaussian index across
+  four independent Adam updates while preserving equations, moments,
+  parameter order, persistent VRAM and checkpoint format v5.
+- Qualification pending on the RTX 3090 exact short gate.
+
 ## 0.5.0-dev.64 - Multiwarp FastGS backward blocks
 
 - Keep one 32-thread NVIDIA warp responsible for one FastGS backward bucket

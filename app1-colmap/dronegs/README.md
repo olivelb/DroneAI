@@ -7,6 +7,12 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
+Version `0.5.0-dev.65` assigns one active SH coefficient to each CUDA lane and
+updates its RGB and opacity-SH Adam parameters together. This reuses the
+projected basis value and power-of-two Gaussian index while preserving every
+parameter update equation and checkpoint format. Performance qualification is
+pending.
+
 Version `0.5.0-dev.64` schedules four independent FastGS backward buckets per
 CUDA block while retaining one 32-thread NVIDIA warp per bucket. The
 per-bucket traversal, checkpoint state and derivative equations are unchanged,

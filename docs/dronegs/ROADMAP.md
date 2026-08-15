@@ -21,7 +21,7 @@ Each completed phase has one focused commit and an annotated
 ## Current status
 
 - Completed tagged phase: Phase 3.
-- Current development version: 0.5.0-dev.64.
+- Current development version: 0.5.0-dev.65.
 - Production Gaussian backend: DroneGS. No LichtFeld executable, adapter,
   image, checkout or vcpkg build remains in the pipeline.
 - The Albagnac 15,000-step gate passed on the frozen 172-view evaluator:
