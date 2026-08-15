@@ -2,6 +2,28 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.64 - Multiwarp FastGS backward blocks
+
+- Keep one 32-thread NVIDIA warp responsible for one FastGS backward bucket
+  while scheduling four independent buckets per CUDA block with disjoint
+  shared checkpoint state and portable CUDA warp primitives.
+- Raise the RTX 3090 kernel's theoretical resident occupancy from 16 to 24
+  warps per SM without changing bucket traversal, derivative equations or
+  persistent VRAM. Performance remains qualified per GPU architecture.
+- Pass all eight native CPU/CUDA CTests on RTX 3090.
+- Pass all eight native CPU/CUDA CTests on RTX 4070 Laptop and build the
+  portable CUDA target set from Turing through Blackwell. Performance remains
+  measured only on RTX 3090.
+- Repeat the fixed-topology 5.1 M-Gaussian gate twice: sampled iteration-999
+  raster backward falls from 8.36/8.28 to 7.27/7.33 ms, mean native training
+  falls from 34.912 to 34.028 seconds (`-2.53%`) and mean wall time falls from
+  55.602 to 54.545 seconds (`-1.90%`), with equivalent loss, PSNR, SSIM and
+  population.
+- Complete two exact-commit 30,000-step HQ runs at 5.1 M Gaussians: mean
+  native training falls `1.34%`, mean wall time falls `1.32%`, mean PSNR and
+  pixel-weighted SSIM improve, and the repeated mean SSIM delta is
+  `-0.001618`. The existing `0.002` quality threshold remains unchanged.
+
 ## 0.5.0-dev.63 - Interleaved SH Adam moments
 
 - Specialize the coefficient-parallel SH Adam kernel for the three supported
