@@ -14,7 +14,9 @@ unchanged; checkpoint capture keeps the interleaved snapshot directly and
 serialization/reload converts in bounded chunks. Two fixed-topology 5.1
 M-Gaussian runs reduce mean native training by 4.38% from dev.62 while sampled
 SH Adam falls from about 12.49 to 10.98 ms with equivalent held-out quality.
-The exact-commit 30,000-step HQ gate remains required before promotion.
+The exact-commit 30,000-step HQ gate reduces native training by 2.66% and wall
+time by 2.71%; aggregate PSNR and SSIM improve and weighted SSIM remains inside
+the established long-run non-regression envelope.
 Version `0.5.0-dev.62` lays out scalar Adam as one 16-lane subgroup per
 Gaussian. The four quaternion lanes normalize their updated rotation through
 warp shuffles before the kernel returns, eliminating the following full-model

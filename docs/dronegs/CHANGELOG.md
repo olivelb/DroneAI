@@ -18,7 +18,10 @@ This changelog covers the standalone Gaussian trainer project.
 - Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean native training
   falls from 35.769 to 34.203 seconds (`-4.38%`) and sampled SH Adam from
   about 12.49 to 10.98 ms, with equivalent loss, PSNR, SSIM and population.
-- Require an exact-commit 30,000-step HQ gate before promotion.
+- Pass the exact-commit 30,000-step 5.1 M-Gaussian HQ gate: native training
+  falls from 884.450 to 860.926 seconds (`-2.66%`) and wall time from 896.056
+  to 871.779 seconds (`-2.71%`). Mean PSNR and SSIM improve while
+  pixel-weighted SSIM changes by only `-0.000162`.
 
 ## 0.5.0-dev.62 - Subwarp scalar Adam
 
