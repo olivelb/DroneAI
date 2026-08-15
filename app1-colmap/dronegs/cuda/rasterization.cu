@@ -93,12 +93,16 @@ constexpr float fastgs_maximum_fragment_alpha = 0.999F;
 constexpr float fastgs_maximum_support = 3.33F;
 constexpr float conservative_radius_margin = 1.0F;
 constexpr std::uint32_t fastgs_checkpoint_interval = 32U;
+constexpr std::uint32_t fastgs_backward_warps_per_block = 4U;
 constexpr float fastgs_checkpoint_color_scale = 255.0F / 4.0F;
 constexpr float fastgs_checkpoint_color_inverse_scale = 4.0F / 255.0F;
 constexpr float dev37_antialias_filter_variance_005 = 0.05F;
 constexpr float dev37_antialias_filter_variance_015 = 0.15F;
 constexpr float dev37_antialias_filter_variance_030 = 0.30F;
 constexpr std::uint32_t threads_per_block = 256U;
+static_assert(
+    fastgs_backward_warps_per_block * fastgs_checkpoint_interval <=
+    threads_per_block);
 constexpr std::size_t scalar_adam_lanes_per_gaussian = 16U;
 static_assert(sizeof(float2) == 2U * sizeof(float));
 constexpr std::uint32_t ssim_window_radius = 5U;
@@ -1638,9 +1642,13 @@ __global__ void backward_alpha_buckets_kernel(
     float* frame_visibility_weight,
     float* frame_edge_weight,
     float* frame_abs_projected_gradient) {
-    const std::uint32_t bucket = blockIdx.x;
-    const std::uint32_t lane = threadIdx.x;
-    if (bucket >= bucket_count || lane >= fastgs_checkpoint_interval) {
+    const std::uint32_t warp =
+        threadIdx.x / fastgs_checkpoint_interval;
+    const std::uint32_t lane =
+        threadIdx.x % fastgs_checkpoint_interval;
+    const std::uint32_t bucket =
+        blockIdx.x * fastgs_backward_warps_per_block + warp;
+    if (bucket >= bucket_count) {
         return;
     }
 
@@ -1686,10 +1694,14 @@ __global__ void backward_alpha_buckets_kernel(
     const std::uint32_t start_x = tile_x * alpha_tile_width;
     const std::uint32_t start_y = tile_y * alpha_tile_height;
 
-    __shared__ std::uint32_t collected_last_contributor[32];
-    __shared__ float collected_color_after[32][3];
-    __shared__ float collected_transmittance[32];
-    __shared__ float collected_gradient[32][3];
+    __shared__ std::uint32_t collected_last_contributor[
+        fastgs_backward_warps_per_block][fastgs_checkpoint_interval];
+    __shared__ float collected_color_after[
+        fastgs_backward_warps_per_block][fastgs_checkpoint_interval][3];
+    __shared__ float collected_transmittance[
+        fastgs_backward_warps_per_block][fastgs_checkpoint_interval];
+    __shared__ float collected_gradient[
+        fastgs_backward_warps_per_block][fastgs_checkpoint_interval][3];
 
     std::uint32_t last_contributor = 0U;
     float color_after[3]{0.0F, 0.0F, 0.0F};
@@ -1735,21 +1747,21 @@ __global__ void backward_alpha_buckets_kernel(
                 static_cast<float>((packed >> 16U) & 0xffU) *
                     fastgs_checkpoint_color_inverse_scale,
             };
-            collected_last_contributor[lane] =
+            collected_last_contributor[warp][lane] =
                 pixel_in_bounds
                 ? pixel_contributions[pixel]
                 : 0U;
-            collected_transmittance[lane] =
+            collected_transmittance[warp][lane] =
                 static_cast<float>((packed >> 24U) & 0xffU) /
                 255.0F;
             for (std::uint32_t channel = 0U;
                  channel < 3U; ++channel) {
-                collected_color_after[lane][channel] =
+                collected_color_after[warp][lane][channel] =
                     pixel_in_bounds
                     ? final_rgb[pixel * 3U + channel] -
                           checkpoint_color[channel]
                     : 0.0F;
-                collected_gradient[lane][channel] =
+                collected_gradient[warp][lane][channel] =
                     pixel_in_bounds
                     ? image_gradient[pixel * 3U + channel]
                     : 0.0F;
@@ -1793,17 +1805,17 @@ __global__ void backward_alpha_buckets_kernel(
                 static_cast<std::uint32_t>(diagonal) %
                 fastgs_checkpoint_interval;
             last_contributor =
-                collected_last_contributor[shared_index];
+                collected_last_contributor[warp][shared_index];
             transmittance =
-                collected_transmittance[shared_index];
+                collected_transmittance[warp][shared_index];
             for (std::uint32_t channel = 0U;
                  channel < 3U; ++channel) {
                 color_after[channel] =
                     collected_color_after[
-                        shared_index][channel];
+                        warp][shared_index][channel];
                 upstream[channel] =
                     collected_gradient[
-                        shared_index][channel];
+                        warp][shared_index][channel];
             }
         }
 
@@ -5587,9 +5599,18 @@ struct OrderedAlphaTrainingContext::Impl {
             rotation_gradient.zero(gaussian_count * 4U);
             stage_timer.mark(9U);
             if (use_structural_fastgs) {
+                const auto fastgs_backward_blocks =
+                    fastgs_bucket_count /
+                        fastgs_backward_warps_per_block +
+                    (fastgs_bucket_count %
+                             fastgs_backward_warps_per_block !=
+                         0U
+                        ? 1U
+                        : 0U);
                 backward_alpha_buckets_kernel<<<
-                    fastgs_bucket_count,
-                    fastgs_checkpoint_interval>>>(
+                    fastgs_backward_blocks,
+                    fastgs_backward_warps_per_block *
+                        fastgs_checkpoint_interval>>>(
                     records.data(),
                     depth_keys.data(),
                     sorted_record_indices.data(),
