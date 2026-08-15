@@ -44,6 +44,8 @@
  * Dev.63 specializes SH Adam by active degree and interleaves each parameter's
  * first/second moments for one vector load/store while retaining checkpoint
  * format v5.
+ * Dev.64 schedules four independent FastGS backward buckets per CUDA block,
+ * raising resident warp occupancy without changing per-bucket traversal.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -93,6 +95,9 @@ constexpr float fastgs_maximum_fragment_alpha = 0.999F;
 constexpr float fastgs_maximum_support = 3.33F;
 constexpr float conservative_radius_margin = 1.0F;
 constexpr std::uint32_t fastgs_checkpoint_interval = 32U;
+// One portable NVIDIA warp owns one bucket. Grouping independent warps avoids
+// the resident-block limit of the former one-warp launch geometry; no
+// architecture-specific instruction or warp-width assumption is added here.
 constexpr std::uint32_t fastgs_backward_warps_per_block = 4U;
 constexpr float fastgs_checkpoint_color_scale = 255.0F / 4.0F;
 constexpr float fastgs_checkpoint_color_inverse_scale = 4.0F / 255.0F;

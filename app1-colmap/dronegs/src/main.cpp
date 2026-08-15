@@ -20,7 +20,7 @@ int main(int argc, char** argv) {
     }
     if (argc == 2 && std::string_view(argv[1]) == "--version") {
         std::cout
-            << "DroneGS 0.5.0-dev.63 interleaved-SH-Adam "
+            << "DroneGS 0.5.0-dev.64 multiwarp-FastGS-backward "
                "crop-aware-scale portable-CUDA "
                "shared-backward MRNF prototype\n";
         return 0;
@@ -33,7 +33,7 @@ int main(int argc, char** argv) {
         const dronegs::RunMeasurements initial{
             .started_at = dronegs::utc_timestamp(),
         };
-        std::cerr << "DroneGS 0.5.0-dev.63 uses an independent "
+        std::cerr << "DroneGS 0.5.0-dev.64 uses an independent "
                      "bounded/FastGS raster profile plus compensated-antialias "
                      "AbsGrad-guided "
                      "extended-color crop-aware local/projected-KNN "
@@ -71,7 +71,10 @@ int main(int argc, char** argv) {
                      "dev62 aligns scalar Adam on 16-lane groups and "
                      "normalizes rotations in the same kernel; dev63 "
                      "specializes SH Adam by active degree and interleaves "
-                     "its moment pairs without changing checkpoint v5.\n";
+                     "its moment pairs without changing checkpoint v5; "
+                     "dev64 schedules four independent FastGS backward "
+                     "buckets per CUDA block without changing bucket "
+                     "traversal.\n";
         std::cout << "{\"event\":\"progress\",\"iteration\":0,"
                      "\"iterations\":" << options.iterations
                   << ",\"loss\":0.0,\"gaussians\":0}\n" << std::flush;

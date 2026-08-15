@@ -3,7 +3,7 @@
 Status: dev.48 sole production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.63
+Project version: 0.5.0-dev.64
 
 ## Decision
 
@@ -19,6 +19,13 @@ full-state checkpoint/resume plus held-out deployment canaries. Dev.47 adds
 strict production-profile/dataset/artifact identity, checkpoint V3 integrity
 and spatial-block evaluation. LichtFeld is retained only in historical
 comparisons and the GPL provenance record.
+
+Dev.64 keeps the portable FastGS rule that one 32-thread NVIDIA warp owns one
+backward bucket, but schedules four independent bucket warps in each CUDA
+block. The warps have disjoint shared-memory checkpoint state and preserve the
+original per-bucket traversal and atomic derivative accumulation. The code
+uses no architecture-specific intrinsic; performance claims remain qualified
+per target GPU architecture.
 
 Dev.60 consumes the raw FastGS appearance derivatives directly in the scalar
 and coefficient-parallel Adam kernels. DC scaling and SH basis expansion are

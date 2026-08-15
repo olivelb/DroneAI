@@ -7,7 +7,15 @@ edge-guidance and optimizer-schedule behavior from pinned LichtFeld inside two
 explicitly GPL-3.0-or-later CUDA translation units; see
 `docs/dronegs/GPL_COMPONENTS.md`.
 
-Version `0.5.0-dev.63` specializes SH Adam for the only valid active
+Version `0.5.0-dev.64` schedules four independent FastGS backward buckets per
+CUDA block while retaining one 32-thread NVIDIA warp per bucket. The
+per-bucket traversal, checkpoint state and derivative equations are unchanged,
+and the launch uses only portable CUDA warp primitives supported by the
+project's Turing-through-Blackwell targets. On RTX 3090, two fixed-topology
+5.1 M-Gaussian runs reduce sampled late backward by about 12% and mean native
+training by 2.53%, with equivalent held-out quality. Performance on other GPU
+architectures remains a separate qualification. Version `0.5.0-dev.63`
+specializes SH Adam for the only valid active
 coefficient counts (3, 8 and 15) and stores every SH parameter's first and
 second moments as one `float2`. Runtime bytes and checkpoint format v5 remain
 unchanged; checkpoint capture keeps the interleaved snapshot directly and
