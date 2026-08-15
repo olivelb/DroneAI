@@ -41,6 +41,9 @@
  * lies outside the image before evaluating SH and exact covariance.
  * Dev.62 aligns scalar Adam on 16-lane Gaussian groups and normalizes each
  * quaternion inside the same kernel, removing a full model-memory pass.
+ * Dev.63 specializes SH Adam by active degree and interleaves each parameter's
+ * first/second moments for one vector load/store while retaining checkpoint
+ * format v5.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -97,6 +100,7 @@ constexpr float dev37_antialias_filter_variance_015 = 0.15F;
 constexpr float dev37_antialias_filter_variance_030 = 0.30F;
 constexpr std::uint32_t threads_per_block = 256U;
 constexpr std::size_t scalar_adam_lanes_per_gaussian = 16U;
+static_assert(sizeof(float2) == 2U * sizeof(float));
 constexpr std::uint32_t ssim_window_radius = 5U;
 constexpr float l1_objective_weight = 0.8F;
 constexpr float dssim_objective_weight = 0.2F;
@@ -359,14 +363,18 @@ public:
             "zero reusable alpha buffer");
     }
 
-    void copy_from_host(const T* source, std::size_t count) {
-        if (count > capacity_) {
+    void copy_from_host(
+        const T* source, std::size_t count,
+        std::size_t destination_offset = 0U) {
+        if (destination_offset > capacity_ ||
+            count > capacity_ - destination_offset) {
             throw std::out_of_range(
                 "reusable host-to-device copy exceeds capacity");
         }
         require_cuda(
             cudaMemcpy(
-                data_, source, count * sizeof(T),
+                data_ + destination_offset,
+                source, count * sizeof(T),
                 cudaMemcpyHostToDevice),
             "copy reusable alpha buffer to device");
     }
@@ -3466,9 +3474,9 @@ __global__ void split_gaussians_long_axis_kernel(
     const std::uint32_t* child_indices,
     std::size_t parent_count,
     float* first_dc, float* second_dc,
-    float* first_sh_rest, float* second_sh_rest,
+    float2* sh_rest_moments,
     float* first_opacity, float* second_opacity,
-    float* first_opacity_sh, float* second_opacity_sh,
+    float2* opacity_sh_moments,
     float* first_xyz, float* second_xyz,
     float* first_log_scale, float* second_log_scale,
     float* first_rotation, float* second_rotation,
@@ -3555,14 +3563,12 @@ __global__ void split_gaussians_long_axis_kernel(
     }
     for (std::size_t coefficient = 0U;
          coefficient < maximum_sh_rest_values; ++coefficient) {
-        first_sh_rest[
-            parent_index * maximum_sh_rest_values + coefficient] = 0.0F;
-        second_sh_rest[
-            parent_index * maximum_sh_rest_values + coefficient] = 0.0F;
-        first_sh_rest[
-            child_index * maximum_sh_rest_values + coefficient] = 0.0F;
-        second_sh_rest[
-            child_index * maximum_sh_rest_values + coefficient] = 0.0F;
+        sh_rest_moments[
+            parent_index * maximum_sh_rest_values + coefficient] =
+            make_float2(0.0F, 0.0F);
+        sh_rest_moments[
+            child_index * maximum_sh_rest_values + coefficient] =
+            make_float2(0.0F, 0.0F);
     }
     first_opacity[parent_index] = 0.0F;
     second_opacity[parent_index] = 0.0F;
@@ -3570,18 +3576,12 @@ __global__ void split_gaussians_long_axis_kernel(
     second_opacity[child_index] = 0.0F;
     for (std::size_t coefficient = 0U;
          coefficient < maximum_opacity_sh_coefficients; ++coefficient) {
-        first_opacity_sh[
+        opacity_sh_moments[
             parent_index * maximum_opacity_sh_coefficients + coefficient] =
-            0.0F;
-        second_opacity_sh[
-            parent_index * maximum_opacity_sh_coefficients + coefficient] =
-            0.0F;
-        first_opacity_sh[
+            make_float2(0.0F, 0.0F);
+        opacity_sh_moments[
             child_index * maximum_opacity_sh_coefficients + coefficient] =
-            0.0F;
-        second_opacity_sh[
-            child_index * maximum_opacity_sh_coefficients + coefficient] =
-            0.0F;
+            make_float2(0.0F, 0.0F);
     }
     for (std::size_t component = 0U; component < 4U; ++component) {
         first_rotation[parent_index * 4U + component] = 0.0F;
@@ -3608,6 +3608,7 @@ struct DeviceOptimizerTelemetry {
     unsigned int samples[5];
 };
 
+template <std::uint32_t ActiveCoefficients, std::size_t LanesPerGaussian>
 __global__ void ordered_sh_adam_update_kernel(
     Gaussian* gaussians, std::size_t gaussian_count,
     const float* sh_rest_gradient,
@@ -3615,33 +3616,34 @@ __global__ void ordered_sh_adam_update_kernel(
     const float* dc_gradient,
     const float* opacity_gradient,
     const float* projected_sh_basis,
-    float* first_sh_rest, float* second_sh_rest,
-    float* first_opacity_sh, float* second_opacity_sh,
+    float2* sh_rest_moments,
+    float2* opacity_sh_moments,
     float inverse_bias_first, float inverse_bias_second,
     float sh_rest_learning_rate, float opacity_sh_learning_rate,
     float dc_epsilon, float opacity_epsilon,
-    std::uint32_t active_coefficients,
     bool expand_fastgs_gradients) {
-    if (active_coefficients == 0U) {
-        return;
-    }
+    static_assert(
+        ActiveCoefficients == 3U || ActiveCoefficients == 8U ||
+        ActiveCoefficients == 15U);
+    static_assert(LanesPerGaussian == ActiveCoefficients * 4U);
     const std::size_t item_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const std::size_t items_per_gaussian =
-        static_cast<std::size_t>(active_coefficients) * 4U;
-    const std::size_t item_count = gaussian_count * items_per_gaussian;
+    const std::size_t item_count = gaussian_count * LanesPerGaussian;
     if (item_index >= item_count) {
         return;
     }
     constexpr float beta_first = 0.9F;
     constexpr float beta_second = 0.999F;
-    const std::size_t gaussian_index = item_index / items_per_gaussian;
-    const std::size_t local_index = item_index % items_per_gaussian;
-    const std::size_t color_item_count =
-        static_cast<std::size_t>(active_coefficients) * 3U;
+    const std::size_t gaussian_index = item_index / LanesPerGaussian;
+    const std::size_t local_index = item_index % LanesPerGaussian;
+    constexpr std::size_t active_items = ActiveCoefficients * 4U;
+    if (local_index >= active_items) {
+        return;
+    }
+    constexpr std::size_t color_item_count = ActiveCoefficients * 3U;
     if (local_index < color_item_count) {
-        const std::size_t channel = local_index / active_coefficients;
-        const std::size_t coefficient = local_index % active_coefficients;
+        const std::size_t channel = local_index / ActiveCoefficients;
+        const std::size_t coefficient = local_index % ActiveCoefficients;
         const auto offset =
             gaussian_index * maximum_sh_rest_values +
             channel * maximum_sh_rest_coefficients + coefficient;
@@ -3650,17 +3652,19 @@ __global__ void ordered_sh_adam_update_kernel(
                   gaussian_index * 16U + coefficient + 1U] *
                 dc_gradient[gaussian_index * 3U + channel]
             : sh_rest_gradient[offset];
-        first_sh_rest[offset] =
-            beta_first * first_sh_rest[offset] +
+        auto moments = sh_rest_moments[offset];
+        moments.x =
+            beta_first * moments.x +
             (1.0F - beta_first) * gradient;
-        second_sh_rest[offset] =
-            beta_second * second_sh_rest[offset] +
+        moments.y =
+            beta_second * moments.y +
             (1.0F - beta_second) * gradient * gradient;
+        sh_rest_moments[offset] = moments;
         gaussians[gaussian_index].sh_rest[
             channel * maximum_sh_rest_coefficients + coefficient] -=
             sh_rest_learning_rate *
-            first_sh_rest[offset] * inverse_bias_first /
-            (sqrtf(second_sh_rest[offset] * inverse_bias_second) +
+            moments.x * inverse_bias_first /
+            (sqrtf(moments.y * inverse_bias_second) +
              dc_epsilon);
         return;
     }
@@ -3672,16 +3676,18 @@ __global__ void ordered_sh_adam_update_kernel(
               gaussian_index * 16U + coefficient + 1U] *
             opacity_gradient[gaussian_index]
         : opacity_sh_gradient[offset];
-    first_opacity_sh[offset] =
-        beta_first * first_opacity_sh[offset] +
+    auto moments = opacity_sh_moments[offset];
+    moments.x =
+        beta_first * moments.x +
         (1.0F - beta_first) * gradient;
-    second_opacity_sh[offset] =
-        beta_second * second_opacity_sh[offset] +
+    moments.y =
+        beta_second * moments.y +
         (1.0F - beta_second) * gradient * gradient;
+    opacity_sh_moments[offset] = moments;
     gaussians[gaussian_index].opacity_sh[coefficient] -=
         opacity_sh_learning_rate *
-        first_opacity_sh[offset] * inverse_bias_first /
-        (sqrtf(second_opacity_sh[offset] * inverse_bias_second) +
+        moments.x * inverse_bias_first /
+        (sqrtf(moments.y * inverse_bias_second) +
          opacity_epsilon);
 }
 
@@ -4937,15 +4943,11 @@ struct OrderedAlphaTrainingContext::Impl {
         rotation_gradient.ensure(gaussian_capacity * 4U);
         first_dc.ensure(gaussian_capacity * 3U);
         second_dc.ensure(gaussian_capacity * 3U);
-        first_sh_rest.ensure(
-            gaussian_capacity * maximum_sh_rest_values);
-        second_sh_rest.ensure(
+        sh_rest_moments.ensure(
             gaussian_capacity * maximum_sh_rest_values);
         first_opacity.ensure(gaussian_capacity);
         second_opacity.ensure(gaussian_capacity);
-        first_opacity_sh.ensure(
-            gaussian_capacity * maximum_opacity_sh_coefficients);
-        second_opacity_sh.ensure(
+        opacity_sh_moments.ensure(
             gaussian_capacity * maximum_opacity_sh_coefficients);
         first_xyz.ensure(gaussian_capacity * 3U);
         second_xyz.ensure(gaussian_capacity * 3U);
@@ -5005,15 +5007,11 @@ struct OrderedAlphaTrainingContext::Impl {
             initial_gaussians.data(), gaussian_count);
         first_dc.zero(gaussian_count * 3U);
         second_dc.zero(gaussian_count * 3U);
-        first_sh_rest.zero(
-            gaussian_count * maximum_sh_rest_values);
-        second_sh_rest.zero(
+        sh_rest_moments.zero(
             gaussian_count * maximum_sh_rest_values);
         first_opacity.zero(gaussian_count);
         second_opacity.zero(gaussian_count);
-        first_opacity_sh.zero(
-            gaussian_count * maximum_opacity_sh_coefficients);
-        second_opacity_sh.zero(
+        opacity_sh_moments.zero(
             gaussian_count * maximum_opacity_sh_coefficients);
         first_xyz.zero(gaussian_count * 3U);
         second_xyz.zero(gaussian_count * 3U);
@@ -5793,30 +5791,53 @@ struct OrderedAlphaTrainingContext::Impl {
                         (active_sh_degree + 1U) -
                     1U;
                 if (active_coefficients > 0U) {
-                    const std::size_t sh_item_count =
-                        gaussian_count * active_coefficients * 4U;
-                    const auto sh_blocks = static_cast<std::uint32_t>(
-                        (sh_item_count + block_size - 1U) / block_size);
-                    ordered_sh_adam_update_kernel<<<
-                        sh_blocks, block_size>>>(
-                        gaussians.data(), gaussian_count,
-                        sh_rest_gradient.data(),
-                        opacity_sh_gradient.data(),
-                        dc_gradient.data(), opacity_gradient.data(),
-                        projected_sh_basis.data(),
-                        first_sh_rest.data(), second_sh_rest.data(),
-                        first_opacity_sh.data(),
-                        second_opacity_sh.data(),
-                        inverse_bias_first, inverse_bias_second,
-                        learning_rates.dc / 20.0F,
-                        learning_rates.opacity / 20.0F,
-                        learning_rates.dc_epsilon,
-                        learning_rates.opacity_epsilon,
-                        active_coefficients,
-                        use_structural_fastgs);
+                    const auto launch_sh_adam =
+                        [&](auto active_tag, auto lane_tag) {
+                            constexpr std::uint32_t active =
+                                decltype(active_tag)::value;
+                            constexpr std::size_t lanes =
+                                decltype(lane_tag)::value;
+                            const std::size_t sh_item_count =
+                                gaussian_count * lanes;
+                            const auto sh_blocks =
+                                static_cast<std::uint32_t>(
+                                    (sh_item_count + block_size - 1U) /
+                                    block_size);
+                            ordered_sh_adam_update_kernel<active, lanes><<<
+                                sh_blocks, block_size>>>(
+                                gaussians.data(), gaussian_count,
+                                sh_rest_gradient.data(),
+                                opacity_sh_gradient.data(),
+                                dc_gradient.data(), opacity_gradient.data(),
+                                projected_sh_basis.data(),
+                                sh_rest_moments.data(),
+                                opacity_sh_moments.data(),
+                                inverse_bias_first, inverse_bias_second,
+                                learning_rates.dc / 20.0F,
+                                learning_rates.opacity / 20.0F,
+                                learning_rates.dc_epsilon,
+                                learning_rates.opacity_epsilon,
+                                use_structural_fastgs);
+                        };
+                    if (active_coefficients == 3U) {
+                        launch_sh_adam(
+                            std::integral_constant<std::uint32_t, 3U>{},
+                            std::integral_constant<std::size_t, 12U>{});
+                    } else if (active_coefficients == 8U) {
+                        launch_sh_adam(
+                            std::integral_constant<std::uint32_t, 8U>{},
+                            std::integral_constant<std::size_t, 32U>{});
+                    } else if (active_coefficients == 15U) {
+                        launch_sh_adam(
+                            std::integral_constant<std::uint32_t, 15U>{},
+                            std::integral_constant<std::size_t, 60U>{});
+                    } else {
+                        throw std::logic_error(
+                            "unsupported active SH coefficient count");
+                    }
                     require_cuda(
                         cudaGetLastError(),
-                        "launch coefficient-parallel ordered SH Adam");
+                        "launch degree-specialized ordered SH Adam");
                 }
                 stage_timer.mark(13U);
                 if (optimizer_steps % sh_degree_interval == 0U &&
@@ -6096,10 +6117,14 @@ struct OrderedAlphaTrainingContext::Impl {
             }
             const auto compact_moments = [&](
                 auto& allocation, std::size_t components) {
-                std::vector<float> source(previous_count * components);
+                using value_type = std::remove_cv_t<
+                    std::remove_pointer_t<
+                        decltype(allocation.data())>>;
+                std::vector<value_type> source(
+                    previous_count * components);
                 allocation.copy_to_host(
                     source.data(), source.size());
-                std::vector<float> compact(
+                std::vector<value_type> compact(
                     survivors.size() * components);
                 for (std::size_t destination = 0U;
                      destination < survivors.size(); ++destination) {
@@ -6115,15 +6140,12 @@ struct OrderedAlphaTrainingContext::Impl {
             compact_moments(first_dc, 3U);
             compact_moments(second_dc, 3U);
             compact_moments(
-                first_sh_rest, maximum_sh_rest_values);
-            compact_moments(
-                second_sh_rest, maximum_sh_rest_values);
+                sh_rest_moments, maximum_sh_rest_values);
             compact_moments(first_opacity, 1U);
             compact_moments(second_opacity, 1U);
             compact_moments(
-                first_opacity_sh, maximum_opacity_sh_coefficients);
-            compact_moments(
-                second_opacity_sh, maximum_opacity_sh_coefficients);
+                opacity_sh_moments,
+                maximum_opacity_sh_coefficients);
             compact_moments(first_xyz, 3U);
             compact_moments(second_xyz, 3U);
             compact_moments(first_log_scale, 3U);
@@ -6281,9 +6303,9 @@ struct OrderedAlphaTrainingContext::Impl {
                 gaussians.data(), refinement_indices.data(),
                 refinement_destinations.data(), added,
                 first_dc.data(), second_dc.data(),
-                first_sh_rest.data(), second_sh_rest.data(),
+                sh_rest_moments.data(),
                 first_opacity.data(), second_opacity.data(),
-                first_opacity_sh.data(), second_opacity_sh.data(),
+                opacity_sh_moments.data(),
                 first_xyz.data(), second_xyz.data(),
                 first_log_scale.data(), second_log_scale.data(),
                 first_rotation.data(), second_rotation.data(),
@@ -6393,12 +6415,10 @@ struct OrderedAlphaTrainingContext::Impl {
     ReusableDeviceAllocation<float> rotation_gradient;
     ReusableDeviceAllocation<float> first_dc;
     ReusableDeviceAllocation<float> second_dc;
-    ReusableDeviceAllocation<float> first_sh_rest;
-    ReusableDeviceAllocation<float> second_sh_rest;
+    ReusableDeviceAllocation<float2> sh_rest_moments;
     ReusableDeviceAllocation<float> first_opacity;
     ReusableDeviceAllocation<float> second_opacity;
-    ReusableDeviceAllocation<float> first_opacity_sh;
-    ReusableDeviceAllocation<float> second_opacity_sh;
+    ReusableDeviceAllocation<float2> opacity_sh_moments;
     ReusableDeviceAllocation<float> first_xyz;
     ReusableDeviceAllocation<float> second_xyz;
     ReusableDeviceAllocation<float> first_log_scale;
@@ -6443,12 +6463,10 @@ struct TrainingCheckpointSnapshot::Impl {
     std::vector<Gaussian> gaussians;
     std::vector<float> first_dc;
     std::vector<float> second_dc;
-    std::vector<float> first_sh_rest;
-    std::vector<float> second_sh_rest;
+    std::vector<float2> sh_rest_moments;
     std::vector<float> first_opacity;
     std::vector<float> second_opacity;
-    std::vector<float> first_opacity_sh;
-    std::vector<float> second_opacity_sh;
+    std::vector<float2> opacity_sh_moments;
     std::vector<float> first_xyz;
     std::vector<float> second_xyz;
     std::vector<float> first_log_scale;
@@ -6648,20 +6666,14 @@ OrderedAlphaTrainingContext::capture_checkpoint(
     capture_device(impl_->first_dc, snapshot->first_dc, count * 3U);
     capture_device(impl_->second_dc, snapshot->second_dc, count * 3U);
     capture_device(
-        impl_->first_sh_rest, snapshot->first_sh_rest,
-        count * maximum_sh_rest_values);
-    capture_device(
-        impl_->second_sh_rest, snapshot->second_sh_rest,
+        impl_->sh_rest_moments, snapshot->sh_rest_moments,
         count * maximum_sh_rest_values);
     capture_device(
         impl_->first_opacity, snapshot->first_opacity, count);
     capture_device(
         impl_->second_opacity, snapshot->second_opacity, count);
     capture_device(
-        impl_->first_opacity_sh, snapshot->first_opacity_sh,
-        count * maximum_opacity_sh_coefficients);
-    capture_device(
-        impl_->second_opacity_sh, snapshot->second_opacity_sh,
+        impl_->opacity_sh_moments, snapshot->opacity_sh_moments,
         count * maximum_opacity_sh_coefficients);
     capture_device(impl_->first_xyz, snapshot->first_xyz, count * 3U);
     capture_device(impl_->second_xyz, snapshot->second_xyz, count * 3U);
@@ -6724,6 +6736,35 @@ void TrainingCheckpointSnapshot::write_to(
                     reinterpret_cast<const char*>(allocation.data()),
                     static_cast<std::streamsize>(
                         count * sizeof(value_type)));
+            }
+        };
+    const auto write_moment_pairs =
+        [&stream](const std::vector<float2>& moments,
+                  std::size_t count) {
+            if (count > moments.size()) {
+                throw std::logic_error(
+                    "checkpoint moment snapshot is truncated");
+            }
+            if (count == 0U) {
+                return;
+            }
+            constexpr std::size_t chunk_size = 1U << 20U;
+            std::vector<float> chunk(std::min(count, chunk_size));
+            for (std::size_t component = 0U; component < 2U;
+                 ++component) {
+                for (std::size_t offset = 0U; offset < count;
+                     offset += chunk_size) {
+                    const auto size =
+                        std::min(chunk_size, count - offset);
+                    for (std::size_t index = 0U; index < size; ++index) {
+                        const auto pair = moments[offset + index];
+                        chunk[index] = component == 0U ? pair.x : pair.y;
+                    }
+                    stream.write(
+                        reinterpret_cast<const char*>(chunk.data()),
+                        static_cast<std::streamsize>(
+                            size * sizeof(float)));
+                }
             }
         };
     constexpr std::array<char, 16> magic{
@@ -6792,19 +6833,13 @@ void TrainingCheckpointSnapshot::write_to(
     write_device(snapshot.gaussians, count);
     write_device(snapshot.first_dc, count * 3U);
     write_device(snapshot.second_dc, count * 3U);
-    write_device(
-        snapshot.first_sh_rest,
-        count * maximum_sh_rest_values);
-    write_device(
-        snapshot.second_sh_rest,
+    write_moment_pairs(
+        snapshot.sh_rest_moments,
         count * maximum_sh_rest_values);
     write_device(snapshot.first_opacity, count);
     write_device(snapshot.second_opacity, count);
-    write_device(
-        snapshot.first_opacity_sh,
-        count * maximum_opacity_sh_coefficients);
-    write_device(
-        snapshot.second_opacity_sh,
+    write_moment_pairs(
+        snapshot.opacity_sh_moments,
         count * maximum_opacity_sh_coefficients);
     write_device(snapshot.first_xyz, count * 3U);
     write_device(snapshot.second_xyz, count * 3U);
@@ -6928,6 +6963,41 @@ OrderedAlphaTrainingContext::load_checkpoint(
                         "checkpoint payload is truncated");
                 }
                 allocation.copy_from_host(host.data(), count);
+            }
+        };
+    const auto read_moment_pairs =
+        [&stream](auto& allocation, std::size_t count) {
+            std::vector<float> first(count);
+            if (count == 0U) {
+                return;
+            }
+            stream.read(
+                reinterpret_cast<char*>(first.data()),
+                static_cast<std::streamsize>(count * sizeof(float)));
+            if (!stream) {
+                throw std::runtime_error(
+                    "checkpoint moment payload is truncated");
+            }
+            constexpr std::size_t chunk_size = 1U << 20U;
+            std::vector<float> second(std::min(count, chunk_size));
+            std::vector<float2> pairs(second.size());
+            for (std::size_t offset = 0U; offset < count;
+                 offset += chunk_size) {
+                const auto size =
+                    std::min(chunk_size, count - offset);
+                stream.read(
+                    reinterpret_cast<char*>(second.data()),
+                    static_cast<std::streamsize>(size * sizeof(float)));
+                if (!stream) {
+                    throw std::runtime_error(
+                        "checkpoint moment payload is truncated");
+                }
+                for (std::size_t index = 0U; index < size; ++index) {
+                    pairs[index] = make_float2(
+                        first[offset + index], second[index]);
+                }
+                allocation.copy_from_host(
+                    pairs.data(), size, offset);
             }
         };
     constexpr std::array<char, 16> expected_magic{
@@ -7084,19 +7154,13 @@ OrderedAlphaTrainingContext::load_checkpoint(
     read_device(impl_->gaussians, count);
     read_device(impl_->first_dc, count * 3U);
     read_device(impl_->second_dc, count * 3U);
-    read_device(
-        impl_->first_sh_rest,
-        count * maximum_sh_rest_values);
-    read_device(
-        impl_->second_sh_rest,
+    read_moment_pairs(
+        impl_->sh_rest_moments,
         count * maximum_sh_rest_values);
     read_device(impl_->first_opacity, count);
     read_device(impl_->second_opacity, count);
-    read_device(
-        impl_->first_opacity_sh,
-        count * maximum_opacity_sh_coefficients);
-    read_device(
-        impl_->second_opacity_sh,
+    read_moment_pairs(
+        impl_->opacity_sh_moments,
         count * maximum_opacity_sh_coefficients);
     read_device(impl_->first_xyz, count * 3U);
     read_device(impl_->second_xyz, count * 3U);

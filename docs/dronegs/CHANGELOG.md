@@ -2,6 +2,24 @@
 
 This changelog covers the standalone Gaussian trainer project.
 
+## 0.5.0-dev.63 - Interleaved SH Adam moments
+
+- Specialize the coefficient-parallel SH Adam kernel for the three supported
+  active SH layouts: 3, 8 and 15 coefficients per channel.
+- Store each SH parameter's first and second Adam moments as one `float2`,
+  reducing two scalar loads/stores to one vector load/store without changing
+  the number of bytes, update equation or parameter order.
+- Preserve checkpoint format v5. Capture interleaved moments directly, emit
+  the legacy first-then-second layout in bounded chunks, and stream legacy
+  reloads with one full scalar moment plus bounded conversion buffers.
+- Pass all eight native CPU/CUDA CTests on RTX 3090 and parse the retained
+  5.1 M-Gaussian dev.62 HQ checkpoint through checksum and optimizer-state
+  validation.
+- Repeat the fixed-topology 5.1 M-Gaussian gate twice: mean native training
+  falls from 35.769 to 34.203 seconds (`-4.38%`) and sampled SH Adam from
+  about 12.49 to 10.98 ms, with equivalent loss, PSNR, SSIM and population.
+- Require an exact-commit 30,000-step HQ gate before promotion.
+
 ## 0.5.0-dev.62 - Subwarp scalar Adam
 
 - Lay out each Gaussian's 14 scalar Adam parameters in a padded 16-lane
