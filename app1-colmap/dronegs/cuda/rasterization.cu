@@ -46,8 +46,6 @@
  * format v5.
  * Dev.64 schedules four independent FastGS backward buckets per CUDA block,
  * raising resident warp occupancy without changing per-bucket traversal.
- * Dev.65 assigns one SH coefficient to each CUDA lane and updates its RGB and
- * opacity parameters together, reusing the projected basis value.
  * The
  * pre-existing DroneGS
  * rasterizer, loss, gradient, and optimizer code in this file was original MIT
@@ -3644,10 +3642,7 @@ __global__ void ordered_sh_adam_update_kernel(
     static_assert(
         ActiveCoefficients == 3U || ActiveCoefficients == 8U ||
         ActiveCoefficients == 15U);
-    static_assert(
-        LanesPerGaussian == 4U || LanesPerGaussian == 8U ||
-        LanesPerGaussian == 16U);
-    static_assert(LanesPerGaussian >= ActiveCoefficients);
+    static_assert(LanesPerGaussian == ActiveCoefficients * 4U);
     const std::size_t item_index =
         static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
     const std::size_t item_count = gaussian_count * LanesPerGaussian;
@@ -3658,21 +3653,21 @@ __global__ void ordered_sh_adam_update_kernel(
     constexpr float beta_second = 0.999F;
     const std::size_t gaussian_index = item_index / LanesPerGaussian;
     const std::size_t local_index = item_index % LanesPerGaussian;
-    if (local_index >= ActiveCoefficients) {
+    constexpr std::size_t active_items = ActiveCoefficients * 4U;
+    if (local_index >= active_items) {
         return;
     }
-    const std::size_t coefficient = local_index;
-    const float basis = expand_fastgs_gradients
-        ? projected_sh_basis[
-              gaussian_index * 16U + coefficient + 1U]
-        : 0.0F;
-#pragma unroll
-    for (std::size_t channel = 0U; channel < 3U; ++channel) {
+    constexpr std::size_t color_item_count = ActiveCoefficients * 3U;
+    if (local_index < color_item_count) {
+        const std::size_t channel = local_index / ActiveCoefficients;
+        const std::size_t coefficient = local_index % ActiveCoefficients;
         const auto offset =
             gaussian_index * maximum_sh_rest_values +
             channel * maximum_sh_rest_coefficients + coefficient;
         const float gradient = expand_fastgs_gradients
-            ? basis * dc_gradient[gaussian_index * 3U + channel]
+            ? projected_sh_basis[
+                  gaussian_index * 16U + coefficient + 1U] *
+                dc_gradient[gaussian_index * 3U + channel]
             : sh_rest_gradient[offset];
         auto moments = sh_rest_moments[offset];
         moments.x =
@@ -3688,11 +3683,15 @@ __global__ void ordered_sh_adam_update_kernel(
             moments.x * inverse_bias_first /
             (sqrtf(moments.y * inverse_bias_second) +
              dc_epsilon);
+        return;
     }
+    const std::size_t coefficient = local_index - color_item_count;
     const auto offset =
         gaussian_index * maximum_opacity_sh_coefficients + coefficient;
     const float gradient = expand_fastgs_gradients
-        ? basis * opacity_gradient[gaussian_index]
+        ? projected_sh_basis[
+              gaussian_index * 16U + coefficient + 1U] *
+            opacity_gradient[gaussian_index]
         : opacity_sh_gradient[offset];
     auto moments = opacity_sh_moments[offset];
     moments.x =
@@ -5849,15 +5848,15 @@ struct OrderedAlphaTrainingContext::Impl {
                     if (active_coefficients == 3U) {
                         launch_sh_adam(
                             std::integral_constant<std::uint32_t, 3U>{},
-                            std::integral_constant<std::size_t, 4U>{});
+                            std::integral_constant<std::size_t, 12U>{});
                     } else if (active_coefficients == 8U) {
                         launch_sh_adam(
                             std::integral_constant<std::uint32_t, 8U>{},
-                            std::integral_constant<std::size_t, 8U>{});
+                            std::integral_constant<std::size_t, 32U>{});
                     } else if (active_coefficients == 15U) {
                         launch_sh_adam(
                             std::integral_constant<std::uint32_t, 15U>{},
-                            std::integral_constant<std::size_t, 16U>{});
+                            std::integral_constant<std::size_t, 60U>{});
                     } else {
                         throw std::logic_error(
                             "unsupported active SH coefficient count");

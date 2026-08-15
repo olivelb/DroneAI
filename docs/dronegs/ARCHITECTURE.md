@@ -1,9 +1,9 @@
 # DroneGS architecture
 
-Status: dev.65 production Gaussian backend candidate with tiled training and opacity-SH
+Status: dev.64 production Gaussian backend with tiled training and opacity-SH
 
 Contract version: 1  
-Project version: 0.5.0-dev.65
+Project version: 0.5.0-dev.64
 
 ## Decision
 
@@ -26,13 +26,6 @@ block. The warps have disjoint shared-memory checkpoint state and preserve the
 original per-bucket traversal and atomic derivative accumulation. The code
 uses no architecture-specific intrinsic; performance claims remain qualified
 per target GPU architecture.
-
-Dev.65 maps one active SH coefficient to one CUDA lane. That lane updates the
-three colour parameters and the matching opacity-SH parameter together, so the
-projected basis value and Gaussian index are computed once instead of four
-times. Power-of-two groups of 4, 8 and 16 lanes cover SH degrees 1, 2 and 3;
-the update equations, moments, parameter order and checkpoint format remain
-unchanged.
 
 Dev.60 consumes the raw FastGS appearance derivatives directly in the scalar
 and coefficient-parallel Adam kernels. DC scaling and SH basis expansion are
