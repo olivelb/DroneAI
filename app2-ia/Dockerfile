@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.9.2-base-ubuntu24.04@sha256:bb0d3cf98bade70e5bf3e15d92355d1418b9628f59b7ed853e83ea66ff20fa49
+FROM nvidia/cuda:13.3.1-base-ubuntu24.04@sha256:22dc6de51e33966f735440e9601a3006c38a8e6da4b4896b8ebc826e41252ae1
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
