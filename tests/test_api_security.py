@@ -49,17 +49,13 @@ def test_api_key_rbac_accepts_admin_and_rejects_viewer_for_writes(
     monkeypatch.setenv("DRONEAI_AUTH_DISABLED", "false")
     monkeypatch.setenv("DRONEAI_API_KEYS_JSON", _keys())
 
-    admin_principal = security.authenticate_token(
-        "admin-secret-key-with-at-least-32-bytes!"
-    )
+    admin_principal = security.authenticate_token("admin-secret-key-with-at-least-32-bytes!")
     assert admin_principal is not None
     admin = security.require_admin(admin_principal)
     assert admin.subject == "operations"
     assert admin.organization_id == "acme-survey"
     with pytest.raises(HTTPException) as error:
-        viewer = security.authenticate_token(
-            "viewer-secret-key-with-at-least-32-bytes"
-        )
+        viewer = security.authenticate_token("viewer-secret-key-with-at-least-32-bytes")
         assert viewer is not None
         security.require_operator(viewer)
     assert error.value.status_code == 403
@@ -223,9 +219,7 @@ def test_production_configuration_rejects_candidate_quality_profiles(
 ):
     monkeypatch.setenv("DRONEAI_ENV", "production")
     monkeypatch.setenv("DRONEAI_STAGE_JOBS_ENABLED", "true")
-    monkeypatch.setenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true"
-    )
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true")
 
     with pytest.raises(RuntimeError, match="cannot be exposed in production"):
         security.validate_production_configuration()
@@ -276,9 +270,7 @@ def test_production_rejects_static_bootstrap_without_explicit_adoption_flag(
     monkeypatch.setenv("CORS_ORIGINS", "https://droneai.example.com")
     monkeypatch.delenv("DRONEAI_ALLOW_STATIC_BOOTSTRAP", raising=False)
 
-    assert security.authenticate_api_key(
-        "admin-secret-key-with-at-least-32-bytes!"
-    ) is None
+    assert security.authenticate_api_key("admin-secret-key-with-at-least-32-bytes!") is None
     with pytest.raises(RuntimeError, match="Static bootstrap credentials"):
         security.validate_production_configuration()
 
@@ -413,9 +405,7 @@ def test_identity_rate_limiter_uses_public_uuid_without_retaining_secret():
     credential_id = "7af8698a-c9d7-49b2-b1a9-bf42d754ad43"
     secret = "identity-secret-that-must-not-be-persisted"
 
-    identity = rate_limit._public_credential_identity(
-        f"dai.{credential_id}.{secret}"
-    )
+    identity = rate_limit._public_credential_identity(f"dai.{credential_id}.{secret}")
 
     assert identity == f"tenant:{credential_id}"
     assert secret not in identity
@@ -450,16 +440,16 @@ def test_identity_middleware_limits_targeted_public_credential(monkeypatch):
         calls.append("called")
         return []
 
-    token = (
-        "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43."
-        "identity-secret-that-is-at-least-32-bytes"
-    )
+    token = "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43.identity-secret-that-is-at-least-32-bytes"
     client = TestClient(application)
 
-    assert client.get(
-        "/auth/credentials",
-        headers={"X-API-Key": token},
-    ).status_code == 200
+    assert (
+        client.get(
+            "/auth/credentials",
+            headers={"X-API-Key": token},
+        ).status_code
+        == 200
+    )
     limited = client.get(
         "/auth/credentials",
         headers={"X-API-Key": token},
@@ -469,6 +459,62 @@ def test_identity_middleware_limits_targeted_public_credential(monkeypatch):
     assert limited.headers["X-RateLimit-Scope"] == "identity"
     assert limited.headers["X-RateLimit-Limit"] == "1"
     assert calls == ["called"]
+
+
+def test_identity_middleware_limits_token_bearing_non_identity_routes(monkeypatch):
+    now = lambda: 100.0
+    monkeypatch.setattr(
+        security,
+        "identity_peer_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=100,
+            burst=10,
+            clock=now,
+        ),
+    )
+    monkeypatch.setattr(
+        security,
+        "identity_credential_rate_limiter",
+        security.TokenBucketRateLimiter(
+            requests_per_minute=1,
+            burst=1,
+            clock=now,
+        ),
+    )
+    application = FastAPI()
+    application.add_middleware(rate_limit.IdentityRateLimitMiddleware)
+    calls: list[str] = []
+
+    @application.get("/maps/mission-1")
+    def mission_map():
+        calls.append("map")
+        return {"status": "ok"}
+
+    @application.get("/ready")
+    def ready():
+        calls.append("ready")
+        return {"status": "ok"}
+
+    token = "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43.identity-secret-that-is-at-least-32-bytes"
+    client = TestClient(application)
+
+    assert client.get("/ready", headers={"X-API-Key": token}).status_code == 200
+    assert client.get("/ready", headers={"X-API-Key": token}).status_code == 200
+    assert (
+        client.get(
+            "/maps/mission-1",
+            headers={"X-API-Key": token},
+        ).status_code
+        == 200
+    )
+    limited = client.get(
+        "/maps/mission-1",
+        headers={"X-API-Key": token},
+    )
+
+    assert limited.status_code == 429
+    assert limited.headers["X-RateLimit-Scope"] == "identity"
+    assert calls == ["ready", "ready", "map"]
 
 
 def test_identity_peer_bucket_limits_rotating_public_identifiers(monkeypatch):
@@ -507,9 +553,7 @@ def test_identity_peer_bucket_limits_rotating_public_identifiers(monkeypatch):
     statuses = [
         client.get(
             "/auth/members",
-            headers={
-                "X-API-Key": f"dai.{credential_id}.{'s' * 32}"
-            },
+            headers={"X-API-Key": f"dai.{credential_id}.{'s' * 32}"},
         ).status_code
         for credential_id in credential_ids
     ]
@@ -545,10 +589,7 @@ def test_session_json_credential_is_limited_before_authentication(monkeypatch):
     )
     application = FastAPI()
     application.include_router(auth_routes.router)
-    token = (
-        "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43."
-        "identity-secret-that-is-at-least-32-bytes"
-    )
+    token = "dai.7af8698a-c9d7-49b2-b1a9-bf42d754ad43.identity-secret-that-is-at-least-32-bytes"
     client = TestClient(application)
 
     first = client.post("/auth/session", json={"api_key": token})
@@ -635,9 +676,7 @@ def test_rate_limit_identity_uses_authenticated_subject(monkeypatch):
         headers={"X-Forwarded-For": "203.0.113.20"},
     )
 
-    assert response.json() == {
-        "key": "organization:legacy-unassigned:subject:operator-1"
-    }
+    assert response.json() == {"key": "organization:legacy-unassigned:subject:operator-1"}
 
 
 def test_organization_request_quota_middleware_is_tenant_wide(monkeypatch):

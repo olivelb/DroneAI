@@ -261,6 +261,31 @@ int main() {
             throw std::runtime_error(
                 "held-out split compatibility mismatch");
         }
+
+        dronegs::Scene supported_scene;
+        supported_scene.images.resize(3U);
+        const auto single_supported =
+            dronegs::make_supported_dataset_split(
+                supported_scene, {2U}, 8U, "modulo", 0U);
+        if (single_supported.training !=
+                std::vector<std::size_t>{2U} ||
+            !single_supported.held_out.empty() ||
+            !single_supported.ignored.empty()) {
+            throw std::runtime_error(
+                "single supported image must remain trainable");
+        }
+        const auto filtered_split =
+            dronegs::make_supported_dataset_split(
+                supported_scene, {1U, 2U}, 8U, "modulo", 0U);
+        if (filtered_split.training !=
+                std::vector<std::size_t>{2U} ||
+            filtered_split.held_out !=
+                std::vector<std::size_t>{1U} ||
+            !filtered_split.ignored.empty()) {
+            throw std::runtime_error(
+                "supported-image split remapping mismatch");
+        }
+
         dronegs::Scene spatial_scene;
         std::uint32_t image_id = 1U;
         for (int y = -2; y <= 2; ++y) {

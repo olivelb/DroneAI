@@ -596,7 +596,7 @@ class AnalysisWorkflow:
             if run is not None and run.finalization_owner in {
                 None,
                 self.finalization_owner,
-            }:
+            } and run.status != "cancelled":
                 run.status = "failed"
                 run.phase = "finalization_failed"
                 run.error_message = str(error)

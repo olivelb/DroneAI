@@ -29,9 +29,7 @@ map_support = importlib.import_module("app4-dashboard.api.map_support")
 analysis_routes = importlib.import_module("app4-dashboard.api.routers.map_analyses")
 export_routes = importlib.import_module("app4-dashboard.api.routers.map_exports")
 feature_routes = importlib.import_module("app4-dashboard.api.routers.map_features")
-feature_mutation_routes = importlib.import_module(
-    "app4-dashboard.api.routers.map_feature_mutations"
-)
+feature_mutation_routes = importlib.import_module("app4-dashboard.api.routers.map_feature_mutations")
 mission_routes = importlib.import_module("app4-dashboard.api.routers.missions")
 dataset_routes = importlib.import_module("app4-dashboard.api.routers.datasets")
 operation_routes = importlib.import_module("app4-dashboard.api.routers.operations")
@@ -142,24 +140,17 @@ def test_every_map_route_exposes_the_explicit_admin_owner_scope():
         if not path.startswith("/maps/"):
             continue
         for operation in operations.values():
-            parameter_names = {
-                parameter["name"] for parameter in operation.get("parameters", [])
-            }
+            parameter_names = {parameter["name"] for parameter in operation.get("parameters", [])}
             assert "owner_subject" in parameter_names, path
 
 
 def test_gcp_import_and_refresh_keep_distinct_transport_contracts():
     schema = main.app.openapi()
     import_operation = schema["paths"]["/maps/{vol_id}/gcps/import"]["post"]
-    refresh_operation = schema["paths"][
-        "/maps/{vol_id}/gcps/{set_id}/candidates/refresh"
-    ]["post"]
+    refresh_operation = schema["paths"]["/maps/{vol_id}/gcps/{set_id}/candidates/refresh"]["post"]
 
     assert import_operation["requestBody"]["required"] is True
-    refresh_parameters = {
-        (parameter["name"], parameter["in"])
-        for parameter in refresh_operation["parameters"]
-    }
+    refresh_parameters = {(parameter["name"], parameter["in"]) for parameter in refresh_operation["parameters"]}
     assert ("candidate_radius_m", "query") in refresh_parameters
     assert ("max_candidates", "query") in refresh_parameters
 
@@ -190,12 +181,8 @@ def test_new_mission_event_is_deterministic_for_one_mission_id():
 
 
 def test_mission_event_identity_is_isolated_by_organization():
-    first = messaging.build_new_mission_event(
-        {"vol_id": "mission-1", "organization_id": "tenant-a"}
-    )
-    second = messaging.build_new_mission_event(
-        {"vol_id": "mission-1", "organization_id": "tenant-b"}
-    )
+    first = messaging.build_new_mission_event({"vol_id": "mission-1", "organization_id": "tenant-a"})
+    second = messaging.build_new_mission_event({"vol_id": "mission-1", "organization_id": "tenant-b"})
 
     assert first["event_id"] != second["event_id"]
     assert first["correlation_id"] == "tenant-a:mission-1"
@@ -227,6 +214,7 @@ def test_start_mission_rejects_an_existing_id(monkeypatch):
         vol_id="mission-1",
         pipeline="modern",
         input_dataset="datasets/mission-1",
+        quality_profile="normal-v3",
         model_dump=lambda: {
             "vol_id": "mission-1",
             "pipeline": "modern",
@@ -280,7 +268,7 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
     params = mission_routes.MissionParams(
         vol_id="profile-mission-001",
         input_dataset="datasets/profile-mission",
-        quality_profile="high-quality-v1",
+        quality_profile="normal-v3",
         ai_model_variant="yolo26n",
         colmap_params={"gs_iterations": "35000"},
     )
@@ -290,24 +278,38 @@ def test_start_mission_persists_profile_overrides_and_model_identity(monkeypatch
     with session_scope() as session:
         mission = session.query(Mission).one()
         outbox = session.query(OutboxEvent).one()
-        assert mission.params["quality_profile"] == "high-quality-v1"
+        assert mission.params["quality_profile"] == "normal-v3"
         assert mission.owner_subject == "test-operator"
-        assert mission.params["quality_profile_version"] == 1
-        assert mission.params["quality_profile_overrides"] == {
-            "gs_iterations": "35000"
-        }
-        assert mission.params["colmap_params"]["gs_cap_max"] == "5000000"
+        assert mission.params["quality_profile_version"] == 3
+        assert mission.params["quality_profile_overrides"] == {"gs_iterations": "35000"}
+        assert mission.params["colmap_params"]["gs_cap_max"] == "8000000"
         assert mission.params["colmap_params"]["gs_iterations"] == "35000"
         assert mission.params["ai_model_manifest"]["id"] == "yolo26n"
         assert outbox.payload["ai_model_manifest"]["artifact_sha256"]
 
 
+def test_start_mission_rejects_qualification_override_without_candidate_gate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
+    params = mission_routes.MissionParams(
+        vol_id="profile-override-guard",
+        input_dataset="datasets/profile-override-guard",
+        quality_profile="normal-v3",
+        colmap_params={"gs_initial_scale_policy": "projected-knn"},
+    )
+
+    with pytest.raises(HTTPException) as error:
+        mission_routes._start_mission(params, TEST_PRINCIPAL)
+
+    assert error.value.status_code == 422
+    assert "qualification overrides require" in error.value.detail
+
+
 def test_parameter_catalog_exposes_profiles_and_model_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.delenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False
-    )
+    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
     response = mission_routes.mission_parameters()
 
     assert response["quality_profile_default"] == "normal-v3"
@@ -330,9 +332,7 @@ def test_parameter_catalog_exposes_profiles_and_model_capabilities(
 def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true"
-    )
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true")
 
     response = mission_routes.mission_parameters()
 
@@ -343,11 +343,7 @@ def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
         "normal-v4",
         "high-quality-v4",
     ]
-    candidate = next(
-        profile
-        for profile in response["quality_profiles"]
-        if profile["id"] == "high-quality-v4"
-    )
+    candidate = next(profile for profile in response["quality_profiles"] if profile["id"] == "high-quality-v4")
     assert candidate["parameters"]["gs_resident_partitioning"] is True
     assert candidate["parameters"]["gs_cap_max"] == "6000000"
     assert candidate["parameters"]["gs_target_gaussian_spacing_pixels"] == "3.6"
@@ -357,9 +353,7 @@ def test_parameter_catalog_can_expose_hq_v4_for_controlled_qualification(
 def test_parameter_catalog_rejects_ambiguous_candidate_flag(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv(
-        "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes"
-    )
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "yes")
 
     with pytest.raises(
         RuntimeError,

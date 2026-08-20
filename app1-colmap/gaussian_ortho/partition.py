@@ -69,9 +69,7 @@ class CellBounds:
             "col": self.col,
             "include_core_x_max": self.include_core_x_max,
             "include_core_y_max": self.include_core_y_max,
-            "model_to_ground_linear": [
-                list(row) for row in self.model_to_ground_linear
-            ],
+            "model_to_ground_linear": [list(row) for row in self.model_to_ground_linear],
             "model_to_ground_offset": list(self.model_to_ground_offset),
         }
 
@@ -89,22 +87,9 @@ class CellBounds:
 
     def core_mask(self, points: Any, *, array_module: Any) -> Any:
         ground = self.project_model_points(points, array_module=array_module)
-        x_upper = (
-            ground[:, 0] <= self.core_x_max
-            if self.include_core_x_max
-            else ground[:, 0] < self.core_x_max
-        )
-        y_upper = (
-            ground[:, 1] <= self.core_y_max
-            if self.include_core_y_max
-            else ground[:, 1] < self.core_y_max
-        )
-        return (
-            (ground[:, 0] >= self.core_x_min)
-            & x_upper
-            & (ground[:, 1] >= self.core_y_min)
-            & y_upper
-        )
+        x_upper = ground[:, 0] <= self.core_x_max if self.include_core_x_max else ground[:, 0] < self.core_x_max
+        y_upper = ground[:, 1] <= self.core_y_max if self.include_core_y_max else ground[:, 1] < self.core_y_max
+        return (ground[:, 0] >= self.core_x_min) & x_upper & (ground[:, 1] >= self.core_y_min) & y_upper
 
     def buffer_mask(self, points: Any, *, array_module: Any) -> Any:
         ground = self.project_model_points(points, array_module=array_module)
@@ -125,10 +110,7 @@ def _finite_vector(
     if (
         not isinstance(payload, list)
         or len(payload) != length
-        or any(
-            isinstance(value, bool) or not isinstance(value, (float, int))
-            for value in payload
-        )
+        or any(isinstance(value, bool) or not isinstance(value, (float, int)) for value in payload)
     ):
         raise ValueError(f"Gaussian partition {name} is invalid")
     result = tuple(float(value) for value in payload)
@@ -146,10 +128,7 @@ def cell_bounds_from_dict(payload: object) -> CellBounds:
     linear_raw = payload.get("model_to_ground_linear")
     if not isinstance(linear_raw, list) or len(linear_raw) != 2:
         raise ValueError("Gaussian partition ground transform is invalid")
-    linear_rows = tuple(
-        _finite_vector(row, name="ground transform", length=3)
-        for row in linear_raw
-    )
+    linear_rows = tuple(_finite_vector(row, name="ground transform", length=3) for row in linear_raw)
     offset = _finite_vector(
         payload.get("model_to_ground_offset"),
         name="ground offset",
@@ -196,6 +175,7 @@ def cell_bounds_from_dict(payload: object) -> CellBounds:
         model_to_ground_offset=cast(GroundOffset, offset),
     )
 
+
 def ground_projection_from_sim3(
     transform_data: Sim3Transform,
 ) -> tuple[GroundLinear, GroundOffset]:
@@ -239,10 +219,7 @@ def _project_points(
         raise ValueError("geographic partitioning requires model points shaped (N, 3)")
     if not np.isfinite(xyz).all():
         raise ValueError("geographic partition points must be finite")
-    projected: np.ndarray = (
-        xyz @ np.asarray(linear, dtype=np.float64).T
-        + np.asarray(offset, dtype=np.float64)
-    )
+    projected: np.ndarray = xyz @ np.asarray(linear, dtype=np.float64).T + np.asarray(offset, dtype=np.float64)
     return projected
 
 
@@ -348,9 +325,7 @@ def plan_partition_grid(
         cell_count = rows * columns
         cell_aspect = scene_aspect * rows / columns
         shape_penalty = abs(math.log(max(cell_aspect, 1.0e-12)))
-        overprovision_penalty = (
-            2.0 * (cell_count - required_cell_count) / required_cell_count
-        )
+        overprovision_penalty = 2.0 * (cell_count - required_cell_count) / required_cell_count
         candidate = (
             shape_penalty + overprovision_penalty,
             cell_count,
@@ -373,6 +348,10 @@ def _filter_points_in_buffer(point_cloud: PointCloud, cell: CellBounds) -> Point
     )
 
 
+def _core_point_count(point_cloud: PointCloud, cell: CellBounds) -> int:
+    return int(np.count_nonzero(cell.core_mask(point_cloud.points, array_module=np)))
+
+
 def partition_scene(
     scene: SceneInfo,
     m: int = 2,
@@ -387,15 +366,14 @@ def partition_scene(
     crop_margin_pixels: int = 128,
     maximum_view_incidence_degrees: float = 75.0,
     minimum_plane_overlap_m2: float = 1.0,
+    require_core_support: bool = False,
 ) -> list[tuple[CellBounds, SceneInfo]]:
     """Build resident scenes from footprint-visible native-image crops."""
     if min_cameras < 1:
         raise ValueError("minimum partition camera count must be positive")
     selected_frame = planar_frame or geographic_frame
     if selected_frame is None:
-        raise ValueError(
-            "partition camera selection requires a planar scene frame"
-        )
+        raise ValueError("partition camera selection requires a planar scene frame")
     cells = compute_partition_grid(
         scene,
         m,
@@ -420,9 +398,7 @@ def partition_scene(
                         cell.buffer_y_max,
                     ),
                     crop_margin_pixels=crop_margin_pixels,
-                    maximum_nadir_incidence_degrees=(
-                        maximum_view_incidence_degrees
-                    ),
+                    maximum_nadir_incidence_degrees=(maximum_view_incidence_degrees),
                     minimum_ground_overlap_m2=minimum_plane_overlap_m2,
                 )
             )
@@ -431,6 +407,27 @@ def partition_scene(
         cameras = [camera for camera, _assignment in assignments]
         if len(cameras) < min_cameras:
             continue
+        if require_core_support:
+            core_bounds = (
+                cell.core_x_min,
+                cell.core_x_max,
+                cell.core_y_min,
+                cell.core_y_max,
+            )
+            core_camera_count = sum(
+                camera_assignment_for_planar_buffer(
+                    camera,
+                    selected_frame,
+                    core_bounds,
+                    crop_margin_pixels=0,
+                    maximum_nadir_incidence_degrees=maximum_view_incidence_degrees,
+                    minimum_ground_overlap_m2=minimum_plane_overlap_m2,
+                )
+                is not None
+                for camera in cameras
+            )
+            if core_camera_count < min_cameras or _core_point_count(scene.point_cloud, cell) == 0:
+                continue
         point_cloud = _filter_points_in_buffer(scene.point_cloud, cell)
         if point_cloud.points.shape[0] < 100:
             continue
@@ -443,10 +440,7 @@ def partition_scene(
                     point_cloud=point_cloud,
                     dense_path=scene.dense_path,
                     images_dir=scene.images_dir,
-                    image_crops={
-                        camera.image_name: assignment.crop
-                        for camera, assignment in assignments
-                    },
+                    image_crops={camera.image_name: assignment.crop for camera, assignment in assignments},
                 ),
             )
         )
