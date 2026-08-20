@@ -231,10 +231,7 @@ def _reusable_dronegs_result(
         or manifest.get("status") != "completed"
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
         or manifest.get("dataset", {}).get("fingerprint") != request.dataset_fingerprint
-        or any(
-            not manifest_parameter_matches(parameters.get(key), value)
-            for key, value in expected.items()
-        )
+        or any(not manifest_parameter_matches(parameters.get(key), value) for key, value in expected.items())
         or not manifest_matches_ply(manifest, ply_path)
     ):
         return None
@@ -613,11 +610,14 @@ def _apply_required_resident_partition(
         maximum_view_incidence_degrees=maximum_view_incidence,
         minimum_plane_overlap_m2=minimum_plane_overlap_m2,
     )
-    if len(cells) < required_cell_count:
+    planned_cell_count = rows * columns
+    if len(cells) != planned_cell_count:
         raise RuntimeError(
-            "Planar camera visibility produced only "
-            f"{len(cells)} active cells but Gaussian density requires "
-            f"{required_cell_count}; inspect coverage or use a coarser GSD."
+            "Planar camera visibility retained "
+            f"{len(cells)} of {planned_cell_count} planned resident cores "
+            f"(Gaussian density requires at least {required_cell_count}). "
+            "A planned core may not disappear silently; inspect coverage, "
+            "re-plan the grid, or use a coarser GSD."
         )
     scene_state.cells = [(bounds, cell_scene) for bounds, cell_scene in cells]
     scene_state.use_partition = True

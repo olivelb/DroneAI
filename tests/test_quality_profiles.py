@@ -5,8 +5,10 @@ from shared.quality_profiles import (
     QUALITY_PROFILES,
     QUALITY_PROFILE_BY_ID,
     profile_overrides,
+    profile_overrides_for_new_mission,
     quality_profile_candidates_enabled,
     quality_profile,
+    quality_profile_for_new_mission,
     selectable_quality_profiles,
 )
 from shared.yolo_capabilities import (
@@ -73,6 +75,32 @@ def test_profile_overrides_only_records_changed_envelope_values():
     ) == {"gs_iterations": "20000"}
 
 
+def test_new_mission_override_policy_separates_public_and_qualification_settings(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
+    assert profile_overrides_for_new_mission(
+        "normal-v3",
+        {"gs_iterations": "20000"},
+    ) == {"gs_iterations": "20000"}
+    with pytest.raises(ValueError, match="immutable quality-profile identity"):
+        profile_overrides_for_new_mission(
+            "normal-v3",
+            {"gs_production_profile": "high-quality-v4"},
+        )
+    with pytest.raises(ValueError, match="qualification overrides require"):
+        profile_overrides_for_new_mission(
+            "normal-v3",
+            {"gs_initial_scale_policy": "projected-knn"},
+        )
+
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true")
+    assert profile_overrides_for_new_mission(
+        "normal-v3",
+        {"gs_initial_scale_policy": "projected-knn"},
+    ) == {"gs_initial_scale_policy": "projected-knn"}
+
+
 def test_candidate_profiles_require_explicit_catalog_exposure():
     selectable = {profile.profile_id for profile in selectable_quality_profiles()}
     assert {"fast-v2", "normal-v4", "high-quality-v3", "high-quality-v4"}.isdisjoint(selectable)
@@ -90,6 +118,22 @@ def test_candidate_profile_flag_is_strict(monkeypatch: pytest.MonkeyPatch):
     candidates = {profile.profile_id for profile in selectable_quality_profiles(include_candidates=True)}
     assert {"fast-v2", "normal-v4", "high-quality-v4"} <= candidates
     assert "high-quality-v3" not in candidates
+
+
+def test_new_mission_profile_resolver_separates_public_candidate_and_replay(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.delenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", raising=False)
+    assert quality_profile_for_new_mission("normal-v3").profile_id == "normal-v3"
+    with pytest.raises(ValueError, match="not selectable for a new mission"):
+        quality_profile_for_new_mission("high-quality-v1")
+    with pytest.raises(ValueError, match="not selectable for a new mission"):
+        quality_profile_for_new_mission("high-quality-v4")
+
+    monkeypatch.setenv("DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED", "true")
+    assert quality_profile_for_new_mission("high-quality-v4").profile_id == "high-quality-v4"
+    with pytest.raises(ValueError, match="not selectable for a new mission"):
+        quality_profile_for_new_mission("high-quality-v1")
 
 
 def test_yolo_catalog_exposes_all_approved_models_and_native_classes():

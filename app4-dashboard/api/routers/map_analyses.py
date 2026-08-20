@@ -23,6 +23,7 @@ from shared.tenancy import MissionObjectNamespace
 from ..analysis_support import (
     build_analysis_cancel_event,
     build_analysis_pipeline_event,
+    ensure_mission_accepts_new_analysis,
     get_owned_run,
     owned_run_scope,
 )
@@ -58,9 +59,7 @@ def list_analyses(
 ) -> AnalysisListResponse:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        mission = get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_list"
-        )
+        mission = get_mission(typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_list")
         runs = cast(
             list[AnalysisRunRecord],
             typed_session.query(AIAnalysisRun)
@@ -85,8 +84,14 @@ def create_analysis(
     with get_session() as session:
         typed_session = cast(RouteSession, session)
         mission = get_mission(
-            typed_session, vol_id, principal, owner_subject=owner_subject, action="analysis_create"
+            typed_session,
+            vol_id,
+            principal,
+            owner_subject=owner_subject,
+            action="analysis_create",
+            for_update=True,
         )
+        ensure_mission_accepts_new_analysis(mission)
         key = resolve_raster_product(
             typed_session,
             mission,
@@ -141,9 +146,7 @@ def retry_analysis(
     principal: Annotated[Principal, Depends(require_operator)],
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    with owned_run_scope(
-        vol_id, run_id, principal, owner_subject, "analysis_retry"
-    ) as (typed_session, run):
+    with owned_run_scope(vol_id, run_id, principal, owner_subject, "analysis_retry") as (typed_session, run):
         mission = get_mission(
             typed_session,
             vol_id,
@@ -151,6 +154,7 @@ def retry_analysis(
             owner_subject=owner_subject,
             action="analysis_retry",
         )
+        ensure_mission_accepts_new_analysis(mission)
         if run.status != "failed":
             raise HTTPException(
                 status_code=409,
@@ -204,9 +208,7 @@ def cancel_analysis(
     run_id: str,
     owner_subject: Annotated[str | None, Query(max_length=256)] = None,
 ) -> JsonObject:
-    with owned_run_scope(
-        vol_id, run_id, principal, owner_subject, "analysis_cancel"
-    ) as (typed_session, run):
+    with owned_run_scope(vol_id, run_id, principal, owner_subject, "analysis_cancel") as (typed_session, run):
         if run.status == "completed":
             raise HTTPException(
                 status_code=409,
@@ -263,17 +265,12 @@ def analysis_vectors(
                 MapFeature.analysis_run_id == run.id,
                 MapFeature.deleted_at.is_(None),
             )
-            query = apply_spatial_filter(
-                query, MapFeature.geometry, bounds
-            )
+            query = apply_spatial_filter(query, MapFeature.geometry, bounds)
             records = cast(
                 list[MapFeature],
                 query.order_by(MapFeature.id).limit(limit + 1).all(),
             )
-            features = [
-                map_feature_geojson(typed_session, item)
-                for item in records[:limit]
-            ]
+            features = [map_feature_geojson(typed_session, item) for item in records[:limit]]
             return feature_collection(
                 features,
                 run_id=run_id,
