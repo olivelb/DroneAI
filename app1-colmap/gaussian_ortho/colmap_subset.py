@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import shutil
 import struct
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TypedDict
 
@@ -148,6 +149,101 @@ def _restrict_track_to_training_regions(
     return retained, crop_rejections
 
 
+def _provide_subset_images(
+    images_dir: str,
+    target_images: Path,
+    image_names: Iterable[str],
+) -> dict[str, object]:
+    """Expose selected images without requiring symlink support.
+
+    Native Linux workspaces retain the zero-copy directory symlink. Mounted
+    filesystems such as WSL DrvFS/9p may reject symlink creation, so the
+    portable fallback materialises only selected image names, preferring
+    same-filesystem hardlinks before copying bytes. Existing directories are
+    reconciled to make an interrupted export safe to retry.
+    """
+    source_images = Path(images_dir).resolve(strict=True)
+    if not source_images.is_dir():
+        raise NotADirectoryError(f"COLMAP image source is not a directory: {source_images}")
+    selected_names = sorted(set(image_names))
+
+    if os.path.lexists(target_images):
+        if target_images.is_symlink():
+            if target_images.resolve(strict=True) != source_images:
+                raise RuntimeError(
+                    f"COLMAP subset image link points outside the source: {target_images}"
+                )
+            return {
+                "strategy": "symlink",
+                "image_count": len(selected_names),
+                "existing": len(selected_names),
+                "hardlinked": 0,
+                "copied": 0,
+            }
+        if not target_images.is_dir():
+            raise RuntimeError(
+                f"COLMAP subset image target is not a directory: {target_images}"
+            )
+    else:
+        try:
+            os.symlink(source_images, target_images)
+        except OSError:
+            target_images.mkdir(parents=True, exist_ok=True)
+        else:
+            return {
+                "strategy": "symlink",
+                "image_count": len(selected_names),
+                "existing": 0,
+                "hardlinked": 0,
+                "copied": 0,
+            }
+
+    existing = 0
+    hardlinked = 0
+    copied = 0
+    for image_name in selected_names:
+        relative = Path(image_name)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(
+                f"COLMAP image name must stay inside the image directory: {image_name}"
+            )
+        source_image = source_images / relative
+        if not source_image.is_file():
+            raise FileNotFoundError(source_image)
+        target_image = target_images / relative
+        target_image.parent.mkdir(parents=True, exist_ok=True)
+        if os.path.lexists(target_image):
+            if not target_image.is_file():
+                raise RuntimeError(
+                    f"COLMAP subset image target is not a file: {target_image}"
+                )
+            existing += 1
+            continue
+        try:
+            os.link(source_image, target_image)
+        except OSError:
+            shutil.copy2(source_image, target_image)
+            copied += 1
+        else:
+            hardlinked += 1
+
+    if existing == len(selected_names):
+        strategy = "existing-directory"
+    elif hardlinked and copied:
+        strategy = "mixed"
+    elif copied:
+        strategy = "copy"
+    else:
+        strategy = "hardlink"
+    return {
+        "strategy": strategy,
+        "image_count": len(selected_names),
+        "existing": existing,
+        "hardlinked": hardlinked,
+        "copied": copied,
+    }
+
+
 def export_colmap_subset(
     source_sparse_dir: str,
     target_dir: str,
@@ -258,9 +354,13 @@ def export_colmap_subset(
         crops,
     )
 
-    target_images = Path(target_dir) / "images"
-    if images_dir and not target_images.exists():
-        os.symlink(os.path.abspath(images_dir), target_images)
+    image_transport: dict[str, object] | None = None
+    if images_dir:
+        image_transport = _provide_subset_images(
+            images_dir,
+            Path(target_dir) / "images",
+            (image["name"] for image in filtered_images.values()),
+        )
     exported_track_lengths = [
         len(point["track"])
         for point in filtered_points.values()
@@ -300,6 +400,8 @@ def export_colmap_subset(
             length >= 5 for length in exported_track_lengths
         ),
     }
+    if image_transport is not None:
+        report["image_transport"] = image_transport
     return report if return_report else str(target_sparse)
 
 

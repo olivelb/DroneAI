@@ -12,6 +12,50 @@ from gaussian_ortho.colmap_subset import (
 from gaussian_ortho.camera_footprint import NativeImageCrop
 
 
+def _write_single_image_model(source: Path, image_name: str) -> None:
+    source.mkdir()
+    _write_colmap_cameras_bin(
+        {
+            1: {
+                "model_id": 1,
+                "width": 16,
+                "height": 12,
+                "params": [10.0, 10.0, 8.0, 6.0],
+            }
+        },
+        source / "cameras.bin",
+    )
+    _write_colmap_images_bin(
+        {
+            10: {
+                "qw": 1.0,
+                "qx": 0.0,
+                "qy": 0.0,
+                "qz": 0.0,
+                "tx": 0.0,
+                "ty": 0.0,
+                "tz": 0.0,
+                "camera_id": 1,
+                "name": image_name,
+                "xys": [(2.0, 3.0)],
+                "point3D_ids": [100],
+            }
+        },
+        source / "images.bin",
+    )
+    _write_colmap_points3d_bin(
+        {
+            100: {
+                "xyz": (1.0, 2.0, 3.0),
+                "rgb": (4, 5, 6),
+                "error": 0.1,
+                "track": [(10, 0)],
+            }
+        },
+        source / "points3D.bin",
+    )
+
+
 def test_gaussian_pipeline_imports_without_legacy_backend() -> None:
     from gaussian_ortho.generate_gaussian_orthophoto import (
         generate_gaussian_orthophoto,
@@ -243,3 +287,92 @@ def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
     assert cropped_points == {}
     assert cropped_report["points_rejected_for_restricted_track"] == 2
     assert cropped_report["observations_rejected_outside_native_crops"] == 1
+
+
+def test_export_colmap_subset_uses_hardlinks_when_symlinks_are_unsupported(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    image_name = "nested/keep.jpg"
+    _write_single_image_model(source, image_name)
+    source_images = tmp_path / "images"
+    source_image = source_images / image_name
+    source_image.parent.mkdir(parents=True)
+    source_image.write_bytes(b"jpeg fixture")
+
+    def reject_symlink(*_args, **_kwargs) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.os.symlink", reject_symlink)
+
+    report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cell"),
+        [image_name],
+        images_dir=str(source_images),
+        return_report=True,
+    )
+
+    target_image = tmp_path / "cell" / "images" / image_name
+    assert target_image.read_bytes() == b"jpeg fixture"
+    assert target_image.stat().st_ino == source_image.stat().st_ino
+    assert report["image_transport"] == {
+        "strategy": "hardlink",
+        "image_count": 1,
+        "existing": 0,
+        "hardlinked": 1,
+        "copied": 0,
+    }
+
+
+def test_export_colmap_subset_copies_when_links_are_unsupported(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    image_name = "keep.jpg"
+    _write_single_image_model(source, image_name)
+    source_images = tmp_path / "images"
+    source_images.mkdir()
+    source_image = source_images / image_name
+    source_image.write_bytes(b"jpeg fixture")
+
+    def reject_link(*_args, **_kwargs) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.os.symlink", reject_link)
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.os.link", reject_link)
+
+    first_report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cell"),
+        [image_name],
+        images_dir=str(source_images),
+        return_report=True,
+    )
+    second_report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "cell"),
+        [image_name],
+        images_dir=str(source_images),
+        return_report=True,
+    )
+
+    target_image = tmp_path / "cell" / "images" / image_name
+    assert target_image.read_bytes() == b"jpeg fixture"
+    assert target_image.stat().st_ino != source_image.stat().st_ino
+    assert first_report["image_transport"] == {
+        "strategy": "copy",
+        "image_count": 1,
+        "existing": 0,
+        "hardlinked": 0,
+        "copied": 1,
+    }
+    assert second_report["image_transport"] == {
+        "strategy": "existing-directory",
+        "image_count": 1,
+        "existing": 1,
+        "hardlinked": 0,
+        "copied": 0,
+    }

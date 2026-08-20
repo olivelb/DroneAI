@@ -504,6 +504,25 @@ def write_run_report(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def report_parameters(profile: GaussianProfile) -> dict[str, Any]:
+    """Serialize requested policy without presenting an auto fallback as effective."""
+    parameters = asdict(profile)
+    parameters["tile_mode_configured"] = profile.tile_mode
+    if profile.tile_mode_auto:
+        parameters["tile_mode"] = "auto"
+    return parameters
+
+
+def persist_runtime_plan(
+    report_path: Path,
+    report: dict[str, Any],
+    runtime_plan: dict[str, object],
+) -> None:
+    """Persist a resolved GPU plan before fallible training preparation."""
+    report["effective_parameters"] = runtime_plan
+    write_run_report(report_path, report)
+
+
 def main() -> int:
     args = parse_args()
     profile = resolve_profile(args)
@@ -545,17 +564,21 @@ def main() -> int:
     report_path = workspace / f"gaussian_run.{run_label}.json"
     started_at = time.time()
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "running",
         "profile": args.profile,
         "run_label": run_label,
-        "parameters": asdict(profile),
+        "parameters": report_parameters(profile),
         "workspace": str(workspace),
         "checkpoint_dir": str(checkpoint_path),
         "trainer_backend": profile.backend,
         "started_at": started_at,
     }
     write_run_report(report_path, report)
+
+    def record_runtime_plan(runtime_plan: dict[str, object]) -> None:
+        persist_runtime_plan(report_path, report, runtime_plan)
+
     try:
         result = generate_gaussian_orthophoto(
             dense_path=str(dense_path),
@@ -599,6 +622,7 @@ def main() -> int:
             dronegs_initial_max_projected_sigma_pixels=(profile.initial_max_projected_sigma_pixels),
             dronegs_maximum_scale_growth_factor=profile.maximum_scale_growth_factor,
             dronegs_capacity_targeted_growth=profile.capacity_targeted_growth,
+            runtime_plan_fn=record_runtime_plan,
             render_mode=args.render_mode,
             facade_scale_mode=args.facade_scale_mode,
             facade_meters_per_model_unit=args.facade_meters_per_model_unit,

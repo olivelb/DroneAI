@@ -1,3 +1,4 @@
+import json
 from argparse import ArgumentTypeError, Namespace
 
 import pytest
@@ -9,6 +10,8 @@ from shared.facade_process import (
 from tools.run_local_gaussian import (
     PROFILES,
     output_paths,
+    persist_runtime_plan,
+    report_parameters,
     resolve_profile,
     validated_run_label,
 )
@@ -164,6 +167,35 @@ def test_numeric_tile_mode_is_an_expert_override():
     assert profile.tile_mode == 1
     assert profile.tile_mode_auto is False
     assert profile.profile_id == "custom"
+
+
+def test_report_parameters_distinguish_automatic_policy_from_effective_mode():
+    automatic = report_parameters(PROFILES["facade-hd"])
+    expert = report_parameters(resolve_profile(_arguments(profile="balanced", tile_mode=1)))
+
+    assert automatic["tile_mode"] == "auto"
+    assert automatic["tile_mode_configured"] == 4
+    assert automatic["tile_mode_auto"] is True
+    assert expert["tile_mode"] == 1
+    assert expert["tile_mode_configured"] == 1
+    assert expert["tile_mode_auto"] is False
+
+
+def test_effective_runtime_plan_is_persisted_before_training_completion(tmp_path):
+    report_path = tmp_path / "gaussian_run.facade.json"
+    report = {"schema_version": 2, "status": "running"}
+    runtime_plan = {
+        "tile_mode": 1,
+        "tile_mode_plan": {"automatic": True, "effective_mode": 1},
+    }
+
+    persist_runtime_plan(report_path, report, runtime_plan)
+    report.update(status="failed", error="later preparation failed")
+    persist_runtime_plan(report_path, report, runtime_plan)
+
+    persisted = json.loads(report_path.read_text(encoding="utf-8"))
+    assert persisted["status"] == "failed"
+    assert persisted["effective_parameters"] == runtime_plan
 
 
 def test_balanced_training_overrides_become_custom_recipe():
