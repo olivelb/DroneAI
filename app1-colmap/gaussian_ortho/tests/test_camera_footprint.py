@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -9,7 +12,11 @@ from gaussian_ortho.camera_footprint import (
     facade_scene_frame,
     geographic_scene_frame,
 )
-from gaussian_ortho.colmap_loader import CameraInfo, PointCloud
+from gaussian_ortho.colmap_loader import (
+    CameraInfo,
+    PointCloud,
+    load_colmap_reconstruction,
+)
 from gaussian_ortho.partition import (
     cell_bounds_from_dict,
     partition_scene,
@@ -227,3 +234,33 @@ def test_facade_plane_uses_metric_visibility_and_native_crops() -> None:
     assert len(cells) == 2
     assert all(len(cell_scene.train_cameras) == 6 for _, cell_scene in cells)
     assert all(cell_scene.image_crops for _, cell_scene in cells)
+
+
+def test_native_footprint_loader_requires_an_undistorted_camera_model(
+    monkeypatch,
+):
+    reconstruction = SimpleNamespace(
+        images={
+            1: SimpleNamespace(
+                camera_id=1,
+                name="distorted.jpg",
+                num_points3D=0,
+            )
+        },
+        cameras={
+            1: SimpleNamespace(
+                model=SimpleNamespace(name="OPENCV"),
+                params=[1000.0, 1000.0, 500.0, 400.0, 0.1, 0.0, 0.0, 0.0],
+                width=1000,
+                height=800,
+            )
+        },
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pycolmap",
+        SimpleNamespace(Reconstruction=lambda _path: reconstruction),
+    )
+
+    with pytest.raises(ValueError, match="expected PINHOLE or SIMPLE_PINHOLE"):
+        load_colmap_reconstruction("/tmp/dense")

@@ -691,3 +691,34 @@ def test_referenced_tile_result_rejects_a_tampered_hash(monkeypatch):
             },
             run,
         )
+
+
+def test_late_finalization_failure_does_not_reopen_a_cancelled_analysis(
+    monkeypatch,
+):
+    session_scope = _analysis_session_scope()
+    with session_scope() as session:
+        mission = Mission(
+            vol_id="mission-cancelled",
+            owner_subject="operator",
+        )
+        session.add(mission)
+        session.flush()
+        session.add(
+            AIAnalysisRun(
+                run_id="run-cancelled",
+                mission_id=mission.id,
+                vol_id=mission.vol_id,
+                name="Cancelled analysis",
+                ortho_s3_key="missions/mission-cancelled/orthomosaic.tif",
+                status="cancelled",
+                phase="cancelled",
+                finalization_owner=None,
+            )
+        )
+    monkeypatch.setattr(analysis_workflow, "get_session", session_scope)
+
+    _workflow()._mark_finalization_failed("run-cancelled", RuntimeError("late"))
+
+    with session_scope() as session:
+        assert session.query(AIAnalysisRun).one().status == "cancelled"

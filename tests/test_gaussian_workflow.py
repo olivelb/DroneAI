@@ -704,3 +704,49 @@ def test_prepare_gaussian_render_state_preserves_facade_frame_and_extent(
     assert state.resolution_units == "metres"
     np.testing.assert_allclose(state.frame_origin, [1.0, 2.0, 3.0])
     assert saved_paths == [str(tmp_path / "final.ply")]
+
+
+def test_resident_partition_rejects_a_missing_planned_core(monkeypatch):
+    frame = SimpleNamespace(
+        ground_linear=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ground_offset=(0.0, 0.0),
+    )
+    scene_state = SimpleNamespace(
+        scene=SimpleNamespace(),
+        point_cloud=SimpleNamespace(points=np.ones((100, 3))),
+        transform_data={"R": np.eye(3), "scale": 1.0, "t": [0, 0, 0]},
+        facade_frame=None,
+        cells=[],
+        use_partition=False,
+    )
+    config = SimpleNamespace(
+        partition_m=3,
+        partition_n=3,
+        partition_overlap=0.2,
+        render_mode="map",
+        vol_id="mission-partition",
+        report_fn=None,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "geographic_scene_frame",
+        lambda *_args, **_kwargs: frame,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "partition_scene",
+        lambda *_args, **_kwargs: [
+            (SimpleNamespace(), SimpleNamespace())
+        ]
+        * 8,
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="retained 8 of 9 planned resident cores",
+    ):
+        workflow._apply_required_resident_partition(
+            scene_state,
+            config,
+            required_cell_count=7,
+        )

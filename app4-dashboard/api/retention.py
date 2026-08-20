@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from shared import storage
 from shared.database import (
+    AIAnalysisRun,
+    AIAnalysisTile,
     Mission,
     MissionArtifact,
     MissionStageRun,
@@ -30,9 +32,14 @@ from shared.organization_saas import (
 )
 from shared.observability import observe_control_loop, observe_reconciliation
 from shared.tenancy import MissionObjectNamespace
+from .analysis_support import (
+    ACTIVE_ANALYSIS_STATUSES,
+    request_mission_analysis_cancellations,
+)
 
 logger = logging.getLogger("droneai.retention")
 RETRYABLE_RETENTION_STATUSES = ("deleting", "deletion_failed")
+RETENTION_DRAINING_STEP = "RETENTION_DRAINING"
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,24 @@ def _compute_is_quiescent(session: Session, mission_id: int) -> bool:
         provenance = cast(dict[str, object], run.provenance or {})
         if not provenance.get("cancellation_job_cleanup_at"):
             return False
-    return True
+    analysis_runs = session.query(AIAnalysisRun).filter(AIAnalysisRun.mission_id == mission_id).all()
+    for run in analysis_runs:
+        if run.status in ACTIVE_ANALYSIS_STATUSES:
+            return False
+    queued_tile = (
+        session.query(AIAnalysisTile.id)
+        .join(
+            AIAnalysisRun,
+            AIAnalysisTile.analysis_run_id == AIAnalysisRun.id,
+        )
+        .filter(
+            AIAnalysisRun.mission_id == mission_id,
+            AIAnalysisRun.status.in_(ACTIVE_ANALYSIS_STATUSES),
+            AIAnalysisTile.status == "queued",
+        )
+        .first()
+    )
+    return queued_tile is None
 
 
 def _locked_deleting_mission(
@@ -105,9 +129,7 @@ def claim_retention_candidates(
                     OrganizationSaasPolicy.retention_days.isnot(None),
                     Mission.status.in_(RETENTION_TERMINAL_STATUSES),
                 ),
-                Mission.current_step.in_(
-                    (MANUAL_DELETION_STEP, MANUAL_DELETION_FAILED_STEP)
-                ),
+                Mission.current_step.in_((MANUAL_DELETION_STEP, MANUAL_DELETION_FAILED_STEP)),
                 Mission.status.in_(RETRYABLE_RETENTION_STATUSES),
             ),
         )
@@ -128,9 +150,9 @@ def claim_retention_candidates(
         manual_retry = mission.current_step == MANUAL_DELETION_FAILED_STEP
         updated_at = _aware(cast(datetime, mission.updated_at))
         if manual_deletion:
-            eligible = _compute_is_quiescent(session, cast(int, mission.id)) and (
-                not manual_retry or updated_at <= now - timedelta(seconds=retry_seconds)
-            )
+            eligible = not manual_retry or updated_at <= now - timedelta(seconds=retry_seconds)
+        elif mission.current_step == RETENTION_DRAINING_STEP:
+            eligible = True
         elif mission.status in RETRYABLE_RETENTION_STATUSES:
             eligible = updated_at <= now - timedelta(seconds=retry_seconds)
         else:
@@ -141,15 +163,23 @@ def claim_retention_candidates(
             )
         if not eligible:
             continue
+        if not _compute_is_quiescent(session, cast(int, mission.id)):
+            if not manual_deletion:
+                mission.status = "deleting"
+                mission.current_step = RETENTION_DRAINING_STEP
+                mission.error_message = None
+            request_mission_analysis_cancellations(
+                session,
+                mission,
+            )
+            continue
         namespace = MissionObjectNamespace.from_binding(
             cast(str, mission.organization_id),
             cast(str, mission.vol_id),
             cast(str, mission.workspace_prefix),
         )
         mission.status = "deleting"
-        mission.current_step = (
-            "DELETION_DRAINED" if manual_deletion else "RETENTION_DELETING"
-        )
+        mission.current_step = "DELETION_DRAINED" if manual_deletion else "RETENTION_DELETING"
         mission.error_message = None
         candidates.append(
             RetentionCandidate(
@@ -189,9 +219,7 @@ def _complete_retention(
             action="storage_released" if is_manual else "retention_deleted",
             resource_type="mission",
             resource_id=candidate.vol_id,
-            actor_subject=(
-                "system:mission-deletion" if is_manual else "system:retention"
-            ),
+            actor_subject=("system:mission-deletion" if is_manual else "system:retention"),
             quantity=-artifact_bytes,
             unit="bytes",
             idempotency_key=(
@@ -216,11 +244,7 @@ def _fail_retention(candidate: RetentionCandidate, error: Exception) -> None:
         if mission is None:
             return
         mission.status = "deletion_failed"
-        mission.current_step = (
-            MANUAL_DELETION_FAILED_STEP
-            if candidate.reason == "manual"
-            else "RETENTION_FAILED"
-        )
+        mission.current_step = MANUAL_DELETION_FAILED_STEP if candidate.reason == "manual" else "RETENTION_FAILED"
         mission.error_message = f"Retention object deletion failed: {error}"[:4000]
         append_usage_event(
             session,
@@ -269,9 +293,7 @@ def retention_cleanup_once(
 def run_retention_cleanup(stop_event: Event) -> None:
     try:
         interval = int(os.getenv("DRONEAI_RETENTION_CLEANUP_SECONDS", "900"))
-        retry_seconds = int(
-            os.getenv("DRONEAI_RETENTION_FAILURE_RETRY_SECONDS", "3600")
-        )
+        retry_seconds = int(os.getenv("DRONEAI_RETENTION_FAILURE_RETRY_SECONDS", "3600"))
     except ValueError:
         logger.exception("Invalid retention cleanup configuration; cleanup disabled")
         return

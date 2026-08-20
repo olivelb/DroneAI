@@ -1,7 +1,15 @@
 # DroneAI production readiness
 
-Last verified: 2026-08-12
+Last structurally verified: 2026-08-20
 
+
+This date records repository-level control-plane, migration, security and
+CPU-test verification. It is not a scientific promotion of a Gaussian profile
+and does not claim current-head CUDA/GPU, full-scene resident, OVH interruption
+or dataset-backed E2E qualification. Those evidence classes remain separate
+and must be attached to the release candidate that was actually executed.
+The current audit disposition is recorded in
+[`audit-remediation-2026-08-20.md`](audit-remediation-2026-08-20.md).
 ## Supported deployment boundary
 
 The repository now provides an authenticated, role-separated multi-organization

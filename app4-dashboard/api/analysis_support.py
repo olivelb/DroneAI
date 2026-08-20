@@ -4,20 +4,27 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import cast
+from datetime import UTC, datetime
+from typing import Any, cast
 
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 
-from shared.database import AIAnalysisRun, get_session
+from shared.cancellation import mark_cancellation_requested
+from shared.config import TOPIC_CONTROL
+from shared.database import AIAnalysisRun, AIAnalysisTile, get_session
 from shared.event_contracts import (
     deterministic_tenant_event_id,
     make_event,
     tenant_correlation_id,
 )
+from shared.inbox_outbox import enqueue_outbox
+from shared.kafka_partitioning import tenant_mission_key
 from shared.tenancy import LEGACY_ORGANIZATION_ID, MissionObjectNamespace
 
 from .map_support import AnalysisRunRecord, JsonObject, RouteSession, get_mission
 from .security import Principal
+
+ACTIVE_ANALYSIS_STATUSES = ("queued", "tiling", "running", "finalizing")
 
 
 def analysis_event(
@@ -106,6 +113,85 @@ def build_analysis_cancel_event(
     )
 
 
+def ensure_mission_accepts_new_analysis(mission: Any) -> None:
+    """Reject analysis creation/retry once mission deletion has started."""
+
+    if mission.status in {"deleting", "deletion_failed"} or mission.current_step in {
+        "DELETION_REQUESTED",
+        "DELETION_FAILED",
+    }:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Mission deletion is in progress; new analyses are blocked",
+        )
+
+
+def request_mission_analysis_cancellations(
+    session: Any,
+    mission: Any,
+) -> int:
+    """Cancel every active analysis under the already-locked mission row.
+
+    Revoking finalization ownership and retiring queued tile journal entries
+    prevents a cancelled worker from publishing logical state after deletion
+    has entered its drain phase. The outbox command remains the prompt signal;
+    the durable run status is the worker-side source of truth.
+    """
+
+    runs = (
+        session.query(AIAnalysisRun)
+        .filter(
+            AIAnalysisRun.mission_id == mission.id,
+            AIAnalysisRun.status.in_(ACTIVE_ANALYSIS_STATUSES),
+        )
+        .with_for_update()
+        .all()
+    )
+    now = datetime.now(UTC)
+    cancelled = 0
+    for run in runs:
+        attempt = int(run.retry_count or 0)
+        if not mark_cancellation_requested(
+            session,
+            vol_id=str(mission.vol_id),
+            run_id=str(run.run_id),
+            attempt=attempt,
+            organization_id=str(mission.organization_id),
+        ):
+            continue
+        run.finalization_owner = None
+        run.finalization_lease_until = None
+        run.completed_at = now
+        (
+            session.query(AIAnalysisTile)
+            .filter(
+                AIAnalysisTile.analysis_run_id == run.id,
+                AIAnalysisTile.status == "queued",
+            )
+            .update(
+                {
+                    AIAnalysisTile.status: "dead",
+                    AIAnalysisTile.last_error: "Analysis cancelled for mission deletion",
+                    AIAnalysisTile.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        enqueue_outbox(
+            session,
+            topic=TOPIC_CONTROL,
+            event=build_analysis_cancel_event(
+                str(mission.vol_id),
+                str(run.run_id),
+                str(mission.organization_id),
+                attempt,
+            ),
+            key=tenant_mission_key(str(mission.organization_id), str(mission.vol_id)),
+        )
+        cancelled += 1
+    return cancelled
+
+
 def get_owned_run(
     session: RouteSession,
     vol_id: str,
@@ -122,6 +208,7 @@ def get_owned_run(
         principal,
         owner_subject=owner_subject,
         action=action,
+        for_update=lock,
     )
     query = session.query(AIAnalysisRun).filter(
         AIAnalysisRun.mission_id == mission.id,
@@ -145,12 +232,15 @@ def owned_run_scope(
 ) -> Iterator[tuple[RouteSession, AnalysisRunRecord]]:
     with get_session() as session:
         typed_session = cast(RouteSession, session)
-        yield typed_session, get_owned_run(
+        yield (
             typed_session,
-            vol_id,
-            run_id,
-            principal,
-            owner_subject,
-            action=action,
-            lock=True,
+            get_owned_run(
+                typed_session,
+                vol_id,
+                run_id,
+                principal,
+                owner_subject,
+                action=action,
+                lock=True,
+            ),
         )
