@@ -82,6 +82,7 @@ from .render_geometry import GaussianRenderGeometry
 from .capacity_planning import (
     GaussianCapacityPlan,
     GaussianDensityAssessment,
+    GaussianTileModePlan,
     assess_gaussian_density,
     detected_vram_bytes,
     plan_training_tile_mode,
@@ -104,6 +105,12 @@ class ProgressReport(Protocol):
         *,
         log: str,
     ) -> object: ...
+
+
+class RuntimePlanReport(Protocol):
+    """Structured callback for decisions resolved after GPU discovery."""
+
+    def __call__(self, plan: dict[str, object]) -> object: ...
 
 
 type ModelFactory = Callable[..., "GaussianModel"]
@@ -752,7 +759,7 @@ def _resolve_training_tile_mode(
     scene_state: GaussianSceneState,
     capacity_plan: GaussianCapacityPlan,
     vram_bytes: tuple[int, int] | None,
-) -> int:
+) -> GaussianTileModePlan:
     automatic = bool(getattr(config, "tile_mode_auto", False))
     plan = plan_training_tile_mode(
         _training_region_inventory(
@@ -789,7 +796,7 @@ def _resolve_training_tile_mode(
         f"workspace, {inventory} VRAM ({fit_note}).",
         config.report_fn,
     )
-    return plan.effective_mode
+    return plan
 
 
 def execute_gaussian_training_phase(
@@ -800,6 +807,7 @@ def execute_gaussian_training_phase(
     model_class: ModelFactory | None = None,
     merge_models_fn: MergeModels | None = None,
     cupy_module: Any | None = None,
+    runtime_plan_fn: RuntimePlanReport | None = None,
 ) -> GaussianTrainingPhaseState:
     """Prepare the scene and train its merged, unfiltered Gaussian model."""
     if backend is None:
@@ -864,16 +872,24 @@ def execute_gaussian_training_phase(
             f"(hard resident cap {capacity_plan.resident_cap:,}).",
             config.report_fn,
         )
-    effective_tile_mode = _resolve_training_tile_mode(
+    tile_mode_plan = _resolve_training_tile_mode(
         config,
         scene_state,
         capacity_plan,
         detected_vram,
     )
+    if runtime_plan_fn is not None:
+        runtime_plan_fn(
+            {
+                "tile_mode": tile_mode_plan.effective_mode,
+                "tile_mode_plan": tile_mode_plan.as_dict(),
+                "capacity_plan": capacity_plan.as_dict(),
+            }
+        )
     training_config = replace(
         config,
         cap_max=capacity_plan.effective_cell_cap,
-        tile_mode=effective_tile_mode,
+        tile_mode=tile_mode_plan.effective_mode,
     )
     training_state = train_and_merge_gaussian_models(
         training_config,
@@ -2161,6 +2177,7 @@ def generate_gaussian_orthophoto(
     dronegs_canary_min_ssim: float = (DRONEGS_PRODUCTION_PROFILE_V1.canary_min_ssim),
     cancellation_check: CancellationCheck | None = None,
     checkpoint_callback: CheckpointCallback | None = None,
+    runtime_plan_fn: RuntimePlanReport | None = None,
     render_mode: str = "map",
     facade_scale_mode: str = FACADE_PARAMETER_DEFAULTS["facade_scale_mode"],
     facade_meters_per_model_unit: float = float(FACADE_PARAMETER_DEFAULTS["facade_meters_per_model_unit"]),
@@ -2331,6 +2348,7 @@ def generate_gaussian_orthophoto(
         config,
         trainer_backend=trainer_backend,
         cupy_module=cp,
+        runtime_plan_fn=runtime_plan_fn,
     )
     phase_timings["training_and_scene_preparation"] = perf_counter() - phase_started
     scene_state = training_phase.scene_state

@@ -70,6 +70,7 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
         lambda config, **changes: SimpleNamespace(**(vars(config) | changes)),
     )
 
+    runtime_plans = []
     result = workflow.execute_gaussian_training_phase(
         SimpleNamespace(
             capacity_mode="fixed",
@@ -89,6 +90,7 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
         model_class=lambda: None,
         merge_models_fn=lambda: None,
         cupy_module=SimpleNamespace(),
+        runtime_plan_fn=runtime_plans.append,
     )
 
     assert result.scene_state is scene_state
@@ -96,6 +98,24 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
     assert result.backend_name == "dronegs"
     assert result.trainer_binary_sha256 == "a" * 64
     assert calls["trainer_binary_sha256"] == "a" * 64
+    assert runtime_plans == [
+        {
+            "tile_mode": 4,
+            "tile_mode_plan": {
+                "automatic": False,
+                "configured_mode": 4,
+                "effective_mode": 4,
+                "maximum_view_pixels": 200_000,
+                "estimated_pixel_bytes": 51_200_000,
+                "gaussian_capacity_bytes": 1_920_000_000,
+                "dynamic_reserve_bytes": 1_073_741_824,
+                "safe_vram_bytes": None,
+                "available_pixel_bytes": None,
+                "fits_estimate": None,
+            },
+            "capacity_plan": result.capacity_plan.as_dict(),
+        }
+    ]
 
 
 def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):

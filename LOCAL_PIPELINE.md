@@ -348,13 +348,13 @@ Once that succeeds, the conservative RTX 4070 Laptop / 8 GiB profile is:
 
 | Profile | Iterations | Gaussian cap | SH | Image factor | Max dimension | Tile mode | GSD |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | 4 | 0.25 m |
-| `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | 4 | 0.05 m |
-| `fast-resident` (qualification locale) | 7,500 | adaptive, floor 1.5 M | 3 | 8 | 1,600 px | 4 | 0.05 m |
-| `normal` (`normal-v3`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | 4 | 0.05 m |
-| `high-quality` (`high-quality-v4`) | 30,000 | adaptive 5–6 M | 3 | 1 | 4,096 px | 4 | 0.015 m |
-| `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | 4 | 0.10 m |
-| `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | 4 | 0.05 m |
+| `smoke` | 500 | 100,000 | 0 | 8 | 1,024 px | auto (1/2/4) | 0.25 m |
+| `fast` (`fast-v1`) | 7,500 | 1,500,000 | 3 | 8 | 1,600 px | auto (1/2/4) | 0.05 m |
+| `fast-resident` (qualification locale) | 7,500 | adaptive, floor 1.5 M | 3 | 8 | 1,600 px | auto (1/2/4) | 0.05 m |
+| `normal` (`normal-v3`) | 15,000 | adaptive 3–8 M | 3 | 4 | 2,400 px | auto (1/2/4) | 0.05 m |
+| `high-quality` (`high-quality-v4`) | 30,000 | adaptive 5–6 M | 3 | 1 | 4,096 px | auto (1/2/4) | 0.015 m |
+| `low-memory` | 5,000 | 500,000 | 1 | 4 | 1,600 px | auto (1/2/4) | 0.10 m |
+| `balanced` | 15,000 | 1,500,000 | 3 | 4 | 1,600 px | auto (1/2/4) | 0.05 m |
 
 `smoke` exercises checkpoint/resume and modulo held-out evaluation but uses a
 zero-threshold operational canary. `low-memory` uses the spatial-block canary
@@ -396,8 +396,17 @@ The local runner accepts the following profile overrides:
 Any trainer or qualification override that no longer equals the immutable V1
 recipe automatically changes the recorded `profile_id` from
 `DRONEGS_PRODUCTION_PROFILE_V1` to `custom`. Raster-only choices such as
-`--resolution` do not change the trainer identity. The effective values and
-identity are written to `gaussian_run.<profile>.json`.
+`--resolution` do not change the trainer identity. The requested policy and
+identity are written to `gaussian_run.<profile>.json`. Automatic tiling is
+recorded as `parameters.tile_mode = "auto"`; once VRAM discovery resolves the
+plan, `effective_parameters.tile_mode` and the complete capacity/tile plan are
+persisted immediately, including when a later training step fails.
+
+Subset workspaces normally expose their selected image directory through a
+zero-copy symlink. On filesystems that reject symlinks (notably WSL
+DrvFS/9p), the exporter falls back to per-image hardlinks and finally targeted
+copies. Retries reconcile an existing partial directory instead of repeating
+the complete COLMAP pipeline.
 
 Canary thresholds are validated (`PSNR >= 0`, `0 <= SSIM <= 1`). Lowering a
 threshold is appropriate only for an explicitly labelled diagnostic render:

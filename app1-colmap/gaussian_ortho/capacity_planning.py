@@ -428,6 +428,9 @@ class GaussianTileModePlan:
     available_pixel_bytes: int | None
     fits_estimate: bool | None
 
+    def as_dict(self) -> dict[str, int | bool | None]:
+        return asdict(self)
+
 
 def _training_dimensions(
     width: int,
