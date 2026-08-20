@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
@@ -9,7 +12,11 @@ from gaussian_ortho.camera_footprint import (
     facade_scene_frame,
     geographic_scene_frame,
 )
-from gaussian_ortho.colmap_loader import CameraInfo, PointCloud
+from gaussian_ortho.colmap_loader import (
+    CameraInfo,
+    PointCloud,
+    load_colmap_reconstruction,
+)
 from gaussian_ortho.partition import (
     cell_bounds_from_dict,
     partition_scene,
@@ -48,9 +55,7 @@ def _camera(
 
 def _flat_points() -> np.ndarray:
     x, y = np.meshgrid(np.linspace(0.0, 100.0, 20), np.linspace(0.0, 100.0, 20))
-    return np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size))).astype(
-        np.float32
-    )
+    return np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size))).astype(np.float32)
 
 
 def test_projected_cell_bounds_have_a_strict_portable_round_trip() -> None:
@@ -125,10 +130,7 @@ def test_partition_assigns_camera_by_footprint_not_camera_center() -> None:
     points = _flat_points()
     colors = np.ones_like(points)
     point_cloud = PointCloud(points=points, colors=colors, normals=np.zeros_like(points))
-    cameras = [
-        _camera(uid=index, center=(0.0, 50.0, 100.0))
-        for index in range(1, 7)
-    ]
+    cameras = [_camera(uid=index, center=(0.0, 50.0, 100.0)) for index in range(1, 7)]
     scene = build_scene_info(cameras, [], point_cloud)
     frame = geographic_scene_frame(
         points,
@@ -152,13 +154,8 @@ def test_partition_assigns_camera_by_footprint_not_camera_center() -> None:
     second_bounds, second_scene = cells[1]
     assert second_bounds.core_x_min == pytest.approx(50.0)
     assert len(second_scene.train_cameras) == len(cameras)
-    assert set(second_scene.image_crops) == {
-        camera.image_name for camera in cameras
-    }
-    assert all(
-        crop.source_x > 0 and crop.width < crop.source_width
-        for crop in second_scene.image_crops.values()
-    )
+    assert set(second_scene.image_crops) == {camera.image_name for camera in cameras}
+    assert all(crop.source_x > 0 and crop.width < crop.source_width for crop in second_scene.image_crops.values())
 
 
 def test_partition_grid_planner_follows_projected_scene_aspect() -> None:
@@ -189,10 +186,7 @@ def test_facade_plane_uses_metric_visibility_and_native_crops() -> None:
         colors=np.ones_like(points),
         normals=np.zeros_like(points),
     )
-    cameras = [
-        _camera(uid=index, center=(50.0, 50.0, 100.0))
-        for index in range(1, 7)
-    ]
+    cameras = [_camera(uid=index, center=(50.0, 50.0, 100.0)) for index in range(1, 7)]
     scene = build_scene_info(cameras, [], point_cloud)
     frame = facade_scene_frame(
         points,
@@ -227,3 +221,74 @@ def test_facade_plane_uses_metric_visibility_and_native_crops() -> None:
     assert len(cells) == 2
     assert all(len(cell_scene.train_cameras) == 6 for _, cell_scene in cells)
     assert all(cell_scene.image_crops for _, cell_scene in cells)
+
+
+def test_partition_preflight_rejects_buffer_only_empty_cores() -> None:
+    points = _flat_points()
+    diagonal = np.repeat(
+        points[((points[:, 0] < 45.0) & (points[:, 1] < 45.0)) | ((points[:, 0] > 55.0) & (points[:, 1] > 55.0))],
+        2,
+        axis=0,
+    )
+    point_cloud = PointCloud(
+        points=diagonal,
+        colors=np.ones_like(diagonal),
+        normals=np.zeros_like(diagonal),
+    )
+    scene = build_scene_info(
+        [_camera()],
+        [],
+        point_cloud,
+    )
+    frame = geographic_scene_frame(
+        diagonal,
+        IDENTITY_SIM3,
+        terrain_margin_m=0.0,
+    )
+
+    cells = partition_scene(
+        scene,
+        m=2,
+        n=2,
+        overlap=0.2,
+        min_cameras=1,
+        model_to_ground_linear=frame.ground_linear,
+        model_to_ground_offset=frame.ground_offset,
+        planar_frame=frame,
+        require_core_support=True,
+    )
+
+    assert {(bounds.row, bounds.col) for bounds, _scene in cells} == {
+        (0, 0),
+        (1, 1),
+    }
+
+
+def test_native_footprint_loader_requires_an_undistorted_camera_model(
+    monkeypatch,
+):
+    reconstruction = SimpleNamespace(
+        images={
+            1: SimpleNamespace(
+                camera_id=1,
+                name="distorted.jpg",
+                num_points3D=0,
+            )
+        },
+        cameras={
+            1: SimpleNamespace(
+                model=SimpleNamespace(name="OPENCV"),
+                params=[1000.0, 1000.0, 500.0, 400.0, 0.1, 0.0, 0.0, 0.0],
+                width=1000,
+                height=800,
+            )
+        },
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pycolmap",
+        SimpleNamespace(Reconstruction=lambda _path: reconstruction),
+    )
+
+    with pytest.raises(ValueError, match="expected PINHOLE or SIMPLE_PINHOLE"):
+        load_colmap_reconstruction("/tmp/dense")

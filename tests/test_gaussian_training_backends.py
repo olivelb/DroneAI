@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import sys
 import time
@@ -421,6 +422,20 @@ def test_production_profile_command_matches_accepted_dev45_recipe():
     assert arguments["--photometric-mse-percent"] == "100"
     assert arguments["--test-split"] == "modulo"
     assert arguments["--test-guard-percent"] == "0"
+
+
+def test_production_profile_accepts_only_an_automatic_tile_resolution():
+    profile = DRONEGS_PRODUCTION_PROFILE_V1
+    production = TrainingRequest(
+        data_path="/data",
+        output_path="/output",
+        dataset_fingerprint="benchmark-fixture",
+    )
+
+    automatic = replace(production, tile_mode=1, tile_mode_auto=True)
+    assert automatic.tile_mode == 1
+    with pytest.raises(ValueError, match="tile_mode"):
+        replace(automatic, tile_mode_auto=False)
 
 
 def test_dronegs_cancellation_terminates_process_and_keeps_checkpoint(

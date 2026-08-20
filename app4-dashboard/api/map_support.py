@@ -102,6 +102,8 @@ class MissionRecord(Protocol):
     workspace_prefix: str | None
     input_dataset: str | None
     tiling_metadata: JsonObject | None
+    status: str
+    current_step: str | None
 
 
 class MissionArtifactRecord(Protocol):
@@ -255,11 +257,7 @@ def resolve_raster_product(
         return RasterProductObject(
             key=compatibility_key,
             default_colormap=colormap,
-            sidecar_key=(
-                compatibility_sidecar_key
-                if storage.file_exists(compatibility_sidecar_key)
-                else None
-            ),
+            sidecar_key=(compatibility_sidecar_key if storage.file_exists(compatibility_sidecar_key) else None),
         )
 
     logical_path = RASTER_LAYERS[layer][0]
@@ -286,9 +284,7 @@ def resolve_raster_product(
         )
     require_object(key)
     artifact_sidecar_key = object_keys.get(f"{logical_path}.cog.json")
-    if artifact_sidecar_key is not None and not storage.file_exists(
-        artifact_sidecar_key
-    ):
+    if artifact_sidecar_key is not None and not storage.file_exists(artifact_sidecar_key):
         artifact_sidecar_key = None
     return RasterProductObject(
         key=key,
@@ -379,6 +375,7 @@ def get_mission(
     *,
     owner_subject: str | None = None,
     action: str = "map_read",
+    for_update: bool = False,
 ) -> MissionRecord:
     return cast(
         MissionRecord,
@@ -388,6 +385,7 @@ def get_mission(
             principal,
             requested_owner=owner_subject,
             action=action,
+            for_update=for_update,
         ),
     )
 
@@ -559,9 +557,7 @@ def pipeline_detection_features(
     if product is None:
         return None
     payload = load_json_object(product.key)
-    if payload.get("type") != "FeatureCollection" or not isinstance(
-        payload.get("features"), list
-    ):
+    if payload.get("type") != "FeatureCollection" or not isinstance(payload.get("features"), list):
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Detection artifact is not a GeoJSON FeatureCollection",
@@ -636,11 +632,7 @@ def object_store_analysis_features(
     features: list[JsonObject] = []
     truncated = False
     for tile in tiles:
-        if (
-            bounds
-            and tile.bounds_wgs84
-            and not bounds_intersect(list(bounds), tile.bounds_wgs84)
-        ):
+        if bounds and tile.bounds_wgs84 and not bounds_intersect(list(bounds), tile.bounds_wgs84):
             continue
         payload = load_json_object(tile.result_s3_key)
         if "raw_detections" in payload:

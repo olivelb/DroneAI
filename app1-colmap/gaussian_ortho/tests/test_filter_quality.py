@@ -6,14 +6,17 @@ from gaussian_ortho.filter_quality import require_minimum_filter_retention
 
 
 def test_filter_retention_accepts_healthy_cleanup() -> None:
-    assert require_minimum_filter_retention(1_500_000, 1_358_194, 0.80) == pytest.approx(
-        1_358_194 / 1_500_000
-    )
+    assert require_minimum_filter_retention(1_500_000, 1_358_194, 0.80) == pytest.approx(1_358_194 / 1_500_000)
 
 
 def test_filter_retention_rejects_sparse_map_product() -> None:
     with pytest.raises(ValueError, match=r"410378/1500000.*27.4%.*80.0%"):
         require_minimum_filter_retention(1_500_000, 410_378, 0.80)
+
+
+def test_filter_retention_rejects_an_empty_facade_even_with_zero_ratio() -> None:
+    with pytest.raises(ValueError, match="removed every primitive"):
+        require_minimum_filter_retention(100, 0, 0.0)
 
 
 @pytest.mark.parametrize(

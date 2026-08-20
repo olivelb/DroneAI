@@ -4,6 +4,7 @@ Gaussian model spatial filtering (CuPy).
 Removes outlier Gaussians after training: out-of-bounds, transparent,
 needle-shaped, SOR isolated, disconnected components, and Z-floaters.
 """
+
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -66,13 +67,18 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         else:
             print(msg)
 
+    def _require_non_empty(stage: str) -> None:
+        if model.num_gaussians == 0:
+            raise ValueError(f"{stage} removed every Gaussian")
+
     # --- Oversized Gaussian filter ---
     n_before = model.num_gaussians
     if max_scale > 0:
-        activated_scales = model.scales          # (N, 3)
+        activated_scales = model.scales  # (N, 3)
         max_per_gauss = activated_scales.max(axis=-1)
         not_huge = max_per_gauss <= max_scale
         model.filter_by_mask(not_huge)
+        _require_non_empty("Max-scale filter")
         del activated_scales, max_per_gauss, not_huge
         if model.num_gaussians < n_before:
             _log(f"Max-scale filter (>{max_scale:.3f}): {n_before} → {model.num_gaussians}")
@@ -90,6 +96,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
             gauss_dists, _ = cam_tree.query(xyz_chunk, k=1)
             in_bounds[start:stop] = cp.asarray(gauss_dists <= boundary)
         model.filter_by_mask(in_bounds)
+        _require_non_empty("Distance filter")
         del in_bounds
         if model.num_gaussians < n_before:
             _log(f"Distance filter (>{boundary:.2f}): {n_before} → {model.num_gaussians}")
@@ -99,6 +106,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
     if opacity_threshold > 0:
         visible = model.opacity.squeeze(-1) > opacity_threshold
         model.filter_by_mask(visible)
+        _require_non_empty("Opacity filter")
         del visible
         if model.num_gaussians < n_before:
             _log(f"Opacity filter (<{opacity_threshold}): {n_before} → {model.num_gaussians}")
@@ -111,6 +119,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         aniso_ratio = cp.exp(sorted_log[:, 2] - sorted_log[:, 0])
         not_needle = aniso_ratio <= needle_ratio
         model.filter_by_mask(not_needle)
+        _require_non_empty("Needle filter")
         del log_scales, sorted_log, aniso_ratio, not_needle
         if model.num_gaussians < n_before:
             _log(f"Needle filter (>{needle_ratio:.0f}): {n_before} → {model.num_gaussians}")
@@ -127,6 +136,7 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         sor_keep = cp.array(mean_dists <= sor_thresh)
         n_b = model.num_gaussians
         model.filter_by_mask(sor_keep)
+        _require_non_empty("SOR filter")
         if model.num_gaussians < n_b:
             _log(f"SOR filter: {n_b} → {model.num_gaussians}")
 
@@ -152,9 +162,9 @@ def filter_gaussians[ModelT: GaussianFilterModel](
             cc_keep = cp.array(labels == unique[counts.argmax()])
             n_b = model.num_gaussians
             model.filter_by_mask(cc_keep)
+            _require_non_empty("Connected-component filter")
             if model.num_gaussians < n_b:
-                _log(f"CC filter: {n_b} → {model.num_gaussians} "
-                     f"({n_components - 1} disconnected clusters removed)")
+                _log(f"CC filter: {n_b} → {model.num_gaussians} ({n_components - 1} disconnected clusters removed)")
 
     # --- Z-floater removal (IQR-based) ---
     if z_floater_enabled:
@@ -170,19 +180,16 @@ def filter_gaussians[ModelT: GaussianFilterModel](
         z_keep = (z_vals >= z_lo) & (z_vals <= z_hi)
         n_b = model.num_gaussians
         model.filter_by_mask(z_keep)
+        _require_non_empty("Z-floater filter")
         del z_vals, z_keep
         if model.num_gaussians < n_b:
-            _log(f"Z-floater filter: {n_b} → {model.num_gaussians} "
-                 f"(Z outside [{z_lo:.2f}, {z_hi:.2f}])")
+            _log(f"Z-floater filter: {n_b} → {model.num_gaussians} (Z outside [{z_lo:.2f}, {z_hi:.2f}])")
 
     retained_ratio = require_minimum_filter_retention(
         initial_count,
         model.num_gaussians,
         minimum_retained_ratio,
     )
-    _log(
-        "Filter retention: "
-        f"{model.num_gaussians}/{initial_count} ({retained_ratio:.1%})"
-    )
+    _log(f"Filter retention: {model.num_gaussians}/{initial_count} ({retained_ratio:.1%})")
 
     return model

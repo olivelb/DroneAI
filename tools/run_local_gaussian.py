@@ -77,6 +77,7 @@ class GaussianProfile:
     maximum_scale_growth_factor: float = 54.59815
     capacity_targeted_growth: bool = False
     qualification_policy_id: str = DRONEGS_QUALIFICATION_POLICY_ID
+    tile_mode_auto: bool = True
 
 
 PROFILES: dict[str, GaussianProfile] = {
@@ -172,7 +173,7 @@ PROFILES: dict[str, GaussianProfile] = {
         sh_degree=int(FACADE_PROCESS_OVERRIDES["gs_sh_degree"]),
         data_factor=int(FACADE_PROCESS_OVERRIDES["gs_data_factor"]),
         max_width=int(FACADE_PROCESS_OVERRIDES["gs_max_width"]),
-        tile_mode=int(FACADE_PROCESS_OVERRIDES["gs_tile_mode"]),
+        tile_mode=DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
         resolution=float(FACADE_PROCESS_OVERRIDES["ortho_mesh_resolution"]),
         filter_enabled=True,
         seed=DRONEGS_PRODUCTION_PROFILE_V1.seed,
@@ -353,6 +354,8 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
     profile = PROFILES[args.profile]
     overrides = {field: getattr(args, field) for field in asdict(profile) if getattr(args, field, None) is not None}
     resolved = replace(profile, **overrides)
+    if args.tile_mode is not None:
+        resolved = replace(resolved, tile_mode_auto=False)
     training_identity_fields = set(DRONEGS_PRODUCTION_PROFILE_V1.training_identity_parameters())
     training_identity_fields.update(
         {
@@ -362,8 +365,11 @@ def resolve_profile(args: argparse.Namespace) -> GaussianProfile:
             "capacity_targeted_growth",
         }
     )
-    if any(
-        name in training_identity_fields and getattr(resolved, name) != getattr(profile, name) for name in overrides
+    if (
+        any(
+            name in training_identity_fields and getattr(resolved, name) != getattr(profile, name) for name in overrides
+        )
+        or args.tile_mode is not None
     ):
         resolved = replace(resolved, profile_id="custom")
     if any(
@@ -563,6 +569,7 @@ def main() -> int:
             data_factor=profile.data_factor,
             max_width=profile.max_width,
             tile_mode=profile.tile_mode,
+            tile_mode_auto=profile.tile_mode_auto,
             cap_max=profile.cap_max,
             capacity_mode=profile.capacity_mode,
             capacity_floor=profile.capacity_floor or profile.cap_max,
