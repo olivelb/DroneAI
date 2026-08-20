@@ -158,6 +158,8 @@ class TestColmapStageHelpers(unittest.TestCase):
         self.assertTrue(config.coverage_gate_enabled)
         self.assertEqual(config.coverage_grid_size, 16)
         self.assertEqual(config.coverage_min_valid_ratio, 0.50)
+        self.assertEqual(config.tile_mode, 4)
+        self.assertTrue(config.tile_mode_auto)
         self.assertEqual(warnings, ())
 
         facade_config, _ = dronegs_config.resolve_dronegs_config(
@@ -175,6 +177,26 @@ class TestColmapStageHelpers(unittest.TestCase):
             data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
         )
         self.assertEqual(overridden.profile_id, "custom")
+        self.assertTrue(warnings)
+
+        expert, warnings = dronegs_config.resolve_dronegs_config(
+            {**params, "gs_tile_mode": "1"},
+            facade_mode=False,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        self.assertEqual(expert.tile_mode, 1)
+        self.assertFalse(expert.tile_mode_auto)
+        self.assertEqual(expert.profile_id, "custom")
+        self.assertTrue(warnings)
+
+        maximum_expert, warnings = dronegs_config.resolve_dronegs_config(
+            {**params, "gs_tile_mode": "4"},
+            facade_mode=False,
+            data_factor=DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
+        )
+        self.assertEqual(maximum_expert.tile_mode, 4)
+        self.assertFalse(maximum_expert.tile_mode_auto)
+        self.assertEqual(maximum_expert.profile_id, "custom")
         self.assertTrue(warnings)
 
     def test_versioned_quality_profile_becomes_custom_after_training_override(self):
