@@ -22,6 +22,7 @@ const RECONSTRUCTION_PARAMS = [
   "facade_meters_per_model_unit",
   "facade_texture_max_incidence_deg",
   "facade_depth_iqr_multiplier",
+  "facade_depth_rear_iqr_multiplier",
   "facade_seed_max_reprojection_error",
   "facade_seed_min_track_length",
   "facade_filter_max_scale",

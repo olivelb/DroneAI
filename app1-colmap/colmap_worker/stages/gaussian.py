@@ -261,6 +261,7 @@ def prepare_gaussian_product_run(
         facade_frame_report=os.path.join(workspace_dir, "facade_frame.json"),
         facade_texture_max_incidence_deg=float(params["facade_texture_max_incidence_deg"]),
         facade_depth_iqr_multiplier=float(params["facade_depth_iqr_multiplier"]),
+        facade_depth_rear_iqr_multiplier=float(params["facade_depth_rear_iqr_multiplier"]),
         facade_seed_max_reprojection_error=float(params["facade_seed_max_reprojection_error"]),
         facade_seed_min_track_length=int(params["facade_seed_min_track_length"]),
     )
@@ -380,6 +381,7 @@ def run_gaussian_product(
             facade_frame_report=config.facade_frame_report,
             facade_texture_max_incidence_deg=(config.facade_texture_max_incidence_deg),
             facade_depth_iqr_multiplier=config.facade_depth_iqr_multiplier,
+            facade_depth_rear_iqr_multiplier=(config.facade_depth_rear_iqr_multiplier),
             facade_seed_max_reprojection_error=(config.facade_seed_max_reprojection_error),
             facade_seed_min_track_length=config.facade_seed_min_track_length,
         )

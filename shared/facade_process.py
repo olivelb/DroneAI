@@ -16,7 +16,7 @@ from shared.dronegs_profile import DRONEGS_PRODUCTION_PROFILE_V1
 MAP_PROCESS_ID = "map"
 FACADE_PROCESS_ID = "facade"
 ORTHOPHOTO_MODES = frozenset({MAP_PROCESS_ID, FACADE_PROCESS_ID})
-FACADE_PROCESS_PROFILE_ID = "FACADE_HD_V3"
+FACADE_PROCESS_PROFILE_ID = "FACADE_HD_V4"
 FACADE_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V3"
 FACADE_PREVIOUS_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V2"
 FACADE_LEGACY_DRONEGS_PROFILE_ID = "DRONEGS_FACADE_HD_V1"
@@ -34,6 +34,7 @@ FACADE_PARAMETER_DEFAULTS = MappingProxyType(
         "facade_meters_per_model_unit": "1.0",
         "facade_texture_max_incidence_deg": "45",
         "facade_depth_iqr_multiplier": "1.0",
+        "facade_depth_rear_iqr_multiplier": "4.0",
         "facade_seed_max_reprojection_error": "2.0",
         "facade_seed_min_track_length": "2",
         "facade_filter_max_scale": "1.0",
