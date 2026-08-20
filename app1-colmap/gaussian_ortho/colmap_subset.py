@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import struct
+import tempfile
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import TypedDict
@@ -40,6 +41,32 @@ class ColmapPointRecord(TypedDict):
     rgb: tuple[int, int, int]
     error: float
     track: list[tuple[int, int]]
+
+
+def _copy_file_contents_atomically(source: Path, target: Path) -> None:
+    """Copy bytes without POSIX metadata and publish only a complete file.
+
+    Windows-backed WSL mounts can allow file creation while rejecting the
+    ``utime`` call performed by :func:`shutil.copy2`.  A sibling temporary file
+    also prevents an interrupted retry from treating a partial image as an
+    already materialized subset member.
+    """
+
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=target.parent,
+            prefix=f".{target.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+        shutil.copyfile(source, temporary_path)
+        os.replace(temporary_path, target)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _coverage_balanced_point_ids(
@@ -222,7 +249,7 @@ def _provide_subset_images(
         try:
             os.link(source_image, target_image)
         except OSError:
-            shutil.copy2(source_image, target_image)
+            _copy_file_contents_atomically(source_image, target_image)
             copied += 1
         else:
             hardlinked += 1

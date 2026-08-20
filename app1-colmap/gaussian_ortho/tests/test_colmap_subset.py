@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from gaussian_ortho.colmap_subset import (
     _read_colmap_cameras_bin,
     _read_colmap_images_bin,
@@ -341,8 +343,12 @@ def test_export_colmap_subset_copies_when_links_are_unsupported(
     def reject_link(*_args, **_kwargs) -> None:
         raise PermissionError(1, "Operation not permitted")
 
+    def reject_metadata(*_args, **_kwargs) -> None:
+        raise PermissionError(1, "DrvFS rejects utime")
+
     monkeypatch.setattr("gaussian_ortho.colmap_subset.os.symlink", reject_link)
     monkeypatch.setattr("gaussian_ortho.colmap_subset.os.link", reject_link)
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.shutil.copystat", reject_metadata)
 
     first_report = export_colmap_subset(
         str(source),
@@ -376,3 +382,40 @@ def test_export_colmap_subset_copies_when_links_are_unsupported(
         "hardlinked": 0,
         "copied": 0,
     }
+
+
+def test_export_colmap_subset_does_not_publish_an_interrupted_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "source"
+    image_name = "keep.jpg"
+    _write_single_image_model(source, image_name)
+    source_images = tmp_path / "images"
+    source_images.mkdir()
+    source_image = source_images / image_name
+    source_image.write_bytes(b"complete jpeg fixture")
+
+    def reject_link(*_args, **_kwargs) -> None:
+        raise PermissionError(1, "Operation not permitted")
+
+    def interrupt_copy(_source: Path, destination: Path) -> None:
+        Path(destination).write_bytes(b"partial")
+        raise OSError("simulated interrupted copy")
+
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.os.symlink", reject_link)
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.os.link", reject_link)
+    monkeypatch.setattr("gaussian_ortho.colmap_subset.shutil.copyfile", interrupt_copy)
+
+    with pytest.raises(OSError, match="simulated interrupted copy"):
+        export_colmap_subset(
+            str(source),
+            str(tmp_path / "cell"),
+            [image_name],
+            images_dir=str(source_images),
+            return_report=True,
+        )
+
+    target_images = tmp_path / "cell" / "images"
+    assert not (target_images / image_name).exists()
+    assert not list(target_images.glob(f".{image_name}.*.tmp"))
