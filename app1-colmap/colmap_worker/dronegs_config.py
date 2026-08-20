@@ -53,6 +53,7 @@ class DroneGsRunConfig:
     max_width: int
     tile_mode: int
     mip_filter_variance: float
+    tile_mode_auto: bool
     mip_filter_compensation: bool
     filter_enabled: bool
     filter_max_scale: float
@@ -132,6 +133,17 @@ def resolve_dronegs_config(
         iterations,
         requested_checkpoint_every,
     )
+    raw_tile_mode = params.get("gs_tile_mode", "auto")
+    tile_mode_auto = isinstance(raw_tile_mode, str) and raw_tile_mode.strip().lower() == "auto"
+    if tile_mode_auto:
+        tile_mode = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode
+    else:
+        try:
+            tile_mode = int(raw_tile_mode)
+        except (TypeError, ValueError) as error:
+            raise ValueError("gs_tile_mode must be auto, 1, 2, or 4") from error
+        if tile_mode not in {1, 2, 4}:
+            raise ValueError("gs_tile_mode must be auto, 1, 2, or 4")
     qualification_policy_id = str(params.get("gs_qualification_policy", DRONEGS_QUALIFICATION_POLICY_ID))
     coverage_policy = SpatialCoveragePolicy()
     config = DroneGsRunConfig(
@@ -215,7 +227,8 @@ def resolve_dronegs_config(
             )
         ),
         max_width=int(params.get("gs_max_width", DRONEGS_PRODUCTION_PROFILE_V1.max_width)),
-        tile_mode=int(params.get("gs_tile_mode", DRONEGS_PRODUCTION_PROFILE_V1.tile_mode)),
+        tile_mode=tile_mode,
+        tile_mode_auto=tile_mode_auto,
         mip_filter_variance=float(params.get("gs_ortho_mip_filter_variance", 0.03)),
         mip_filter_compensation=bool(params.get("gs_ortho_mip_filter_compensation", True)),
         filter_enabled=bool(params.get("gs_filter_enabled", True)),
@@ -282,12 +295,11 @@ def resolve_dronegs_config(
     warnings: list[str] = []
     if checkpoint_every != requested_checkpoint_every:
         warnings.append(
-            "DroneGS checkpoint interval was raised to "
-            f"{checkpoint_every} iterations to respect the recovery budget."
+            f"DroneGS checkpoint interval was raised to {checkpoint_every} iterations to respect the recovery budget."
         )
     profile_identity = _profile_identity(config)
     expected_profile = expected_profile_identity(config.profile_id, profile_identity)
-    if expected_profile is not None and profile_identity != expected_profile:
+    if expected_profile is not None and (profile_identity != expected_profile or not config.tile_mode_auto):
         config = replace(config, profile_id="custom")
         warnings.append(
             "DroneGS expert overrides detected; the run is recorded as custom instead of its named profile."

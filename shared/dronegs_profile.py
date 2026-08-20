@@ -73,7 +73,7 @@ class DroneGSProductionProfile:
             "gs_iterations": str(self.iterations),
             "gs_data_factor": str(self.data_factor),
             "gs_max_width": str(self.max_width),
-            "gs_tile_mode": str(self.tile_mode),
+            "gs_tile_mode": "auto",
             "gs_cap_max": str(self.cap_max),
             "gs_sh_degree": str(self.sh_degree),
             "gs_seed": str(self.seed),
