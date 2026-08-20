@@ -23,6 +23,14 @@ QualityProfileId = Literal[
 ]
 DEFAULT_QUALITY_PROFILE_ID: QualityProfileId = "normal-v3"
 QUALITY_PROFILE_CANDIDATES_FLAG = "DRONEAI_QUALITY_PROFILE_CANDIDATES_ENABLED"
+IMMUTABLE_PROFILE_OVERRIDE_KEYS = frozenset({"gs_production_profile"})
+QUALIFICATION_ONLY_PROFILE_OVERRIDE_KEYS = frozenset(
+    {
+        "gs_initial_scale_policy",
+        "gs_initial_max_projected_sigma_pixels",
+        "gs_capacity_targeted_growth",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -77,9 +85,7 @@ def _profile(
                 "feature_max_num_features": str(features),
                 "mvs_max_image_size": str(image_size),
                 "gs_iterations": str(iterations),
-                "gs_checkpoint_every": str(
-                    checkpoint_interval_for_iterations(iterations)
-                ),
+                "gs_checkpoint_every": str(checkpoint_interval_for_iterations(iterations)),
                 "gs_data_factor": data_factor,
                 "gs_max_width": str(image_size),
                 "gs_cap_max": str(gaussians),
@@ -257,6 +263,27 @@ def quality_profile(profile_id: str) -> QualityProfile:
         raise ValueError(f"unknown quality profile {profile_id!r}; expected one of: {supported}") from error
 
 
+def quality_profile_for_new_mission(profile_id: str) -> QualityProfile:
+    """Resolve only profiles explicitly exposed for a new mission.
+
+    The complete registry is intentionally broader because immutable historic
+    missions must remain replayable. It must not double as the create API's
+    allow-list: doing so makes replay-only and unqualified candidate profiles
+    reachable by posting their identifier directly.
+    """
+
+    selectable = selectable_quality_profiles(
+        include_candidates=quality_profile_candidates_enabled(),
+    )
+    for profile in selectable:
+        if profile.profile_id == profile_id:
+            return profile
+    supported = ", ".join(profile.profile_id for profile in selectable)
+    raise ValueError(
+        f"quality profile {profile_id!r} is not selectable for a new mission; expected one of: {supported}"
+    )
+
+
 def selectable_quality_profiles(*, include_candidates: bool = False) -> tuple[QualityProfile, ...]:
     """Return profiles offered for new missions in the operator catalog."""
 
@@ -286,3 +313,22 @@ def profile_overrides(
         for key, expected in profile.parameters.items()
         if key in effective_parameters and str(effective_parameters[key]) != str(expected)
     }
+
+
+def profile_overrides_for_new_mission(
+    profile_id: str,
+    effective_parameters: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate expert overrides against create-time profile exposure policy."""
+
+    overrides = profile_overrides(profile_id, effective_parameters)
+    immutable = sorted(IMMUTABLE_PROFILE_OVERRIDE_KEYS.intersection(overrides))
+    if immutable:
+        raise ValueError("new missions cannot override immutable quality-profile identity: " + ", ".join(immutable))
+    qualification_only = sorted(QUALIFICATION_ONLY_PROFILE_OVERRIDE_KEYS.intersection(overrides))
+    if qualification_only and not quality_profile_candidates_enabled():
+        raise ValueError(
+            "quality-profile qualification overrides require "
+            f"{QUALITY_PROFILE_CANDIDATES_FLAG}=true in a non-production environment: " + ", ".join(qualification_only)
+        )
+    return overrides

@@ -1497,7 +1497,7 @@ Default training parameters (configurable via dashboard UI):
 | `gs_iterations` | 15000 | Validated training budget |
 | `gs_data_factor` | 4 | Image downscaling factor |
 | `gs_max_width` | 1600 | Maximum resized image width |
-| `gs_tile_mode` | 4 | Memory-aware tiling mode |
+| `gs_tile_mode` | `auto` | VRAM-aware mode; numeric 1/2/4 is an expert override |
 | `gs_cap_max` | 1,500,000 | Maximum Gaussian count |
 | `gs_sh_degree` | 3 | Maximum spherical harmonics degree |
 | `gs_seed` | 42 | Deterministic base seed |
@@ -1510,6 +1510,17 @@ Default training parameters (configurable via dashboard UI):
 | `gs_test_guard_percent` | 0 | Guard ring excluded from training for spatial-block |
 | `gs_canary_min_psnr` | 18.0 | Minimum held-out PSNR required before rendering |
 | `gs_canary_min_ssim` | 0.25 | Minimum held-out SSIM required before rendering |
+
+In automatic mode, orchestration evaluates modes 1, 2, then 4 and selects the
+smallest split count whose largest processed view fits the current device.
+The conservative budget is `min(free VRAM, 85% of total VRAM)`, minus the
+planned resident Gaussian capacity and a 1 GiB dynamic-workspace reserve.
+Image workspaces are estimated at 256 bytes per maximum processed pixel,
+including headroom over the native trainer's fixed allocations. If VRAM
+inventory is unavailable, mode 4 is used conservatively. An explicit numeric
+value is treated as an expert override and is never silently changed. The
+native trainer still receives a concrete 1, 2, or 4 in its run manifest.
+
 
 #### Step 4: Merge
 
@@ -1692,7 +1703,7 @@ complete immutable envelopes and the memory formula are in
 | GS Maximum Training Width | `gs_max_width` | int | 1600 | 256–4096 |
 | Ortho Mip Filter Variance | `gs_ortho_mip_filter_variance` | float | 0.03 | 0.01–1.0 |
 | Ortho Mip Opacity Compensation | `gs_ortho_mip_filter_compensation` | bool | true | — |
-| GS Tile Mode | `gs_tile_mode` | select | 4 | 1/2/4 |
+| GS Tile Mode | `gs_tile_mode` | select | auto | auto/1/2/4 |
 | GS Max Gaussians | `gs_cap_max` | int | 1500000 | 1000000–20000000 |
 | GS Capacity Mode | `gs_capacity_mode` | select | fixed | fixed/adaptive |
 | GS Capacity Floor | `gs_capacity_floor` | int | 1500000 | 1000000–20000000 |

@@ -25,15 +25,16 @@ from shared.tenancy import (
 )
 from shared.quality_profiles import (
     DEFAULT_QUALITY_PROFILE_ID,
-    profile_overrides,
+    profile_overrides_for_new_mission,
     quality_profile_candidates_enabled,
-    quality_profile,
+    quality_profile_for_new_mission,
     selectable_quality_profiles,
 )
 from shared.validation import configured_work_drives
 from shared.yolo_capabilities import yolo_model_catalog, yolo_model_manifest
 from shared.sam3_capabilities import Sam3Capability, sam3_capability
 
+from ..analysis_support import request_mission_analysis_cancellations
 from ..dataset_access import get_owned_dataset
 from ..mission_access import mission_query, resolve_owner_subject
 from ..messaging import (
@@ -147,10 +148,7 @@ def _resolve_owner_for_direct_lookup(
     """Persist explicit delegation before helpers open their own DB session."""
 
     normalized_owner = requested_owner.strip() if requested_owner is not None else None
-    durable_delegation = (
-        normalized_owner not in {None, "", principal.subject}
-        and principal.role == "admin"
-    )
+    durable_delegation = normalized_owner not in {None, "", principal.subject} and principal.role == "admin"
     if durable_delegation:
         with get_session() as audit_session:
             return resolve_owner_subject(
@@ -334,6 +332,7 @@ def _delete_mission(
                         synchronize_session=False,
                     )
                 )
+                request_mission_analysis_cancellations(session, mission)
                 mission.current_step = MANUAL_DELETION_STEP
                 enqueue_outbox(
                     session,
@@ -423,9 +422,7 @@ def mission_parameters() -> MissionParametersResponse:
     work_drive_default = os.getenv("WORK_DRIVE_DEFAULT", "").strip()
     if work_drive_default not in configured_names:
         work_drive_default = work_drives[0]["name"] if work_drives else ""
-    profiles = selectable_quality_profiles(
-        include_candidates=quality_profile_candidates_enabled()
-    )
+    profiles = selectable_quality_profiles(include_candidates=quality_profile_candidates_enabled())
     return {
         "pipelines": PIPELINE_DEFAULTS,
         "processes": product_process_catalog(),
@@ -461,6 +458,22 @@ def _start_mission(
         LEGACY_ORGANIZATION_ID,
     )
     try:
+        selected_profile = quality_profile_for_new_mission(params.quality_profile)
+        requested_profile_overrides = getattr(params, "colmap_params", {})
+        effective_profile_parameters = {
+            **selected_profile.parameters,
+            **requested_profile_overrides,
+        }
+        selected_profile_overrides = profile_overrides_for_new_mission(
+            params.quality_profile,
+            requested_profile_overrides,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(error),
+        ) from error
+    try:
         with get_session() as session:
             existing = (
                 session.query(Mission)
@@ -487,20 +500,11 @@ def _start_mission(
             payload["organization_id"] = organization_id
             workspace_prefix = mission_prefix(organization_id, params.vol_id)
             payload["workspace_prefix"] = workspace_prefix
-            selected_profile = quality_profile(params.quality_profile)
-            payload["colmap_params"] = {
-                **selected_profile.parameters,
-                **params.colmap_params,
-            }
+            payload["colmap_params"] = effective_profile_parameters
             payload["quality_profile_version"] = selected_profile.version
-            payload["quality_profile_overrides"] = profile_overrides(
-                params.quality_profile,
-                params.colmap_params,
-            )
+            payload["quality_profile_overrides"] = selected_profile_overrides
             if params.ai_backend == "yolo":
-                payload["ai_model_manifest"] = yolo_model_manifest(
-                    params.ai_model_variant
-                )
+                payload["ai_model_manifest"] = yolo_model_manifest(params.ai_model_variant)
             mission = Mission(
                 vol_id=params.vol_id,
                 owner_subject=principal.subject,

@@ -97,3 +97,7 @@ def test_tenant_mission_identity_migration_replaces_global_constraints() -> None
     assert '["organization_id", "vol_id"]' in source
     assert '"uq_processed_tile_mission_index"' in source
     assert '["mission_id", "tile_index"]' in source
+    assert "GROUP BY vol_id HAVING COUNT(*) > 1" in source
+    assert "GROUP BY vol_id, tile_index" in source
+    assert "Cannot downgrade 0035" in source
+    assert "application/schema forward" in source

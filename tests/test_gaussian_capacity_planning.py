@@ -245,11 +245,7 @@ def test_detected_vram_can_be_lowered_for_reproducible_qualification(
 ):
     monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "8")
     cupy = SimpleNamespace(
-        cuda=SimpleNamespace(
-            Device=lambda _index: SimpleNamespace(
-                mem_info=(20 * capacity.GIB, 24 * capacity.GIB)
-            )
-        )
+        cuda=SimpleNamespace(Device=lambda _index: SimpleNamespace(mem_info=(20 * capacity.GIB, 24 * capacity.GIB)))
     )
 
     assert capacity.detected_vram_bytes(cupy) == (
@@ -261,11 +257,7 @@ def test_detected_vram_can_be_lowered_for_reproducible_qualification(
 def test_detected_vram_budget_never_increases_available_memory(monkeypatch):
     monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "32")
     cupy = SimpleNamespace(
-        cuda=SimpleNamespace(
-            Device=lambda _index: SimpleNamespace(
-                mem_info=(6 * capacity.GIB, 24 * capacity.GIB)
-            )
-        )
+        cuda=SimpleNamespace(Device=lambda _index: SimpleNamespace(mem_info=(6 * capacity.GIB, 24 * capacity.GIB)))
     )
 
     assert capacity.detected_vram_bytes(cupy) == (
@@ -277,11 +269,7 @@ def test_detected_vram_budget_never_increases_available_memory(monkeypatch):
 def test_detected_vram_rejects_an_invalid_operator_budget(monkeypatch):
     monkeypatch.setenv(capacity.VRAM_BUDGET_ENV, "not-a-number")
     cupy = SimpleNamespace(
-        cuda=SimpleNamespace(
-            Device=lambda _index: SimpleNamespace(
-                mem_info=(8 * capacity.GIB, 8 * capacity.GIB)
-            )
-        )
+        cuda=SimpleNamespace(Device=lambda _index: SimpleNamespace(mem_info=(8 * capacity.GIB, 8 * capacity.GIB)))
     )
 
     with pytest.raises(ValueError, match=capacity.VRAM_BUDGET_ENV):
@@ -332,7 +320,99 @@ def test_achieved_density_accepts_a_supported_requested_gsd():
     assert assessment.achieved_spacing_pixels < 8.0
 
     assert capacity.capacity_plan_from_dict(plan.as_dict()) == plan
-    assert (
-        capacity.density_assessment_from_dict(assessment.as_dict())
-        == assessment
+    assert capacity.density_assessment_from_dict(assessment.as_dict()) == assessment
+
+
+FULL_4K_REGION = [(4096, 4096, 4096, 4096, False)]
+
+
+@pytest.mark.parametrize(
+    ("gaussian_capacity_bytes", "expected_mode"),
+    [
+        (12_000_000 * capacity.GAUSSIAN_CAPACITY_BYTES, 1),
+        (2_100_000 * capacity.GAUSSIAN_CAPACITY_BYTES, 2),
+        (int(4.3 * capacity.GIB), 4),
+    ],
+)
+def test_automatic_tile_mode_uses_the_largest_view_that_fits_vram(
+    gaussian_capacity_bytes,
+    expected_mode,
+):
+    total = 24 * capacity.GIB if expected_mode == 1 else 8 * capacity.GIB
+
+    plan = capacity.plan_training_tile_mode(
+        FULL_4K_REGION,
+        configured_mode=4,
+        automatic=True,
+        resize_factor=1,
+        max_width=4096,
+        gaussian_capacity_bytes=gaussian_capacity_bytes,
+        free_vram_bytes=total,
+        total_vram_bytes=total,
     )
+
+    assert plan.effective_mode == expected_mode
+    assert plan.fits_estimate
+    assert plan.estimated_pixel_bytes <= plan.available_pixel_bytes
+
+
+def test_automatic_tile_mode_reports_when_even_four_tiles_do_not_fit():
+    plan = capacity.plan_training_tile_mode(
+        FULL_4K_REGION,
+        configured_mode=4,
+        automatic=True,
+        resize_factor=1,
+        max_width=4096,
+        gaussian_capacity_bytes=5 * capacity.GIB,
+        free_vram_bytes=8 * capacity.GIB,
+        total_vram_bytes=8 * capacity.GIB,
+    )
+
+    assert plan.effective_mode == 4
+    assert not plan.fits_estimate
+    assert plan.estimated_pixel_bytes > plan.available_pixel_bytes
+
+
+def test_automatic_tile_mode_falls_back_conservatively_without_vram_inventory():
+    plan = capacity.plan_training_tile_mode(
+        FULL_4K_REGION,
+        configured_mode=4,
+        automatic=True,
+        resize_factor=1,
+        max_width=4096,
+        gaussian_capacity_bytes=0,
+        free_vram_bytes=None,
+        total_vram_bytes=None,
+    )
+
+    assert plan.effective_mode == 4
+    assert plan.fits_estimate is None
+
+
+def test_expert_tile_mode_is_never_silently_overridden():
+    plan = capacity.plan_training_tile_mode(
+        FULL_4K_REGION,
+        configured_mode=1,
+        automatic=False,
+        resize_factor=1,
+        max_width=4096,
+        gaussian_capacity_bytes=5 * capacity.GIB,
+        free_vram_bytes=8 * capacity.GIB,
+        total_vram_bytes=8 * capacity.GIB,
+    )
+
+    assert plan.effective_mode == 1
+    assert not plan.fits_estimate
+
+
+def test_adaptive_native_crop_does_not_over_split_a_small_resident_view():
+    regions = [(1024, 768, 4096, 3072, True)]
+
+    pixels = capacity.maximum_training_view_pixels(
+        regions,
+        tile_mode=4,
+        resize_factor=1,
+        max_width=4096,
+    )
+
+    assert pixels == 1024 * 768

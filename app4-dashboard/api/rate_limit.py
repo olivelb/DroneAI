@@ -27,6 +27,7 @@ BODY_CREDENTIAL_PATHS = {
     ("POST", "/auth/session"),
     ("POST", "/auth/capabilities/redeem"),
 }
+PUBLIC_IDENTITY_EXEMPT_PATHS = {"/", "/live", "/ready"}
 
 
 def _unverified_request_token(request: Request) -> str | None:
@@ -62,22 +63,16 @@ def consume_identity_rate_limit(
     """Consume peer-wide and public-credential buckets without a DB lookup."""
 
     peer = request.client.host if request.client else "unknown"
-    retry_after = security.identity_peer_rate_limiter.consume(
-        f"identity:peer:{peer}"
-    )
+    retry_after = security.identity_peer_rate_limiter.consume(f"identity:peer:{peer}")
     if retry_after is not None:
         return (
             retry_after,
             security.identity_peer_rate_limiter.requests_per_minute,
         )
-    public_identity = _public_credential_identity(
-        token if token is not None else _unverified_request_token(request)
-    )
+    public_identity = _public_credential_identity(token if token is not None else _unverified_request_token(request))
     if public_identity is None:
         return None, security.identity_peer_rate_limiter.requests_per_minute
-    retry_after = security.identity_credential_rate_limiter.consume(
-        f"identity:credential:{public_identity}"
-    )
+    retry_after = security.identity_credential_rate_limiter.consume(f"identity:credential:{public_identity}")
     return (
         retry_after,
         security.identity_credential_rate_limiter.requests_per_minute,
@@ -111,21 +106,23 @@ def enforce_identity_rate_limit(
 
 
 class IdentityRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
-    """Protect identity routes before their authentication dependencies run."""
+    """Protect every token-bearing request before authentication reaches DB."""
 
     async def dispatch(
         self,
         request: Request,
         call_next: Callable[[Request], Awaitable[Response]],
     ) -> Response:
+        token = _unverified_request_token(request)
         identity_path = request.url.path.startswith(("/auth", "/platform"))
         skip = (request.method, request.url.path) in BODY_CREDENTIAL_PATHS or (
             request.method == "DELETE" and request.url.path == "/auth/session"
         )
-        if not identity_path or skip:
+        exempt_public = request.method == "OPTIONS" or request.url.path in PUBLIC_IDENTITY_EXEMPT_PATHS
+        if skip or exempt_public or (not identity_path and token is None):
             return await call_next(request)
         try:
-            await run_in_threadpool(enforce_identity_rate_limit, request)
+            await run_in_threadpool(enforce_identity_rate_limit, request, token)
         except HTTPException as error:
             return JSONResponse(
                 status_code=error.status_code,
@@ -136,14 +133,16 @@ class IdentityRateLimitMiddleware(BaseHTTPMiddleware):  # type: ignore[misc]
 
 
 def organization_request_quotas_enabled() -> bool:
-    raw = os.getenv(
-        "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
-        "false",
-    ).strip().lower()
-    if raw not in {"true", "false"}:
-        raise RuntimeError(
-            "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED must be true or false"
+    raw = (
+        os.getenv(
+            "DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED",
+            "false",
         )
+        .strip()
+        .lower()
+    )
+    if raw not in {"true", "false"}:
+        raise RuntimeError("DRONEAI_ORGANIZATION_REQUEST_QUOTAS_ENABLED must be true or false")
     return raw == "true"
 
 
@@ -151,10 +150,7 @@ def rate_limit_identity(request: Request) -> str:
     """Prefer the authenticated subject over ingress-dependent source addresses."""
     principal = security.authenticate_request(request)
     if principal is not None:
-        return (
-            f"organization:{principal.organization_id}:"
-            f"subject:{principal.subject}"
-        )
+        return f"organization:{principal.organization_id}:subject:{principal.subject}"
     peer = request.client.host if request.client else "unknown"
     return f"peer:{peer}"
 
@@ -232,9 +228,7 @@ class OrganizationRequestQuotaMiddleware(BaseHTTPMiddleware):  # type: ignore[mi
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 content={"detail": "Organization request quota exceeded"},
                 headers={
-                    "Retry-After": str(
-                        max(1, math.ceil(decision.retry_after_seconds))
-                    ),
+                    "Retry-After": str(max(1, math.ceil(decision.retry_after_seconds))),
                     "X-RateLimit-Scope": "organization",
                     "X-RateLimit-Limit": str(decision.requests_per_minute),
                 },

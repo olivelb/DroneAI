@@ -5,6 +5,7 @@ Reads cameras.bin / images.bin / points3D.bin from a COLMAP sparse model
 directory and converts them into numpy arrays suitable for Gaussian Splatting
 training initialisation.
 """
+
 from __future__ import annotations
 
 import json
@@ -21,6 +22,7 @@ type Sim3Transform = dict[str, Any]
 # ---------------------------------------------------------------------------
 #  COLMAP binary format readers
 # ---------------------------------------------------------------------------
+
 
 def _read_colmap_dense_array(path: str) -> np.ndarray:
     """Read a COLMAP dense array (depth/normal *.bin) with width&height&channels& header."""
@@ -47,8 +49,7 @@ def _read_colmap_dense_array(path: str) -> np.ndarray:
     return result
 
 
-def _resolve_depth_map_path(dense_path: str, image_name: str,
-                            preferred: str = "geometric") -> str | None:
+def _resolve_depth_map_path(dense_path: str, image_name: str, preferred: str = "geometric") -> str | None:
     """Find a depth map for the given image, preferring the given type."""
     folder = os.path.join(dense_path, "stereo", "depth_maps")
     for dtype in (preferred, "photometric" if preferred == "geometric" else "geometric"):
@@ -62,9 +63,11 @@ def _resolve_depth_map_path(dense_path: str, image_name: str,
 #  Camera info
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class CameraInfo:
     """Intrinsics + extrinsics for a single image."""
+
     uid: int
     image_name: str
     width: int
@@ -73,28 +76,31 @@ class CameraInfo:
     fy: float
     cx: float
     cy: float
-    R: np.ndarray          # 3x3 rotation (camera-to-world)
-    T: np.ndarray          # 3   translation (camera centre in world)
+    R: np.ndarray  # 3x3 rotation (camera-to-world)
+    T: np.ndarray  # 3   translation (camera centre in world)
     image_path: str = ""
     sparse_observations: int = 0
+    camera_model: str = "PINHOLE"
 
 
 @dataclass
 class PointCloud:
     """Sparse point cloud from COLMAP SfM."""
-    points: np.ndarray     # (N, 3) world XYZ
-    colors: np.ndarray     # (N, 3) RGB 0-1
-    normals: np.ndarray    # (N, 3) or zeros
+
+    points: np.ndarray  # (N, 3) world XYZ
+    colors: np.ndarray  # (N, 3) RGB 0-1
+    normals: np.ndarray  # (N, 3) or zeros
 
 
 # ---------------------------------------------------------------------------
 #  Loader
 # ---------------------------------------------------------------------------
 
+
 def _camera_intrinsics(cam: Any) -> tuple[float, float, float, float]:
     """Extract (fx, fy, cx, cy) from a pycolmap Camera regardless of model."""
     params = [float(value) for value in cam.params]
-    model = cam.model.name if hasattr(cam.model, 'name') else str(cam.model)
+    model = cam.model.name if hasattr(cam.model, "name") else str(cam.model)
     if model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"):
         f, cx, cy = params[0], params[1], params[2]
         return f, f, cx, cy
@@ -102,9 +108,12 @@ def _camera_intrinsics(cam: Any) -> tuple[float, float, float, float]:
         return params[0], params[1], params[2], params[3]
     else:
         # Best-effort: assume first 4 params are fx, fy, cx, cy
-        return params[0], params[1] if len(params) > 1 else params[0], \
-               params[2] if len(params) > 2 else 0, \
-               params[3] if len(params) > 3 else 0
+        return (
+            params[0],
+            params[1] if len(params) > 1 else params[0],
+            params[2] if len(params) > 2 else 0,
+            params[3] if len(params) > 3 else 0,
+        )
 
 
 def load_colmap_reconstruction(
@@ -156,6 +165,13 @@ def load_colmap_reconstruction(
     for img_id in sorted(reconstruction.images.keys()):
         image = reconstruction.images[img_id]
         cam = reconstruction.cameras[image.camera_id]
+        camera_model = cam.model.name if hasattr(cam.model, "name") else str(cam.model)
+        if camera_model not in {"SIMPLE_PINHOLE", "PINHOLE"}:
+            raise ValueError(
+                "Gaussian native-image footprints require the undistorted "
+                "COLMAP dense workspace camera model; expected PINHOLE or "
+                f"SIMPLE_PINHOLE, got {camera_model!r} for {image.name!r}"
+            )
         fx, fy, cx, cy = _camera_intrinsics(cam)
 
         # COLMAP: R_cw (world→camera), t_cw
@@ -167,17 +183,23 @@ def load_colmap_reconstruction(
         # R for 3DGS: camera-to-world rotation
         R_c2w = R_cw.T
 
-        all_cameras.append(CameraInfo(
-            uid=img_id,
-            image_name=image.name,
-            width=cam.width,
-            height=cam.height,
-            fx=fx, fy=fy, cx=cx, cy=cy,
-            R=R_c2w.astype(np.float32),
-            T=C_world.astype(np.float32),
-            image_path=os.path.join(images_dir, image.name),
-            sparse_observations=int(image.num_points3D),
-        ))
+        all_cameras.append(
+            CameraInfo(
+                uid=img_id,
+                image_name=image.name,
+                width=cam.width,
+                height=cam.height,
+                fx=fx,
+                fy=fy,
+                cx=cx,
+                cy=cy,
+                R=R_c2w.astype(np.float32),
+                T=C_world.astype(np.float32),
+                image_path=os.path.join(images_dir, image.name),
+                sparse_observations=int(image.num_points3D),
+                camera_model=camera_model,
+            )
+        )
 
     # Train/test split
     train_cameras: list[CameraInfo]
@@ -220,8 +242,10 @@ def load_colmap_reconstruction(
         colors = colors[keep]
         reproj_errors = reproj_errors[keep]
         track_lengths = track_lengths[keep]
-        print(f"[colmap_loader] Point quality filter: {n_before} → {keep.sum()} points "
-              f"(removed {n_removed}: reproj_error>{max_reproj_error}px or track_len<{min_track_length})")
+        print(
+            f"[colmap_loader] Point quality filter: {n_before} → {keep.sum()} points "
+            f"(removed {n_removed}: reproj_error>{max_reproj_error}px or track_len<{min_track_length})"
+        )
 
     # Spatial proximity filter: remove points far from any camera.
     # COLMAP local coordinates are NOT metric — we use the max inter-camera
@@ -229,9 +253,11 @@ def load_colmap_reconstruction(
     # point should be farther from all cameras than the cameras are from each
     # other, so this is a physically conservative bound.
     from scipy.spatial import cKDTree
+
     cam_positions = np.array([c.T for c in all_cameras], dtype=np.float64)
     cam_tree = cKDTree(cam_positions)
     from scipy.spatial.distance import pdist
+
     max_inter_cam = float(np.max(pdist(cam_positions)))
     max_dist = max_inter_cam
     pt_dists, _ = cam_tree.query(points, k=1)
@@ -241,11 +267,15 @@ def load_colmap_reconstruction(
     if n_outside > 0:
         points = points[inside]
         colors = colors[inside]
-        print(f"[colmap_loader] Spatial proximity filter: {n_before_bbox} → {inside.sum()} points "
-              f"(removed {n_outside} farther than {max_dist:.2f} units from nearest camera)")
+        print(
+            f"[colmap_loader] Spatial proximity filter: {n_before_bbox} → {inside.sum()} points "
+            f"(removed {n_outside} farther than {max_dist:.2f} units from nearest camera)"
+        )
     else:
-        print(f"[colmap_loader] Spatial proximity filter: all {n_before_bbox} points within "
-              f"{max_dist:.2f} units of a camera (scene diameter)")
+        print(
+            f"[colmap_loader] Spatial proximity filter: all {n_before_bbox} points within "
+            f"{max_dist:.2f} units of a camera (scene diameter)"
+        )
 
     normals = np.zeros_like(points)
     point_cloud = PointCloud(points=points, colors=colors, normals=normals)
@@ -276,9 +306,17 @@ def apply_sim3_to_camera(
     new_T = s * R_a @ cam.T.astype(np.float64) + t_a
     new_R = R_a @ cam.R.astype(np.float64)
     return CameraInfo(
-        uid=cam.uid, image_name=cam.image_name,
-        width=cam.width, height=cam.height,
-        fx=cam.fx, fy=cam.fy, cx=cam.cx, cy=cam.cy,
-        R=new_R.astype(np.float32), T=new_T.astype(np.float32),
+        uid=cam.uid,
+        image_name=cam.image_name,
+        width=cam.width,
+        height=cam.height,
+        fx=cam.fx,
+        fy=cam.fy,
+        cx=cam.cx,
+        cy=cam.cy,
+        R=new_R.astype(np.float32),
+        T=new_T.astype(np.float32),
         image_path=cam.image_path,
+        sparse_observations=cam.sparse_observations,
+        camera_model=cam.camera_model,
     )
