@@ -509,11 +509,13 @@ std::pair<std::uint32_t, std::uint32_t> training_dimensions(
 std::vector<FrameDescriptor> make_frame_descriptors(
     const Options& options, const Scene& scene,
     const std::vector<Gaussian>& gaussians,
-    std::size_t& maximum_pixels) {
+    std::size_t& maximum_pixels,
+    std::size_t& generated_views) {
     std::vector<FrameDescriptor> descriptors;
     descriptors.reserve(
         scene.images.size() * static_cast<std::size_t>(options.tile_mode));
     maximum_pixels = 0U;
+    generated_views = 0U;
     for (std::size_t scene_index = 0U;
          scene_index < scene.images.size(); ++scene_index) {
         const auto& image = scene.images[scene_index];
@@ -543,6 +545,7 @@ std::vector<FrameDescriptor> make_frame_descriptors(
                   static_cast<std::uint32_t>(camera.height),
                   options.tile_mode)
             : make_training_tiles(source_region, options.tile_mode);
+        generated_views += regions.size();
         for (std::size_t tile_index = 0U;
              tile_index < regions.size(); ++tile_index) {
             FrameDescriptor descriptor{
@@ -629,6 +632,17 @@ DatasetSplit expand_frame_split(
         }
     }
     return frame_split;
+}
+
+std::vector<std::size_t> supported_scene_indices(
+    const std::vector<FrameDescriptor>& descriptors) {
+    std::vector<std::size_t> indices;
+    for (const auto& descriptor : descriptors) {
+        if (indices.empty() || indices.back() != descriptor.scene_index) {
+            indices.push_back(descriptor.scene_index);
+        }
+    }
+    return indices;
 }
 
 struct HostImageCachePlan {
@@ -1197,18 +1211,65 @@ DatasetSplit make_dataset_split(
     return split;
 }
 
+DatasetSplit make_supported_dataset_split(
+    const Scene& scene,
+    const std::vector<std::size_t>& supported_indices,
+    std::uint32_t test_every, std::string_view test_split,
+    std::uint32_t test_guard_percent) {
+    if (supported_indices.empty()) {
+        throw std::invalid_argument(
+            "supported dataset split requires at least one image");
+    }
+    Scene supported_scene;
+    supported_scene.images.reserve(supported_indices.size());
+    std::size_t previous = 0U;
+    bool first = true;
+    for (const auto index : supported_indices) {
+        if (index >= scene.images.size() ||
+            (!first && index <= previous)) {
+            throw std::invalid_argument(
+                "supported dataset indices must be unique, ordered, and valid");
+        }
+        supported_scene.images.push_back(scene.images[index]);
+        previous = index;
+        first = false;
+    }
+
+    const auto local_split = make_dataset_split(
+        supported_scene,
+        supported_indices.size() == 1U ? 0U : test_every,
+        test_split,
+        test_guard_percent);
+    const auto remap =
+        [&supported_indices](const std::vector<std::size_t>& local) {
+            std::vector<std::size_t> mapped;
+            mapped.reserve(local.size());
+            for (const auto index : local) {
+                mapped.push_back(supported_indices.at(index));
+            }
+            return mapped;
+        };
+    return {
+        .training = remap(local_split.training),
+        .held_out = remap(local_split.held_out),
+        .ignored = remap(local_split.ignored),
+    };
+}
+
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians) {
     if (gaussians.empty() || scene.images.empty()) {
         throw std::invalid_argument("training requires images and initialized Gaussians");
     }
     std::size_t maximum_pixels = 0U;
+    std::size_t generated_views = 0U;
     const auto descriptors = make_frame_descriptors(
-        options, scene, gaussians, maximum_pixels);
+        options, scene, gaussians, maximum_pixels, generated_views);
     const auto host_cache_plan =
         host_image_cache_plan(descriptors, options);
-    const auto image_split = make_dataset_split(
-        scene, options.test_every, options.test_split,
+    const auto image_split = make_supported_dataset_split(
+        scene, supported_scene_indices(descriptors),
+        options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(
@@ -1343,22 +1404,22 @@ TrainingMetrics train_ordered_mrnf(
             "ordered training requires images and initialized Gaussians");
     }
     std::size_t maximum_pixels = 0U;
+    std::size_t generated_views = 0U;
     const auto descriptors = make_frame_descriptors(
-        options, scene, gaussians, maximum_pixels);
-    const auto requested_views =
-        scene.images.size() * static_cast<std::size_t>(options.tile_mode);
+        options, scene, gaussians, maximum_pixels, generated_views);
     std::cout
         << "{\"event\":\"training_view_expansion\",\"source_images\":"
         << scene.images.size() << ",\"tile_mode\":"
         << options.tile_mode << ",\"training_views\":"
         << descriptors.size() << ",\"unsupported_views\":"
-        << requested_views - descriptors.size()
+        << generated_views - descriptors.size()
         << "}\n"
         << std::flush;
     const auto host_cache_plan =
         host_image_cache_plan(descriptors, options);
-    const auto image_split = make_dataset_split(
-        scene, options.test_every, options.test_split,
+    const auto image_split = make_supported_dataset_split(
+        scene, supported_scene_indices(descriptors),
+        options.test_every, options.test_split,
         options.test_guard_percent);
     const auto frame_split = expand_frame_split(image_split, descriptors);
     ImageCache cache(

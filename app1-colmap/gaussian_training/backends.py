@@ -172,6 +172,7 @@ class TrainingRequest:
     seed: int = DRONEGS_PRODUCTION_PROFILE_V1.seed
     dataset_fingerprint: str | None = None
     dronegs: DroneGSTuning = field(default_factory=DroneGSTuning)
+    tile_mode_auto: bool = False
 
     def __post_init__(self) -> None:
         def require_integer(
@@ -205,6 +206,8 @@ class TrainingRequest:
         require_integer("seed", self.seed, 0)
         if not isinstance(self.dronegs, DroneGSTuning):
             raise ValueError("dronegs must be a DroneGSTuning instance")
+        if not isinstance(self.tile_mode_auto, bool):
+            raise ValueError("tile_mode_auto must be a boolean")
         if self.dataset_fingerprint is not None and not (
             isinstance(self.dataset_fingerprint, str) and self.dataset_fingerprint.strip()
         ):
@@ -253,7 +256,11 @@ class TrainingRequest:
                 "test_split": production.test_split,
                 "test_guard_percent": production.test_guard_percent,
             }
-            mismatches = [name for name, value in effective.items() if value != expected[name]]
+            mismatches = [
+                name
+                for name, value in effective.items()
+                if value != expected[name] and not (name == "tile_mode" and self.tile_mode_auto)
+            ]
             if mismatches:
                 raise ValueError(
                     f"{production.profile_id} cannot be combined with "

@@ -34,6 +34,7 @@ def test_resident_training_parallelizes_image_cache_io_by_resolution():
 
 
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
+    camera = SimpleNamespace(image_name="image.jpg", width=1000, height=800)
     scene_state = SimpleNamespace(
         name="scene",
         point_cloud=SimpleNamespace(
@@ -43,7 +44,7 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
             )
         ),
         colmap_to_meters=1.0,
-        cells=[(None, SimpleNamespace())],
+        cells=[(None, SimpleNamespace(train_cameras=[camera], image_crops={}))],
     )
     training_state = SimpleNamespace(final_ply="final.ply")
     calls = {}
@@ -76,6 +77,13 @@ def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch)
             capacity_floor=1_500_000,
             target_gaussian_spacing_pixels=0.0,
             resolution=0.02,
+            resident_partitioning=False,
+            tile_mode=4,
+            tile_mode_auto=False,
+            data_factor=1,
+            max_width=2400,
+            vol_id="mission",
+            report_fn=None,
         ),
         backend=backend,
         model_class=lambda: None,
@@ -96,10 +104,15 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
         np.linspace(0.0, 418.8, 40),
     )
     points = np.column_stack((x.ravel(), y.ravel(), np.zeros(x.size)))
+    camera = SimpleNamespace(image_name="image.jpg", width=4096, height=3072)
+    cell_scene = SimpleNamespace(
+        train_cameras=[camera],
+        image_crops={},
+    )
     scene_state = SimpleNamespace(
         point_cloud=SimpleNamespace(points=points),
         colmap_to_meters=1.0,
-        cells=[(None, SimpleNamespace())],
+        cells=[(None, cell_scene)],
         use_partition=False,
     )
     backend = SimpleNamespace(
@@ -115,7 +128,7 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
 
     def apply_partition(scene, _config, *, required_cell_count):
         assert required_cell_count == 7
-        scene.cells = [(SimpleNamespace(), SimpleNamespace())] * 9
+        scene.cells = [(SimpleNamespace(), cell_scene)] * 9
         scene.use_partition = True
 
     monkeypatch.setattr(
@@ -146,6 +159,10 @@ def test_training_phase_expands_adaptive_hq_to_resident_cells(monkeypatch):
         resident_partitioning=True,
         vol_id="mission",
         report_fn=None,
+        tile_mode=4,
+        tile_mode_auto=True,
+        data_factor=1,
+        max_width=4096,
     )
 
     result = workflow.execute_gaussian_training_phase(
@@ -271,14 +288,28 @@ def test_partitioned_rasterization_feathers_overlapping_buffer_models(
     left_path.write_bytes(b"left")
     right_path.write_bytes(b"right")
     left_bounds = workflow.CellBounds(
-        0.0, 10.0, 0.0, 10.0,
-        -2.0, 12.0, -2.0, 12.0,
-        0, 0,
+        0.0,
+        10.0,
+        0.0,
+        10.0,
+        -2.0,
+        12.0,
+        -2.0,
+        12.0,
+        0,
+        0,
     )
     right_bounds = workflow.CellBounds(
-        10.0, 20.0, 0.0, 10.0,
-        8.0, 22.0, -2.0, 12.0,
-        0, 1,
+        10.0,
+        20.0,
+        0.0,
+        10.0,
+        8.0,
+        22.0,
+        -2.0,
+        12.0,
+        0,
+        1,
         include_core_x_max=True,
         include_core_y_max=True,
     )
@@ -353,9 +384,7 @@ def test_partitioned_rasterization_feathers_overlapping_buffer_models(
     )
 
     assert result.result["rgb"].shape == (10, 20, 3)
-    assert result.result["rgb"][0, :, 0].tolist() == (
-        [40] * 8 + [68, 100, 120, 152] + [180] * 8
-    )
+    assert result.result["rgb"][0, :, 0].tolist() == ([40] * 8 + [68, 100, 120, 152] + [180] * 8)
     assert np.isfinite(result.result["height"]).all()
 
     seam_report = seam_quality.evaluate_core_seams(
@@ -734,11 +763,13 @@ def test_resident_partition_rejects_a_missing_planned_core(monkeypatch):
     )
     monkeypatch.setattr(
         workflow,
+        "plan_partition_grid",
+        lambda *_args, **_kwargs: (3, 3),
+    )
+    monkeypatch.setattr(
+        workflow,
         "partition_scene",
-        lambda *_args, **_kwargs: [
-            (SimpleNamespace(), SimpleNamespace())
-        ]
-        * 8,
+        lambda *_args, **_kwargs: [(SimpleNamespace(), SimpleNamespace())] * 8,
     )
 
     with pytest.raises(
@@ -750,3 +781,52 @@ def test_resident_partition_rejects_a_missing_planned_core(monkeypatch):
             config,
             required_cell_count=7,
         )
+
+
+def test_resident_partition_replans_around_an_empty_requested_core(monkeypatch):
+    frame = SimpleNamespace(
+        ground_linear=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+        ground_offset=(0.0, 0.0),
+    )
+    scene_state = SimpleNamespace(
+        scene=SimpleNamespace(),
+        point_cloud=SimpleNamespace(points=np.ones((100, 3))),
+        transform_data={"R": np.eye(3), "scale": 1.0, "t": [0, 0, 0]},
+        facade_frame=None,
+        cells=[],
+        use_partition=False,
+    )
+    config = SimpleNamespace(
+        partition_m=3,
+        partition_n=3,
+        partition_overlap=0.2,
+        render_mode="map",
+        vol_id="mission-replanned",
+        report_fn=None,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "geographic_scene_frame",
+        lambda *_args, **_kwargs: frame,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "plan_partition_grid",
+        lambda _scene, count, **_kwargs: (3, 3) if count == 9 else (2, 5),
+    )
+
+    def partition(_scene, rows, columns, *_args, **_kwargs):
+        planned = rows * columns
+        retained = planned - 1 if (rows, columns) == (3, 3) else planned
+        return [(SimpleNamespace(row=0, col=index), SimpleNamespace()) for index in range(retained)]
+
+    monkeypatch.setattr(workflow, "partition_scene", partition)
+
+    workflow._apply_required_resident_partition(
+        scene_state,
+        config,
+        required_cell_count=7,
+    )
+
+    assert scene_state.use_partition
+    assert len(scene_state.cells) == 10

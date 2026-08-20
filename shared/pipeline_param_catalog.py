@@ -884,10 +884,10 @@ PARAMETER_METADATA: dict[str, dict[str, Any]] = {
     },
     "gs_tile_mode": {
         "label": "Training Tile Mode",
-        "description": "Splits training into 1, 2 or 4 spatial tiles to bound VRAM use.",
+        "description": "Auto selects the fastest 1, 2 or 4-view split that fits detected VRAM; explicit values are expert overrides.",
         "type": "select",
         "group": "Orthomosaic",
-        "options": ["1", "2", "4"],
+        "options": ["auto", "1", "2", "4"],
     },
     "gs_cap_max": {
         "label": "Maximum Gaussians",
