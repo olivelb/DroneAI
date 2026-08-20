@@ -49,6 +49,29 @@ def test_facade_frame_recovers_plane_up_and_camera_side():
     )
 
 
+def test_facade_depth_window_extends_only_behind_the_elevation():
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).parents[1] / "app1-colmap"))
+    from gaussian_ortho.facade_frame import facade_depth_bounds_from_quartiles
+
+    bounds = facade_depth_bounds_from_quartiles(
+        -1.0,
+        1.0,
+        front_iqr_multiplier=1.0,
+        rear_iqr_multiplier=4.0,
+    )
+
+    assert bounds == pytest.approx((-9.0, 3.0))
+    with pytest.raises(ValueError, match="non-negative"):
+        facade_depth_bounds_from_quartiles(
+            -1.0,
+            1.0,
+            front_iqr_multiplier=1.0,
+            rear_iqr_multiplier=-1.0,
+        )
+
+
 def test_facade_selection_keeps_long_oblique_pass_and_deduplicates(tmp_path, monkeypatch):
     first = tmp_path / "pass_a"
     duplicate = tmp_path / "pass_b"
@@ -230,6 +253,7 @@ def test_facade_report_supports_resident_partition_geometry(tmp_path):
         ortho_file=str(tmp_path / "facade.tif"),
         facade_texture_max_incidence_deg=45.0,
         facade_depth_iqr_multiplier=1.0,
+        facade_depth_rear_iqr_multiplier=4.0,
         resolution=0.01,
     )
     summary = GaussianSceneSummary(
@@ -295,6 +319,8 @@ def test_facade_report_supports_resident_partition_geometry(tmp_path):
     }
     assert report["depth_filter"]["scope"] == "resident-cells"
     assert report["depth_filter"]["bounds_metres"] == [-1.0, 2.0]
+    assert report["depth_filter"]["front_iqr_multiplier"] == 1.0
+    assert report["depth_filter"]["rear_iqr_multiplier"] == 4.0
     assert len(report["depth_filter"]["resident_cells"]) == 2
 
 
@@ -405,7 +431,8 @@ def test_dashboard_facade_process_reuses_the_backend_profile():
     assert processes["facade"]["stages"] == ["COLMAP"]
     assert processes["facade"]["label"] == "Façade"
     assert processes["facade"]["profile_id"] == FACADE_PROCESS_PROFILE_ID
-    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V3"
+    assert FACADE_PROCESS_PROFILE_ID == "FACADE_HD_V4"
+    assert processes["facade"]["parameters"]["facade_depth_rear_iqr_multiplier"] == "4.0"
     assert validated == dict(FACADE_PROCESS_OVERRIDES)
 
 

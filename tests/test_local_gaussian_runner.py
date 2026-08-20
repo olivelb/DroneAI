@@ -1,5 +1,8 @@
 import json
+import os
+import subprocess
 from argparse import ArgumentTypeError, Namespace
+from pathlib import Path
 
 import pytest
 
@@ -298,3 +301,48 @@ def test_checkpoint_root_can_use_a_separate_fast_filesystem(tmp_path):
     assert ortho == workspace / "facade_orthophoto.facade-metric.tif"
     assert height == workspace / "facade_orthophoto.facade-metric.height.tif"
     assert checkpoint == scratch / "facade-metric"
+
+
+def test_shell_wrapper_mounts_checkpoint_root_into_the_container(tmp_path):
+    workspace = tmp_path / "workspace"
+    checkpoint_root = tmp_path / "fast-checkpoints"
+    fake_bin = tmp_path / "bin"
+    docker_arguments = tmp_path / "docker-arguments.txt"
+    workspace.mkdir()
+    fake_bin.mkdir()
+    fake_docker = fake_bin / "docker"
+    fake_docker.write_text(
+        """#!/usr/bin/env bash
+if [[ "$1" == "image" && "$2" == "inspect" ]]; then
+  exit 0
+fi
+printf '%s\\n' "$@" > "$DRONEAI_DOCKER_ARGS_LOG"
+""",
+        encoding="utf-8",
+    )
+    fake_docker.chmod(0o755)
+    environment = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "DRONEAI_DOCKER_ARGS_LOG": str(docker_arguments),
+    }
+
+    subprocess.run(
+        [
+            "/usr/bin/bash",
+            str(Path(__file__).parents[1] / "tools" / "run_local_gaussian.sh"),
+            str(workspace),
+            "--render-mode",
+            "facade",
+            "--checkpoint-root",
+            str(checkpoint_root),
+        ],
+        check=True,
+        env=environment,
+    )
+
+    arguments = docker_arguments.read_text(encoding="utf-8").splitlines()
+    mount = f"{checkpoint_root.resolve()}:/checkpoints"
+    assert arguments[arguments.index(mount) - 1] == "--volume"
+    checkpoint_option = arguments.index("--checkpoint-root")
+    assert arguments[checkpoint_option + 1] == "/checkpoints"

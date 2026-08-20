@@ -29,6 +29,7 @@ from shared.dronegs_profile import (  # noqa: E402
 )
 from shared.facade_process import (  # noqa: E402
     FACADE_DRONEGS_PROFILE_ID,
+    FACADE_PARAMETER_DEFAULTS,
     FACADE_PROCESS_OVERRIDES,
     FACADE_QUALIFICATION_POLICY_ID,
 )
@@ -327,6 +328,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--facade-meters-per-model-unit", type=float, default=1.0)
     parser.add_argument("--facade-texture-max-incidence-deg", type=float, default=45.0)
     parser.add_argument("--facade-depth-iqr-multiplier", type=float, default=1.0)
+    parser.add_argument(
+        "--facade-depth-rear-iqr-multiplier",
+        type=float,
+        default=float(FACADE_PARAMETER_DEFAULTS["facade_depth_rear_iqr_multiplier"]),
+        help="rear depth allowance behind the facade plane in IQR units",
+    )
     parser.add_argument(
         "--facade-seed-max-reprojection-error",
         type=float,
@@ -629,6 +636,7 @@ def main() -> int:
             facade_frame_report=str(workspace / "facade_frame.json"),
             facade_texture_max_incidence_deg=args.facade_texture_max_incidence_deg,
             facade_depth_iqr_multiplier=args.facade_depth_iqr_multiplier,
+            facade_depth_rear_iqr_multiplier=(args.facade_depth_rear_iqr_multiplier),
             facade_seed_max_reprojection_error=(args.facade_seed_max_reprojection_error),
             facade_seed_min_track_length=args.facade_seed_min_track_length,
         )

@@ -274,6 +274,8 @@ def _write_facade_report(
         },
         "depth_filter": {
             "iqr_multiplier": config.facade_depth_iqr_multiplier,
+            "front_iqr_multiplier": config.facade_depth_iqr_multiplier,
+            "rear_iqr_multiplier": config.facade_depth_rear_iqr_multiplier,
             "scope": (
                 "resident-cells"
                 if filtering_phase.partition_models

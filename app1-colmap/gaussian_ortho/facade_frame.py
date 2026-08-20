@@ -43,6 +43,37 @@ class FacadeFrame:
         }
 
 
+def facade_depth_bounds_from_quartiles(
+    q25: float,
+    q75: float,
+    *,
+    front_iqr_multiplier: float,
+    rear_iqr_multiplier: float,
+) -> tuple[float, float]:
+    """Return an asymmetric depth window in the outward-facing facade frame.
+
+    Positive depth points toward the cameras, while negative depth points
+    behind the elevation. A larger rear multiplier therefore preserves deep
+    openings without admitting the same amount of foreground clutter.
+    """
+
+    values = np.asarray(
+        [q25, q75, front_iqr_multiplier, rear_iqr_multiplier],
+        dtype=np.float64,
+    )
+    if not np.isfinite(values).all():
+        raise ValueError("Facade depth quartiles and multipliers must be finite")
+    if q75 < q25:
+        raise ValueError("Facade depth quartiles must be ordered")
+    if front_iqr_multiplier < 0 or rear_iqr_multiplier < 0:
+        raise ValueError("Facade depth multipliers must be non-negative")
+    iqr = max(q75 - q25, 1e-6)
+    return (
+        q25 - rear_iqr_multiplier * iqr,
+        q75 + front_iqr_multiplier * iqr,
+    )
+
+
 def _normalize(vector: np.ndarray) -> np.ndarray:
     norm = float(np.linalg.norm(vector))
     if norm < 1e-12:

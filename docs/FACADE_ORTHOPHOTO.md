@@ -179,8 +179,9 @@ as a fallback.
   resident PLY and increase the number of wall-plane blocks without reducing
   the requested total surface density;
 - every buffer is trained from native calibrated crops selected by visibility
-  in the metric facade plane. `FACADE_HD_V3` is the versioned fallback
-  recipe for direct clients that do not submit a production quality profile;
+  in the metric facade plane. `FACADE_HD_V4` is the versioned product fallback
+  and reuses the qualified `DRONEGS_FACADE_HD_V3` training recipe for direct
+  clients that do not submit a production quality profile;
 - DroneAI inserts no software sleep between Gaussian iterations; NVIDIA's
   firmware/driver thermal and power protections remain authoritative;
 - request 0.01 m/pixel only after confirming that source GSD, focus and pose
@@ -191,19 +192,24 @@ as a fallback.
 Facade held-out views are evaluated with the facade gates established on the
 final Cahors reference run (`facade_canary_min_psnr=18`,
 `facade_canary_min_ssim=0.25`). The product manifest records the effective
-thresholds and the selected production profile. `FACADE_HD_V3` remains the
-fallback for direct clients without a selected profile; historical
-`FACADE_HD_V2` and `FACADE_HD_V1` jobs remain replayable with their original
-12 M resident and fixed 2 M monolithic recipes respectively.
+thresholds and the selected production profile. `FACADE_HD_V4` remains the
+fallback for direct clients without a selected profile. It extends the rear
+architectural volume without changing the versioned DroneGS trainer. Historical
+`FACADE_HD_V3`, `FACADE_HD_V2` and `FACADE_HD_V1` jobs remain identifiable;
+the older DroneGS recipes keep their original 12 M resident and fixed 2 M
+monolithic behaviours respectively.
 Changing a quality value remains possible but produces an explicitly
 customized recipe.
 
-Before rendering, `facade_depth_iqr_multiplier` (default `1.0`) keeps the
-robust depth band around the elevation. This removes isolated street,
-background or weak-pose Gaussians far behind the wall while preserving normal
-architectural relief. Set it to `0` only for an intentionally very deep
-structure, or raise it when the frame report shows that valid recesses are
-being clipped. The raster footprint itself uses robust 0.1–99.9% bounds plus
+Before rendering, the depth filter is asymmetric in the local facade frame,
+whose positive Z axis points toward the cameras. `facade_depth_iqr_multiplier`
+keeps the front allowance at `1.0×IQR`, while
+`facade_depth_rear_iqr_multiplier` defaults to `4.0×IQR` behind the wall.
+This preserves doors, windows, arches and other deep recesses without admitting
+the same amount of street clutter in front. Set the front multiplier to `0`
+only to disable the depth filter completely; expert workflows may tune the rear
+multiplier independently. The raster footprint itself uses robust 0.1–99.9%
+bounds plus
 a one-metre margin so thin facade borders are retained without letting remote
 islands collapse the useful resolution.
 

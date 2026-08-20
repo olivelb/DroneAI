@@ -88,6 +88,7 @@ from .capacity_planning import (
     plan_training_tile_mode,
     plan_gaussian_capacity,
 )
+from .facade_frame import facade_depth_bounds_from_quartiles
 
 if TYPE_CHECKING:
     from .facade_frame import FacadeFrame
@@ -355,6 +356,7 @@ class GaussianOrthoConfig:
     facade_depth_iqr_multiplier: float
     facade_seed_max_reprojection_error: float
     facade_seed_min_track_length: int
+    facade_depth_rear_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_rear_iqr_multiplier"])
     # Compatibility default for integrations constructing this transport
     # object directly. Public product entry points opt in explicitly.
     tile_mode_auto: bool = False
@@ -1426,16 +1428,22 @@ def prepare_gaussian_render_state(
         )
         q25 = float(cupy_module.quantile(depths, 0.25))
         q75 = float(cupy_module.quantile(depths, 0.75))
-        iqr = max(q75 - q25, 1e-6)
-        multiplier = config.facade_depth_iqr_multiplier
-        depth_bounds = (q25 - multiplier * iqr, q75 + multiplier * iqr)
+        front_multiplier = config.facade_depth_iqr_multiplier
+        rear_multiplier = config.facade_depth_rear_iqr_multiplier
+        depth_bounds = facade_depth_bounds_from_quartiles(
+            q25,
+            q75,
+            front_iqr_multiplier=front_multiplier,
+            rear_iqr_multiplier=rear_multiplier,
+        )
         before_filter = model.num_gaussians
         model.filter_by_mask((depths >= depth_bounds[0]) & (depths <= depth_bounds[1]))
         _report(
             config.vol_id,
             "GAUSS",
             90,
-            f"Facade depth filter ({multiplier:.2f}xIQR): "
+            "Facade depth filter "
+            f"(rear {rear_multiplier:.2f}xIQR, front {front_multiplier:.2f}xIQR): "
             f"{before_filter} → {model.num_gaussians}; window "
             f"[{depth_bounds[0] * scene_state.colmap_to_meters:.2f}, "
             f"{depth_bounds[1] * scene_state.colmap_to_meters:.2f}] m.",
@@ -2184,6 +2192,7 @@ def generate_gaussian_orthophoto(
     facade_frame_report: str | None = None,
     facade_texture_max_incidence_deg: float = float(FACADE_PARAMETER_DEFAULTS["facade_texture_max_incidence_deg"]),
     facade_depth_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_iqr_multiplier"]),
+    facade_depth_rear_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_rear_iqr_multiplier"]),
     facade_seed_max_reprojection_error: float = float(FACADE_PARAMETER_DEFAULTS["facade_seed_max_reprojection_error"]),
     facade_seed_min_track_length: int = int(FACADE_PARAMETER_DEFAULTS["facade_seed_min_track_length"]),
 ) -> dict[str, Any]:
@@ -2339,6 +2348,7 @@ def generate_gaussian_orthophoto(
         facade_frame_report=facade_frame_report,
         facade_texture_max_incidence_deg=facade_texture_max_incidence_deg,
         facade_depth_iqr_multiplier=facade_depth_iqr_multiplier,
+        facade_depth_rear_iqr_multiplier=facade_depth_rear_iqr_multiplier,
         facade_seed_max_reprojection_error=facade_seed_max_reprojection_error,
         facade_seed_min_track_length=facade_seed_min_track_length,
     )
