@@ -365,6 +365,11 @@ DatasetSplit make_dataset_split(
 DatasetSplit make_dataset_split(
     const Scene& scene, std::uint32_t test_every,
     std::string_view test_split, std::uint32_t test_guard_percent);
+DatasetSplit make_supported_dataset_split(
+    const Scene& scene,
+    const std::vector<std::size_t>& supported_indices,
+    std::uint32_t test_every, std::string_view test_split,
+    std::uint32_t test_guard_percent);
 
 TrainingMetrics train_fixed_topology(const Options& options, const Scene& scene,
                                      std::vector<Gaussian>& gaussians);

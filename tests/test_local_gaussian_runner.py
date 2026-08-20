@@ -40,6 +40,7 @@ def test_low_memory_profile_is_conservative_for_eight_gigabytes():
     assert profile.cap_max <= 500_000
     assert profile.sh_degree <= 1
     assert profile.data_factor >= 4
+    assert profile.tile_mode_auto is True
     assert profile.tile_mode == 4
 
 
@@ -155,6 +156,14 @@ def test_profile_overrides_are_explicit_and_validated():
     assert profile.max_width == 1200
     assert profile.filter_enabled is False
     assert profile.cap_max == PROFILES["low-memory"].cap_max
+
+
+def test_numeric_tile_mode_is_an_expert_override():
+    profile = resolve_profile(_arguments(profile="balanced", tile_mode=1))
+
+    assert profile.tile_mode == 1
+    assert profile.tile_mode_auto is False
+    assert profile.profile_id == "custom"
 
 
 def test_balanced_training_overrides_become_custom_recipe():

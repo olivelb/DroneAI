@@ -79,9 +79,9 @@ def test_rejects_unsafe_dataset_prefixes(value):
 
 def test_normalizes_dataset_trailing_slash():
     assert validate_dataset_prefix("datasets/banyuls/") == "datasets/banyuls"
-    assert validate_dataset_prefix(
-        "organizations/tenant-a/datasets/banyuls/"
-    ) == "organizations/tenant-a/datasets/banyuls"
+    assert (
+        validate_dataset_prefix("organizations/tenant-a/datasets/banyuls/") == "organizations/tenant-a/datasets/banyuls"
+    )
 
 
 def test_safe_child_path_stays_under_base(tmp_path):
@@ -259,7 +259,7 @@ def test_pipeline_defaults_select_validated_dronegs_profile():
     assert params["gs_max_width"] == "1600"
     assert params["gs_ortho_mip_filter_variance"] == "0.03"
     assert params["gs_ortho_mip_filter_compensation"] is True
-    assert params["gs_tile_mode"] == "4"
+    assert params["gs_tile_mode"] == "auto"
     assert params["gs_seed"] == "42"
     assert params["gs_raster_profile"] == "fastgs"
     assert params["gs_production_profile"] == "DRONEGS_PRODUCTION_PROFILE_V1"

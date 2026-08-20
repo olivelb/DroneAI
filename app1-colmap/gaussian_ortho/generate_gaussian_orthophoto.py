@@ -16,9 +16,10 @@ Pipeline:
 
 from __future__ import annotations
 
+import math
 import json
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from datetime import UTC, datetime
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -83,6 +84,7 @@ from .capacity_planning import (
     GaussianDensityAssessment,
     assess_gaussian_density,
     detected_vram_bytes,
+    plan_training_tile_mode,
     plan_gaussian_capacity,
 )
 
@@ -231,10 +233,7 @@ def _reusable_dronegs_result(
         or manifest.get("status") != "completed"
         or manifest.get("trainer_binary_sha256") != trainer_binary_sha256
         or manifest.get("dataset", {}).get("fingerprint") != request.dataset_fingerprint
-        or any(
-            not manifest_parameter_matches(parameters.get(key), value)
-            for key, value in expected.items()
-        )
+        or any(not manifest_parameter_matches(parameters.get(key), value) for key, value in expected.items())
         or not manifest_matches_ply(manifest, ply_path)
     ):
         return None
@@ -349,6 +348,9 @@ class GaussianOrthoConfig:
     facade_depth_iqr_multiplier: float
     facade_seed_max_reprojection_error: float
     facade_seed_min_track_length: int
+    # Compatibility default for integrations constructing this transport
+    # object directly. Public product entry points opt in explicitly.
+    tile_mode_auto: bool = False
 
 
 @dataclass
@@ -559,6 +561,7 @@ def _apply_required_resident_partition(
         return
     if scene_state.scene is None or scene_state.point_cloud is None:
         raise ValueError("Partitioned Gaussian training requires a prepared scene and sparse point cloud")
+    scene = scene_state.scene
     render_mode = getattr(config, "render_mode", "map")
     frame: PlanarSceneFrame
     if render_mode == "map":
@@ -585,39 +588,73 @@ def _apply_required_resident_partition(
         plane_label = "metric facade plane"
     else:
         raise ValueError(f"Unsupported resident partition render mode: {render_mode}")
-    if requested_rows * requested_columns >= target_cell_count:
-        rows, columns = requested_rows, requested_columns
-    else:
-        rows, columns = plan_partition_grid(
-            scene_state.scene,
-            target_cell_count,
+    candidate_grids: list[tuple[int, int]] = []
+
+    def candidate_grid_shapes() -> Iterator[tuple[int, int]]:
+        """Yield the requested grid first and compute fallbacks only if needed."""
+
+        if requested_rows * requested_columns >= target_cell_count:
+            candidate_grids.append((requested_rows, requested_columns))
+            yield requested_rows, requested_columns
+        candidate_limit = target_cell_count + max(
+            4,
+            math.ceil(math.sqrt(target_cell_count)),
+        )
+        for candidate_count in range(target_cell_count, candidate_limit + 1):
+            candidate = plan_partition_grid(
+                scene,
+                candidate_count,
+                model_to_ground_linear=frame.ground_linear,
+                model_to_ground_offset=frame.ground_offset,
+            )
+            if candidate in candidate_grids:
+                continue
+            candidate_grids.append(candidate)
+            yield candidate
+
+    overlap = float(getattr(config, "partition_overlap", 0.20))
+    attempts: list[tuple[int, int]] = []
+    cells: list[tuple[CellBounds, SceneInfo]] = []
+    for candidate_rows, candidate_columns in candidate_grid_shapes():
+        planned_cell_count = candidate_rows * candidate_columns
+        _report(
+            config.vol_id,
+            "GAUSS",
+            12,
+            f"Preflighting {plane_label} as {candidate_rows}x{candidate_columns} "
+            f"core/buffer cells (minimum {required_cell_count})…",
+            config.report_fn,
+        )
+        candidate_cells = partition_scene(
+            scene,
+            candidate_rows,
+            candidate_columns,
+            overlap,
             model_to_ground_linear=frame.ground_linear,
             model_to_ground_offset=frame.ground_offset,
+            planar_frame=frame,
+            maximum_view_incidence_degrees=maximum_view_incidence,
+            minimum_plane_overlap_m2=minimum_plane_overlap_m2,
+            require_core_support=True,
         )
-    overlap = float(getattr(config, "partition_overlap", 0.20))
-    _report(
-        config.vol_id,
-        "GAUSS",
-        12,
-        f"Partitioning {plane_label} into {rows}x{columns} core/buffer cells (minimum {required_cell_count})…",
-        config.report_fn,
-    )
-    cells = partition_scene(
-        scene_state.scene,
-        rows,
-        columns,
-        overlap,
-        model_to_ground_linear=frame.ground_linear,
-        model_to_ground_offset=frame.ground_offset,
-        planar_frame=frame,
-        maximum_view_incidence_degrees=maximum_view_incidence,
-        minimum_plane_overlap_m2=minimum_plane_overlap_m2,
-    )
-    if len(cells) < required_cell_count:
+        attempts.append((len(candidate_cells), planned_cell_count))
+        if len(candidate_cells) == planned_cell_count:
+            cells = candidate_cells
+            break
+    if not cells:
+        retained, planned_cell_count = max(
+            attempts,
+            key=lambda attempt: (attempt[0] / attempt[1], attempt[0], -attempt[1]),
+        )
+        tried = ", ".join(
+            f"{candidate_rows}x{candidate_columns}" for candidate_rows, candidate_columns in candidate_grids
+        )
         raise RuntimeError(
-            "Planar camera visibility produced only "
-            f"{len(cells)} active cells but Gaussian density requires "
-            f"{required_cell_count}; inspect coverage or use a coarser GSD."
+            "Planar camera visibility retained "
+            f"{retained} of {planned_cell_count} planned resident cores "
+            f"(Gaussian density requires at least {required_cell_count}). "
+            f"Deterministic grid replanning tried {tried}; no planned core "
+            "may disappear or rely only on its neighbour buffer."
         )
     scene_state.cells = [(bounds, cell_scene) for bounds, cell_scene in cells]
     scene_state.use_partition = True
@@ -693,6 +730,68 @@ def _plan_scene_capacity(
     )
 
 
+def _training_region_inventory(
+    scene_state: GaussianSceneState,
+    *,
+    adaptive: bool,
+) -> list[tuple[int, int, int, int, bool]]:
+    regions: list[tuple[int, int, int, int, bool]] = []
+    for _bounds, cell_scene in scene_state.cells:
+        for camera in cell_scene.train_cameras:
+            crop = cell_scene.image_crops.get(camera.image_name)
+            width = crop.width if crop is not None else camera.width
+            height = crop.height if crop is not None else camera.height
+            regions.append((width, height, camera.width, camera.height, adaptive))
+    if not regions:
+        raise RuntimeError("Gaussian tile-mode planning found no training images")
+    return regions
+
+
+def _resolve_training_tile_mode(
+    config: GaussianOrthoConfig,
+    scene_state: GaussianSceneState,
+    capacity_plan: GaussianCapacityPlan,
+    vram_bytes: tuple[int, int] | None,
+) -> int:
+    automatic = bool(getattr(config, "tile_mode_auto", False))
+    plan = plan_training_tile_mode(
+        _training_region_inventory(
+            scene_state,
+            adaptive=bool(config.resident_partitioning),
+        ),
+        configured_mode=config.tile_mode,
+        automatic=automatic,
+        resize_factor=config.data_factor,
+        max_width=config.max_width,
+        gaussian_capacity_bytes=capacity_plan.estimated_capacity_bytes,
+        free_vram_bytes=vram_bytes[0] if vram_bytes else None,
+        total_vram_bytes=vram_bytes[1] if vram_bytes else None,
+    )
+    if automatic and plan.fits_estimate is False:
+        available_gib = (plan.available_pixel_bytes or 0) / (1024**3)
+        required_gib = plan.estimated_pixel_bytes / (1024**3)
+        raise RuntimeError(
+            "Automatic DroneGS tiling cannot fit even mode 4 in the current "
+            f"VRAM budget ({required_gib:.2f} GiB image workspace versus "
+            f"{available_gib:.2f} GiB available); increase resident "
+            "partitioning, lower gs_max_width, or reduce the Gaussian cap."
+        )
+    policy = "automatic" if automatic else "expert override"
+    inventory = "unavailable" if plan.safe_vram_bytes is None else f"{plan.safe_vram_bytes / (1024**3):.2f} GiB safe"
+    fit_note = "unverified" if plan.fits_estimate is None else "fits" if plan.fits_estimate else "exceeds estimate"
+    _report(
+        config.vol_id,
+        "GAUSS",
+        14,
+        f"DroneGS tile mode {plan.effective_mode} selected by {policy}: "
+        f"{plan.maximum_view_pixels:,} maximum pixels, "
+        f"{plan.estimated_pixel_bytes / (1024**3):.2f} GiB estimated image "
+        f"workspace, {inventory} VRAM ({fit_note}).",
+        config.report_fn,
+    )
+    return plan.effective_mode
+
+
 def execute_gaussian_training_phase(
     config: GaussianOrthoConfig,
     *,
@@ -765,9 +864,16 @@ def execute_gaussian_training_phase(
             f"(hard resident cap {capacity_plan.resident_cap:,}).",
             config.report_fn,
         )
+    effective_tile_mode = _resolve_training_tile_mode(
+        config,
+        scene_state,
+        capacity_plan,
+        detected_vram,
+    )
     training_config = replace(
         config,
         cap_max=capacity_plan.effective_cell_cap,
+        tile_mode=effective_tile_mode,
     )
     training_state = train_and_merge_gaussian_models(
         training_config,
@@ -927,6 +1033,7 @@ def train_and_merge_gaussian_models(
             resize_factor=config.data_factor,
             max_width=config.max_width,
             tile_mode=config.tile_mode,
+            tile_mode_auto=config.tile_mode_auto,
             seed=config.training_seed,
             dataset_fingerprint=dataset_identity.fingerprint,
             dronegs=DroneGSTuning(
@@ -1836,7 +1943,22 @@ def execute_partitioned_gaussian_rasterization_phase(
             buffered=True,
         )
         if px1 <= px0 or py1 <= py0:
-            continue
+            raise RuntimeError(
+                f"Resident cell {partition.bounds.row},{partition.bounds.col} has an empty buffered raster window"
+            )
+        core_px0, core_px1, core_py0, core_py1 = _partition_pixel_window(
+            config,
+            partition.bounds,
+            geometry,
+            width=width,
+            height=height,
+            buffered=False,
+        )
+        if core_px1 <= core_px0 or core_py1 <= core_py0:
+            raise RuntimeError(
+                f"Resident cell {partition.bounds.row},{partition.bounds.col} "
+                "has an empty core raster window at the requested GSD"
+            )
         model = model_class(
             sh_degree=config.sh_degree,
             opacity_sh_enabled=config.opacity_sh_enabled,
@@ -1892,6 +2014,15 @@ def execute_partitioned_gaussian_rasterization_phase(
         )
         tile_rgb = tile["rgb"]
         tile_height = tile["height"]
+        core_height = tile_height[
+            core_py0 - py0 : core_py1 - py0,
+            core_px0 - px0 : core_px1 - px0,
+        ]
+        if core_height.size == 0 or not bool(np.isfinite(core_height).any()):
+            raise RuntimeError(
+                f"Resident cell {partition.bounds.row},{partition.bounds.col} "
+                "rasterized no finite pixel inside its owned core"
+            )
         row_chunk = 512
         for row_start in range(0, expected_shape[0], row_chunk):
             row_stop = min(expected_shape[0], row_start + row_chunk)
@@ -1984,6 +2115,7 @@ def generate_gaussian_orthophoto(
     ortho_mip_filter_variance: float = 0.03,
     ortho_mip_filter_compensation: bool = True,
     tile_mode: int = DRONEGS_PRODUCTION_PROFILE_V1.tile_mode,
+    tile_mode_auto: bool = True,
     cap_max: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
     capacity_mode: str = "fixed",
     capacity_floor: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
@@ -2139,6 +2271,7 @@ def generate_gaussian_orthophoto(
         ortho_mip_filter_variance=ortho_mip_filter_variance,
         ortho_mip_filter_compensation=ortho_mip_filter_compensation,
         tile_mode=tile_mode,
+        tile_mode_auto=tile_mode_auto,
         cap_max=cap_max,
         capacity_mode=capacity_mode,
         capacity_floor=capacity_floor,

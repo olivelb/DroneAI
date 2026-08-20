@@ -24,6 +24,8 @@ def require_minimum_filter_retention(
         raise ValueError("minimum Gaussian filter retention ratio must be in [0, 1]")
 
     retained_ratio = retained_count / initial_count
+    if retained_count == 0:
+        raise ValueError("Gaussian filtering removed every primitive")
     if retained_ratio < minimum_ratio:
         raise ValueError(
             "Gaussian filtering retained "
