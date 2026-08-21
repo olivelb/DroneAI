@@ -12,6 +12,7 @@ from shared.facade_process import (
 )
 from tools.run_local_gaussian import (
     PROFILES,
+    clear_generated_outputs,
     output_paths,
     persist_runtime_plan,
     report_parameters,
@@ -303,9 +304,10 @@ def test_checkpoint_root_can_use_a_separate_fast_filesystem(tmp_path):
     assert checkpoint == scratch / "facade-metric"
 
 
-def test_shell_wrapper_mounts_checkpoint_root_into_the_container(tmp_path):
+def test_shell_wrapper_mounts_durable_and_training_roots_into_the_container(tmp_path):
     workspace = tmp_path / "workspace"
     checkpoint_root = tmp_path / "fast-checkpoints"
+    training_workspace_root = tmp_path / "native-linux-training"
     fake_bin = tmp_path / "bin"
     docker_arguments = tmp_path / "docker-arguments.txt"
     workspace.mkdir()
@@ -336,6 +338,8 @@ printf '%s\\n' "$@" > "$DRONEAI_DOCKER_ARGS_LOG"
             "facade",
             "--checkpoint-root",
             str(checkpoint_root),
+            "--training-workspace-root",
+            str(training_workspace_root),
         ],
         check=True,
         env=environment,
@@ -346,3 +350,28 @@ printf '%s\\n' "$@" > "$DRONEAI_DOCKER_ARGS_LOG"
     assert arguments[arguments.index(mount) - 1] == "--volume"
     checkpoint_option = arguments.index("--checkpoint-root")
     assert arguments[checkpoint_option + 1] == "/checkpoints"
+    training_mount = f"{training_workspace_root.resolve()}:/training-workspaces"
+    assert arguments[arguments.index(training_mount) - 1] == "--volume"
+    training_option = arguments.index("--training-workspace-root")
+    assert arguments[training_option + 1] == "/training-workspaces"
+
+
+def test_force_cleanup_removes_only_the_selected_training_workspace(tmp_path):
+    ortho = tmp_path / "workspace" / "facade.tif"
+    height = tmp_path / "workspace" / "facade.height.tif"
+    checkpoint = tmp_path / "checkpoints" / "run-a"
+    training = tmp_path / "training" / "run-a"
+    sibling = tmp_path / "training" / "run-b"
+    for directory in (ortho.parent, checkpoint, training, sibling):
+        directory.mkdir(parents=True, exist_ok=True)
+    ortho.write_bytes(b"ortho")
+    height.write_bytes(b"height")
+    (checkpoint / "state").write_bytes(b"checkpoint")
+    (training / "subset").write_bytes(b"subset")
+    (sibling / "keep").write_bytes(b"keep")
+
+    clear_generated_outputs(ortho, height, checkpoint, training)
+
+    assert not ortho.exists() and not height.exists()
+    assert not checkpoint.exists() and not training.exists()
+    assert (sibling / "keep").read_bytes() == b"keep"

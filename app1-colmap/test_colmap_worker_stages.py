@@ -348,7 +348,12 @@ class TestColmapStageHelpers(unittest.TestCase):
             reconstruction = types.SimpleNamespace(utm_crs="EPSG:32631")
             alignment = types.SimpleNamespace(alignment_transform_path=None)
             checkpoint_dir = os.path.join(tmp_dir, "checkpoints")
+            training_root = os.path.join(tmp_dir, "training-workspaces")
             with (
+                patch.dict(
+                    os.environ,
+                    {"DRONEAI_GAUSSIAN_TRAINING_WORKSPACE_ROOT": training_root},
+                ),
                 patch.object(gaussian_stage, "dense_sparse_model_ready", return_value=True),
                 patch.object(
                     gaussian_stage,
@@ -375,6 +380,10 @@ class TestColmapStageHelpers(unittest.TestCase):
             self.assertEqual(config.resolution, 0.025)
             self.assertEqual(config.cap_max, DRONEGS_PRODUCTION_PROFILE_V1.cap_max)
             self.assertEqual(config.checkpoint_dir, checkpoint_dir)
+            self.assertEqual(
+                config.training_workspace_root,
+                os.path.join(training_root, "vol-recipe"),
+            )
             self.assertEqual(product_run.trainer_backend, "dronegs")
             self.assertEqual(
                 product_run.checkpoint_s3_prefix,

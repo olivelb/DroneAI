@@ -232,6 +232,8 @@ sequence while keeping every systematic pass:
 ./tools/run_local_gaussian.sh WORKSPACE \
   --render-mode facade \
   --profile facade-hd \
+  --checkpoint-root /mnt/i/DroneAI-Checkpoints \
+  --training-workspace-root "$HOME/DroneAI-Training-Workspaces" \
   --facade-scale-mode gps-baseline \
   --resolution 0.01
 ```
@@ -251,6 +253,20 @@ The runner refuses to modify a non-empty directory unless it contains its
 `.droneai-local-workspace.json` marker. It resumes existing COLMAP artifacts
 when the selected source images have not changed. `--force` removes only known
 generated artifacts inside a marked workspace.
+
+Keep `--training-workspace-root` on a native Linux filesystem such as WSL2
+ext4. Per-cell COLMAP subsets then expose the unchanged source JPEG directory
+through a zero-copy symlink; the sparse subset and `image_regions.tsv` remain
+run-scoped. Keep `--checkpoint-root` on durable, capacious storage such as
+`/mnt/i`. Checkpoints, final PLYs, reports and raster products are never moved
+to the reconstructible training workspace.
+
+If no training root is configured, the runner preserves the portable legacy
+fallback: directory symlink, per-file hardlink, then atomic copy. The run
+report and console expose the effective strategy and timings for COLMAP reads,
+selection, filtering, sparse writes, region writes and image preparation.
+Training workspaces are retained for deterministic resume; an explicit
+`--force` removes only the selected run label from both roots.
 
 Key outputs are:
 

@@ -12,6 +12,7 @@ shift
 
 container_arguments=()
 checkpoint_root_host=""
+training_workspace_root_host=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --checkpoint-root)
@@ -34,6 +35,30 @@ while [[ $# -gt 0 ]]; do
       checkpoint_root_host="${1#*=}"
       if [[ -z "$checkpoint_root_host" ]]; then
         echo "--checkpoint-root requires a host path" >&2
+        exit 2
+      fi
+      shift
+      ;;
+    --training-workspace-root)
+      if [[ $# -lt 2 || -z "$2" ]]; then
+        echo "--training-workspace-root requires a host path" >&2
+        exit 2
+      fi
+      if [[ -n "$training_workspace_root_host" ]]; then
+        echo "--training-workspace-root may be specified only once" >&2
+        exit 2
+      fi
+      training_workspace_root_host="$2"
+      shift 2
+      ;;
+    --training-workspace-root=*)
+      if [[ -n "$training_workspace_root_host" ]]; then
+        echo "--training-workspace-root may be specified only once" >&2
+        exit 2
+      fi
+      training_workspace_root_host="${1#*=}"
+      if [[ -z "$training_workspace_root_host" ]]; then
+        echo "--training-workspace-root requires a host path" >&2
         exit 2
       fi
       shift
@@ -69,6 +94,16 @@ if [[ -n "$checkpoint_root_host" ]]; then
   container_arguments+=(--checkpoint-root /checkpoints)
 fi
 
+training_workspace_mount=()
+if [[ -n "$training_workspace_root_host" ]]; then
+  mkdir -p "$training_workspace_root_host"
+  training_workspace_root_host="$(realpath "$training_workspace_root_host")"
+  training_workspace_mount=(
+    --volume "$training_workspace_root_host:/training-workspaces"
+  )
+  container_arguments+=(--training-workspace-root /training-workspaces)
+fi
+
 docker run --rm \
   --gpus all \
   --user "$(id -u):$(id -g)" \
@@ -76,5 +111,6 @@ docker run --rm \
   --volume "$repo_root:/repo:ro" \
   --volume "$workspace:/workspace" \
   "${checkpoint_mount[@]}" \
+  "${training_workspace_mount[@]}" \
   "$image" \
   python3 /repo/tools/run_local_gaussian.py /workspace "${container_arguments[@]}"

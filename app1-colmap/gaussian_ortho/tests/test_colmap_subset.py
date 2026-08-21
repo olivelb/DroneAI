@@ -163,6 +163,35 @@ def test_export_colmap_subset_filters_images_cameras_and_points(
     ) == "# dronegs-image-regions-v1\nkeep.jpg\t2\t3\t10\t8\n"
 
 
+def test_native_training_workspace_uses_a_zero_copy_image_directory(tmp_path: Path):
+    source = tmp_path / "source"
+    image_name = "keep.jpg"
+    _write_single_image_model(source, image_name)
+    source_images = tmp_path / "images"
+    source_images.mkdir()
+    (source_images / image_name).write_bytes(b"unchanged jpeg")
+
+    report = export_colmap_subset(
+        str(source),
+        str(tmp_path / "native-workspace"),
+        [image_name],
+        images_dir=str(source_images),
+        return_report=True,
+    )
+
+    image_directory = tmp_path / "native-workspace" / "images"
+    assert image_directory.is_symlink()
+    assert image_directory.resolve() == source_images.resolve()
+    assert report["image_transport"] == {
+        "strategy": "symlink",
+        "image_count": 1,
+        "existing": 0,
+        "hardlinked": 0,
+        "copied": 0,
+        "copied_bytes": 0,
+    }
+
+
 def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
     tmp_path: Path,
 ) -> None:
@@ -246,6 +275,14 @@ def test_export_colmap_subset_applies_track_gate_after_camera_restriction(
     assert set(exported) == {101}
     assert exported[101]["track"] == [(10, 1), (20, 1)]
     assert images[10]["point3D_ids"] == [-1, 101]
+    timings = report.pop("timings_seconds")
+    process_peak_rss_kib = report.pop("process_peak_rss_kib")
+    assert process_peak_rss_kib > 0
+    assert set(timings) == {
+        "read_cameras", "read_images", "read_points", "select_cameras",
+        "filter_points", "write_sparse", "write_regions", "prepare_images", "total",
+    }
+    assert all(value >= 0.0 for value in timings.values())
     assert report == {
         "sparse_path": str(tmp_path / "cell" / "sparse" / "0"),
         "selected_images": 2,
@@ -325,6 +362,7 @@ def test_export_colmap_subset_uses_hardlinks_when_symlinks_are_unsupported(
         "existing": 0,
         "hardlinked": 1,
         "copied": 0,
+        "copied_bytes": 0,
     }
 
 
@@ -374,6 +412,7 @@ def test_export_colmap_subset_copies_when_links_are_unsupported(
         "existing": 0,
         "hardlinked": 0,
         "copied": 1,
+        "copied_bytes": len(b"jpeg fixture"),
     }
     assert second_report["image_transport"] == {
         "strategy": "existing-directory",
@@ -381,6 +420,7 @@ def test_export_colmap_subset_copies_when_links_are_unsupported(
         "existing": 1,
         "hardlinked": 0,
         "copied": 0,
+        "copied_bytes": 0,
     }
 
 

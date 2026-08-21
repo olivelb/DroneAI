@@ -33,6 +33,40 @@ def test_resident_training_parallelizes_image_cache_io_by_resolution():
     ) == (1, 1)
 
 
+def test_training_workspace_root_is_operational_and_falls_back_to_checkpoints(
+    tmp_path,
+):
+    checkpoints = tmp_path / "checkpoints"
+    scratch = tmp_path / "native-linux-scratch"
+
+    configured = SimpleNamespace(
+        checkpoint_dir=str(checkpoints),
+        training_workspace_root=str(scratch),
+    )
+    fallback = SimpleNamespace(
+        checkpoint_dir=str(checkpoints),
+        training_workspace_root=None,
+    )
+
+    assert workflow._training_workspace_path(configured, "cell_0_workspace") == str(scratch / "cell_0_workspace")
+    assert workflow._training_workspace_path(fallback, "cell_0_workspace") == str(checkpoints / "cell_0_workspace")
+
+
+def test_scientific_subset_report_excludes_operational_preparation_data():
+    report = {
+        "exported_points": 42,
+        "track_scope": "selected-cameras-and-native-crops-v1",
+        "timings_seconds": {"total": 1.5},
+        "image_transport": {"strategy": "symlink"},
+        "process_peak_rss_kib": 2048,
+    }
+
+    assert workflow._scientific_subset_report(report) == {
+        "exported_points": 42,
+        "track_scope": "selected-cameras-and-native-crops-v1",
+    }
+
+
 def test_training_phase_exposes_backend_identity_and_explicit_state(monkeypatch):
     camera = SimpleNamespace(image_name="image.jpg", width=1000, height=800)
     scene_state = SimpleNamespace(
