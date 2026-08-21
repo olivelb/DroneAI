@@ -109,6 +109,17 @@ def _prepare_checkpoint_store(
     return durable_checkpoint_dir, checkpoint_s3_prefix
 
 
+def _training_workspace_root(vol_id: str) -> str | None:
+    """Resolve optional reconstructible training storage outside checkpoints."""
+
+    root = os.getenv("DRONEAI_GAUSSIAN_TRAINING_WORKSPACE_ROOT")
+    if not root:
+        return None
+    workspace_root = os.path.join(root, vol_id)
+    os.makedirs(workspace_root, exist_ok=True)
+    return workspace_root
+
+
 def _checkpoint_callback(
     durable_checkpoint_dir: str,
     checkpoint_s3_prefix: str,
@@ -200,6 +211,7 @@ def prepare_gaussian_product_run(
         iterations=resolved.iterations,
         partition_m=1,
         partition_n=1,
+        training_workspace_root=_training_workspace_root(vol_id),
         partition_overlap=0.20,
         resident_partitioning=resolved.resident_partitioning,
         sh_degree=resolved.sh_degree,
@@ -324,6 +336,7 @@ def run_gaussian_product(
             sh_degree=config.sh_degree,
             opacity_sh_enabled=config.opacity_sh_enabled,
             checkpoint_dir=config.checkpoint_dir,
+            training_workspace_root=config.training_workspace_root,
             data_factor=config.data_factor,
             max_width=config.max_width,
             ortho_mip_filter_variance=config.ortho_mip_filter_variance,

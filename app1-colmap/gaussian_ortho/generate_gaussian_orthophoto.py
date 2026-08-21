@@ -360,6 +360,9 @@ class GaussianOrthoConfig:
     # Compatibility default for integrations constructing this transport
     # object directly. Public product entry points opt in explicitly.
     tile_mode_auto: bool = False
+    # Optional run-scoped fast filesystem used only for reconstructible COLMAP
+    # subsets. Checkpoints and final products remain under checkpoint_dir.
+    training_workspace_root: str | None = None
 
 
 @dataclass
@@ -691,6 +694,7 @@ class GaussianTrainingState:
     merged_model: GaussianModel | None
     final_ply: str | None
     facade_subset_result: dict[str, object] | None
+    preparation_reports: tuple[dict[str, object], ...] = ()
     partition_models: tuple[GaussianPartitionModel, ...] = ()
 
     @property
@@ -929,6 +933,78 @@ def _make_training_reporter(
     return reporter
 
 
+def _training_workspace_path(
+    config: GaussianOrthoConfig,
+    workspace_name: str,
+) -> str:
+    """Keep reconstructible training data separate from durable checkpoints."""
+
+    workspace_root = config.training_workspace_root or config.checkpoint_dir
+    return os.path.join(workspace_root, workspace_name)
+
+
+def _report_subset_preparation(
+    config: GaussianOrthoConfig,
+    progress: int,
+    cell_label: str,
+    subset_export: str | dict[str, object],
+    elapsed_seconds: float,
+) -> None:
+    """Expose preparation cost and image transport before GPU training."""
+
+    if not isinstance(subset_export, dict):
+        return
+    transport = subset_export.get("image_transport")
+    if not isinstance(transport, dict):
+        return
+    _report(
+        config.vol_id,
+        "GAUSS",
+        progress,
+        f"[DroneGS] Prepared {cell_label} in {elapsed_seconds:.1f}s: "
+        f"{transport.get('image_count', 0)} images via "
+        f"{transport.get('strategy', 'unknown')} "
+        f"({transport.get('existing', 0)} existing, "
+        f"{transport.get('hardlinked', 0)} hardlinked, "
+        f"{transport.get('copied', 0)} copied, "
+        f"{float(transport.get('copied_bytes', 0)) / (1024**2):.1f} MiB)",
+        config.report_fn,
+    )
+    timings = subset_export.get("timings_seconds")
+    if isinstance(timings, dict):
+        ordered_phases = (
+            "read_cameras",
+            "read_images",
+            "read_points",
+            "select_cameras",
+            "filter_points",
+            "write_sparse",
+            "write_regions",
+            "prepare_images",
+        )
+        summary = ", ".join(f"{phase}={float(timings.get(phase, 0.0)):.1f}s" for phase in ordered_phases)
+        _report(
+            config.vol_id,
+            "GAUSS",
+            progress,
+            f"[DroneGS] {cell_label} preparation: {summary}",
+            config.report_fn,
+        )
+
+
+def _scientific_subset_report(
+    subset_export: dict[str, object],
+) -> dict[str, object]:
+    """Exclude environment-dependent preparation data from science state."""
+
+    operational_fields = {
+        "timings_seconds",
+        "image_transport",
+        "process_peak_rss_kib",
+    }
+    return {key: value for key, value in subset_export.items() if key not in operational_fields}
+
+
 def train_and_merge_gaussian_models(
     config: GaussianOrthoConfig,
     scene_state: GaussianSceneState,
@@ -946,6 +1022,7 @@ def train_and_merge_gaussian_models(
     partition_models: list[GaussianPartitionModel] = []
     n_cells = len(scene_state.cells)
     facade_subset_result: dict[str, object] | None = None
+    preparation_reports: list[dict[str, object]] = []
     facade_partition_reports: list[dict[str, object]] = []
     sparse_dir = os.path.join(config.dense_path, "sparse", "0")
     if not os.path.isdir(sparse_dir):
@@ -956,22 +1033,24 @@ def train_and_merge_gaussian_models(
         cell_label = f"cell_{index}" if scene_state.use_partition else "full"
         pct_start = 15 + int(65 * index / n_cells)
         pct_end = 15 + int(65 * (index + 1) / n_cells)
-        _report(
-            config.vol_id,
-            "GAUSS",
-            pct_start,
-            f"[{backend.name} MRNF] Training {cell_label}: "
-            f"{len(cell_scene.train_cameras)} cameras, "
-            f"{cell_scene.point_cloud.points.shape[0]} points",
-            config.report_fn,
-        )
         cell_output = os.path.join(config.checkpoint_dir, cell_label)
 
         if scene_state.use_partition:
-            cell_workspace = os.path.join(
-                config.checkpoint_dir,
+            cell_workspace = _training_workspace_path(
+                config,
                 f"{cell_label}_workspace",
             )
+            _report(
+                config.vol_id,
+                "GAUSS",
+                pct_start,
+                f"[DroneGS] Preparing {cell_label}: "
+                f"{len(cell_scene.train_cameras)} cameras, "
+                f"{cell_scene.point_cloud.points.shape[0]} points in "
+                f"{cell_workspace}",
+                config.report_fn,
+            )
+            preparation_started = perf_counter()
             subset_export = export_colmap_subset(
                 source_sparse_dir=sparse_dir,
                 target_dir=cell_workspace,
@@ -981,18 +1060,47 @@ def train_and_merge_gaussian_models(
                 max_point_error=(scene_state.seed_max_error if config.render_mode == "facade" else 1.0),
                 min_track_length=(scene_state.seed_min_track if config.render_mode == "facade" else 3),
                 max_points=(max(1, int(config.cap_max * 0.85)) if config.render_mode == "facade" else None),
-                return_report=config.render_mode == "facade",
+                return_report=True,
+            )
+            _report_subset_preparation(
+                config,
+                pct_start,
+                cell_label,
+                subset_export,
+                perf_counter() - preparation_started,
+            )
+            if isinstance(subset_export, str):
+                raise RuntimeError("Resident subset export did not return its report")
+            preparation_reports.append(
+                {
+                    "cell": cell_label,
+                    "training_workspace": cell_workspace,
+                    "timings_seconds": subset_export.get("timings_seconds"),
+                    "image_transport": subset_export.get("image_transport"),
+                    "process_peak_rss_kib": subset_export.get("process_peak_rss_kib"),
+                }
             )
             if config.render_mode == "facade":
-                if isinstance(subset_export, str):
-                    raise RuntimeError("Resident facade subset export did not return its report")
-                facade_partition_reports.append({"cell": cell_label, **subset_export})
+                facade_partition_reports.append(
+                    {
+                        "cell": cell_label,
+                        **_scientific_subset_report(subset_export),
+                    }
+                )
             training_data_path = cell_workspace
         elif config.render_mode == "facade":
-            texture_workspace = os.path.join(
-                config.checkpoint_dir,
+            texture_workspace = _training_workspace_path(
+                config,
                 "facade_texture_workspace",
             )
+            _report(
+                config.vol_id,
+                "GAUSS",
+                pct_start,
+                f"[DroneGS] Preparing facade texture workspace at {texture_workspace}",
+                config.report_fn,
+            )
+            preparation_started = perf_counter()
             subset_export = export_colmap_subset(
                 source_sparse_dir=sparse_dir,
                 target_dir=texture_workspace,
@@ -1003,9 +1111,25 @@ def train_and_merge_gaussian_models(
                 max_points=max(1, int(config.cap_max * 0.85)),
                 return_report=True,
             )
+            _report_subset_preparation(
+                config,
+                pct_start,
+                cell_label,
+                subset_export,
+                perf_counter() - preparation_started,
+            )
             if isinstance(subset_export, str):
                 raise RuntimeError("Facade subset export did not return its report")
-            facade_subset_result = subset_export
+            preparation_reports.append(
+                {
+                    "cell": cell_label,
+                    "training_workspace": texture_workspace,
+                    "timings_seconds": subset_export.get("timings_seconds"),
+                    "image_transport": subset_export.get("image_transport"),
+                    "process_peak_rss_kib": subset_export.get("process_peak_rss_kib"),
+                }
+            )
+            facade_subset_result = _scientific_subset_report(subset_export)
             if facade_subset_result["coverage_balanced"]:
                 _report(
                     config.vol_id,
@@ -1020,6 +1144,16 @@ def train_and_merge_gaussian_models(
             training_data_path = texture_workspace
         else:
             training_data_path = config.dense_path
+
+        _report(
+            config.vol_id,
+            "GAUSS",
+            pct_start,
+            f"[{backend.name} MRNF] Training {cell_label}: "
+            f"{len(cell_scene.train_cameras)} cameras, "
+            f"{cell_scene.point_cloud.points.shape[0]} points",
+            config.report_fn,
+        )
 
         checkpoint_path = os.path.join(cell_output, "training.ckpt")
         resume_from = (
@@ -1218,6 +1352,7 @@ def train_and_merge_gaussian_models(
         merged_model=merged_model,
         final_ply=final_ply,
         facade_subset_result=facade_subset_result,
+        preparation_reports=tuple(preparation_reports),
         partition_models=tuple(partition_models),
     )
 
@@ -2134,6 +2269,7 @@ def generate_gaussian_orthophoto(
     sh_degree: int = 3,
     opacity_sh_enabled: bool = True,
     checkpoint_dir: str | None = None,
+    training_workspace_root: str | None = None,
     data_factor: int = DRONEGS_PRODUCTION_PROFILE_V1.data_factor,
     max_width: int = DRONEGS_PRODUCTION_PROFILE_V1.max_width,
     ortho_mip_filter_variance: float = 0.03,
@@ -2231,6 +2367,10 @@ def generate_gaussian_orthophoto(
         remain view-independent; this is not full FAGK.
     checkpoint_dir : str, optional
         Directory for training checkpoints.
+    training_workspace_root : str, optional
+        Run-scoped fast filesystem for reconstructible per-cell COLMAP
+        workspaces. Keeping this on native Linux storage permits zero-copy
+        image directory symlinks while checkpoints remain durable elsewhere.
     data_factor : int
         Trainer image downscaling factor (1, 2, 4, or 8).
     max_width : int
@@ -2292,6 +2432,7 @@ def generate_gaussian_orthophoto(
         sh_degree=sh_degree,
         opacity_sh_enabled=opacity_sh_enabled,
         checkpoint_dir=checkpoint_dir,
+        training_workspace_root=training_workspace_root,
         data_factor=data_factor,
         max_width=max_width,
         ortho_mip_filter_variance=ortho_mip_filter_variance,
@@ -2416,5 +2557,6 @@ def generate_gaussian_orthophoto(
         cupy_version=cp.__version__,
     )
     phase_timings["quality_and_geotiff_publication"] = perf_counter() - phase_started
+    result["preparation_reports"] = list(training_phase.training_state.preparation_reports)
     result["phase_timings_seconds"] = {name: round(seconds, 6) for name, seconds in phase_timings.items()}
     return result

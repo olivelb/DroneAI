@@ -319,6 +319,11 @@ def parse_args() -> argparse.Namespace:
             "products and the run report remain in the marked workspace"
         ),
     )
+    parser.add_argument(
+        "--training-workspace-root",
+        type=Path,
+        help=("optional native Linux filesystem for reconstructible per-cell workspaces"),
+    )
     parser.add_argument("--render-mode", choices=("map", "facade"), default="map")
     parser.add_argument(
         "--facade-scale-mode",
@@ -496,12 +501,15 @@ def clear_generated_outputs(
     ortho_path: Path,
     height_path: Path,
     checkpoint_path: Path,
+    training_workspace_path: Path | None = None,
 ) -> None:
     for path in (ortho_path, height_path):
         if path.exists():
             path.unlink()
     if checkpoint_path.exists():
         shutil.rmtree(checkpoint_path)
+    if training_workspace_path is not None and training_workspace_path.exists():
+        shutil.rmtree(training_workspace_path)
 
 
 def write_run_report(path: Path, payload: dict[str, Any]) -> None:
@@ -550,14 +558,29 @@ def main() -> int:
         args.render_mode,
         args.checkpoint_root,
     )
+    training_workspace_path = (
+        args.training_workspace_root.resolve() / run_label if args.training_workspace_root is not None else None
+    )
     if ortho_path.exists() or height_path.exists():
         if not args.force:
             raise ValueError(
                 f"generated outputs already exist; pass --force to replace only the {args.profile!r} profile artifacts"
             )
-        clear_generated_outputs(ortho_path, height_path, checkpoint_path)
+        clear_generated_outputs(
+            ortho_path,
+            height_path,
+            checkpoint_path,
+            training_workspace_path,
+        )
     elif checkpoint_path.exists() and args.force:
-        clear_generated_outputs(ortho_path, height_path, checkpoint_path)
+        clear_generated_outputs(
+            ortho_path,
+            height_path,
+            checkpoint_path,
+            training_workspace_path,
+        )
+    elif training_workspace_path is not None and training_workspace_path.exists() and args.force:
+        clear_generated_outputs(ortho_path, height_path, checkpoint_path, training_workspace_path)
 
     from gaussian_ortho.generate_gaussian_orthophoto import (
         generate_gaussian_orthophoto,
@@ -578,6 +601,7 @@ def main() -> int:
         "parameters": report_parameters(profile),
         "workspace": str(workspace),
         "checkpoint_dir": str(checkpoint_path),
+        "training_workspace_root": (str(training_workspace_path) if training_workspace_path else None),
         "trainer_backend": profile.backend,
         "started_at": started_at,
     }
@@ -607,6 +631,7 @@ def main() -> int:
             resident_partitioning=profile.resident_partitioning,
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
+            training_workspace_root=(str(training_workspace_path) if training_workspace_path else None),
             verbose=args.verbose,
             trainer_backend=profile.backend,
             training_seed=profile.seed,

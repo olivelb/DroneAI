@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import os
+import resource
 import shutil
 import struct
 import tempfile
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+from time import perf_counter
 from typing import TypedDict
 
 import numpy as np
@@ -206,6 +208,7 @@ def _provide_subset_images(
                 "existing": len(selected_names),
                 "hardlinked": 0,
                 "copied": 0,
+                "copied_bytes": 0,
             }
         if not target_images.is_dir():
             raise RuntimeError(
@@ -223,11 +226,13 @@ def _provide_subset_images(
                 "existing": 0,
                 "hardlinked": 0,
                 "copied": 0,
+                "copied_bytes": 0,
             }
 
     existing = 0
     hardlinked = 0
     copied = 0
+    copied_bytes = 0
     for image_name in selected_names:
         relative = Path(image_name)
         if relative.is_absolute() or ".." in relative.parts:
@@ -251,6 +256,7 @@ def _provide_subset_images(
         except OSError:
             _copy_file_contents_atomically(source_image, target_image)
             copied += 1
+            copied_bytes += source_image.stat().st_size
         else:
             hardlinked += 1
 
@@ -268,6 +274,7 @@ def _provide_subset_images(
         "existing": existing,
         "hardlinked": hardlinked,
         "copied": copied,
+        "copied_bytes": copied_bytes,
     }
 
 
@@ -284,14 +291,23 @@ def export_colmap_subset(
     return_report: bool = False,
 ) -> str | dict[str, object]:
     """Write a filtered COLMAP sparse reconstruction for one training cell."""
+    export_started = perf_counter()
+    timings: dict[str, float] = {}
     source = Path(source_sparse_dir)
     target_sparse = Path(target_dir) / "sparse" / "0"
     target_sparse.mkdir(parents=True, exist_ok=True)
 
+    phase_started = perf_counter()
     cameras = _read_colmap_cameras_bin(source / "cameras.bin")
+    timings["read_cameras"] = perf_counter() - phase_started
+    phase_started = perf_counter()
     images = _read_colmap_images_bin(source / "images.bin")
+    timings["read_images"] = perf_counter() - phase_started
+    phase_started = perf_counter()
     points = _read_colmap_points3d_bin(source / "points3D.bin")
+    timings["read_points"] = perf_counter() - phase_started
 
+    phase_started = perf_counter()
     selected_names = set(camera_names)
     filtered_images: dict[int, ColmapImageRecord] = {
         image_id: image
@@ -306,7 +322,9 @@ def export_colmap_subset(
         for camera_id, camera in cameras.items()
         if camera_id in used_camera_ids
     }
+    timings["select_cameras"] = perf_counter() - phase_started
 
+    phase_started = perf_counter()
     if point_ids is None:
         visible_point_ids: set[int] = {
             point_id
@@ -363,6 +381,8 @@ def export_colmap_subset(
             point_id if point_id in valid_point_ids else -1
             for point_id in image["point3D_ids"]
         ]
+    timings["filter_points"] = perf_counter() - phase_started
+    phase_started = perf_counter()
 
     _write_colmap_cameras_bin(
         filtered_cameras, target_sparse / "cameras.bin"
@@ -373,6 +393,8 @@ def export_colmap_subset(
     _write_colmap_points3d_bin(
         filtered_points, target_sparse / "points3D.bin"
     )
+    timings["write_sparse"] = perf_counter() - phase_started
+    phase_started = perf_counter()
 
     _write_native_image_regions(
         Path(target_dir) / "image_regions.tsv",
@@ -380,6 +402,8 @@ def export_colmap_subset(
         filtered_cameras,
         crops,
     )
+    timings["write_regions"] = perf_counter() - phase_started
+    phase_started = perf_counter()
 
     image_transport: dict[str, object] | None = None
     if images_dir:
@@ -388,11 +412,15 @@ def export_colmap_subset(
             Path(target_dir) / "images",
             (image["name"] for image in filtered_images.values()),
         )
+    timings["prepare_images"] = perf_counter() - phase_started
     exported_track_lengths = [
         len(point["track"])
         for point in filtered_points.values()
     ]
+    timings["total"] = perf_counter() - export_started
     report: dict[str, object] = {
+        "timings_seconds": timings,
+        "process_peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss,
         "sparse_path": str(target_sparse),
         "selected_images": len(filtered_images),
         "points_before_cap": points_before_cap,
