@@ -235,7 +235,7 @@ def _write_facade_report(
         coverage_balanced = bool(
             subset and subset.get("coverage_balanced")
         )
-        resident_cell_count = 1
+        resident_cell_count = len(filtering_phase.partition_models) or 1
     report_path = Path(
         config.facade_frame_report
         or str(Path(config.ortho_file).with_name("facade_frame.json"))
@@ -464,6 +464,19 @@ def finalize_gaussian_raster_product(
             if filtering_phase.density_assessment is not None
             else None
         ),
+        "gaussian_density_qualification": {
+            "accepted": (
+                filtering_phase.density_assessment.accepted
+                if filtering_phase.density_assessment is not None
+                else None
+            ),
+            "gate_enabled": bool(getattr(config, "density_gate_enabled", True)),
+            "rendered_with_expert_override": bool(
+                filtering_phase.density_assessment is not None
+                and not filtering_phase.density_assessment.accepted
+                and not getattr(config, "density_gate_enabled", True)
+            ),
+        },
         "ortho_mip_filter_variance": config.ortho_mip_filter_variance,
         "ortho_mip_filter_compensation": config.ortho_mip_filter_compensation,
     }

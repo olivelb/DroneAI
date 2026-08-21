@@ -52,6 +52,7 @@ _RUNTIME_CONFIG_FIELDS = frozenset(
         "cancellation_check",
         "checkpoint_callback",
         "facade_frame_report",
+        "density_gate_enabled",
     }
 )
 

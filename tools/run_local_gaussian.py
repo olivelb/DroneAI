@@ -324,6 +324,29 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help=("optional native Linux filesystem for reconstructible per-cell workspaces"),
     )
+    parser.add_argument(
+        "--resume-filtered-root",
+        type=Path,
+        help=(
+            "existing resident checkpoint directory containing cell_N/buffer.ply; "
+            "skips COLMAP reconstruction changes, training, and filtering"
+        ),
+    )
+    parser.add_argument(
+        "--unified-ply",
+        type=Path,
+        help="atomic output PLY containing only the disjoint core of every resident cell",
+    )
+    parser.add_argument("--expected-filtered-core-gaussians", type=int)
+    parser.add_argument(
+        "--density-gate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "enforce the scientific Gaussian-spacing qualification before rendering; "
+            "--no-density-gate is an explicit expert override and remains reported"
+        ),
+    )
     parser.add_argument("--render-mode", choices=("map", "facade"), default="map")
     parser.add_argument(
         "--facade-scale-mode",
@@ -561,24 +584,49 @@ def main() -> int:
     training_workspace_path = (
         args.training_workspace_root.resolve() / run_label if args.training_workspace_root is not None else None
     )
+    resume_filtered = args.resume_filtered_root is not None
+    if resume_filtered:
+        checkpoint_path = args.resume_filtered_root.resolve()
+        if not checkpoint_path.is_dir():
+            raise ValueError("resume-filtered-root must be an existing checkpoint directory")
+        if args.render_mode != "facade" or not profile.resident_partitioning:
+            raise ValueError("filtered resident recovery requires the facade resident profile")
+    unified_ply_path = (
+        args.unified_ply.resolve()
+        if args.unified_ply is not None
+        else ortho_path.with_suffix(".gaussians.ply") if resume_filtered else None
+    )
+    if unified_ply_path is not None:
+        try:
+            unified_ply_path.relative_to(workspace)
+        except ValueError as error:
+            raise ValueError("unified PLY output must stay inside the marked workspace") from error
     if ortho_path.exists() or height_path.exists():
         if not args.force:
             raise ValueError(
                 f"generated outputs already exist; pass --force to replace only the {args.profile!r} profile artifacts"
             )
-        clear_generated_outputs(
-            ortho_path,
-            height_path,
-            checkpoint_path,
-            training_workspace_path,
-        )
+        if resume_filtered:
+            ortho_path.unlink(missing_ok=True)
+            height_path.unlink(missing_ok=True)
+        else:
+            clear_generated_outputs(
+                ortho_path,
+                height_path,
+                checkpoint_path,
+                training_workspace_path,
+            )
     elif checkpoint_path.exists() and args.force:
-        clear_generated_outputs(
-            ortho_path,
-            height_path,
-            checkpoint_path,
-            training_workspace_path,
-        )
+        if resume_filtered:
+            ortho_path.unlink(missing_ok=True)
+            height_path.unlink(missing_ok=True)
+        else:
+            clear_generated_outputs(
+                ortho_path,
+                height_path,
+                checkpoint_path,
+                training_workspace_path,
+            )
     elif training_workspace_path is not None and training_workspace_path.exists() and args.force:
         clear_generated_outputs(ortho_path, height_path, checkpoint_path, training_workspace_path)
 
@@ -587,9 +635,10 @@ def main() -> int:
     )
     from gaussian_training import resolve_training_backend
 
-    backend = resolve_training_backend(profile.backend)
-    if not backend.is_available():
-        raise RuntimeError(f"{profile.backend} trainer is missing from the local Gaussian image")
+    if not resume_filtered:
+        backend = resolve_training_backend(profile.backend)
+        if not backend.is_available():
+            raise RuntimeError(f"{profile.backend} trainer is missing from the local Gaussian image")
 
     report_path = workspace / f"gaussian_run.{run_label}.json"
     started_at = time.time()
@@ -604,6 +653,8 @@ def main() -> int:
         "training_workspace_root": (str(training_workspace_path) if training_workspace_path else None),
         "trainer_backend": profile.backend,
         "started_at": started_at,
+        "execution_mode": "filtered-partition-recovery" if resume_filtered else "train-filter-render",
+        "source_checkpoint_dir": str(checkpoint_path) if resume_filtered else None,
     }
     write_run_report(report_path, report)
 
@@ -628,6 +679,7 @@ def main() -> int:
             capacity_mode=profile.capacity_mode,
             capacity_floor=profile.capacity_floor or profile.cap_max,
             target_gaussian_spacing_pixels=(profile.target_gaussian_spacing_pixels),
+            density_gate_enabled=args.density_gate,
             resident_partitioning=profile.resident_partitioning,
             filter_enabled=profile.filter_enabled,
             checkpoint_dir=str(checkpoint_path),
@@ -664,6 +716,9 @@ def main() -> int:
             facade_depth_rear_iqr_multiplier=(args.facade_depth_rear_iqr_multiplier),
             facade_seed_max_reprojection_error=(args.facade_seed_max_reprojection_error),
             facade_seed_min_track_length=args.facade_seed_min_track_length,
+            resume_filtered_partitions=resume_filtered,
+            expected_filtered_core_gaussians=(args.expected_filtered_core_gaussians),
+            unified_ply_file=(str(unified_ply_path) if unified_ply_path is not None else None),
         )
     except Exception as error:
         report.update(

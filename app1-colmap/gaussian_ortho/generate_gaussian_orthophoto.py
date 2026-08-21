@@ -363,6 +363,10 @@ class GaussianOrthoConfig:
     # Optional run-scoped fast filesystem used only for reconstructible COLMAP
     # subsets. Checkpoints and final products remain under checkpoint_dir.
     training_workspace_root: str | None = None
+    # Scientific density remains recorded regardless of this operational gate.
+    # Expert recovery may render a requested pixel grid while explicitly
+    # accepting that the achieved Gaussian spacing misses its target.
+    density_gate_enabled: bool = True
 
 
 @dataclass
@@ -1917,6 +1921,44 @@ class GaussianRasterizationPhaseState:
     height: int
 
 
+def _qualify_gaussian_density_for_rasterization(
+    config: GaussianOrthoConfig,
+    filtering_phase: GaussianFilteringPhaseState,
+) -> None:
+    """Keep scientific density qualification separate from render execution."""
+
+    if config.capacity_mode != "adaptive":
+        return
+    density = filtering_phase.density_assessment
+    if density is None:
+        raise RuntimeError(
+            "Adaptive Gaussian rasterization requires a post-filter density "
+            "assessment; rerun filtering or restore its portable artifact."
+        )
+    if density.accepted:
+        return
+    message = (
+        f"Requested GSD {density.requested_gsd_m:.4f} m/px has insufficient "
+        "qualified Gaussian density: "
+        f"{density.actual_gaussian_count:,} retained versus "
+        f"{density.required_gaussian_count:,} required; achieved mean spacing "
+        f"is {density.achieved_spacing_pixels:.2f} px for a "
+        f"{density.target_spacing_pixels:.2f} px target. Use at least "
+        f"{density.minimum_compatible_gsd_m:.4f} m/px for the qualified "
+        "density."
+    )
+    if getattr(config, "density_gate_enabled", True):
+        raise RuntimeError(message + " Disable the density gate only as an explicit expert override.")
+    _report(
+        config.vol_id,
+        "GAUSS",
+        95,
+        "Scientific density qualification warning: " + message
+        + " Continuing because the expert density gate override is active.",
+        config.report_fn,
+    )
+
+
 def execute_gaussian_rasterization_phase(
     config: GaussianOrthoConfig,
     filtering_phase: GaussianFilteringPhaseState,
@@ -1930,22 +1972,7 @@ def execute_gaussian_rasterization_phase(
             filtering_phase,
             render_fn=render_fn,
         )
-    density = filtering_phase.density_assessment
-    if config.capacity_mode == "adaptive":
-        if density is None:
-            raise RuntimeError(
-                "Adaptive Gaussian rasterization requires a post-filter "
-                "density assessment; rerun training and filtering."
-            )
-        if not density.accepted:
-            raise RuntimeError(
-                f"Requested GSD {density.requested_gsd_m:.4f} m/px is "
-                "incompatible with the achieved Gaussian density: "
-                f"{density.actual_gaussian_count:,} retained versus "
-                f"{density.required_gaussian_count:,} required. Use at least "
-                f"{density.minimum_compatible_gsd_m:.4f} m/px or increase "
-                "resident capacity through geographic partitioning."
-            )
+    _qualify_gaussian_density_for_rasterization(config, filtering_phase)
     if render_fn is None:
         from .ortho_renderer import render_orthophoto
 
@@ -2063,15 +2090,7 @@ def execute_partitioned_gaussian_rasterization_phase(
     partitions = filtering_phase.partition_models
     if geometry is None or not partitions:
         raise ValueError("Partitioned rasterization requires resident geometry")
-    density = filtering_phase.density_assessment
-    if config.capacity_mode == "adaptive" and (density is None or not density.accepted):
-        if density is None:
-            raise RuntimeError("Resident rasterization has no density assessment")
-        raise RuntimeError(
-            f"Requested GSD {density.requested_gsd_m:.4f} m/px is "
-            f"incompatible with {density.actual_gaussian_count:,} retained "
-            "unique core Gaussians"
-        )
+    _qualify_gaussian_density_for_rasterization(config, filtering_phase)
     if model_class is None:
         from .gaussian_model import GaussianModel
 
@@ -2280,6 +2299,7 @@ def generate_gaussian_orthophoto(
     capacity_mode: str = "fixed",
     capacity_floor: int = DRONEGS_PRODUCTION_PROFILE_V1.cap_max,
     target_gaussian_spacing_pixels: float = 0.0,
+    density_gate_enabled: bool = True,
     filter_enabled: bool = True,
     filter_max_scale: float = 5.0,
     filter_min_retained_ratio: float = 0.80,
@@ -2331,6 +2351,9 @@ def generate_gaussian_orthophoto(
     facade_depth_rear_iqr_multiplier: float = float(FACADE_PARAMETER_DEFAULTS["facade_depth_rear_iqr_multiplier"]),
     facade_seed_max_reprojection_error: float = float(FACADE_PARAMETER_DEFAULTS["facade_seed_max_reprojection_error"]),
     facade_seed_min_track_length: int = int(FACADE_PARAMETER_DEFAULTS["facade_seed_min_track_length"]),
+    resume_filtered_partitions: bool = False,
+    expected_filtered_core_gaussians: int | None = None,
+    unified_ply_file: str | None = None,
 ) -> dict[str, Any]:
     """
     Generate a True Digital Orthophoto Map using 3D Gaussian Splatting.
@@ -2492,68 +2515,86 @@ def generate_gaussian_orthophoto(
         facade_depth_rear_iqr_multiplier=facade_depth_rear_iqr_multiplier,
         facade_seed_max_reprojection_error=facade_seed_max_reprojection_error,
         facade_seed_min_track_length=facade_seed_min_track_length,
+        density_gate_enabled=density_gate_enabled,
     )
     phase_timings: dict[str, float] = {}
-    phase_started = perf_counter()
-    training_phase = execute_gaussian_training_phase(
-        config,
-        trainer_backend=trainer_backend,
-        cupy_module=cp,
-        runtime_plan_fn=runtime_plan_fn,
-    )
-    phase_timings["training_and_scene_preparation"] = perf_counter() - phase_started
-    scene_state = training_phase.scene_state
-    phase_started = perf_counter()
-    if training_phase.training_state.partition_models:
-        if training_phase.capacity_plan is None:
-            raise RuntimeError("Resident Gaussian training produced no capacity plan")
-        filtering_phase = execute_partitioned_gaussian_filtering_phase(
+    training_phase: GaussianTrainingPhaseState | None = None
+    if resume_filtered_partitions:
+        if not config.resident_partitioning:
+            raise ValueError("Filtered partition recovery requires resident partitioning")
+        from .partitioned_recovery import recover_partitioned_filtering_phase
+
+        phase_started = perf_counter()
+        filtering_phase, summary = recover_partitioned_filtering_phase(
             config,
-            scene_state,
-            training_phase.training_state.partition_models,
-            training_phase.capacity_plan,
+            expected_core_gaussians=expected_filtered_core_gaussians,
+            unified_ply_file=unified_ply_file,
             cupy_module=cp,
         )
+        phase_timings["filtered_partition_recovery"] = perf_counter() - phase_started
     else:
-        filtering_phase = execute_gaussian_filtering_phase(
+        phase_started = perf_counter()
+        training_phase = execute_gaussian_training_phase(
             config,
-            training_phase,
+            trainer_backend=trainer_backend,
             cupy_module=cp,
+            runtime_plan_fn=runtime_plan_fn,
         )
-    phase_timings["filtering"] = perf_counter() - phase_started
+        phase_timings["training_and_scene_preparation"] = perf_counter() - phase_started
+        scene_state = training_phase.scene_state
+        phase_started = perf_counter()
+        if training_phase.training_state.partition_models:
+            if training_phase.capacity_plan is None:
+                raise RuntimeError("Resident Gaussian training produced no capacity plan")
+            filtering_phase = execute_partitioned_gaussian_filtering_phase(
+                config,
+                scene_state,
+                training_phase.training_state.partition_models,
+                training_phase.capacity_plan,
+                cupy_module=cp,
+            )
+        else:
+            filtering_phase = execute_gaussian_filtering_phase(
+                config,
+                training_phase,
+                cupy_module=cp,
+            )
+        phase_timings["filtering"] = perf_counter() - phase_started
+        from .raster_product import GaussianSceneSummary
+
+        summary = GaussianSceneSummary(
+            sim3_aligned=scene_state.transform_data is not None,
+            exif_altitude_available=scene_state.mean_exif_alt is not None,
+            colmap_to_meters=scene_state.colmap_to_meters,
+            scale_source=scene_state.scale_source,
+            facade_frame=(scene_state.facade_frame.as_dict() if scene_state.facade_frame is not None else None),
+            registered_camera_count=len(scene_state.registered_cameras),
+            texture_camera_count=scene_state.texture_camera_count,
+            texture_filter_applied=scene_state.texture_filter_applied,
+            minimum_sparse_observations=scene_state.minimum_sparse_observations,
+            seed_max_error=scene_state.seed_max_error,
+            seed_min_track=scene_state.seed_min_track,
+            gaussian_seed_point_count=scene_state.gaussian_seed_point_count,
+            facade_subset_result=training_phase.training_state.facade_subset_result,
+        )
     phase_started = perf_counter()
     rasterization_phase = execute_gaussian_rasterization_phase(
         config,
         filtering_phase,
     )
     phase_timings["rasterization"] = perf_counter() - phase_started
-    from .raster_product import (
-        GaussianSceneSummary,
-        finalize_gaussian_raster_product,
-    )
-
-    summary = GaussianSceneSummary(
-        sim3_aligned=scene_state.transform_data is not None,
-        exif_altitude_available=scene_state.mean_exif_alt is not None,
-        colmap_to_meters=scene_state.colmap_to_meters,
-        scale_source=scene_state.scale_source,
-        facade_frame=(scene_state.facade_frame.as_dict() if scene_state.facade_frame is not None else None),
-        registered_camera_count=len(scene_state.registered_cameras),
-        texture_camera_count=scene_state.texture_camera_count,
-        texture_filter_applied=scene_state.texture_filter_applied,
-        minimum_sparse_observations=scene_state.minimum_sparse_observations,
-        seed_max_error=scene_state.seed_max_error,
-        seed_min_track=scene_state.seed_min_track,
-        gaussian_seed_point_count=scene_state.gaussian_seed_point_count,
-        facade_subset_result=training_phase.training_state.facade_subset_result,
-    )
+    from .raster_product import finalize_gaussian_raster_product
     phase_started = perf_counter()
     result = finalize_gaussian_raster_product(
         config,
         filtering_phase,
         rasterization_phase,
         summary,
-        final_ply=training_phase.training_state.final_ply,
+        final_ply=(
+            unified_ply_file
+            if resume_filtered_partitions
+            else training_phase.training_state.final_ply if training_phase is not None else None
+        ),
         cupy_version=cp.__version__,
     )
     phase_timings["quality_and_geotiff_publication"] = perf_counter() - phase_started
