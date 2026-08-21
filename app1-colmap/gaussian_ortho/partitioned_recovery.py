@@ -29,9 +29,10 @@ from .phase_artifacts import (
     write_filtering_artifact,
 )
 from .ply_stream import (
+    FEATHERED_MERGE_COMMENT,
     PartitionCorePly,
     count_partition_core_vertices,
-    merge_partition_cores_to_ply,
+    merge_partition_buffers_to_ply,
 )
 from .raster_product import GaussianSceneSummary
 from .render_geometry import GaussianRenderGeometry
@@ -73,37 +74,35 @@ def _merge_unified_ply(
         from .ply_stream import read_binary_ply_layout
 
         layout = read_binary_ply_layout(output)
-        if layout.vertex_count == filtering_phase.output_gaussians:
+        if FEATHERED_MERGE_COMMENT in layout.comments:
             _report(
                 config.vol_id,
                 "GAUSS",
                 95,
-                f"Reusing validated unified core PLY ({layout.vertex_count:,} Gaussians)",
+                "Reusing validated seam-safe unified PLY "
+                f"({layout.vertex_count:,} weighted Gaussians)",
                 config.report_fn,
             )
             return
         raise RuntimeError(
-            f"Existing unified PLY has {layout.vertex_count:,} vertices; "
-            f"expected {filtering_phase.output_gaussians:,}"
+            "Existing unified PLY does not use the seam-safe opacity-feather "
+            "contract; choose a new output path to preserve the old evidence"
         )
-    result = merge_partition_cores_to_ply(
+    result = merge_partition_buffers_to_ply(
         (
             PartitionCorePly(partition.bounds, Path(partition.model_path))
             for partition in filtering_phase.partition_models
         ),
         output,
-        expected_vertex_count=(
-            expected_core_gaussians
-            if expected_core_gaussians is not None
-            else filtering_phase.output_gaussians
-        ),
     )
     _report(
         config.vol_id,
         "GAUSS",
         95,
-        f"Saved unified resident-core PLY: {result.path} "
-        f"({result.vertex_count:,} Gaussians, {result.size_bytes / 1024**3:.2f} GiB)",
+        f"Saved seam-safe unified PLY: {result.path} "
+        f"({result.vertex_count:,} opacity-weighted Gaussians from "
+        f"{result.source_vertex_count:,} buffer records, "
+        f"{result.size_bytes / 1024**3:.2f} GiB)",
         config.report_fn,
     )
 

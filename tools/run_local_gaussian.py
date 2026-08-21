@@ -335,7 +335,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--unified-ply",
         type=Path,
-        help="atomic output PLY containing only the disjoint core of every resident cell",
+        help=(
+            "atomic seam-safe PLY built from opacity-feathered resident buffers; "
+            "preserves Gaussian support across cell boundaries"
+        ),
     )
     parser.add_argument("--expected-filtered-core-gaussians", type=int)
     parser.add_argument(
