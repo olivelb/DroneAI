@@ -476,6 +476,19 @@ def _robust_cost_scale(values: np.ndarray) -> float:
     return max(float(np.median(finite)) if finite.size else 1.0, 1e-12)
 
 
+def _positions_and_scales(records: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the common finite-space inputs used by LOD and bounds calculations."""
+
+    positions = np.column_stack((records["x"], records["y"], records["z"])).astype(
+        np.float64, copy=False
+    )
+    log_scales = np.column_stack(
+        (records["scale_0"], records["scale_1"], records["scale_2"])
+    ).astype(np.float64, copy=False)
+    scales = np.exp(np.clip(log_scales, -30.0, 30.0))
+    return positions, log_scales, scales
+
+
 def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build deterministic local candidates and a scene-normalized merge cost."""
 
@@ -487,13 +500,7 @@ def _adaptive_candidate_edges(records: np.ndarray, neighbors: int = 8) -> tuple[
     right = np.concatenate(
         [morton_order[offset:] for offset in range(1, min(neighbors, count - 1) + 1)]
     )
-    positions = np.column_stack((records["x"], records["y"], records["z"])).astype(
-        np.float64, copy=False
-    )
-    log_scales = np.column_stack(
-        (records["scale_0"], records["scale_1"], records["scale_2"])
-    ).astype(np.float64, copy=False)
-    scales = np.exp(np.clip(log_scales, -30.0, 30.0))
+    positions, log_scales, scales = _positions_and_scales(records)
     spatial = np.sum(np.square(positions[left] - positions[right]), axis=1) / np.maximum(
         np.sum(np.square(scales[left]), axis=1) + np.sum(np.square(scales[right]), axis=1),
         1e-12,
@@ -629,13 +636,7 @@ def _gaussian_render_bounds(
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """Return conservative finite AABB support, including anisotropic splat extent."""
 
-    positions = np.column_stack((records["x"], records["y"], records["z"])).astype(
-        np.float64, copy=False
-    )
-    log_scales = np.column_stack(
-        (records["scale_0"], records["scale_1"], records["scale_2"])
-    ).astype(np.float64, copy=False)
-    scales = np.exp(np.clip(log_scales, -30.0, 30.0))
+    positions, _log_scales, scales = _positions_and_scales(records)
     rotations = _rotation_matrices(
         np.column_stack(
             (records["rot_0"], records["rot_1"], records["rot_2"], records["rot_3"])
@@ -835,6 +836,261 @@ def _source_degrees(layout: BinaryPlyLayout) -> tuple[int, int]:
     return color_degree, opacity_degree
 
 
+class _GsTileTreeBuilder:
+    """Stateful deterministic tree writer used by the atomic bundle publisher."""
+
+    def __init__(
+        self,
+        layout: BinaryPlyLayout,
+        options: GsTileBuildOptions,
+        bundle_tmp: Path,
+    ) -> None:
+        self.layout = layout
+        self.options = options
+        self.bundle_tmp = bundle_tmp
+        self.work_dtype = _work_dtype(layout)
+        self.adaptive_v4 = (
+            options.lod_proxy_size is not None
+            and options.lod_proxy_strategy == "adaptive-moment"
+        )
+        self.nodes: list[dict[str, Any]] = []
+        self.packs: list[dict[str, Any]] = []
+        self.maximum_errors: dict[str, float] = {}
+        self.exact_pack_bytes = 0
+        self.proxy_pack_bytes = 0
+        self.proxy_records = 0
+        self.leaf_count = 0
+
+    def pack_tile(
+        self,
+        records: np.ndarray,
+        *,
+        pack_id: str,
+        node_id: str,
+    ) -> tuple[dict[str, Any], int]:
+        ply_records = np.empty(records.shape[0], dtype=self.layout.dtype)
+        for name in self.layout.dtype.names or ():
+            ply_records[name] = records[name]
+        relative = Path("packs") / f"{pack_id}.gst"
+        pack, errors = write_pack_atomic(
+            self.bundle_tmp / relative,
+            ply_records,
+            records["source_id"],
+            node_id=node_id,
+        )
+        pack["id"] = pack_id
+        pack["path"] = relative.as_posix()
+        pack["byteOffset"] = 32
+        self.packs.append(pack)
+        for key, value in errors.items():
+            self.maximum_errors[key] = max(self.maximum_errors.get(key, 0.0), value)
+        tile = {
+            "pack": pack_id,
+            "byteOffset": 32,
+            "byteLength": pack["byteLength"] - 32,
+            "recordCount": records.shape[0],
+            "sha256": pack["sha256"],
+            "quantization": pack.pop("quantization"),
+        }
+        return tile, pack["byteLength"]
+
+    def _lod_proxy(
+        self,
+        records: np.ndarray,
+        errors: np.ndarray,
+        item: _WorkFile,
+    ) -> _LodProxy:
+        limit = self.options.lod_proxy_size
+        if limit is None:
+            raise RuntimeError("GSTile LOD proxy requested without a configured size")
+        if self.options.lod_proxy_strategy == "adaptive-moment":
+            return _adaptive_moment_lod_proxy(records, errors, limit)
+        if self.options.lod_proxy_strategy == "moment-matched":
+            return _moment_matched_lod_proxy(records, errors, limit)
+        return _replacement_lod_proxy(
+            records,
+            errors,
+            limit,
+            self.options.lod_proxy_strategy,
+            item,
+        )
+
+    @staticmethod
+    def _combined_render_bounds(
+        left: _LodProxy,
+        right: _LodProxy,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        if (
+            left.render_bounds_min is None
+            or left.render_bounds_max is None
+            or right.render_bounds_min is None
+            or right.render_bounds_max is None
+        ):
+            raise RuntimeError("GSTile adaptive child render bounds are missing")
+        minimum = tuple(
+            min(left.render_bounds_min[axis], right.render_bounds_min[axis])
+            for axis in range(3)
+        )
+        maximum = tuple(
+            max(left.render_bounds_max[axis], right.render_bounds_max[axis])
+            for axis in range(3)
+        )
+        return minimum, maximum
+
+    @staticmethod
+    def _expanded_render_bounds(
+        minimum: tuple[float, float, float],
+        maximum: tuple[float, float, float],
+        proxy: _LodProxy,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        proxy_minimum, proxy_maximum = _gaussian_render_bounds(proxy.records)
+        return (
+            tuple(min(minimum[axis], proxy_minimum[axis]) for axis in range(3)),
+            tuple(max(maximum[axis], proxy_maximum[axis]) for axis in range(3)),
+        )
+
+    def _visit_leaf(
+        self,
+        item: _WorkFile,
+        node: dict[str, Any],
+        node_id: str,
+        depth: int,
+    ) -> _LodProxy | None:
+        records = np.fromfile(item.path, dtype=self.work_dtype, count=item.count)
+        if records.shape[0] != item.count:
+            raise RuntimeError("GSTile leaf payload is incomplete")
+        render_bounds_min: tuple[float, float, float] | None = None
+        render_bounds_max: tuple[float, float, float] | None = None
+        if self.adaptive_v4:
+            render_bounds_min, render_bounds_max = _gaussian_render_bounds(records)
+            node["renderBounds"] = {
+                "min": list(render_bounds_min),
+                "max": list(render_bounds_max),
+            }
+        node["tile"], written = self.pack_tile(records, pack_id=node_id, node_id=node_id)
+        self.exact_pack_bytes += written
+        self.leaf_count += 1
+        if self.options.lod_proxy_size is not None:
+            node["geometricError"] = 0.0
+        item.path.unlink()
+        _emit_progress(
+            self.options.progress_callback,
+            "leaf_written",
+            node=node_id,
+            depth=depth,
+            gaussianCount=item.count,
+            leafCount=self.leaf_count,
+        )
+        if self.options.lod_proxy_size is None:
+            return None
+        proxy = self._lod_proxy(records, np.zeros(records.shape[0], dtype=np.float64), item)
+        return _LodProxy(
+            proxy.records,
+            proxy.errors,
+            render_bounds_min,
+            render_bounds_max,
+        )
+
+    def _visit_branch(
+        self,
+        item: _WorkFile,
+        node: dict[str, Any],
+        node_id: str,
+        depth: int,
+    ) -> _LodProxy | None:
+        if depth >= self.options.maximum_depth:
+            raise RuntimeError("GSTile partition exceeded maximum depth")
+        _emit_progress(
+            self.options.progress_callback,
+            "partition_split",
+            node=node_id,
+            depth=depth,
+            gaussianCount=item.count,
+        )
+        left, right = _split_work_file(
+            item,
+            node_id=node_id,
+            dtype=self.work_dtype,
+            chunk_records=self.options.chunk_records,
+            cancellation_check=self.options.cancellation_check,
+        )
+        node["children"] = [node_id + "0", node_id + "1"]
+        left_proxy = self.visit(left, node_id + "0", depth + 1)
+        right_proxy = self.visit(right, node_id + "1", depth + 1)
+        if self.options.lod_proxy_size is None:
+            return None
+        if left_proxy is None or right_proxy is None:
+            raise RuntimeError("GSTile LOD child proxy is missing")
+        return self._write_branch_proxy(item, node, node_id, depth, left_proxy, right_proxy)
+
+    def _write_branch_proxy(
+        self,
+        item: _WorkFile,
+        node: dict[str, Any],
+        node_id: str,
+        depth: int,
+        left_proxy: _LodProxy,
+        right_proxy: _LodProxy,
+    ) -> _LodProxy:
+        render_bounds_min: tuple[float, float, float] | None = None
+        render_bounds_max: tuple[float, float, float] | None = None
+        if self.adaptive_v4:
+            render_bounds_min, render_bounds_max = self._combined_render_bounds(
+                left_proxy, right_proxy
+            )
+        combined_records = np.concatenate((left_proxy.records, right_proxy.records))
+        combined_errors = np.concatenate((left_proxy.errors, right_proxy.errors))
+        proxy = self._lod_proxy(combined_records, combined_errors, item)
+        if self.adaptive_v4:
+            if render_bounds_min is None or render_bounds_max is None:
+                raise RuntimeError("GSTile adaptive render bounds are missing")
+            render_bounds_min, render_bounds_max = self._expanded_render_bounds(
+                render_bounds_min, render_bounds_max, proxy
+            )
+            node["renderBounds"] = {
+                "min": list(render_bounds_min),
+                "max": list(render_bounds_max),
+            }
+        node["lodTile"], written = self.pack_tile(
+            proxy.records,
+            pack_id=f"lod-{node_id}",
+            node_id=f"lod-{node_id}",
+        )
+        node["geometricError"] = max(
+            float(np.max(proxy.errors, initial=0.0)),
+            _proxy_support_error(proxy.records),
+        )
+        self.proxy_pack_bytes += written
+        self.proxy_records += proxy.records.shape[0]
+        _emit_progress(
+            self.options.progress_callback,
+            "lod_proxy_written",
+            node=node_id,
+            depth=depth,
+            gaussianCount=item.count,
+            proxyCount=proxy.records.shape[0],
+        )
+        return _LodProxy(
+            proxy.records,
+            proxy.errors,
+            render_bounds_min,
+            render_bounds_max,
+        )
+
+    def visit(self, item: _WorkFile, node_id: str, depth: int) -> _LodProxy | None:
+        if self.options.cancellation_check is not None:
+            self.options.cancellation_check()
+        node: dict[str, Any] = {
+            "id": node_id,
+            "bounds": {"min": list(item.bounds_min), "max": list(item.bounds_max)},
+            "gaussianCount": item.count,
+        }
+        self.nodes.append(node)
+        if item.count <= self.options.leaf_size:
+            return self._visit_leaf(item, node, node_id, depth)
+        return self._visit_branch(item, node, node_id, depth)
+
+
 def build_gstile_bundle(
     source_ply: str | Path,
     output_directory: str | Path,
@@ -905,7 +1161,6 @@ def build_gstile_bundle(
     try:
         bundle_tmp.mkdir()
         (bundle_tmp / "packs").mkdir()
-        work_dtype = _work_dtype(layout)
         root_work, source_sha256 = _create_root_work_file(
             source,
             layout,
@@ -920,226 +1175,8 @@ def build_gstile_bundle(
             gaussianCount=root_work.count,
             sha256=source_sha256,
         )
-        nodes: list[dict[str, Any]] = []
-        packs: list[dict[str, Any]] = []
-        maximum_errors: dict[str, float] = {}
-        exact_pack_bytes = 0
-        proxy_pack_bytes = 0
-        proxy_records = 0
-        leaf_count = 0
-        adaptive_v4 = (
-            options.lod_proxy_size is not None
-            and options.lod_proxy_strategy == "adaptive-moment"
-        )
-
-        def pack_tile(
-            records: np.ndarray,
-            *,
-            pack_id: str,
-            node_id: str,
-        ) -> tuple[dict[str, Any], int]:
-            ply_records = np.empty(records.shape[0], dtype=layout.dtype)
-            for name in layout.dtype.names or ():
-                ply_records[name] = records[name]
-            relative = Path("packs") / f"{pack_id}.gst"
-            pack, errors = write_pack_atomic(
-                bundle_tmp / relative,
-                ply_records,
-                records["source_id"],
-                node_id=node_id,
-            )
-            pack["id"] = pack_id
-            pack["path"] = relative.as_posix()
-            pack["byteOffset"] = 32
-            packs.append(pack)
-            for key, value in errors.items():
-                maximum_errors[key] = max(maximum_errors.get(key, 0.0), value)
-            return (
-                {
-                    "pack": pack_id,
-                    "byteOffset": 32,
-                    "byteLength": pack["byteLength"] - 32,
-                    "recordCount": records.shape[0],
-                    "sha256": pack["sha256"],
-                    "quantization": pack.pop("quantization"),
-                },
-                pack["byteLength"],
-            )
-
-        def visit(item: _WorkFile, node_id: str, depth: int) -> _LodProxy | None:
-            nonlocal exact_pack_bytes, leaf_count, proxy_pack_bytes, proxy_records
-            if options.cancellation_check is not None:
-                options.cancellation_check()
-            node: dict[str, Any] = {
-                "id": node_id,
-                "bounds": {"min": list(item.bounds_min), "max": list(item.bounds_max)},
-                "gaussianCount": item.count,
-            }
-            nodes.append(node)
-            if item.count <= options.leaf_size:
-                records = np.fromfile(item.path, dtype=work_dtype, count=item.count)
-                if records.shape[0] != item.count:
-                    raise RuntimeError("GSTile leaf payload is incomplete")
-                render_bounds_min: tuple[float, float, float] | None = None
-                render_bounds_max: tuple[float, float, float] | None = None
-                if adaptive_v4:
-                    render_bounds_min, render_bounds_max = _gaussian_render_bounds(records)
-                    node["renderBounds"] = {
-                        "min": list(render_bounds_min),
-                        "max": list(render_bounds_max),
-                    }
-                node["tile"], written = pack_tile(
-                    records,
-                    pack_id=node_id,
-                    node_id=node_id,
-                )
-                exact_pack_bytes += written
-                leaf_count += 1
-                if options.lod_proxy_size is not None:
-                    node["geometricError"] = 0.0
-                item.path.unlink()
-                _emit_progress(
-                    options.progress_callback,
-                    "leaf_written",
-                    node=node_id,
-                    depth=depth,
-                    gaussianCount=item.count,
-                    leafCount=leaf_count,
-                )
-                if options.lod_proxy_size is None:
-                    return None
-                input_errors = np.zeros(records.shape[0], dtype=np.float64)
-                if options.lod_proxy_strategy in {"adaptive-moment", "moment-matched"}:
-                    proxy = (
-                        _adaptive_moment_lod_proxy(
-                            records, input_errors, options.lod_proxy_size
-                        )
-                        if adaptive_v4
-                        else _moment_matched_lod_proxy(
-                            records, input_errors, options.lod_proxy_size
-                        )
-                    )
-                    return _LodProxy(
-                        proxy.records,
-                        proxy.errors,
-                        render_bounds_min,
-                        render_bounds_max,
-                    )
-                return _replacement_lod_proxy(
-                    records,
-                    input_errors,
-                    options.lod_proxy_size,
-                    options.lod_proxy_strategy,
-                    item,
-                )
-            if depth >= options.maximum_depth:
-                raise RuntimeError("GSTile partition exceeded maximum depth")
-            _emit_progress(
-                options.progress_callback,
-                "partition_split",
-                node=node_id,
-                depth=depth,
-                gaussianCount=item.count,
-            )
-            left, right = _split_work_file(
-                item,
-                node_id=node_id,
-                dtype=work_dtype,
-                chunk_records=options.chunk_records,
-                cancellation_check=options.cancellation_check,
-            )
-            node["children"] = [node_id + "0", node_id + "1"]
-            left_proxy = visit(left, node_id + "0", depth + 1)
-            right_proxy = visit(right, node_id + "1", depth + 1)
-            if options.lod_proxy_size is None:
-                return None
-            if left_proxy is None or right_proxy is None:
-                raise RuntimeError("GSTile LOD child proxy is missing")
-            render_bounds_min: tuple[float, float, float] | None = None
-            render_bounds_max: tuple[float, float, float] | None = None
-            if adaptive_v4:
-                if (
-                    left_proxy.render_bounds_min is None
-                    or left_proxy.render_bounds_max is None
-                    or right_proxy.render_bounds_min is None
-                    or right_proxy.render_bounds_max is None
-                ):
-                    raise RuntimeError("GSTile adaptive child render bounds are missing")
-                render_bounds_min = tuple(
-                    min(left_proxy.render_bounds_min[axis], right_proxy.render_bounds_min[axis])
-                    for axis in range(3)
-                )
-                render_bounds_max = tuple(
-                    max(left_proxy.render_bounds_max[axis], right_proxy.render_bounds_max[axis])
-                    for axis in range(3)
-                )
-                node["renderBounds"] = {
-                    "min": list(render_bounds_min),
-                    "max": list(render_bounds_max),
-                }
-            combined_records = np.concatenate((left_proxy.records, right_proxy.records))
-            combined_errors = np.concatenate((left_proxy.errors, right_proxy.errors))
-            if options.lod_proxy_strategy in {"adaptive-moment", "moment-matched"}:
-                proxy = (
-                    _adaptive_moment_lod_proxy(
-                        combined_records, combined_errors, options.lod_proxy_size
-                    )
-                    if adaptive_v4
-                    else _moment_matched_lod_proxy(
-                        combined_records, combined_errors, options.lod_proxy_size
-                    )
-                )
-            else:
-                proxy = _replacement_lod_proxy(
-                    combined_records,
-                    combined_errors,
-                    options.lod_proxy_size,
-                    options.lod_proxy_strategy,
-                    item,
-                )
-            if adaptive_v4:
-                if render_bounds_min is None or render_bounds_max is None:
-                    raise RuntimeError("GSTile adaptive render bounds are missing")
-                proxy_bounds_min, proxy_bounds_max = _gaussian_render_bounds(proxy.records)
-                render_bounds_min = tuple(
-                    min(render_bounds_min[axis], proxy_bounds_min[axis])
-                    for axis in range(3)
-                )
-                render_bounds_max = tuple(
-                    max(render_bounds_max[axis], proxy_bounds_max[axis])
-                    for axis in range(3)
-                )
-                node["renderBounds"] = {
-                    "min": list(render_bounds_min),
-                    "max": list(render_bounds_max),
-                }
-            node["lodTile"], written = pack_tile(
-                proxy.records,
-                pack_id=f"lod-{node_id}",
-                node_id=f"lod-{node_id}",
-            )
-            node["geometricError"] = max(
-                float(np.max(proxy.errors, initial=0.0)),
-                _proxy_support_error(proxy.records),
-            )
-            proxy_pack_bytes += written
-            proxy_records += proxy.records.shape[0]
-            _emit_progress(
-                options.progress_callback,
-                "lod_proxy_written",
-                node=node_id,
-                depth=depth,
-                gaussianCount=item.count,
-                proxyCount=proxy.records.shape[0],
-            )
-            return _LodProxy(
-                proxy.records,
-                proxy.errors,
-                render_bounds_min,
-                render_bounds_max,
-            )
-
-        visit(root_work, "r", 0)
+        tree = _GsTileTreeBuilder(layout, options, bundle_tmp)
+        tree.visit(root_work, "r", 0)
         if options.cancellation_check is not None:
             options.cancellation_check()
         if options.lod_proxy_strategy == "adaptive-moment":
@@ -1172,20 +1209,21 @@ def build_gstile_bundle(
                 "crs": options.crs,
             },
             "root": "r",
-            "nodes": nodes,
-            "packs": packs,
+            "nodes": tree.nodes,
+            "packs": tree.packs,
             "statistics": {
-                "leafCount": leaf_count,
-                "packBytes": sum(pack["byteLength"] for pack in packs),
-                "bytesPerGaussian": sum(pack["byteLength"] for pack in packs) / layout.vertex_count,
-                "maximumQuantizationError": maximum_errors,
+                "leafCount": tree.leaf_count,
+                "packBytes": sum(pack["byteLength"] for pack in tree.packs),
+                "bytesPerGaussian": sum(pack["byteLength"] for pack in tree.packs)
+                / layout.vertex_count,
+                "maximumQuantizationError": tree.maximum_errors,
                 "lod": (lod_statistic if options.lod_proxy_size is not None else "leaf-only"),
                 **(
                     {
-                        "exactPackBytes": exact_pack_bytes,
-                        "proxyCount": sum(1 for node in nodes if "lodTile" in node),
-                        "proxyRecords": proxy_records,
-                        "proxyPackBytes": proxy_pack_bytes,
+                        "exactPackBytes": tree.exact_pack_bytes,
+                        "proxyCount": sum(1 for node in tree.nodes if "lodTile" in node),
+                        "proxyRecords": tree.proxy_records,
+                        "proxyPackBytes": tree.proxy_pack_bytes,
                     }
                     if options.lod_proxy_size is not None
                     else {}
@@ -1221,7 +1259,7 @@ def build_gstile_bundle(
             leaf_count=manifest["statistics"]["leafCount"],
             pack_bytes=manifest["statistics"]["packBytes"],
             source_bytes=source_payload_bytes,
-            maximum_errors=maximum_errors,
+            maximum_errors=tree.maximum_errors,
         )
     except Exception:
         shutil.rmtree(bundle_tmp, ignore_errors=True)
