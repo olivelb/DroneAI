@@ -25,6 +25,13 @@ Scientific representation and platform orchestration are tracked separately.
    collision representation, not rendered splat centres.
 8. **Pipeline:** `gaussian_viewer` depends on `gaussian_filtering` and is a
    sibling of `rasterization`; viewer failure cannot invalidate raster output.
+9. **Engine integration:** pin PlayCanvas `2.21.4` and use its public unified
+   GSplat extension points. `GSplatFormat.addExtraStreams()` stores DroneGS
+   opacity data on each source resource, while
+   `GSplatComponent.setWorkBufferModifier()` evaluates directional alpha during
+   the source-to-work-buffer copy. The normal unified work-buffer and WebGPU
+   global sorter remain unchanged. A maintained engine fork is not justified
+   unless a later parity/streaming gate proves these public hooks insufficient.
 
 ## Corrected delivery order
 
@@ -61,6 +68,24 @@ Exit: repeatable bundle hashes, corruption tests, bounded-memory benchmark.
 
 Exit: same resident GSTile scene matches DroneGS references within frozen
 thresholds; unsupported WebGPU produces an actionable fallback.
+
+Implementation status:
+
+- strict manifest/range/pack decoders, SHA-256 and CRC32 validation are present;
+- the 96-byte record is expanded to the PLY property convention expected by
+  PlayCanvas without changing coefficient order;
+- four RGBA32F resource streams preserve the base logit and all 15 opacity-SH
+  coefficients; the work-buffer receives only the evaluated alpha;
+- PlayCanvas uses `GSPLATDATA_LARGE`, GPU global sorting and continuous SH
+  refresh while the camera moves;
+- the resident adapter deliberately rejects scenes above its configured splat
+  ceiling (2 million by default). Loading the 27-million Saint-Étienne result
+  through this baseline would be an uncontrolled multi-gigabyte allocation;
+  that scene is a Phase 3 hierarchical-LOD qualification target, not a reason
+  to weaken the safety gate.
+
+Remaining exit evidence: real WebGPU shader compilation on the device matrix
+and image/directional-alpha comparison against frozen DroneGS references.
 
 ### Phase 3 — streaming and replacement LOD
 

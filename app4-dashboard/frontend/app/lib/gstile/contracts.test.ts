@@ -70,6 +70,22 @@ describe("GSTile browser contract", () => {
     expect(() => decodeGsTileManifest(value)).toThrow(/safe relative POSIX path/);
   });
 
+  it("rejects record counts that could bypass the resident allocation gate", () => {
+    const value = manifest();
+    value.source.gaussianCount = 0;
+    expect(() => decodeGsTileManifest(value)).toThrow(/non-empty nodes and packs/);
+
+    const inconsistent = manifest();
+    inconsistent.nodes[0].tile.recordCount = 2;
+    expect(() => decodeGsTileManifest(inconsistent)).toThrow(/valid aligned range/);
+  });
+
+  it("requires tile ranges to cover their pack without holes or overlaps", () => {
+    const value = manifest();
+    value.nodes[0].tile.byteOffset = 128;
+    expect(() => decodeGsTileManifest(value)).toThrow(/valid aligned range/);
+  });
+
   it("resolves a safe pack relative to the manifest", () => {
     expect(
       resolveGsTilePackUrl(

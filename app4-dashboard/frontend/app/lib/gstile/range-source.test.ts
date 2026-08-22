@@ -5,12 +5,14 @@ describe("GSTile range source", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("requires a matching partial response", async () => {
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(new Uint8Array([1, 2, 3, 4]), {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      void _input;
+      void _init;
+      return new Response(new Uint8Array([1, 2, 3, 4]), {
         status: 206,
         headers: { "Content-Range": "bytes 32-35/128" },
-      }),
-    );
+      });
+    });
     vi.stubGlobal("fetch", fetchMock);
     const result = await fetchGsTileRange("https://example.test/r.gst", {
       start: 32,

@@ -6,13 +6,16 @@ import type {
   GaussianRenderStatistics,
 } from "../lib/gstile/backend";
 import { decodeGsTileManifest } from "../lib/gstile/contracts";
+import { createPlayCanvasResidentBackend } from "../lib/gstile/playcanvas-backend";
 import { GsTileRangeScheduler } from "../lib/gstile/range-source";
 
 export type GaussianTileViewerProps = {
   manifestUrl: string;
-  createBackend: () => GaussianRenderBackend;
+  createBackend?: () => GaussianRenderBackend;
   className?: string;
 };
+
+const defaultBackendFactory = () => createPlayCanvasResidentBackend();
 
 const emptyStatistics: GaussianRenderStatistics = {
   residentGaussians: 0,
@@ -33,7 +36,7 @@ const formatCount = (value: number) =>
  */
 export default function GaussianTileViewer({
   manifestUrl,
-  createBackend,
+  createBackend = defaultBackendFactory,
   className = "",
 }: GaussianTileViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
