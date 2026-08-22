@@ -14,8 +14,12 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import React, { useEffect, useState } from "react";
 import AppProviders from "../../components/AppProviders";
+import GaussianTileViewer from "../../components/GaussianTileViewer";
 import MissionStageProgress from "../../components/MissionStageProgress";
-import { fetchMissionDetail } from "../../lib/api";
+import {
+  fetchMissionDetail,
+  getGaussianViewerDescriptorUrl,
+} from "../../lib/api";
 import { useI18n } from "../../lib/i18n/provider";
 import type { MissionDetail } from "../../lib/types";
 
@@ -154,6 +158,21 @@ function MissionDetailView() {
             </h2>
             <MissionStageProgress runs={mission.stage_runs ?? []} />
           </section>
+
+          {mission.products.some(
+            (product) => product.kind === "gaussian_viewer_bundle",
+          ) && (
+            <section className="surface mt-4 p-5">
+              <h2 className="mb-4 flex items-center gap-2 text-sm font-bold text-[#40504b]">
+                <Boxes size={17} className="text-[#0f766e]" />
+                GSTile · {t("detail.products")}
+              </h2>
+              <GaussianTileViewer
+                descriptorUrl={getGaussianViewerDescriptorUrl(volId)}
+                className="h-[min(70vh,52rem)]"
+              />
+            </section>
+          )}
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
             <Section title={t("detail.products")} icon={<PackageCheck size={17} />}>
