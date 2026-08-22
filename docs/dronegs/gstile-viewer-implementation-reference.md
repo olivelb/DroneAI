@@ -112,9 +112,45 @@ Implementation status:
 - the subset proxy is a navigation approximation, not an optical aggregate.
   It deliberately does not claim density, radiance or directional-opacity
   equivalence to the exact descendants.
+- the browser selector uses projected geometric error and a hard resident
+  splat budget. It always selects a complete hierarchy cut and resolves equal
+  priorities deterministically;
+- a replacement is transactional: all missing children are fetched, hashed,
+  decoded and uploaded disabled before the previous complete cut is replaced.
+  Superseded requests are aborted, and a failed fetch leaves the previous cut
+  resident;
+- the mission detail page mounts the viewer only when the owner-scoped mission
+  publishes `gaussian_viewer_bundle`. The existing signed descriptor endpoint
+  remains the only production discovery path.
 
-Remaining exit evidence: replacement/eviction in the renderer, camera-path
-seam tests, device memory bounds, and visual metrics against the exact leaves.
+Remaining exit evidence: camera-path image/seam metrics against the exact
+leaves, GPU timestamp telemetry, cache/eviction hysteresis and broader browser
+device coverage. These are scientific/performance gates, not blockers for the
+validated complete-cut and failure-preservation contracts.
+
+#### Saint-Etienne scale qualification — 2026-08-22
+
+The production-sized qualification used the immutable 14,624,789,799-byte
+Saint-Etienne seam-safe PLY (49,408,067 Gaussians). It did not repeat COLMAP,
+DroneGS training or filtering.
+
+| Evidence | Result |
+|---|---|
+| Exact default compatibility | The pre/post-LOD 5,000-Gaussian fixture retained identical bundle, manifest and all eight pack hashes. |
+| Hierarchical build | 1,350 exact leaves + 1,349 internal proxies, 2,699 packs, 5,804,157,568 pack bytes. |
+| Proxy overhead | 11,051,008 proxy records and 1,060,939,936 proxy bytes; exact leaves remain 4,743,217,632 bytes. |
+| Build resource bound | 14 min 49.30 s wall time, 324,760 KiB maximum RSS, no swap. |
+| Immutable identity | Bundle `sha256:8fbebcbe571e8bd8af6bb5504706733b213c1847d15bac8eb9e773db146bd6ba`; manifest `sha256:177e04df6536a5af80a2f2e5140b985892c5abce367abdb1ed13ee585bb052d3`. |
+| Independent validation | All 2,699 sizes and SHA-256 hashes, 5,804,157,568 bytes, validated in 71.84 s with 66,624 KiB maximum RSS. |
+| Generic browser harness | The real LOD bundle renders, zoom triggers additional range requests while preserving a complete budgeted cut, and the 49-million exact profile is rejected before any pack request. |
+| RTX 3090 qualification | Edge 151 WebGPU reported `vendor=nvidia`, `architecture=ampere`; initial cut 23 nodes / 198,029 splats; zoom caused new pack requests while remaining ready and within the 2-million-splat ceiling. |
+
+The Ubuntu/WSL Chromium build exposes WebGPU through SwiftShader because this
+host has no NVIDIA Vulkan ICD for WSL. That path passes the same functional
+test but is not hardware-performance evidence. Hardware qualification therefore
+uses Windows Edge/D3D12 on the same BIGZEN RTX 3090. Logs and captures remain
+under `I:\DroneAI-GSTile-Tests\viewer-qualification-ecb4af8`; temporary Edge,
+Node/CDP and Next processes are stopped after the test.
 
 ### Phase 4 — adaptive 4K and telemetry
 
