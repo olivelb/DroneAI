@@ -1,6 +1,13 @@
 import type { GsTileManifest } from "./contracts";
 import type { GsTileRangeScheduler } from "./range-source";
 
+export type GaussianViewFrame = {
+  kind: "facade";
+  right: readonly [number, number, number];
+  up: readonly [number, number, number];
+  outward: readonly [number, number, number];
+};
+
 export type GaussianCameraState = {
   view: Float64Array;
   projection: Float64Array;
@@ -25,6 +32,7 @@ export interface GaussianRenderBackend {
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
     packUrls?: ReadonlyMap<string, string>,
+    recommendedView?: GaussianViewFrame | null,
   ): Promise<void>;
   setCamera(camera: GaussianCameraState): void;
   render(timestampMs: number): GaussianRenderStatistics;

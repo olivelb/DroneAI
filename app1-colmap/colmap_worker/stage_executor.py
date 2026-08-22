@@ -798,23 +798,33 @@ def run_gaussian_viewer_stage(
             default_role="gaussian-viewer-pack",
             role_overrides={"manifest.json": "gaussian-viewer-manifest"},
         )
+        viewer_metadata: dict[str, Any] = {
+            "manifest_key": published.manifest_key,
+            "file_count": published.file_count,
+            "viewer_manifest_file": "manifest.json",
+            "bundle_id": result.bundle_id,
+            "source_filtered_sha256": manifest["source"]["sha256"],
+            "gaussian_count": result.gaussian_count,
+            "leaf_count": result.leaf_count,
+            "pack_bytes": result.pack_bytes,
+            "profile": manifest["profile"],
+            "lod": manifest["statistics"]["lod"],
+        }
+        facade_frame = artifact.scene_summary.facade_frame
+        if facade_frame is not None:
+            axes = cast(dict[str, object], facade_frame["axes_world"])
+            viewer_metadata["recommended_view"] = {
+                "kind": "facade",
+                "right": axes["horizontal"],
+                "up": axes["vertical"],
+                "outward": axes["outward_normal"],
+            }
         return StageExecutionResult(
             kind="gaussian_viewer_bundle",
             uri=published.uri,
             checksum_sha256=published.checksum_sha256,
             size_bytes=published.size_bytes,
-            metadata={
-                "manifest_key": published.manifest_key,
-                "file_count": published.file_count,
-                "viewer_manifest_file": "manifest.json",
-                "bundle_id": result.bundle_id,
-                "source_filtered_sha256": manifest["source"]["sha256"],
-                "gaussian_count": result.gaussian_count,
-                "leaf_count": result.leaf_count,
-                "pack_bytes": result.pack_bytes,
-                "profile": manifest["profile"],
-                "lod": manifest["statistics"]["lod"],
-            },
+            metadata=viewer_metadata,
             quality_metrics={
                 "gaussian_count": result.gaussian_count,
                 "leaf_count": result.leaf_count,

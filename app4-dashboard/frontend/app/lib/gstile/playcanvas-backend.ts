@@ -1,5 +1,6 @@
 import type {
   GaussianCameraState,
+  GaussianViewFrame,
   GaussianRenderBackend,
   GaussianRenderStatistics,
 } from "./backend";
@@ -51,6 +52,13 @@ const OPACITY_STREAM_NAMES = [
   "droneOpacity3",
 ] as const;
 
+const DEFAULT_VIEW_FRAME: GaussianViewFrame = {
+  kind: "facade",
+  right: [1, 0, 0],
+  up: [0, 1, 0],
+  outward: [0, 0, 1],
+};
+
 const sha256 = async (content: ArrayBuffer) => {
   const digest = await crypto.subtle.digest("SHA-256", content);
   return Array.from(new Uint8Array(digest), (byte) =>
@@ -64,12 +72,140 @@ const centerOf = (minimum: Vec3, maximum: Vec3): Vec3 => [
   (minimum[2] + maximum[2]) / 2,
 ];
 
-const diagonalOf = (minimum: Vec3, maximum: Vec3) =>
-  Math.hypot(
-    maximum[0] - minimum[0],
-    maximum[1] - minimum[1],
-    maximum[2] - minimum[2],
+const dot = (left: readonly number[], right: readonly number[]) =>
+  left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+
+const combine = (
+  first: readonly number[],
+  firstScale: number,
+  second: readonly number[],
+  secondScale: number,
+  third: readonly number[],
+  thirdScale: number,
+): Vec3 => [
+  first[0] * firstScale + second[0] * secondScale + third[0] * thirdScale,
+  first[1] * firstScale + second[1] * secondScale + third[1] * thirdScale,
+  first[2] * firstScale + second[2] * secondScale + third[2] * thirdScale,
+];
+
+export const orbitCameraBasis = (
+  frame: GaussianViewFrame,
+  yaw: number,
+  pitch: number,
+) => {
+  const sinYaw = Math.sin(yaw);
+  const cosYaw = Math.cos(yaw);
+  const sinPitch = Math.sin(pitch);
+  const cosPitch = Math.cos(pitch);
+  return {
+    offset: combine(
+      frame.outward,
+      cosYaw * cosPitch,
+      frame.right,
+      sinYaw * cosPitch,
+      frame.up,
+      sinPitch,
+    ),
+    right: combine(frame.right, cosYaw, frame.outward, -sinYaw, frame.up, 0),
+    up: combine(
+      frame.outward,
+      -cosYaw * sinPitch,
+      frame.right,
+      -sinYaw * sinPitch,
+      frame.up,
+      cosPitch,
+    ),
+  };
+};
+
+export const fitOrbitDistanceInFrame = (
+  minimum: Vec3,
+  maximum: Vec3,
+  frame: GaussianViewFrame,
+  verticalFovDegrees: number,
+  aspectRatio: number,
+  padding = 1.08,
+) => {
+  const center = centerOf(minimum, maximum);
+  let halfWidth = 0;
+  let halfHeight = 0;
+  let halfDepth = 0;
+  for (const x of [minimum[0], maximum[0]]) {
+    for (const y of [minimum[1], maximum[1]]) {
+      for (const z of [minimum[2], maximum[2]]) {
+        const relative = [x - center[0], y - center[1], z - center[2]];
+        halfWidth = Math.max(halfWidth, Math.abs(dot(relative, frame.right)));
+        halfHeight = Math.max(halfHeight, Math.abs(dot(relative, frame.up)));
+        halfDepth = Math.max(halfDepth, Math.abs(dot(relative, frame.outward)));
+      }
+    }
+  }
+  const tangentY = Math.tan((verticalFovDegrees * Math.PI) / 360);
+  const tangentX = tangentY * Math.max(aspectRatio, 1e-6);
+  return Math.max(
+    halfDepth + padding * Math.max(halfWidth / tangentX, halfHeight / tangentY),
+    0.01,
   );
+};
+
+export const fitOrbitDistance = (
+  minimum: Vec3,
+  maximum: Vec3,
+  verticalFovDegrees: number,
+  aspectRatio: number,
+  padding = 1.08,
+) => {
+  return fitOrbitDistanceInFrame(
+    minimum,
+    maximum,
+    DEFAULT_VIEW_FRAME,
+    verticalFovDegrees,
+    aspectRatio,
+    padding,
+  );
+};
+
+export const panOrbitTarget = (
+  target: Vec3,
+  yaw: number,
+  pitch: number,
+  distance: number,
+  deltaX: number,
+  deltaY: number,
+  viewportHeight: number,
+  verticalFovDegrees: number,
+  frame: GaussianViewFrame = DEFAULT_VIEW_FRAME,
+): Vec3 => {
+  const scale =
+    (2 * distance * Math.tan((verticalFovDegrees * Math.PI) / 360)) /
+    Math.max(viewportHeight, 1);
+  const { right, up } = orbitCameraBasis(frame, yaw, pitch);
+  return [
+    target[0] - right[0] * deltaX * scale + up[0] * deltaY * scale,
+    target[1] - right[1] * deltaX * scale + up[1] * deltaY * scale,
+    target[2] - right[2] * deltaX * scale + up[2] * deltaY * scale,
+  ];
+};
+
+export const lodProxyCoverage = (node: GsTileNode) => {
+  const representation = node.tile ?? node.lodTile;
+  const isProxy = node.tile === undefined && node.lodTile !== undefined;
+  if (!representation || !isProxy) {
+    return { multiplier: 1, maximumScale: Number.MAX_VALUE };
+  }
+  const sampleCount = Math.max(representation.recordCount, 1);
+  const populationRatio = Math.max(node.gaussianCount / sampleCount, 1);
+  const surfaceSpacing =
+    Math.hypot(
+      node.bounds.max[0] - node.bounds.min[0],
+      node.bounds.max[1] - node.bounds.min[1],
+      node.bounds.max[2] - node.bounds.min[2],
+    ) / Math.sqrt(sampleCount);
+  return {
+    multiplier: populationRatio,
+    maximumScale: Math.max(surfaceSpacing, 1e-6),
+  };
+};
 
 const releasePlyPropertyStorage = (data: import("playcanvas").GSplatData) => {
   // GSplatResource has already uploaded every property. Keep the PLY element
@@ -101,9 +237,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #yaw = 0;
   #pitch = 0;
   #distance = 1;
+  #viewFrame = DEFAULT_VIEW_FRAME;
   #pointerId: number | null = null;
   #pointerX = 0;
   #pointerY = 0;
+  #pointerMode: "orbit" | "pan" | null = null;
   #cameraDirty = true;
   #removeInputListeners: (() => void) | null = null;
   #loadedTiles = new Map<string, LoadedTile>();
@@ -116,6 +254,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodGeneration = 0;
   #lodSelectionKey = "";
   #lodPendingKey = "";
+  #lodUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  #viewportWidth = 1;
+  #viewportHeight = 1;
 
   constructor(options: PlayCanvasResidentBackendOptions = {}) {
     this.#maximumResidentGaussians =
@@ -190,6 +331,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
     packUrls?: ReadonlyMap<string, string>,
+    recommendedView?: GaussianViewFrame | null,
   ) {
     const pc = this.#pc;
     const app = this.#app;
@@ -211,7 +353,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       target[1] - origin[1],
       target[2] - origin[2],
     ];
-    this.#distance = Math.max(diagonalOf(root.bounds.min, root.bounds.max), 1);
+    this.#viewFrame = recommendedView ?? DEFAULT_VIEW_FRAME;
+    this.#distance = fitOrbitDistanceInFrame(
+      root.bounds.min,
+      root.bounds.max,
+      this.#viewFrame,
+      this.#camera?.camera?.fov ?? 55,
+      this.#viewportWidth / this.#viewportHeight,
+    );
     this.#cameraDirty = true;
     this.#updateCameraPose();
 
@@ -263,7 +412,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           node.tile.recordCount,
           node.tile.quantization,
         );
-        this.#addTileResource(pc, app, decoded, origin, node.id);
+        this.#addTileResource(pc, app, decoded, origin, node);
       }
       this.#residentBytes += pack.byteLength;
     }
@@ -314,10 +463,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const app = this.#app;
     if (!app) return;
     const maximumRatio = Math.min(Math.max(devicePixelRatio, 1), 2);
-    app.resizeCanvas(
-      Math.max(1, Math.round(width * maximumRatio)),
-      Math.max(1, Math.round(height * maximumRatio)),
-    );
+    const pixelWidth = Math.max(1, Math.round(width * maximumRatio));
+    const pixelHeight = Math.max(1, Math.round(height * maximumRatio));
+    this.#viewportWidth = pixelWidth;
+    this.#viewportHeight = pixelHeight;
+    if (
+      app.graphicsDevice.width === pixelWidth &&
+      app.graphicsDevice.height === pixelHeight
+    ) {
+      return;
+    }
+    app.graphicsDevice.resizeCanvas(pixelWidth, pixelHeight);
     this.#scheduleLodUpdate();
   }
 
@@ -327,6 +483,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       new DOMException("GSTile backend disposed", "AbortError"),
     );
     this.#lodSyncController = null;
+    if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
+    this.#lodUpdateTimer = null;
     this.#removeInputListeners?.();
     this.#removeInputListeners = null;
     for (const entity of this.#entities) entity.destroy();
@@ -354,10 +512,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     app: PcApplication,
     tile: DecodedGsTile,
     origin: Vec3,
-    nodeId: string,
+    node: GsTileNode,
   ) {
-    const loaded = this.#createTileResource(pc, app, tile, origin, nodeId, true);
-    this.#registerTile(nodeId, loaded);
+    const loaded = this.#createTileResource(pc, app, tile, origin, node, true);
+    this.#registerTile(node.id, loaded);
   }
 
   #createTileResource(
@@ -365,7 +523,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     app: PcApplication,
     tile: DecodedGsTile,
     origin: Vec3,
-    nodeId: string,
+    node: GsTileNode,
     enabled: boolean,
     byteLength = 0,
   ): LoadedTile {
@@ -392,7 +550,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       texture.unlock();
     });
 
-    const entity = new pc.Entity(`GSTile ${nodeId}`);
+    const entity = new pc.Entity(`GSTile ${node.id}`);
     entity.enabled = enabled;
     entity.setPosition(-origin[0], -origin[1], -origin[2]);
     entity.addComponent("gsplat", { unified: true });
@@ -402,6 +560,21 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       glsl: DRONEGS_OPACITY_MODIFIER_GLSL,
       wgsl: DRONEGS_OPACITY_MODIFIER_WGSL,
     });
+    const coverage = lodProxyCoverage(node);
+    entity.gsplat.setParameter(
+      "uDroneLodScaleMultiplier",
+      coverage.multiplier,
+    );
+    entity.gsplat.setParameter("uDroneLodMaximumScale", coverage.maximumScale);
+    const cameraPosition = this.#camera?.getPosition();
+    if (cameraPosition) {
+      entity.gsplat.setParameter("uDroneCameraPosition", [
+        cameraPosition.x,
+        cameraPosition.y,
+        cameraPosition.z,
+      ]);
+      entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
+    }
     app.root.addChild(entity);
     releasePlyPropertyStorage(data);
     return {
@@ -508,7 +681,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       app,
       decoded,
       manifest.coordinateFrame.origin,
-      node.id,
+      node,
       false,
       pack.byteLength,
     );
@@ -585,13 +758,17 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #scheduleLodUpdate() {
     const signal = this.#lodSignal;
     if (!this.#lodManifest || !signal || signal.aborted) return;
-    void this.#synchronizeLod(signal).catch((error: unknown) => {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      console.error(
-        "GSTile LOD update failed; keeping the previous complete representation",
-        error,
-      );
-    });
+    if (this.#lodUpdateTimer !== null) clearTimeout(this.#lodUpdateTimer);
+    this.#lodUpdateTimer = setTimeout(() => {
+      this.#lodUpdateTimer = null;
+      void this.#synchronizeLod(signal).catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        console.error(
+          "GSTile LOD update failed; keeping the previous complete representation",
+          error,
+        );
+      });
+    }, 120);
   }
 
   #statistics(frameCpuMs: number | null): GaussianRenderStatistics {
@@ -607,32 +784,45 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #updateCameraPose() {
     const camera = this.#camera;
     if (!camera) return;
-    const cosPitch = Math.cos(this.#pitch);
+    const basis = orbitCameraBasis(this.#viewFrame, this.#yaw, this.#pitch);
     camera.setPosition(
-      this.#target[0] + this.#distance * Math.sin(this.#yaw) * cosPitch,
-      this.#target[1] + this.#distance * Math.sin(this.#pitch),
-      this.#target[2] + this.#distance * Math.cos(this.#yaw) * cosPitch,
+      this.#target[0] + this.#distance * basis.offset[0],
+      this.#target[1] + this.#distance * basis.offset[1],
+      this.#target[2] + this.#distance * basis.offset[2],
     );
-    camera.lookAt(this.#target[0], this.#target[1], this.#target[2]);
+    camera.lookAt(
+      this.#target[0], this.#target[1], this.#target[2],
+      basis.up[0], basis.up[1], basis.up[2],
+    );
     this.#cameraDirty = false;
     this.#updateOpacityCameraUniform();
     this.#scheduleLodUpdate();
   }
 
   #updateOpacityCameraUniform() {
+    const pc = this.#pc;
     const camera = this.#camera;
-    if (!camera) return;
+    if (!pc || !camera) return;
     const position = camera.getPosition();
     const value = [position.x, position.y, position.z];
     for (const entity of this.#entities) {
       entity.gsplat?.setParameter("uDroneCameraPosition", value);
+      if (entity.gsplat) {
+        entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
+      }
     }
   }
 
   #installOrbitInput(canvas: HTMLCanvasElement) {
     const onPointerDown = (event: PointerEvent) => {
       if (this.#pointerId !== null) return;
+      if (event.button !== 0 && event.button !== 1 && event.button !== 2) return;
+      event.preventDefault();
       this.#pointerId = event.pointerId;
+      this.#pointerMode =
+        event.button === 1 || event.button === 2 || event.shiftKey
+          ? "pan"
+          : "orbit";
       this.#pointerX = event.clientX;
       this.#pointerY = event.clientY;
       canvas.setPointerCapture(event.pointerId);
@@ -643,16 +833,31 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       const dy = event.clientY - this.#pointerY;
       this.#pointerX = event.clientX;
       this.#pointerY = event.clientY;
-      this.#yaw -= dx * 0.005;
-      this.#pitch = Math.max(
-        -Math.PI * 0.49,
-        Math.min(Math.PI * 0.49, this.#pitch + dy * 0.005),
-      );
+      if (this.#pointerMode === "pan") {
+        this.#target = panOrbitTarget(
+          this.#target,
+          this.#yaw,
+          this.#pitch,
+          this.#distance,
+          dx,
+          dy,
+          canvas.clientHeight,
+          this.#camera?.camera?.fov ?? 55,
+          this.#viewFrame,
+        );
+      } else {
+        this.#yaw -= dx * 0.005;
+        this.#pitch = Math.max(
+          -Math.PI * 0.49,
+          Math.min(Math.PI * 0.49, this.#pitch + dy * 0.005),
+        );
+      }
       this.#cameraDirty = true;
     };
     const onPointerUp = (event: PointerEvent) => {
       if (event.pointerId !== this.#pointerId) return;
       this.#pointerId = null;
+      this.#pointerMode = null;
       canvas.releasePointerCapture(event.pointerId);
     };
     const onWheel = (event: WheelEvent) => {
@@ -660,17 +865,20 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       this.#distance = Math.max(0.01, this.#distance * Math.exp(event.deltaY * 0.001));
       this.#cameraDirty = true;
     };
+    const onContextMenu = (event: MouseEvent) => event.preventDefault();
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    canvas.addEventListener("contextmenu", onContextMenu);
     this.#removeInputListeners = () => {
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("contextmenu", onContextMenu);
     };
   }
 }

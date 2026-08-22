@@ -84,6 +84,36 @@ describe("GSTile signed descriptor", () => {
     );
   });
 
+  it("accepts an optional right-handed facade view", () => {
+    const value = {
+      ...descriptor(),
+      recommendedView: {
+        kind: "facade",
+        right: [0, 1, 0],
+        up: [0, 0, 1],
+        outward: [1, 0, 0],
+      },
+    };
+    expect(decodeGsTileViewerDescriptor(value).recommendedView).toEqual(
+      value.recommendedView,
+    );
+  });
+
+  it("rejects a non-orthonormal recommended view", () => {
+    const value = {
+      ...descriptor(),
+      recommendedView: {
+        kind: "facade",
+        right: [1, 0, 0],
+        up: [1, 0, 0],
+        outward: [0, 0, 1],
+      },
+    };
+    expect(() => decodeGsTileViewerDescriptor(value)).toThrow(
+      /right-handed orthonormal frame/,
+    );
+  });
+
   it("rejects a signed pack whose integrity differs from the manifest", () => {
     const value = descriptor();
     value.packs[0].sha256 = "d".repeat(64);

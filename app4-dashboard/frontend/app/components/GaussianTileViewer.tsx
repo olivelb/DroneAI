@@ -106,6 +106,7 @@ export default function GaussianTileViewer({
           scheduler,
           controller.signal,
           descriptor?.packUrls,
+          descriptor?.recommendedView,
         );
         if (controller.signal.aborted) return;
         setStatus("Prêt");
@@ -146,6 +147,9 @@ export default function GaussianTileViewer({
             )}
           </div>
         )}
+        <div className="mt-1 text-[9px] text-white/45">
+          Rotation : clic gauche · Déplacement : clic droit ou Maj+glisser · Zoom : molette
+        </div>
       </div>
       {error && (
         <div className="absolute inset-x-4 bottom-4 rounded-xl border border-red-300/30 bg-red-950/85 p-3 text-xs text-red-100">

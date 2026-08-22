@@ -16,6 +16,13 @@ type QualificationManifest = {
   packs: ManifestPack[];
 };
 
+const saintEtienneFacadeView = {
+  kind: "facade",
+  right: [0.9975430758, -0.0338857647, -0.0613153074],
+  up: [-0.0358895499, -0.9988471697, -0.0318790192],
+  outward: [-0.0601643763, 0.0340012737, -0.9976092227],
+} as const;
+
 const json = (body: unknown, status = 200) => ({
   status,
   contentType: "application/json",
@@ -60,6 +67,7 @@ const descriptor = (
   artifactId: "gstile-qualification-artifact",
   bundleId: manifest.bundleId,
   expiresAt: "2030-01-01T00:00:00Z",
+  recommendedView: saintEtienneFacadeView,
   manifest,
   packs: manifest.packs.map((pack) => ({
     id: pack.id,
@@ -250,8 +258,29 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       }),
     );
 
+    const canvas = viewer.locator("canvas");
+    const canvasBox = await canvas.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    const beforePan = await canvas.screenshot();
+    await page.keyboard.down("Shift");
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2,
+      canvasBox!.y + canvasBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2 + 140,
+      canvasBox!.y + canvasBox!.height / 2 + 60,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+    await page.keyboard.up("Shift");
+    await page.waitForTimeout(300);
+    expect((await canvas.screenshot()).equals(beforePan)).toBe(false);
+    await expect(viewer).toHaveAttribute("data-status", "Prêt");
+
     const requestsBeforeZoom = rangeRequestCount();
-    await viewer.locator("canvas").hover();
+    await canvas.hover();
     await page.mouse.wheel(0, -2_400);
     await expect.poll(rangeRequestCount, { timeout: 60_000 }).toBeGreaterThan(
       requestsBeforeZoom,

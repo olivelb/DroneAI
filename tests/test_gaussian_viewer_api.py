@@ -49,7 +49,7 @@ def _manifest(*, digest: str = "b" * 64) -> dict[str, object]:
     }
 
 
-def _artifact() -> SimpleNamespace:
+def _artifact(*, recommended_view: object | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         artifact_id="artifact-viewer",
         checksum_sha256="d" * 64,
@@ -58,6 +58,7 @@ def _artifact() -> SimpleNamespace:
             "viewer_manifest_file": "manifest.json",
             "bundle_id": "sha256:" + "a" * 64,
             "source_filtered_sha256": "c" * 64,
+            "recommended_view": recommended_view,
         },
     )
 
@@ -124,6 +125,48 @@ def test_descriptor_validates_tenant_workspace_and_signs_packs(monkeypatch):
             "sha256": "b" * 64,
         }
     ]
+
+
+def test_descriptor_publishes_validated_recommended_view(monkeypatch):
+    recommended_view = {
+        "kind": "facade",
+        "right": [0.0, 1.0, 0.0],
+        "up": [0.0, 0.0, 1.0],
+        "outward": [1.0, 0.0, 0.0],
+    }
+    monkeypatch.setattr(
+        viewer,
+        "_latest_viewer_artifact",
+        lambda *_args: _artifact(recommended_view=recommended_view),
+    )
+    monkeypatch.setattr(viewer, "resolve_workspace_files", lambda *_args, **_kwargs: _files())
+    monkeypatch.setattr(
+        viewer.storage,
+        "get_object_bytes",
+        lambda *_args, **_kwargs: json.dumps(_manifest()).encode(),
+    )
+    monkeypatch.setattr(viewer.storage, "get_presigned_url", lambda *_args, **_kwargs: "https://objects.example/pack")
+
+    result = viewer.gaussian_viewer_descriptor(
+        SimpleNamespace(), SimpleNamespace(id=7, organization_id="org-a")
+    )
+
+    assert result["recommendedView"] == recommended_view
+
+
+def test_descriptor_rejects_invalid_recommended_view(monkeypatch):
+    artifact = _artifact(
+        recommended_view={"kind": "facade", "right": [1, 0, 0], "up": [1, 0, 0], "outward": [0, 0, 1]}
+    )
+    monkeypatch.setattr(viewer, "_latest_viewer_artifact", lambda *_args: artifact)
+    monkeypatch.setattr(viewer, "resolve_workspace_files", lambda *_args, **_kwargs: _files())
+    monkeypatch.setattr(viewer.storage, "get_object_bytes", lambda *_args, **_kwargs: json.dumps(_manifest()).encode())
+
+    with pytest.raises(HTTPException) as error:
+        viewer.gaussian_viewer_descriptor(SimpleNamespace(), SimpleNamespace(id=7, organization_id="org-a"))
+
+    assert error.value.status_code == 502
+    assert "not orthonormal" in error.value.detail
 
 
 def test_descriptor_fails_closed_on_pack_integrity_mismatch(monkeypatch):

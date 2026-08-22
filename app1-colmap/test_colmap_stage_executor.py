@@ -586,6 +586,15 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
         model_path=model_path,
         partition_models=(),
         output_gaussians=42,
+        scene_summary=SimpleNamespace(
+            facade_frame={
+                "axes_world": {
+                    "horizontal": [0.0, 1.0, 0.0],
+                    "vertical": [0.0, 0.0, 1.0],
+                    "outward_normal": [1.0, 0.0, 0.0],
+                }
+            }
+        ),
     )
 
     def read_artifact(_workspace, _config):
@@ -634,6 +643,12 @@ def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
     assert result.kind == "gaussian_viewer_bundle"
     assert result.metadata["gaussian_count"] == 42
     assert result.metadata["lod"] == "leaf-only-v1"
+    assert result.metadata["recommended_view"] == {
+        "kind": "facade",
+        "right": [0.0, 1.0, 0.0],
+        "up": [0.0, 0.0, 1.0],
+        "outward": [1.0, 0.0, 0.0],
+    }
     assert result.quality_metrics["scientific_qualification"] == (
         "quantization-bounds-only"
     )

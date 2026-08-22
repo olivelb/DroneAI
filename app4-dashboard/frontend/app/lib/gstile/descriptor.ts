@@ -1,4 +1,5 @@
 import { ResponseContractError } from "../contract-decoder";
+import type { GaussianViewFrame } from "./backend";
 import { decodeGsTileManifest, type GsTileManifest } from "./contracts";
 
 export type GsTileViewerDescriptor = {
@@ -7,6 +8,7 @@ export type GsTileViewerDescriptor = {
   expiresAt: string;
   manifest: GsTileManifest;
   packUrls: ReadonlyMap<string, string>;
+  recommendedView: GaussianViewFrame | null;
 };
 
 const objectValue = (value: unknown, path: string) => {
@@ -25,6 +27,67 @@ const stringValue = (value: unknown, path: string) => {
     );
   }
   return value;
+};
+
+const vectorValue = (
+  value: unknown,
+  path: string,
+): [number, number, number] => {
+  if (
+    !Array.isArray(value) ||
+    value.length !== 3 ||
+    value.some((entry) => typeof entry !== "number" || !Number.isFinite(entry))
+  ) {
+    throw new ResponseContractError(
+      "Gaussian viewer descriptor",
+      path,
+      "finite 3-item vector",
+    );
+  }
+  return [value[0], value[1], value[2]];
+};
+
+const dot = (
+  left: readonly number[],
+  right: readonly number[],
+) => left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+
+const decodeRecommendedView = (value: unknown): GaussianViewFrame => {
+  const payload = objectValue(value, "$.recommendedView");
+  if (payload.kind !== "facade") {
+    throw new ResponseContractError(
+      "Gaussian viewer descriptor",
+      "$.recommendedView.kind",
+      "facade",
+    );
+  }
+  const right = vectorValue(payload.right, "$.recommendedView.right");
+  const up = vectorValue(payload.up, "$.recommendedView.up");
+  const outward = vectorValue(payload.outward, "$.recommendedView.outward");
+  const cross: [number, number, number] = [
+    right[1] * up[2] - right[2] * up[1],
+    right[2] * up[0] - right[0] * up[2],
+    right[0] * up[1] - right[1] * up[0],
+  ];
+  const tolerance = 1e-3;
+  const isUnit = (vector: readonly number[]) =>
+    Math.abs(dot(vector, vector) - 1) <= tolerance;
+  if (
+    !isUnit(right) ||
+    !isUnit(up) ||
+    !isUnit(outward) ||
+    Math.abs(dot(right, up)) > tolerance ||
+    Math.abs(dot(right, outward)) > tolerance ||
+    Math.abs(dot(up, outward)) > tolerance ||
+    dot(cross, outward) < 1 - tolerance
+  ) {
+    throw new ResponseContractError(
+      "Gaussian viewer descriptor",
+      "$.recommendedView",
+      "right-handed orthonormal frame",
+    );
+  }
+  return { kind: "facade", right, up, outward };
 };
 
 export const decodeGsTileViewerDescriptor = (
@@ -104,5 +167,9 @@ export const decodeGsTileViewerDescriptor = (
       "one URL per manifest pack",
     );
   }
-  return { artifactId, bundleId, expiresAt, manifest, packUrls };
+  const recommendedView =
+    payload.recommendedView === undefined
+      ? null
+      : decodeRecommendedView(payload.recommendedView);
+  return { artifactId, bundleId, expiresAt, manifest, packUrls, recommendedView };
 };
