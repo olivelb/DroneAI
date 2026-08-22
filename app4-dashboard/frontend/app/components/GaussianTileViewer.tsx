@@ -130,6 +130,9 @@ export default function GaussianTileViewer({
     <div
       className={`relative min-h-80 overflow-hidden rounded-2xl bg-[#101816] ${className}`}
       data-testid="gstile-viewer"
+      data-status={status}
+      data-resident-gaussians={statistics.residentGaussians}
+      data-selected-nodes={statistics.selectedNodes}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
