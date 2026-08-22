@@ -486,6 +486,40 @@ def test_rasterization_rejects_gsd_unsupported_by_achieved_density():
         )
 
 
+def test_expert_density_override_reports_shortfall_without_erasing_qualification():
+    density = workflow.GaussianDensityAssessment(
+        robust_ground_area_m2=479.0255,
+        requested_gsd_m=0.001,
+        target_spacing_pixels=3.6,
+        actual_gaussian_count=27_166_354,
+        required_gaussian_count=36_961_846,
+        achieved_spacing_m=0.004199,
+        achieved_spacing_pixels=4.199,
+        minimum_compatible_gsd_m=0.0011664,
+        accepted=False,
+    )
+    messages = []
+
+    workflow._qualify_gaussian_density_for_rasterization(
+        SimpleNamespace(
+            capacity_mode="adaptive",
+            density_gate_enabled=False,
+            vol_id="mission",
+            report_fn=lambda *_args, **kwargs: messages.append(kwargs["log"]),
+        ),
+        workflow.GaussianFilteringPhaseState(
+            render_state=SimpleNamespace(),
+            input_gaussians=27_741_401,
+            output_gaussians=27_166_354,
+            density_assessment=density,
+        ),
+    )
+
+    assert density.accepted is False
+    assert any("expert density gate override" in message for message in messages)
+    assert any("4.20 px" in message for message in messages)
+
+
 def test_raster_product_applies_shared_coverage_and_geotiff_contract(
     monkeypatch,
     tmp_path,
