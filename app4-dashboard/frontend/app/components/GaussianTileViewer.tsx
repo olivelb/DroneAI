@@ -29,6 +29,11 @@ const emptyStatistics: GaussianRenderStatistics = {
   targetNodes: 0,
   pendingNodes: 0,
   maximumSelectedErrorPixels: 0,
+  effectiveMaximumErrorPixels: 0,
+  selectedExactNodes: 0,
+  selectedProxyNodes: 0,
+  maximumSelectedProxyScreenRadiusPixels: 0,
+  maximumResidentGaussians: 0,
   frameCpuMs: null,
   frameGpuMs: null,
 };
@@ -58,7 +63,9 @@ export default function GaussianTileViewer({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const controller = new AbortController();
-    const scheduler = new GsTileRangeScheduler(4);
+    // Six requests saturate the usual per-origin HTTP/1.1 connection pool
+    // without the burst memory of decoding an unbounded LOD cut concurrently.
+    const scheduler = new GsTileRangeScheduler(6);
     const backend = createBackend();
     let animation = 0;
     let lastDiagnostics = 0;
@@ -150,6 +157,9 @@ export default function GaussianTileViewer({
       data-target-gaussians={statistics.targetGaussians}
       data-target-nodes={statistics.targetNodes}
       data-pending-nodes={statistics.pendingNodes}
+      data-selected-exact-nodes={statistics.selectedExactNodes}
+      data-selected-proxy-nodes={statistics.selectedProxyNodes}
+      data-maximum-proxy-radius-pixels={statistics.maximumSelectedProxyScreenRadiusPixels}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
@@ -160,9 +170,25 @@ export default function GaussianTileViewer({
               {formatCount(statistics.residentGaussians)} / {formatCount(statistics.targetGaussians || statistics.residentGaussians)} splats
             </span>
             <span>{statistics.selectedNodes} / {statistics.targetNodes || statistics.selectedNodes} tuiles</span>
+            {(statistics.selectedExactNodes > 0 || statistics.selectedProxyNodes > 0) && (
+              <span>
+                {statistics.selectedExactNodes} exactes · {statistics.selectedProxyNodes} proxys
+              </span>
+            )}
             {statistics.pendingNodes > 0 && <span>{statistics.pendingNodes} en attente</span>}
             {statistics.maximumSelectedErrorPixels > 0 && (
               <span>erreur {statistics.maximumSelectedErrorPixels.toFixed(1)} px</span>
+            )}
+            {statistics.maximumSelectedProxyScreenRadiusPixels > 0 && (
+              <span>
+                proxy max Ø {(statistics.maximumSelectedProxyScreenRadiusPixels * 2).toFixed(0)} px
+              </span>
+            )}
+            {statistics.effectiveMaximumErrorPixels > 0 && (
+              <span>SSE {statistics.effectiveMaximumErrorPixels.toFixed(2)} px</span>
+            )}
+            {statistics.maximumResidentGaussians > 0 && (
+              <span>budget {formatCount(statistics.maximumResidentGaussians)}</span>
             )}
             {statistics.frameGpuMs !== null && (
               <span>{statistics.frameGpuMs.toFixed(1)} ms GPU</span>

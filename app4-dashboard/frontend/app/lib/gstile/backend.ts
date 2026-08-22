@@ -24,6 +24,11 @@ export type GaussianRenderStatistics = {
   targetNodes: number;
   pendingNodes: number;
   maximumSelectedErrorPixels: number;
+  effectiveMaximumErrorPixels: number;
+  selectedExactNodes: number;
+  selectedProxyNodes: number;
+  maximumSelectedProxyScreenRadiusPixels: number;
+  maximumResidentGaussians: number;
   frameCpuMs: number | null;
   frameGpuMs: number | null;
 };

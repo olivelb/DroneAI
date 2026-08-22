@@ -15,6 +15,10 @@ export type GsTileLodSelection = {
   selectedNodeIds: string[];
   residentGaussians: number;
   maximumSelectedErrorPixels: number;
+  effectiveMaximumErrorPixels: number;
+  selectedExactNodes: number;
+  selectedProxyNodes: number;
+  maximumSelectedProxyScreenRadiusPixels: number;
   budgetLimited: boolean;
   unresolvedMaximumErrorPixels: number;
 };
@@ -171,6 +175,9 @@ type LodCut = {
   nodes: GsTileNode[];
   residentGaussians: number;
   maximumSelectedErrorPixels: number;
+  selectedExactNodes: number;
+  selectedProxyNodes: number;
+  maximumSelectedProxyScreenRadiusPixels: number;
 };
 
 export const selectGsTileLod = (
@@ -215,6 +222,10 @@ export const selectGsTileLod = (
       selectedNodeIds: [],
       residentGaussians: 0,
       maximumSelectedErrorPixels: 0,
+      effectiveMaximumErrorPixels: 0,
+      selectedExactNodes: 0,
+      selectedProxyNodes: 0,
+      maximumSelectedProxyScreenRadiusPixels: 0,
       budgetLimited: false,
       unresolvedMaximumErrorPixels: 0,
     };
@@ -242,6 +253,9 @@ export const selectGsTileLod = (
     const selected: GsTileNode[] = [];
     let residentGaussians = 0;
     let maximumSelectedErrorPixels = 0;
+    let selectedExactNodes = 0;
+    let selectedProxyNodes = 0;
+    let maximumSelectedProxyScreenRadiusPixels = 0;
 
     const visit = (node: GsTileNode) => {
       const projected = projection(node);
@@ -257,6 +271,15 @@ export const selectGsTileLod = (
       }
       selected.push(node);
       residentGaussians += representationCount(node);
+      if (node.children && node.lodTile) {
+        selectedProxyNodes += 1;
+        maximumSelectedProxyScreenRadiusPixels = Math.max(
+          maximumSelectedProxyScreenRadiusPixels,
+          projected.screenRadiusPixels,
+        );
+      } else {
+        selectedExactNodes += 1;
+      }
       maximumSelectedErrorPixels = Math.max(
         maximumSelectedErrorPixels,
         projected.errorPixels,
@@ -264,41 +287,53 @@ export const selectGsTileLod = (
     };
 
     visit(root);
-    return { nodes: selected, residentGaussians, maximumSelectedErrorPixels };
+    return {
+      nodes: selected,
+      residentGaussians,
+      maximumSelectedErrorPixels,
+      selectedExactNodes,
+      selectedProxyNodes,
+      maximumSelectedProxyScreenRadiusPixels,
+    };
   };
 
   const requestedCut = buildCut(options.maximumProjectedErrorPixels);
-  let selectedCut = requestedCut;
-  let budgetLimited = false;
-  if (requestedCut.residentGaussians > options.maximumResidentGaussians) {
-    budgetLimited = true;
+  const budgetLimited =
+    requestedCut.residentGaussians > options.maximumResidentGaussians;
 
-    // Cesium raises one memory-adjusted SSE for the whole tileset. Choosing a
-    // single threshold avoids the previous greedy failure mode where an
-    // expensive branch stayed blurry while cheaper neighbours became exact.
-    const candidateErrors = [...new Set(
-      manifest.nodes
-        .filter((node) => node.children && projection(node).visible)
-        .map((node) => projection(node).errorPixels)
-        .filter((error) => error > options.maximumProjectedErrorPixels),
-    )].sort((left, right) => left - right);
-    let lower = 0;
-    let upper = candidateErrors.length - 1;
-    let fittingCut: LodCut | null = null;
-    while (lower <= upper) {
-      const middle = Math.floor((lower + upper) / 2);
-      const cut = buildCut(candidateErrors[middle]);
-      if (cut.residentGaussians <= options.maximumResidentGaussians) {
-        fittingCut = cut;
-        upper = middle - 1;
-      } else {
-        lower = middle + 1;
-      }
+  // Use the strictest *global* SSE that fits the resident budget. Cesium's
+  // memory-adjusted SSE raises the threshold when the requested cut is too
+  // expensive; PlayCanvas' streamed SOG balancer also spends spare budget by
+  // moving the closest nodes to a finer LOD. Doing both here is essential:
+  // stopping at the nominal quality threshold left several million splats of
+  // headroom unused and allowed large moment-matched proxies to remain visibly
+  // blurred during close inspection. A single global threshold preserves a
+  // spatially coherent cut and avoids checkerboard refinement.
+  const candidateErrors = [...new Set([
+    0,
+    ...manifest.nodes
+      .filter((node) => node.children && projection(node).visible)
+      .map((node) => projection(node).errorPixels)
+      .filter((error) => Number.isFinite(error) && error > 0),
+  ])].sort((left, right) => left - right);
+  let lower = 0;
+  let upper = candidateErrors.length - 1;
+  let selectedCut: LodCut | null = null;
+  let effectiveMaximumErrorPixels = candidateErrors.at(-1) ?? 0;
+  while (lower <= upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    const candidateError = candidateErrors[middle];
+    const cut = buildCut(candidateError);
+    if (cut.residentGaussians <= options.maximumResidentGaussians) {
+      selectedCut = cut;
+      effectiveMaximumErrorPixels = candidateError;
+      upper = middle - 1;
+    } else {
+      lower = middle + 1;
     }
-    if (!fittingCut) {
-      throw new Error("GSTile hierarchy cannot satisfy the resident splat budget");
-    }
-    selectedCut = fittingCut;
+  }
+  if (!selectedCut) {
+    throw new Error("GSTile hierarchy cannot satisfy the resident splat budget");
   }
 
   const selectedNodes = selectedCut.nodes
@@ -312,6 +347,11 @@ export const selectGsTileLod = (
     selectedNodeIds: selectedNodes.map((node) => node.id),
     residentGaussians: selectedCut.residentGaussians,
     maximumSelectedErrorPixels: selectedCut.maximumSelectedErrorPixels,
+    effectiveMaximumErrorPixels,
+    selectedExactNodes: selectedCut.selectedExactNodes,
+    selectedProxyNodes: selectedCut.selectedProxyNodes,
+    maximumSelectedProxyScreenRadiusPixels:
+      selectedCut.maximumSelectedProxyScreenRadiusPixels,
     budgetLimited,
     unresolvedMaximumErrorPixels: budgetLimited
       ? selectedCut.maximumSelectedErrorPixels

@@ -223,14 +223,27 @@ export const configureHighQualityGsplatRendering = (
   settings.dataFormat = values.dataFormat;
   settings.renderer = values.renderer;
   settings.colorUpdateAngle = 0;
-  settings.antiAlias = true;
+  // DroneGS `fastgs` exports already encode the training-time footprint in
+  // each Gaussian and explicitly disable compensated anti-aliasing. The
+  // PlayCanvas compensation is only valid for splats trained/exported with
+  // that option; forcing it here changes opacity and softens the reconstruction.
+  settings.antiAlias = false;
   settings.minContribution = 0.05;
   settings.minPixelSize = 0.5;
   settings.alphaClip = 1 / 255;
-  settings.radialSorting = true;
+  // This viewer uses an ordinary perspective camera which orbits by changing
+  // position. PlayCanvas documents radial sorting for cubemap/fisheye views;
+  // directional depth sorting is more accurate during camera translation.
+  // Radial ordering made the centre look sharp while misordering overlapping
+  // facade splats toward both screen edges, perceived as persistent blurry
+  // tiles even when the selected cut contained exact leaves only.
+  settings.radialSorting = false;
 };
 
-const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 7_000_000;
+// The qualification RTX 4070 stays just below its 8 GiB dedicated budget at
+// 7.5M while retaining shared-memory headroom for transient cut replacement.
+// Source size is deliberately independent: a 100M bundle remains out-of-core.
+const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 7_500_000;
 const DEFAULT_MAXIMUM_PROJECTED_ERROR_PIXELS = 2;
 const OPACITY_STREAM_NAMES = [
   "droneOpacity0",
@@ -432,6 +445,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #targetNodes = 0;
   #pendingNodes = 0;
   #maximumSelectedErrorPixels = 0;
+  #effectiveMaximumErrorPixels = 0;
+  #selectedExactNodes = 0;
+  #selectedProxyNodes = 0;
+  #maximumSelectedProxyScreenRadiusPixels = 0;
   #lodState: GaussianRenderStatistics["lodState"] = "steady";
   #lastTimestampMs: number | null = null;
   #target: Vec3 = [0, 0, 0];
@@ -718,6 +735,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#targetNodes = 0;
     this.#pendingNodes = 0;
     this.#maximumSelectedErrorPixels = 0;
+    this.#effectiveMaximumErrorPixels = 0;
+    this.#selectedExactNodes = 0;
+    this.#selectedProxyNodes = 0;
+    this.#maximumSelectedProxyScreenRadiusPixels = 0;
     this.#lodState = "steady";
     this.#lodUsesMomentMatchedProxies = false;
     this.#coordinateOrigin = [0, 0, 0];
@@ -924,6 +945,11 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       selection.maximumSelectedErrorPixels,
       selection.unresolvedMaximumErrorPixels,
     );
+    this.#effectiveMaximumErrorPixels = selection.effectiveMaximumErrorPixels;
+    this.#selectedExactNodes = selection.selectedExactNodes;
+    this.#selectedProxyNodes = selection.selectedProxyNodes;
+    this.#maximumSelectedProxyScreenRadiusPixels =
+      selection.maximumSelectedProxyScreenRadiusPixels;
     if (key === this.#lodSelectionKey) {
       this.#pendingNodes = 0;
       this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
@@ -1069,6 +1095,12 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       targetNodes: this.#targetNodes,
       pendingNodes: this.#pendingNodes,
       maximumSelectedErrorPixels: this.#maximumSelectedErrorPixels,
+      effectiveMaximumErrorPixels: this.#effectiveMaximumErrorPixels,
+      selectedExactNodes: this.#selectedExactNodes,
+      selectedProxyNodes: this.#selectedProxyNodes,
+      maximumSelectedProxyScreenRadiusPixels:
+        this.#maximumSelectedProxyScreenRadiusPixels,
+      maximumResidentGaussians: this.#maximumResidentGaussians,
       frameCpuMs,
       frameGpuMs: null,
     };

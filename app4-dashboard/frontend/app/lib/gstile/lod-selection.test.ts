@@ -70,10 +70,32 @@ const options = {
 };
 
 describe("GSTile LOD selection", () => {
-  it("keeps the parent when its projected error is acceptable", () => {
+  it("spends spare resident budget below the nominal SSE", () => {
     const selection = selectGsTileLod(manifest(), options);
+    expect(selection.selectedNodeIds).toEqual(["r0", "r1"]);
+    expect(selection.residentGaussians).toBe(16_000);
+    expect(selection.effectiveMaximumErrorPixels).toBe(0);
+    expect(selection.selectedExactNodes).toBe(2);
+    expect(selection.selectedProxyNodes).toBe(0);
+    expect(selection.maximumSelectedProxyScreenRadiusPixels).toBe(0);
+    expect(selection.budgetLimited).toBe(false);
+  });
+
+  it("keeps the globally coherent parent when finer content does not fit", () => {
+    const selection = selectGsTileLod(manifest(), {
+      ...options,
+      maximumResidentGaussians: 1_000,
+    });
+
     expect(selection.selectedNodeIds).toEqual(["r"]);
     expect(selection.residentGaussians).toBe(1_000);
+    expect(selection.effectiveMaximumErrorPixels).toBeGreaterThan(0);
+    expect(selection.selectedExactNodes).toBe(0);
+    expect(selection.selectedProxyNodes).toBe(1);
+    expect(selection.maximumSelectedProxyScreenRadiusPixels).toBeGreaterThan(0);
+    // The requested 100 px cut already fit. Spending additional quality
+    // headroom is optional and must not be reported as a hard GPU limit.
+    expect(selection.budgetLimited).toBe(false);
   });
 
   it("atomically replaces a parent with all children when close enough", () => {
@@ -365,5 +387,28 @@ describe("GSTile LOD selection", () => {
 
     expect(selection.selectedNodeIds).toEqual([]);
     expect(selection.residentGaussians).toBe(0);
+  });
+
+  it("keeps a 100M source out-of-core under the resident budget", () => {
+    const value = manifest();
+    value.source.gaussianCount = 100_000_000;
+    value.nodes[0].gaussianCount = 100_000_000;
+    value.nodes[0].lodTile = tile(1_000_000);
+    value.nodes[1].gaussianCount = 50_000_000;
+    value.nodes[1].tile = tile(50_000_000);
+    value.nodes[2].gaussianCount = 50_000_000;
+    value.nodes[2].tile = tile(50_000_000);
+
+    const selection = selectGsTileLod(value, {
+      ...options,
+      cameraPosition: [0, 0, 2],
+      maximumProjectedErrorPixels: 2,
+      maximumResidentGaussians: 7_500_000,
+    });
+
+    expect(selection.selectedNodeIds).toEqual(["r"]);
+    expect(selection.residentGaussians).toBe(1_000_000);
+    expect(selection.residentGaussians).toBeLessThanOrEqual(7_500_000);
+    expect(selection.budgetLimited).toBe(true);
   });
 });

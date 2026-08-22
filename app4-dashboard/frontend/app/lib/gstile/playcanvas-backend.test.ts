@@ -168,7 +168,7 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
     ).toEqual([638_002.5, 6_214_996, 131]);
   });
 
-  it("enables the reference anti-aliasing and low-contribution settings", () => {
+  it("preserves FastGS footprints and enables low-contribution rendering", () => {
     const settings = {
       antiAlias: false,
       alphaClip: 0.3,
@@ -186,13 +186,13 @@ describe("PlayCanvas high-quality Gaussian rendering", () => {
     });
 
     expect(settings).toEqual({
-      antiAlias: true,
+      antiAlias: false,
       alphaClip: 1 / 255,
       colorUpdateAngle: 0,
       dataFormat: "large",
       minContribution: 0.05,
       minPixelSize: 0.5,
-      radialSorting: true,
+      radialSorting: false,
       renderer: 2,
     });
   });

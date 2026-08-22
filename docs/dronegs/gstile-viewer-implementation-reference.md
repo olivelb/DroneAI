@@ -144,10 +144,12 @@ Implementation status:
 - the mission detail page mounts the viewer only when the owner-scoped mission
   publishes `gaussian_viewer_bundle`. The existing signed descriptor endpoint
   remains the only production discovery path;
-- the PlayCanvas adapter enables antialiasing, radial sorting and low-alpha
-  rendering, and accepts subpixel splats (`minContribution=0.05`,
-  `minPixelSize=0.5`). The previous defaults culled much of a distant facade
-  before the LOD budget could contribute it.
+- the PlayCanvas adapter keeps low-alpha rendering and accepts subpixel splats
+  (`minContribution=0.05`, `minPixelSize=0.5`). It deliberately disables
+  compensated antialiasing for the DroneGS FastGS export and uses directional
+  rather than radial sorting for the translating perspective camera. The
+  previous culling defaults removed distant facade contribution, while forced
+  compensation and radial order softened or misordered exact splats.
 
 Remaining exit evidence: camera-path image/seam metrics against the exact
 leaves, GPU timestamp telemetry, cache/eviction hysteresis and broader browser
@@ -298,6 +300,108 @@ Chrome/WebGPU remained operational without a device-loss or out-of-memory
 error. This higher ceiling is an operational viewer setting only and does not
 change the source PLY, proxy construction or scientific content.
 
+#### RTX 4070 R8 renderer and selection diagnosis — 2026-08-23
+
+The apparent persistent "blurry tiles" combined three different effects that
+must not be diagnosed from a screenshot alone:
+
+1. a proxy can legitimately remain selected when the global resident budget
+   cannot fit its exact descendants;
+2. PlayCanvas radial sorting is intended for cubemap/fisheye cameras. The
+   facade viewer orbits by translating a perspective camera, so radial order
+   produced screen-edge overlap errors while the centre remained sharper;
+3. PlayCanvas antialias compensation is only valid for splats generated with
+   that training/export option. The Saint-Etienne run records the FastGS
+   raster profile, which disables this compensation. Forcing it in the viewer
+   changed opacity and widened the reconstruction.
+
+R8 therefore:
+
+- uses directional sorting and disables compensated antialiasing;
+- computes the strictest single global SSE cut that fits the resident budget,
+  so spare VRAM refines visible proxies instead of stopping at a nominal 2 px
+  threshold;
+- raises the qualification ceiling to 7.5 million splats and exposes exact
+  node count, proxy node count, maximum proxy screen diameter, effective SSE
+  and resident budget in the HUD;
+- uses six concurrent range requests, matching the normal HTTP/1.1 per-origin
+  connection pool without unbounded decoded-buffer bursts.
+
+On the real 49,408,067-Gaussian V4 bundle, the initial view selected 127 exact
+nodes and 236 proxies at 7.5 million resident splats. An intermediate rose
+window view selected 174 exact nodes and 129 proxies. Windows reported
+7,291 MiB used out of 8,188 MiB dedicated RTX 4070 memory. At strong zoom the
+cut converged to 58 exact nodes, zero proxies and 1.8 million splats. Any
+remaining whole-image softness in that last state is therefore not a missing
+tile or stale LOD: it is present in the exact leaf representation, the source
+reconstruction/view extrapolation or the renderer's resident parity. The HUD
+makes that distinction directly observable.
+
+Exact-leaf fidelity was also sampled through stable `source_id` values against
+the original 296-byte PLY records. Across 7,970 Gaussians from 128 leaves, the
+largest observed errors were about `1.27e-5` for position, `1.01e-4` for log
+scale, `7.91e-5` for colour DC, `2.06e-3` for colour SH, `1.87e-4` for base
+opacity and `9.83e-3` for opacity SH. These q96 errors are far below the gross
+screen-space blocks previously observed and do not explain them.
+
+### 100-million-splat capacity and fidelity plan
+
+The runtime is out-of-core: source population is not the resident GPU
+population. A 100-million-splat manifest is accepted while the selector keeps
+the cut below the configured 7.5-million resident ceiling. At the measured
+V4 ratio of about 138.95 bundle bytes per source splat, a comparable 100M
+bundle would occupy roughly 13.9 GB before object-store/HTTP compression.
+
+The current browser path can therefore address 100M, but three further changes
+are required before claiming smooth original-PLY-equivalent quality:
+
+1. **Render-supervised scientific proxies.** Moment/covariance fusion and the
+   nonlinear directional-opacity fit preserve physical statistics, but do not
+   minimize the rendered difference at intermediate LODs. Build candidate
+   proxies, render them from representative cameras against the exact child
+   population, then optimize position, covariance, colour SH and opacity SH.
+   Store a measured render-error bound per node and drive SSE from it. H3DGS,
+   LODGE and V3DG all use hierarchy optimization, fine-tuning or local
+   splatting for this reason.
+2. **Transition-safe hierarchy.** Add overlap skirts or shared boundary
+   clusters and optical-thickness cross-fades between a parent and its fully
+   resident children. This allows branch-atomic updates without a coarse/exact
+   grid while avoiding the current scene-wide CPU staging pause.
+3. **Streaming pipeline.** Decode and validate in workers/WASM, coalesce
+   adjacent byte ranges, prefetch one LOD ahead, retain a bounded cooldown
+   cache and upload through reusable GPU arenas. HTTP/2 or HTTP/3/object-store
+   delivery should replace the qualification HTTP/1.1 bottleneck.
+
+The tiler also needs a scale-specific rewrite. Its bounded-memory midpoint
+split is safe, but rereads and rewrites records at every hierarchy depth,
+making temporary I/O approximately `O(N log N)`. A 100M input uses about
+30.4 GB for one 304-byte working copy before repeated partition traffic. The
+next implementation should external-sort one Morton key per Gaussian, write
+contiguous leaf ranges once, build the hierarchy bottom-up, and use a measured
+proxy-count model for disk preflight instead of multiplying source population
+by maximum tree depth.
+
+Proposed acceptance gates for the 100M path are:
+
+- no proxy remains when the visible exact cut fits the resident budget;
+- no visible tile boundary after a stable cut or during a completed branch
+  transition;
+- exact-leaf renders compare against the original PLY from frozen cameras;
+- proxy renders report PSNR, SSIM and LPIPS against exact children, with
+  thresholds frozen from the representative corpus rather than invented per
+  run;
+- at least 30 interactive frames/s on the RTX 4070 qualification device,
+  bounded dedicated memory and no WebGPU device loss;
+- cold and warm camera paths report network, decode, upload, sort, frame and
+  cache telemetry separately.
+
+Cesium's useful contribution is the hierarchy contract: geometric error,
+screen-space error, replacement refinement and implicit tiling. It is not a
+drop-in Gaussian quality solution. Cesium's own Gaussian integration still
+has an open visibility/disappearance issue, so adopting its viewer would not
+remove the need for DroneGS directional opacity, render-supervised proxies and
+Gaussian-specific transition handling.
+
 ### Phase 4 — adaptive 4K and telemetry
 
 - Measure frame CPU, GPU (when timestamp queries exist), sorting, decode,
@@ -392,6 +496,15 @@ scientific approximation needs a named profile, metrics and its own review.
 - A LoD of Gaussians (SIGGRAPH 2026 official implementation):
   https://github.com/FelixWindisch/LoDOfGaussians
 - WebGPU Recommendation: https://www.w3.org/TR/webgpu/
+- Cesium 3D Tiles specification:
+  https://github.com/CesiumGS/3d-tiles/blob/main/specification/README.adoc
+- Cesium Gaussian visibility issue:
+  https://github.com/CesiumGS/cesium/issues/13304
+- Hierarchical 3D Gaussians paper: https://arxiv.org/abs/2406.12080
+- LODGE: https://arxiv.org/abs/2505.23158
+- V3DG: https://arxiv.org/abs/2505.06523
+- V3DG official implementation: https://github.com/city-super/V3DG
+- Octree-GS: https://arxiv.org/abs/2403.17898
 
 These upstream formats and APIs inform the implementation; GSTile remains a
 DroneAI-owned contract so the directional-opacity representation cannot be
