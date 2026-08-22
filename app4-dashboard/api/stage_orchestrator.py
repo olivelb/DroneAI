@@ -34,11 +34,13 @@ from shared.observability import (
     observe_stage_queue,
 )
 from shared.stage_contracts import (
+    DEFAULT_STAGE_RESOURCE_CLASSES,
+    RESOURCE_CLASSES,
     STAGE_ORDER,
     ResourceClassId,
     StageId,
     resource_class_for_stage,
-    resource_class_meets_gpu_envelope,
+    resource_class_meets_envelope,
 )
 from shared.stage_scheduler import (
     SchedulingLimits,
@@ -186,7 +188,12 @@ def _executor_catalog(
             raise ValueError(
                 f"Executor command for {stage} must be a non-empty string list"
             )
-        if stage != "rasterization" and not isinstance(architecture, str):
+        default_resources = RESOURCE_CLASSES[DEFAULT_STAGE_RESOURCE_CLASSES[stage]]
+        if (
+            default_resources["gpu_count"] > 0
+            and stage != "rasterization"
+            and not isinstance(architecture, str)
+        ):
             raise ValueError(f"GPU architecture must be declared for {stage}")
         if not isinstance(selector, dict) or not all(
             isinstance(key, str) and isinstance(value, str)
@@ -763,7 +770,7 @@ def _repair_underprovisioned_resource_class(run: MissionStageRun) -> None:
         return
     parameters = cast(dict[str, Any], run.parameters or {})
     required = resource_class_for_stage(stage, parameters)
-    if resource_class_meets_gpu_envelope(actual, required):
+    if resource_class_meets_envelope(actual, required):
         return
     logger.warning(
         "Repairing underprovisioned stage run %s from %s to %s",

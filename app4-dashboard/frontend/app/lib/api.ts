@@ -81,6 +81,8 @@ export const fetchMissionCatalog = (limit = 25, offset = 0) =>
   }).toString()}`, parseMissionCatalog);
 export const fetchMissionDetail = (volId: string) =>
   api(`/missions/${encodeURIComponent(volId)}`, parseMissionDetail);
+export const getGaussianViewerDescriptorUrl = (volId: string) =>
+  `${getApiBaseUrl()}/missions/${encodeURIComponent(volId)}/gaussians/viewer`;
 export const fetchParameters = () =>
   api("/mission/parameters", parseParameterConfig);
 export const fetchBrowse = (prefix: string) =>

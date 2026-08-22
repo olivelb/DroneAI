@@ -5,6 +5,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+import gaussian_tiles
 from colmap_worker import stage_executor
 from colmap_worker.stages import gaussian as gaussian_stage
 from gaussian_ortho import phase_artifacts
@@ -560,4 +561,83 @@ def test_rasterization_adapter_qualifies_filtered_model_without_refiltering(
     assert result.quality_metrics["gaussian_count"] == 1_200_000
     assert result.provenance["renderer_contract"] == "cupy-ortho-v3-surface-color"
     assert result.provenance["workspace_transfer"]["restore"]["file_count"] == 2
+    assert cancellation.cleared == 1
+
+
+def test_gaussian_viewer_adapter_builds_product_only_from_filtered_model(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("DRONEAI_STAGE_WORK_ROOT", str(tmp_path / "work"))
+    cancellation = FakeCancellationState()
+    monkeypatch.setattr(stage_executor.runtime, "cancellation_state", cancellation)
+    calls = []
+    _mock_workspace_transfer(monkeypatch, calls)
+    state = (SimpleNamespace(), SimpleNamespace(), SimpleNamespace())
+    monkeypatch.setattr(stage_executor, "load_reconstruction_state", lambda _path: state)
+    config = SimpleNamespace(dronegs_profile_id="normal-v1")
+    monkeypatch.setattr(
+        gaussian_stage,
+        "prepare_gaussian_product_run",
+        lambda *_args, **_kwargs: SimpleNamespace(config=config),
+    )
+    model_path = tmp_path / "work" / ("a" * 32) / "filtered.ply"
+    artifact = SimpleNamespace(
+        model_path=model_path,
+        partition_models=(),
+        output_gaussians=42,
+    )
+
+    def read_artifact(_workspace, _config):
+        calls.append("read")
+        model_path.write_bytes(b"filtered-gaussians")
+        return artifact
+
+    monkeypatch.setattr(phase_artifacts, "read_filtering_artifact", read_artifact)
+
+    def build(source, output, *, options):
+        calls.append("tile")
+        assert Path(source).read_bytes() == b"filtered-gaussians"
+        assert options.leaf_size == 1024
+        options.cancellation_check()
+        output = Path(output)
+        output.mkdir(parents=True)
+        manifest_path = output / "manifest.json"
+        manifest_path.write_text(
+            '{"profile":"dronegs-sh3-opacity-sh3-q96",'
+            '"source":{"sha256":"' + "e" * 64 + '"},'
+            '"statistics":{"lod":"leaf-only-v1"}}',
+            encoding="ascii",
+        )
+        (output / "pack.gstp").write_bytes(b"pack")
+        return SimpleNamespace(
+            manifest_path=manifest_path,
+            bundle_id="sha256:" + "f" * 64,
+            gaussian_count=42,
+            leaf_count=1,
+            pack_bytes=4,
+            maximum_errors={"position": 0.001},
+        )
+
+    monkeypatch.setattr(gaussian_tiles, "build_gstile_bundle", build)
+
+    result = stage_executor.run_gaussian_viewer_stage(
+        _context(
+            "gaussian_viewer",
+            input_kind="gaussian_filtering_workspace",
+            parameters={"gaussian_viewer": {"leaf_size": 1024}},
+        ),
+        FakeControl(),
+    )
+
+    assert calls == ["restore", "read", "tile", "publish"]
+    assert result.kind == "gaussian_viewer_bundle"
+    assert result.metadata["gaussian_count"] == 42
+    assert result.metadata["lod"] == "leaf-only-v1"
+    assert result.quality_metrics["scientific_qualification"] == (
+        "quantization-bounds-only"
+    )
+    assert result.provenance["source_merge"]["algorithm"] == (
+        "resident-filtered-model-v1"
+    )
     assert cancellation.cleared == 1

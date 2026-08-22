@@ -132,8 +132,8 @@ storage:
   s3SecretKey: "minioadmin"
   s3Region: "us-east-1"
   databaseUrl: "postgresql://droneai:droneai-local@postgres.drone-ai.svc:5432/droneai"
-  # External S3 buckets must expose ETag and allow PUT from the frontend
-  # origin. See scripts/deploy/configure-s3-upload-cors.sh.
+  # External S3 buckets must expose ETag/Range headers and allow browser PUT,
+  # GET and HEAD from the frontend origin. See the CORS deployment helper.
 
 # --------------------------------------------------------------------------
 # COLMAP Worker
@@ -319,7 +319,7 @@ stageJobs:
   databaseUrlSecretKey: stage-database-url
   # Existing Secrets injected into each one-shot executor. Each Secret exposes
   # stage-database-url, s3-access-key and s3-secret-key. A complete map with
-  # five distinct Secret names is
+  # six distinct Secret names is
   # mandatory when Jobs are enabled in staging or production. Development may
   # omit it and reuse storage.existingSecret for local compatibility only.
   credentialSecrets: {}
@@ -337,7 +337,7 @@ stageJobs:
     tilesPerShard: 1024
     parallelism: 2
     maximumTiles: 100000
-  # All five one-shot commands are implemented and Q3-qualified. Enabling still
+  # All six one-shot commands are implemented and Q3-qualified. Enabling still
   # requires every entry so a generic Helm install cannot dispatch mutable or
   # partially configured workloads. Protected environments require an OCI
   # digest; development may use a Git-SHA tag for local scientific workflows.
@@ -359,6 +359,7 @@ stageJobs:
     perMissionConcurrency: 1
     resourceConcurrency:
       cpu-standard: 2
+      cpu-high-memory: 1
       gpu-standard: 1
       gpu-geometry: 1
       gpu-high-memory: 1

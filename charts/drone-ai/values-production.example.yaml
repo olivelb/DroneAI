@@ -95,12 +95,16 @@ stageJobs:
       image: "registry.example.com/drone-ia@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app2-ia/stage_executor.py"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_viewer:
+      image: "registry.example.com/drone-colmap@sha256:REPLACE_OCI_DIGEST"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_viewer"]
   credentialSecrets:
     reconstruction: drone-ai-stage-reconstruction-production
     gaussian_training: drone-ai-stage-gaussian-training-production
     gaussian_filtering: drone-ai-stage-gaussian-filtering-production
     rasterization: drone-ai-stage-rasterization-production
     detection: drone-ai-stage-detection-production
+    gaussian_viewer: drone-ai-stage-gaussian-viewer-production
 
 iaWorker:
   enabled: false

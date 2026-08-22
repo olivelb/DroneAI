@@ -1,0 +1,193 @@
+import { describe, expect, it } from "vitest";
+import { decodeGsTileManifest, resolveGsTilePackUrl } from "./contracts";
+
+const manifest = () => ({
+  schema: "droneai-gstile",
+  version: 1,
+  profile: "dronegs-sh3-opacity-sh3-q96",
+  bundleId: `sha256:${"a".repeat(64)}`,
+  source: {
+    sha256: "b".repeat(64),
+    gaussianCount: 1,
+    colorShDegree: 3,
+    opacityShDegree: 3,
+    recordBytes: 296,
+  },
+  coordinateFrame: { kind: "local", origin: [0, 0, 0], crs: null },
+  root: "r",
+  nodes: [
+    {
+      id: "r",
+      bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      gaussianCount: 1,
+      tile: {
+        pack: "r",
+        byteOffset: 32,
+        byteLength: 96,
+        recordCount: 1,
+        sha256: "c".repeat(64),
+        quantization: {
+          position: { min: [0, 0, 0], max: [1, 1, 1] },
+          logScale: { min: [-4, -4, -4], max: [-3, -3, -3] },
+          rotation: { encoding: "snorm16x4" },
+          opacityLogit: { min: -1, max: 1 },
+          colorDcScale: [1, 1, 1],
+          colorShScale: Array(45).fill(1),
+          opacityShScale: Array(15).fill(1),
+          sourceColorShDegree: 3,
+          sourceOpacityShDegree: 3,
+        },
+      },
+    },
+  ],
+  packs: [
+    {
+      id: "r",
+      path: "packs/r.gst",
+      byteLength: 128,
+      recordCount: 1,
+      sha256: "c".repeat(64),
+      payloadCrc32: "12345678",
+      byteOffset: 32,
+    },
+  ],
+  statistics: {
+    leafCount: 1,
+    packBytes: 128,
+    bytesPerGaussian: 128,
+    lod: "leaf-only",
+  },
+});
+
+const lodManifest = () => {
+  const base = manifest();
+  const quantization = base.nodes[0].tile.quantization;
+  const tile = (pack: string, sha256: string) => ({
+    pack,
+    byteOffset: 32,
+    byteLength: 96,
+    recordCount: 1,
+    sha256,
+    quantization,
+  });
+  const nodes = [
+    {
+      id: "r",
+      bounds: { min: [0, 0, 0], max: [2, 1, 1] },
+      gaussianCount: 2,
+      geometricError: 0.25,
+      children: ["r0", "r1"],
+      lodTile: tile("lod-r", "d".repeat(64)),
+    },
+    {
+      id: "r0",
+      bounds: { min: [0, 0, 0], max: [1, 1, 1] },
+      gaussianCount: 1,
+      geometricError: 0,
+      tile: tile("r0", "e".repeat(64)),
+    },
+    {
+      id: "r1",
+      bounds: { min: [1, 0, 0], max: [2, 1, 1] },
+      gaussianCount: 1,
+      geometricError: 0,
+      tile: tile("r1", "f".repeat(64)),
+    },
+  ];
+  const packs = [
+    {
+      id: "lod-r",
+      path: "packs/lod-r.gst",
+      byteLength: 128,
+      recordCount: 1,
+      sha256: "d".repeat(64),
+      payloadCrc32: "12345678",
+      byteOffset: 32,
+    },
+    {
+      id: "r0",
+      path: "packs/r0.gst",
+      byteLength: 128,
+      recordCount: 1,
+      sha256: "e".repeat(64),
+      payloadCrc32: "23456789",
+      byteOffset: 32,
+    },
+    {
+      id: "r1",
+      path: "packs/r1.gst",
+      byteLength: 128,
+      recordCount: 1,
+      sha256: "f".repeat(64),
+      payloadCrc32: "3456789a",
+      byteOffset: 32,
+    },
+  ];
+  return {
+    ...base,
+    profile: "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1",
+    source: { ...base.source, gaussianCount: 2 },
+    nodes,
+    packs,
+    statistics: {
+      leafCount: 2,
+      packBytes: 384,
+      bytesPerGaussian: 192,
+      lod: "deterministic-minhash-replacement-v1",
+      exactPackBytes: 256,
+      proxyCount: 1,
+      proxyRecords: 1,
+      proxyPackBytes: 128,
+    },
+  };
+};
+
+describe("GSTile browser contract", () => {
+  it("accepts the version-one baseline manifest", () => {
+    expect(decodeGsTileManifest(manifest()).root).toBe("r");
+  });
+
+  it("accepts a separate deterministic replacement-LOD profile", () => {
+    const decoded = decodeGsTileManifest(lodManifest());
+    expect(decoded.nodes.find((node) => node.id === "r")?.lodTile?.recordCount).toBe(
+      1,
+    );
+  });
+
+  it("rejects incomplete LOD proxy coverage", () => {
+    const value = lodManifest();
+    delete value.nodes[0].lodTile;
+    expect(() => decodeGsTileManifest(value)).toThrow(/LOD proxy/);
+  });
+
+  it("rejects path traversal before any pack request", () => {
+    const value = manifest();
+    value.packs[0].path = "../secret";
+    expect(() => decodeGsTileManifest(value)).toThrow(/safe relative POSIX path/);
+  });
+
+  it("rejects record counts that could bypass the resident allocation gate", () => {
+    const value = manifest();
+    value.source.gaussianCount = 0;
+    expect(() => decodeGsTileManifest(value)).toThrow(/non-empty nodes and packs/);
+
+    const inconsistent = manifest();
+    inconsistent.nodes[0].tile.recordCount = 2;
+    expect(() => decodeGsTileManifest(inconsistent)).toThrow(/valid aligned range/);
+  });
+
+  it("requires tile ranges to cover their pack without holes or overlaps", () => {
+    const value = manifest();
+    value.nodes[0].tile.byteOffset = 128;
+    expect(() => decodeGsTileManifest(value)).toThrow(/valid aligned range/);
+  });
+
+  it("resolves a safe pack relative to the manifest", () => {
+    expect(
+      resolveGsTilePackUrl(
+        "https://assets.example/bundle/manifest.json",
+        "packs/r.gst",
+      ),
+    ).toBe("https://assets.example/bundle/packs/r.gst");
+  });
+});

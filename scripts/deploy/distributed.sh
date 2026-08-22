@@ -255,6 +255,8 @@ deploy_distributed() {
             --set-json 'stageJobs.executors.detection.command=["python3","app2-ia/stage_executor.py"]'
             --set-string stageJobs.executors.detection.gpu_architecture=ampere
             --set-json 'stageJobs.executors.detection.tolerations=[{"key":"nvidia.com/gpu","operator":"Equal","value":"present","effect":"NoSchedule"}]'
+            --set-string "stageJobs.executors.gaussian_viewer.image=drone-colmap:$STAGE_JOBS_IMAGE_TAG"
+            --set-json 'stageJobs.executors.gaussian_viewer.command=["python3","app1-colmap/stage_executor.py","gaussian_viewer"]'
         )
     fi
 

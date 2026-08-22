@@ -155,12 +155,16 @@ stageJobs:
       image: "REPLACE_REGISTRY_URL/droneai/drone-ia@sha256:REPLACE_OCI_DIGEST"
       command: ["python3", "app2-ia/stage_executor.py"]
       gpu_architecture: REPLACE_GPU_ARCHITECTURE
+    gaussian_viewer:
+      image: "REPLACE_REGISTRY_URL/droneai/drone-colmap@sha256:REPLACE_OCI_DIGEST"
+      command: ["python3", "app1-colmap/stage_executor.py", "gaussian_viewer"]
   credentialSecrets:
     reconstruction: drone-ai-stage-reconstruction-preprod
     gaussian_training: drone-ai-stage-gaussian-training-preprod
     gaussian_filtering: drone-ai-stage-gaussian-filtering-preprod
     rasterization: drone-ai-stage-rasterization-preprod
     detection: drone-ai-stage-detection-preprod
+    gaussian_viewer: drone-ai-stage-gaussian-viewer-preprod
 
 ingress:
   enabled: true
