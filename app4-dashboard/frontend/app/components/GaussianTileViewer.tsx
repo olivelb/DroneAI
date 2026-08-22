@@ -21,9 +21,19 @@ export type GaussianTileViewerProps = {
 const defaultBackendFactory = () => createPlayCanvasResidentBackend();
 
 const emptyStatistics: GaussianRenderStatistics = {
+  lodState: "steady",
   residentGaussians: 0,
   residentBytes: 0,
   selectedNodes: 0,
+  targetGaussians: 0,
+  targetNodes: 0,
+  pendingNodes: 0,
+  maximumSelectedErrorPixels: 0,
+  effectiveMaximumErrorPixels: 0,
+  selectedExactNodes: 0,
+  selectedProxyNodes: 0,
+  maximumSelectedProxyScreenRadiusPixels: 0,
+  maximumResidentGaussians: 0,
   frameCpuMs: null,
   frameGpuMs: null,
 };
@@ -53,7 +63,9 @@ export default function GaussianTileViewer({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const controller = new AbortController();
-    const scheduler = new GsTileRangeScheduler(4);
+    // Six requests saturate the usual per-origin HTTP/1.1 connection pool
+    // without the burst memory of decoding an unbounded LOD cut concurrently.
+    const scheduler = new GsTileRangeScheduler(6);
     const backend = createBackend();
     let animation = 0;
     let lastDiagnostics = 0;
@@ -106,6 +118,7 @@ export default function GaussianTileViewer({
           scheduler,
           controller.signal,
           descriptor?.packUrls,
+          descriptor?.recommendedView,
         );
         if (controller.signal.aborted) return;
         setStatus("Prêt");
@@ -126,26 +139,65 @@ export default function GaussianTileViewer({
     };
   }, [createBackend, descriptorUrl, manifestUrl]);
 
+  const displayStatus =
+    status === "Prêt" && statistics.lodState === "refining"
+      ? "Préparation atomique…"
+      : status === "Prêt" && statistics.lodState === "budget-limited"
+        ? "Limite GPU atteinte"
+        : status;
+
   return (
     <div
       className={`relative min-h-80 overflow-hidden rounded-2xl bg-[#101816] ${className}`}
       data-testid="gstile-viewer"
       data-status={status}
+      data-lod-state={statistics.lodState}
       data-resident-gaussians={statistics.residentGaussians}
       data-selected-nodes={statistics.selectedNodes}
+      data-target-gaussians={statistics.targetGaussians}
+      data-target-nodes={statistics.targetNodes}
+      data-pending-nodes={statistics.pendingNodes}
+      data-selected-exact-nodes={statistics.selectedExactNodes}
+      data-selected-proxy-nodes={statistics.selectedProxyNodes}
+      data-maximum-proxy-radius-pixels={statistics.maximumSelectedProxyScreenRadiusPixels}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
-        <div className="font-semibold text-white">GSTile · {status}</div>
+        <div className="font-semibold text-white">GSTile · {displayStatus}</div>
         {!error && (
-          <div className="mt-1 flex gap-3 font-mono text-[10px] text-white/60">
-            <span>{formatCount(statistics.residentGaussians)} splats</span>
-            <span>{statistics.selectedNodes} tuiles</span>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-white/60">
+            <span>
+              {formatCount(statistics.residentGaussians)} / {formatCount(statistics.targetGaussians || statistics.residentGaussians)} splats
+            </span>
+            <span>{statistics.selectedNodes} / {statistics.targetNodes || statistics.selectedNodes} tuiles</span>
+            {(statistics.selectedExactNodes > 0 || statistics.selectedProxyNodes > 0) && (
+              <span>
+                {statistics.selectedExactNodes} exactes · {statistics.selectedProxyNodes} proxys
+              </span>
+            )}
+            {statistics.pendingNodes > 0 && <span>{statistics.pendingNodes} en attente</span>}
+            {statistics.maximumSelectedErrorPixels > 0 && (
+              <span>erreur {statistics.maximumSelectedErrorPixels.toFixed(1)} px</span>
+            )}
+            {statistics.maximumSelectedProxyScreenRadiusPixels > 0 && (
+              <span>
+                proxy max Ø {(statistics.maximumSelectedProxyScreenRadiusPixels * 2).toFixed(0)} px
+              </span>
+            )}
+            {statistics.effectiveMaximumErrorPixels > 0 && (
+              <span>SSE {statistics.effectiveMaximumErrorPixels.toFixed(2)} px</span>
+            )}
+            {statistics.maximumResidentGaussians > 0 && (
+              <span>budget {formatCount(statistics.maximumResidentGaussians)}</span>
+            )}
             {statistics.frameGpuMs !== null && (
               <span>{statistics.frameGpuMs.toFixed(1)} ms GPU</span>
             )}
           </div>
         )}
+        <div className="mt-1 text-[9px] text-white/45">
+          Rotation : clic gauche · Déplacement : clic droit ou Maj+glisser · Zoom : molette
+        </div>
       </div>
       {error && (
         <div className="absolute inset-x-4 bottom-4 rounded-xl border border-red-300/30 bg-red-950/85 p-3 text-xs text-red-100">

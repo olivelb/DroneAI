@@ -16,6 +16,13 @@ type QualificationManifest = {
   packs: ManifestPack[];
 };
 
+const saintEtienneFacadeView = {
+  kind: "facade",
+  right: [0.9975430758, -0.0338857647, -0.0613153074],
+  up: [-0.0358895499, -0.9988471697, -0.0318790192],
+  outward: [-0.0601643763, 0.0340012737, -0.9976092227],
+} as const;
+
 const json = (body: unknown, status = 200) => ({
   status,
   contentType: "application/json",
@@ -60,6 +67,7 @@ const descriptor = (
   artifactId: "gstile-qualification-artifact",
   bundleId: manifest.bundleId,
   expiresAt: "2030-01-01T00:00:00Z",
+  recommendedView: saintEtienneFacadeView,
   manifest,
   packs: manifest.packs.map((pack) => ({
     id: pack.id,
@@ -207,7 +215,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     const resident = Number(await viewer.getAttribute("data-resident-gaussians"));
     const selected = Number(await viewer.getAttribute("data-selected-nodes"));
     expect(resident).toBeGreaterThan(0);
-    expect(resident).toBeLessThanOrEqual(2_000_000);
+    expect(resident).toBeLessThanOrEqual(6_000_000);
     expect(selected).toBeGreaterThan(0);
     const adapterInfo = await page.evaluate(async () => {
       const gpu = (
@@ -250,16 +258,72 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       }),
     );
 
+    const canvas = viewer.locator("canvas");
+    const canvasBox = await canvas.boundingBox();
+    expect(canvasBox).not.toBeNull();
+    const beforePan = await canvas.screenshot();
+    await page.keyboard.down("Shift");
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2,
+      canvasBox!.y + canvasBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      canvasBox!.x + canvasBox!.width / 2 + 140,
+      canvasBox!.y + canvasBox!.height / 2 + 60,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+    await page.keyboard.up("Shift");
+    await page.waitForTimeout(300);
+    expect((await canvas.screenshot()).equals(beforePan)).toBe(false);
+    await expect(viewer).toHaveAttribute("data-status", "Prêt");
+    await expect(viewer).not.toHaveAttribute("data-lod-state", "refining", {
+      timeout: 4 * 60_000,
+    });
+    await expect(viewer).toHaveAttribute("data-pending-nodes", "0");
+
     const requestsBeforeZoom = rangeRequestCount();
-    await viewer.locator("canvas").hover();
+    await canvas.hover();
     await page.mouse.wheel(0, -2_400);
     await expect.poll(rangeRequestCount, { timeout: 60_000 }).toBeGreaterThan(
       requestsBeforeZoom,
     );
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
-    expect(
-      Number(await viewer.getAttribute("data-resident-gaussians")),
-    ).toBeLessThanOrEqual(2_000_000);
+    const progressiveResidents: number[] = [];
+    let sawIntermediateCut = false;
+    await expect
+      .poll(
+        async () => {
+          const resident = Number(
+            await viewer.getAttribute("data-resident-gaussians"),
+          );
+          const target = Number(
+            await viewer.getAttribute("data-target-gaussians"),
+          );
+          const pending = Number(await viewer.getAttribute("data-pending-nodes"));
+          expect(resident).toBeLessThanOrEqual(6_000_000);
+          progressiveResidents.push(resident);
+          sawIntermediateCut ||= pending > 0 && resident !== target;
+          return pending;
+        },
+        { timeout: 4 * 60_000, intervals: [250, 500, 1_000] },
+      )
+      .toBe(0);
+    expect(sawIntermediateCut).toBe(true);
+    expect(new Set(progressiveResidents).size).toBeGreaterThan(1);
+    await expect(viewer).not.toHaveAttribute("data-lod-state", "refining");
+    const residentAfterZoom = Number(
+      await viewer.getAttribute("data-resident-gaussians"),
+    );
+    const targetAfterZoom = Number(
+      await viewer.getAttribute("data-target-gaussians"),
+    );
+    expect(residentAfterZoom).toBe(targetAfterZoom);
+    expect(Number(await viewer.getAttribute("data-selected-nodes"))).toBe(
+      Number(await viewer.getAttribute("data-target-nodes")),
+    );
+    expect(residentAfterZoom).toBeLessThanOrEqual(6_000_000);
     console.log(
       JSON.stringify({
         event: "gstile_zoom_reselection",

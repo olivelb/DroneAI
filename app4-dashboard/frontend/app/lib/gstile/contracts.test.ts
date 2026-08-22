@@ -154,6 +154,50 @@ describe("GSTile browser contract", () => {
     );
   });
 
+  it("accepts the spatially stratified replacement-LOD profile", () => {
+    const value = lodManifest();
+    value.profile = "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2";
+    value.statistics.lod = "deterministic-morton-stratified-replacement-v2";
+    const decoded = decodeGsTileManifest(value);
+    expect(decoded.profile).toBe(
+      "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2",
+    );
+  });
+
+  it("accepts the moment-matched replacement-LOD profile", () => {
+    const value = lodManifest();
+    value.profile = "dronegs-sh3-opacity-sh3-q96-moment-lod-v3";
+    value.statistics.lod = "deterministic-morton-moment-matched-v3";
+    const decoded = decodeGsTileManifest(value);
+    expect(decoded.profile).toBe(
+      "dronegs-sh3-opacity-sh3-q96-moment-lod-v3",
+    );
+  });
+
+  it("accepts V4 only with conservative hierarchical render bounds", () => {
+    const value = lodManifest();
+    value.profile = "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4";
+    value.statistics.lod = "deterministic-adaptive-cost-moment-opacity-refit-v4";
+    const adaptiveNodes = value.nodes as Array<
+      (typeof value.nodes)[number] & {
+        renderBounds: { min: number[]; max: number[] };
+      }
+    >;
+    adaptiveNodes.forEach((node) => {
+      node.renderBounds = {
+        min: node.bounds.min.map((coordinate) => coordinate - 0.5),
+        max: node.bounds.max.map((coordinate) => coordinate + 0.5),
+      };
+    });
+    const decoded = decodeGsTileManifest(value);
+    expect(decoded.profile).toBe(
+      "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4",
+    );
+
+    adaptiveNodes[0].renderBounds.max[0] = 1;
+    expect(() => decodeGsTileManifest(value)).toThrow(/renderBounds/);
+  });
+
   it("rejects incomplete LOD proxy coverage", () => {
     const value = lodManifest();
     delete value.nodes[0].lodTile;

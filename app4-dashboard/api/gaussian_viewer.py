@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import Any, Protocol, cast
@@ -47,6 +48,60 @@ def _latest_viewer_artifact(
             detail="Gaussian viewer is not available",
         )
     return artifact
+
+
+def _recommended_view(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    raw = metadata.get("recommended_view")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or raw.get("kind") != "facade":
+        raise ValueError("Gaussian viewer recommended view is invalid")
+
+    def vector(name: str) -> list[float]:
+        value = raw.get(name)
+        if (
+            not isinstance(value, list)
+            or len(value) != 3
+            or any(
+                isinstance(entry, bool)
+                or not isinstance(entry, (int, float))
+                or not math.isfinite(float(entry))
+                for entry in value
+            )
+        ):
+            raise ValueError(f"Gaussian viewer recommended {name} is invalid")
+        return [float(entry) for entry in value]
+
+    right = vector("right")
+    up = vector("up")
+    outward = vector("outward")
+
+    def dot(left: list[float], right_vector: list[float]) -> float:
+        return sum(left[index] * right_vector[index] for index in range(3))
+
+    cross = [
+        right[1] * up[2] - right[2] * up[1],
+        right[2] * up[0] - right[0] * up[2],
+        right[0] * up[1] - right[1] * up[0],
+    ]
+    tolerance = 1e-3
+    if (
+        any(
+            abs(dot(vector_value, vector_value) - 1.0) > tolerance
+            for vector_value in (right, up, outward)
+        )
+        or abs(dot(right, up)) > tolerance
+        or abs(dot(right, outward)) > tolerance
+        or abs(dot(up, outward)) > tolerance
+        or dot(cross, outward) < 1.0 - tolerance
+    ):
+        raise ValueError("Gaussian viewer recommended view is not orthonormal")
+    return {
+        "kind": "facade",
+        "right": right,
+        "up": up,
+        "outward": outward,
+    }
 
 
 def gaussian_viewer_descriptor(
@@ -94,6 +149,7 @@ def gaussian_viewer_descriptor(
             raise ValueError("GSTile bundle identity differs from artifact metadata")
         if payload.get("source", {}).get("sha256") != metadata.get("source_filtered_sha256"):
             raise ValueError("GSTile source identity differs from artifact metadata")
+        recommended_view = _recommended_view(metadata)
         base = PurePosixPath(manifest_relative).parent
         signed_packs: list[dict[str, Any]] = []
         for pack in cast(list[dict[str, Any]], payload["packs"]):
@@ -122,7 +178,7 @@ def gaussian_viewer_descriptor(
             detail=f"Unable to resolve Gaussian viewer artifact: {error}",
         ) from error
 
-    return {
+    descriptor = {
         "schema": "droneai-gaussian-viewer-descriptor",
         "version": 1,
         "artifactId": cast(str, artifact.artifact_id),
@@ -131,3 +187,6 @@ def gaussian_viewer_descriptor(
         "manifest": payload,
         "packs": signed_packs,
     }
+    if recommended_view is not None:
+        descriptor["recommendedView"] = recommended_view
+    return descriptor

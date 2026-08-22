@@ -12,8 +12,20 @@ from typing import Any, cast
 GSTILE_SCHEMA = "droneai-gstile"
 GSTILE_VERSION = 1
 GSTILE_PROFILE = "dronegs-sh3-opacity-sh3-q96"
-GSTILE_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1"
-GSTILE_SUPPORTED_PROFILES = frozenset((GSTILE_PROFILE, GSTILE_LOD_PROFILE))
+GSTILE_MINHASH_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1"
+GSTILE_LOD_PROFILE = GSTILE_MINHASH_LOD_PROFILE
+GSTILE_STRATIFIED_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2"
+GSTILE_MOMENT_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-moment-lod-v3"
+GSTILE_ADAPTIVE_LOD_PROFILE = "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4"
+GSTILE_LOD_PROFILES = frozenset(
+    (
+        GSTILE_MINHASH_LOD_PROFILE,
+        GSTILE_STRATIFIED_LOD_PROFILE,
+        GSTILE_MOMENT_LOD_PROFILE,
+        GSTILE_ADAPTIVE_LOD_PROFILE,
+    )
+)
+GSTILE_SUPPORTED_PROFILES = frozenset((GSTILE_PROFILE, *GSTILE_LOD_PROFILES))
 GSTILE_PACK_HEADER_SIZE = 32
 GSTILE_PACK_RECORD_SIZE = 96
 
@@ -40,7 +52,7 @@ def _validate_manifest_header(
     profile = payload.get("profile")
     if profile not in GSTILE_SUPPORTED_PROFILES:
         raise ValueError("Unsupported GSTile profile")
-    has_lod = profile == GSTILE_LOD_PROFILE
+    has_lod = profile in GSTILE_LOD_PROFILES
     bundle_id = payload.get("bundleId")
     if not isinstance(bundle_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", bundle_id):
         raise ValueError("GSTile bundle identity is invalid")
@@ -99,8 +111,8 @@ def _validate_packs(
     return pack_ids, pack_counts, pack_hashes
 
 
-def _validate_bounds(node: Mapping[str, Any]) -> None:
-    bounds = node.get("bounds")
+def _validate_bounds(node: Mapping[str, Any], field: str = "bounds") -> None:
+    bounds = node.get(field)
     if not isinstance(bounds, Mapping):
         raise ValueError("GSTile node bounds are missing")
     minimum, maximum = bounds.get("min"), bounds.get("max")
@@ -114,7 +126,7 @@ def _validate_bounds(node: Mapping[str, Any]) -> None:
         )
         and all(left <= right for left, right in zip(minimum, maximum, strict=True))
     ):
-        raise ValueError("GSTile node bounds are invalid")
+        raise ValueError(f"GSTile node {field} are invalid")
 
 
 def _validate_tile_reference(
@@ -158,6 +170,7 @@ def _validate_nodes(
     pack_ids: set[str],
     pack_counts: Mapping[str, int],
     pack_hashes: Mapping[str, str],
+    require_render_bounds: bool,
 ) -> tuple[set[str], dict[str, tuple[str, ...]], set[str], int, int, int, int]:
 
     node_ids: set[str] = set()
@@ -188,6 +201,18 @@ def _validate_nodes(
         elif lod_tile is not None:
             raise ValueError("GSTile baseline nodes cannot contain lodTile")
         _validate_bounds(node)
+        if require_render_bounds:
+            _validate_bounds(node, "renderBounds")
+            bounds = cast(Mapping[str, list[float]], node["bounds"])
+            render_bounds = cast(Mapping[str, list[float]], node["renderBounds"])
+            if any(
+                render_bounds["min"][axis] > bounds["min"][axis]
+                or render_bounds["max"][axis] < bounds["max"][axis]
+                for axis in range(3)
+            ):
+                raise ValueError("GSTile renderBounds must contain center bounds")
+        elif node.get("renderBounds") is not None:
+            raise ValueError("GSTile renderBounds require the adaptive V4 profile")
         gaussian_count = node.get("gaussianCount")
         if isinstance(gaussian_count, bool) or not isinstance(gaussian_count, int) or gaussian_count < 1:
             raise ValueError("GSTile node Gaussian count is invalid")
@@ -264,6 +289,7 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
     """Fail closed on incompatible, inconsistent or dangerous manifests."""
 
     has_lod, nodes, packs, source_count = _validate_manifest_header(payload)
+    profile = payload.get("profile")
     pack_ids, pack_counts, pack_hashes = _validate_packs(packs)
     (
         node_ids,
@@ -279,10 +305,26 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
         pack_ids=pack_ids,
         pack_counts=pack_counts,
         pack_hashes=pack_hashes,
+        require_render_bounds=profile == GSTILE_ADAPTIVE_LOD_PROFILE,
     )
 
     root = payload.get("root")
     _validate_hierarchy(node_ids, children_by_node, root)
+    if profile == GSTILE_ADAPTIVE_LOD_PROFILE:
+        nodes_by_id = {
+            cast(str, cast(Mapping[str, Any], node)["id"]): cast(Mapping[str, Any], node)
+            for node in nodes
+        }
+        for parent_id, children in children_by_node.items():
+            parent_bounds = cast(Mapping[str, list[float]], nodes_by_id[parent_id]["renderBounds"])
+            for child_id in children:
+                child_bounds = cast(Mapping[str, list[float]], nodes_by_id[child_id]["renderBounds"])
+                if any(
+                    parent_bounds["min"][axis] > child_bounds["min"][axis]
+                    or parent_bounds["max"][axis] < child_bounds["max"][axis]
+                    for axis in range(3)
+                ):
+                    raise ValueError("GSTile parent renderBounds must contain child renderBounds")
     expected_pack_count = tile_count + lod_tile_count
     if expected_pack_count != len(packs) or referenced_packs != pack_ids or tile_records != source_count:
         raise ValueError("GSTile leaf population does not match the source")
@@ -290,7 +332,18 @@ def validate_gstile_manifest(payload: Mapping[str, Any]) -> None:
         raise ValueError("GSTile LOD proxy population is incomplete")
 
     statistics = payload.get("statistics")
-    expected_lod = "deterministic-minhash-replacement-v1" if has_lod else "leaf-only"
+    expected_lod = (
+        "deterministic-adaptive-cost-moment-opacity-refit-v4"
+        if profile == GSTILE_ADAPTIVE_LOD_PROFILE
+        else "deterministic-morton-moment-matched-v3"
+        if profile == GSTILE_MOMENT_LOD_PROFILE
+        else
+        "deterministic-morton-stratified-replacement-v2"
+        if profile == GSTILE_STRATIFIED_LOD_PROFILE
+        else "deterministic-minhash-replacement-v1"
+        if has_lod
+        else "leaf-only"
+    )
     if not isinstance(statistics, Mapping) or statistics.get("lod") != expected_lod:
         raise ValueError("GSTile LOD statistics are inconsistent")
     if has_lod and (

@@ -8,6 +8,8 @@
  */
 export const DRONEGS_OPACITY_MODIFIER_GLSL = /* glsl */ `
 uniform vec3 uDroneCameraPosition;
+uniform float uDroneLodScaleMultiplier;
+uniform float uDroneLodMaximumScale;
 
 void modifySplatCenter(inout vec3 center) {}
 
@@ -16,7 +18,12 @@ void modifySplatRotationScale(
     vec3 modifiedCenter,
     inout vec4 rotation,
     inout vec3 scale
-) {}
+) {
+    scale = min(
+        scale * uDroneLodScaleMultiplier,
+        vec3(uDroneLodMaximumScale)
+    );
+}
 
 void modifySplatColor(vec3 center, inout vec4 color) {
     vec3 delta = center - uDroneCameraPosition;
@@ -55,6 +62,8 @@ void modifySplatColor(vec3 center, inout vec4 color) {
 
 export const DRONEGS_OPACITY_MODIFIER_WGSL = /* wgsl */ `
 uniform uDroneCameraPosition: vec3f;
+uniform uDroneLodScaleMultiplier: f32;
+uniform uDroneLodMaximumScale: f32;
 
 fn modifySplatCenter(center: ptr<function, vec3f>) {}
 
@@ -63,7 +72,12 @@ fn modifySplatRotationScale(
     modifiedCenter: vec3f,
     rotation: ptr<function, vec4f>,
     scale: ptr<function, vec3f>
-) {}
+) {
+    (*scale) = min(
+        (*scale) * uniform.uDroneLodScaleMultiplier,
+        vec3f(uniform.uDroneLodMaximumScale)
+    );
+}
 
 fn modifySplatColor(center: vec3f, color: ptr<function, vec4f>) {
     let delta = center - uniform.uDroneCameraPosition;
