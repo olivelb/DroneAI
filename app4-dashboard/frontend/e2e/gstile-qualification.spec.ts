@@ -250,17 +250,11 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       }),
     );
 
-    const requestsBeforeOrbit = rangeRequestCount();
-    const box = await viewer.locator("canvas").boundingBox();
-    if (!box) throw new Error("GSTile canvas has no bounding box");
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    await page.mouse.move(box.x + box.width * 0.75, box.y + box.height / 2, {
-      steps: 8,
-    });
-    await page.mouse.up();
+    const requestsBeforeZoom = rangeRequestCount();
+    await viewer.locator("canvas").hover();
+    await page.mouse.wheel(0, -2_400);
     await expect.poll(rangeRequestCount, { timeout: 60_000 }).toBeGreaterThan(
-      requestsBeforeOrbit,
+      requestsBeforeZoom,
     );
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
     expect(
@@ -268,7 +262,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     ).toBeLessThanOrEqual(2_000_000);
     console.log(
       JSON.stringify({
-        event: "gstile_orbit_reselection",
+        event: "gstile_zoom_reselection",
         rangeRequests: rangeRequestCount(),
         residentGaussians: Number(
           await viewer.getAttribute("data-resident-gaussians"),
