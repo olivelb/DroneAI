@@ -262,6 +262,12 @@ scientific contract.
   one-sigma radius. This prevents a covariance-expanded moment proxy with
   nearly unchanged centres from declaring negligible error and remaining
   visibly blurred at close range;
+- proxy SSE also includes its projected screen footprint. A proxy that covers
+  a large part of the viewport is therefore refined even when its stored
+  world-space displacement and covariance errors are both optimistic. This
+  removes the stable sharp-leaf/blurred-proxy rectangles observed at strong
+  zoom; the term is folded into the same global SSE budget instead of adding a
+  camera-specific scientific threshold;
 - selected requests are ordered by projected screen support and keep sibling
   requests contiguous. The range scheduler uses eight concurrent transfers,
   gives an orphaned transfer a 300 ms reuse window across adjacent camera
@@ -275,13 +281,22 @@ scientific contract.
   blendable seam skirt, so committing ready branches progressively exposes a
   visible checkerboard of coarse and exact representations.
 
-Focused evidence currently passes 13 Python tests, the complete 95-test
+Focused evidence currently passes 13 Python tests, the complete 96-test
 frontend suite, linting, typechecking and the production
 Next.js build. A 65,536-to-8,192 proxy benchmark takes 1.82 s with
 the nonlinear fit versus 1.52 s before it. The synthetic directional-opacity
 case reduces mean squared alpha error by about 55% relative to linear SH
 averaging. The production-sized Saint-Etienne build and RTX 4070 camera-path
 captures remain the final fidelity/performance gates.
+
+The RTX 4070 R6 qualification raises the default resident ceiling from
+6,000,000 to 7,000,000 splats. At the reproduced strong-zoom rose-window
+camera, the viewer converged to a complete 171-node cut with 5.7 million
+resident splats and no isolated blurred proxy tile. Under the 7-million-splat
+ceiling Windows reported 7.54 GiB dedicated and 2.21 GiB shared GPU memory;
+Chrome/WebGPU remained operational without a device-loss or out-of-memory
+error. This higher ceiling is an operational viewer setting only and does not
+change the source PLY, proxy construction or scientific content.
 
 ### Phase 4 — adaptive 4K and telemetry
 

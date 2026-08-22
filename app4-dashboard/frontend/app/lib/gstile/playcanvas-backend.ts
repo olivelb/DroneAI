@@ -230,7 +230,7 @@ export const configureHighQualityGsplatRendering = (
   settings.radialSorting = true;
 };
 
-const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 6_000_000;
+const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 7_000_000;
 const DEFAULT_MAXIMUM_PROJECTED_ERROR_PIXELS = 2;
 const OPACITY_STREAM_NAMES = [
   "droneOpacity0",

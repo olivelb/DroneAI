@@ -29,6 +29,12 @@ type ProjectionContext = {
   focalPixels: number;
 };
 
+// A proxy that covers a large screen region must not survive solely because
+// its center/covariance error estimate is optimistic. Express its projected
+// footprint as an additional Cesium-style SSE term: at the nominal 2 px
+// threshold a proxy may cover at most about 128 px in radius.
+const PROXY_SCREEN_RADIUS_ERROR_DIVISOR = 64;
+
 const representationCount = (node: GsTileNode) =>
   node.tile?.recordCount ?? node.lodTile?.recordCount ?? 0;
 
@@ -131,23 +137,33 @@ const projectNode = (node: GsTileNode, context: ProjectionContext) => {
       vertical +
       radius * Math.hypot(1, context.tangentY) >=
       0;
+  const screenRadiusPixels = visible
+    ? (radius * context.focalPixels) / Math.max(depth - radius, 1e-6)
+    : 0;
   const geometricError = Math.max(
     node.geometricError ?? 0,
     lodProxySupportError(node),
   );
+  const geometricErrorPixels =
+    visible && geometricError > 0 && node.children
+      ? (geometricError * context.focalPixels) /
+        Math.max(
+          distanceToBounds(context.cameraPosition, cullingBounds),
+          geometricError,
+        )
+      : 0;
+  const proxyFootprintErrorPixels =
+    visible && node.lodTile && node.children
+      ? Math.min(screenRadiusPixels, context.focalPixels) /
+        PROXY_SCREEN_RADIUS_ERROR_DIVISOR
+      : 0;
   return {
     visible,
-    screenRadiusPixels: visible
-      ? (radius * context.focalPixels) / Math.max(depth - radius, 1e-6)
-      : 0,
-    errorPixels:
-      visible && geometricError > 0 && node.children
-        ? (geometricError * context.focalPixels) /
-          Math.max(
-            distanceToBounds(context.cameraPosition, cullingBounds),
-            geometricError,
-          )
-        : 0,
+    screenRadiusPixels,
+    errorPixels: Math.max(
+      geometricErrorPixels,
+      proxyFootprintErrorPixels,
+    ),
   };
 };
 

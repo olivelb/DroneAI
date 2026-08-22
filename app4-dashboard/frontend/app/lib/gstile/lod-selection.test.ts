@@ -144,6 +144,25 @@ describe("GSTile LOD selection", () => {
     expect(selection.selectedNodeIds).toEqual(["r0", "r1"]);
   });
 
+  it("refines a screen-filling proxy even when all stored world errors are tiny", () => {
+    const value = manifest();
+    const root = value.nodes[0];
+    root.geometricError = 1e-6;
+    root.lodTile!.quantization = {
+      logScale: {
+        min: [Math.log(1e-6), Math.log(1e-6), Math.log(1e-6)],
+        max: [Math.log(1e-6), Math.log(1e-6), Math.log(1e-6)],
+      },
+    } as NonNullable<GsTileNode["lodTile"]>["quantization"];
+
+    const selection = selectGsTileLod(value, {
+      ...options,
+      maximumProjectedErrorPixels: 2,
+    });
+
+    expect(selection.selectedNodeIds).toEqual(["r0", "r1"]);
+  });
+
   it("bounds projected error when the camera is inside an empty node AABB", () => {
     const value = manifest();
     value.nodes[0].bounds = { min: [-10, -10, -10], max: [10, 10, 10] };
