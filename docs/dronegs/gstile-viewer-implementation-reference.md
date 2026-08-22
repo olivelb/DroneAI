@@ -124,6 +124,27 @@ Exit: deterministic measurement/edit tests and cross-view selection parity.
 Exit: stage/API failure isolation, tenant authorization tests and production
 runbook are complete.
 
+Implementation status:
+
+- DAG v2 includes the independent, non-blocking `gaussian_viewer` branch after
+  `gaussian_filtering`; rasterization and detection retain scheduling priority;
+- the CPU-high-memory executor consumes the immutable filtering artifact,
+  reuses the seam-safe resident partition merge when needed, and never repeats
+  DroneGS training or filtering;
+- only the derived GSTile product is published. Artifact edges retain exact
+  input lineage without copying the filtering workspace into the bundle;
+- the owner-scoped API validates the tenant CAS workspace, manifest paths,
+  pack sizes and SHA-256 identities before returning short-lived signed pack
+  URLs; pack bytes are never proxied through the API;
+- Helm production/preproduction contracts, scoped executor secrets, range CORS,
+  cancellation checkpoints, schema migration and non-blocking mission
+  projection are wired and covered by focused tests.
+
+Remaining exit evidence: real S3/OVH range qualification, cancellation during
+a multi-pack build, SaaS quota policy for bundle bytes, operational alerts and
+the production runbook. These platform tasks do not authorize Phase 3 LOD
+approximations; the current artifact remains the loss-bounded leaf-only profile.
+
 ## Non-negotiable separation
 
 Platform changes include storage layout, streaming, caching, scheduler,

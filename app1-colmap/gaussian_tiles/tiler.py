@@ -9,7 +9,7 @@ import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 import numpy as np
 
@@ -33,6 +33,7 @@ class GsTileBuildOptions:
     temporary_root: Path | None = None
     coordinate_origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
     crs: str | None = None
+    cancellation_check: Callable[[], None] | None = None
 
     def validate(self) -> None:
         if not 1_024 <= self.leaf_size <= 1_048_576:
@@ -89,9 +90,16 @@ def _work_dtype(layout: BinaryPlyLayout) -> np.dtype:
     )
 
 
-def _chunks(path: Path, dtype: np.dtype, count: int) -> Iterator[np.ndarray]:
+def _chunks(
+    path: Path,
+    dtype: np.dtype,
+    count: int,
+    cancellation_check: Callable[[], None] | None = None,
+) -> Iterator[np.ndarray]:
     with path.open("rb") as handle:
         while True:
+            if cancellation_check is not None:
+                cancellation_check()
             records = np.fromfile(handle, dtype=dtype, count=count)
             if records.size == 0:
                 return
@@ -112,6 +120,7 @@ def _create_root_work_file(
     layout: BinaryPlyLayout,
     target: Path,
     chunk_records: int,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> _WorkFile:
     dtype = _work_dtype(layout)
     minimum = np.full(3, np.inf, dtype=np.float64)
@@ -121,6 +130,8 @@ def _create_root_work_file(
         input_handle.seek(layout.header_size)
         remaining = layout.vertex_count
         while remaining:
+            if cancellation_check is not None:
+                cancellation_check()
             count = min(chunk_records, remaining)
             records = np.fromfile(input_handle, dtype=layout.dtype, count=count)
             if records.shape[0] != count:
@@ -145,11 +156,16 @@ def _create_root_work_file(
     )
 
 
-def _file_bounds(path: Path, dtype: np.dtype, chunk_records: int) -> tuple[tuple[float, ...], tuple[float, ...], int]:
+def _file_bounds(
+    path: Path,
+    dtype: np.dtype,
+    chunk_records: int,
+    cancellation_check: Callable[[], None] | None = None,
+) -> tuple[tuple[float, ...], tuple[float, ...], int]:
     minimum = np.full(3, np.inf, dtype=np.float64)
     maximum = np.full(3, -np.inf, dtype=np.float64)
     count = 0
-    for records in _chunks(path, dtype, chunk_records):
+    for records in _chunks(path, dtype, chunk_records, cancellation_check):
         chunk_min, chunk_max = _bounds(records)
         minimum = np.minimum(minimum, chunk_min)
         maximum = np.maximum(maximum, chunk_max)
@@ -165,6 +181,7 @@ def _split_work_file(
     node_id: str,
     dtype: np.dtype,
     chunk_records: int,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> tuple[_WorkFile, _WorkFile]:
     extent = np.asarray(item.bounds_max) - np.asarray(item.bounds_min)
     axis = int(np.argmax(extent))
@@ -173,7 +190,7 @@ def _split_work_file(
     right_path = item.path.with_name(f"{node_id}1.work")
     left_count = right_count = 0
     with left_path.open("xb") as left, right_path.open("xb") as right:
-        for records in _chunks(item.path, dtype, chunk_records):
+        for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
             mask = records[("x", "y", "z")[axis]] < midpoint
             left_records, right_records = records[mask], records[~mask]
             left_records.tofile(left)
@@ -188,7 +205,7 @@ def _split_work_file(
         right_count = item.count - left_count
         written = 0
         with left_path.open("xb") as left, right_path.open("xb") as right:
-            for records in _chunks(item.path, dtype, chunk_records):
+            for records in _chunks(item.path, dtype, chunk_records, cancellation_check):
                 left_remaining = max(0, left_count - written)
                 left_part = records[:left_remaining]
                 right_part = records[left_remaining:]
@@ -196,8 +213,12 @@ def _split_work_file(
                 right_part.tofile(right)
                 written += left_part.shape[0]
 
-    left_min, left_max, verified_left = _file_bounds(left_path, dtype, chunk_records)
-    right_min, right_max, verified_right = _file_bounds(right_path, dtype, chunk_records)
+    left_min, left_max, verified_left = _file_bounds(
+        left_path, dtype, chunk_records, cancellation_check
+    )
+    right_min, right_max, verified_right = _file_bounds(
+        right_path, dtype, chunk_records, cancellation_check
+    )
     if verified_left != left_count or verified_right != right_count:
         raise RuntimeError("GSTile partition count changed during split")
     item.path.unlink()
@@ -226,6 +247,8 @@ def build_gstile_bundle(
 
     options = options or GsTileBuildOptions()
     options.validate()
+    if options.cancellation_check is not None:
+        options.cancellation_check()
     source = Path(source_ply).resolve()
     output = Path(output_directory).resolve()
     if not source.is_file():
@@ -276,12 +299,15 @@ def build_gstile_bundle(
             layout,
             build_root / "r.work",
             options.chunk_records,
+            options.cancellation_check,
         )
         nodes: list[dict[str, Any]] = []
         packs: list[dict[str, Any]] = []
         maximum_errors: dict[str, float] = {}
 
         def visit(item: _WorkFile, node_id: str, depth: int) -> None:
+            if options.cancellation_check is not None:
+                options.cancellation_check()
             node: dict[str, Any] = {
                 "id": node_id,
                 "bounds": {"min": list(item.bounds_min), "max": list(item.bounds_max)},
@@ -326,17 +352,20 @@ def build_gstile_bundle(
                 node_id=node_id,
                 dtype=work_dtype,
                 chunk_records=options.chunk_records,
+                cancellation_check=options.cancellation_check,
             )
             node["children"] = [node_id + "0", node_id + "1"]
             visit(left, node_id + "0", depth + 1)
             visit(right, node_id + "1", depth + 1)
 
         visit(root_work, "r", 0)
+        if options.cancellation_check is not None:
+            options.cancellation_check()
         manifest: dict[str, Any] = {
             "schema": GSTILE_SCHEMA,
             "version": GSTILE_VERSION,
             "profile": GSTILE_PROFILE,
-            "bundleId": "sha256:pending",
+            "bundleId": "sha256:" + "0" * 64,
             "source": {
                 "sha256": _sha256(source),
                 "gaussianCount": layout.vertex_count,

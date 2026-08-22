@@ -12,10 +12,12 @@ StageId = Literal[
     "gaussian_filtering",
     "rasterization",
     "detection",
+    "gaussian_viewer",
 ]
 
 ResourceClassId = Literal[
     "cpu-standard",
+    "cpu-high-memory",
     "gpu-standard",
     "gpu-geometry",
     "gpu-high-memory",
@@ -32,13 +34,14 @@ class ResourceClassSpec(TypedDict):
     gpu_count: int
     minimum_vram_gib: int
 
-STAGE_DAG_VERSION = 1
+STAGE_DAG_VERSION = 2
 STAGE_ORDER: tuple[StageId, ...] = (
     "reconstruction",
     "gaussian_training",
     "gaussian_filtering",
     "rasterization",
     "detection",
+    "gaussian_viewer",
 )
 STAGE_DEPENDENCIES: dict[StageId, tuple[StageId, ...]] = {
     "reconstruction": (),
@@ -46,7 +49,12 @@ STAGE_DEPENDENCIES: dict[StageId, tuple[StageId, ...]] = {
     "gaussian_filtering": ("gaussian_training",),
     "rasterization": ("gaussian_filtering",),
     "detection": ("rasterization",),
+    "gaussian_viewer": ("gaussian_filtering",),
 }
+
+# These product branches preserve their own durable failure state and evidence,
+# but do not invalidate scientific products produced by the core pipeline.
+NON_BLOCKING_STAGES: frozenset[StageId] = frozenset({"gaussian_viewer"})
 
 STAGE_ARTIFACT_KINDS: dict[StageId, str] = {
     "reconstruction": "reconstruction_workspace",
@@ -54,6 +62,7 @@ STAGE_ARTIFACT_KINDS: dict[StageId, str] = {
     "gaussian_filtering": "gaussian_filtering_workspace",
     "rasterization": "raster_product_workspace",
     "detection": "detection_workspace",
+    "gaussian_viewer": "gaussian_viewer_bundle",
 }
 
 RESOURCE_CLASSES: dict[ResourceClassId, ResourceClassSpec] = {
@@ -64,6 +73,16 @@ RESOURCE_CLASSES: dict[ResourceClassId, ResourceClassSpec] = {
         "memory_limit": "16Gi",
         "ephemeral_storage_request": "10Gi",
         "ephemeral_storage_limit": "50Gi",
+        "gpu_count": 0,
+        "minimum_vram_gib": 0,
+    },
+    "cpu-high-memory": {
+        "cpu_request": "4",
+        "cpu_limit": "12",
+        "memory_request": "16Gi",
+        "memory_limit": "64Gi",
+        "ephemeral_storage_request": "40Gi",
+        "ephemeral_storage_limit": "200Gi",
         "gpu_count": 0,
         "minimum_vram_gib": 0,
     },
@@ -105,6 +124,7 @@ DEFAULT_STAGE_RESOURCE_CLASSES: dict[StageId, ResourceClassId] = {
     "gaussian_filtering": "gpu-high-memory",
     "rasterization": "gpu-standard",
     "detection": "gpu-standard",
+    "gaussian_viewer": "cpu-high-memory",
 }
 
 # The normal profile is capped at 3M Gaussians. Above that envelope, the
@@ -139,6 +159,40 @@ def resource_class_meets_gpu_envelope(
         candidate_spec["gpu_count"] >= required_spec["gpu_count"]
         and candidate_spec["minimum_vram_gib"]
         >= required_spec["minimum_vram_gib"]
+    )
+
+
+def _resource_quantity(value: str) -> float:
+    suffixes = {"Ki": 1024.0, "Mi": 1024.0**2, "Gi": 1024.0**3}
+    for suffix, multiplier in suffixes.items():
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * multiplier
+    return float(value)
+
+
+def resource_class_meets_envelope(
+    candidate: ResourceClassId,
+    required: ResourceClassId,
+) -> bool:
+    """Return whether every schedulable resource meets the required class."""
+
+    candidate_spec = RESOURCE_CLASSES[candidate]
+    required_spec = RESOURCE_CLASSES[required]
+    quantities = (
+        "cpu_request",
+        "cpu_limit",
+        "memory_request",
+        "memory_limit",
+        "ephemeral_storage_request",
+        "ephemeral_storage_limit",
+    )
+    return bool(
+        all(
+            _resource_quantity(candidate_spec[name])
+            >= _resource_quantity(required_spec[name])
+            for name in quantities
+        )
+        and resource_class_meets_gpu_envelope(candidate, required)
     )
 
 
@@ -186,9 +240,9 @@ def resource_class_for_stage(
         if requested not in RESOURCE_CLASSES:
             raise ValueError(f"Unknown stage resource class: {requested}")
         requested_id = cast(ResourceClassId, requested)
-        if not resource_class_meets_gpu_envelope(requested_id, baseline_id):
+        if not resource_class_meets_envelope(requested_id, baseline_id):
             raise ValueError(
-                f"Resource class {requested} is below the {baseline_id} GPU envelope"
+                f"Resource class {requested} is below the {baseline_id} resource envelope"
             )
         return requested_id
     return baseline_id
@@ -203,6 +257,9 @@ def stage_dag_catalog() -> dict[str, Any]:
                 "dependencies": list(STAGE_DEPENDENCIES[stage]),
                 "artifact_kind": STAGE_ARTIFACT_KINDS[stage],
                 "resource_class": DEFAULT_STAGE_RESOURCE_CLASSES[stage],
+                "failure_policy": (
+                    "independent" if stage in NON_BLOCKING_STAGES else "blocking"
+                ),
             }
             for stage in STAGE_ORDER
         ],

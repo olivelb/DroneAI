@@ -123,6 +123,7 @@ MISSION_STAGE_TYPES = (
     "gaussian_filtering",
     "rasterization",
     "detection",
+    "gaussian_viewer",
 )
 MISSION_STAGE_RUN_STATUSES = (
     "blocked",

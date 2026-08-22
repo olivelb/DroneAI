@@ -46,7 +46,7 @@
 {{- fail "stageJobs.databaseUrlSecretKey must identify a non-owner PostgreSQL role distinct from the operator role in staging and production" }}
 {{- end }}
 {{- $seenCredentialSecrets := dict }}
-{{- range $stage := list "reconstruction" "gaussian_training" "gaussian_filtering" "rasterization" "detection" }}
+{{- range $stage := list "reconstruction" "gaussian_training" "gaussian_filtering" "rasterization" "detection" "gaussian_viewer" }}
 {{- $secretName := index $.Values.stageJobs.credentialSecrets $stage | default "" }}
 {{- if not $secretName }}
 {{- fail (printf "stageJobs.credentialSecrets.%s is required when stage Jobs are enabled in %s" $stage $.Values.dashboardApi.environment) }}
@@ -67,7 +67,7 @@
 {{- if not $executorCommand }}
 {{- fail (printf "stageJobs.executors.%s.command is required in %s" $stage $.Values.dashboardApi.environment) }}
 {{- end }}
-{{- if and (ne $stage "rasterization") (not (get $executor "gpu_architecture")) }}
+{{- if and (ne $stage "rasterization") (ne $stage "gaussian_viewer") (not (get $executor "gpu_architecture")) }}
 {{- fail (printf "stageJobs.executors.%s.gpu_architecture is required in %s" $stage $.Values.dashboardApi.environment) }}
 {{- end }}
 {{- end }}

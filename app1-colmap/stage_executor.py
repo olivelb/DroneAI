@@ -12,6 +12,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from colmap_worker.stage_executor import (
     run_gaussian_filtering_stage,
+    run_gaussian_viewer_stage,
     run_gaussian_training_stage,
     run_rasterization_stage,
     run_reconstruction_stage,
@@ -28,6 +29,7 @@ def main() -> int:
             "gaussian_training",
             "gaussian_filtering",
             "rasterization",
+            "gaussian_viewer",
         ),
     )
     args = parser.parse_args()
@@ -37,8 +39,10 @@ def main() -> int:
         execute_one_shot_stage("gaussian_training", run_gaussian_training_stage)
     elif args.stage == "gaussian_filtering":
         execute_one_shot_stage("gaussian_filtering", run_gaussian_filtering_stage)
-    else:
+    elif args.stage == "rasterization":
         execute_one_shot_stage("rasterization", run_rasterization_stage)
+    else:
+        execute_one_shot_stage("gaussian_viewer", run_gaussian_viewer_stage)
     return 0
 
 

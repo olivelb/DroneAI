@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -103,6 +104,39 @@ def _publish_stage_workspace(
         default_role=f"{stage}-workspace",
         role_overrides=role_overrides,
         parents=tuple(parents),
+        organization_id=context.organization_id,
+        cancellation_check=control.raise_if_cancelled,
+    )
+
+
+def _publish_product_workspace(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+    product_root: Path,
+    *,
+    stage: str,
+    default_role: str,
+    role_overrides: dict[str, str] | None = None,
+) -> PublishedWorkspace:
+    """Publish only a derived product while lineage remains in artifact edges."""
+
+    prefix = context.object_namespace.key(
+        "stage-runs",
+        context.run_id,
+        f"{stage}-workspace",
+    )
+    if not artifact_manifest_v2_write_enabled():
+        return publish_workspace(
+            product_root,
+            prefix,
+            cancellation_check=control.raise_if_cancelled,
+        )
+    return publish_workspace_v2(
+        product_root,
+        prefix,
+        default_role=default_role,
+        role_overrides=role_overrides,
+        parents=(),
         organization_id=context.organization_id,
         cancellation_check=control.raise_if_cancelled,
     )
@@ -665,6 +699,134 @@ def run_rasterization_stage(
                 "profile_id": product.config.dronegs_profile_id,
                 "renderer_contract": result["renderer_contract"],
                 "cupy_version": result["cupy_version"],
+                "workspace_transfer": workspace_transfer_provenance(
+                    published,
+                    restored,
+                ),
+            },
+        )
+    finally:
+        _cleanup_stage_workspace(workspace)
+
+
+def run_gaussian_viewer_stage(
+    context: StageExecutionContext,
+    control: StageExecutionControl,
+) -> StageExecutionResult:
+    """Build an immutable CPU-only GSTile bundle from filtered Gaussians."""
+
+    workspace = _prepare_stage_workspace(context)
+    try:
+        restored = _restore_input_workspace(
+            context,
+            control,
+            workspace,
+            expected_kind="gaussian_filtering_workspace",
+        )
+        preparation, reconstruction, alignment = load_reconstruction_state(workspace)
+        from gaussian_ortho.phase_artifacts import read_filtering_artifact
+        from gaussian_ortho.ply_stream import (
+            PartitionCorePly,
+            merge_partition_buffers_to_ply,
+        )
+        from gaussian_tiles import GsTileBuildOptions, build_gstile_bundle
+
+        from .stages.gaussian import prepare_gaussian_product_run
+
+        product = prepare_gaussian_product_run(
+            preparation,
+            reconstruction,
+            alignment,
+            str(workspace),
+            context.vol_id,
+            prepare_checkpoints=False,
+        )
+        artifact = read_filtering_artifact(workspace, product.config)
+        source_merge: dict[str, Any]
+        if artifact.partition_models:
+            source_path = workspace / ".droneai" / "gaussian-viewer-source.ply"
+            merge = merge_partition_buffers_to_ply(
+                (
+                    PartitionCorePly(partition.bounds, partition.model_path)
+                    for partition in artifact.partition_models
+                ),
+                source_path,
+            )
+            source_merge = {
+                "algorithm": merge.algorithm,
+                "source_vertex_count": merge.source_vertex_count,
+                "viewer_gaussian_count": merge.vertex_count,
+            }
+        else:
+            if artifact.model_path is None:
+                raise RuntimeError("Gaussian filtering artifact has no model")
+            source_path = artifact.model_path
+            source_merge = {
+                "algorithm": "resident-filtered-model-v1",
+                "source_vertex_count": artifact.output_gaussians,
+                "viewer_gaussian_count": artifact.output_gaussians,
+            }
+
+        raw_options = context.parameters.get("gaussian_viewer") or {}
+        if not isinstance(raw_options, dict):
+            raise ValueError("gaussian_viewer stage parameters must be an object")
+        output_root = workspace / ".droneai" / "gaussian-viewer"
+        temporary_root = workspace / ".droneai" / "gaussian-viewer-temporary"
+        result = build_gstile_bundle(
+            source_path,
+            output_root,
+            options=GsTileBuildOptions(
+                leaf_size=int(raw_options.get("leaf_size", 65_536)),
+                chunk_records=int(raw_options.get("chunk_records", 131_072)),
+                maximum_depth=int(raw_options.get("maximum_depth", 48)),
+                temporary_root=temporary_root,
+                cancellation_check=control.raise_if_cancelled,
+            ),
+        )
+        control.raise_if_cancelled()
+        if artifact.partition_models:
+            source_path.unlink()
+        manifest = cast(
+            dict[str, Any],
+            json.loads(result.manifest_path.read_text(encoding="ascii")),
+        )
+        published = _publish_product_workspace(
+            context,
+            control,
+            output_root,
+            stage="gaussian-viewer",
+            default_role="gaussian-viewer-pack",
+            role_overrides={"manifest.json": "gaussian-viewer-manifest"},
+        )
+        return StageExecutionResult(
+            kind="gaussian_viewer_bundle",
+            uri=published.uri,
+            checksum_sha256=published.checksum_sha256,
+            size_bytes=published.size_bytes,
+            metadata={
+                "manifest_key": published.manifest_key,
+                "file_count": published.file_count,
+                "viewer_manifest_file": "manifest.json",
+                "bundle_id": result.bundle_id,
+                "source_filtered_sha256": manifest["source"]["sha256"],
+                "gaussian_count": result.gaussian_count,
+                "leaf_count": result.leaf_count,
+                "pack_bytes": result.pack_bytes,
+                "profile": manifest["profile"],
+                "lod": manifest["statistics"]["lod"],
+            },
+            quality_metrics={
+                "gaussian_count": result.gaussian_count,
+                "leaf_count": result.leaf_count,
+                "bytes_per_gaussian": result.pack_bytes / result.gaussian_count,
+                "maximum_quantization_error": result.maximum_errors,
+                "scientific_qualification": "quantization-bounds-only",
+            },
+            provenance={
+                "stage_adapter": "gaussian-viewer-v1",
+                "tiler_profile": manifest["profile"],
+                "lod_profile": manifest["statistics"]["lod"],
+                "source_merge": source_merge,
                 "workspace_transfer": workspace_transfer_provenance(
                     published,
                     restored,

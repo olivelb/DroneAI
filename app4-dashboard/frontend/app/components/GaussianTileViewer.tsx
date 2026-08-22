@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { apiCredentials } from "../lib/api-client";
 import type {
   GaussianRenderBackend,
   GaussianRenderStatistics,
 } from "../lib/gstile/backend";
 import { decodeGsTileManifest } from "../lib/gstile/contracts";
 import { createPlayCanvasResidentBackend } from "../lib/gstile/playcanvas-backend";
+import { decodeGsTileViewerDescriptor } from "../lib/gstile/descriptor";
 import { GsTileRangeScheduler } from "../lib/gstile/range-source";
 
 export type GaussianTileViewerProps = {
-  manifestUrl: string;
+  manifestUrl?: string;
+  descriptorUrl?: string;
   createBackend?: () => GaussianRenderBackend;
   className?: string;
 };
@@ -36,6 +39,7 @@ const formatCount = (value: number) =>
  */
 export default function GaussianTileViewer({
   manifestUrl,
+  descriptorUrl,
   createBackend = defaultBackendFactory,
   className = "",
 }: GaussianTileViewerProps) {
@@ -74,25 +78,34 @@ export default function GaussianTileViewer({
 
     void (async () => {
       try {
+        if ((manifestUrl ? 1 : 0) + (descriptorUrl ? 1 : 0) !== 1) {
+          throw new Error("Le viewer requiert une source GSTile unique");
+        }
+        const sourceUrl = descriptorUrl ?? manifestUrl!;
         setError(null);
         setStatus("Chargement du manifeste…");
-        const response = await fetch(manifestUrl, {
+        const response = await fetch(sourceUrl, {
           signal: controller.signal,
-          credentials: "same-origin",
+          credentials: descriptorUrl ? apiCredentials() : "same-origin",
         });
         if (!response.ok) {
           throw new Error(`Manifeste GSTile indisponible (HTTP ${response.status})`);
         }
-        const manifest = decodeGsTileManifest(await response.json());
+        const payload: unknown = await response.json();
+        const descriptor = descriptorUrl
+          ? decodeGsTileViewerDescriptor(payload)
+          : null;
+        const manifest = descriptor?.manifest ?? decodeGsTileManifest(payload);
         setStatus("Initialisation du moteur…");
         await backend.initialize(canvas);
         resize();
         setStatus("Chargement progressif…");
         await backend.loadBundle(
-          manifestUrl,
+          sourceUrl,
           manifest,
           scheduler,
           controller.signal,
+          descriptor?.packUrls,
         );
         if (controller.signal.aborted) return;
         setStatus("Prêt");
@@ -111,7 +124,7 @@ export default function GaussianTileViewer({
       observer.disconnect();
       backend.dispose();
     };
-  }, [createBackend, manifestUrl]);
+  }, [createBackend, descriptorUrl, manifestUrl]);
 
   return (
     <div

@@ -28,7 +28,7 @@ jq -n \
       AllowedOrigins: ($origins | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))),
       AllowedMethods: ["PUT", "GET", "HEAD"],
       AllowedHeaders: ["*"],
-      ExposeHeaders: ["ETag"],
+      ExposeHeaders: ["ETag", "Accept-Ranges", "Content-Length", "Content-Range"],
       MaxAgeSeconds: 3600
     }]
   }' > "$cors_file"

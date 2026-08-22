@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Iterable, TypedDict, cast
 
-from shared.stage_contracts import STAGE_ORDER
+from shared.stage_contracts import NON_BLOCKING_STAGES, STAGE_ORDER
 
 from .mission_state import MISSION_PROCESSING_STALE_SECONDS
 
@@ -78,18 +78,32 @@ def project_stage_mission(mission: Any, runs: Iterable[Any]) -> StageMissionProj
     stages = requested or [stage for stage in STAGE_ORDER if stage in latest]
     selected = [latest[stage] for stage in stages]
     statuses = [str(run.status) for run in selected]
+    blocking = [run for run in selected if str(run.stage) not in NON_BLOCKING_STAGES]
+    blocking_statuses = [str(run.status) for run in blocking]
+    terminal_statuses = {"succeeded", "failed"}
 
     if str(mission.status) == "cancelled" or "cancelled" in statuses:
         overall = "cancelled"
-    elif "failed" in statuses:
+    elif "failed" in blocking_statuses:
         overall = "error"
-    elif statuses and all(status == "succeeded" for status in statuses):
+    elif (
+        all(status == "succeeded" for status in blocking_statuses)
+        and all(status in terminal_statuses for status in statuses)
+    ):
         overall = "success"
     else:
         overall = "processing"
 
     weighted_progress = [
-        100 if str(run.status) == "succeeded" else int(run.progress or 0)
+        (
+            100
+            if str(run.status) == "succeeded"
+            or (
+                str(run.stage) in NON_BLOCKING_STAGES
+                and str(run.status) == "failed"
+            )
+            else int(run.progress or 0)
+        )
         for run in selected
     ]
     progress = round(sum(weighted_progress) / len(weighted_progress))

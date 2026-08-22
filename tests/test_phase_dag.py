@@ -167,6 +167,7 @@ def test_default_stage_plan_is_versioned_and_dependency_ordered():
         "gpu-high-memory",
         "gpu-standard",
         "gpu-standard",
+        "cpu-high-memory",
     ]
 
 
@@ -212,7 +213,17 @@ def test_stage_resource_catalog_is_explicit_and_prevents_gpu_downgrades():
         "gaussian_filtering_workspace",
         "raster_product_workspace",
         "detection_workspace",
+        "gaussian_viewer_bundle",
     ]
+    viewer = next(stage for stage in catalog["stages"] if stage["id"] == "gaussian_viewer")
+    assert viewer["dependencies"] == ["gaussian_filtering"]
+    assert viewer["failure_policy"] == "independent"
+    assert resource_class_for_stage("gaussian_viewer") == "cpu-high-memory"
+    with pytest.raises(ValueError, match="below the cpu-high-memory"):
+        resource_class_for_stage(
+            "gaussian_viewer",
+            {"resource_class": "cpu-standard"},
+        )
     assert resource_class_for_stage(
         "detection",
         {"ai": {"backend": "sam3"}},

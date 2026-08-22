@@ -24,6 +24,7 @@ export interface GaussianRenderBackend {
     manifest: GsTileManifest,
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
+    packUrls?: ReadonlyMap<string, string>,
   ): Promise<void>;
   setCamera(camera: GaussianCameraState): void;
   render(timestampMs: number): GaussianRenderStatistics;

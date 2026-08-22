@@ -155,6 +155,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     manifest: GsTileManifest,
     scheduler: GsTileRangeScheduler,
     signal: AbortSignal,
+    packUrls?: ReadonlyMap<string, string>,
   ) {
     const pc = this.#pc;
     const app = this.#app;
@@ -194,7 +195,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       signal.throwIfAborted();
       const nodes = nodesByPack.get(pack.id);
       if (!nodes?.length) continue;
-      const url = resolveGsTilePackUrl(manifestUrl, pack.path);
+      const url =
+        packUrls?.get(pack.id) ?? resolveGsTilePackUrl(manifestUrl, pack.path);
       const content = await scheduler.fetch(
         url,
         { start: 0, length: pack.byteLength },

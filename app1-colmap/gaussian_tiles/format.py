@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import struct
 import zlib
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 
-GSTILE_SCHEMA = "droneai-gstile"
-GSTILE_VERSION = 1
-GSTILE_PROFILE = "dronegs-sh3-opacity-sh3-q96"
+from shared.gstile_manifest import (
+    GSTILE_PACK_HEADER_SIZE,
+    GSTILE_PACK_RECORD_SIZE,
+    GSTILE_PROFILE,
+    GSTILE_SCHEMA,
+    GSTILE_VERSION,
+    canonical_gstile_manifest_bytes,
+    validate_gstile_manifest,
+)
+
 PACK_MAGIC = b"GSTILE1\0"
-PACK_HEADER_SIZE = 32
-PACK_RECORD_SIZE = 96
+PACK_HEADER_SIZE = GSTILE_PACK_HEADER_SIZE
+PACK_RECORD_SIZE = GSTILE_PACK_RECORD_SIZE
 _HEADER = struct.Struct("<8sHHHHIQI")
 
 PACK_DTYPE = np.dtype(
@@ -320,65 +326,8 @@ def decode_pack(content: bytes, quantization: Mapping[str, Any]) -> dict[str, np
     }
 
 
-def _safe_relative_path(value: Any, field: str) -> str:
-    if not isinstance(value, str) or not value or "\\" in value:
-        raise ValueError(f"{field} must be a non-empty POSIX path")
-    path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"{field} escapes the GSTile bundle")
-    return value
-
-
-def validate_manifest(payload: Mapping[str, Any]) -> None:
-    """Fail closed on incompatible or dangerous GSTile manifests."""
-
-    if payload.get("schema") != GSTILE_SCHEMA or payload.get("version") != GSTILE_VERSION:
-        raise ValueError("Unsupported GSTile manifest")
-    if payload.get("profile") != GSTILE_PROFILE:
-        raise ValueError("Unsupported GSTile profile")
-    nodes = payload.get("nodes")
-    packs = payload.get("packs")
-    if not isinstance(nodes, list) or not isinstance(packs, list) or not nodes:
-        raise ValueError("GSTile manifest must contain nodes and packs")
-    pack_ids: set[str] = set()
-    for index, pack in enumerate(packs):
-        if not isinstance(pack, Mapping):
-            raise ValueError("GSTile pack entry must be an object")
-        pack_id = pack.get("id")
-        if not isinstance(pack_id, str) or pack_id in pack_ids:
-            raise ValueError("GSTile pack ids must be unique strings")
-        pack_ids.add(pack_id)
-        _safe_relative_path(pack.get("path"), f"packs[{index}].path")
-        if not isinstance(pack.get("byteLength"), int) or pack["byteLength"] < PACK_HEADER_SIZE:
-            raise ValueError("GSTile pack byte length is invalid")
-    node_ids: set[str] = set()
-    for node in nodes:
-        if not isinstance(node, Mapping) or not isinstance(node.get("id"), str):
-            raise ValueError("GSTile node entry is invalid")
-        if node["id"] in node_ids:
-            raise ValueError("GSTile node ids must be unique")
-        node_ids.add(node["id"])
-        children, tile = node.get("children"), node.get("tile")
-        if (children is None) == (tile is None):
-            raise ValueError("GSTile node must contain exactly children or tile")
-        bounds = node.get("bounds")
-        if not isinstance(bounds, Mapping):
-            raise ValueError("GSTile node bounds are missing")
-        minimum, maximum = bounds.get("min"), bounds.get("max")
-        if not (
-            isinstance(minimum, list)
-            and isinstance(maximum, list)
-            and len(minimum) == len(maximum) == 3
-            and all(isinstance(value, (int, float)) and math.isfinite(value) for value in minimum + maximum)
-            and all(left <= right for left, right in zip(minimum, maximum))
-        ):
-            raise ValueError("GSTile node bounds are invalid")
-        if tile is not None and (not isinstance(tile, Mapping) or tile.get("pack") not in pack_ids):
-            raise ValueError("GSTile tile references an unknown pack")
-    if payload.get("root") not in node_ids:
-        raise ValueError("GSTile root node is unknown")
+validate_manifest = validate_gstile_manifest
 
 
 def canonical_manifest_bytes(payload: Mapping[str, Any]) -> bytes:
-    validate_manifest(payload)
-    return (json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
+    return canonical_gstile_manifest_bytes(payload)

@@ -490,6 +490,7 @@ jobs:
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_viewer.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           > /tmp/drone-ai-production.yaml
       - name: Render OVHcloud preproduction values
         run: >-
@@ -503,6 +504,7 @@ jobs:
           --set-string stageJobs.executors.gaussian_filtering.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.rasterization.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           --set-string stageJobs.executors.detection.image="registry.example.com/drone-ia@${CI_OCI_DIGEST}"
+          --set-string stageJobs.executors.gaussian_viewer.image="registry.example.com/drone-colmap@${CI_OCI_DIGEST}"
           > /tmp/drone-ai-ovh-preprod.yaml
       - name: Verify production storage Secret references
         run: |

@@ -60,6 +60,7 @@ from ..security import (
 )
 from ..stage_orchestrator import stage_jobs_enabled
 from .mission_catalog import router as mission_catalog_router
+from .mission_gaussians import router as mission_gaussians_router
 from .mission_stages import router as mission_stages_router
 
 router = APIRouter(
@@ -67,6 +68,7 @@ router = APIRouter(
     dependencies=[Depends(bind_tenant_context)],
 )
 router.include_router(mission_catalog_router)
+router.include_router(mission_gaussians_router)
 router.include_router(mission_stages_router)
 
 

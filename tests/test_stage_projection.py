@@ -116,6 +116,27 @@ def test_stage_projection_surfaces_failure_before_blocked_downstream_stage():
     assert result["current_step"] == "RASTERIZATION · FAILED"
 
 
+def test_optional_viewer_failure_preserves_completed_core_mission():
+    now = datetime.now(UTC)
+    mission = SimpleNamespace(
+        status="pending",
+        params={"phases": ["rasterization", "detection", "gaussian_viewer"]},
+        updated_at=now,
+    )
+    runs = [
+        _run(1, "rasterization", "succeeded", progress=100, completed_at=now),
+        _run(2, "detection", "succeeded", progress=100, completed_at=now),
+        _run(3, "gaussian_viewer", "failed", completed_at=now),
+    ]
+
+    result = projection.project_stage_mission(mission, runs)
+
+    assert result is not None
+    assert result["overall_status"] == "success"
+    assert result["progress"] == 100
+    assert result["current_step"] == "GAUSSIAN_VIEWER · FAILED"
+
+
 def test_operator_parameters_hide_yolo_choice_from_sam3_projection():
     mission = projection.operator_parameters(
         {"ai_backend": "sam3", "ai_model_variant": "yolo26l"}

@@ -48,6 +48,7 @@ def _executors():
             "gaussian_filtering",
             "rasterization",
             "detection",
+            "gaussian_viewer",
         )
     }
 

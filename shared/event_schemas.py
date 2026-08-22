@@ -69,7 +69,11 @@ class MissionEvent(EventEnvelope):
     colmap_params: JsonObject | None = None
     work_drive: str | None = Field(default=None, max_length=256)
     owner_subject: str | None = Field(default=None, max_length=256)
-    phases: list[StageId] | None = Field(default=None, min_length=1, max_length=5)
+    phases: list[StageId] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=len(STAGE_ORDER),
+    )
     stage_run_id: str | None = Field(default=None, max_length=36)
     upstream_artifact_ids: dict[StageId, str] | None = None
     stage_parameters: JsonObject | None = None
