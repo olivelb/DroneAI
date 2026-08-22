@@ -215,7 +215,7 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     const resident = Number(await viewer.getAttribute("data-resident-gaussians"));
     const selected = Number(await viewer.getAttribute("data-selected-nodes"));
     expect(resident).toBeGreaterThan(0);
-    expect(resident).toBeLessThanOrEqual(2_000_000);
+    expect(resident).toBeLessThanOrEqual(6_000_000);
     expect(selected).toBeGreaterThan(0);
     const adapterInfo = await page.evaluate(async () => {
       const gpu = (
@@ -278,6 +278,10 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
     await page.waitForTimeout(300);
     expect((await canvas.screenshot()).equals(beforePan)).toBe(false);
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
+    await expect(viewer).not.toHaveAttribute("data-lod-state", "refining", {
+      timeout: 4 * 60_000,
+    });
+    await expect(viewer).toHaveAttribute("data-pending-nodes", "0");
 
     const requestsBeforeZoom = rangeRequestCount();
     await canvas.hover();
@@ -286,9 +290,40 @@ test("streams the real hierarchical Saint-Etienne bundle without an incomplete c
       requestsBeforeZoom,
     );
     await expect(viewer).toHaveAttribute("data-status", "Prêt");
-    expect(
-      Number(await viewer.getAttribute("data-resident-gaussians")),
-    ).toBeLessThanOrEqual(2_000_000);
+    const progressiveResidents: number[] = [];
+    let sawIntermediateCut = false;
+    await expect
+      .poll(
+        async () => {
+          const resident = Number(
+            await viewer.getAttribute("data-resident-gaussians"),
+          );
+          const target = Number(
+            await viewer.getAttribute("data-target-gaussians"),
+          );
+          const pending = Number(await viewer.getAttribute("data-pending-nodes"));
+          expect(resident).toBeLessThanOrEqual(6_000_000);
+          progressiveResidents.push(resident);
+          sawIntermediateCut ||= pending > 0 && resident !== target;
+          return pending;
+        },
+        { timeout: 4 * 60_000, intervals: [250, 500, 1_000] },
+      )
+      .toBe(0);
+    expect(sawIntermediateCut).toBe(true);
+    expect(new Set(progressiveResidents).size).toBeGreaterThan(1);
+    await expect(viewer).not.toHaveAttribute("data-lod-state", "refining");
+    const residentAfterZoom = Number(
+      await viewer.getAttribute("data-resident-gaussians"),
+    );
+    const targetAfterZoom = Number(
+      await viewer.getAttribute("data-target-gaussians"),
+    );
+    expect(residentAfterZoom).toBe(targetAfterZoom);
+    expect(Number(await viewer.getAttribute("data-selected-nodes"))).toBe(
+      Number(await viewer.getAttribute("data-target-nodes")),
+    );
+    expect(residentAfterZoom).toBeLessThanOrEqual(6_000_000);
     console.log(
       JSON.stringify({
         event: "gstile_zoom_reselection",

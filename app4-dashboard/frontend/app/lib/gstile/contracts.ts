@@ -17,6 +17,18 @@ export const GSTILE_VERSION = 1;
 export const GSTILE_PROFILE = "dronegs-sh3-opacity-sh3-q96";
 export const GSTILE_LOD_PROFILE =
   "dronegs-sh3-opacity-sh3-q96-minhash-lod-v1";
+export const GSTILE_STRATIFIED_LOD_PROFILE =
+  "dronegs-sh3-opacity-sh3-q96-stratified-lod-v2";
+export const GSTILE_MOMENT_LOD_PROFILE =
+  "dronegs-sh3-opacity-sh3-q96-moment-lod-v3";
+export const GSTILE_ADAPTIVE_LOD_PROFILE =
+  "dronegs-sh3-opacity-sh3-q96-adaptive-lod-v4";
+
+export const isGsTileLodProfile = (profile: string) =>
+  profile === GSTILE_LOD_PROFILE ||
+  profile === GSTILE_STRATIFIED_LOD_PROFILE ||
+  profile === GSTILE_MOMENT_LOD_PROFILE ||
+  profile === GSTILE_ADAPTIVE_LOD_PROFILE;
 
 export type Vec3 = [number, number, number];
 
@@ -35,6 +47,7 @@ export type GsTileQuantization = {
 export type GsTileNode = {
   id: string;
   bounds: { min: Vec3; max: Vec3 };
+  renderBounds?: { min: Vec3; max: Vec3 };
   gaussianCount: number;
   geometricError?: number;
   children?: [string, string];
@@ -69,7 +82,12 @@ export type GsTilePack = {
 export type GsTileManifest = {
   schema: typeof GSTILE_SCHEMA;
   version: typeof GSTILE_VERSION;
-  profile: typeof GSTILE_PROFILE | typeof GSTILE_LOD_PROFILE;
+  profile:
+    | typeof GSTILE_PROFILE
+    | typeof GSTILE_LOD_PROFILE
+    | typeof GSTILE_STRATIFIED_LOD_PROFILE
+    | typeof GSTILE_MOMENT_LOD_PROFILE
+    | typeof GSTILE_ADAPTIVE_LOD_PROFILE;
   bundleId: string;
   source: {
     sha256: string;
@@ -155,6 +173,7 @@ const nodeValidator = objectWith(
   },
   {
     children: childPair,
+    renderBounds: boundsValidator,
     tile: tileValidator,
     lodTile: tileValidator,
     geometricError: numberValue,
@@ -175,7 +194,13 @@ const structuralDecoder = decoder<GsTileManifest>(
   objectWith({
     schema: oneOf(GSTILE_SCHEMA),
     version: oneOf(GSTILE_VERSION),
-    profile: oneOf(GSTILE_PROFILE, GSTILE_LOD_PROFILE),
+    profile: oneOf(
+      GSTILE_PROFILE,
+      GSTILE_LOD_PROFILE,
+      GSTILE_STRATIFIED_LOD_PROFILE,
+      GSTILE_MOMENT_LOD_PROFILE,
+      GSTILE_ADAPTIVE_LOD_PROFILE,
+    ),
     bundleId: nonEmptyString,
     source: objectWith({
       sha256: nonEmptyString,
@@ -271,7 +296,7 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
     );
   }
   const rangesByPack = new Map<string, Array<{ start: number; end: number }>>();
-  const hasLod = manifest.profile === GSTILE_LOD_PROFILE;
+  const hasLod = isGsTileLodProfile(manifest.profile);
   let proxyCount = 0;
   let proxyRecords = 0;
 
@@ -343,6 +368,30 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
         );
       }
     });
+    const requiresRenderBounds =
+      manifest.profile === GSTILE_ADAPTIVE_LOD_PROFILE;
+    if (requiresRenderBounds !== (node.renderBounds !== undefined)) {
+      throw new ResponseContractError(
+        "GSTile manifest",
+        `$.nodes.${node.id}.renderBounds`,
+        requiresRenderBounds
+          ? "conservative V4 render bounds"
+          : "absent outside V4",
+      );
+    }
+    node.renderBounds?.min.forEach((minimum, index) => {
+      if (
+        minimum > node.renderBounds!.max[index] ||
+        minimum > node.bounds.min[index] ||
+        node.renderBounds!.max[index] < node.bounds.max[index]
+      ) {
+        throw new ResponseContractError(
+          "GSTile manifest",
+          `$.nodes.${node.id}.renderBounds`,
+          "ordered bounds containing Gaussian centers",
+        );
+      }
+    });
     node.children?.forEach((child) => {
       if (!nodeIds.has(child)) {
         throw new ResponseContractError(
@@ -350,6 +399,23 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
           `$.nodes.${node.id}.children`,
           "known node ids",
         );
+      }
+      if (node.renderBounds) {
+        const childBounds = nodesById.get(child)?.renderBounds;
+        if (
+          !childBounds ||
+          childBounds.min.some(
+            (minimum, index) =>
+              minimum < node.renderBounds!.min[index] ||
+              childBounds.max[index] > node.renderBounds!.max[index],
+          )
+        ) {
+          throw new ResponseContractError(
+            "GSTile manifest",
+            `$.nodes.${node.id}.renderBounds`,
+            "bounds containing every child render support",
+          );
+        }
       }
     });
     if (node.tile) validateTile(node, node.tile, "tile");
@@ -360,9 +426,16 @@ export const decodeGsTileManifest = (value: unknown): GsTileManifest => {
     }
   });
 
-  const expectedLod = hasLod
-    ? "deterministic-minhash-replacement-v1"
-    : "leaf-only";
+  const expectedLod =
+    manifest.profile === GSTILE_ADAPTIVE_LOD_PROFILE
+      ? "deterministic-adaptive-cost-moment-opacity-refit-v4"
+      : manifest.profile === GSTILE_MOMENT_LOD_PROFILE
+      ? "deterministic-morton-moment-matched-v3"
+      : manifest.profile === GSTILE_STRATIFIED_LOD_PROFILE
+      ? "deterministic-morton-stratified-replacement-v2"
+      : hasLod
+        ? "deterministic-minhash-replacement-v1"
+        : "leaf-only";
   if (
     manifest.statistics.lod !== expectedLod ||
     (hasLod &&

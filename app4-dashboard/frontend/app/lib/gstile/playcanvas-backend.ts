@@ -6,10 +6,12 @@ import type {
 } from "./backend";
 import { GaussianBackendUnavailable } from "./backend";
 import {
-  GSTILE_LOD_PROFILE,
   type GsTileManifest,
   type GsTileNode,
   type Vec3,
+  GSTILE_ADAPTIVE_LOD_PROFILE,
+  GSTILE_MOMENT_LOD_PROFILE,
+  isGsTileLodProfile,
 } from "./contracts";
 import { resolveGsTilePackUrl } from "./contracts";
 import {
@@ -35,6 +37,166 @@ type LoadedTile = {
   gaussianCount: number;
   byteLength: number;
 };
+type PreparedTile = {
+  pc: Pc;
+  app: PcApplication;
+  decoded: DecodedGsTile;
+  origin: Vec3;
+  node: GsTileNode;
+  byteLength: number;
+};
+export type LodTransitionGroup = {
+  addNodeIds: string[];
+  removeNodeIds: string[];
+};
+
+export const lodTransitionCounts = (
+  transition: LodTransitionGroup,
+  residentGaussianCount: (nodeId: string) => number | undefined,
+  stagedGaussianCount: (nodeId: string) => number | undefined,
+) => ({
+  add: transition.addNodeIds.reduce(
+    (total, nodeId) =>
+      total +
+      (residentGaussianCount(nodeId) === undefined
+        ? (stagedGaussianCount(nodeId) ?? 0)
+        : 0),
+    0,
+  ),
+  remove: transition.removeNodeIds.reduce(
+    (total, nodeId) => total + (residentGaussianCount(nodeId) ?? 0),
+    0,
+  ),
+});
+
+export const completeLodTargetPlan = (
+  currentNodeIds: Iterable<string>,
+  targetNodeIds: Iterable<string>,
+  residentGaussianCount: (nodeId: string) => number | undefined,
+  stagedGaussianCount: (nodeId: string) => number | undefined,
+) => {
+  const target = new Set(targetNodeIds);
+  const addNodeIds: string[] = [];
+  let gaussianCount = 0;
+  let complete = true;
+  for (const nodeId of target) {
+    const resident = residentGaussianCount(nodeId);
+    const staged = stagedGaussianCount(nodeId);
+    if (resident === undefined && staged === undefined) {
+      complete = false;
+      continue;
+    }
+    gaussianCount += resident ?? staged ?? 0;
+    if (resident === undefined) addNodeIds.push(nodeId);
+  }
+  return {
+    complete,
+    gaussianCount,
+    addNodeIds,
+    removeNodeIds: [...currentNodeIds].filter((nodeId) => !target.has(nodeId)),
+  };
+};
+
+export const planLodTransitions = (
+  manifest: GsTileManifest,
+  currentNodeIds: Iterable<string>,
+  targetNodeIds: Iterable<string>,
+): LodTransitionGroup[] => {
+  const current = new Set(currentNodeIds);
+  const target = new Set(targetNodeIds);
+  const parents = new Map<string, string>();
+  for (const node of manifest.nodes) {
+    for (const child of node.children ?? []) parents.set(child, node.id);
+  }
+  const isAncestor = (ancestor: string, descendant: string) => {
+    let cursor = parents.get(descendant);
+    while (cursor !== undefined) {
+      if (cursor === ancestor) return true;
+      cursor = parents.get(cursor);
+    }
+    return false;
+  };
+  const groups = new Map<string, LodTransitionGroup>();
+  for (const nodeId of target) {
+    if (current.has(nodeId)) continue;
+    let ancestor = parents.get(nodeId);
+    while (ancestor !== undefined && !current.has(ancestor)) {
+      ancestor = parents.get(ancestor);
+    }
+    if (ancestor !== undefined) {
+      const key = `refine:${ancestor}`;
+      const group = groups.get(key) ?? {
+        addNodeIds: [],
+        removeNodeIds: [ancestor],
+      };
+      group.addNodeIds.push(nodeId);
+      groups.set(key, group);
+      continue;
+    }
+    const descendants = [...current].filter((candidate) =>
+      isAncestor(nodeId, candidate),
+    );
+    if (descendants.length > 0) {
+      groups.set(`coarsen:${nodeId}`, {
+        addNodeIds: [nodeId],
+        removeNodeIds: descendants,
+      });
+      continue;
+    }
+    groups.set(`add:${nodeId}`, {
+      addNodeIds: [nodeId],
+      removeNodeIds: [],
+    });
+  }
+  return [...groups.values()];
+};
+
+export const prioritizeLodLoads = (
+  transitions: readonly LodTransitionGroup[],
+  targetNodeIds: readonly string[],
+  residentNodeIds: Iterable<string>,
+) => {
+  const resident = new Set(residentNodeIds);
+  const targetRank = new Map(
+    targetNodeIds.map((nodeId, index) => [nodeId, index]),
+  );
+  const scheduled = new Set<string>();
+  const ordered: string[] = [];
+  const groups = transitions
+    .map((transition) => {
+      const missing = transition.addNodeIds
+        .filter((nodeId) => !resident.has(nodeId))
+        .sort(
+          (left, right) =>
+            (targetRank.get(left) ?? Number.MAX_SAFE_INTEGER) -
+            (targetRank.get(right) ?? Number.MAX_SAFE_INTEGER),
+        );
+      return {
+        missing,
+        rank: Math.min(
+          ...missing.map(
+            (nodeId) => targetRank.get(nodeId) ?? Number.MAX_SAFE_INTEGER,
+          ),
+        ),
+      };
+    })
+    .filter((group) => group.missing.length > 0)
+    .sort((left, right) => left.rank - right.rank);
+  for (const group of groups) {
+    for (const nodeId of group.missing) {
+      if (scheduled.has(nodeId)) continue;
+      scheduled.add(nodeId);
+      ordered.push(nodeId);
+    }
+  }
+  for (const nodeId of targetNodeIds) {
+    if (resident.has(nodeId) || scheduled.has(nodeId)) continue;
+    scheduled.add(nodeId);
+    ordered.push(nodeId);
+  }
+  return ordered;
+};
+
 
 export type PlayCanvasResidentBackendOptions = {
   /** Hard safety gate. Hierarchical LOD must be used beyond this resident baseline. */
@@ -43,7 +205,32 @@ export type PlayCanvasResidentBackendOptions = {
   background?: [number, number, number];
 };
 
-const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 2_000_000;
+type GsplatQualitySettings = {
+  antiAlias: boolean;
+  alphaClip: number;
+  colorUpdateAngle: number;
+  dataFormat: string;
+  minContribution: number;
+  minPixelSize: number;
+  radialSorting: boolean;
+  renderer: number;
+};
+
+export const configureHighQualityGsplatRendering = (
+  settings: GsplatQualitySettings,
+  values: { dataFormat: string; renderer: number },
+) => {
+  settings.dataFormat = values.dataFormat;
+  settings.renderer = values.renderer;
+  settings.colorUpdateAngle = 0;
+  settings.antiAlias = true;
+  settings.minContribution = 0.05;
+  settings.minPixelSize = 0.5;
+  settings.alphaClip = 1 / 255;
+  settings.radialSorting = true;
+};
+
+const DEFAULT_MAXIMUM_RESIDENT_GAUSSIANS = 6_000_000;
 const DEFAULT_MAXIMUM_PROJECTED_ERROR_PIXELS = 2;
 const OPACITY_STREAM_NAMES = [
   "droneOpacity0",
@@ -86,6 +273,15 @@ const combine = (
   first[0] * firstScale + second[0] * secondScale + third[0] * thirdScale,
   first[1] * firstScale + second[1] * secondScale + third[1] * thirdScale,
   first[2] * firstScale + second[2] * secondScale + third[2] * thirdScale,
+];
+
+export const coordinateFrameCameraPosition = (
+  cameraPosition: readonly number[],
+  origin: readonly number[],
+): Vec3 => [
+  cameraPosition[0] + origin[0],
+  cameraPosition[1] + origin[1],
+  cameraPosition[2] + origin[2],
 ];
 
 export const orbitCameraBasis = (
@@ -187,10 +383,10 @@ export const panOrbitTarget = (
   ];
 };
 
-export const lodProxyCoverage = (node: GsTileNode) => {
+export const lodProxyCoverage = (node: GsTileNode, inflateReplacementProxy = true) => {
   const representation = node.tile ?? node.lodTile;
   const isProxy = node.tile === undefined && node.lodTile !== undefined;
-  if (!representation || !isProxy) {
+  if (!representation || !isProxy || !inflateReplacementProxy) {
     return { multiplier: 1, maximumScale: Number.MAX_VALUE };
   }
   const sampleCount = Math.max(representation.recordCount, 1);
@@ -232,12 +428,18 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #residentGaussians = 0;
   #residentBytes = 0;
   #selectedNodes = 0;
+  #targetGaussians = 0;
+  #targetNodes = 0;
+  #pendingNodes = 0;
+  #maximumSelectedErrorPixels = 0;
+  #lodState: GaussianRenderStatistics["lodState"] = "steady";
   #lastTimestampMs: number | null = null;
   #target: Vec3 = [0, 0, 0];
   #yaw = 0;
   #pitch = 0;
   #distance = 1;
   #viewFrame = DEFAULT_VIEW_FRAME;
+  #coordinateOrigin: Vec3 = [0, 0, 0];
   #pointerId: number | null = null;
   #pointerX = 0;
   #pointerY = 0;
@@ -257,6 +459,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   #lodUpdateTimer: ReturnType<typeof setTimeout> | null = null;
   #viewportWidth = 1;
   #viewportHeight = 1;
+  #lodUsesMomentMatchedProxies = false;
+  #verifiedPackBuffers = new WeakSet<ArrayBuffer>();
 
   constructor(options: PlayCanvasResidentBackendOptions = {}) {
     this.#maximumResidentGaussians =
@@ -301,9 +505,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     }
 
     const app = new pc.Application(canvas, { graphicsDevice: device });
-    app.scene.gsplat.dataFormat = pc.GSPLATDATA_LARGE;
-    app.scene.gsplat.renderer = pc.GSPLAT_RENDERER_RASTER_GPU_SORT;
-    app.scene.gsplat.colorUpdateAngle = 0;
+    configureHighQualityGsplatRendering(app.scene.gsplat, {
+      dataFormat: pc.GSPLATDATA_LARGE,
+      renderer: pc.GSPLAT_RENDERER_RASTER_GPU_SORT,
+    });
 
     const camera = new pc.Entity("GSTile camera");
     camera.addComponent("camera", {
@@ -336,7 +541,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const pc = this.#pc;
     const app = this.#app;
     if (!pc || !app) throw new Error("PlayCanvas GSTile backend is not initialized");
-    const hasLod = manifest.profile === GSTILE_LOD_PROFILE;
+    const hasLod = isGsTileLodProfile(manifest.profile);
     if (!hasLod && manifest.source.gaussianCount > this.#maximumResidentGaussians) {
       throw new GaussianBackendUnavailable(
         `Le profil résident est limité à ${this.#maximumResidentGaussians.toLocaleString()} splats; ` +
@@ -347,6 +552,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const root = manifest.nodes.find((node) => node.id === manifest.root);
     if (!root) throw new Error("GSTile root node is missing");
     const origin = manifest.coordinateFrame.origin;
+    this.#coordinateOrigin = [...origin];
     const target = centerOf(root.bounds.min, root.bounds.max);
     this.#target = [
       target[0] - origin[0],
@@ -365,6 +571,9 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#updateCameraPose();
 
     if (hasLod) {
+      this.#lodUsesMomentMatchedProxies =
+        manifest.profile === GSTILE_MOMENT_LOD_PROFILE ||
+        manifest.profile === GSTILE_ADAPTIVE_LOD_PROFILE;
       this.#lodManifest = manifest;
       this.#lodManifestUrl = manifestUrl;
       this.#lodScheduler = scheduler;
@@ -505,6 +714,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     this.#lodSignal = null;
     this.#lodSelectionKey = "";
     this.#lodPendingKey = "";
+    this.#targetGaussians = 0;
+    this.#targetNodes = 0;
+    this.#pendingNodes = 0;
+    this.#maximumSelectedErrorPixels = 0;
+    this.#lodState = "steady";
+    this.#lodUsesMomentMatchedProxies = false;
+    this.#coordinateOrigin = [0, 0, 0];
+    this.#verifiedPackBuffers = new WeakSet<ArrayBuffer>();
   }
 
   #addTileResource(
@@ -560,7 +777,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       glsl: DRONEGS_OPACITY_MODIFIER_GLSL,
       wgsl: DRONEGS_OPACITY_MODIFIER_WGSL,
     });
-    const coverage = lodProxyCoverage(node);
+    const coverage = lodProxyCoverage(node, !this.#lodUsesMomentMatchedProxies);
     entity.gsplat.setParameter(
       "uDroneLodScaleMultiplier",
       coverage.multiplier,
@@ -568,11 +785,13 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     entity.gsplat.setParameter("uDroneLodMaximumScale", coverage.maximumScale);
     const cameraPosition = this.#camera?.getPosition();
     if (cameraPosition) {
-      entity.gsplat.setParameter("uDroneCameraPosition", [
-        cameraPosition.x,
-        cameraPosition.y,
-        cameraPosition.z,
-      ]);
+      entity.gsplat.setParameter(
+        "uDroneCameraPosition",
+        coordinateFrameCameraPosition(
+          [cameraPosition.x, cameraPosition.y, cameraPosition.z],
+          origin,
+        ),
+      );
       entity.gsplat.workBufferUpdate = pc.WORKBUFFER_UPDATE_ONCE;
     }
     app.root.addChild(entity);
@@ -623,6 +842,8 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const canvas = this.#canvas;
     if (!manifest || !camera?.camera || !canvas) return null;
     const position = camera.getPosition();
+    const forward = camera.forward;
+    const up = camera.up;
     const origin = manifest.coordinateFrame.origin;
     return selectGsTileLod(manifest, {
       cameraPosition: [
@@ -630,7 +851,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         position.y + origin[1],
         position.z + origin[2],
       ],
+      cameraDirection: [forward.x, forward.y, forward.z],
+      cameraUp: [up.x, up.y, up.z],
       verticalFovRadians: (camera.camera.fov * Math.PI) / 180,
+      viewportWidth: Math.max(canvas.width, 1),
       viewportHeight: Math.max(canvas.height, 1),
       maximumResidentGaussians: this.#maximumResidentGaussians,
       maximumProjectedErrorPixels: this.#maximumProjectedErrorPixels,
@@ -640,7 +864,7 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
   async #loadLodTile(
     node: GsTileNode,
     signal: AbortSignal,
-  ): Promise<LoadedTile> {
+  ): Promise<PreparedTile> {
     const pc = this.#pc;
     const app = this.#app;
     const manifest = this.#lodManifest;
@@ -660,12 +884,15 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       { start: 0, length: pack.byteLength },
       signal,
     );
-    const actualSha256 = await sha256(content);
-    if (
-      actualSha256 !== pack.sha256.toLowerCase() ||
-      actualSha256 !== tile.sha256.toLowerCase()
-    ) {
-      throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
+    if (!this.#verifiedPackBuffers.has(content)) {
+      const actualSha256 = await sha256(content);
+      if (
+        actualSha256 !== pack.sha256.toLowerCase() ||
+        actualSha256 !== tile.sha256.toLowerCase()
+      ) {
+        throw new Error(`GSTile pack ${pack.id} failed SHA-256 validation`);
+      }
+      this.#verifiedPackBuffers.add(content);
     }
     signal.throwIfAborted();
     const decoded = decodeGsTilePackTile(
@@ -676,15 +903,14 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
       tile.quantization,
     );
     signal.throwIfAborted();
-    return this.#createTileResource(
+    return {
       pc,
       app,
       decoded,
-      manifest.coordinateFrame.origin,
+      origin: manifest.coordinateFrame.origin,
       node,
-      false,
-      pack.byteLength,
-    );
+      byteLength: pack.byteLength,
+    };
   }
 
   async #synchronizeLod(signal: AbortSignal) {
@@ -692,7 +918,18 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const selection = this.#lodSelection();
     if (!manifest || !selection) return;
     const key = selection.selectedNodeIds.join("\0");
-    if (key === this.#lodSelectionKey || key === this.#lodPendingKey) return;
+    this.#targetGaussians = selection.residentGaussians;
+    this.#targetNodes = selection.selectedNodeIds.length;
+    this.#maximumSelectedErrorPixels = Math.max(
+      selection.maximumSelectedErrorPixels,
+      selection.unresolvedMaximumErrorPixels,
+    );
+    if (key === this.#lodSelectionKey) {
+      this.#pendingNodes = 0;
+      this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
+      return;
+    }
+    if (key === this.#lodPendingKey) return;
 
     this.#lodSyncController?.abort(
       new DOMException("Superseded GSTile LOD selection", "AbortError"),
@@ -701,20 +938,38 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const generation = ++this.#lodGeneration;
     this.#lodSyncController = controller;
     this.#lodPendingKey = key;
+    this.#pendingNodes = selection.selectedNodeIds.filter((nodeId) => !this.#loadedTiles.has(nodeId)).length;
+    this.#lodState = "refining";
     const abort = () => controller.abort(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     const desired = new Set(selection.selectedNodeIds);
     const nodes = new Map(manifest.nodes.map((node) => [node.id, node]));
-    const staged = new Map<string, LoadedTile>();
+    const staged = new Map<string, PreparedTile>();
+    const transitions = planLodTransitions(
+      manifest,
+      this.#loadedTiles.keys(),
+      selection.selectedNodeIds,
+    );
+    const loadNodeIds = prioritizeLodLoads(
+      transitions,
+      selection.selectedNodeIds,
+      this.#loadedTiles.keys(),
+    );
     try {
       signal.throwIfAborted();
       const loadResults = await Promise.allSettled(
-        selection.selectedNodeIds.map(async (nodeId) => {
+        loadNodeIds.map(async (nodeId) => {
           if (this.#loadedTiles.has(nodeId)) return;
           const node = nodes.get(nodeId);
           if (!node) throw new Error(`GSTile LOD node ${nodeId} is missing`);
-          const loaded = await this.#loadLodTile(node, controller.signal);
-          staged.set(nodeId, loaded);
+          try {
+            const loaded = await this.#loadLodTile(node, controller.signal);
+            staged.set(nodeId, loaded);
+          } finally {
+            if (generation === this.#lodGeneration) {
+              this.#pendingNodes = Math.max(0, this.#pendingNodes - 1);
+            }
+          }
         }),
       );
       const failedLoad = loadResults.find(
@@ -729,22 +984,55 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
         throw new DOMException("Stale GSTile LOD selection", "AbortError");
       }
 
-      const obsolete = [...this.#loadedTiles.keys()].filter(
-        (nodeId) => !desired.has(nodeId),
+      // A GSTile proxy has no independently blendable seam skirt. Committing
+      // ready branches progressively therefore creates a visible checkerboard
+      // of coarse and exact Gaussian representations. Keep the previous
+      // complete cut on the GPU while the next cut is decoded in CPU memory,
+      // then replace the complete cut between two rendered frames.
+      const finalPlan = completeLodTargetPlan(
+        this.#loadedTiles.keys(),
+        desired,
+        (nodeId) => this.#loadedTiles.get(nodeId)?.gaussianCount,
+        (nodeId) => staged.get(nodeId)?.decoded.count,
       );
-      for (const nodeId of obsolete) {
+      if (!finalPlan.complete) {
+        throw new Error("GSTile complete LOD target is not ready");
+      }
+      if (finalPlan.gaussianCount > this.#maximumResidentGaussians) {
+        throw new Error("GSTile complete LOD target exceeds the resident budget");
+      }
+      for (const nodeId of finalPlan.removeNodeIds) {
         const loaded = this.#loadedTiles.get(nodeId);
         if (loaded) loaded.entity.enabled = false;
       }
-      for (const [nodeId, loaded] of staged) {
+      for (const nodeId of finalPlan.removeNodeIds) this.#removeTile(nodeId);
+      for (const nodeId of finalPlan.addNodeIds) {
+        const prepared = staged.get(nodeId);
+        if (!prepared) {
+          throw new Error(`GSTile prepared target node ${nodeId} is missing`);
+        }
+        const loaded = this.#createTileResource(
+          prepared.pc,
+          prepared.app,
+          prepared.decoded,
+          prepared.origin,
+          prepared.node,
+          false,
+          prepared.byteLength,
+        );
         loaded.entity.enabled = true;
         this.#registerTile(nodeId, loaded);
+        staged.delete(nodeId);
       }
-      for (const nodeId of obsolete) this.#removeTile(nodeId);
+      this.#lodSelectionKey = "";
+      this.#updateOpacityCameraUniform();
       this.#lodSelectionKey = key;
+      this.#pendingNodes = 0;
+      this.#lodState = selection.budgetLimited ? "budget-limited" : "steady";
       this.#updateOpacityCameraUniform();
     } catch (error) {
-      for (const loaded of staged.values()) this.#destroyUnregisteredTile(loaded);
+      staged.clear();
+      if (!(error instanceof DOMException && error.name === "AbortError")) this.#lodState = "error";
       throw error;
     } finally {
       signal.removeEventListener("abort", abort);
@@ -768,14 +1056,19 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
           error,
         );
       });
-    }, 120);
+    }, 250);
   }
 
   #statistics(frameCpuMs: number | null): GaussianRenderStatistics {
     return {
+      lodState: this.#lodState,
       residentGaussians: this.#residentGaussians,
       residentBytes: this.#residentBytes,
       selectedNodes: this.#selectedNodes,
+      targetGaussians: this.#targetGaussians,
+      targetNodes: this.#targetNodes,
+      pendingNodes: this.#pendingNodes,
+      maximumSelectedErrorPixels: this.#maximumSelectedErrorPixels,
       frameCpuMs,
       frameGpuMs: null,
     };
@@ -804,7 +1097,10 @@ export class PlayCanvasResidentBackend implements GaussianRenderBackend {
     const camera = this.#camera;
     if (!pc || !camera) return;
     const position = camera.getPosition();
-    const value = [position.x, position.y, position.z];
+    const value = coordinateFrameCameraPosition(
+      [position.x, position.y, position.z],
+      this.#coordinateOrigin,
+    );
     for (const entity of this.#entities) {
       entity.gsplat?.setParameter("uDroneCameraPosition", value);
       if (entity.gsplat) {

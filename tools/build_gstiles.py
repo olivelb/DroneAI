@@ -28,6 +28,12 @@ def _parser() -> argparse.ArgumentParser:
         type=int,
         help="opt into deterministic hierarchical LOD with this proxy size",
     )
+    parser.add_argument(
+        "--lod-proxy-strategy",
+        choices=("adaptive-moment", "moment-matched", "spatial-stratified", "minhash"),
+        default="moment-matched",
+        help="LOD proxy strategy; adaptive-moment enables V4, replacement modes preserve legacy bundles",
+    )
     parser.add_argument("--chunk-records", type=int, default=131_072)
     parser.add_argument("--temporary-root", type=Path)
     parser.add_argument("--crs")
@@ -53,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         options=GsTileBuildOptions(
             leaf_size=arguments.leaf_size,
             lod_proxy_size=arguments.lod_proxy_size,
+            lod_proxy_strategy=arguments.lod_proxy_strategy,
             chunk_records=arguments.chunk_records,
             temporary_root=arguments.temporary_root,
             coordinate_origin=tuple(arguments.origin),

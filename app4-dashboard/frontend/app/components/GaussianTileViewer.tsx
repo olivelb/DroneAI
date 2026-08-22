@@ -21,9 +21,14 @@ export type GaussianTileViewerProps = {
 const defaultBackendFactory = () => createPlayCanvasResidentBackend();
 
 const emptyStatistics: GaussianRenderStatistics = {
+  lodState: "steady",
   residentGaussians: 0,
   residentBytes: 0,
   selectedNodes: 0,
+  targetGaussians: 0,
+  targetNodes: 0,
+  pendingNodes: 0,
+  maximumSelectedErrorPixels: 0,
   frameCpuMs: null,
   frameGpuMs: null,
 };
@@ -127,21 +132,38 @@ export default function GaussianTileViewer({
     };
   }, [createBackend, descriptorUrl, manifestUrl]);
 
+  const displayStatus =
+    status === "Prêt" && statistics.lodState === "refining"
+      ? "Préparation atomique…"
+      : status === "Prêt" && statistics.lodState === "budget-limited"
+        ? "Limite GPU atteinte"
+        : status;
+
   return (
     <div
       className={`relative min-h-80 overflow-hidden rounded-2xl bg-[#101816] ${className}`}
       data-testid="gstile-viewer"
       data-status={status}
+      data-lod-state={statistics.lodState}
       data-resident-gaussians={statistics.residentGaussians}
       data-selected-nodes={statistics.selectedNodes}
+      data-target-gaussians={statistics.targetGaussians}
+      data-target-nodes={statistics.targetNodes}
+      data-pending-nodes={statistics.pendingNodes}
     >
       <canvas ref={canvasRef} className="block h-full min-h-80 w-full" />
       <div className="pointer-events-none absolute left-3 top-3 rounded-xl border border-white/10 bg-black/55 px-3 py-2 text-[11px] text-white/80 backdrop-blur">
-        <div className="font-semibold text-white">GSTile · {status}</div>
+        <div className="font-semibold text-white">GSTile · {displayStatus}</div>
         {!error && (
-          <div className="mt-1 flex gap-3 font-mono text-[10px] text-white/60">
-            <span>{formatCount(statistics.residentGaussians)} splats</span>
-            <span>{statistics.selectedNodes} tuiles</span>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-white/60">
+            <span>
+              {formatCount(statistics.residentGaussians)} / {formatCount(statistics.targetGaussians || statistics.residentGaussians)} splats
+            </span>
+            <span>{statistics.selectedNodes} / {statistics.targetNodes || statistics.selectedNodes} tuiles</span>
+            {statistics.pendingNodes > 0 && <span>{statistics.pendingNodes} en attente</span>}
+            {statistics.maximumSelectedErrorPixels > 0 && (
+              <span>erreur {statistics.maximumSelectedErrorPixels.toFixed(1)} px</span>
+            )}
             {statistics.frameGpuMs !== null && (
               <span>{statistics.frameGpuMs.toFixed(1)} ms GPU</span>
             )}

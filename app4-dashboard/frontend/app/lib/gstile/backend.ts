@@ -16,9 +16,14 @@ export type GaussianCameraState = {
 };
 
 export type GaussianRenderStatistics = {
+  lodState: "steady" | "refining" | "budget-limited" | "error";
   residentGaussians: number;
   residentBytes: number;
   selectedNodes: number;
+  targetGaussians: number;
+  targetNodes: number;
+  pendingNodes: number;
+  maximumSelectedErrorPixels: number;
   frameCpuMs: number | null;
   frameGpuMs: number | null;
 };
