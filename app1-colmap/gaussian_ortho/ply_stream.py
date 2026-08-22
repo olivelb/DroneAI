@@ -6,7 +6,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterable
+from typing import BinaryIO, Callable, Iterable, Iterator
 
 import numpy as np
 
@@ -43,6 +43,17 @@ class PlyMergeResult:
     path: Path
     vertex_count: int
     size_bytes: int
+    source_vertex_count: int
+    algorithm: str
+
+
+@dataclass(frozen=True)
+class _PlyMergePlan:
+    sources: tuple[PartitionCorePly, ...]
+    output: Path
+    layouts: tuple[BinaryPlyLayout, ...]
+    output_header: bytes
+    output_count_offset: int
     source_vertex_count: int
     algorithm: str
 
@@ -130,6 +141,22 @@ def _core_mask(records: np.ndarray, bounds: CellBounds) -> np.ndarray:
     )
 
 
+def _read_record_chunks(
+    source: BinaryIO,
+    *,
+    layout: BinaryPlyLayout,
+    chunk_records: int,
+) -> Iterator[np.ndarray]:
+    remaining = layout.vertex_count
+    while remaining:
+        count = min(remaining, chunk_records)
+        records = np.fromfile(source, dtype=layout.dtype, count=count)
+        if records.shape[0] != count:
+            raise ValueError("PLY payload ended before its declared vertex count")
+        yield records
+        remaining -= count
+
+
 def _copy_core_records(
     source: BinaryIO,
     target: BinaryIO | None,
@@ -139,17 +166,15 @@ def _copy_core_records(
     chunk_records: int,
 ) -> int:
     retained = 0
-    remaining = layout.vertex_count
-    while remaining:
-        count = min(remaining, chunk_records)
-        records = np.fromfile(source, dtype=layout.dtype, count=count)
-        if records.shape[0] != count:
-            raise ValueError("PLY payload ended before its declared vertex count")
+    for records in _read_record_chunks(
+        source,
+        layout=layout,
+        chunk_records=chunk_records,
+    ):
         selected = records[_core_mask(records, bounds)]
         retained += int(selected.shape[0])
         if target is not None and selected.size:
             selected.tofile(target)
-        remaining -= count
     return retained
 
 
@@ -175,15 +200,13 @@ def count_partition_core_vertices(
     return total
 
 
-def merge_partition_cores_to_ply(
+def _prepare_merge(
     partitions: Iterable[PartitionCorePly],
     output_path: str | Path,
     *,
-    expected_vertex_count: int | None = None,
-    chunk_records: int = 131_072,
-) -> PlyMergeResult:
-    """Atomically concatenate disjoint resident cores into one Gaussian PLY."""
-
+    algorithm: str,
+    required_properties: tuple[str, ...] = (),
+) -> _PlyMergePlan:
     sources = tuple(partitions)
     if not sources:
         raise ValueError("At least one resident PLY is required")
@@ -199,12 +222,14 @@ def merge_partition_cores_to_ply(
         for layout in layouts[1:]
     ):
         raise ValueError("Resident PLY schemas are inconsistent")
-    output_header = _header_with_merge_comment(first, CORE_MERGE_COMMENT)
-    output_count_offset = output_header.index(_VERTEX_PREFIX) + len(_VERTEX_PREFIX)
-    maximum_bytes = sum(
-        layout.vertex_count * layout.dtype.itemsize
-        for layout in layouts
-    ) + len(output_header)
+    missing = tuple(name for name in required_properties if name not in first.property_names)
+    if missing:
+        raise ValueError(
+            "Seam-safe PLY merging requires Gaussian " + ", ".join(missing)
+        )
+    output_header = _header_with_merge_comment(first, algorithm)
+    source_vertex_count = sum(layout.vertex_count for layout in layouts)
+    maximum_bytes = source_vertex_count * first.dtype.itemsize + len(output_header)
     free_bytes = shutil.disk_usage(output.parent).free
     reserve_bytes = 5 * 1024**3
     if free_bytes < maximum_bytes + reserve_bytes:
@@ -213,21 +238,35 @@ def merge_partition_cores_to_ply(
             f"need up to {(maximum_bytes + reserve_bytes) / 1024**3:.1f} GiB, "
             f"have {free_bytes / 1024**3:.1f} GiB"
         )
-    temporary = output.with_name(output.name + ".tmp")
+    return _PlyMergePlan(
+        sources=sources,
+        output=output,
+        layouts=layouts,
+        output_header=output_header,
+        output_count_offset=(output_header.index(_VERTEX_PREFIX) + len(_VERTEX_PREFIX)),
+        source_vertex_count=source_vertex_count,
+        algorithm=algorithm,
+    )
+
+
+def _write_atomic_merge(
+    plan: _PlyMergePlan,
+    copy_partition: Callable[
+        [BinaryIO, BinaryIO, BinaryPlyLayout, PartitionCorePly],
+        int,
+    ],
+    *,
+    expected_vertex_count: int | None = None,
+) -> PlyMergeResult:
+    temporary = plan.output.with_name(plan.output.name + ".tmp")
     total = 0
     try:
         with temporary.open("wb+") as target:
-            target.write(output_header)
-            for partition, layout in zip(sources, layouts, strict=True):
+            target.write(plan.output_header)
+            for partition, layout in zip(plan.sources, plan.layouts, strict=True):
                 with partition.model_path.open("rb") as source:
                     source.seek(layout.header_size)
-                    total += _copy_core_records(
-                        source,
-                        target,
-                        layout=layout,
-                        bounds=partition.bounds,
-                        chunk_records=chunk_records,
-                    )
+                    total += copy_partition(source, target, layout, partition)
             if expected_vertex_count is not None and total != expected_vertex_count:
                 raise RuntimeError(
                     "Unified PLY core count drifted: "
@@ -236,20 +275,56 @@ def merge_partition_cores_to_ply(
             encoded_count = f"{total:0{_COUNT_WIDTH}d}".encode("ascii")
             if len(encoded_count) != _COUNT_WIDTH:
                 raise OverflowError("Unified PLY vertex count exceeds header capacity")
-            target.seek(output_count_offset)
+            target.seek(plan.output_count_offset)
             target.write(encoded_count)
             target.flush()
             os.fsync(target.fileno())
-        os.replace(temporary, output)
+        os.replace(temporary, plan.output)
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
     return PlyMergeResult(
-        path=output,
+        path=plan.output,
         vertex_count=total,
-        size_bytes=output.stat().st_size,
-        source_vertex_count=sum(layout.vertex_count for layout in layouts),
+        size_bytes=plan.output.stat().st_size,
+        source_vertex_count=plan.source_vertex_count,
+        algorithm=plan.algorithm,
+    )
+
+
+def merge_partition_cores_to_ply(
+    partitions: Iterable[PartitionCorePly],
+    output_path: str | Path,
+    *,
+    expected_vertex_count: int | None = None,
+    chunk_records: int = 131_072,
+) -> PlyMergeResult:
+    """Atomically concatenate disjoint resident cores into one Gaussian PLY."""
+
+    plan = _prepare_merge(
+        partitions,
+        output_path,
         algorithm=CORE_MERGE_COMMENT,
+    )
+
+    def copy_partition(
+        source: BinaryIO,
+        target: BinaryIO,
+        layout: BinaryPlyLayout,
+        partition: PartitionCorePly,
+    ) -> int:
+        return _copy_core_records(
+            source,
+            target,
+            layout=layout,
+            bounds=partition.bounds,
+            chunk_records=chunk_records,
+        )
+
+    return _write_atomic_merge(
+        plan,
+        copy_partition,
+        expected_vertex_count=expected_vertex_count,
     )
 
 
@@ -406,19 +481,17 @@ def _copy_feathered_records(
     chunk_records: int,
 ) -> int:
     retained = 0
-    remaining = layout.vertex_count
-    while remaining:
-        count = min(remaining, chunk_records)
-        records = np.fromfile(source, dtype=layout.dtype, count=count)
-        if records.shape[0] != count:
-            raise ValueError("PLY payload ended before its declared vertex count")
+    for records in _read_record_chunks(
+        source,
+        layout=layout,
+        chunk_records=chunk_records,
+    ):
         weights, domain = partition_opacity_weights(records, owner, all_bounds)
         selected = domain & (weights > 0.0)
         if selected.any():
             weighted = _apply_optical_depth_weight(records[selected], weights[selected])
             weighted.tofile(target)
             retained += int(weighted.shape[0])
-        remaining -= count
     return retained
 
 
@@ -436,68 +509,28 @@ def merge_partition_buffers_to_ply(
     remains bounded-memory and publication is atomic.
     """
 
-    sources = tuple(partitions)
-    if not sources:
-        raise ValueError("At least one resident PLY is required")
-    all_bounds = tuple(partition.bounds for partition in sources)
-    _validate_shared_ground_frame(all_bounds)
-    output = Path(output_path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    resolved_output = output.resolve()
-    if any(partition.model_path.resolve() == resolved_output for partition in sources):
-        raise ValueError("Unified PLY output cannot replace a resident input")
-    layouts = tuple(read_binary_ply_layout(partition.model_path) for partition in sources)
-    first = layouts[0]
-    if any(
-        layout.dtype != first.dtype or layout.property_names != first.property_names
-        for layout in layouts[1:]
-    ):
-        raise ValueError("Resident PLY schemas are inconsistent")
-    if "opacity" not in first.property_names:
-        raise ValueError("Seam-safe PLY merging requires Gaussian opacity")
-    output_header = _header_with_merge_comment(first, FEATHERED_MERGE_COMMENT)
-    output_count_offset = output_header.index(_VERTEX_PREFIX) + len(_VERTEX_PREFIX)
-    source_vertex_count = sum(layout.vertex_count for layout in layouts)
-    maximum_bytes = source_vertex_count * first.dtype.itemsize + len(output_header)
-    free_bytes = shutil.disk_usage(output.parent).free
-    reserve_bytes = 5 * 1024**3
-    if free_bytes < maximum_bytes + reserve_bytes:
-        raise RuntimeError(
-            "Insufficient disk space for atomic seam-safe PLY assembly: "
-            f"need up to {(maximum_bytes + reserve_bytes) / 1024**3:.1f} GiB, "
-            f"have {free_bytes / 1024**3:.1f} GiB"
-        )
-    temporary = output.with_name(output.name + ".tmp")
-    total = 0
-    try:
-        with temporary.open("wb+") as target:
-            target.write(output_header)
-            for partition, layout in zip(sources, layouts, strict=True):
-                with partition.model_path.open("rb") as source:
-                    source.seek(layout.header_size)
-                    total += _copy_feathered_records(
-                        source,
-                        target,
-                        layout=layout,
-                        owner=partition.bounds,
-                        all_bounds=all_bounds,
-                        chunk_records=chunk_records,
-                    )
-            encoded_count = f"{total:0{_COUNT_WIDTH}d}".encode("ascii")
-            if len(encoded_count) != _COUNT_WIDTH:
-                raise OverflowError("Unified PLY vertex count exceeds header capacity")
-            target.seek(output_count_offset)
-            target.write(encoded_count)
-            target.flush()
-            os.fsync(target.fileno())
-        os.replace(temporary, output)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-    return PlyMergeResult(
-        path=output,
-        vertex_count=total,
-        size_bytes=output.stat().st_size,
-        source_vertex_count=source_vertex_count,
+    plan = _prepare_merge(
+        partitions,
+        output_path,
         algorithm=FEATHERED_MERGE_COMMENT,
+        required_properties=("opacity",),
     )
+    all_bounds = tuple(partition.bounds for partition in plan.sources)
+    _validate_shared_ground_frame(all_bounds)
+
+    def copy_partition(
+        source: BinaryIO,
+        target: BinaryIO,
+        layout: BinaryPlyLayout,
+        partition: PartitionCorePly,
+    ) -> int:
+        return _copy_feathered_records(
+            source,
+            target,
+            layout=layout,
+            owner=partition.bounds,
+            all_bounds=all_bounds,
+            chunk_records=chunk_records,
+        )
+
+    return _write_atomic_merge(plan, copy_partition)

@@ -2598,6 +2598,10 @@ def generate_gaussian_orthophoto(
         cupy_version=cp.__version__,
     )
     phase_timings["quality_and_geotiff_publication"] = perf_counter() - phase_started
-    result["preparation_reports"] = list(training_phase.training_state.preparation_reports)
+    result["preparation_reports"] = (
+        list(training_phase.training_state.preparation_reports)
+        if training_phase is not None
+        else []
+    )
     result["phase_timings_seconds"] = {name: round(seconds, 6) for name, seconds in phase_timings.items()}
     return result
